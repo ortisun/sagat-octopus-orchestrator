@@ -56,3 +56,13 @@ jobs:
           npx --yes -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats \
             -s specs/001-platform-foundation/contracts/workflow.schema.json \
             -d examples/payment-saga.workflow.json
+
+  local-environment:
+    name: local environment (docker compose smoke test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Builds the image, starts PostgreSQL + NATS + control plane, checks health, runs the seed
+      # twice and tears everything down (see scripts/smoke-compose.sh).
+      - run: scripts/smoke-compose.sh
