@@ -10,15 +10,15 @@
 
 ## Phase 2: Foundation
 - [x] T001-004 Create the necessary domain contracts/interfaces in `crates/domain/src/identity.rs` and invariant tests.
-- [ ] T001-005 Implement ports/use cases in the appropriate module based on `specs/001-platform-foundation/plan.md`.
-- [ ] T001-006 Write additive migrations and rollback/forward tests in `crates/infra-postgres/migrations/`.
-- [ ] T001-007 Create PostgreSQL integration and tenant isolation tests in `tests/integration/001-platform-foundation/`.
+- [x] T001-005 Implement ports/use cases in the appropriate module based on `specs/001-platform-foundation/plan.md`.
+- [x] T001-006 Write additive migrations and rollback/forward tests in `crates/infra-postgres/migrations/`.
+- [x] T001-007 Create PostgreSQL integration and tenant isolation tests in `tests/integration/001-platform-foundation/`.
 
 ## Phase 3: US01 — Create a workspace and namespace (P1)
 **Independent test:** Given an authenticated administrator; When they create a workspace and dev namespace; Then the workspace is persisted, and the scope appears in the API/Studio.
 - [ ] T001-008 [P] [US01] Write a Given/When/Then test to create a workspace and namespace in `tests/e2e/001-platform-foundation/us01.rs`.
 - [x] T001-009 [US01] Implement the domain path and error handling to create a workspace and namespace in `crates/domain/src/identity.rs`.
-- [ ] T001-010 [US01] Integrate adapters and persistence for the US01 scenario in `crates/application/` and `crates/infra-postgres/`.
+- [x] T001-010 [US01] Integrate adapters and persistence for the US01 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [ ] T001-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to the US01 scenario in `crates/telemetry/`.
 - [ ] T001-012 [US01] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US01 in `tests/fault/001-platform-foundation/`.
 
@@ -42,13 +42,13 @@
 **Independent test:** Given a user of tenant A; When they request a resource of tenant B; Then the API does not reveal tenant B data and records the attempt.
 - [ ] T001-023 [P] [US04] Write a Given/When/Then test to deny cross-tenant access in `tests/e2e/001-platform-foundation/us04.rs`.
 - [ ] T001-024 [US04] Implement the domain path and error handling to deny cross-tenant access in `apps/control-plane/src/main.rs`.
-- [ ] T001-025 [US04] Integrate adapters and persistence for the US04 scenario in `crates/application/` and `crates/infra-postgres/`.
+- [x] T001-025 [US04] Integrate adapters and persistence for the US04 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [ ] T001-026 [P] [US04] Add logs/traces/metrics and tenant/secret protection to the US04 scenario in `crates/telemetry/`.
 - [ ] T001-027 [US04] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US04 in `tests/fault/001-platform-foundation/`.
 
 ## Phase: Engineering design details (story-linked hardening)
 
-- [ ] T001-028 [US01] Define the schema of `tenant` and `namespace` with scoped FKs in `crates/infra-postgres/migrations/` and reject tenant spoofing in tests.
+- [x] T001-028 [US01] Define the schema of `tenant` and `namespace` with scoped FKs in `crates/infra-postgres/migrations/` and reject tenant spoofing in tests.
 - [ ] T001-029 [US01] Add OIDC/JWKS, authz and request context middleware in `crates/api-http/src/middleware/`.
 - [ ] T001-030 [US01] Create CI for lint/clippy/fmt, migrations up and OpenAPI/protobuf validation in `.github/workflows/ci.yml`.
 
