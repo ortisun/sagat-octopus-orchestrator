@@ -51,6 +51,8 @@ jobs:
           protoc --proto_path=specs/001-platform-foundation/contracts \
                  --descriptor_set_out=/dev/null \
                  specs/001-platform-foundation/contracts/worker.proto
+      - name: AsyncAPI is valid
+        run: npx --yes @asyncapi/cli@3 validate specs/001-platform-foundation/contracts/events.asyncapi.yaml
       - name: Workflow example validates against the IR schema
         run: |
           npx --yes -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats \

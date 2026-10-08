@@ -57,3 +57,23 @@ pub async fn connect(config: &PoolConfig) -> Result<PgPool, sqlx::Error> {
         .connect_with(options)
         .await
 }
+
+/// Publishes `db_pool_connections{state="idle"|"in_use"}` every `interval` until the pool closes.
+///
+/// A pool that stays saturated (`in_use` at the maximum) is the earliest visible sign of a slow
+/// database or of abuse, well before requests start timing out.
+pub fn spawn_pool_metrics(pool: PgPool, interval: Duration) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            if pool.is_closed() {
+                return;
+            }
+            let size = f64::from(pool.size());
+            let idle = f64::from(u32::try_from(pool.num_idle()).unwrap_or(u32::MAX));
+            metrics::gauge!("db_pool_connections", "state" => "idle").set(idle);
+            metrics::gauge!("db_pool_connections", "state" => "in_use").set((size - idle).max(0.0));
+        }
+    })
+}

@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sagat_api_http::{AuthConfig, HttpLimits, ServerConfig};
+use sagat_api_http::{AuthConfig, HttpLimits, RateLimitConfig, ServerConfig};
 use sagat_telemetry::LogFormat;
 
 /// Where the process runs. Anything that could damage real data is gated on this; the default is
@@ -158,6 +158,10 @@ pub struct ServeConfig {
     pub limits: HttpLimits,
     /// Connection-level protections (slow clients, connection cap, shutdown grace).
     pub server: ServerConfig,
+    /// Per-tenant request budget.
+    pub rate_limit: RateLimitConfig,
+    /// Where `/metrics` is served, on a listener separate from the public API. `None` disables it.
+    pub admin_addr: Option<SocketAddr>,
     /// Apply pending migrations before listening. Off by default: production runs them as a
     /// separate, privileged step (`control-plane migrate`).
     pub migrate_on_start: bool,
@@ -174,6 +178,7 @@ impl ServeConfig {
         );
         auth.tenant_claim = optional(get, "SAGAT_OIDC_TENANT_CLAIM", auth.tenant_claim)?;
         auth.allow_insecure_jwks_http = flag(get, "SAGAT_ALLOW_INSECURE_JWKS_HTTP")?;
+        auth.required_token_type = get("SAGAT_OIDC_REQUIRED_TYP").filter(|v| !v.trim().is_empty());
 
         let defaults = HttpLimits::default();
         let max_body_bytes: usize = optional(get, "SAGAT_MAX_BODY_BYTES", defaults.max_body_bytes)?;
@@ -194,6 +199,39 @@ impl ServeConfig {
                 reason: "must be greater than zero".to_owned(),
             });
         }
+        let max_in_flight: usize = optional(get, "SAGAT_MAX_IN_FLIGHT", defaults.max_in_flight)?;
+        if max_in_flight == 0 {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_MAX_IN_FLIGHT",
+                reason: "must be greater than zero".to_owned(),
+            });
+        }
+        let rate_defaults = RateLimitConfig::default();
+        let rate_per_second: f64 = optional(get, "SAGAT_RATE_LIMIT_RPS", rate_defaults.per_second)?;
+        let rate_burst: f64 = optional(get, "SAGAT_RATE_LIMIT_BURST", rate_defaults.burst)?;
+        if !(rate_per_second.is_finite() && rate_per_second > 0.0) {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_RATE_LIMIT_RPS",
+                reason: "must be a positive number".to_owned(),
+            });
+        }
+        if !(rate_burst.is_finite() && rate_burst >= 1.0) {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_RATE_LIMIT_BURST",
+                reason: "must be at least 1".to_owned(),
+            });
+        }
+        let admin_addr =
+            match get("SAGAT_ADMIN_ADDR").as_deref().map(str::trim) {
+                None | Some("") => Some(SocketAddr::from(([127, 0, 0, 1], 9090))),
+                Some("off") => None,
+                Some(raw) => Some(raw.parse().map_err(|e: std::net::AddrParseError| {
+                    ConfigError::Invalid {
+                        name: "SAGAT_ADMIN_ADDR",
+                        reason: e.to_string(),
+                    }
+                })?),
+            };
         let server_defaults = ServerConfig::default();
         let header_secs: u64 = optional(
             get,
@@ -232,7 +270,13 @@ impl ServeConfig {
             limits: HttpLimits {
                 max_body_bytes,
                 request_timeout: Duration::from_secs(timeout_secs),
+                max_in_flight,
             },
+            rate_limit: RateLimitConfig {
+                per_second: rate_per_second,
+                burst: rate_burst,
+            },
+            admin_addr,
             server: ServerConfig {
                 header_read_timeout: Duration::from_secs(header_secs),
                 max_connections,
@@ -293,5 +337,24 @@ pub fn redact_url(url: &str) -> String {
         format!("{scheme}://{host}")
     } else {
         format!("{scheme}://{host}/{path}")
+    }
+}
+
+/// Settings for `provision-tenant`. Unlike the development seed there are no defaults: creating a
+/// real tenant must be a deliberate act.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionConfig {
+    pub tenant_slug: String,
+    pub admin_subject: String,
+}
+
+impl ProvisionConfig {
+    /// # Errors
+    /// [`ConfigError::Missing`] when either value is absent.
+    pub fn from_lookup(get: Lookup<'_>) -> Result<Self, ConfigError> {
+        Ok(Self {
+            tenant_slug: required(get, "SAGAT_PROVISION_TENANT")?,
+            admin_subject: required(get, "SAGAT_PROVISION_ADMIN")?,
+        })
     }
 }

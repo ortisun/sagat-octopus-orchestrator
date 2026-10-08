@@ -144,3 +144,34 @@ fn a_plaintext_database_url_is_refused_outside_development_without_leaking_it() 
         }
     }
 }
+
+#[test]
+fn provisioning_a_tenant_needs_both_values_and_never_assumes_defaults() {
+    let base = [("DATABASE_URL", SECRET_URL), ("SAGAT_ENV", "prod")];
+    let none = control_plane(&["provision-tenant"], &base);
+    assert_eq!(none.status.code(), Some(2));
+    assert!(text(&none.stderr).contains("SAGAT_PROVISION_TENANT"));
+
+    let mut only_slug = base.to_vec();
+    only_slug.push(("SAGAT_PROVISION_TENANT", "acme"));
+    let missing_admin = control_plane(&["provision-tenant"], &only_slug);
+    assert_eq!(missing_admin.status.code(), Some(2));
+    assert!(text(&missing_admin.stderr).contains("SAGAT_PROVISION_ADMIN"));
+}
+
+#[test]
+fn provisioning_rejects_an_invalid_slug_before_touching_the_database() {
+    let started = Instant::now();
+    let output = control_plane(
+        &["provision-tenant"],
+        &[
+            ("DATABASE_URL", SECRET_URL),
+            ("SAGAT_ENV", "prod"),
+            ("SAGAT_PROVISION_TENANT", "NOT A SLUG"),
+            ("SAGAT_PROVISION_ADMIN", "alice"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(text(&output.stderr).contains("SAGAT_PROVISION_TENANT"));
+    assert!(started.elapsed() < Duration::from_secs(2));
+}

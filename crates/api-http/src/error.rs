@@ -24,6 +24,7 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     ValidationFailed,
+    RateLimited,
     Unavailable,
     Internal,
 }
@@ -140,6 +141,24 @@ impl ApiError {
         )
     }
 
+    /// The tenant exceeded its request budget; `retry_after` is when a token will be available.
+    #[must_use]
+    pub fn rate_limited(retry_after: std::time::Duration) -> Self {
+        let mut e = Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::RateLimited,
+            "too many requests; slow down and retry",
+        );
+        e.parts.retryable = true;
+        // Whole seconds, rounded up, never zero: a 0 would invite an immediate retry storm.
+        e.retry_after = Some(
+            u32::try_from(retry_after.as_secs_f64().ceil() as u64)
+                .unwrap_or(u32::MAX)
+                .max(1),
+        );
+        e
+    }
+
     /// Dependency down; the client may retry.
     #[must_use]
     pub fn unavailable() -> Self {
@@ -163,6 +182,7 @@ impl ApiError {
 impl From<AuthError> for ApiError {
     fn from(error: AuthError) -> Self {
         tracing::debug!(%error, "bearer token refused");
+        metrics::counter!("auth_failures_total", "reason" => error.label()).increment(1);
         match error {
             AuthError::Unavailable => Self::unavailable(),
             AuthError::Malformed | AuthError::Expired | AuthError::Invalid(_) => {

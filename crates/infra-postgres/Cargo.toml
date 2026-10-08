@@ -12,9 +12,10 @@ workspace = true
 
 [dependencies]
 sagat-application.workspace = true
+metrics.workspace = true
 sagat-domain.workspace = true
 sqlx.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing.workspace = true
 uuid.workspace = true

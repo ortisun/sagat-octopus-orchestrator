@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use reqwest::{Client, Method, RequestBuilder, Response};
 use sagat_api_http::{
-    AppState, AuthConfig, HttpJwksFetcher, HttpLimits, ServerConfig, TokenVerifier,
-    auth::install_crypto_provider, router,
+    AppState, AuthConfig, HttpJwksFetcher, HttpLimits, RateLimitConfig, ServerConfig,
+    TokenVerifier, auth::install_crypto_provider, router,
 };
 use sagat_application::clock::SystemClock;
 use sagat_application::identity::IdentityService;
@@ -40,6 +40,8 @@ pub struct Options {
     pub server: ServerConfig,
     /// Connect the API as the least-privilege runtime role instead of the database owner.
     pub runtime_role: bool,
+    /// Per-tenant request budget.
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for Options {
@@ -50,6 +52,7 @@ impl Default for Options {
             statement_timeout: Duration::from_secs(2),
             server: ServerConfig::default(),
             runtime_role: false,
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
@@ -81,7 +84,10 @@ pub async fn start_with(options: Options) -> TestApi {
     let fetcher = HttpJwksFetcher::new(&auth).expect("fetcher");
     let verifier = TokenVerifier::new(Arc::new(fetcher), &auth);
     let service = IdentityService::new(store.clone(), SystemClock);
-    let app = router(AppState::new(service, verifier), options.limits);
+    let app = router(
+        AppState::with_rate_limit(service, verifier, options.rate_limit),
+        options.limits,
+    );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -110,8 +116,8 @@ pub async fn start_with(options: Options) -> TestApi {
 
 impl TestApi {
     /// Creates a tenant and its first admin directly in the database.
-    pub async fn tenant(&self, slug: &str, admin: &str) {
-        provision(&self.owner_store, slug, admin).await;
+    pub async fn tenant(&self, slug: &str, admin: &str) -> sagat_domain::identity::TenantId {
+        provision(&self.owner_store, slug, admin).await.0.id()
     }
 
     pub fn request(&self, method: Method, path: &str) -> RequestBuilder {

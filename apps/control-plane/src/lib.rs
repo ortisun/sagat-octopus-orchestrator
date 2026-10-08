@@ -6,12 +6,17 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sagat_api_http::{AppState, HttpJwksFetcher, TokenVerifier, router};
+use sagat_api_http::{
+    AppState, HttpJwksFetcher, HttpLimits, ServerConfig, TokenVerifier, protect, router,
+};
 use sagat_application::clock::SystemClock;
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityService;
 use sagat_domain::identity::{Membership, Slug, Subject, Tenant, TenantId};
-use sagat_infra_postgres::{PgIdentityStore, PgPool, PoolConfig, connect, migrate};
+use sagat_infra_postgres::{
+    PgIdentityStore, PgPool, PoolConfig, connect, migrate, spawn_pool_metrics,
+};
+use sagat_telemetry::Metrics;
 use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -19,7 +24,9 @@ use tokio::net::{TcpListener, TcpStream};
 pub mod cli;
 pub mod config;
 
-use config::{Config, ConfigError, DatabaseConfig, Environment, SeedConfig, ServeConfig};
+use config::{
+    Config, ConfigError, DatabaseConfig, Environment, ProvisionConfig, SeedConfig, ServeConfig,
+};
 
 /// A command failed. `exit_code` follows the convention: 2 for a problem the operator must fix in
 /// the invocation or configuration, 1 for a runtime failure.
@@ -37,6 +44,8 @@ pub enum RunError {
     Migrate(String),
     #[error("authentication setup failed: {0}")]
     Auth(String),
+    #[error("a tenant with that slug already exists")]
+    AlreadyExists,
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("health check failed: {0}")]
@@ -48,7 +57,11 @@ impl RunError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Config(_) | Self::Refused(_) | Self::Auth(_) => 2,
-            Self::Database(_) | Self::Migrate(_) | Self::Io(_) | Self::Unhealthy(_) => 1,
+            Self::Database(_)
+            | Self::Migrate(_)
+            | Self::Io(_)
+            | Self::Unhealthy(_)
+            | Self::AlreadyExists => 1,
         }
     }
 }
@@ -124,6 +137,35 @@ pub async fn seed_dev(config: &Config, seed: &SeedConfig) -> Result<SeedOutcome,
     Ok(outcome)
 }
 
+/// Creates a tenant and its first administrator in any environment. Audited atomically with the
+/// change (`tenant.provisioned`, `membership.granted`, actor `system:provisioning`).
+///
+/// # Errors
+/// [`RunError::AlreadyExists`] when the slug is taken; [`RunError::Config`] for an invalid slug or
+/// subject.
+pub async fn provision_tenant(config: &Config, request: &ProvisionConfig) -> Result<(), RunError> {
+    let slug = Slug::parse(&request.tenant_slug).map_err(|e| ConfigError::Invalid {
+        name: "SAGAT_PROVISION_TENANT",
+        reason: e.to_string(),
+    })?;
+    let subject = Subject::parse(&request.admin_subject).map_err(|e| ConfigError::Invalid {
+        name: "SAGAT_PROVISION_ADMIN",
+        reason: e.to_string(),
+    })?;
+    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let store = PgIdentityStore::new(pool.clone());
+    let now = OffsetDateTime::now_utc();
+    let tenant = Tenant::provision(TenantId::generate(), slug, now);
+    let admin = Membership::bootstrap_admin(&tenant, subject, now);
+    let result = store.provision_tenant(&tenant, &admin).await;
+    pool.close().await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(StoreError::Conflict(ConflictKind::TenantSlug)) => Err(RunError::AlreadyExists),
+        Err(error) => Err(RunError::Database(error.to_string())),
+    }
+}
+
 /// Runs the HTTP API on `listener` until `shutdown` completes, then drains in-flight requests.
 ///
 /// # Errors
@@ -132,6 +174,21 @@ pub async fn serve(
     config: &Config,
     serve: &ServeConfig,
     listener: TcpListener,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), RunError> {
+    serve_with_admin(config, serve, listener, None, shutdown).await
+}
+
+/// [`serve`] plus an optional administrative listener that exposes `GET /metrics` only. It is a
+/// separate socket so operational data never shares a port (or an exposure policy) with the API.
+///
+/// # Errors
+/// Same as [`serve`].
+pub async fn serve_with_admin(
+    config: &Config,
+    serve: &ServeConfig,
+    listener: TcpListener,
+    admin_listener: Option<TcpListener>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), RunError> {
     // A plain-http key URL lets anyone on the path substitute their own signing keys and forge any
@@ -148,7 +205,20 @@ pub async fn serve(
     let fetcher = HttpJwksFetcher::new(&serve.auth).map_err(|e| RunError::Auth(e.to_string()))?;
     let verifier = TokenVerifier::new(Arc::new(fetcher), &serve.auth);
     let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
-    let app = router(AppState::new(service, verifier), serve.limits);
+    // Install the metrics recorder before the first request so nothing is missed.
+    let _ = Metrics::global();
+    let app = router(
+        AppState::with_rate_limit(service, verifier, serve.rate_limit),
+        serve.limits,
+    );
+    let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
+
+    // One shutdown signal drives both listeners.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown.await;
+        let _ = stop_tx.send(true);
+    });
 
     // Public settings only; never the database URL.
     tracing::info!(
@@ -159,10 +229,54 @@ pub async fn serve(
         jwks_uri = %config::redact_url(&serve.auth.jwks_uri),
         "control plane listening"
     );
-    sagat_api_http::serve(listener, app, serve.server, shutdown).await?;
+    let admin = match admin_listener {
+        Some(admin_listener) => {
+            tracing::info!(addr = %admin_listener.local_addr()?, "metrics listener");
+            Some(tokio::spawn(sagat_api_http::serve(
+                admin_listener,
+                admin_router(),
+                ServerConfig::default(),
+                stopped(stop_rx.clone()),
+            )))
+        }
+        None => None,
+    };
+    sagat_api_http::serve(listener, app, serve.server, stopped(stop_rx)).await?;
+    if let Some(admin) = admin {
+        let _ = admin.await;
+    }
     tracing::info!("control plane stopped");
+    pool_metrics.abort();
     pool.close().await;
     Ok(())
+}
+
+/// Completes once the shared shutdown flag is set.
+async fn stopped(mut flag: tokio::sync::watch::Receiver<bool>) {
+    while !*flag.borrow() {
+        if flag.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// The administrative surface: Prometheus metrics, nothing else.
+fn admin_router() -> axum::Router {
+    use axum::http::{HeaderValue, header};
+    use axum::routing::get;
+    let metrics = || async {
+        (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+            )],
+            Metrics::global().render(),
+        )
+    };
+    protect(
+        axum::Router::new().route("/metrics", get(metrics)),
+        HttpLimits::default(),
+    )
 }
 
 /// Completes on SIGINT or SIGTERM.

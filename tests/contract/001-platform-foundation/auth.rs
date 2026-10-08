@@ -436,3 +436,23 @@ async fn the_issuer_must_be_a_string_not_a_list_containing_it() {
     let exact = idp.token("alice", "acme").build();
     assert!(v.verify(&exact).await.is_ok());
 }
+
+#[tokio::test]
+async fn a_required_token_type_keeps_other_kinds_of_token_out() {
+    // RFC 9068: access tokens are `at+jwt`; this keeps an ID token (typ JWT) from being replayed as one.
+    let idp = TestIdp::start().await;
+    let v = verifier_with(&idp, |c| c.required_token_type = Some("at+jwt".into())).await;
+
+    let plain = idp.token("alice", "acme").build(); // typ = JWT
+    assert_eq!(v.verify(&plain).await, invalid(InvalidReason::TokenType));
+    let none = idp.token("alice", "acme").typ(None).build();
+    assert_eq!(v.verify(&none).await, invalid(InvalidReason::TokenType));
+    for ok in ["at+jwt", "AT+JWT"] {
+        let token = idp.token("alice", "acme").typ(Some(ok)).build();
+        assert!(v.verify(&token).await.is_ok(), "{ok}");
+    }
+
+    // Off by default.
+    let lenient = verifier(&idp).await;
+    assert!(lenient.verify(&plain).await.is_ok());
+}

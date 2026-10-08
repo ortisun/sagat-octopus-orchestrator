@@ -67,6 +67,12 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
         .map_or_else(|| "unmatched".to_owned(), |r| r.0.clone());
     let response = finalize(response, trace_id);
 
+    // Low-cardinality labels only: the route TEMPLATE, never the path, tenant or subject.
+    let status = response.status().as_u16().to_string();
+    metrics::counter!("http_requests_total", "method" => method.to_string(), "route" => route.clone(), "status" => status).increment(1);
+    metrics::histogram!("http_request_duration_seconds", "route" => route.clone())
+        .record(started.elapsed().as_secs_f64());
+
     // Identifiers only: never headers, bodies, tokens or subjects.
     tracing::info!(
         parent: &span,

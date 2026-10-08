@@ -39,6 +39,12 @@ where
             .identity
             .authenticate(&claims.tenant, &claims.subject)
             .await?;
+        // Budget per tenant, charged only to callers that proved who they are: an anonymous flood
+        // cannot spend (or be blamed on) a tenant's budget.
+        if let Err(retry_after) = state.limiter.check(session.principal.tenant_id()) {
+            metrics::counter!("http_rate_limited_total").increment(1);
+            return Err(ApiError::rate_limited(retry_after));
+        }
         let trace = parts
             .extensions
             .get::<TraceContext>()

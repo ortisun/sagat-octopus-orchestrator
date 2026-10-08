@@ -14,6 +14,7 @@ workspace = true
 [dev-dependencies]
 axum.workspace = true
 base64 = "0.22"
+jsonschema = { version = "0.58", default-features = false }
 jsonwebtoken.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 reqwest = { workspace = true, features = ["json"] }
@@ -24,6 +25,7 @@ sagat-domain.workspace = true
 sagat-infra-postgres.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
+serde_yaml_ng = "0.10"
 sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true
@@ -44,3 +46,11 @@ path = "e2e/001-platform-foundation/main.rs"
 [[test]]
 name = "fault_001"
 path = "fault/001-platform-foundation/main.rs"
+
+[[test]]
+name = "contract_rest_001"
+path = "contract/001-platform-foundation/rest/main.rs"
+
+[[test]]
+name = "perf_001"
+path = "performance/001-platform-foundation/main.rs"

@@ -102,7 +102,8 @@ async fn readiness_reports_the_database_and_recovers() {
 
     let mut saw_unavailable = false;
     let mut statuses = Vec::new();
-    for _ in 0..10 {
+    // Readiness is cached for a second, so the red state can take that long to show.
+    for _ in 0..30 {
         let ready = api
             .request(Method::GET, "/ready")
             .send()

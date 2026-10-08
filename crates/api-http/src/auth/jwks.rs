@@ -232,6 +232,7 @@ impl Inner {
         match outcome {
             Ok(set) => {
                 let keys = usable_keys(&set);
+                metrics::counter!("jwks_refresh_total", "outcome" => if keys.is_empty() { "no_usable_keys" } else { "ok" }).increment(1);
                 if keys.is_empty() {
                     // A 200 without a single usable key is an incident at the provider, never a
                     // policy: keep whatever good keys we have rather than locking everyone out.
@@ -245,7 +246,10 @@ impl Inner {
                     });
                 }
             }
-            Err(error) => tracing::warn!(%error, "JWKS refresh failed"),
+            Err(error) => {
+                metrics::counter!("jwks_refresh_total", "outcome" => "error").increment(1);
+                tracing::warn!(%error, "JWKS refresh failed");
+            }
         }
     }
 }

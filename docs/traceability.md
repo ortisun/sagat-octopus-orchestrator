@@ -33,15 +33,15 @@ Last updated with the control-plane branch. "Partial" and "Open" are stated expl
 | Requirement | State | Evidence |
 |---|---|---|
 | FR-001-001 tenants, workspaces, namespaces, memberships, roles; uniqueness and tenant isolation | Done | `crates/domain/tests/identity.rs`, `tests/integration/001-platform-foundation/{constraints,store,flows}.rs` |
-| FR-001-002 REST/OpenAPI v1 for health, auth context, workspace, namespace | Done | OpenAPI lint in CI, `tests/e2e/001-platform-foundation/{us01,us02}.rs` |
+| FR-001-002 REST/OpenAPI v1 for health, auth context, workspace, namespace | Done | OpenAPI lint in CI, `tests/e2e/001-platform-foundation/{us01,us02}.rs`, live conformance of every Identity operation in `tests/contract/001-platform-foundation/rest/` |
 | FR-001-002 … and the **definition lifecycle** | Open | Declared in `openapi.yaml`, not implemented (belongs with feature 002) |
 | FR-001-003 versioned gRPC/protobuf worker protocol | Partial | `worker.proto` compiles in CI; no server, no compatibility check (`buf breaking`) yet |
-| FR-001-004 idempotent migrations; development-only seed | Done | `tests/integration/001-platform-foundation/migrations.rs`, `tests/e2e/001-platform-foundation/us03.rs`, `apps/control-plane/tests/cli.rs` |
+| FR-001-004 idempotent migrations; development-only seed (and an explicit `provision-tenant` for real environments) | Done | `tests/integration/001-platform-foundation/migrations.rs`, `tests/e2e/001-platform-foundation/us03.rs`, `apps/control-plane/tests/cli.rs` |
 | FR-001-005 Docker Compose with PostgreSQL, NATS and optional S3-compatible store | Partial | `infra/docker/compose.yaml`, `scripts/smoke-compose.sh`; the S3-compatible store is deferred (optional in this phase) |
 | FR-001-006 canonical errors without sensitive data | Partial | One envelope `{code, message, retryable, traceId, details}` proven in `tests/e2e/001-platform-foundation/`; the spec's separate `request_id` is not implemented (the trace id serves) |
 | FR-001-007 OIDC/JWT, base RBAC on every route, audit trail (including tenant and administrator provisioning) | Done | `tests/contract/001-platform-foundation/auth.rs`, `tests/e2e/001-platform-foundation/{us02,us04}.rs`, `tests/fault/001-platform-foundation/provider.rs` |
-| NFR-001-OBS structured logs, correlated traces, essential metrics | Partial | JSON logs and trace-id correlation (response, error body, audit) are tested; **OTLP export and metrics are not implemented** (G6) |
-| NFR-001-PERF p95 < 250 ms namespace read | Open | No benchmark has been run (T001-033) |
+| NFR-001-OBS structured logs, correlated traces, essential metrics | Done | JSON logs, trace-id correlation (response, error body, audit) and Prometheus metrics are tested (`tests/e2e/001-platform-foundation/us03.rs`); OTLP span export is owned by feature 008 (G6) |
+| NFR-001-PERF p95 < 250 ms namespace read | Done | Baseline `tests/performance/001-platform-foundation/main.rs`, report `tests/performance/reports/001-platform-foundation.md`: p95 15.0 ms, 0 errors (Apple M3 Max, release build, single instance) |
 | SC-001-001 contract/API + tenant isolation suite and reproducible local environment | Done | The suites above plus `scripts/smoke-compose.sh` |
 | SC-001-002 100% of US01..US04 pass in an automated suite | Done | `tests/e2e/001-platform-foundation/us0{1,2,3,4}.rs` |
 | SC-001-003 no violation of the Constitution gates | Open | `.specify/memory/constitution.md` is not in the repository (G1); cannot be asserted |

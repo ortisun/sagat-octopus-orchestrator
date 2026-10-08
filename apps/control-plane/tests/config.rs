@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use sagat_control_plane::cli::{self, Command, UsageError};
 use sagat_control_plane::config::{
-    Config, ConfigError, Environment, SeedConfig, ServeConfig, redact_url, requires_tls,
+    Config, ConfigError, Environment, ProvisionConfig, SeedConfig, ServeConfig, redact_url,
+    requires_tls,
 };
 use sagat_telemetry::LogFormat;
 
@@ -280,4 +281,93 @@ fn logged_urls_never_carry_credentials_or_query_strings() {
         assert_eq!(shown, expected, "{input}");
         assert!(!shown.contains("hunter2") && !shown.contains("token=") && !shown.contains("a:b"));
     }
+}
+
+#[test]
+fn overload_protection_is_on_by_default_with_finite_positive_values() {
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+
+    assert!(serve.rate_limit.per_second > 0.0 && serve.rate_limit.burst >= 1.0);
+    assert!(serve.limits.max_in_flight > 0);
+    assert_eq!(
+        serve.admin_addr.map(|a| a.to_string()).as_deref(),
+        Some("127.0.0.1:9090"),
+        "metrics on loopback"
+    );
+    assert_eq!(serve.auth.required_token_type, None);
+}
+
+#[test]
+fn overload_and_observability_settings_can_be_tuned() {
+    let mut pairs = OIDC.to_vec();
+    pairs.extend([
+        ("SAGAT_RATE_LIMIT_RPS", "2.5"),
+        ("SAGAT_RATE_LIMIT_BURST", "10"),
+        ("SAGAT_MAX_IN_FLIGHT", "64"),
+        ("SAGAT_ADMIN_ADDR", "127.0.0.1:19090"),
+        ("SAGAT_OIDC_REQUIRED_TYP", "at+jwt"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&pairs)).expect("serve config");
+
+    assert!(
+        (serve.rate_limit.per_second - 2.5).abs() < f64::EPSILON
+            && (serve.rate_limit.burst - 10.0).abs() < f64::EPSILON
+    );
+    assert_eq!(serve.limits.max_in_flight, 64);
+    assert_eq!(
+        serve.admin_addr.map(|a| a.to_string()).as_deref(),
+        Some("127.0.0.1:19090")
+    );
+    assert_eq!(serve.auth.required_token_type.as_deref(), Some("at+jwt"));
+
+    let mut off = OIDC.to_vec();
+    off.push(("SAGAT_ADMIN_ADDR", "off"));
+    assert_eq!(
+        ServeConfig::from_lookup(&env(&off))
+            .expect("config")
+            .admin_addr,
+        None
+    );
+}
+
+#[test]
+fn nonsensical_overload_settings_are_rejected() {
+    let bad: [(&str, &str); 8] = [
+        ("SAGAT_RATE_LIMIT_RPS", "0"),
+        ("SAGAT_RATE_LIMIT_RPS", "-1"),
+        ("SAGAT_RATE_LIMIT_RPS", "NaN"),
+        ("SAGAT_RATE_LIMIT_RPS", "inf"),
+        ("SAGAT_RATE_LIMIT_BURST", "0.5"),
+        ("SAGAT_MAX_IN_FLIGHT", "0"),
+        ("SAGAT_ADMIN_ADDR", "everywhere"),
+        ("SAGAT_RATE_LIMIT_BURST", "lots"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        assert!(
+            ServeConfig::from_lookup(&env(&pairs)).is_err(),
+            "{name}={value}"
+        );
+    }
+}
+
+#[test]
+fn tenant_provisioning_has_no_defaults() {
+    assert_eq!(
+        ProvisionConfig::from_lookup(&env(&[])),
+        Err(ConfigError::Missing("SAGAT_PROVISION_TENANT"))
+    );
+    assert_eq!(
+        ProvisionConfig::from_lookup(&env(&[("SAGAT_PROVISION_TENANT", "acme")])),
+        Err(ConfigError::Missing("SAGAT_PROVISION_ADMIN"))
+    );
+    let ok = ProvisionConfig::from_lookup(&env(&[
+        ("SAGAT_PROVISION_TENANT", "acme"),
+        ("SAGAT_PROVISION_ADMIN", "alice"),
+    ]));
+    assert_eq!(
+        ok.map(|c| (c.tenant_slug, c.admin_subject)),
+        Ok(("acme".into(), "alice".into()))
+    );
 }

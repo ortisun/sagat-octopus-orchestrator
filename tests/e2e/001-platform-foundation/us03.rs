@@ -40,6 +40,8 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         auth,
         limits: HttpLimits::default(),
         server: sagat_api_http::ServerConfig::default(),
+        rate_limit: sagat_api_http::RateLimitConfig::default(),
+        admin_addr: None,
         migrate_on_start: false,
     }
 }
@@ -455,4 +457,254 @@ async fn the_insecure_jwks_flag_is_refused_outside_development() {
         );
         assert_eq!(error.exit_code(), 2);
     }
+}
+
+/// True if some line of a Prometheus page is the series `name` with all the given labels.
+fn has_series(page: &str, name: &str, labels: &[(&str, &str)]) -> bool {
+    page.lines().any(|line| {
+        line.starts_with(name)
+            && line[name.len()..].starts_with('{')
+            && labels
+                .iter()
+                .all(|(k, v)| line.contains(&format!("{k}=\"{v}\"")))
+    })
+}
+
+#[tokio::test]
+async fn metrics_are_served_on_a_separate_listener_and_never_carry_identifiers() {
+    let db = migrated_db().await;
+    let idp = TestIdp::start().await;
+    let cfg = config(&db, Environment::Dev);
+    seed_dev(
+        &cfg,
+        &SeedConfig {
+            tenant_slug: "dev".into(),
+            admin_subject: "dev-admin".into(),
+        },
+    )
+    .await
+    .expect("seed");
+    let serve_cfg = serve_config(&idp.jwks_url());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let admin = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind admin");
+    let (api_addr, admin_addr) = (
+        listener.local_addr().expect("addr"),
+        admin.local_addr().expect("addr"),
+    );
+    let (stop, stopped) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        sagat_control_plane::serve_with_admin(&cfg, &serve_cfg, listener, Some(admin), async {
+            let _ = stopped.await;
+        })
+        .await
+    });
+    for _ in 0..100 {
+        if healthcheck(&api_addr.to_string()).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let client = Client::new();
+    let api = |path: &str| format!("http://{api_addr}/v1{path}");
+
+    // Traffic of every kind: success, anonymous, expired token, unknown route, a path with an id.
+    let good = idp.token("dev-admin", "dev").build();
+    assert_eq!(
+        client
+            .get(api("/auth/context"))
+            .bearer_auth(&good)
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        200
+    );
+    assert_eq!(
+        client
+            .get(api("/auth/context"))
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        401
+    );
+    let expired = idp.token("dev-admin", "dev").issued(900, 300).build();
+    assert_eq!(
+        client
+            .get(api("/auth/context"))
+            .bearer_auth(expired)
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .get(api("/no-such-route"))
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        404
+    );
+    let secret_id = "019b5d6e-1111-7222-8333-444455556666";
+    assert_eq!(
+        client
+            .get(api(&format!("/workspaces/{secret_id}")))
+            .bearer_auth(&good)
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        404
+    );
+
+    let page = client
+        .get(format!("http://{admin_addr}/metrics"))
+        .send()
+        .await
+        .expect("metrics");
+    assert_eq!(page.status(), 200);
+    assert!(
+        page.headers()["content-type"]
+            .to_str()
+            .expect("ascii")
+            .starts_with("text/plain")
+    );
+    let page = page.text().await.expect("body");
+
+    assert!(
+        has_series(
+            &page,
+            "http_requests_total",
+            &[
+                ("method", "GET"),
+                ("route", "/v1/auth/context"),
+                ("status", "200")
+            ]
+        ),
+        "{page}"
+    );
+    assert!(has_series(
+        &page,
+        "http_requests_total",
+        &[("route", "/v1/auth/context"), ("status", "401")]
+    ));
+    assert!(
+        has_series(
+            &page,
+            "http_requests_total",
+            &[("route", "unmatched"), ("status", "404")]
+        ),
+        "unknown routes share one label"
+    );
+    assert!(
+        has_series(
+            &page,
+            "http_requests_total",
+            &[("route", "/v1/workspaces/{workspace_id}")]
+        ),
+        "route TEMPLATES, not paths"
+    );
+    assert!(has_series(
+        &page,
+        "auth_failures_total",
+        &[("reason", "expired")]
+    ));
+    assert!(has_series(
+        &page,
+        "jwks_refresh_total",
+        &[("outcome", "ok")]
+    ));
+    assert!(page.contains("http_request_duration_seconds_bucket"));
+
+    // Nothing that identifies a person, a tenant or a resource may become a label.
+    for forbidden in ["dev-admin", secret_id, "tenant=", "subject=", "sub="] {
+        assert!(!page.contains(forbidden), "metrics leak {forbidden:?}");
+    }
+
+    // The operational surface is not on the public port, and the API is not on the admin port.
+    assert_eq!(
+        client
+            .get(api("/metrics"))
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        404
+    );
+    assert_eq!(
+        client
+            .get(format!("http://{admin_addr}/v1/health"))
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        404
+    );
+
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("shutdown")
+        .expect("join")
+        .expect("clean");
+}
+
+#[tokio::test]
+async fn an_operator_can_provision_a_real_tenant_in_production_and_its_admin_can_sign_in() {
+    use sagat_control_plane::config::ProvisionConfig;
+    use sagat_control_plane::provision_tenant;
+
+    let db = migrated_db().await;
+    let prod = config(&db, Environment::Prod); // not gated on dev, unlike the seed
+    let acme = ProvisionConfig {
+        tenant_slug: "acme".into(),
+        admin_subject: "alice".into(),
+    };
+
+    provision_tenant(&prod, &acme).await.expect("provisioned");
+
+    // Audited atomically, attributed to the system, and the administrator really can authenticate.
+    let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_records ORDER BY id")
+        .fetch_all(&db.pool)
+        .await
+        .expect("audit");
+    assert_eq!(actions, ["tenant.provisioned", "membership.granted"]);
+    let idp = TestIdp::start().await;
+    let mut dev = config(&db, Environment::Dev);
+    dev.database.url = db.url.clone();
+    let api = Running::start(dev, serve_config(&idp.jwks_url())).await;
+    let response = Client::new()
+        .get(api.url("/auth/context"))
+        .bearer_auth(idp.token("alice", "acme").build())
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(response.status(), 200);
+    api.stop().await.expect("clean shutdown");
+
+    // Provisioning twice is reported, not silently ignored, and changes nothing.
+    let again = provision_tenant(&prod, &acme).await.expect_err("duplicate");
+    assert!(matches!(again, RunError::AlreadyExists), "{again:?}");
+    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM tenants")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+    assert_eq!(tenants, 1);
+
+    // Bad input is a configuration error.
+    let bad = ProvisionConfig {
+        tenant_slug: "Bad Slug".into(),
+        admin_subject: "alice".into(),
+    };
+    assert!(matches!(
+        provision_tenant(&prod, &bad).await,
+        Err(RunError::Config(_))
+    ));
 }
