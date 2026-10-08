@@ -2401,6 +2401,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-control-plane"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "sagat-api-http",
+ "sagat-application",
+ "sagat-domain",
+ "sagat-infra-postgres",
+ "sagat-telemetry",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sagat-domain"
 version = "0.1.0"
 dependencies = [

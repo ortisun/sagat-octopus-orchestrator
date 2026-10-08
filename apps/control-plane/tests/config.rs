@@ -1,0 +1,179 @@
+//! Configuration parsing and command-line parsing. No environment, no network.
+#![allow(clippy::expect_used, clippy::panic)]
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use sagat_control_plane::cli::{self, Command, UsageError};
+use sagat_control_plane::config::{Config, ConfigError, Environment, SeedConfig, ServeConfig};
+use sagat_telemetry::LogFormat;
+
+fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    let map: HashMap<String, String> = pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    move |name| map.get(name).cloned()
+}
+
+const DB: (&str, &str) = ("DATABASE_URL", "postgres://user:s3cret@db.internal/app");
+const OIDC: [(&str, &str); 3] = [
+    ("SAGAT_OIDC_ISSUER", "https://idp.example/"),
+    ("SAGAT_OIDC_AUDIENCE", "sagat"),
+    ("SAGAT_OIDC_JWKS_URI", "https://idp.example/jwks.json"),
+];
+
+#[test]
+fn defaults_are_the_safe_ones() {
+    let config = Config::from_lookup(&env(&[DB])).expect("config");
+
+    assert_eq!(
+        config.environment,
+        Environment::Prod,
+        "unset means production"
+    );
+    assert_eq!(config.log_format, LogFormat::Json);
+    assert_eq!(config.database.max_connections, 10);
+    assert_eq!(config.database.statement_timeout, Duration::from_secs(5));
+}
+
+#[test]
+fn the_database_url_is_required_and_never_printed() {
+    assert_eq!(
+        Config::from_lookup(&env(&[])).expect_err("missing"),
+        ConfigError::Missing("DATABASE_URL")
+    );
+    assert_eq!(
+        Config::from_lookup(&env(&[("DATABASE_URL", "   ")])).expect_err("blank"),
+        ConfigError::Missing("DATABASE_URL")
+    );
+
+    let config = Config::from_lookup(&env(&[DB])).expect("config");
+    let rendered = format!("{config:?} {:?}", config.database);
+    assert!(
+        !rendered.contains("s3cret") && !rendered.contains("user:"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("<redacted>"));
+}
+
+#[test]
+fn invalid_values_name_the_variable() {
+    let bad: [(&str, &str); 4] = [
+        ("SAGAT_ENV", "qa"),
+        ("SAGAT_LOG_FORMAT", "xml"),
+        ("SAGAT_DB_MAX_CONNECTIONS", "0"),
+        ("SAGAT_DB_STATEMENT_TIMEOUT_MS", "soon"),
+    ];
+    for (name, value) in bad {
+        let error = Config::from_lookup(&env(&[DB, (name, value)])).expect_err(name);
+        assert!(
+            matches!(&error, ConfigError::Invalid { name: n, .. } if *n == name),
+            "{name}={value} -> {error:?}"
+        );
+    }
+}
+
+#[test]
+fn serve_requires_the_identity_provider_settings() {
+    for missing in [
+        "SAGAT_OIDC_ISSUER",
+        "SAGAT_OIDC_AUDIENCE",
+        "SAGAT_OIDC_JWKS_URI",
+    ] {
+        let pairs: Vec<_> = OIDC
+            .iter()
+            .copied()
+            .filter(|(k, _)| *k != missing)
+            .collect();
+        let error = ServeConfig::from_lookup(&env(&pairs)).expect_err(missing);
+        assert_eq!(error, ConfigError::Missing(missing));
+    }
+}
+
+#[test]
+fn serve_defaults_bind_to_loopback_and_keep_the_secure_options() {
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+
+    assert_eq!(
+        serve.bind_addr.to_string(),
+        "127.0.0.1:8080",
+        "not exposed on all interfaces"
+    );
+    assert!(!serve.auth.allow_insecure_jwks_http);
+    assert!(
+        !serve.migrate_on_start,
+        "migrations are a separate, privileged step by default"
+    );
+    assert_eq!(serve.auth.tenant_claim, "tenant");
+    assert!(serve.limits.max_body_bytes > 0 && serve.limits.request_timeout > Duration::ZERO);
+}
+
+#[test]
+fn serve_options_can_be_overridden() {
+    let mut pairs = OIDC.to_vec();
+    pairs.extend([
+        ("SAGAT_BIND_ADDR", "0.0.0.0:9000"),
+        ("SAGAT_OIDC_TENANT_CLAIM", "https://x/tenant"),
+        ("SAGAT_ALLOW_INSECURE_JWKS_HTTP", "true"),
+        ("SAGAT_MIGRATE_ON_START", "1"),
+        ("SAGAT_MAX_BODY_BYTES", "1024"),
+        ("SAGAT_REQUEST_TIMEOUT_SECS", "3"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&pairs)).expect("serve config");
+
+    assert_eq!(serve.bind_addr.to_string(), "0.0.0.0:9000");
+    assert_eq!(serve.auth.tenant_claim, "https://x/tenant");
+    assert!(serve.auth.allow_insecure_jwks_http && serve.migrate_on_start);
+    assert_eq!(serve.limits.max_body_bytes, 1024);
+    assert_eq!(serve.limits.request_timeout, Duration::from_secs(3));
+}
+
+#[test]
+fn nonsense_serve_values_are_rejected() {
+    let bad: [(&str, &str); 5] = [
+        ("SAGAT_BIND_ADDR", "everywhere"),
+        ("SAGAT_ALLOW_INSECURE_JWKS_HTTP", "maybe"),
+        ("SAGAT_MAX_BODY_BYTES", "0"),
+        ("SAGAT_REQUEST_TIMEOUT_SECS", "0"),
+        ("SAGAT_REQUEST_TIMEOUT_SECS", "-1"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        assert!(
+            ServeConfig::from_lookup(&env(&pairs)).is_err(),
+            "{name}={value}"
+        );
+    }
+}
+
+#[test]
+fn seed_defaults_are_obviously_development_values() {
+    let seed = SeedConfig::from_lookup(&env(&[])).expect("seed");
+    assert_eq!(
+        (seed.tenant_slug.as_str(), seed.admin_subject.as_str()),
+        ("dev", "dev-admin")
+    );
+}
+
+#[test]
+fn the_command_line_maps_to_commands() {
+    let parse =
+        |args: &[&str]| cli::parse(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>());
+
+    assert_eq!(parse(&[]), Ok(Command::Serve), "serving is the default");
+    assert_eq!(parse(&["serve"]), Ok(Command::Serve));
+    assert_eq!(parse(&["migrate"]), Ok(Command::Migrate));
+    assert_eq!(parse(&["seed-dev"]), Ok(Command::SeedDev));
+    assert_eq!(parse(&["healthcheck"]), Ok(Command::Healthcheck));
+    for help in ["help", "--help", "-h"] {
+        assert_eq!(parse(&[help]), Ok(Command::Help));
+    }
+    for version in ["version", "--version", "-V"] {
+        assert_eq!(parse(&[version]), Ok(Command::Version));
+    }
+    assert!(matches!(parse(&["rm", "-rf"]), Err(UsageError(_))));
+    assert!(matches!(parse(&["migrate", "now"]), Err(UsageError(m)) if m.contains("now")));
+    assert!(matches!(parse(&["--unknown"]), Err(UsageError(_))));
+}

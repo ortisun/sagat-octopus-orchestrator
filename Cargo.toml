@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "apps/control-plane", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,7 @@ sagat-application = { path = "crates/application" }
 sagat-infra-postgres = { path = "crates/infra-postgres" }
 sagat-telemetry = { path = "crates/telemetry" }
 sagat-api-http = { path = "crates/api-http" }
+sagat-control-plane = { path = "apps/control-plane" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
@@ -45,3 +46,8 @@ panic = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+
+# Release builds keep unwinding on purpose: the HTTP layer contains handler panics (CatchPanicLayer).
+[profile.release]
+lto = "thin"
+strip = "symbols"
