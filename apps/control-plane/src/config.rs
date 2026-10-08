@@ -127,11 +127,22 @@ impl Config {
             });
         }
         let statement_timeout_ms: u64 = optional(get, "SAGAT_DB_STATEMENT_TIMEOUT_MS", 5_000)?;
+        let url = required(get, "DATABASE_URL")?;
+        // sqlx defaults to `sslmode=prefer`, which silently falls back to plaintext and never
+        // verifies the server. Outside development the connection must be encrypted.
+        if environment != Environment::Dev && !requires_tls(&url) {
+            return Err(ConfigError::Invalid {
+                name: "DATABASE_URL",
+                reason: "outside SAGAT_ENV=dev the database connection must require TLS \
+                         (add sslmode=require, verify-ca or verify-full)"
+                    .to_owned(),
+            });
+        }
         Ok(Self {
             environment,
             log_format,
             database: DatabaseConfig {
-                url: required(get, "DATABASE_URL")?,
+                url,
                 max_connections,
                 statement_timeout: Duration::from_millis(statement_timeout_ms),
             },
@@ -247,5 +258,40 @@ impl SeedConfig {
             tenant_slug: optional(get, "SAGAT_SEED_TENANT", "dev".to_owned())?,
             admin_subject: optional(get, "SAGAT_SEED_ADMIN_SUBJECT", "dev-admin".to_owned())?,
         })
+    }
+}
+
+/// Whether a PostgreSQL URL insists on TLS (`sslmode` / `ssl-mode` of `require`, `verify-ca` or
+/// `verify-full`). `disable`, `allow`, `prefer` and an absent parameter do not.
+#[must_use]
+pub fn requires_tls(url: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(key, value)| {
+            matches!(key, "sslmode" | "ssl-mode")
+                && matches!(value, "require" | "verify-ca" | "verify-full")
+        })
+}
+
+/// A URL that is safe to log: scheme, host, port and path only. Credentials (`user:password@`),
+/// query strings (which may carry tokens) and fragments are dropped.
+#[must_use]
+pub fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "<unparseable url>".to_owned();
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if path.is_empty() {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}/{path}")
     }
 }

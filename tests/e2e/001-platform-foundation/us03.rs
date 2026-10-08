@@ -278,7 +278,9 @@ async fn a_bad_setup_stops_the_process_before_it_listens() {
     assert_eq!(error.exit_code(), 2);
 
     // A database that is not there.
-    let mut unreachable = config(&db, Environment::Prod);
+    // Development: the insecure JWKS URL of `serve_config` is only legal there, and this case is
+    // about the database being unreachable, not about that flag.
+    let mut unreachable = config(&db, Environment::Dev);
     unreachable.database.url = "postgres://nobody:none@127.0.0.1:1/missing".into();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -420,4 +422,37 @@ async fn shutdown_waits_for_database_work_that_is_still_running() {
         .await
         .expect("join")
         .expect("clean shutdown after draining");
+}
+
+#[tokio::test]
+async fn the_insecure_jwks_flag_is_refused_outside_development() {
+    // A plain-http key URL would let anyone on the network path substitute signing keys.
+    let db = migrated_db().await;
+    for environment in [Environment::Prod, Environment::Staging] {
+        let mut serve_cfg = serve_config("http://idp.example.test/jwks.json");
+        serve_cfg.auth.allow_insecure_jwks_http = true;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+
+        // Bounded: if the refusal regressed, the server would start and never return.
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            serve(
+                &config(&db, environment),
+                &serve_cfg,
+                listener,
+                std::future::pending(),
+            ),
+        )
+        .await
+        .expect("it must refuse to start, not start serving")
+        .expect_err("must be refused");
+
+        assert!(
+            matches!(error, RunError::Refused(_)),
+            "{environment:?}: {error:?}"
+        );
+        assert_eq!(error.exit_code(), 2);
+    }
 }

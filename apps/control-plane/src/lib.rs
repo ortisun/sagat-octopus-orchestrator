@@ -134,6 +134,13 @@ pub async fn serve(
     listener: TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), RunError> {
+    // A plain-http key URL lets anyone on the path substitute their own signing keys and forge any
+    // identity, so it is a development convenience only and is refused everywhere else.
+    if serve.auth.allow_insecure_jwks_http && config.environment != Environment::Dev {
+        return Err(RunError::Refused(
+            "SAGAT_ALLOW_INSECURE_JWKS_HTTP is only allowed when SAGAT_ENV=dev",
+        ));
+    }
     if serve.migrate_on_start {
         run_migrations(&config.database).await?;
     }
@@ -147,9 +154,9 @@ pub async fn serve(
     tracing::info!(
         addr = %listener.local_addr()?,
         environment = ?config.environment,
-        issuer = %serve.auth.issuer,
+        issuer = %config::redact_url(&serve.auth.issuer),
         audience = %serve.auth.audience,
-        jwks_uri = %serve.auth.jwks_uri,
+        jwks_uri = %config::redact_url(&serve.auth.jwks_uri),
         "control plane listening"
     );
     sagat_api_http::serve(listener, app, serve.server, shutdown).await?;
