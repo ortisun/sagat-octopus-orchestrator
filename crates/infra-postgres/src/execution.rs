@@ -640,6 +640,20 @@ impl RunTx for PgRunTx {
         Ok(())
     }
 
+    async fn lease_expiry(&mut self, node: &NodeId) -> Result<Option<OffsetDateTime>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT lease_expires_at FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+             AND status IN ('LEASED', 'RUNNING')",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map(Option::flatten)
+        .map_err(store_error)
+    }
+
     async fn lease_matches(
         &mut self,
         node: &NodeId,

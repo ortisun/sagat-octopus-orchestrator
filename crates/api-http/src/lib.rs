@@ -33,6 +33,7 @@ pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
 pub use core::Core;
 pub use exec::{Exec, ExecState};
+pub use extract::{Authenticated, authenticate_bearer, parse_bearer};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
 };

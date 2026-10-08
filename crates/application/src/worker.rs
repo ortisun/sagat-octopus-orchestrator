@@ -166,6 +166,8 @@ impl ClaimedTask {
 pub struct TaskRef<'a> {
     pub run_id: RunId,
     pub node: &'a NodeId,
+    /// The step identity the worker was handed; checked when present.
+    pub step_id: Option<Uuid>,
     pub fence: Fence,
     pub lease_token: &'a str,
 }
@@ -183,6 +185,8 @@ pub struct StepAck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatAck {
     pub cancel_requested: bool,
+    /// When the lease now expires (never past the attempt's own deadline).
+    pub lease_expires_at: OffsetDateTime,
 }
 
 /// The worker protocol use cases.
@@ -442,7 +446,11 @@ where
             .await
             .map_err(engine_error)?;
         let info = tx.info().clone();
-        let expires_at = tx.now() + self.settings.lease_ttl;
+        // The real expiry: a renewal never outlives the attempt deadline, so ask the row.
+        let expires_at = tx
+            .lease_expiry(node)
+            .await?
+            .unwrap_or_else(|| tx.now() + self.settings.lease_ttl);
         let run_id = info.run_id;
         let version = info.version_id;
         let (data, template) = {
@@ -516,8 +524,15 @@ where
             })
             .await
             .map_err(engine_error)?;
+        let lease_expires_at = tx
+            .lease_expiry(task.node)
+            .await?
+            .unwrap_or_else(|| tx.now());
         tx.commit().await?;
-        Ok(HeartbeatAck { cancel_requested })
+        Ok(HeartbeatAck {
+            cancel_requested,
+            lease_expires_at,
+        })
     }
 
     /// Records a successful attempt. A repeat with the same `idempotency_key` returns the original
@@ -639,6 +654,13 @@ where
 
     /// The presented token must be the one hashed into the step's current lease.
     async fn verify<Tx: RunTx>(&self, tx: &mut Tx, task: &TaskRef<'_>) -> Result<(), AppError> {
+        // A step id that does not belong to this run and node is a misdirected report.
+        if let Some(claimed) = task.step_id {
+            let info = tx.info();
+            if claimed != step_id(info.version_id, info.run_id, task.node) {
+                return Err(AppError::StaleAttempt);
+            }
+        }
         if tx
             .lease_matches(task.node, &Token::hash_of(task.lease_token))
             .await?

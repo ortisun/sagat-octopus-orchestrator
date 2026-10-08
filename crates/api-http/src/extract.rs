@@ -30,36 +30,59 @@ pub struct Caller {
     _slot: TenantPermit,
 }
 
+/// What authenticating a bearer token yields: the session and the caller's slot in its tenant's
+/// concurrency cap (held for as long as the value lives).
+#[derive(Debug)]
+pub struct Authenticated {
+    pub session: Session,
+    pub slot: TenantPermit,
+}
+
+/// The one sequence that decides who a bearer token belongs to, shared by every transport:
+/// verify the token, charge the per-subject budget BEFORE touching the database, look the caller up,
+/// charge the per-tenant budget, take a slot of the tenant's concurrency cap.
+///
+/// # Errors
+/// [`ApiError`] for a bad token (401), an exhausted budget (429), an unknown member (401) or an
+/// unreachable dependency (503).
+pub async fn authenticate_bearer<St: Core>(
+    state: &St,
+    token: &str,
+) -> Result<Authenticated, ApiError> {
+    let claims = state.verifier().verify(token).await?;
+    // Budget per verified subject, before the database is touched: `authenticate` costs two
+    // lookups, and a holder of a valid token who is not a member (or names an unknown tenant)
+    // would otherwise get them for free, without ever reaching the tenant budget below. Only a
+    // token that verified is charged, so an anonymous flood cannot spend anyone's budget.
+    if let Err(retry_after) = state.subject_limiter().check(claims.subject.clone()) {
+        metrics::counter!("http_rate_limited_total", "scope" => "subject").increment(1);
+        return Err(ApiError::rate_limited(retry_after));
+    }
+    let session = state.authenticate(&claims.tenant, &claims.subject).await?;
+    // Budget per tenant, charged only to callers that proved who they are: an anonymous flood
+    // cannot spend (or be blamed on) a tenant's budget.
+    if let Err(retry_after) = state.tenant_limiter().check(session.principal.tenant_id()) {
+        metrics::counter!("http_rate_limited_total", "scope" => "tenant").increment(1);
+        return Err(ApiError::rate_limited(retry_after));
+    }
+    // How many requests of this tenant may be in flight at once: a tenant that parks requests
+    // (a stalled upload) can fill only its own share of the global slots.
+    let slot = state
+        .tenant_concurrency()
+        .try_acquire(session.principal.tenant_id())
+        .map_err(|_| {
+            metrics::counter!("http_tenant_concurrency_rejected_total").increment(1);
+            ApiError::rate_limited(Duration::from_secs(1))
+        })?;
+    Ok(Authenticated { session, slot })
+}
+
 impl<St: Core> FromRequestParts<St> for Caller {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers)?;
-        let claims = state.verifier().verify(token).await?;
-        // Budget per verified subject, before the database is touched: `authenticate` costs two
-        // lookups, and a holder of a valid token who is not a member (or names an unknown tenant)
-        // would otherwise get them for free, without ever reaching the tenant budget below. Only a
-        // token that verified is charged, so an anonymous flood cannot spend anyone's budget.
-        if let Err(retry_after) = state.subject_limiter().check(claims.subject.clone()) {
-            metrics::counter!("http_rate_limited_total", "scope" => "subject").increment(1);
-            return Err(ApiError::rate_limited(retry_after));
-        }
-        let session = state.authenticate(&claims.tenant, &claims.subject).await?;
-        // Budget per tenant, charged only to callers that proved who they are: an anonymous flood
-        // cannot spend (or be blamed on) a tenant's budget.
-        if let Err(retry_after) = state.tenant_limiter().check(session.principal.tenant_id()) {
-            metrics::counter!("http_rate_limited_total", "scope" => "tenant").increment(1);
-            return Err(ApiError::rate_limited(retry_after));
-        }
-        // How many requests of this tenant may be in flight at once: a tenant that parks requests
-        // (a stalled upload) can fill only its own share of the global slots.
-        let slot = state
-            .tenant_concurrency()
-            .try_acquire(session.principal.tenant_id())
-            .map_err(|_| {
-                metrics::counter!("http_tenant_concurrency_rejected_total").increment(1);
-                ApiError::rate_limited(Duration::from_secs(1))
-            })?;
+        let Authenticated { session, slot } = authenticate_bearer(state, token).await?;
         let trace = parts
             .extensions
             .get::<TraceContext>()
@@ -84,9 +107,18 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
         // Missing, or ambiguous because several headers were sent.
         return Err(ApiError::missing_credentials());
     };
-    let value = value
-        .to_str()
-        .map_err(|_| ApiError::invalid_credentials())?;
+    parse_bearer(
+        value
+            .to_str()
+            .map_err(|_| ApiError::invalid_credentials())?,
+    )
+}
+
+/// The token of an `Authorization` value of the form `Bearer <token>` (any transport).
+///
+/// # Errors
+/// [`ApiError`] (401) for any other shape.
+pub fn parse_bearer(value: &str) -> Result<&str, ApiError> {
     let (scheme, token) = value
         .split_once(' ')
         .ok_or_else(ApiError::invalid_credentials)?;

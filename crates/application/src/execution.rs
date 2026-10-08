@@ -211,6 +211,13 @@ pub trait RunTx: Send {
     /// The immutable definition and the mutable state, borrowed together.
     fn parts(&mut self) -> (&WorkflowDefinition, &mut RunState);
 
+    /// When the lease held on `node` expires (the renewal capped by the attempt deadline), or
+    /// `None` when no lease is held.
+    fn lease_expiry(
+        &mut self,
+        node: &NodeId,
+    ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
+
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(
         &mut self,
