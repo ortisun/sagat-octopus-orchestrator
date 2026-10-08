@@ -21,7 +21,7 @@ macro_rules! uuid_id {
 
             /// The underlying UUID.
             #[must_use]
-            pub const fn as_uuid(&self) -> ::uuid::Uuid {
+            pub const fn as_uuid(self) -> ::uuid::Uuid {
                 self.0
             }
         }
