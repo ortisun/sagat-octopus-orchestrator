@@ -351,8 +351,22 @@ fn namespace_from_row(row: &PgRow) -> Result<Namespace, StoreError> {
 
 // -------------------------------------------------------------------------- error mapping
 
-/// Translates driver errors into the port's typed errors. Server messages are kept for logs only.
+/// Translates driver errors into the port's typed errors and records the root cause.
+///
+/// The application layer deliberately drops the detail (clients must never see it), so this is the
+/// only place where an operator can learn *why* storage failed. Server messages carry no row
+/// values (those live in a separate `DETAIL` field that is not logged).
 fn store_error(error: sqlx::Error) -> StoreError {
+    let mapped = classify(&error);
+    match &mapped {
+        StoreError::Unavailable { detail } => tracing::warn!(%detail, "storage unavailable"),
+        StoreError::Internal { detail } => tracing::error!(%detail, "storage failure"),
+        StoreError::Conflict(_) | StoreError::MissingReference => {}
+    }
+    mapped
+}
+
+fn classify(error: &sqlx::Error) -> StoreError {
     use sqlx::Error;
     let detail = error.to_string();
     match &error {
@@ -373,9 +387,16 @@ fn store_error(error: sqlx::Error) -> StoreError {
                 },
                 // foreign_key_violation
                 "23503" => StoreError::MissingReference,
-                // connection exceptions (08), operator intervention incl. admin shutdown and
-                // statement-timeout cancellation (57), insufficient resources (53)
-                c if c.starts_with("08") || c.starts_with("57") || c.starts_with("53") => {
+                // Conditions that can clear on their own, so the caller may retry:
+                //   08 connection exceptions        40 transaction rollback (deadlock,
+                //   53 insufficient resources          serialization; fully undone)
+                //   55 object not in prerequisite   57 operator intervention (admin shutdown,
+                //      state (e.g. database not        statement-timeout cancellation,
+                //      accepting connections)          server starting up)
+                c if ["08", "40", "53", "55", "57"]
+                    .iter()
+                    .any(|class| c.starts_with(class)) =>
+                {
                     StoreError::Unavailable { detail }
                 }
                 _ => StoreError::Internal { detail },

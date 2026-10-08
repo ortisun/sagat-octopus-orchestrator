@@ -12,14 +12,34 @@ autotests = false
 workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+base64 = "0.22"
+jsonwebtoken.workspace = true
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+reqwest = { workspace = true, features = ["json"] }
+sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-postgres.workspace = true
+sagat-telemetry.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 
 [[test]]
 name = "integration_001"
 path = "integration/001-platform-foundation/main.rs"
+
+[[test]]
+name = "contract_001"
+path = "contract/001-platform-foundation/main.rs"
+
+[[test]]
+name = "e2e_001"
+path = "e2e/001-platform-foundation/main.rs"
+
+[[test]]
+name = "fault_001"
+path = "fault/001-platform-foundation/main.rs"

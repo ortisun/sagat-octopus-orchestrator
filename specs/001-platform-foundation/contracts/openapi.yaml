@@ -3,19 +3,152 @@ info:
   title: Sagat Octopus Orchestrator Control & Execution API
   version: 0.1.0
   description: |
-    Design contract (not implemented). The database is the source of truth; commands may be redelivered.
+    Design contract. Operations tagged `Identity` are implemented by the control plane (feature 001);
+    every other operation is a design proposal that is not implemented yet.
+    The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
+
+    Authentication: `Authorization: Bearer <JWT>` issued by the configured OIDC provider. The token MUST carry
+    `iss`, `aud`, `sub`, `exp`, `iat` and a tenant claim (default name `tenant`, the tenant slug). Only
+    asymmetric algorithms (RS256, ES256) are accepted. A tenant is NEVER read from a header or a body.
+
+    Errors use one envelope (`Error`). A resource that exists only in another tenant is reported as
+    `NOT_FOUND`, indistinguishable from a missing one.
+
+    Known gap: creating workspaces and namespaces is not yet idempotent through `Idempotency-Key`; a retry after
+    an ambiguous response returns `409 CONFLICT` and the client should read the resource back.
 servers:
   - url: https://api.sagat-octopus-orchestrator.example/v1
 security:
   - bearerAuth: []
 tags:
+  - name: Identity
   - name: Workflows
   - name: Runs
   - name: Events
   - name: Scripts
   - name: Operations
 paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness probe
+      tags: [Identity]
+      security: []
+      responses:
+        '200': {description: The process is alive, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /ready:
+    get:
+      operationId: getReadiness
+      summary: Readiness probe (checks the database)
+      tags: [Identity]
+      security: []
+      responses:
+        '200': {description: Ready to serve traffic, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /auth/context:
+    get:
+      operationId: getAuthContext
+      summary: Describe the authenticated caller
+      tags: [Identity]
+      responses:
+        '200': {description: Resolved identity of the caller, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      summary: List workspaces of the caller's tenant
+      tags: [Identity]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {description: Page of workspaces, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspacePage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    post:
+      operationId: createWorkspace
+      summary: Create a workspace
+      tags: [Identity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateWorkspaceRequest'}
+      responses:
+        '201': {description: Workspace created, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /workspaces/{workspaceId}:
+    get:
+      operationId: getWorkspace
+      summary: Get a workspace
+      tags: [Identity]
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200': {description: The workspace, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /workspaces/{workspaceId}/namespaces:
+    post:
+      operationId: createNamespace
+      summary: Create a namespace inside a workspace
+      tags: [Identity]
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateNamespaceRequest'}
+      responses:
+        '201': {description: Namespace created, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces:
+    get:
+      operationId: listNamespaces
+      summary: List namespaces of the caller's tenant
+      tags: [Identity]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': {description: Page of namespaces, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /namespaces/{namespaceId}:
+    get:
+      operationId: getNamespace
+      summary: Get a namespace
+      tags: [Identity]
+      parameters:
+        - name: namespaceId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200': {description: The namespace, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /workflows:
     get:
       operationId: listWorkflows
@@ -199,15 +332,15 @@ paths:
           in: path
           required: true
           schema: {type: string}
-        - name: X-DF-Signature
+        - name: X-Octopus-Signature
           in: header
           required: true
           schema: {type: string}
-        - name: X-DF-Timestamp
+        - name: X-Octopus-Timestamp
           in: header
           required: true
           schema: {type: string}
-        - name: X-DF-Event-Id
+        - name: X-Octopus-Event-Id
           in: header
           required: true
           schema: {type: string}
@@ -238,9 +371,13 @@ paths:
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  headers:
+    TraceId:
+      description: W3C trace id (32 lowercase hex characters) of the request, for log and trace correlation.
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
   parameters:
     Namespace:
-      name: X-DF-Namespace
+      name: X-Octopus-Namespace
       in: header
       required: true
       description: Namespace; authorization derives tenant from token, not header.
@@ -253,7 +390,13 @@ components:
     Cursor:
       name: cursor
       in: query
+      description: Opaque cursor returned as `nextCursor` by the previous page.
       schema: {type: string}
+    Limit:
+      name: limit
+      in: query
+      description: Page size; values outside 1..200 are clamped.
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
     WorkflowId:
       name: workflowId
       in: path
@@ -270,11 +413,71 @@ components:
       type: object
       required: [code, message, retryable, traceId]
       properties:
-        code: {type: string}
-        message: {type: string}
+        code:
+          type: string
+          description: Stable machine-readable code.
+          enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, UNAVAILABLE, INTERNAL]
+        message: {type: string, description: "Safe, human-readable summary. Never contains secrets, payloads or other tenants' data."}
         retryable: {type: boolean}
-        traceId: {type: string}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
         details: {type: object, additionalProperties: true}
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok]}
+    AuthContext:
+      type: object
+      required: [tenant, subject, role, permissions, traceId]
+      properties:
+        tenant: {type: string, description: Slug of the caller's tenant.}
+        subject: {type: string}
+        role: {type: string, enum: [admin, developer, operator, viewer]}
+        permissions:
+          type: array
+          items: {type: string, example: 'workspace:read'}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
+    Workspace:
+      type: object
+      required: [id, slug, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        createdAt: {type: string, format: date-time}
+    CreateWorkspaceRequest:
+      type: object
+      required: [slug]
+      additionalProperties: false
+      properties:
+        slug: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$', description: 'Unique inside the tenant. 3-63 characters; no consecutive hyphens.'}
+    WorkspacePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Workspace'}}
+        nextCursor: {type: [string, 'null']}
+    NamespaceResource:
+      type: object
+      required: [id, workspaceId, slug, environment, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        workspaceId: {type: string, format: uuid}
+        slug: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        environment: {type: string, enum: [dev, staging, prod]}
+        createdAt: {type: string, format: date-time}
+    CreateNamespaceRequest:
+      type: object
+      required: [slug, environment]
+      additionalProperties: false
+      properties:
+        slug: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$', description: 'Unique inside the tenant (not only inside the workspace).'}
+        environment: {type: string, enum: [dev, staging, prod]}
+    NamespacePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/NamespaceResource'}}
+        nextCursor: {type: [string, 'null']}
     WorkflowDraft:
       type: object
       required: [name, ir]
@@ -397,3 +600,5 @@ components:
     Conflict: {description: Conflict or stale version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     ValidationError: {description: Invalid input/schema/graph, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     TooManyRequests: {description: Rate or quota exceeded, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unavailable: {description: A dependency is temporarily unavailable; retry later, headers: {Retry-After: {schema: {type: integer, minimum: 0}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    InternalError: {description: Unexpected failure, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

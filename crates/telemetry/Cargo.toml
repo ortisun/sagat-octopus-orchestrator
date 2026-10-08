@@ -1,0 +1,16 @@
+[package]
+name = "sagat-telemetry"
+description = "Trace context (W3C traceparent) and structured logging setup."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

@@ -10,6 +10,9 @@
 //! test databases are then left behind for inspection.
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
+pub mod api;
+pub mod oidc;
+
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use sagat_domain::identity::{Membership, Principal, Slug, Subject, Tenant, TenantId};
@@ -74,9 +77,37 @@ async fn start_server() -> Server {
         .get_host_port_ipv4(5432)
         .await
         .expect("mapped port");
+    let admin_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    wait_until_queryable(&admin_url).await;
     Server {
-        admin_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
+        admin_url,
         _container: Some(container),
+    }
+}
+
+/// Blocks until a real PostgreSQL session works.
+///
+/// The container's "ready to accept connections" log line is printed first by the temporary
+/// server that the image's entrypoint runs during initialisation (it has no TCP listener), and the
+/// host port is already open through Docker's proxy. Tests that start in that window got
+/// `unexpected response from SSLRequest` (about 1 cold start in 8). Only an actual query proves
+/// the real server is up.
+async fn wait_until_queryable(url: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let attempt = async {
+            let mut conn = PgConnection::connect(url).await?;
+            sqlx::query("SELECT 1").execute(&mut conn).await?;
+            conn.close().await
+        };
+        match attempt.await {
+            Ok(()) => return,
+            Err(error) if std::time::Instant::now() < deadline => {
+                let _ = error; // not ready yet; keep polling
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("PostgreSQL never became queryable: {error}"),
+        }
     }
 }
 

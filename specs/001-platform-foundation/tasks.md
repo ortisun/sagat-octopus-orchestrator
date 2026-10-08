@@ -16,19 +16,19 @@
 
 ## Phase 3: US01 — Create a workspace and namespace (P1)
 **Independent test:** Given an authenticated administrator; When they create a workspace and dev namespace; Then the workspace is persisted, and the scope appears in the API/Studio.
-- [ ] T001-008 [P] [US01] Write a Given/When/Then test to create a workspace and namespace in `tests/e2e/001-platform-foundation/us01.rs`.
+- [x] T001-008 [P] [US01] Write a Given/When/Then test to create a workspace and namespace in `tests/e2e/001-platform-foundation/us01.rs`.
 - [x] T001-009 [US01] Implement the domain path and error handling to create a workspace and namespace in `crates/domain/src/identity.rs`.
 - [x] T001-010 [US01] Integrate adapters and persistence for the US01 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [ ] T001-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to the US01 scenario in `crates/telemetry/`.
-- [ ] T001-012 [US01] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US01 in `tests/fault/001-platform-foundation/`.
+- [x] T001-012 [US01] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US01 in `tests/fault/001-platform-foundation/`.
 
 ## Phase 4: US02 — Authenticate an SDK client (P1)
 **Independent test:** Given a valid token with tenant scope; When the client queries namespaces; Then the API returns only the authorized resources and a trace id.
-- [ ] T001-013 [P] [US02] Write a Given/When/Then test to authenticate an SDK client in `tests/e2e/001-platform-foundation/us02.rs`.
-- [ ] T001-014 [US02] Implement the domain path and error handling to authenticate an SDK client in `crates/application/src/identity.rs`.
-- [ ] T001-015 [US02] Integrate adapters and persistence for the US02 scenario in `crates/application/` and `crates/infra-postgres/`.
+- [x] T001-013 [P] [US02] Write a Given/When/Then test to authenticate an SDK client in `tests/e2e/001-platform-foundation/us02.rs`.
+- [x] T001-014 [US02] Implement the domain path and error handling to authenticate an SDK client in `crates/application/src/identity.rs`.
+- [x] T001-015 [US02] Integrate adapters and persistence for the US02 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [ ] T001-016 [P] [US02] Add logs/traces/metrics and tenant/secret protection to the US02 scenario in `crates/telemetry/`.
-- [ ] T001-017 [US02] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US02 in `tests/fault/001-platform-foundation/`.
+- [x] T001-017 [US02] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US02 in `tests/fault/001-platform-foundation/`.
 
 ## Phase 5: US03 — Bring up a complete local environment (P1)
 **Independent test:** Given the cloned repository and prerequisites installed; When the developer starts docker compose and runs health checks; Then API, PostgreSQL and NATS are running and migrations are idempotent.
@@ -40,7 +40,7 @@
 
 ## Phase 6: US04 — Deny cross-tenant access (P1)
 **Independent test:** Given a user of tenant A; When they request a resource of tenant B; Then the API does not reveal tenant B data and records the attempt.
-- [ ] T001-023 [P] [US04] Write a Given/When/Then test to deny cross-tenant access in `tests/e2e/001-platform-foundation/us04.rs`.
+- [x] T001-023 [P] [US04] Write a Given/When/Then test to deny cross-tenant access in `tests/e2e/001-platform-foundation/us04.rs`.
 - [ ] T001-024 [US04] Implement the domain path and error handling to deny cross-tenant access in `apps/control-plane/src/main.rs`.
 - [x] T001-025 [US04] Integrate adapters and persistence for the US04 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [ ] T001-026 [P] [US04] Add logs/traces/metrics and tenant/secret protection to the US04 scenario in `crates/telemetry/`.
@@ -49,7 +49,7 @@
 ## Phase: Engineering design details (story-linked hardening)
 
 - [x] T001-028 [US01] Define the schema of `tenant` and `namespace` with scoped FKs in `crates/infra-postgres/migrations/` and reject tenant spoofing in tests.
-- [ ] T001-029 [US01] Add OIDC/JWKS, authz and request context middleware in `crates/api-http/src/middleware/`.
+- [x] T001-029 [US01] Add OIDC/JWKS, authz and request context middleware in `crates/api-http/src/auth/`, `context.rs` and `extract.rs`.
 - [ ] T001-030 [US01] Create CI for lint/clippy/fmt, migrations up and OpenAPI/protobuf validation in `.github/workflows/ci.yml`.
 
 ## Final Phase: Hardening / rollout
