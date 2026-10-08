@@ -19,7 +19,7 @@
 - [x] T001-008 [P] [US01] Write a Given/When/Then test to create a workspace and namespace in `tests/e2e/001-platform-foundation/us01.rs`.
 - [x] T001-009 [US01] Implement the domain path and error handling to create a workspace and namespace in `crates/domain/src/identity.rs`.
 - [x] T001-010 [US01] Integrate adapters and persistence for the US01 scenario in `crates/application/` and `crates/infra-postgres/`.
-- [ ] T001-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to the US01 scenario in `crates/telemetry/`.
+- [x] T001-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to the US01 scenario in `crates/telemetry/`.
 - [x] T001-012 [US01] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US01 in `tests/fault/001-platform-foundation/`.
 
 ## Phase 4: US02 — Authenticate an SDK client (P1)
@@ -27,7 +27,7 @@
 - [x] T001-013 [P] [US02] Write a Given/When/Then test to authenticate an SDK client in `tests/e2e/001-platform-foundation/us02.rs`.
 - [x] T001-014 [US02] Implement the domain path and error handling to authenticate an SDK client in `crates/application/src/identity.rs`.
 - [x] T001-015 [US02] Integrate adapters and persistence for the US02 scenario in `crates/application/` and `crates/infra-postgres/`.
-- [ ] T001-016 [P] [US02] Add logs/traces/metrics and tenant/secret protection to the US02 scenario in `crates/telemetry/`.
+- [x] T001-016 [P] [US02] Add logs/traces/metrics and tenant/secret protection to the US02 scenario in `crates/telemetry/`.
 - [x] T001-017 [US02] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US02 in `tests/fault/001-platform-foundation/`.
 
 ## Phase 5: US03 — Bring up a complete local environment (P1)
@@ -35,7 +35,7 @@
 - [x] T001-018 [P] [US03] Write a Given/When/Then test to bring up a complete local environment in `tests/e2e/001-platform-foundation/us03.rs`.
 - [x] T001-019 [US03] Implement the domain path and error handling to bring up a complete local environment in `crates/infra-postgres/src/identity.rs`.
 - [x] T001-020 [US03] Integrate adapters and persistence for the US03 scenario in `crates/application/` and `crates/infra-postgres/`.
-- [ ] T001-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to the US03 scenario in `crates/telemetry/`.
+- [x] T001-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to the US03 scenario in `crates/telemetry/`.
 - [ ] T001-022 [US03] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US03 in `tests/fault/001-platform-foundation/`.
 
 ## Phase 6: US04 — Deny cross-tenant access (P1)
@@ -43,7 +43,7 @@
 - [x] T001-023 [P] [US04] Write a Given/When/Then test to deny cross-tenant access in `tests/e2e/001-platform-foundation/us04.rs`.
 - [x] T001-024 [US04] Implement the domain path and error handling to deny cross-tenant access in `apps/control-plane/src/main.rs`.
 - [x] T001-025 [US04] Integrate adapters and persistence for the US04 scenario in `crates/application/` and `crates/infra-postgres/`.
-- [ ] T001-026 [P] [US04] Add logs/traces/metrics and tenant/secret protection to the US04 scenario in `crates/telemetry/`.
+- [x] T001-026 [P] [US04] Add logs/traces/metrics and tenant/secret protection to the US04 scenario in `crates/telemetry/`.
 - [ ] T001-027 [US04] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US04 in `tests/fault/001-platform-foundation/`.
 
 ## Phase: Engineering design details (story-linked hardening)
