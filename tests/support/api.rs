@@ -85,7 +85,7 @@ pub async fn start_with(options: Options) -> TestApi {
     let verifier = TokenVerifier::new(Arc::new(fetcher), &auth);
     let service = IdentityService::new(store.clone(), SystemClock);
     let app = router(
-        AppState::with_rate_limit(service, verifier, options.rate_limit),
+        AppState::with_rate_limit(service, verifier, options.rate_limit).expect("valid budget"),
         options.limits,
     );
 

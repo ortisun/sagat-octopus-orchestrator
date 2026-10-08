@@ -26,7 +26,9 @@ mod routes;
 mod server;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
-pub use limits::{RateLimitConfig, RateLimiter};
+pub use limits::{
+    DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
+};
 pub use server::{ServerConfig, serve};
 
 /// Shared handler state. Cloning is cheap (a few `Arc`s).
@@ -40,21 +42,41 @@ pub struct AppState<S, C> {
 }
 
 impl<S, C> AppState<S, C> {
+    /// State with the default budgets.
     #[must_use]
     pub fn new(identity: IdentityService<S, C>, verifier: TokenVerifier) -> Self {
-        Self::with_rate_limit(identity, verifier, RateLimitConfig::default())
+        Self::assemble(
+            identity,
+            verifier,
+            RateLimiter::from_valid(RateLimitConfig::default()),
+        )
     }
 
-    #[must_use]
+    /// State with an explicit per-tenant budget.
+    ///
+    /// # Errors
+    /// [`RateLimitConfigError`] when the budget is not usable (NaN, infinite or too small).
     pub fn with_rate_limit(
         identity: IdentityService<S, C>,
         verifier: TokenVerifier,
         rate_limit: RateLimitConfig,
+    ) -> Result<Self, RateLimitConfigError> {
+        Ok(Self::assemble(
+            identity,
+            verifier,
+            RateLimiter::new(rate_limit)?,
+        ))
+    }
+
+    fn assemble(
+        identity: IdentityService<S, C>,
+        verifier: TokenVerifier,
+        limiter: RateLimiter,
     ) -> Self {
         Self {
             identity: Arc::new(identity),
             verifier: Arc::new(verifier),
-            limiter: Arc::new(RateLimiter::new(rate_limit)),
+            limiter: Arc::new(limiter),
             ready_cache: Arc::new(Mutex::new(None)),
         }
     }

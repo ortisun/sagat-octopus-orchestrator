@@ -152,6 +152,15 @@ async fn when_saturated_the_api_sheds_load_at_once_and_probes_keep_answering() {
         "refused at once, not queued: {:?}",
         started.elapsed()
     );
+    let retry_after: u64 = shed.headers()["retry-after"]
+        .to_str()
+        .expect("ascii")
+        .parse()
+        .expect("Retry-After is a whole number of seconds");
+    assert!(
+        (3..=8).contains(&retry_after),
+        "a small jittered delay, not a constant that synchronises every client: {retry_after}"
+    );
     assert_eq!(json_of(shed).await["retryable"], true);
     assert_eq!(
         api.request(Method::GET, "/health")

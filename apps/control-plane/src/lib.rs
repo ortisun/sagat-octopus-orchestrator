@@ -208,10 +208,11 @@ pub async fn serve_with_admin(
     // Install the metrics recorder before the first request so nothing is missed. Idle series are
     // forgotten when the page is rendered, so a process nobody scrapes needs this timer.
     let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
-    let app = router(
-        AppState::with_rate_limit(service, verifier, serve.rate_limit),
-        serve.limits,
-    );
+    // Already validated by `ServeConfig`; checked again because the limiter must never run with a
+    // budget that could panic or never admit a request.
+    let state = AppState::with_rate_limit(service, verifier, serve.rate_limit)
+        .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?;
+    let app = router(state, serve.limits);
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
 
     // One shutdown signal drives both listeners.

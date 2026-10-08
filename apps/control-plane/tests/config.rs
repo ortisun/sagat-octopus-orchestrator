@@ -353,6 +353,43 @@ fn nonsensical_overload_settings_are_rejected() {
 }
 
 #[test]
+fn rate_limit_values_that_would_break_the_limiter_name_their_variable() {
+    // `1e-300` used to be accepted and made the first over-budget request panic (review finding 6).
+    let bad: [(&str, &str); 9] = [
+        ("SAGAT_RATE_LIMIT_RPS", "1e-300"),
+        ("SAGAT_RATE_LIMIT_RPS", "0.0005"),
+        ("SAGAT_RATE_LIMIT_RPS", "NaN"),
+        ("SAGAT_RATE_LIMIT_RPS", "-inf"),
+        ("SAGAT_RATE_LIMIT_BURST", "0.99"),
+        ("SAGAT_RATE_LIMIT_BURST", "NaN"),
+        ("SAGAT_RATE_LIMIT_BURST", "inf"),
+        ("SAGAT_RATE_LIMIT_BURST", "0"),
+        ("SAGAT_RATE_LIMIT_BURST", "-5"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        let error = ServeConfig::from_lookup(&env(&pairs)).expect_err(name);
+        assert!(
+            matches!(&error, ConfigError::Invalid { name: n, .. } if *n == name),
+            "{name}={value} -> {error:?}"
+        );
+    }
+
+    // The documented minimums themselves are accepted.
+    let mut edge = OIDC.to_vec();
+    edge.extend([
+        ("SAGAT_RATE_LIMIT_RPS", "0.001"),
+        ("SAGAT_RATE_LIMIT_BURST", "1"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&edge)).expect("minimums are valid");
+    assert!(
+        (serve.rate_limit.per_second - 0.001).abs() < f64::EPSILON
+            && (serve.rate_limit.burst - 1.0).abs() < f64::EPSILON
+    );
+}
+
+#[test]
 fn tenant_provisioning_has_no_defaults() {
     assert_eq!(
         ProvisionConfig::from_lookup(&env(&[])),

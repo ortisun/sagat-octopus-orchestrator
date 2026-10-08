@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sagat_api_http::{AuthConfig, HttpLimits, RateLimitConfig, ServerConfig};
+use sagat_api_http::{AuthConfig, HttpLimits, RateLimitConfig, RateLimitConfigError, ServerConfig};
 use sagat_telemetry::LogFormat;
 
 /// Where the process runs. Anything that could damage real data is gated on this; the default is
@@ -75,6 +75,39 @@ fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
             name,
             reason: format!("'{other}' is not a boolean (use true or false)"),
         }),
+    }
+}
+
+/// Variables of the per-tenant request budget: (requests per second, burst).
+pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
+
+/// Reads a request budget from a requests-per-second and a burst variable and validates it with the
+/// same rules the limiter enforces (finite, rate at least 0.001, burst at least 1).
+fn rate_limit(
+    get: Lookup<'_>,
+    (rps_var, burst_var): (&'static str, &'static str),
+    defaults: RateLimitConfig,
+) -> Result<RateLimitConfig, ConfigError> {
+    let per_second: f64 = optional(get, rps_var, defaults.per_second)?;
+    let burst: f64 = optional(get, burst_var, defaults.burst)?;
+    RateLimitConfig { per_second, burst }
+        .validate()
+        .map_err(|e| rate_limit_error((rps_var, burst_var), e))
+}
+
+/// The configuration error for a refused budget, naming the variable that caused it.
+#[must_use]
+pub fn rate_limit_error(
+    (rps_var, burst_var): (&'static str, &'static str),
+    error: RateLimitConfigError,
+) -> ConfigError {
+    let name = match error {
+        RateLimitConfigError::PerSecond => rps_var,
+        RateLimitConfigError::Burst => burst_var,
+    };
+    ConfigError::Invalid {
+        name,
+        reason: error.to_string(),
     }
 }
 
@@ -206,21 +239,7 @@ impl ServeConfig {
                 reason: "must be greater than zero".to_owned(),
             });
         }
-        let rate_defaults = RateLimitConfig::default();
-        let rate_per_second: f64 = optional(get, "SAGAT_RATE_LIMIT_RPS", rate_defaults.per_second)?;
-        let rate_burst: f64 = optional(get, "SAGAT_RATE_LIMIT_BURST", rate_defaults.burst)?;
-        if !(rate_per_second.is_finite() && rate_per_second > 0.0) {
-            return Err(ConfigError::Invalid {
-                name: "SAGAT_RATE_LIMIT_RPS",
-                reason: "must be a positive number".to_owned(),
-            });
-        }
-        if !(rate_burst.is_finite() && rate_burst >= 1.0) {
-            return Err(ConfigError::Invalid {
-                name: "SAGAT_RATE_LIMIT_BURST",
-                reason: "must be at least 1".to_owned(),
-            });
-        }
+        let rate_limit = rate_limit(get, TENANT_RATE_VARS, RateLimitConfig::default())?;
         let admin_addr =
             match get("SAGAT_ADMIN_ADDR").as_deref().map(str::trim) {
                 None | Some("") => Some(SocketAddr::from(([127, 0, 0, 1], 9090))),
@@ -272,10 +291,7 @@ impl ServeConfig {
                 request_timeout: Duration::from_secs(timeout_secs),
                 max_in_flight,
             },
-            rate_limit: RateLimitConfig {
-                per_second: rate_per_second,
-                burst: rate_burst,
-            },
+            rate_limit,
             admin_addr,
             server: ServerConfig {
                 header_read_timeout: Duration::from_secs(header_secs),

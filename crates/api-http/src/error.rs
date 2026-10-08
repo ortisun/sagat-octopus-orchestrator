@@ -162,13 +162,19 @@ impl ApiError {
     /// Dependency down; the client may retry.
     #[must_use]
     pub fn unavailable() -> Self {
+        Self::unavailable_after(5)
+    }
+
+    /// Temporarily unable to serve; the client may retry after `seconds` (at least one).
+    #[must_use]
+    pub fn unavailable_after(seconds: u32) -> Self {
         let mut e = Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::Unavailable,
             "service temporarily unavailable",
         );
         e.parts.retryable = true;
-        e.retry_after = Some(5);
+        e.retry_after = Some(seconds.max(1));
         e
     }
 
