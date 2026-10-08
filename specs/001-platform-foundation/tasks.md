@@ -6,6 +6,7 @@
 ## Phase 1: Setup / contracts
 - [x] T001-001 Check FR-001-001..FR-001-007, SCs and ADRs; record gaps in `specs/001-platform-foundation/research.md`.
 - [ ] T001-002 [P] Define fixtures and contract validation in `tests/contract/001-platform-foundation/fixtures/`.
+  _Partly done: the contract is validated against a running server by `tests/contract/001-platform-foundation/rest/` and the auth matrix, with no static fixtures directory. The IR example is validated in CI. Static fixtures arrive with the IR in feature 002._
 - [x] T001-003 [P] Document types, transitions and invariants in `specs/001-platform-foundation/data-model.md`.
 
 ## Phase 2: Foundation
@@ -36,7 +37,7 @@
 - [x] T001-019 [US03] Implement the domain path and error handling to bring up a complete local environment in `crates/infra-postgres/src/identity.rs`.
 - [x] T001-020 [US03] Integrate adapters and persistence for the US03 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [x] T001-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to the US03 scenario in `crates/telemetry/`.
-- [ ] T001-022 [US03] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US03 in `tests/fault/001-platform-foundation/`.
+- [x] T001-022 [US03] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US03 in `tests/fault/001-platform-foundation/`.
 
 ## Phase 6: US04 — Deny cross-tenant access (P1)
 **Independent test:** Given a user of tenant A; When they request a resource of tenant B; Then the API does not reveal tenant B data and records the attempt.
@@ -44,7 +45,7 @@
 - [x] T001-024 [US04] Implement the domain path and error handling to deny cross-tenant access in `apps/control-plane/src/main.rs`.
 - [x] T001-025 [US04] Integrate adapters and persistence for the US04 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [x] T001-026 [P] [US04] Add logs/traces/metrics and tenant/secret protection to the US04 scenario in `crates/telemetry/`.
-- [ ] T001-027 [US04] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US04 in `tests/fault/001-platform-foundation/`.
+- [x] T001-027 [US04] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US04 in `tests/fault/001-platform-foundation/`.
 
 ## Phase: Engineering design details (story-linked hardening)
 
@@ -54,8 +55,9 @@
 
 ## Final Phase: Hardening / rollout
 - [ ] T001-031 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/001-platform-foundation/`.
+  _REST: done (`rest/`, live conformance). AsyncAPI: validated (0 errors) locally and in CI. gRPC: `worker.proto` compiles, but the compatibility check (`buf breaking`) is not wired yet; it needs a baseline and arrives with the worker protocol server in feature 002._
 - [x] T001-032 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`.
-- [ ] T001-033 Run the benchmark defined in `specs/001-platform-foundation/plan.md` and publish the report in `tests/performance/reports/001-platform-foundation.md`.
+- [x] T001-033 Run the benchmark defined in `specs/001-platform-foundation/plan.md` and publish the report in `tests/performance/reports/001-platform-foundation.md`.
 - [ ] T001-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/001-platform-foundation/quickstart.md`.
 - [x] T001-035 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`.
 

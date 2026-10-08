@@ -27,7 +27,8 @@ scripts/smoke-compose.sh                 # builds the image, starts PostgreSQL +
 ```
 
 The full procedure, the environment variables and what is not built yet are in
-[`specs/001-platform-foundation/quickstart.md`](specs/001-platform-foundation/quickstart.md).
+[`specs/001-platform-foundation/quickstart.md`](specs/001-platform-foundation/quickstart.md);
+operating the control plane is in [`docs/runbooks/control-plane.md`](docs/runbooks/control-plane.md).
 Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
 
 ## Folders
@@ -40,6 +41,7 @@ docs/adr/                       Architectural Decision Records
 docs/roadmap.md                 Phases, dependencies and exit criteria
 docs/traceability.md            Traceability of requirements and deliverables
 docs/test-strategy.md           Failure, load, contract and security tests
+docs/runbooks/                  Operational procedures
 AGENTS.md                       Instructions for implementation agents
 crates/ apps/ tests/            Rust workspace: domain, application, adapters, control plane, test suites
 infra/docker/                   Local environment (Docker Compose) and the control-plane image

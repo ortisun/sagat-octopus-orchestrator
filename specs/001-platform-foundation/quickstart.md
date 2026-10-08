@@ -29,6 +29,13 @@ Each user story has its own file (`tests/e2e/001-platform-foundation/us01.rs` â€
 token matrix is `tests/contract/001-platform-foundation/auth.rs`; failure scenarios are in
 `tests/fault/001-platform-foundation/`.
 
+The baseline benchmark is ignored by default (it is slow and machine-specific):
+
+```sh
+SAGAT_PERF_REPORT=tests/performance/reports/001-platform-foundation.md \
+  cargo test -p sagat-tests --test perf_001 --release --locked -- --ignored
+```
+
 To reuse a PostgreSQL you already run instead of a container, set
 `SAGAT_TEST_DATABASE_URL=postgres://user:pass@127.0.0.1:PORT/postgres`.
 
@@ -69,6 +76,8 @@ export SAGAT_OIDC_ISSUER=https://your-idp/ SAGAT_OIDC_AUDIENCE=sagat-octopus-orc
 export SAGAT_OIDC_JWKS_URI=https://your-idp/.well-known/jwks.json
 cargo run -p sagat-control-plane --bin control-plane -- migrate
 cargo run -p sagat-control-plane --bin control-plane -- seed-dev      # tenant "dev", admin "dev-admin"
+# outside dev, create a real tenant explicitly (owner role; no defaults):
+SAGAT_PROVISION_TENANT=acme SAGAT_PROVISION_ADMIN=alice cargo run -p sagat-control-plane --bin control-plane -- provision-tenant
 cargo run -p sagat-control-plane --bin control-plane -- serve
 cargo run -p sagat-control-plane --bin control-plane -- --help        # every setting
 ```
@@ -96,9 +105,10 @@ every request, so removing one takes effect immediately.
 ## Known limits
 
 Recorded in [`research.md`](./research.md): no token revocation list (G7), create operations are not
-idempotent through `Idempotency-Key` (G8), `403`s are not audited (G9), no OTLP export or metrics
-(G6), no development identity provider (G10), no rate limiting or per-tenant fairness (G13) and no
-access-token `typ` enforcement (G14).
+idempotent through `Idempotency-Key` (G8), `403`s are not audited (G9), no OTLP span export (G6;
+logs, trace ids and Prometheus metrics exist), no development identity provider (G10), and rate
+limits that are per process (G13; a shared limiter is feature 010). Access-token `typ` enforcement
+is available but off by default (G14). Operations: [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md).
 
 ## Security review evidence (T001-034, partial)
 
@@ -113,11 +123,11 @@ or write. It did find the issues below; each fix was written test-first or verif
 | 3 | No header-read timeout or connection cap (Slowloris); one stuck connection blocked shutdown | Medium | Fixed: own HTTP/1 loop with timer, cap and bounded grace (`fault/server.rs`) |
 | 4 | "Append-only audit" was a convention; the API ran as the owner | Medium | Fixed: least-privilege `sagat_app`, `ENABLE ALWAYS` triggers (`integration/runtime_role.rs`, `scripts/smoke-compose.sh`) |
 | 5 | The insecure-JWKS flag was honoured in production | Low-Medium | Fixed: refused unless `SAGAT_ENV=dev` |
-| 6 | No rate limiting; `/v1/ready` unauthenticated and DB-backed | Low | Open: G13 |
+| 6 | No rate limiting; `/v1/ready` unauthenticated and DB-backed | Low | Fixed for one instance: per-tenant token bucket, in-flight cap, 1 s readiness cache (`fault/limits.rs`); per-process limits remain: G13 |
 | 7 | PostgreSQL TLS not enforced | Low | Fixed: required outside dev |
 | 8 | Role grants and provisioning not audited; compose pinned `SAGAT_ENV=dev` | Low | Fixed: audited atomically (D14); `SAGAT_ENV` configurable |
 | 9 | `crit` header, array `iss`, empty key set replacing a good cache | Low | Fixed; `typ` enforcement open: G14 |
 | 10 | Logs could carry URL credentials; unbounded echo of rejected input | Low | Fixed: redaction and clipping; spoofable trace id accepted: G15 |
 | 11 | Smoke test could wipe real volumes; mutable Action tags; no advisory scanning | Low | Fixed: throw-away project name, SHA-pinned actions, `cargo audit` (one justified ignore: G16) |
 
-Still pending for T001-034: an operational runbook, and a second pass after rate limiting (G13).
+The operational runbook is [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md). Still pending for T001-034: the result of a second review pass over the rate limiting, metrics and `provision-tenant` changes.
