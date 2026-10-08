@@ -5,7 +5,8 @@
 //! Times are stored as microseconds since the epoch, the precision PostgreSQL keeps.
 
 use sagat_domain::execution::{
-    CorrelationKey, FailureCode, Fence, JoinOutcome, RunEvent, RunStatus, StopReason,
+    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, RunEvent, RunId, RunStatus,
+    StopReason,
 };
 use sagat_domain::workflow::NodeId;
 use serde_json::{Map, Value, json};
@@ -86,6 +87,14 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
                 JoinOutcome::Succeeded => "succeeded",
                 JoinOutcome::Failed => "failed",
             }
+        }),
+        RunEvent::ChildStarted { child, .. } => json!({ "child": child.to_string() }),
+        RunEvent::ChildFinished { child, outcome, .. } => json!({
+            "child": child.to_string(),
+            "outcome": match outcome {
+                ChildOutcome::Succeeded => Value::Null,
+                ChildOutcome::Failed(code) => json!(code.as_str()),
+            },
         }),
         RunEvent::RunStopRequested { reason, code } => json!({
             "reason": match reason {
@@ -236,6 +245,19 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
             outcome: match text(d, "outcome")? {
                 "succeeded" => JoinOutcome::Succeeded,
                 "failed" => JoinOutcome::Failed,
+                _ => return None,
+            },
+        },
+        "child.started" => RunEvent::ChildStarted {
+            node: node_id()?,
+            child: text(d, "child")?.parse::<RunId>().ok()?,
+        },
+        "child.finished" => RunEvent::ChildFinished {
+            node: node_id()?,
+            child: text(d, "child")?.parse::<RunId>().ok()?,
+            outcome: match d.get("outcome")? {
+                Value::Null => ChildOutcome::Succeeded,
+                Value::String(code) => ChildOutcome::Failed(FailureCode::parse(code).ok()?),
                 _ => return None,
             },
         },

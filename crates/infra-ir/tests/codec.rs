@@ -70,6 +70,7 @@ fn saga_fields_in_the_example_are_reported_not_silently_dropped() {
         .iter()
         .map(|w| match w {
             DefinitionWarning::SagaFieldsNotExecuted { node } => node.as_str(),
+            other @ DefinitionWarning::RecursiveChild { .. } => panic!("unexpected: {other}"),
         })
         .collect();
     assert_eq!(nodes, ["reserve", "submit"]);
@@ -344,11 +345,6 @@ fn a_timer_beyond_a_year_is_rejected() {
 fn node_kinds_without_an_engine_are_refused_with_the_reason() {
     let cases = [
         (
-            "child",
-            json!({"id": "c", "type": "child", "workflowId": "other-flow"}),
-            "feature 002",
-        ),
-        (
             "saga",
             json!({"id": "c", "type": "saga", "begin": "x"}),
             "feature 003",
@@ -380,6 +376,101 @@ fn node_kinds_without_an_engine_are_refused_with_the_reason() {
                 assert!(reason.contains(feature), "{kind}: {reason}");
             }
             other => panic!("{kind}: {other:?}"),
+        }
+    }
+}
+
+// ------------------------------------------------------------------ child workflows
+
+fn child_document(node: serde_json::Value) -> serde_json::Value {
+    minimal(json!([node, activity("after")]), "c")
+}
+
+#[test]
+fn a_child_node_carries_its_workflow_version_input_and_cancel_policy() {
+    use sagat_domain::workflow::{CancelPolicy, NodeKind};
+    let doc = child_document(json!({
+        "id": "c", "type": "child", "workflowId": "payment-flow", "version": 3,
+        "input": "input.order", "cancelPolicy": "request_cancel", "next": "after",
+        "onError": "after", "timeoutMs": 60000
+    }));
+    let parsed = parse(&doc).expect("a child node is executable now");
+    let node = parsed
+        .definition
+        .node(&NodeId::parse("c").expect("id"))
+        .expect("node");
+    let NodeKind::Child {
+        workflow,
+        version,
+        input,
+        cancel_policy,
+    } = node.kind()
+    else {
+        panic!("expected a child node, got {:?}", node.kind());
+    };
+    assert_eq!(workflow.as_str(), "payment-flow");
+    assert_eq!(*version, Some(3));
+    assert_eq!(input.as_ref().map(|e| e.as_str()), Some("input.order"));
+    assert_eq!(*cancel_policy, CancelPolicy::RequestCancel);
+    assert_eq!(node.timeout(), Some(std::time::Duration::from_secs(60)));
+}
+
+#[test]
+fn a_child_node_defaults_to_the_active_version_the_parents_input_and_propagation() {
+    use sagat_domain::workflow::{CancelPolicy, NodeKind};
+    let doc = child_document(json!({
+        "id": "c", "type": "child", "workflowId": "payment-flow", "next": "after"
+    }));
+    let parsed = parse(&doc).expect("valid");
+    let node = parsed
+        .definition
+        .node(&NodeId::parse("c").expect("id"))
+        .expect("node");
+    assert!(matches!(
+        node.kind(),
+        NodeKind::Child {
+            version: None,
+            input: None,
+            cancel_policy: CancelPolicy::Propagate,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_malformed_child_node_is_reported_at_the_offending_field() {
+    let cases = [
+        (json!({"id": "c", "type": "child"}), "/nodes/0"),
+        (
+            json!({"id": "c", "type": "child", "workflowId": "Not A Slug", "next": "after"}),
+            "/nodes/0/workflowId",
+        ),
+        (
+            json!({"id": "c", "type": "child", "workflowId": "ok-flow", "version": 0, "next": "after"}),
+            // The schema's `oneOf` reports a node it rejects at the node itself.
+            "/nodes/0",
+        ),
+        (
+            json!({"id": "c", "type": "child", "workflowId": "ok-flow", "cancelPolicy": "kill", "next": "after"}),
+            "/nodes/0",
+        ),
+        (
+            json!({"id": "c", "type": "child", "workflowId": "ok-flow", "input": "input.((", "next": "after"}),
+            "/nodes/0/input",
+        ),
+    ];
+    for (node, at) in cases {
+        match parse(&child_document(node.clone())) {
+            Err(IrError::Schema(issues)) => {
+                assert!(
+                    issues.iter().any(|i| i.path.starts_with(at)),
+                    "{node}: {issues:?}"
+                );
+            }
+            Err(IrError::Expression { field, .. }) => {
+                assert!(at.ends_with("/input") && field == "input", "{node}");
+            }
+            other => panic!("{node}: {other:?}"),
         }
     }
 }

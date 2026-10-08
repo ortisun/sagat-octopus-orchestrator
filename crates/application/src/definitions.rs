@@ -153,6 +153,14 @@ pub trait DefinitionStore: Send + Sync {
         id: WorkflowId,
     ) -> impl Future<Output = Result<Option<WorkflowRecord>, StoreError>> + Send;
 
+    /// A workflow by its name inside one namespace (names are unique there).
+    fn find_workflow_by_name(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+    ) -> impl Future<Output = Result<Option<WorkflowRecord>, StoreError>> + Send;
+
     /// Workflows of one namespace with `id > after`, ascending by id, at most `limit`.
     fn list_workflows(
         &self,

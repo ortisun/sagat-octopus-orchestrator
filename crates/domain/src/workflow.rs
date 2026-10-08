@@ -398,6 +398,48 @@ pub enum JoinPolicy {
     Any,
 }
 
+/// What happens to a child run when the run that started it is stopped (`FR-002-009`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CancelPolicy {
+    /// The child is cancelled; the parent does not wait for it to settle. The default.
+    Propagate,
+    /// The child is cancelled and the parent waits until it has actually settled before it finishes.
+    RequestCancel,
+    /// The child keeps running on its own.
+    Detach,
+}
+
+impl CancelPolicy {
+    /// The name stored and shown (`PROPAGATE`, `REQUEST_CANCEL`, `DETACH`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Propagate => "PROPAGATE",
+            Self::RequestCancel => "REQUEST_CANCEL",
+            Self::Detach => "DETACH",
+        }
+    }
+
+    /// Whether stopping the parent stops the child.
+    #[must_use]
+    pub const fn cascades(self) -> bool {
+        !matches!(self, Self::Detach)
+    }
+}
+
+impl std::str::FromStr for CancelPolicy {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, ()> {
+        match value {
+            "PROPAGATE" => Ok(Self::Propagate),
+            "REQUEST_CANCEL" => Ok(Self::RequestCancel),
+            "DETACH" => Ok(Self::Detach),
+            _ => Err(()),
+        }
+    }
+}
+
 /// What a node does (the node kinds of version 1 that this engine executes).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
@@ -432,6 +474,18 @@ pub enum NodeKind {
         branches: Vec<NodeId>,
         join: JoinPolicy,
     },
+    /// Starts another workflow of the same namespace as a child run and waits for it, holding no
+    /// process while it does (`FR-002-009`).
+    Child {
+        /// The child workflow's name, resolved in the parent's namespace when the child starts.
+        workflow: Slug,
+        /// A pinned version number; the workflow's active version when absent.
+        version: Option<u32>,
+        /// Evaluated over the parent's data into the child's input; the parent's own input when
+        /// absent.
+        input: Option<Expression>,
+        cancel_policy: CancelPolicy,
+    },
     /// Closes the workflow successfully.
     End { output: Option<Expression> },
 }
@@ -446,6 +500,7 @@ impl NodeKind {
             Self::WaitEvent { .. } => "waitEvent",
             Self::Condition { .. } => "condition",
             Self::Parallel { .. } => "parallel",
+            Self::Child { .. } => "child",
             Self::End { .. } => "end",
         }
     }
@@ -554,6 +609,9 @@ impl Node {
 pub enum DefinitionWarning {
     /// `compensateWith` / `reconcileWith` are stored but not executed until the saga engine exists.
     SagaFieldsNotExecuted { node: NodeId },
+    /// A child node starts the workflow it belongs to. Legal (a condition can stop the recursion),
+    /// but the depth limit ends it at the latest.
+    RecursiveChild { node: NodeId },
 }
 
 impl fmt::Display for DefinitionWarning {
@@ -562,6 +620,10 @@ impl fmt::Display for DefinitionWarning {
             Self::SagaFieldsNotExecuted { node } => write!(
                 f,
                 "node '{node}': compensateWith/reconcileWith are recorded but compensation is not executed yet (feature 003)"
+            ),
+            Self::RecursiveChild { node } => write!(
+                f,
+                "node '{node}': starts the workflow it belongs to; the nesting depth limit ends the recursion"
             ),
         }
     }
@@ -670,23 +732,28 @@ impl WorkflowDefinition {
     /// Observations for the author; none of them makes the definition invalid.
     #[must_use]
     pub fn warnings(&self) -> Vec<DefinitionWarning> {
-        self.nodes()
-            .filter(|n| {
-                matches!(
-                    n.kind(),
-                    NodeKind::Activity {
-                        compensate_with: Some(_),
-                        ..
-                    } | NodeKind::Activity {
-                        reconcile_with: Some(_),
-                        ..
-                    }
-                )
-            })
-            .map(|n| DefinitionWarning::SagaFieldsNotExecuted {
-                node: n.id().clone(),
-            })
-            .collect()
+        let mut out = Vec::new();
+        for node in self.nodes() {
+            match node.kind() {
+                NodeKind::Activity {
+                    compensate_with: Some(_),
+                    ..
+                }
+                | NodeKind::Activity {
+                    reconcile_with: Some(_),
+                    ..
+                } => out.push(DefinitionWarning::SagaFieldsNotExecuted {
+                    node: node.id().clone(),
+                }),
+                NodeKind::Child { workflow, .. } if *workflow == self.name => {
+                    out.push(DefinitionWarning::RecursiveChild {
+                        node: node.id().clone(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        out
     }
 }
 

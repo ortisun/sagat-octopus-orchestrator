@@ -1,14 +1,23 @@
 use std::time::Duration;
 
+use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
+use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    Actor, Effects, Engine, EngineError, ExpressionEvaluator, RunTx,
+    Actor, DefinitionCache, Effects, Engine, EngineError, ExpressionEvaluator, ParentLink, RunInfo,
+    RunTx,
 };
-use sagat_application::maintenance::{LeaseLoss, MaintenanceStore, RunRef, StepRef};
-use sagat_application::runs::{Lock, RunStore};
+use sagat_application::maintenance::{
+    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, RunRef, StepRef,
+};
+use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
-use sagat_domain::execution::{self, ExecutionError, Expiry, Progress, StopReason};
+use sagat_domain::execution::{
+    self, ChildOutcome, ExecutionError, Expiry, FailureCode, Progress, RunStatus, StopReason,
+};
 use sagat_domain::identity::TenantId;
+use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 
 /// Delivered outbox messages deleted per housekeeping round.
@@ -47,6 +56,9 @@ pub struct Report {
     pub leases_expired: u32,
     pub deadlines_enforced: u32,
     pub hints_renewed: u32,
+    pub children_started: u32,
+    pub children_finished: u32,
+    pub children_cancelled: u32,
     /// Candidates another scheduler or a caller had already handled.
     pub skipped: u32,
     /// Candidates that failed for a reason other than losing a race (logged).
@@ -63,11 +75,14 @@ impl Report {
             + self.leases_expired
             + self.deadlines_enforced
             + self.hints_renewed
+            + self.children_started
+            + self.children_finished
+            + self.children_cancelled
             > 0
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Outcome {
     Done,
     Skipped,
@@ -80,6 +95,9 @@ pub struct Scheduler<S, E, R> {
     engine: Engine<E>,
     entropy: R,
     settings: SchedulerSettings,
+    /// Needed to start child runs (it parses the child workflow's definition); without it the
+    /// scheduler leaves `child` steps alone.
+    definitions: Option<DefinitionCache>,
 }
 
 impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
@@ -90,7 +108,7 @@ impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
 
 impl<S, E, R> Scheduler<S, E, R>
 where
-    S: RunStore + MaintenanceStore,
+    S: RunStore + MaintenanceStore + DefinitionStore,
     E: ExpressionEvaluator,
     R: Entropy,
 {
@@ -100,7 +118,15 @@ where
             engine,
             entropy,
             settings,
+            definitions: None,
         }
+    }
+
+    /// Lets the scheduler start the child runs that `child` steps reserve.
+    #[must_use]
+    pub fn with_children(mut self, definitions: DefinitionCache) -> Self {
+        self.definitions = Some(definitions);
+        self
     }
 
     /// Runs every pass once.
@@ -112,6 +138,9 @@ where
         self.leases(&mut report).await;
         self.deadlines(&mut report).await;
         self.hints(&mut report).await;
+        self.children_start(&mut report).await;
+        self.children_finish(&mut report).await;
+        self.children_cancel(&mut report).await;
         report
     }
 
@@ -390,6 +419,271 @@ where
                 })
                 .await;
             Self::tally(report, outcome, |r| r.hints_renewed += 1);
+        }
+    }
+    // ------------------------------------------------------------------ child runs (FR-002-009)
+
+    /// Creates the child runs that `child` steps reserved. Each is created, started and its
+    /// reservation claimed in one transaction under the parent's lock, so a child exists exactly
+    /// when its parent step was still waiting for it.
+    async fn children_start(&self, report: &mut Report) {
+        let Some(definitions) = &self.definitions else {
+            return;
+        };
+        let pending = Self::candidates(
+            self.store.pending_children(self.settings.batch).await,
+            "pending children",
+            report,
+        )
+        .await;
+        for child in pending {
+            let outcome = match self.start_child(definitions, &child).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    tracing::error!(%error, run = %child.step.run_id, node = %child.step.node, "starting a child run failed");
+                    Outcome::Failed
+                }
+            };
+            metrics::counter!("scheduler_actions_total", "kind" => "child_start", "outcome" => match outcome {
+                Outcome::Done => "done",
+                Outcome::Skipped => "skipped",
+                Outcome::Failed => "failed",
+            })
+            .increment(1);
+            Self::tally(report, outcome, |r| r.children_started += 1);
+        }
+    }
+
+    async fn start_child(
+        &self,
+        definitions: &DefinitionCache,
+        pending: &PendingChild,
+    ) -> Result<Outcome, EngineError> {
+        let tenant = pending.step.tenant_id;
+        let parent_id = pending.step.run_id;
+        let node = &pending.step.node;
+        let Some(parent) = self.store.get(tenant, parent_id).await? else {
+            return Ok(Outcome::Skipped);
+        };
+        let Some(parent_version) = self
+            .store
+            .get_version_by_id(tenant, parent.info.version_id)
+            .await?
+        else {
+            return Ok(Outcome::Skipped);
+        };
+        let parent_definition = definitions
+            .get_or_parse(parent.info.version_id, &parent_version.document)
+            .map_err(|_| StoreError::Internal {
+                detail: "a stored version no longer parses".into(),
+            })?;
+        let Some(parent_node) = parent_definition.node(node) else {
+            return Ok(Outcome::Skipped);
+        };
+        let NodeKind::Child {
+            workflow,
+            version,
+            cancel_policy,
+            ..
+        } = parent_node.kind()
+        else {
+            return Ok(Outcome::Skipped);
+        };
+
+        // The child workflow lives in the parent's namespace; the lookup is scoped by tenant and
+        // namespace, so a same-named workflow elsewhere can never be reached.
+        let target = match self
+            .store
+            .find_workflow_by_name(tenant, parent.info.namespace_id, workflow)
+            .await?
+        {
+            Some(record) => {
+                let version_record = match version {
+                    Some(number) => {
+                        self.store
+                            .get_version(tenant, record.workflow.id(), *number)
+                            .await?
+                    }
+                    None => match record.workflow.active_version() {
+                        Some(id) => self.store.get_version_by_id(tenant, id).await?,
+                        None => None,
+                    },
+                };
+                version_record.map(|v| (record, v))
+            }
+            None => None,
+        };
+        let Some((workflow_record, version_record)) = target else {
+            // The child cannot exist: tell the parent step now instead of waiting forever.
+            return Ok(self
+                .finish_with(
+                    tenant,
+                    parent_id,
+                    node.clone(),
+                    pending.child,
+                    ChildOutcome::Failed(FailureCode::child_not_found()),
+                )
+                .await);
+        };
+        let definition = definitions
+            .get_or_parse(version_record.version.id(), &version_record.document)
+            .map_err(|_| StoreError::Internal {
+                detail: "a stored version no longer parses".into(),
+            })?;
+
+        // A child never outlives its parent's deadline, and its own timeout can only shorten it.
+        let own = parent_node
+            .timeout()
+            .and_then(|t| time::Duration::try_from(t).ok())
+            .and_then(|t| pending.as_of.checked_add(t));
+        let deadline_at = match (parent.info.deadline_at, own) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let child_id = pending.child;
+        let info = RunInfo {
+            run_id: child_id,
+            tenant_id: tenant,
+            namespace_id: parent.info.namespace_id,
+            workflow_id: workflow_record.workflow.id(),
+            version_id: version_record.version.id(),
+            started_by: sagat_domain::identity::Subject::engine()
+                .as_str()
+                .to_owned(),
+            correlation_id: parent.info.correlation_id.clone(),
+            trace_id: parent.info.trace_id.clone(),
+            deadline_at,
+            created_at: pending.as_of,
+            parent: Some(ParentLink {
+                run: parent_id,
+                node: node.clone(),
+                cancel_policy: *cancel_policy,
+            }),
+            depth: parent.info.depth.saturating_add(1),
+        };
+        let audit = AuditRecord::engine(
+            tenant,
+            AuditAction::RunStarted,
+            ResourceType::Run,
+            child_id.to_string(),
+            format!("child of run {parent_id}, node {node}"),
+            parent.info.trace_id.clone(),
+            pending.as_of,
+        );
+        let new = NewRun {
+            info,
+            definition: std::sync::Arc::clone(&definition),
+            input: pending.input.clone(),
+            audit,
+            idempotency: Idempotency {
+                scope: format!("child:{parent_id}"),
+                // (The dedupe table requires 8 to 160 characters, like an `Idempotency-Key`.)
+                key: format!("child-start:{node}"),
+                fingerprint: child_id.as_uuid().as_bytes().to_vec(),
+            },
+        };
+        match self.store.create(new).await {
+            Ok(Applied::Replayed(_)) => Ok(Outcome::Skipped),
+            // The parent step no longer waits for this run (cancelled, or created by a peer).
+            Err(StoreError::MissingReference) => Ok(Outcome::Skipped),
+            Err(other) => Err(other.into()),
+            Ok(Applied::Done(mut tx)) => {
+                let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());
+                self.engine
+                    .run(&mut tx, effects, |def: &WorkflowDefinition, state, now| {
+                        let (started, progress) = execution::start_run(def, child_id, now)?;
+                        *state = started;
+                        Ok(((), progress))
+                    })
+                    .await?;
+                tx.commit().await?;
+                metrics::counter!("child_runs_started_total").increment(1);
+                Ok(Outcome::Done)
+            }
+        }
+    }
+
+    /// Reports a child's outcome to the parent step that waits for it.
+    async fn finish_with(
+        &self,
+        tenant: TenantId,
+        parent: RunId,
+        node: sagat_domain::workflow::NodeId,
+        child: RunId,
+        outcome: ChildOutcome,
+    ) -> Outcome {
+        self.apply(
+            tenant,
+            parent,
+            "child_finish",
+            self.effects(),
+            move |def, state, now| {
+                Ok((
+                    (),
+                    execution::finish_child(def, state, &node, child, outcome, now)?,
+                ))
+            },
+        )
+        .await
+    }
+
+    /// Tells parents that the child they wait for has ended.
+    async fn children_finish(&self, report: &mut Report) {
+        let ended = Self::candidates(
+            self.store.ended_children(self.settings.batch).await,
+            "ended children",
+            report,
+        )
+        .await;
+        for EndedChild {
+            tenant_id,
+            child,
+            parent,
+            node,
+            status,
+        } in ended
+        {
+            let outcome = match status {
+                RunStatus::Succeeded => ChildOutcome::Succeeded,
+                RunStatus::Failed => ChildOutcome::Failed(FailureCode::child_failed()),
+                RunStatus::Cancelled => ChildOutcome::Failed(FailureCode::child_cancelled()),
+                RunStatus::TimedOut => ChildOutcome::Failed(FailureCode::child_timed_out()),
+                _ => continue,
+            };
+            let result = self
+                .finish_with(tenant_id, parent, node.clone(), child, outcome)
+                .await;
+            if result == Outcome::Skipped {
+                tracing::warn!(%parent, %node, %child, "an ended child could not be reported to its parent step");
+            }
+            Self::tally(report, result, |r| r.children_finished += 1);
+        }
+    }
+
+    /// Stops the running children of a parent that was stopped under a policy that cancels them.
+    async fn children_cancel(&self, report: &mut Report) {
+        let doomed = Self::candidates(
+            self.store.children_to_cancel(self.settings.batch).await,
+            "children to cancel",
+            report,
+        )
+        .await;
+        for RunRef { tenant_id, run_id } in doomed {
+            let outcome = self
+                .apply(
+                    tenant_id,
+                    run_id,
+                    "child_cancel",
+                    self.effects(),
+                    |def, state, now| {
+                        Ok((
+                            (),
+                            execution::stop_run(def, state, StopReason::Cancelled, None, now)?,
+                        ))
+                    },
+                )
+                .await;
+            Self::tally(report, outcome, |r| r.children_cancelled += 1);
         }
     }
 }

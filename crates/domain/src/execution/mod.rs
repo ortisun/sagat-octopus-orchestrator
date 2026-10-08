@@ -12,10 +12,12 @@ mod state;
 
 pub use command::{
     Expiry, Failure, Heartbeat, Progress, Resolution, complete_step, expire_attempt, fail_step,
-    fire_timer, heartbeat, lease_step, pause_run, resolve, resume_run, retry_due, satisfy_wait,
-    start_run, stop_run, time_out_wait,
+    finish_child, fire_timer, heartbeat, lease_step, pause_run, resolve, resume_run, retry_due,
+    satisfy_wait, start_run, stop_run, time_out_wait,
 };
 pub use error::ExecutionError;
-pub use event::{CorrelationKey, FailureCode, Fence, JoinOutcome, RunEvent, StopReason};
+pub use event::{
+    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, RunEvent, StopReason,
+};
 pub use plan::{Evaluation, Plan, plan};
 pub use state::{RunId, RunState, RunStatus, StepState, StepStatus, WaitingOn};

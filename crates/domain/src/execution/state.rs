@@ -12,7 +12,7 @@ use std::str::FromStr;
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{CorrelationKey, FailureCode, JoinOutcome, RunEvent, StopReason};
+use super::event::{ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, RunEvent, StopReason};
 use crate::identity::IdentityError;
 use crate::workflow::NodeId;
 
@@ -167,6 +167,10 @@ pub enum WaitingOn {
         deadline: OffsetDateTime,
     },
     Branches,
+    /// A child run, reserved by `child.started`; it may not exist yet.
+    Child {
+        run: RunId,
+    },
 }
 
 /// Everything the engine tracks about one step.
@@ -654,13 +658,50 @@ impl RunState {
                     }
                 }
             }
+            RunEvent::ChildStarted { node, child } => {
+                let step = self.step_mut(node, name, &[Pending])?;
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Child { run: *child });
+            }
+            RunEvent::ChildFinished {
+                node,
+                child,
+                outcome,
+            } => {
+                let step = self.step_mut(node, name, &[Waiting])?;
+                if step.waiting != Some(WaitingOn::Child { run: *child }) {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.waiting = None;
+                step.cancel_requested = false;
+                match outcome {
+                    ChildOutcome::Succeeded => step.status = Succeeded,
+                    ChildOutcome::Failed(code) => {
+                        step.status = Failed;
+                        step.failure = Some(code.clone());
+                    }
+                }
+            }
             RunEvent::EndReached { node } => {
                 let step = self.step_mut(node, name, &[Pending])?;
                 step.status = Succeeded;
                 step.routed = true;
             }
             RunEvent::StepCancelRequested { node } => {
-                let step = self.step_mut(node, name, &[Leased, Running])?;
+                let step = self.step_mut(node, name, &[Leased, Running, Waiting])?;
+                // Only a step that waits for a child can be asked to stop while it is parked.
+                if step.status == Waiting && !matches!(step.waiting, Some(WaitingOn::Child { .. }))
+                {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
                 if step.cancel_requested {
                     return Err(ExecutionError::IllegalTransition {
                         node: node.clone(),

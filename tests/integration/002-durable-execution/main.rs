@@ -4,6 +4,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod children;
 mod concurrency;
 mod definitions;
 mod faults;

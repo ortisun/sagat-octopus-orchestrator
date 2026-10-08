@@ -77,6 +77,8 @@ pub struct StepView {
     pub next_attempt_at: Option<OffsetDateTime>,
     pub due_at: Option<OffsetDateTime>,
     pub waiting_on: Option<&'static str>,
+    /// The child run a `child` step reserved.
+    pub child_run: Option<RunId>,
 }
 
 /// A run, its definition and its steps, read at one instant.
@@ -310,6 +312,8 @@ where
             trace_id: ctx.trace_id.clone(),
             deadline_at: request.deadline,
             created_at: now,
+            parent: None,
+            depth: 0,
         };
         let audit = AuditRecord::by(
             principal,

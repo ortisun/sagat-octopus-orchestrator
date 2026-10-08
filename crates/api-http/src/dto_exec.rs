@@ -187,6 +187,18 @@ pub struct RunBody {
     pub updated_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
     pub finished_at: Option<OffsetDateTime>,
+    /// The run and step that started this one, when it is a child run.
+    pub parent: Option<ParentBody>,
+    /// How deeply nested the run is: 0 when started through the API.
+    pub depth: u8,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentBody {
+    pub run_id: String,
+    pub node: String,
+    pub cancel_policy: &'static str,
 }
 
 impl From<&RunRecord> for RunBody {
@@ -205,6 +217,12 @@ impl From<&RunRecord> for RunBody {
             created_at: r.info.created_at,
             updated_at: r.updated_at,
             finished_at: r.finished_at,
+            parent: r.info.parent.as_ref().map(|p| ParentBody {
+                run_id: p.run.to_string(),
+                node: p.node.to_string(),
+                cancel_policy: p.cancel_policy.as_str(),
+            }),
+            depth: r.info.depth,
         }
     }
 }
@@ -259,6 +277,7 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
             "nextAttemptAt": step.and_then(|s| s.next_attempt_at).map(rfc3339),
             "dueAt": step.and_then(|s| s.due_at).map(rfc3339),
             "waitingOn": step.and_then(|s| s.waiting_on),
+            "childRunId": step.and_then(|s| s.child_run).map(|r| r.to_string()),
         }));
         edges_of(node, &mut edges);
     }

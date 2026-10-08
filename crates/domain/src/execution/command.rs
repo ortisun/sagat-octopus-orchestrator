@@ -11,7 +11,7 @@
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{CorrelationKey, FailureCode, Fence, RunEvent, StopReason};
+use super::event::{ChildOutcome, CorrelationKey, FailureCode, Fence, RunEvent, StopReason};
 use super::plan::{Evaluation, Plan, after, plan};
 use super::state::{RunId, RunState, StepState, StepStatus, WaitingOn};
 use crate::workflow::{NodeId, NodeKind, WorkflowDefinition};
@@ -35,6 +35,13 @@ pub enum Resolution {
     Correlation {
         node: NodeId,
         key: Result<CorrelationKey, ()>,
+    },
+    /// The child run reserved for a `child` node, or why there can be none: the code is
+    /// `EXPRESSION_ERROR` for an input that does not evaluate and `CHILD_DEPTH_EXCEEDED` for a
+    /// nesting that is too deep.
+    Child {
+        node: NodeId,
+        child: Result<RunId, FailureCode>,
     },
 }
 
@@ -491,6 +498,41 @@ pub fn resolve(
             }
             Err(()) => fail(node),
         },
+        Resolution::Child { node, child } => match child {
+            Ok(child) => RunEvent::ChildStarted { node, child },
+            Err(code) => RunEvent::StepFailed {
+                node,
+                code,
+                fence: None,
+            },
+        },
     };
     apply_then_settle(def, state, now, event)
+}
+
+/// The child run of a waiting `child` step ended (or could not be started).
+///
+/// # Errors
+/// [`ExecutionError::IllegalTransition`] when the step is not parked on that child any more (the
+/// parent's own cancellation won: the first commit wins), [`ExecutionError::RunFinished`] when the
+/// parent ended meanwhile.
+pub fn finish_child(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    child: RunId,
+    outcome: ChildOutcome,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    require_step(state, node)?;
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::ChildFinished {
+            node: node.clone(),
+            child,
+            outcome,
+        },
+    )
 }

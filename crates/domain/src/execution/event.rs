@@ -5,7 +5,7 @@ use std::fmt;
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::state::RunStatus;
+use super::state::{RunId, RunStatus};
 use crate::identity::clip;
 use crate::workflow::NodeId;
 
@@ -68,6 +68,36 @@ impl FailureCode {
         Self::system("BRANCH_FAILED")
     }
 
+    /// The child run failed.
+    #[must_use]
+    pub fn child_failed() -> Self {
+        Self::system("CHILD_FAILED")
+    }
+
+    /// The child run was cancelled.
+    #[must_use]
+    pub fn child_cancelled() -> Self {
+        Self::system("CHILD_CANCELLED")
+    }
+
+    /// The child run ran past its deadline.
+    #[must_use]
+    pub fn child_timed_out() -> Self {
+        Self::system("CHILD_TIMED_OUT")
+    }
+
+    /// The child workflow (or the pinned version) does not exist in the parent's namespace.
+    #[must_use]
+    pub fn child_not_found() -> Self {
+        Self::system("CHILD_NOT_FOUND")
+    }
+
+    /// Starting the child would nest runs deeper than the limit.
+    #[must_use]
+    pub fn child_depth_exceeded() -> Self {
+        Self::system("CHILD_DEPTH_EXCEEDED")
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -126,6 +156,14 @@ impl StopReason {
 pub enum JoinOutcome {
     Succeeded,
     Failed,
+}
+
+/// How a child run ended, as the step of the parent that waited for it sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildOutcome {
+    Succeeded,
+    /// The child did not succeed (or could not be started); the code says why.
+    Failed(FailureCode),
 }
 
 /// Names one attempt of one step. A completion or failure is only valid for the attempt and
@@ -216,6 +254,18 @@ pub enum RunEvent {
         node: NodeId,
         outcome: JoinOutcome,
     },
+    /// A child run was reserved for the step: its id is journaled before the child exists, so a
+    /// crash between the two is repaired by starting exactly that run (`FR-002-009`).
+    ChildStarted {
+        node: NodeId,
+        child: RunId,
+    },
+    /// The child run reached a terminal state (or could not be started).
+    ChildFinished {
+        node: NodeId,
+        child: RunId,
+        outcome: ChildOutcome,
+    },
     EndReached {
         node: NodeId,
     },
@@ -259,6 +309,8 @@ impl RunEvent {
             Self::WaitTimedOut { .. } => "wait.timed_out",
             Self::ParallelForked { .. } => "parallel.forked",
             Self::ParallelJoined { .. } => "parallel.joined",
+            Self::ChildStarted { .. } => "child.started",
+            Self::ChildFinished { .. } => "child.finished",
             Self::EndReached { .. } => "end.reached",
             Self::StepCancelRequested { .. } => "step.cancel_requested",
             Self::StepCancelled { .. } => "step.cancelled",
@@ -289,6 +341,8 @@ impl RunEvent {
             | Self::WaitTimedOut { node, .. }
             | Self::ParallelForked { node, .. }
             | Self::ParallelJoined { node, .. }
+            | Self::ChildStarted { node, .. }
+            | Self::ChildFinished { node, .. }
             | Self::EndReached { node }
             | Self::StepCancelRequested { node }
             | Self::StepCancelled { node } => Some(node),

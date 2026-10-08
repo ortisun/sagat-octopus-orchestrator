@@ -83,6 +83,11 @@ fn check_expressions(definition: &WorkflowDefinition) -> Result<(), IrError> {
                 Compiled::compile(output.as_str())
                     .map_err(|e| expression_error(id, "outputExpr", e))?;
             }
+            NodeKind::Child {
+                input: Some(input), ..
+            } => {
+                Compiled::compile(input.as_str()).map_err(|e| expression_error(id, "input", e))?;
+            }
             NodeKind::Activity {
                 idempotency_template: Some(template),
                 ..

@@ -287,3 +287,67 @@ async fn without_nats_workers_still_poll_and_the_outbox_waits_for_a_dispatcher()
         "nothing publishes the hints, and nothing loses them either"
     );
 }
+
+#[tokio::test]
+async fn a_parent_run_waits_for_its_child_across_the_whole_stack_and_the_api_shows_the_link() {
+    let p = platform().await;
+    let engine = RunningEngine::start(engine_env(&p.api.db, &p.api.idp, &[])).await;
+    let kid = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": "kid-flow"}, "entrypoint": "kid",
+        "nodes": [{"id": "kid", "type": "activity", "activity": "act.kid"}]
+    });
+    p.publish("kid-flow", &kid).await;
+    let mother = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": "mother-flow"}, "entrypoint": "c",
+        "nodes": [
+            {"id": "c", "type": "child", "workflowId": "kid-flow", "input": "input.order", "next": "after"},
+            {"id": "after", "type": "activity", "activity": "act.after"}
+        ]
+    });
+    let wf = p.publish("mother-flow", &mother).await;
+    let run = p.start(&wf, &json!({"order": {"id": 5}})).await;
+    assert_eq!(p.status(&run).await, "WAITING");
+
+    // The engine's own loop creates the child; the worker finds its task.
+    let mut worker = p.worker_at(&engine.grpc_url, "wendy").await;
+    worker.register(&["act.kid", "act.after"]).await;
+    let task = eventually_task(&mut worker, Duration::from_secs(10)).await;
+    assert_eq!(task.activity_name, "act.kid");
+    assert_ne!(task.run_id, run, "the task belongs to the child run");
+    assert!(task.input_json.contains("\"id\":5"), "{}", task.input_json);
+
+    // The REST API shows the link in both directions.
+    let child = p.run(&task.run_id).await;
+    assert_eq!(child["parent"]["runId"], run);
+    assert_eq!(child["parent"]["node"], "c");
+    assert_eq!(child["parent"]["cancelPolicy"], "PROPAGATE");
+    assert_eq!(child["depth"], 1);
+    let (status, graph) = p
+        .rest(reqwest::Method::GET, &format!("/runs/{run}/graph"), None)
+        .await;
+    assert_eq!(status, 200);
+    let node = graph["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|n| n["id"] == "c")
+        .expect("c");
+    assert_eq!(node["status"], "WAITING");
+    assert_eq!(node["waitingOn"], "child");
+    assert_eq!(node["childRunId"], task.run_id);
+    assert_eq!(p.run(&run).await["parent"], serde_json::Value::Null);
+
+    // Finishing the child releases the parent's next step, again without anyone calling the engine.
+    worker
+        .complete(&task, &json!({}))
+        .await
+        .expect("child step");
+    let after = eventually_task(&mut worker, Duration::from_secs(10)).await;
+    assert_eq!(after.activity_name, "act.after");
+    assert_eq!(after.run_id, run);
+    worker.complete(&after, &json!({})).await.expect("after");
+    assert_eq!(p.status(&run).await, "SUCCEEDED");
+    assert_eq!(p.status(&task.run_id).await, "SUCCEEDED");
+}

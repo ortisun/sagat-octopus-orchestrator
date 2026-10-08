@@ -159,6 +159,31 @@ impl AuditRecord {
         }
     }
 
+    /// Records something the execution engine did on its own initiative. The actor is
+    /// [`Subject::engine`].
+    #[must_use]
+    pub fn engine(
+        tenant_id: TenantId,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+        trace_id: Option<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id,
+            actor: Subject::engine(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id,
+            created_at: now,
+        }
+    }
+
     /// Adds a human-readable reason (must not contain secrets or personal data).
     #[must_use]
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {

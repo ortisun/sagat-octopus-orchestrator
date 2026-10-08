@@ -78,7 +78,7 @@ pub async fn serve(
     }
 
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), DEFINITION_CACHE_ENTRIES);
-    let store = PgRunStore::new(pool.clone(), cache);
+    let store = PgRunStore::new(pool.clone(), cache.clone());
     let state = AppState::with_rate_limit(
         IdentityService::new(identity, SystemClock),
         verifier,
@@ -94,12 +94,15 @@ pub async fn serve(
         SystemEntropy,
         engine.worker,
     );
-    let scheduler: Arc<EngineScheduler> = Arc::new(Scheduler::new(
-        store.clone(),
-        Engine::new(JsonEvaluator),
-        SystemEntropy,
-        engine.scheduler,
-    ));
+    let scheduler: Arc<EngineScheduler> = Arc::new(
+        Scheduler::new(
+            store.clone(),
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            engine.scheduler,
+        )
+        .with_children(cache),
+    );
     let dispatcher: Option<Arc<EngineDispatcher>> = match &engine.nats {
         Some(nats) => {
             let publisher = NatsPublisher::connect(nats.clone()).await.map_err(|e| {

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::maintenance::{
-    LeaseLoss, LostLease, MaintenanceStore, OutboxMessage, OutboxStore, RunRef, StepRef,
+    EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxMessage, OutboxStore, PendingChild,
+    RunRef, StepRef,
 };
 use sagat_domain::execution::{Fence, RunId};
 use sagat_domain::identity::TenantId;
@@ -21,6 +22,13 @@ use crate::identity::{col, corrupt, store_error};
 
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
+}
+
+fn run_ref(row: &PgRow) -> Result<RunRef, StoreError> {
+    Ok(RunRef {
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        run_id: RunId::new(col::<Uuid>(row, "id")?),
+    })
 }
 
 fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
@@ -132,12 +140,7 @@ impl MaintenanceStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(|row| {
-            Ok(RunRef {
-                tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
-                run_id: RunId::new(col::<Uuid>(row, "id")?),
-            })
-        })
+        .map(run_ref)
         .collect()
     }
 
@@ -159,6 +162,70 @@ impl MaintenanceStore for PgRunStore {
         .map_err(store_error)?
         .iter()
         .map(step_ref)
+        .collect()
+    }
+
+    async fn pending_children(&self, limit: u32) -> Result<Vec<PendingChild>, StoreError> {
+        sqlx::query(
+            "SELECT tenant_id, run_id, node, child_run_id, child_input, clock_timestamp() AS db_now \
+             FROM steps \
+             WHERE status = 'WAITING' AND waiting_kind = 'CHILD' AND child_started = false \
+               AND child_input IS NOT NULL \
+             ORDER BY updated_at LIMIT $1",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            Ok(PendingChild {
+                step: step_ref(row)?,
+                child: RunId::new(col::<Uuid>(row, "child_run_id")?),
+                input: col(row, "child_input")?,
+                as_of: col(row, "db_now")?,
+            })
+        })
+        .collect()
+    }
+
+    async fn ended_children(&self, limit: u32) -> Result<Vec<EndedChild>, StoreError> {
+        sqlx::query(
+            "SELECT tenant_id, id, parent_run_id, parent_node, status FROM runs \
+             WHERE parent_run_id IS NOT NULL AND parent_settled = false AND finished_at IS NOT NULL \
+             ORDER BY finished_at LIMIT $1",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            let node: String = col(row, "parent_node")?;
+            let status: String = col(row, "status")?;
+            Ok(EndedChild {
+                tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+                child: RunId::new(col::<Uuid>(row, "id")?),
+                parent: RunId::new(col::<Uuid>(row, "parent_run_id")?),
+                node: NodeId::parse(&node).map_err(|_| corrupt("parent node"))?,
+                status: status.parse().map_err(|_| corrupt("run status"))?,
+            })
+        })
+        .collect()
+    }
+
+    async fn children_to_cancel(&self, limit: u32) -> Result<Vec<RunRef>, StoreError> {
+        sqlx::query(
+            "SELECT tenant_id, id FROM runs \
+             WHERE parent_cancel AND finished_at IS NULL AND stop_reason IS NULL \
+             ORDER BY id LIMIT $1",
+        )
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(run_ref)
         .collect()
     }
 

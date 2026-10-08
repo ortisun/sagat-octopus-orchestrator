@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, Evaluation, ExecutionError, Progress, Resolution, RunEvent, RunId, RunState,
-    RunStatus, StopReason,
+    CorrelationKey, Evaluation, ExecutionError, FailureCode, Progress, Resolution, RunEvent, RunId,
+    RunState, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sagat_domain::workflow::{Expression, NodeId, WorkflowDefinition};
+use sagat_domain::workflow::{CancelPolicy, Expression, NodeId, WorkflowDefinition};
 use time::OffsetDateTime;
 
 use sagat_domain::audit::AuditRecord;
@@ -28,6 +28,24 @@ use crate::error::StoreError;
 /// Largest payload (run input, step output) kept inline; bigger ones need a blob store, which is not
 /// built yet (research.md, gap G19).
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
+
+/// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
+/// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
+pub const MAX_CHILD_DEPTH: u8 = 8;
+
+/// The id of the child run a `child` step of `parent` reserves. Derived, not random, so a retried
+/// reservation names the same run and a crash between journaling it and creating it is repaired by
+/// creating exactly that run.
+#[must_use]
+pub fn child_run_id(parent: RunId, node: &NodeId) -> RunId {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("child/{parent}/{node}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    RunId::new(uuid::Uuid::from_bytes(bytes))
+}
 
 /// The stable identity of a step: derived from the version, the run and the node, so every
 /// instance computes the same value and a hash collision would be caught by the unique key.
@@ -85,6 +103,17 @@ pub trait ExpressionEvaluator: Send + Sync {
         node: &NodeId,
     ) -> Result<String, ExpressionFailure>;
 
+    /// The input of a child run: `expression` evaluated over the parent's data, or the parent's own
+    /// input when the node defines none. It must be a JSON object, like every run input.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails or does not yield an object.
+    fn child_input(
+        &self,
+        expression: Option<&Expression>,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure>;
+
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
 
@@ -93,6 +122,22 @@ pub trait ExpressionEvaluator: Send + Sync {
 
     /// Whether `bytes` is a well-formed JSON object (a run input must be one).
     fn is_json_object(&self, bytes: &[u8]) -> bool;
+}
+
+/// The run that started a child, and what becomes of the child when the parent stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentLink {
+    pub run: RunId,
+    pub node: NodeId,
+    pub cancel_policy: CancelPolicy,
+}
+
+/// A child run reserved by a `child` step: the id, and the input it will start with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildSpawn {
+    pub node: NodeId,
+    pub child: RunId,
+    pub input: Vec<u8>,
 }
 
 /// Everything about a run that does not change after it is created.
@@ -108,6 +153,10 @@ pub struct RunInfo {
     pub trace_id: Option<String>,
     pub deadline_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
+    /// The run that started this one, when it is a child (`FR-002-009`).
+    pub parent: Option<ParentLink>,
+    /// How deeply nested this run is: 0 for a run started through the API.
+    pub depth: u8,
 }
 
 /// A run as read by the API.
@@ -163,6 +212,8 @@ pub struct Effects {
     pub idempotency: Option<(Idempotency, String)>,
     /// `READY` steps to write a fresh wake-up notification for (their notification was lost).
     pub rehint: Vec<NodeId>,
+    /// Child runs reserved in this transaction; the engine fills it while resolving `child` steps.
+    pub children: Vec<ChildSpawn>,
 }
 
 impl Effects {
@@ -177,6 +228,7 @@ impl Effects {
             audit: None,
             idempotency: None,
             rehint: Vec::new(),
+            children: Vec::new(),
         }
     }
 }
@@ -292,7 +344,7 @@ impl<E: ExpressionEvaluator> Engine<E> {
     pub async fn run<T, Tx, F>(
         &self,
         tx: &mut Tx,
-        effects: Effects,
+        mut effects: Effects,
         command: F,
     ) -> Result<T, EngineError>
     where
@@ -324,7 +376,8 @@ impl<E: ExpressionEvaluator> Engine<E> {
             if rounds > limit {
                 return Err(ExecutionError::Invariant("evaluations did not settle").into());
             }
-            let resolution = self.resolve(tx, &evaluation).await?;
+            let (resolution, spawn) = self.resolve(tx, &evaluation).await?;
+            effects.children.extend(spawn);
             progress = {
                 let (def, state) = tx.parts();
                 sagat_domain::execution::resolve(def, state, resolution, now)?
@@ -339,23 +392,73 @@ impl<E: ExpressionEvaluator> Engine<E> {
         &self,
         tx: &mut Tx,
         evaluation: &Evaluation,
-    ) -> Result<Resolution, EngineError> {
+    ) -> Result<(Resolution, Option<ChildSpawn>), EngineError> {
+        let depth = tx.info().depth;
+        let parent = tx.info().run_id;
         let data = tx.data().await?;
         Ok(match evaluation {
-            Evaluation::Condition { node, expression } => Resolution::Condition {
-                node: node.clone(),
-                outcome: self
-                    .evaluator
-                    .condition(expression, data)
-                    .map_err(log_failure(node)),
-            },
-            Evaluation::Correlation { node, expression } => Resolution::Correlation {
-                node: node.clone(),
-                key: self
-                    .evaluator
-                    .correlation_key(expression, data)
-                    .map_err(log_failure(node)),
-            },
+            Evaluation::Condition { node, expression } => (
+                Resolution::Condition {
+                    node: node.clone(),
+                    outcome: self
+                        .evaluator
+                        .condition(expression, data)
+                        .map_err(log_failure(node)),
+                },
+                None,
+            ),
+            Evaluation::Correlation { node, expression } => (
+                Resolution::Correlation {
+                    node: node.clone(),
+                    key: self
+                        .evaluator
+                        .correlation_key(expression, data)
+                        .map_err(log_failure(node)),
+                },
+                None,
+            ),
+            Evaluation::Child { node, input } => {
+                let outcome = if depth >= MAX_CHILD_DEPTH {
+                    Err(FailureCode::child_depth_exceeded())
+                } else {
+                    self.evaluator
+                        .child_input(input.as_ref(), data)
+                        .map_err(log_failure(node))
+                        .map_err(|()| FailureCode::expression_error())
+                        .and_then(|bytes| {
+                            // An input beyond the inline limit would be refused when the child is
+                            // created; refusing it here fails the step with a code instead.
+                            if bytes.len() > MAX_PAYLOAD_BYTES {
+                                Err(FailureCode::expression_error())
+                            } else {
+                                Ok(bytes)
+                            }
+                        })
+                };
+                match outcome {
+                    Ok(input) => {
+                        let child = child_run_id(parent, node);
+                        (
+                            Resolution::Child {
+                                node: node.clone(),
+                                child: Ok(child),
+                            },
+                            Some(ChildSpawn {
+                                node: node.clone(),
+                                child,
+                                input,
+                            }),
+                        )
+                    }
+                    Err(code) => (
+                        Resolution::Child {
+                            node: node.clone(),
+                            child: Err(code),
+                        },
+                        None,
+                    ),
+                }
+            }
         })
     }
 }

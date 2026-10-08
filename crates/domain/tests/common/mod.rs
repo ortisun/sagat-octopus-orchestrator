@@ -3,14 +3,16 @@
 
 use std::time::Duration;
 
+use std::collections::BTreeMap;
+
 use sagat_domain::execution::{
-    self, Evaluation, ExecutionError, Expiry, Failure, FailureCode, Fence, Heartbeat, Progress,
-    Resolution, RunEvent, RunId, RunState, StepStatus, StopReason,
+    self, ChildOutcome, Evaluation, ExecutionError, Expiry, Failure, FailureCode, Fence, Heartbeat,
+    Progress, Resolution, RunEvent, RunId, RunState, StepStatus, StopReason,
 };
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::{
-    ActivityName, BackoffStrategy, EventType, Expression, JoinPolicy, Node, NodeId, NodeKind,
-    RetryPolicy, WorkflowDefinition,
+    ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
+    NodeKind, RetryPolicy, WorkflowDefinition,
 };
 use time::OffsetDateTime;
 
@@ -95,6 +97,19 @@ pub fn parallel(node: &str, branches: &[&str], join: JoinPolicy) -> Node {
     )
 }
 
+/// A child node starting the workflow `child-flow`.
+pub fn child(node: &str, policy: CancelPolicy) -> Node {
+    Node::new(
+        id(node),
+        NodeKind::Child {
+            workflow: Slug::parse("child-flow").expect("slug"),
+            version: None,
+            input: None,
+            cancel_policy: policy,
+        },
+    )
+}
+
 pub fn end(node: &str) -> Node {
     Node::new(id(node), NodeKind::End { output: None })
 }
@@ -111,6 +126,8 @@ pub struct Harness {
     pub journal: Vec<RunEvent>,
     pub now: OffsetDateTime,
     pub pending: Option<Evaluation>,
+    /// The child run reserved for each `child` step, as the engine would record it.
+    pub children: BTreeMap<NodeId, RunId>,
 }
 
 impl Harness {
@@ -123,6 +140,7 @@ impl Harness {
             journal: Vec::new(),
             now: T0,
             pending: None,
+            children: BTreeMap::new(),
         };
         harness.absorb(progress);
         harness
@@ -255,9 +273,40 @@ impl Harness {
     }
 
     pub fn resolve(&mut self, resolution: Resolution) -> Result<(), ExecutionError> {
+        if let Resolution::Child {
+            node,
+            child: Ok(child),
+        } = &resolution
+        {
+            self.children.insert(node.clone(), *child);
+        }
         let progress = execution::resolve(&self.def, &mut self.state, resolution, self.now)?;
         self.absorb(progress);
         Ok(())
+    }
+
+    /// The child run of a `child` step ended.
+    pub fn finish_child(
+        &mut self,
+        node: &str,
+        child: RunId,
+        outcome: ChildOutcome,
+    ) -> Result<(), ExecutionError> {
+        let progress = execution::finish_child(
+            &self.def,
+            &mut self.state,
+            &id(node),
+            child,
+            outcome,
+            self.now,
+        )?;
+        self.absorb(progress);
+        Ok(())
+    }
+
+    /// The run reserved for `node`'s child.
+    pub fn child_of(&self, node: &str) -> RunId {
+        *self.children.get(&id(node)).expect("a child was reserved")
     }
 
     /// Resolves the pending evaluation with a fixed answer.
@@ -270,6 +319,10 @@ impl Harness {
             Evaluation::Correlation { node, .. } => Resolution::Correlation {
                 node,
                 key: Ok(execution::CorrelationKey::parse(key).expect("key")),
+            },
+            Evaluation::Child { node, .. } => Resolution::Child {
+                node,
+                child: Ok(RunId::generate()),
             },
         };
         self.resolve(resolution).expect("resolution applies");

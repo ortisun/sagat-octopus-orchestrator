@@ -16,7 +16,7 @@ use sagat_application::definitions::{
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    DefinitionCache, Effects, RunData, RunInfo, RunRecord, RunTx, step_id,
+    DefinitionCache, Effects, ParentLink, RunData, RunInfo, RunRecord, RunTx, step_id,
 };
 use sagat_application::runs::{
     GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, StepView,
@@ -190,11 +190,16 @@ impl RunStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
             let info = &new.info;
+            if let Some(parent) = &info.parent {
+                claim_reservation(&mut tx, tenant, parent, info.run_id).await?;
+            }
             sqlx::query(
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
-                 deadline_at, created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11)",
+                 deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
+                 depth) \
+                 VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
+                         $12, $13, $14, $15)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -207,6 +212,10 @@ impl RunStore for PgRunStore {
             .bind(info.trace_id.as_deref())
             .bind(info.deadline_at)
             .bind(now)
+            .bind(info.parent.as_ref().map(|p| p.run.as_uuid()))
+            .bind(info.parent.as_ref().map(|p| p.node.as_str().to_owned()))
+            .bind(info.parent.as_ref().map(|p| p.cancel_policy.as_str()))
+            .bind(i16::from(info.depth))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -272,7 +281,8 @@ impl RunStore for PgRunStore {
         let input_digest: Vec<u8> = col(&row, "input_digest")?;
         let step_rows = sqlx::query(
             "SELECT node, status, attempt, generation, cancel_requested, routed, condition, \
-                    timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key \
+                    timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
+                    child_run_id \
              FROM steps WHERE tenant_id = $1 AND run_id = $2",
         )
         .bind(tenant.as_uuid())
@@ -336,7 +346,8 @@ impl RunStore for PgRunStore {
         sqlx::query(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
-                    created_at, updated_at, finished_at \
+                    created_at, updated_at, finished_at, parent_run_id, parent_node, cancel_policy, \
+                    depth \
              FROM runs \
              WHERE tenant_id = $1 AND namespace_id = $2 \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -431,7 +442,7 @@ impl RunStore for PgRunStore {
         let record = run_record(&row)?;
         let step_rows = sqlx::query(
             "SELECT node, status, attempt, generation, cancel_requested, failure_code, \
-                    next_attempt_at, due_at, waiting_kind \
+                    next_attempt_at, due_at, waiting_kind, child_run_id \
              FROM steps WHERE tenant_id = $1 AND run_id = $2 ORDER BY node",
         )
         .bind(tenant.as_uuid())
@@ -461,8 +472,10 @@ impl RunStore for PgRunStore {
                         Some("TIMER") => Some("timer"),
                         Some("EVENT") => Some("event"),
                         Some("BRANCHES") => Some("branches"),
+                        Some("CHILD") => Some("child"),
                         _ => None,
                     },
+                    child_run: col::<Option<Uuid>>(row, "child_run_id")?.map(RunId::new),
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
@@ -489,20 +502,81 @@ impl RunStore for PgRunStore {
     }
 }
 
+/// Creating a child run: confirms, under the parent's row lock, that the parent step still waits
+/// for exactly this run and has not created it yet, and marks it created.
+///
+/// Taking the parent's lock first is the order every writer of a run uses, so this cannot deadlock
+/// with a command on the parent; and because the check and the creation share one transaction, a
+/// child can never come into being for a step that was cancelled a moment earlier.
+async fn claim_reservation(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    parent: &ParentLink,
+    child: RunId,
+) -> Result<(), StoreError> {
+    let locked = sqlx::query_scalar::<_, i32>(
+        "SELECT 1 FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(parent.run.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if locked.is_none() {
+        return Err(StoreError::MissingReference);
+    }
+    let claimed = sqlx::query(
+        "UPDATE steps SET child_started = true, child_input = NULL, updated_at = clock_timestamp() \
+         WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND status = 'WAITING' \
+           AND waiting_kind = 'CHILD' AND child_run_id = $4 AND child_started = false",
+    )
+    .bind(tenant.as_uuid())
+    .bind(parent.run.as_uuid())
+    .bind(parent.node.as_str())
+    .bind(child.as_uuid())
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?
+    .rows_affected();
+    if claimed == 1 {
+        Ok(())
+    } else {
+        // Cancelled, finished, or already created by someone else.
+        Err(StoreError::MissingReference)
+    }
+}
+
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
-     created_at, updated_at, finished_at \
+     created_at, updated_at, finished_at, parent_run_id, parent_node, cancel_policy, depth \
      FROM runs WHERE tenant_id = $1 AND id = $2";
 
 const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
-     trace_id, deadline_at, created_at, updated_at, finished_at, clock_timestamp() AS db_now \
+     trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, parent_node, \
+     cancel_policy, depth, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE";
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
-     trace_id, deadline_at, created_at, updated_at, finished_at, clock_timestamp() AS db_now \
+     trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, parent_node, \
+     cancel_policy, depth, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE SKIP LOCKED";
+
+fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
+    let run: Option<Uuid> = col(row, "parent_run_id")?;
+    let node: Option<String> = col(row, "parent_node")?;
+    let policy: Option<String> = col(row, "cancel_policy")?;
+    match (run, node, policy) {
+        (None, None, None) => Ok(None),
+        (Some(run), Some(node), Some(policy)) => Ok(Some(ParentLink {
+            run: RunId::new(run),
+            node: NodeId::parse(&node).map_err(|_| corrupt("parent node"))?,
+            cancel_policy: policy.parse().map_err(|()| corrupt("cancel policy"))?,
+        })),
+        _ => Err(corrupt("parent link")),
+    }
+}
 
 fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
     let status: String = col(row, "status")?;
@@ -520,6 +594,8 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             trace_id: col(row, "trace_id")?,
             deadline_at: col(row, "deadline_at")?,
             created_at: col(row, "created_at")?,
+            parent: parent_link(row)?,
+            depth: u8::try_from(col::<i16>(row, "depth")?).map_err(|_| corrupt("run depth"))?,
         },
         status: status.parse().map_err(|_| corrupt("run status"))?,
         version: u64::try_from(version).map_err(|_| corrupt("run version"))?,
@@ -546,6 +622,11 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
     let waiting = match (waiting_kind.as_deref(), due_at) {
         (None, _) => None,
         (Some("BRANCHES"), _) => Some(WaitingOn::Branches),
+        (Some("CHILD"), _) => Some(WaitingOn::Child {
+            run: RunId::new(
+                col::<Option<Uuid>>(row, "child_run_id")?.ok_or_else(|| corrupt("child run"))?,
+            ),
+        }),
         (Some("TIMER"), Some(due_at)) => Some(WaitingOn::Timer { due_at }),
         (Some("EVENT"), Some(deadline)) => Some(WaitingOn::Event {
             correlation_key: CorrelationKey::parse(&key.ok_or_else(|| corrupt("correlation key"))?)
@@ -791,6 +872,9 @@ impl RunTx for PgRunTx {
                     hinted.insert(node.clone());
                     self.outbox_task_ready(node).await?;
                 }
+                RunEvent::ChildFinished { child, .. } => self.settle_child(*child, false).await?,
+                RunEvent::StepCancelled { node } => self.release_child(node, true).await?,
+                RunEvent::StepCancelRequested { node } => self.release_child(node, false).await?,
                 RunEvent::RunFinished { status } => self.outbox_run_finished(*status).await?,
                 _ => {}
             }
@@ -889,6 +973,65 @@ impl RunTx for PgRunTx {
 }
 
 impl PgRunTx {
+    /// The parent is told the outcome (or no longer cares): the child need not notify it again.
+    async fn settle_child(&mut self, child: RunId, cancel: bool) -> Result<(), StoreError> {
+        sqlx::query(
+            "UPDATE runs SET parent_settled = true, \
+                    parent_cancel = (parent_cancel OR ($3 AND finished_at IS NULL)) \
+             WHERE tenant_id = $1 AND id = $2 AND parent_run_id IS NOT NULL",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(child.as_uuid())
+        .bind(cancel)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    /// A `child` step of this run was cancelled (`settle`) or asked to stop: apply the node's cancel
+    /// policy to the child run it reserved, if it exists.
+    ///
+    /// The flag is set by the parent, under the parent's lock; the scheduler then cancels the child
+    /// under the child's own lock, so no transaction ever holds both.
+    async fn release_child(&mut self, node: &NodeId, settle: bool) -> Result<(), StoreError> {
+        let Some(NodeKind::Child { cancel_policy, .. }) =
+            self.def.node(node).map(sagat_domain::workflow::Node::kind)
+        else {
+            return Ok(());
+        };
+        let cascades = cancel_policy.cascades();
+        let child: Option<Option<Uuid>> = sqlx::query_scalar(
+            "SELECT child_run_id FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let Some(Some(child)) = child else {
+            // The step never reserved a child (it failed before): nothing to release.
+            return Ok(());
+        };
+        if settle {
+            self.settle_child(RunId::new(child), cascades).await
+        } else if cascades {
+            sqlx::query(
+                "UPDATE runs SET parent_cancel = true \
+                 WHERE tenant_id = $1 AND id = $2 AND parent_run_id IS NOT NULL",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(child)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
     async fn outbox_task_ready(&mut self, node: &NodeId) -> Result<(), StoreError> {
         let activity = match self.def.node(node).map(sagat_domain::workflow::Node::kind) {
             Some(NodeKind::Activity { activity, .. }) => activity.as_str().to_owned(),
@@ -967,7 +1110,15 @@ impl PgRunTx {
                 Some(correlation_key.as_str()),
             ),
             Some(WaitingOn::Branches) => (Some("BRANCHES"), None, None),
+            Some(WaitingOn::Child { .. }) => (Some("CHILD"), None, None),
         };
+        // A `child` step reserved in this transaction: the run id, and the input it starts with.
+        let spawn = effects.children.iter().find(|c| &c.node == node);
+        let child_run = match step.waiting_on() {
+            Some(WaitingOn::Child { run }) => Some(run.as_uuid()),
+            _ => spawn.map(|c| c.child.as_uuid()),
+        };
+        let child_input = spawn.map(|c| c.input.clone());
         let grant = effects.lease.as_ref().filter(|g| &g.node == node);
         let renewal = effects.renewal.as_ref().filter(|r| &r.node == node);
         let leased = matches!(step.status(), StepStatus::Leased | StepStatus::Running);
@@ -988,10 +1139,10 @@ impl PgRunTx {
                  (tenant_id, run_id, node, step_id, namespace_id, status, attempt, generation, \
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
-                  last_hinted_at, output_digest, updated_at) \
+                  last_hinted_at, output_digest, child_run_id, child_input, updated_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
-                         $22, $20)",
+                         $22, $23, $24, $20)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -1015,6 +1166,8 @@ impl PgRunTx {
             .bind(self.now)
             .bind(hinted)
             .bind(output.cloned())
+            .bind(child_run)
+            .bind(child_input)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -1048,6 +1201,9 @@ impl PgRunTx {
                                  WHEN $22::bytea IS NOT NULL THEN $25 \
                                  ELSE leased_by END, \
                 output_digest = COALESCE($26, output_digest), \
+                child_run_id = COALESCE($28, child_run_id), \
+                child_input = CASE WHEN $29::bytea IS NOT NULL THEN $29 \
+                                   WHEN $6 = 'WAITING' THEN child_input ELSE NULL END, \
                 updated_at = $20 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3",
         )
@@ -1078,6 +1234,8 @@ impl PgRunTx {
         .bind(fresh_grant.map(|g| g.worker_id.clone()))
         .bind(output.cloned())
         .bind(renewal.map(|r| micros(r.ttl)))
+        .bind(child_run)
+        .bind(child_input)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
@@ -1113,6 +1271,17 @@ impl DefinitionStore for PgRunStore {
         id: WorkflowId,
     ) -> Result<Option<WorkflowRecord>, StoreError> {
         self.definitions.get_workflow(tenant, id).await
+    }
+
+    async fn find_workflow_by_name(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+    ) -> Result<Option<WorkflowRecord>, StoreError> {
+        self.definitions
+            .find_workflow_by_name(tenant, namespace, name)
+            .await
     }
 
     async fn list_workflows(

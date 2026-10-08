@@ -9,8 +9,8 @@ use std::time::Duration;
 use sagat_application::definitions::{IrError, IrIssue};
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::{
-    ActivityName, BackoffStrategy, EventType, Expression, JoinPolicy, Node, NodeId, NodeKind,
-    RetryPolicy, WorkflowDefinition,
+    ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
+    NodeKind, RetryPolicy, WorkflowDefinition,
 };
 use serde_json::{Map, Value};
 
@@ -68,9 +68,6 @@ fn reference(node: &Map<String, Value>, field: &str, at: &str) -> Result<Option<
 /// Why a node kind that exists in the schema is not executed yet.
 fn unsupported(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "child" => {
-            "child workflows are not executed yet; their parent link and cancellation policy are planned for feature 002"
-        }
         "saga" => "the saga engine arrives with feature 003",
         "script" => "inline scripts arrive with feature 005",
         "foreach" => "bounded loops are not part of any planned feature yet",
@@ -176,6 +173,35 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
             };
             NodeKind::Parallel { branches, join }
         }
+        "child" => NodeKind::Child {
+            workflow: Slug::parse(text(node, "workflowId", at)?)
+                .map_err(|e| issue(format!("{at}/workflowId"), e.to_string()))?,
+            version: match node.get("version") {
+                None => None,
+                Some(v) => Some(
+                    v.as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .filter(|n| *n >= 1)
+                        .ok_or_else(|| {
+                            issue(format!("{at}/version"), "expected a positive integer")
+                        })?,
+                ),
+            },
+            input: optional_text(node, "input", at)?
+                .map(|e| expression(e, &format!("{at}/input")))
+                .transpose()?,
+            cancel_policy: match optional_text(node, "cancelPolicy", at)? {
+                None | Some("propagate") => CancelPolicy::Propagate,
+                Some("request_cancel") => CancelPolicy::RequestCancel,
+                Some("detach") => CancelPolicy::Detach,
+                Some(_) => {
+                    return Err(issue(
+                        format!("{at}/cancelPolicy"),
+                        "expected 'propagate', 'request_cancel' or 'detach'",
+                    ));
+                }
+            },
+        },
         "end" => NodeKind::End {
             output: optional_text(node, "outputExpr", at)?
                 .map(|e| expression(e, &format!("{at}/outputExpr")))

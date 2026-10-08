@@ -137,6 +137,26 @@ impl DefinitionStore for PgDefinitionStore {
         fetch_workflow(&self.pool, tenant, id).await
     }
 
+    async fn find_workflow_by_name(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+    ) -> Result<Option<WorkflowRecord>, StoreError> {
+        sqlx::query(select_workflow!(
+            "WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.name = $3"
+        ))
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(name.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        .as_ref()
+        .map(workflow_from_row)
+        .transpose()
+    }
+
     async fn list_workflows(
         &self,
         tenant: TenantId,

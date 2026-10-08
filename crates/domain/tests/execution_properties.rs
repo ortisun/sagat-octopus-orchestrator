@@ -11,13 +11,13 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use common::{Harness, activity, build, condition, end, flaky, id, parallel, timer, wait};
+use common::{Harness, activity, build, child, condition, end, flaky, id, parallel, timer, wait};
 use proptest::prelude::*;
 use sagat_domain::execution::{
-    Evaluation, ExecutionError, Expiry, Fence, Resolution, RunStatus, StepStatus, StopReason,
-    WaitingOn,
+    ChildOutcome, Evaluation, ExecutionError, Expiry, FailureCode, Fence, Resolution, RunId,
+    RunStatus, StepStatus, StopReason, WaitingOn,
 };
-use sagat_domain::workflow::{JoinPolicy, NodeId, NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{CancelPolicy, JoinPolicy, NodeId, NodeKind, WorkflowDefinition};
 
 fn shapes() -> Vec<WorkflowDefinition> {
     vec![
@@ -87,6 +87,36 @@ fn shapes() -> Vec<WorkflowDefinition> {
                 flaky("review", 2),
             ],
         ),
+        // 6: a child whose cancellation the parent waits for, with an error route
+        build(
+            "c",
+            vec![
+                child("c", CancelPolicy::RequestCancel)
+                    .with_next(id("after"))
+                    .with_on_error(id("recover")),
+                activity("after"),
+                activity("recover"),
+            ],
+        ),
+        // 7: a propagating child racing an activity in an `any` join
+        build(
+            "fork",
+            vec![
+                parallel("fork", &["kid", "a"], JoinPolicy::Any).with_next(id("tail")),
+                child("kid", CancelPolicy::Propagate),
+                flaky("a", 2),
+                activity("tail"),
+            ],
+        ),
+        // 8: a detached child followed by a timer
+        build(
+            "d",
+            vec![
+                child("d", CancelPolicy::Detach).with_next(id("t")),
+                timer("t", 20).with_next(id("z")),
+                activity("z"),
+            ],
+        ),
     ]
 }
 
@@ -102,6 +132,8 @@ enum Action {
     FireTimer(NodeId),
     SatisfyWait(NodeId),
     TimeOutWait(NodeId),
+    /// The child ended: 0 succeeded, 1 failed, 2 cancelled; with the reserved id or a wrong one.
+    FinishChild(NodeId, RunId, u8),
     Advance(u64),
     Resolve(u8),
     Stop(StopReason),
@@ -144,6 +176,13 @@ fn enabled(h: &Harness) -> Vec<Action> {
                     actions.push(Action::SatisfyWait(node.clone()));
                     actions.push(Action::TimeOutWait(node.clone()));
                 }
+                Some(WaitingOn::Child { run }) => {
+                    for mode in 0..3 {
+                        actions.push(Action::FinishChild(node.clone(), *run, mode));
+                    }
+                    // A report about a run this step never waited for must always be refused.
+                    actions.push(Action::FinishChild(node.clone(), RunId::generate(), 0));
+                }
                 _ => {}
             },
             _ => {}
@@ -175,6 +214,15 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
         Action::FireTimer(node) => h.fire_timer(node.as_str()),
         Action::SatisfyWait(node) => h.satisfy_wait(node.as_str()),
         Action::TimeOutWait(node) => h.time_out_wait(node.as_str()),
+        Action::FinishChild(node, child, mode) => h.finish_child(
+            node.as_str(),
+            *child,
+            match mode {
+                0 => ChildOutcome::Succeeded,
+                1 => ChildOutcome::Failed(FailureCode::child_failed()),
+                _ => ChildOutcome::Failed(FailureCode::child_cancelled()),
+            },
+        ),
         Action::Advance(secs) => {
             h.advance(Duration::from_secs(*secs));
             Ok(())
@@ -194,6 +242,13 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
                     key: match mode {
                         2 => Err(()),
                         _ => Ok(sagat_domain::execution::CorrelationKey::parse("k").expect("key")),
+                    },
+                },
+                Evaluation::Child { node, .. } => Resolution::Child {
+                    node,
+                    child: match mode {
+                        2 => Err(FailureCode::child_depth_exceeded()),
+                        _ => Ok(RunId::generate()),
                     },
                 },
             };
@@ -234,6 +289,7 @@ fn check(h: &Harness, terminal_seen: &mut BTreeMap<NodeId, StepStatus>) {
                     (NodeKind::Timer { .. }, Some(WaitingOn::Timer { .. }))
                         | (NodeKind::WaitEvent { .. }, Some(WaitingOn::Event { .. }))
                         | (NodeKind::Parallel { .. }, Some(WaitingOn::Branches))
+                        | (NodeKind::Child { .. }, Some(WaitingOn::Child { .. }))
                 );
                 assert!(ok, "{node}: waiting on {:?}", step.waiting_on());
             }
@@ -261,8 +317,10 @@ fn check(h: &Harness, terminal_seen: &mut BTreeMap<NodeId, StepStatus>) {
         }
         if step.cancel_requested() {
             assert!(
-                step.status().is_leased(),
-                "{node}: cancel is only requested of a leased step"
+                step.status().is_leased()
+                    || (step.status() == StepStatus::Waiting
+                        && matches!(step.waiting_on(), Some(WaitingOn::Child { .. }))),
+                "{node}: cancel is only requested of a leased step or one waiting for a child"
             );
         }
         // Terminal is absorbing.
@@ -417,6 +475,9 @@ fn finish(h: &mut Harness) {
                         h.fire_timer(node.as_str())
                     }
                     Some(WaitingOn::Event { .. }) => h.satisfy_wait(node.as_str()),
+                    Some(WaitingOn::Child { run }) => {
+                        h.finish_child(node.as_str(), run, ChildOutcome::Succeeded)
+                    }
                     _ => continue,
                 },
                 _ => continue,
@@ -483,7 +544,7 @@ proptest! {
 
     #[test]
     fn no_sequence_of_commands_breaks_the_state_machine(
-        shape in 0usize..6,
+        shape in 0usize..9,
         picks in proptest::collection::vec(any::<u16>(), 1..160),
     ) {
         drive(shape, &picks);
@@ -504,7 +565,7 @@ fn the_chaos_reaches_every_event_type_and_every_final_status() {
     let mut names: BTreeSet<&'static str> = BTreeSet::new();
     let mut finals: BTreeSet<&'static str> = BTreeSet::new();
     for _ in 0..6_000 {
-        let shape = usize::try_from(next() % 6).expect("small");
+        let shape = usize::try_from(next() % 9).expect("small");
         let len = 1 + usize::try_from(next() % 120).expect("small");
         let picks: Vec<u16> = (0..len)
             .map(|_| u16::try_from(next() % 65_536).expect("u16"))
@@ -531,6 +592,8 @@ fn the_chaos_reaches_every_event_type_and_every_final_status() {
         "wait.timed_out",
         "parallel.forked",
         "parallel.joined",
+        "child.started",
+        "child.finished",
         "end.reached",
         "step.cancel_requested",
         "step.cancelled",

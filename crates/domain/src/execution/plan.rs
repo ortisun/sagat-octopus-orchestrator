@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::event::{JoinOutcome, RunEvent, StopReason};
 use super::state::{RunState, StepState, StepStatus, WaitingOn};
-use crate::workflow::{Expression, JoinPolicy, NodeId, NodeKind, WorkflowDefinition};
+use crate::workflow::{CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, WorkflowDefinition};
 
 /// What the engine needs to know before it can continue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +25,12 @@ pub enum Evaluation {
     Correlation {
         node: NodeId,
         expression: Expression,
+    },
+    /// Prepare the child run of a `child` node: evaluate its input (when the node defines one),
+    /// check the nesting depth and reserve the child's id.
+    Child {
+        node: NodeId,
+        input: Option<Expression>,
     },
 }
 
@@ -63,7 +69,7 @@ pub fn plan(
         return Ok(Plan::Idle);
     }
     if let Some(reason) = state.stop_reason() {
-        return Ok(drain(state, reason));
+        return Ok(drain(def, state, reason));
     }
     if state.is_paused() {
         return Ok(Plan::Idle);
@@ -102,9 +108,16 @@ fn node_of<'a>(
 }
 
 /// The run is being stopped: cancel what is not in flight, ask what is to stop, then finish.
-fn drain(state: &RunState, reason: StopReason) -> Plan {
+fn drain(def: &WorkflowDefinition, state: &RunState, reason: StopReason) -> Plan {
     for (node, step) in state.steps() {
         match step.status() {
+            // A step parked on a child that the policy asks to be cancelled *and awaited* is asked
+            // to stop like an attempt in flight, then left alone until the child has settled.
+            StepStatus::Waiting if waits_for_cancelled_child(def, node, step) => {
+                if !step.cancel_requested() {
+                    return Plan::Emit(RunEvent::StepCancelRequested { node: node.clone() });
+                }
+            }
             StepStatus::Pending
             | StepStatus::Ready
             | StepStatus::RetryWait
@@ -124,6 +137,19 @@ fn drain(state: &RunState, reason: StopReason) -> Plan {
     } else {
         Plan::Idle
     }
+}
+
+/// Whether `step` is parked on a child run whose node says the parent must wait for the child to
+/// settle after asking it to stop.
+fn waits_for_cancelled_child(def: &WorkflowDefinition, node: &NodeId, step: &StepState) -> bool {
+    matches!(step.waiting_on(), Some(WaitingOn::Child { .. }))
+        && matches!(
+            def.node(node).map(crate::workflow::Node::kind),
+            Some(NodeKind::Child {
+                cancel_policy: CancelPolicy::RequestCancel,
+                ..
+            })
+        )
 }
 
 /// Gives a freshly routed step whatever it needs to make progress.
@@ -153,6 +179,10 @@ fn start_pending(
             NodeKind::Parallel { branches, .. } => Plan::Emit(RunEvent::ParallelForked {
                 node: node.clone(),
                 branches: branches.clone(),
+            }),
+            NodeKind::Child { input, .. } => Plan::Evaluate(Evaluation::Child {
+                node: node.clone(),
+                input: input.clone(),
             }),
             NodeKind::End { .. } => Plan::Emit(RunEvent::EndReached { node: node.clone() }),
         };

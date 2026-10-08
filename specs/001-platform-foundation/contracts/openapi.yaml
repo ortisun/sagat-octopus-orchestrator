@@ -740,6 +740,15 @@ components:
         deadline: {type: [string, 'null'], format: date-time}
         traceId: {type: [string, 'null']}
         correlationId: {type: [string, 'null']}
+        depth: {type: integer, minimum: 0, maximum: 8, description: 'Nesting of child runs: 0 for a run started through the API.'}
+        parent:
+          type: [object, 'null']
+          description: 'Set when this run is the child of a `child` node of another run.'
+          required: [runId, node, cancelPolicy]
+          properties:
+            runId: {type: string, format: uuid}
+            node: {type: string}
+            cancelPolicy: {type: string, enum: [PROPAGATE, REQUEST_CANCEL, DETACH]}
     RunPage:
       type: object
       required: [items]
@@ -787,7 +796,8 @@ components:
               failureCode: {type: [string, 'null']}
               nextAttemptAt: {type: [string, 'null'], format: date-time}
               dueAt: {type: [string, 'null'], format: date-time}
-              waitingOn: {type: [string, 'null'], enum: [timer, event, branches, null]}
+              waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, null]}
+              childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
         edges:
           type: array
           items:

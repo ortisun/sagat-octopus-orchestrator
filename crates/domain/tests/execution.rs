@@ -1170,3 +1170,235 @@ fn a_stopping_run_finishes_only_with_the_status_its_reason_implies() {
         })
         .expect("matching status");
 }
+
+// ------------------------------------------------------------------------------ child runs
+
+mod children {
+    use sagat_domain::execution::ChildOutcome;
+    use sagat_domain::workflow::CancelPolicy;
+
+    use super::*;
+    use common::child;
+
+    fn parent(policy: CancelPolicy) -> Harness {
+        Harness::start(build(
+            "c",
+            vec![
+                child("c", policy)
+                    .with_next(id("after"))
+                    .with_on_error(id("recover")),
+                activity("after"),
+                activity("recover"),
+            ],
+        ))
+    }
+
+    #[test]
+    fn a_child_step_reserves_its_run_then_parks_the_parent_without_a_worker() {
+        let mut run = parent(CancelPolicy::Propagate);
+        assert!(matches!(
+            run.pending,
+            Some(execution::Evaluation::Child { .. })
+        ));
+        assert_eq!(run.names(), ["run.started"]);
+        run.answer(true, "");
+        assert_eq!(run.names(), ["run.started", "child.started"]);
+        assert_eq!(run.status("c"), StepStatus::Waiting);
+        assert_eq!(
+            run.state.step(&id("c")).and_then(|s| s.waiting_on()),
+            Some(&WaitingOn::Child {
+                run: run.child_of("c")
+            })
+        );
+        assert_eq!(run.state.status(), RunStatus::Waiting, "nothing runnable");
+        run.assert_replays();
+    }
+
+    #[test]
+    fn a_successful_child_resumes_the_parent_on_its_next_step() {
+        let mut run = parent(CancelPolicy::Propagate);
+        run.answer(true, "");
+        let kid = run.child_of("c");
+        run.finish_child("c", kid, ChildOutcome::Succeeded)
+            .expect("child done");
+        assert_eq!(run.status("c"), StepStatus::Succeeded);
+        assert_eq!(run.status("after"), StepStatus::Ready);
+        assert_eq!(
+            run.names(),
+            [
+                "run.started",
+                "child.started",
+                "child.finished",
+                "step.routed",
+                "step.released"
+            ]
+        );
+        run.assert_replays();
+    }
+
+    #[test]
+    fn a_failed_child_takes_the_error_route_or_fails_the_run_with_its_code() {
+        let mut routed = parent(CancelPolicy::Propagate);
+        routed.answer(true, "");
+        let kid = routed.child_of("c");
+        routed
+            .finish_child("c", kid, ChildOutcome::Failed(FailureCode::child_failed()))
+            .expect("child failed");
+        assert_eq!(routed.status("c"), StepStatus::Failed);
+        assert!(routed.has_step("recover") && !routed.has_step("after"));
+        assert_eq!(
+            routed
+                .state
+                .step(&id("c"))
+                .and_then(|s| s.failure())
+                .map(FailureCode::as_str),
+            Some("CHILD_FAILED")
+        );
+
+        let mut unhandled = Harness::start(build(
+            "c",
+            vec![
+                child("c", CancelPolicy::Propagate).with_next(id("after")),
+                activity("after"),
+            ],
+        ));
+        unhandled.answer(true, "");
+        let kid = unhandled.child_of("c");
+        unhandled
+            .finish_child(
+                "c",
+                kid,
+                ChildOutcome::Failed(FailureCode::child_timed_out()),
+            )
+            .expect("child timed out");
+        assert_eq!(unhandled.state.status(), RunStatus::Failed);
+        assert_eq!(
+            unhandled.state.stop_code().map(FailureCode::as_str),
+            Some("CHILD_TIMED_OUT")
+        );
+    }
+
+    #[test]
+    fn only_the_child_the_step_waits_for_can_end_the_wait() {
+        let mut run = parent(CancelPolicy::Propagate);
+        run.answer(true, "");
+        let before = (run.state.clone(), run.journal.clone());
+        let stranger = RunId::generate();
+        assert!(matches!(
+            run.finish_child("c", stranger, ChildOutcome::Succeeded),
+            Err(ExecutionError::IllegalTransition { .. })
+        ));
+        assert_eq!((run.state.clone(), run.journal.clone()), before);
+        let kid = run.child_of("c");
+        run.finish_child("c", kid, ChildOutcome::Succeeded)
+            .expect("the right child");
+        assert!(
+            matches!(
+                run.finish_child("c", kid, ChildOutcome::Succeeded),
+                Err(ExecutionError::IllegalTransition { .. })
+            ),
+            "a child ends the wait once"
+        );
+    }
+
+    #[test]
+    fn a_child_that_cannot_be_reserved_fails_the_step_without_a_wait() {
+        let mut run = parent(CancelPolicy::Propagate);
+        let node = id("c");
+        run.resolve(Resolution::Child {
+            node,
+            child: Err(FailureCode::child_depth_exceeded()),
+        })
+        .expect("resolution applies");
+        assert_eq!(run.status("c"), StepStatus::Failed);
+        assert!(run.has_step("recover"), "the error route handles it");
+        assert!(!run.names().contains(&"child.started"));
+    }
+
+    #[test]
+    fn stopping_the_parent_cancels_a_propagating_or_detached_wait_at_once() {
+        for policy in [CancelPolicy::Propagate, CancelPolicy::Detach] {
+            let mut run = parent(policy);
+            run.answer(true, "");
+            run.stop(StopReason::Cancelled).expect("stop");
+            assert_eq!(run.status("c"), StepStatus::Cancelled, "{policy:?}");
+            assert_eq!(run.state.status(), RunStatus::Cancelled, "{policy:?}");
+            let kid = run.child_of("c");
+            assert!(
+                run.finish_child("c", kid, ChildOutcome::Succeeded).is_err(),
+                "the child's late result changes nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn stopping_the_parent_waits_for_a_child_whose_policy_is_request_cancel() {
+        let mut run = parent(CancelPolicy::RequestCancel);
+        run.answer(true, "");
+        run.stop(StopReason::Cancelled).expect("stop");
+        assert_eq!(run.status("c"), StepStatus::Waiting);
+        assert!(
+            run.state
+                .step(&id("c"))
+                .is_some_and(|s| s.cancel_requested()),
+            "the child is to be told to stop"
+        );
+        assert_eq!(run.state.status(), RunStatus::Cancelling, "not done yet");
+
+        let kid = run.child_of("c");
+        run.finish_child(
+            "c",
+            kid,
+            ChildOutcome::Failed(FailureCode::child_cancelled()),
+        )
+        .expect("the child settled");
+        assert_eq!(run.state.status(), RunStatus::Cancelled);
+        assert!(!run.has_step("recover"), "a stopping run routes nothing");
+        run.assert_replays();
+    }
+
+    #[test]
+    fn a_child_that_ends_while_the_parent_is_paused_is_recorded_and_routed_on_resume() {
+        let mut run = parent(CancelPolicy::Propagate);
+        run.answer(true, "");
+        run.pause().expect("pause");
+        let kid = run.child_of("c");
+        run.finish_child("c", kid, ChildOutcome::Succeeded)
+            .expect("recorded while paused");
+        assert_eq!(run.status("c"), StepStatus::Succeeded);
+        assert!(!run.has_step("after"), "nothing new starts while paused");
+        run.resume().expect("resume");
+        assert_eq!(run.status("after"), StepStatus::Ready);
+    }
+
+    #[test]
+    fn a_deadline_cancels_the_waiting_parent_like_any_other_stop() {
+        let mut run = parent(CancelPolicy::Propagate);
+        run.answer(true, "");
+        run.stop(StopReason::TimedOut).expect("deadline");
+        assert_eq!(run.state.status(), RunStatus::TimedOut);
+    }
+
+    #[test]
+    fn a_node_that_starts_its_own_workflow_is_flagged_but_accepted() {
+        use sagat_domain::workflow::{DefinitionWarning, Node, NodeKind};
+        let def = sagat_domain::workflow::WorkflowDefinition::new(
+            sagat_domain::identity::Slug::parse("child-flow").expect("slug"),
+            id("again"),
+            vec![Node::new(
+                id("again"),
+                NodeKind::Child {
+                    workflow: sagat_domain::identity::Slug::parse("child-flow").expect("slug"),
+                    version: None,
+                    input: None,
+                    cancel_policy: CancelPolicy::Propagate,
+                },
+            )],
+        )
+        .expect("recursion is legal");
+        assert_eq!(
+            def.warnings(),
+            [DefinitionWarning::RecursiveChild { node: id("again") }]
+        );
+    }
+}

@@ -111,6 +111,26 @@ impl DefinitionStore for FakeStore {
         })
     }
 
+    async fn find_workflow_by_name(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+    ) -> Result<Option<WorkflowRecord>, StoreError> {
+        let id = self.with(|s| {
+            s.workflows
+                .values()
+                .find(|(w, _)| {
+                    w.tenant_id() == tenant && w.namespace_id() == namespace && w.name() == name
+                })
+                .map(|(w, _)| w.id())
+        });
+        match id {
+            Some(id) => self.get_workflow(tenant, id).await,
+            None => Ok(None),
+        }
+    }
+
     async fn get_workflow(
         &self,
         tenant: TenantId,

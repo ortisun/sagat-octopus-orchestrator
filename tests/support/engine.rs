@@ -81,7 +81,7 @@ pub async fn world_with(settings: WorkerSettings) -> World {
     let engine = Engine::new(JsonEvaluator);
     World {
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
-        runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache),
+        runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
         workers: WorkerService::new(
             store.clone(),
             SystemClock,
@@ -94,7 +94,8 @@ pub async fn world_with(settings: WorkerSettings) -> World {
             engine,
             SystemEntropy,
             SchedulerSettings::default(),
-        ),
+        )
+        .with_children(cache),
         worker: Principal::new(t.admin_a.tenant_id(), subject("worker-1"), Role::Worker),
         admin: t.admin_a,
         other_admin: t.admin_b,
@@ -211,6 +212,15 @@ pub fn wait_node(
     node
 }
 
+/// A `child` node starting the workflow `workflow`.
+pub fn child_node(id: &str, workflow: &str, next: Option<&str>) -> Value {
+    let mut node = json!({ "id": id, "type": "child", "workflowId": workflow });
+    if let Some(next) = next {
+        node["next"] = json!(next);
+    }
+    node
+}
+
 pub fn condition_node(id: &str, expression: &str, if_true: &str, if_false: &str) -> Value {
     json!({ "id": id, "type": "condition", "expression": expression, "ifTrue": if_true, "ifFalse": if_false })
 }
@@ -258,6 +268,98 @@ impl World {
             .await
             .expect("publish");
         (id, published.version.id())
+    }
+
+    /// Publishes `doc` as the next version of an existing workflow.
+    pub async fn publish_new_version(&self, workflow: WorkflowId, doc: Value) -> WorkflowVersionId {
+        let bytes = serde_json::to_vec(&doc).expect("json");
+        let record = self
+            .defs
+            .get_workflow(&self.admin, workflow, &ctx())
+            .await
+            .expect("get workflow");
+        let updated = self
+            .defs
+            .update_draft(
+                &self.admin,
+                workflow,
+                record.workflow.draft_revision(),
+                &bytes,
+                &ctx(),
+            )
+            .await
+            .expect("update draft");
+        self.defs
+            .publish(
+                &self.admin,
+                workflow,
+                updated.workflow.draft_revision(),
+                None,
+                &format!("publish-{}", Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("publish")
+            .version
+            .id()
+    }
+
+    /// Creates a workflow but does not publish it.
+    pub async fn create_draft(&self, doc: Value) -> WorkflowId {
+        let name = doc["metadata"]["name"].as_str().expect("name").to_owned();
+        let bytes = serde_json::to_vec(&doc).expect("json");
+        self.defs
+            .create_workflow(
+                &self.admin,
+                "payments",
+                &name,
+                &bytes,
+                &format!("create-{}", Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("create workflow")
+            .workflow
+            .id()
+    }
+
+    /// Publishes `doc` in the other tenant's namespace.
+    pub async fn publish_as_other_tenant(&self, doc: Value) -> WorkflowId {
+        let name = doc["metadata"]["name"].as_str().expect("name").to_owned();
+        let bytes = serde_json::to_vec(&doc).expect("json");
+        let created = self
+            .defs
+            .create_workflow(
+                &self.other_admin,
+                "payments",
+                &name,
+                &bytes,
+                &format!("create-{}", Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("create workflow");
+        let id = created.workflow.id();
+        self.defs
+            .publish(
+                &self.other_admin,
+                id,
+                created.workflow.draft_revision(),
+                None,
+                &format!("publish-{}", Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("publish");
+        id
+    }
+
+    /// The stored record of a run (any run of the first tenant).
+    pub async fn run_record(&self, run: RunId) -> Option<sagat_application::execution::RunRecord> {
+        self.store
+            .get(self.admin.tenant_id(), run)
+            .await
+            .expect("get run")
     }
 
     pub async fn start(&self, workflow: WorkflowId, input: &Value) -> RunId {
@@ -435,6 +537,11 @@ impl World {
                 &ctx(),
             )
             .await
+    }
+
+    /// Cancels, pauses or resumes any run of the first tenant (children included).
+    pub async fn operate_run(&self, run: RunId, op: RunOperation) {
+        self.operate(run, op).await.expect("operation");
     }
 
     pub async fn runs_of(&self, filter: &RunFilter) -> Vec<RunId> {

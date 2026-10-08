@@ -180,7 +180,8 @@ impl Default for Options {
         Self {
             auth: Box::new(|_| {}),
             limits: HttpLimits::default(),
-            statement_timeout: Duration::from_secs(2),
+            // Generous: the suites also run on loaded machines, and the tests about timeouts set their own.
+            statement_timeout: Duration::from_secs(10),
             server: ServerConfig::default(),
             runtime_role: false,
             rate_limit: RateLimitConfig::default(),
@@ -214,7 +215,7 @@ pub async fn start_with(options: Options) -> TestApi {
     };
     let mut pool_config = PoolConfig::new(api_url);
     pool_config.max_connections = 8;
-    pool_config.acquire_timeout = Duration::from_secs(2);
+    pool_config.acquire_timeout = Duration::from_secs(5);
     pool_config.statement_timeout = options.statement_timeout;
     let api_pool = connect(&pool_config).await.expect("api pool");
     let store = PgIdentityStore::new(api_pool.clone());

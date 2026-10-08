@@ -83,6 +83,23 @@ impl ExpressionEvaluator for JsonEvaluator {
         template.render(&env).map_err(failure)
     }
 
+    fn child_input(
+        &self,
+        expression: Option<&Expression>,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        let Some(expression) = expression else {
+            return Ok(data.input.clone());
+        };
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let env = environment(&compiled.variables(), data, None)?;
+        let value = compiled.eval(&env).map_err(failure)?;
+        if !value.is_object() {
+            return Err(failure("a child input must evaluate to a JSON object"));
+        }
+        serde_json::to_vec(&value).map_err(failure)
+    }
+
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8> {
         let input = parse(&data.input).unwrap_or(Value::Null);
         let mut steps = Map::new();

@@ -10,7 +10,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use sagat_domain::execution::{Fence, RunId};
+use sagat_domain::execution::{Fence, RunId, RunStatus};
 use sagat_domain::identity::TenantId;
 use sagat_domain::workflow::NodeId;
 use time::OffsetDateTime;
@@ -31,6 +31,27 @@ pub struct StepRef {
 pub struct RunRef {
     pub tenant_id: TenantId,
     pub run_id: RunId,
+}
+
+/// A child run that was reserved by a `child` step and does not exist yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingChild {
+    pub step: StepRef,
+    pub child: RunId,
+    /// The input the child starts with (evaluated when the step was reserved).
+    pub input: Vec<u8>,
+    /// The database clock when the candidate was read.
+    pub as_of: OffsetDateTime,
+}
+
+/// A child run that reached a terminal status while its parent step still waits for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndedChild {
+    pub tenant_id: TenantId,
+    pub child: RunId,
+    pub parent: RunId,
+    pub node: NodeId,
+    pub status: RunStatus,
 }
 
 /// Why a leased attempt is considered over.
@@ -90,6 +111,25 @@ pub trait MaintenanceStore: Send + Sync {
         older_than: Duration,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
+
+    /// Child runs that `child` steps reserved and nobody has created yet, oldest first.
+    fn pending_children(
+        &self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<PendingChild>, StoreError>> + Send;
+
+    /// Child runs that ended while the parent step that waits for them has not been told.
+    fn ended_children(
+        &self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<EndedChild>, StoreError>> + Send;
+
+    /// Running child runs whose parent was stopped under a policy that cancels them and that have
+    /// not been asked to stop yet.
+    fn children_to_cancel(
+        &self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
 
     /// Deletes idempotency records older than `older_than`; returns how many.
     fn purge_idempotency(

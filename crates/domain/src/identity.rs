@@ -169,6 +169,13 @@ impl Subject {
         Self("system:provisioning".to_owned())
     }
 
+    /// The actor recorded for what the execution engine does by itself (starting a child run).
+    /// Like [`Subject::provisioning`] it lives in the reserved `system:` namespace.
+    #[must_use]
+    pub fn engine() -> Self {
+        Self("system:engine".to_owned())
+    }
+
     /// Validates and wraps a subject.
     ///
     /// # Errors

@@ -37,23 +37,45 @@ CREATE TABLE runs (
     created_at          timestamptz NOT NULL,
     updated_at          timestamptz NOT NULL,
     finished_at         timestamptz,
+    -- A child run (FR-002-009): the run and step that started it, what happens to it when the parent
+    -- stops, and how deeply it is nested. The link never changes; the two flags are set by the parent
+    -- (under the parent's lock) so the scheduler finds exactly the children it still has to act on.
+    parent_run_id       uuid,
+    parent_node         text,
+    cancel_policy       text,
+    depth               smallint    NOT NULL DEFAULT 0,
+    -- The parent no longer waits for this run (it was told the outcome, or its step was cancelled).
+    parent_settled      boolean     NOT NULL DEFAULT false,
+    -- The parent was stopped under a policy that cancels this run.
+    parent_cancel       boolean     NOT NULL DEFAULT false,
     CONSTRAINT runs_tenant_id_uniq UNIQUE (tenant_id, id),
     CONSTRAINT runs_status_valid CHECK (status IN
         ('RUNNING', 'WAITING', 'PAUSED', 'CANCELLING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT')),
     CONSTRAINT runs_stop_reason_valid CHECK (stop_reason IS NULL OR stop_reason IN ('CANCELLED', 'TIMED_OUT', 'FAILED')),
     CONSTRAINT runs_version_nonnegative CHECK (run_version >= 0),
     CONSTRAINT runs_trace_id_format CHECK (trace_id IS NULL OR trace_id ~ '^[0-9a-f]{32}$'),
+    CONSTRAINT runs_parent_consistent CHECK (
+        (parent_run_id IS NULL) = (parent_node IS NULL) AND (parent_run_id IS NULL) = (cancel_policy IS NULL)),
+    CONSTRAINT runs_cancel_policy_valid CHECK (cancel_policy IS NULL OR cancel_policy IN ('PROPAGATE', 'REQUEST_CANCEL', 'DETACH')),
+    CONSTRAINT runs_depth_valid CHECK (depth BETWEEN 0 AND 16),
+    CONSTRAINT runs_root_has_depth_zero CHECK (parent_run_id IS NOT NULL OR depth = 0),
     CONSTRAINT runs_finished_consistent CHECK ((finished_at IS NULL) = (status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT'))),
     CONSTRAINT runs_namespace_same_tenant_fk FOREIGN KEY (tenant_id, namespace_id) REFERENCES namespaces (tenant_id, id),
     CONSTRAINT runs_workflow_same_tenant_fk FOREIGN KEY (tenant_id, workflow_id) REFERENCES workflows (tenant_id, id),
     CONSTRAINT runs_version_same_tenant_fk FOREIGN KEY (tenant_id, workflow_version_id) REFERENCES workflow_versions (tenant_id, id),
-    CONSTRAINT runs_input_same_tenant_fk FOREIGN KEY (tenant_id, input_digest) REFERENCES payloads (tenant_id, digest)
+    CONSTRAINT runs_input_same_tenant_fk FOREIGN KEY (tenant_id, input_digest) REFERENCES payloads (tenant_id, digest),
+    CONSTRAINT runs_parent_same_tenant_fk FOREIGN KEY (tenant_id, parent_run_id) REFERENCES runs (tenant_id, id)
 );
 
 CREATE INDEX runs_listing_idx ON runs (tenant_id, namespace_id, id DESC);
 CREATE INDEX runs_by_workflow_idx ON runs (tenant_id, workflow_id, id DESC);
 -- Runs that can still hit their deadline.
 CREATE INDEX runs_deadline_idx ON runs (deadline_at) WHERE finished_at IS NULL AND deadline_at IS NOT NULL;
+-- Child runs that ended while their parent has not been told, and running children to cancel.
+CREATE INDEX runs_unsettled_children_idx ON runs (finished_at)
+    WHERE parent_run_id IS NOT NULL AND parent_settled = false AND finished_at IS NOT NULL;
+CREATE INDEX runs_children_to_cancel_idx ON runs (id)
+    WHERE parent_cancel AND finished_at IS NULL AND stop_reason IS NULL;
 
 -- The journal: ordered, append-only, one sequence per run. The run's state can be rebuilt from it.
 CREATE TABLE run_events (
@@ -112,12 +134,19 @@ CREATE TABLE steps (
     attempt_deadline_at timestamptz,
     leased_by          text,
     output_digest      bytea,
+    -- A `child` step: the run it reserved (kept after the step ends), whether that run has been
+    -- created, and the input it starts with (dropped once it has).
+    child_run_id       uuid,
+    child_started      boolean     NOT NULL DEFAULT false,
+    child_input        bytea,
     updated_at         timestamptz NOT NULL,
     PRIMARY KEY (tenant_id, run_id, node),
     CONSTRAINT steps_step_id_uniq UNIQUE (tenant_id, step_id),
     CONSTRAINT steps_status_valid CHECK (status IN
         ('PENDING', 'READY', 'LEASED', 'RUNNING', 'WAITING', 'RETRY_WAIT', 'SUCCEEDED', 'FAILED', 'CANCELLED')),
-    CONSTRAINT steps_waiting_kind_valid CHECK (waiting_kind IS NULL OR waiting_kind IN ('TIMER', 'EVENT', 'BRANCHES')),
+    CONSTRAINT steps_waiting_kind_valid CHECK (waiting_kind IS NULL OR waiting_kind IN ('TIMER', 'EVENT', 'BRANCHES', 'CHILD')),
+    CONSTRAINT steps_child_consistent CHECK (waiting_kind IS DISTINCT FROM 'CHILD' OR child_run_id IS NOT NULL),
+    CONSTRAINT steps_child_input_size CHECK (child_input IS NULL OR octet_length(child_input) <= 262144),
     CONSTRAINT steps_waiting_consistent CHECK ((status = 'WAITING') = (waiting_kind IS NOT NULL)),
     CONSTRAINT steps_lease_consistent CHECK ((status IN ('LEASED', 'RUNNING')) = (lease_token_hash IS NOT NULL)),
     CONSTRAINT steps_counters_nonnegative CHECK (attempt >= 0 AND generation >= 0),
@@ -138,6 +167,9 @@ CREATE INDEX steps_wait_deadline_idx ON steps (due_at) WHERE status = 'WAITING' 
 CREATE INDEX steps_event_match_idx ON steps (tenant_id, namespace_id, event_type, correlation_key)
     WHERE status = 'WAITING' AND waiting_kind = 'EVENT';
 CREATE INDEX steps_rehint_idx ON steps (last_hinted_at) WHERE status = 'READY';
+-- Child runs reserved by a step and not created yet.
+CREATE INDEX steps_child_pending_idx ON steps (updated_at)
+    WHERE status = 'WAITING' AND waiting_kind = 'CHILD' AND child_started = false;
 
 CREATE TABLE worker_sessions (
     id           uuid        PRIMARY KEY,

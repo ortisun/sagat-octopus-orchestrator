@@ -12,11 +12,12 @@ use sagat_api_grpc::pb::{
     RegisterWorkerRequest, TaskLease, WorkerCapabilities,
 };
 use sagat_application::entropy::SystemEntropy;
-use sagat_application::execution::Engine;
+use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_domain::identity::{Membership, Role, TenantId};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_scheduler::{Report, Scheduler, SchedulerSettings};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Request, Status};
@@ -160,6 +161,10 @@ impl Platform {
             SystemEntropy,
             SchedulerSettings::default(),
         )
+        .with_children(DefinitionCache::new(
+            Arc::new(sagat_infra_ir::JsonIrCodec),
+            64,
+        ))
         .tick()
         .await
     }

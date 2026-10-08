@@ -357,3 +357,32 @@ async fn roles_gate_every_run_operation() {
         Err(AppError::Forbidden { .. })
     ));
 }
+
+#[tokio::test]
+async fn a_workflow_is_never_found_by_name_through_another_tenants_namespace() {
+    use sagat_application::definitions::DefinitionStore;
+    use serde_json::json;
+
+    let w = world().await;
+    let doc = document(
+        "shared-name",
+        "a",
+        vec![json!({ "id": "a", "type": "activity", "activity": "act.a" })],
+    );
+    w.publish_as_other_tenant(doc.clone()).await;
+    w.publish(doc).await;
+    let name = crate::support::slug("shared-name");
+    let own = w
+        .store
+        .find_workflow_by_name(w.admin.tenant_id(), w.namespace.id(), &name)
+        .await
+        .expect("lookup");
+    assert!(own.is_some(), "found in its own namespace");
+    // Tenant A asking for tenant B's namespace gets nothing, whatever the name.
+    let crossed = w
+        .store
+        .find_workflow_by_name(w.admin.tenant_id(), w.other_namespace.id(), &name)
+        .await
+        .expect("lookup");
+    assert!(crossed.is_none(), "the tenant filter holds on its own");
+}
