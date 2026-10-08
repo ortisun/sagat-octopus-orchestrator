@@ -38,6 +38,7 @@ paths:
       responses:
         '200': {description: The process is alive, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '500': {$ref: '#/components/responses/InternalError'}
+        default: {$ref: '#/components/responses/InternalError'}
   /ready:
     get:
       operationId: getReadiness
@@ -47,6 +48,7 @@ paths:
       responses:
         '200': {description: Ready to serve traffic, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /auth/context:
     get:
       operationId: getAuthContext
@@ -57,6 +59,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /workspaces:
     get:
       operationId: listWorkspaces
@@ -71,6 +74,8 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
     post:
       operationId: createWorkspace
       summary: Create a workspace
@@ -87,6 +92,8 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /workspaces/{workspaceId}:
     get:
       operationId: getWorkspace
@@ -103,6 +110,8 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /workspaces/{workspaceId}/namespaces:
     post:
       operationId: createNamespace
@@ -126,6 +135,8 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces:
     get:
       operationId: listNamespaces
@@ -140,6 +151,8 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}:
     get:
       operationId: getNamespace
@@ -156,6 +169,8 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /workflows:
     get:
       operationId: listWorkflows
@@ -608,4 +623,4 @@ components:
     ValidationError: {description: Invalid input/schema/graph, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     TooManyRequests: {description: The tenant exceeded its request budget; retry after the delay in Retry-After, headers: {Retry-After: {schema: {type: integer, minimum: 1}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unavailable: {description: A dependency is temporarily unavailable; retry later, headers: {Retry-After: {schema: {type: integer, minimum: 0}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-    InternalError: {description: Unexpected failure, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    InternalError: {description: "Any other failure: 500 for an unexpected error, 408 when the request timed out. Same envelope.", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

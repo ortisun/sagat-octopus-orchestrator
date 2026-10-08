@@ -116,8 +116,8 @@ pub async fn start_with(options: Options) -> TestApi {
 
 impl TestApi {
     /// Creates a tenant and its first admin directly in the database.
-    pub async fn tenant(&self, slug: &str, admin: &str) {
-        provision(&self.owner_store, slug, admin).await;
+    pub async fn tenant(&self, slug: &str, admin: &str) -> sagat_domain::identity::TenantId {
+        provision(&self.owner_store, slug, admin).await.0.id()
     }
 
     pub fn request(&self, method: Method, path: &str) -> RequestBuilder {
