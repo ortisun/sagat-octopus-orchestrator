@@ -9,6 +9,8 @@ pub enum Command {
     Migrate,
     /// Create a development tenant and administrator, then exit. Refused outside `SAGAT_ENV=dev`.
     SeedDev,
+    /// Create a tenant and its first administrator in any environment. Both values are explicit.
+    ProvisionTenant,
     /// Probe the local API's liveness endpoint; for container health checks.
     Healthcheck,
     Help,
@@ -29,6 +31,7 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
         None | Some("serve") => Command::Serve,
         Some("migrate") => Command::Migrate,
         Some("seed-dev") => Command::SeedDev,
+        Some("provision-tenant") => Command::ProvisionTenant,
         Some("healthcheck") => Command::Healthcheck,
         Some("help" | "--help" | "-h") => Command::Help,
         Some("version" | "--version" | "-V") => Command::Version,
@@ -50,6 +53,7 @@ COMMANDS:
     serve         Run the HTTP API (default)
     migrate       Apply pending schema migrations and exit
     seed-dev      Create a development tenant and admin (only when SAGAT_ENV=dev)
+    provision-tenant  Create a tenant and its first admin (any environment; values are explicit)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
     help          Print this message
@@ -83,6 +87,10 @@ ENVIRONMENT (serve):
 ENVIRONMENT (seed-dev):
     SAGAT_SEED_TENANT                 tenant slug                     [dev]
     SAGAT_SEED_ADMIN_SUBJECT          administrator subject           [dev-admin]
+
+ENVIRONMENT (provision-tenant):
+    SAGAT_PROVISION_TENANT            tenant slug (required)
+    SAGAT_PROVISION_ADMIN             subject of the first administrator (required)
 
 ENVIRONMENT (healthcheck):
     SAGAT_HEALTHCHECK_ADDR            address to probe                [127.0.0.1:8080]

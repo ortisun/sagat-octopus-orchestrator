@@ -339,3 +339,22 @@ pub fn redact_url(url: &str) -> String {
         format!("{scheme}://{host}/{path}")
     }
 }
+
+/// Settings for `provision-tenant`. Unlike the development seed there are no defaults: creating a
+/// real tenant must be a deliberate act.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionConfig {
+    pub tenant_slug: String,
+    pub admin_subject: String,
+}
+
+impl ProvisionConfig {
+    /// # Errors
+    /// [`ConfigError::Missing`] when either value is absent.
+    pub fn from_lookup(get: Lookup<'_>) -> Result<Self, ConfigError> {
+        Ok(Self {
+            tenant_slug: required(get, "SAGAT_PROVISION_TENANT")?,
+            admin_subject: required(get, "SAGAT_PROVISION_ADMIN")?,
+        })
+    }
+}

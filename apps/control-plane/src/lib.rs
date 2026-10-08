@@ -24,7 +24,9 @@ use tokio::net::{TcpListener, TcpStream};
 pub mod cli;
 pub mod config;
 
-use config::{Config, ConfigError, DatabaseConfig, Environment, SeedConfig, ServeConfig};
+use config::{
+    Config, ConfigError, DatabaseConfig, Environment, ProvisionConfig, SeedConfig, ServeConfig,
+};
 
 /// A command failed. `exit_code` follows the convention: 2 for a problem the operator must fix in
 /// the invocation or configuration, 1 for a runtime failure.
@@ -42,6 +44,8 @@ pub enum RunError {
     Migrate(String),
     #[error("authentication setup failed: {0}")]
     Auth(String),
+    #[error("a tenant with that slug already exists")]
+    AlreadyExists,
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("health check failed: {0}")]
@@ -53,7 +57,11 @@ impl RunError {
     pub const fn exit_code(&self) -> u8 {
         match self {
             Self::Config(_) | Self::Refused(_) | Self::Auth(_) => 2,
-            Self::Database(_) | Self::Migrate(_) | Self::Io(_) | Self::Unhealthy(_) => 1,
+            Self::Database(_)
+            | Self::Migrate(_)
+            | Self::Io(_)
+            | Self::Unhealthy(_)
+            | Self::AlreadyExists => 1,
         }
     }
 }
@@ -127,6 +135,35 @@ pub async fn seed_dev(config: &Config, seed: &SeedConfig) -> Result<SeedOutcome,
     };
     pool.close().await;
     Ok(outcome)
+}
+
+/// Creates a tenant and its first administrator in any environment. Audited atomically with the
+/// change (`tenant.provisioned`, `membership.granted`, actor `system:provisioning`).
+///
+/// # Errors
+/// [`RunError::AlreadyExists`] when the slug is taken; [`RunError::Config`] for an invalid slug or
+/// subject.
+pub async fn provision_tenant(config: &Config, request: &ProvisionConfig) -> Result<(), RunError> {
+    let slug = Slug::parse(&request.tenant_slug).map_err(|e| ConfigError::Invalid {
+        name: "SAGAT_PROVISION_TENANT",
+        reason: e.to_string(),
+    })?;
+    let subject = Subject::parse(&request.admin_subject).map_err(|e| ConfigError::Invalid {
+        name: "SAGAT_PROVISION_ADMIN",
+        reason: e.to_string(),
+    })?;
+    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let store = PgIdentityStore::new(pool.clone());
+    let now = OffsetDateTime::now_utc();
+    let tenant = Tenant::provision(TenantId::generate(), slug, now);
+    let admin = Membership::bootstrap_admin(&tenant, subject, now);
+    let result = store.provision_tenant(&tenant, &admin).await;
+    pool.close().await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(StoreError::Conflict(ConflictKind::TenantSlug)) => Err(RunError::AlreadyExists),
+        Err(error) => Err(RunError::Database(error.to_string())),
+    }
 }
 
 /// Runs the HTTP API on `listener` until `shutdown` completes, then drains in-flight requests.

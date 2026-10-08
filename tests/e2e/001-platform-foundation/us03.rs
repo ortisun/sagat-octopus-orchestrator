@@ -655,3 +655,56 @@ async fn metrics_are_served_on_a_separate_listener_and_never_carry_identifiers()
         .expect("join")
         .expect("clean");
 }
+
+#[tokio::test]
+async fn an_operator_can_provision_a_real_tenant_in_production_and_its_admin_can_sign_in() {
+    use sagat_control_plane::config::ProvisionConfig;
+    use sagat_control_plane::provision_tenant;
+
+    let db = migrated_db().await;
+    let prod = config(&db, Environment::Prod); // not gated on dev, unlike the seed
+    let acme = ProvisionConfig {
+        tenant_slug: "acme".into(),
+        admin_subject: "alice".into(),
+    };
+
+    provision_tenant(&prod, &acme).await.expect("provisioned");
+
+    // Audited atomically, attributed to the system, and the administrator really can authenticate.
+    let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_records ORDER BY id")
+        .fetch_all(&db.pool)
+        .await
+        .expect("audit");
+    assert_eq!(actions, ["tenant.provisioned", "membership.granted"]);
+    let idp = TestIdp::start().await;
+    let mut dev = config(&db, Environment::Dev);
+    dev.database.url = db.url.clone();
+    let api = Running::start(dev, serve_config(&idp.jwks_url())).await;
+    let response = Client::new()
+        .get(api.url("/auth/context"))
+        .bearer_auth(idp.token("alice", "acme").build())
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(response.status(), 200);
+    api.stop().await.expect("clean shutdown");
+
+    // Provisioning twice is reported, not silently ignored, and changes nothing.
+    let again = provision_tenant(&prod, &acme).await.expect_err("duplicate");
+    assert!(matches!(again, RunError::AlreadyExists), "{again:?}");
+    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM tenants")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+    assert_eq!(tenants, 1);
+
+    // Bad input is a configuration error.
+    let bad = ProvisionConfig {
+        tenant_slug: "Bad Slug".into(),
+        admin_subject: "alice".into(),
+    };
+    assert!(matches!(
+        provision_tenant(&prod, &bad).await,
+        Err(RunError::Config(_))
+    ));
+}

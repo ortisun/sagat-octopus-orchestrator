@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use sagat_control_plane::cli::{self, Command, UsageError};
 use sagat_control_plane::config::{
-    Config, ConfigError, Environment, SeedConfig, ServeConfig, redact_url, requires_tls,
+    Config, ConfigError, Environment, ProvisionConfig, SeedConfig, ServeConfig, redact_url,
+    requires_tls,
 };
 use sagat_telemetry::LogFormat;
 
@@ -349,4 +350,24 @@ fn nonsensical_overload_settings_are_rejected() {
             "{name}={value}"
         );
     }
+}
+
+#[test]
+fn tenant_provisioning_has_no_defaults() {
+    assert_eq!(
+        ProvisionConfig::from_lookup(&env(&[])),
+        Err(ConfigError::Missing("SAGAT_PROVISION_TENANT"))
+    );
+    assert_eq!(
+        ProvisionConfig::from_lookup(&env(&[("SAGAT_PROVISION_TENANT", "acme")])),
+        Err(ConfigError::Missing("SAGAT_PROVISION_ADMIN"))
+    );
+    let ok = ProvisionConfig::from_lookup(&env(&[
+        ("SAGAT_PROVISION_TENANT", "acme"),
+        ("SAGAT_PROVISION_ADMIN", "alice"),
+    ]));
+    assert_eq!(
+        ok.map(|c| (c.tenant_slug, c.admin_subject)),
+        Ok(("acme".into(), "alice".into()))
+    );
 }

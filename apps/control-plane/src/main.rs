@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use sagat_control_plane::cli::{self, Command, USAGE, UsageError};
-use sagat_control_plane::config::{Config, SeedConfig, ServeConfig};
+use sagat_control_plane::config::{Config, ProvisionConfig, SeedConfig, ServeConfig};
 use sagat_control_plane::{RunError, SeedOutcome};
 use sagat_telemetry::init_logging;
 
@@ -66,6 +66,13 @@ async fn run(command: Command) -> Result<(), RunError> {
                     tracing::info!(tenant = %seed.tenant_slug, "development tenant already present");
                 }
             }
+            Ok(())
+        }
+        Command::ProvisionTenant => {
+            let request = ProvisionConfig::from_lookup(&env_lookup)?;
+            sagat_control_plane::provision_tenant(&config, &request).await?;
+            // The administrator's subject can be personal data; only the tenant is logged.
+            tracing::info!(tenant = %request.tenant_slug, "tenant provisioned");
             Ok(())
         }
         Command::Serve => {
