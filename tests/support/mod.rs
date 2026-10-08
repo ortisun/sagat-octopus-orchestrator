@@ -14,6 +14,7 @@ pub mod api;
 pub mod contract;
 pub mod engine;
 pub mod logs;
+pub mod nats;
 pub mod oidc;
 pub mod worker;
 

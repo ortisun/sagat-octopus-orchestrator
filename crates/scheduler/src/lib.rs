@@ -7,6 +7,12 @@
 //! domain re-checks the condition, so a candidate someone else already handled is a harmless skip:
 //! running several schedulers at once is safe, only redundant.
 
+//!
+//! The [`OutboxDispatcher`] is the other half: it moves committed outbox messages to the broker,
+//! at-least-once, so a lost wake-up costs latency but never correctness.
+
+mod outbox;
 mod passes;
 
+pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{Report, Scheduler, SchedulerSettings};

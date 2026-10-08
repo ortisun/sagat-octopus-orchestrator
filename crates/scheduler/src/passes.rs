@@ -11,6 +11,9 @@ use sagat_domain::execution::{self, ExecutionError, Expiry, Progress, StopReason
 use sagat_domain::identity::TenantId;
 use time::OffsetDateTime;
 
+/// Delivered outbox messages deleted per housekeeping round.
+const PURGE_BATCH: u32 = 5_000;
+
 /// Tunable limits of the passes.
 #[derive(Debug, Clone, Copy)]
 pub struct SchedulerSettings {
@@ -20,6 +23,8 @@ pub struct SchedulerSettings {
     pub rehint_after: Duration,
     /// Idempotency records older than this are purged.
     pub idempotency_retention: Duration,
+    /// Delivered outbox messages older than this are purged.
+    pub outbox_retention: Duration,
 }
 
 impl Default for SchedulerSettings {
@@ -28,6 +33,7 @@ impl Default for SchedulerSettings {
             batch: 200,
             rehint_after: Duration::from_secs(30),
             idempotency_retention: Duration::from_secs(7 * 24 * 3600),
+            outbox_retention: Duration::from_secs(24 * 3600),
         }
     }
 }
@@ -124,6 +130,16 @@ where
             Ok(n) if n > 0 => tracing::info!(removed = n, "purged expired worker sessions"),
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "could not purge worker sessions"),
+        }
+        // Bounded per call so a large backlog of delivered messages never holds a long statement.
+        match self
+            .store
+            .purge_outbox(self.settings.outbox_retention, PURGE_BATCH)
+            .await
+        {
+            Ok(n) if n > 0 => tracing::info!(removed = n, "purged delivered outbox messages"),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "could not purge the outbox"),
         }
     }
 

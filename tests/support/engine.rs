@@ -531,3 +531,52 @@ pub fn tenant_of(world: &World) -> TenantId {
 pub fn subject_of(name: &str) -> Subject {
     subject(name)
 }
+
+// ------------------------------------------------------------------------------ the broker
+
+use std::sync::Mutex;
+
+use sagat_application::maintenance::{EventPublisher, PublishError};
+
+/// A broker that records what it was given and can be switched off. Clones share the record.
+#[derive(Clone, Default)]
+pub struct RecordingBroker {
+    published: std::sync::Arc<Mutex<Vec<Published>>>,
+    down: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Published {
+    pub subject: String,
+    pub message_id: String,
+    pub payload: Vec<u8>,
+}
+
+impl RecordingBroker {
+    pub fn set_down(&self, down: bool) {
+        self.down.store(down, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn published(&self) -> Vec<Published> {
+        self.published.lock().expect("lock").clone()
+    }
+}
+
+impl EventPublisher for RecordingBroker {
+    async fn publish(
+        &self,
+        subject: &str,
+        message_id: &str,
+        payload: &[u8],
+    ) -> Result<(), PublishError> {
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(PublishError::Unavailable);
+        }
+        self.published.lock().expect("lock").push(Published {
+            subject: subject.to_owned(),
+            message_id: message_id.to_owned(),
+            payload: payload.to_vec(),
+        });
+        Ok(())
+    }
+}

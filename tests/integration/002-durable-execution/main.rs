@@ -9,6 +9,7 @@ mod definitions;
 mod faults;
 mod flows;
 mod isolation;
+mod nats;
 mod outbox;
 mod routing;
 mod scheduler;

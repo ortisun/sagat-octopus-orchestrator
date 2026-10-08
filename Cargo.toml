@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,12 +18,13 @@ sagat-infra-postgres = { path = "crates/infra-postgres" }
 sagat-telemetry = { path = "crates/telemetry" }
 sagat-api-http = { path = "crates/api-http" }
 sagat-api-grpc = { path = "crates/api-grpc" }
+sagat-infra-nats = { path = "crates/infra-nats" }
 sagat-infra-expr = { path = "crates/infra-expr" }
 sagat-infra-ir = { path = "crates/infra-ir" }
 sagat-scheduler = { path = "crates/scheduler" }
 sagat-control-plane = { path = "apps/control-plane" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time", "json"] }
-testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "nats", "watchdog"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio", "service", "server", "http1"] }
@@ -43,6 +44,8 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "json", "env-filter", "ansi"] }
 time = { version = "0.3", default-features = false, features = ["std"] }
 # gRPC (worker protocol). The .proto is compiled by `protox` (pure Rust) so builds need no `protoc`.
+# NATS JetStream (outbox hints). Only the JetStream client is needed.
+async-nats = { version = "0.50", default-features = false, features = ["jetstream", "ring", "nkeys", "server_2_10"] }
 tonic = "0.14"
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"

@@ -177,6 +177,8 @@ CREATE TABLE event_outbox (
 );
 
 CREATE INDEX event_outbox_pending_idx ON event_outbox (next_attempt_at) WHERE delivered_at IS NULL;
+-- Delivered messages are kept for a while and then purged in bounded batches.
+CREATE INDEX event_outbox_delivered_idx ON event_outbox (delivered_at) WHERE delivered_at IS NOT NULL;
 
 -- Append-only and content-addressed tables never change.
 CREATE FUNCTION execution_reject_mutation() RETURNS trigger
@@ -205,7 +207,9 @@ DO $grants$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app') THEN
         GRANT SELECT, INSERT ON payloads, run_events TO sagat_app;
-        GRANT SELECT, INSERT, UPDATE ON runs, steps, event_outbox TO sagat_app;
+        GRANT SELECT, INSERT, UPDATE ON runs, steps TO sagat_app;
+        -- Delivered outbox messages are purged after their retention; nothing else may be deleted.
+        GRANT SELECT, INSERT, UPDATE, DELETE ON event_outbox TO sagat_app;
         -- Sessions expire, so the runtime may delete them (and only them).
         GRANT SELECT, INSERT, UPDATE, DELETE ON worker_sessions TO sagat_app;
     END IF;

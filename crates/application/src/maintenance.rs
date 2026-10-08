@@ -99,6 +99,52 @@ pub trait MaintenanceStore: Send + Sync {
 
     /// Deletes expired worker sessions; returns how many.
     fn purge_sessions(&self) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// Deletes up to `limit` outbox messages delivered more than `older_than` ago; returns how
+    /// many. Undelivered messages are never deleted.
+    fn purge_outbox(
+        &self,
+        older_than: Duration,
+        limit: u32,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+}
+
+/// Why a message could not be published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PublishError {
+    /// The broker cannot be reached or did not acknowledge in time; try again later.
+    #[error("the broker is unavailable")]
+    Unavailable,
+    /// The broker or the adapter will never accept this message as it is.
+    #[error("the message was refused: {0}")]
+    Rejected(&'static str),
+}
+
+impl PublishError {
+    /// A short stable code for metrics and the outbox's `last_error_code`.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Unavailable => "BROKER_UNAVAILABLE",
+            Self::Rejected(_) => "REJECTED",
+        }
+    }
+}
+
+/// The broker a dispatcher publishes to (NATS JetStream in production).
+///
+/// Publishing is at-least-once: `message_id` is stable across attempts so the broker can drop the
+/// duplicates a crash between publishing and confirming produces.
+pub trait EventPublisher: Send + Sync {
+    /// # Errors
+    /// [`PublishError::Unavailable`] when the broker did not confirm; [`PublishError::Rejected`]
+    /// for a message it can never accept.
+    fn publish(
+        &self,
+        subject: &str,
+        message_id: &str,
+        payload: &[u8],
+    ) -> impl Future<Output = Result<(), PublishError>> + Send;
 }
 
 /// A message waiting to be published to the broker.

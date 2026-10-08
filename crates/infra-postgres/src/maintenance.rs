@@ -173,6 +173,22 @@ impl MaintenanceStore for PgRunStore {
         .map_err(store_error)
     }
 
+    async fn purge_outbox(&self, older_than: Duration, limit: u32) -> Result<u64, StoreError> {
+        sqlx::query(
+            "DELETE FROM event_outbox WHERE id IN ( \
+                 SELECT id FROM event_outbox \
+                 WHERE delivered_at IS NOT NULL \
+                   AND delivered_at < clock_timestamp() - $1 * interval '1 microsecond' \
+                 ORDER BY delivered_at LIMIT $2)",
+        )
+        .bind(micros(older_than))
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map(|r| r.rows_affected())
+        .map_err(store_error)
+    }
+
     async fn purge_sessions(&self) -> Result<u64, StoreError> {
         // Kept for an hour after expiry so a late report still finds its session's identity.
         sqlx::query(
