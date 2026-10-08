@@ -1,0 +1,108 @@
+# Local development environment (FR-001-005, US03).
+#
+#   cp infra/docker/.env.example infra/docker/.env      # then edit
+#   docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env up -d --build
+#
+# Everything is published on 127.0.0.1 only, on non-default host ports so it never collides with a
+# PostgreSQL, NATS or web server already running on this machine.
+#
+# NOT for production: development credentials, single instances, no TLS.
+
+name: sagat-octopus-orchestrator
+
+x-database-url: &database-url
+  DATABASE_URL: postgres://${POSTGRES_USER:-sagat}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/docker/.env}@postgres:5432/${POSTGRES_DB:-sagat}
+
+x-control-plane: &control-plane
+  image: sagat-octopus-orchestrator/control-plane:dev
+  build:
+    context: ../..
+    dockerfile: infra/docker/Dockerfile
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sagat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/docker/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-sagat}
+    ports:
+      - "127.0.0.1:${SAGAT_PG_PORT:-15432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sagat} -d ${POSTGRES_DB:-sagat}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Message broker. Not used by the control plane yet (feature 002 and later); it is part of the
+  # environment so the topology matches what the next features need.
+  nats:
+    image: nats:2.14.6-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:${SAGAT_NATS_PORT:-14222}:4222"
+      - "127.0.0.1:${SAGAT_NATS_MONITOR_PORT:-18222}:8222"
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot job: applies pending migrations and exits. Idempotent; safe to run on every `up`.
+  migrate:
+    <<: *control-plane
+    command: ["migrate"]
+    environment:
+      <<: *database-url
+      SAGAT_ENV: dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  control-plane:
+    <<: *control-plane
+    environment:
+      <<: *database-url
+      SAGAT_ENV: dev
+      SAGAT_OIDC_ISSUER: ${SAGAT_OIDC_ISSUER:?set SAGAT_OIDC_ISSUER in infra/docker/.env}
+      SAGAT_OIDC_AUDIENCE: ${SAGAT_OIDC_AUDIENCE:?set SAGAT_OIDC_AUDIENCE in infra/docker/.env}
+      SAGAT_OIDC_JWKS_URI: ${SAGAT_OIDC_JWKS_URI:?set SAGAT_OIDC_JWKS_URI in infra/docker/.env}
+      SAGAT_OIDC_TENANT_CLAIM: ${SAGAT_OIDC_TENANT_CLAIM:-tenant}
+      SAGAT_ALLOW_INSECURE_JWKS_HTTP: ${SAGAT_ALLOW_INSECURE_JWKS_HTTP:-false}
+      SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+    ports:
+      - "127.0.0.1:${SAGAT_API_PORT:-18080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Development data: `docker compose --profile seed run --rm seed`. Idempotent.
+  seed:
+    <<: *control-plane
+    command: ["seed-dev"]
+    profiles: ["seed"]
+    environment:
+      <<: *database-url
+      SAGAT_ENV: dev
+      SAGAT_SEED_TENANT: ${SAGAT_SEED_TENANT:-dev}
+      SAGAT_SEED_ADMIN_SUBJECT: ${SAGAT_SEED_ADMIN_SUBJECT:-dev-admin}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  pgdata:
+  natsdata:

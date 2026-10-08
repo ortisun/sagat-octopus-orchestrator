@@ -6,6 +6,7 @@ mod support;
 
 mod us01;
 mod us02;
+mod us03;
 mod us04;
 
 use reqwest::Response;
