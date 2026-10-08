@@ -54,10 +54,10 @@
 
 ## Final Phase: Hardening / rollout
 - [ ] T001-031 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/001-platform-foundation/`.
-- [ ] T001-032 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`.
+- [x] T001-032 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`.
 - [ ] T001-033 Run the benchmark defined in `specs/001-platform-foundation/plan.md` and publish the report in `tests/performance/reports/001-platform-foundation.md`.
 - [ ] T001-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/001-platform-foundation/quickstart.md`.
-- [ ] T001-035 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`.
+- [x] T001-035 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`.
 
 ## Dependencies & independent delivery
 
