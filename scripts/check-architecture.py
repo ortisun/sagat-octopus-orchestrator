@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 # Crates the domain may use (normal dependencies only; dev-dependencies are not checked).
-DOMAIN_ALLOWED = {"thiserror", "time", "uuid"}
+DOMAIN_ALLOWED = {"thiserror", "time", "uuid", "zeroize"}
 # Never allowed in the domain, even if someone adds them to DOMAIN_ALLOWED by mistake.
 DOMAIN_FORBIDDEN = {
     "axum", "hyper", "tower", "tower-http", "reqwest", "tonic", "prost",

@@ -9,6 +9,8 @@ mod macros;
 
 pub mod audit;
 pub mod definition;
+pub mod egress;
 pub mod execution;
 pub mod identity;
+pub mod secrets;
 pub mod workflow;
