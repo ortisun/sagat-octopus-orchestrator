@@ -37,6 +37,11 @@ pub struct AppState<S, C> {
     pub verifier: Arc<TokenVerifier>,
     /// Per-tenant request budget, checked after authentication.
     pub limiter: Arc<RateLimiter>,
+    /// Per-subject request budget, checked right after the token verifies and BEFORE any database
+    /// lookup, so a caller who holds a valid token but no membership (or names a tenant that does
+    /// not exist) cannot make the database work for free. Keyed by the token's `sub`: the verifier
+    /// accepts a single configured issuer, so `(iss, sub)` would add nothing.
+    pub subject_limiter: Arc<RateLimiter<String>>,
     /// Last readiness probe result, so a flood of `/v1/ready` calls cannot exhaust the pool.
     pub(crate) ready_cache: Arc<Mutex<Option<(Instant, bool)>>>,
 }
@@ -77,8 +82,21 @@ impl<S, C> AppState<S, C> {
             identity: Arc::new(identity),
             verifier: Arc::new(verifier),
             limiter: Arc::new(limiter),
+            subject_limiter: Arc::new(RateLimiter::from_valid(RateLimitConfig::subject_default())),
             ready_cache: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Replaces the per-subject budget (the default is [`RateLimitConfig::subject_default`]).
+    ///
+    /// # Errors
+    /// [`RateLimitConfigError`] when the budget is not usable (NaN, infinite or too small).
+    pub fn with_subject_rate_limit(
+        mut self,
+        rate_limit: RateLimitConfig,
+    ) -> Result<Self, RateLimitConfigError> {
+        self.subject_limiter = Arc::new(RateLimiter::new(rate_limit)?);
+        Ok(self)
     }
 }
 
@@ -88,6 +106,7 @@ impl<S, C> Clone for AppState<S, C> {
             identity: Arc::clone(&self.identity),
             verifier: Arc::clone(&self.verifier),
             limiter: Arc::clone(&self.limiter),
+            subject_limiter: Arc::clone(&self.subject_limiter),
             ready_cache: Arc::clone(&self.ready_cache),
         }
     }

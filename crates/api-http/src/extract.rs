@@ -35,6 +35,14 @@ where
     ) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers)?;
         let claims = state.verifier.verify(token).await?;
+        // Budget per verified subject, before the database is touched: `authenticate` costs two
+        // lookups, and a holder of a valid token who is not a member (or names an unknown tenant)
+        // would otherwise get them for free, without ever reaching the tenant budget below. Only a
+        // token that verified is charged, so an anonymous flood cannot spend anyone's budget.
+        if let Err(retry_after) = state.subject_limiter.check(claims.subject.clone()) {
+            metrics::counter!("http_rate_limited_total", "scope" => "subject").increment(1);
+            return Err(ApiError::rate_limited(retry_after));
+        }
         let session = state
             .identity
             .authenticate(&claims.tenant, &claims.subject)
@@ -42,7 +50,7 @@ where
         // Budget per tenant, charged only to callers that proved who they are: an anonymous flood
         // cannot spend (or be blamed on) a tenant's budget.
         if let Err(retry_after) = state.limiter.check(session.principal.tenant_id()) {
-            metrics::counter!("http_rate_limited_total").increment(1);
+            metrics::counter!("http_rate_limited_total", "scope" => "tenant").increment(1);
             return Err(ApiError::rate_limited(retry_after));
         }
         let trace = parts

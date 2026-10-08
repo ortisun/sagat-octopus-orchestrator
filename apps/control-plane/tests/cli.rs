@@ -36,6 +36,24 @@ fn help_and_version_succeed() {
     assert!(text(&version.stdout).starts_with("control-plane "));
 }
 
+/// Every setting `serve` reads must be documented in `--help` (the operator's only reference in a
+/// container without the repository).
+#[test]
+fn help_documents_every_serve_setting() {
+    let help = text(&control_plane(&["--help"], &[]).stdout);
+    for variable in [
+        "SAGAT_RATE_LIMIT_RPS",
+        "SAGAT_RATE_LIMIT_BURST",
+        "SAGAT_SUBJECT_RATE_LIMIT_RPS",
+        "SAGAT_SUBJECT_RATE_LIMIT_BURST",
+    ] {
+        assert!(
+            help.contains(variable),
+            "--help does not mention {variable}"
+        );
+    }
+}
+
 #[test]
 fn unknown_commands_are_a_usage_error() {
     let output = control_plane(&["detonate"], &[]);

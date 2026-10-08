@@ -67,7 +67,7 @@ logs for that value to follow one request.
 | All requests `401` with `UNAUTHENTICATED` | Wrong `SAGAT_OIDC_ISSUER`/`AUDIENCE`, expired or too-old token (`iat` older than the maximum lifetime, 1 h) or the provider rotated keys | Compare the token's `iss`/`aud`/`kid`; check `jwks_refresh_total{outcome}` |
 | `401` only for tokens with a new `kid` | JWKS not refreshed yet | Refresh is rate-limited and stale keys keep serving; wait one refresh interval, check `outcome="error"` |
 | Authenticated user gets `404` for a tenant's resource | Resource belongs to another tenant, or does not exist (deliberately the same answer) | Look for `access.denied.cross_tenant` audit rows in the caller's tenant |
-| `429 RATE_LIMITED` | The tenant exceeded `SAGAT_RATE_LIMIT_RPS`/`BURST` | The response carries `Retry-After` and `retryable: true`; clients should honour it. Raise the limit only after checking `http_rate_limited_total` |
+| `429 RATE_LIMITED` | The tenant exceeded `SAGAT_RATE_LIMIT_RPS`/`BURST` (`scope="tenant"`), or one token subject exceeded `SAGAT_SUBJECT_RATE_LIMIT_RPS`/`BURST` (`scope="subject"`, default 20 req/s, burst 40, charged before any database lookup) | The response carries `Retry-After` and `retryable: true`; clients should honour it. A burst of `scope="subject"` from an unknown or non-member subject is a probe or a misconfigured client, not a reason to raise limits. Check `http_rate_limited_total{scope}` before raising anything |
 | `503` `UNAVAILABLE` on API routes, `/v1/ready` fine | Load shedding: more than `SAGAT_MAX_IN_FLIGHT` requests at once (the response carries `Retry-After`) | `http_load_shed_total`, `db_pool_connections{state="in_use"}`; scale out or raise the pool |
 | `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS` | Slow database or client; check `http_request_duration_seconds` |
 | Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password |
@@ -88,7 +88,7 @@ even when nothing scrapes it (the recorder only expires series while rendering).
 | `auth_failures_total{reason}` | counter | Spikes of a single reason (e.g. unknown key) |
 | `jwks_refresh_total{outcome}` | counter | `error` or `no_usable_keys` means the provider or network is failing |
 | `audit_denials_total{outcome}` | counter | `dropped` or `failed` means cross-tenant attempts were not recorded |
-| `http_rate_limited_total` | counter | Tenant-level throttling |
+| `http_rate_limited_total{scope}` | counter | Throttling, by `tenant` or `subject` budget |
 | `http_load_shed_total` | counter | Overload |
 | `db_pool_connections{state}` | gauge | Pool saturation (`in_use` near `SAGAT_DB_MAX_CONNECTIONS`) |
 

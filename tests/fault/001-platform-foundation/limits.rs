@@ -93,6 +93,122 @@ async fn anonymous_traffic_cannot_spend_a_tenants_budget() {
     }
 }
 
+fn tight_subject_budget() -> Options {
+    Options {
+        // 5 requests of burst per subject, then one more per second.
+        subject_rate_limit: RateLimitConfig {
+            per_second: 1.0,
+            burst: 5.0,
+        },
+        ..Options::default()
+    }
+}
+
+#[tokio::test]
+async fn a_valid_token_without_membership_is_throttled_before_it_costs_database_lookups() {
+    // Review finding 3: a non-member with a valid IdP token (or an unknown tenant claim) never
+    // reached the tenant limiter, and every request cost two lookups (300 requests, 600 lookups).
+    let api = start_with(tight_subject_budget()).await;
+    api.tenant("acme", "alice").await;
+    let baseline = api.authentication_lookups();
+
+    let mut statuses = Vec::new();
+    for _ in 0..60 {
+        // `mallory` is a perfectly valid subject of the identity provider, but not a member.
+        statuses.push(
+            api.get_as("/auth/context", "mallory", "acme")
+                .await
+                .status()
+                .as_u16(),
+        );
+    }
+
+    let refused = statuses.iter().filter(|s| **s == 401).count();
+    let limited = statuses.iter().filter(|s| **s == 429).count();
+    assert_eq!(refused + limited, 60, "{statuses:?}");
+    assert!(
+        (5..=7).contains(&refused),
+        "only the burst (plus at most the tokens refilled meanwhile) reaches authentication: {statuses:?}"
+    );
+    let lookups = api.authentication_lookups() - baseline;
+    assert!(
+        lookups <= 2 * refused,
+        "{lookups} lookups for {refused} authenticated attempts: throttled requests must not query"
+    );
+
+    // The same holds for a tenant claim that does not exist, and the envelope is the usual one.
+    for _ in 0..5 {
+        api.get_as("/auth/context", "trudy", "no-such-tenant").await;
+    }
+    let limited = api.get_as("/auth/context", "trudy", "no-such-tenant").await;
+    assert_eq!(limited.status(), 429);
+    assert!(limited.headers().contains_key("retry-after"));
+    let body = json_of(limited).await;
+    assert_eq!(body["code"], "RATE_LIMITED");
+    assert_eq!(body["retryable"], true);
+}
+
+#[tokio::test]
+async fn one_member_cannot_exhaust_the_tenant_budget_on_their_own() {
+    // Review finding 7: a single viewer could spend the whole tenant bucket and lock out the
+    // tenant's administrators.
+    let api = start_with(Options {
+        rate_limit: RateLimitConfig {
+            per_second: 0.5,
+            burst: 20.0,
+        },
+        subject_rate_limit: RateLimitConfig {
+            per_second: 0.5,
+            burst: 6.0,
+        },
+        ..Options::default()
+    })
+    .await;
+    let tenant = api.tenant("acme", "alice").await;
+    add_member(&api, tenant, "vince", "viewer").await;
+
+    let mut viewer = Vec::new();
+    for _ in 0..40 {
+        viewer.push(
+            api.get_as("/auth/context", "vince", "acme")
+                .await
+                .status()
+                .as_u16(),
+        );
+    }
+    assert!(
+        viewer.iter().filter(|s| **s == 200).count() <= 7,
+        "the viewer is held to its own budget: {viewer:?}"
+    );
+
+    // The administrator still has most of the tenant bucket.
+    for i in 0..6 {
+        assert_eq!(
+            api.get_as("/auth/context", "alice", "acme").await.status(),
+            200,
+            "administrator request {i}"
+        );
+    }
+}
+
+/// Adds a membership as the database owner.
+async fn add_member(
+    api: &crate::support::api::TestApi,
+    tenant: sagat_domain::identity::TenantId,
+    subject: &str,
+    role: &str,
+) {
+    sqlx::query(
+        "INSERT INTO memberships (tenant_id, subject, role, created_at) VALUES ($1, $2, $3, now())",
+    )
+    .bind(tenant.as_uuid())
+    .bind(subject)
+    .bind(role)
+    .execute(&api.db.pool)
+    .await
+    .expect("membership");
+}
+
 #[tokio::test]
 async fn probes_are_exempt_from_the_tenant_budget() {
     let api = start_with(tight_budget()).await;

@@ -80,6 +80,8 @@ ENVIRONMENT (serve):
     SAGAT_MAX_IN_FLIGHT               requests served at once         [512]
     SAGAT_RATE_LIMIT_RPS              per-tenant sustained req/s, >= 0.001 [100]
     SAGAT_RATE_LIMIT_BURST            per-tenant burst, >= 1          [200]
+    SAGAT_SUBJECT_RATE_LIMIT_RPS      per-subject req/s, charged before any DB lookup, >= 0.001 [20]
+    SAGAT_SUBJECT_RATE_LIMIT_BURST    per-subject burst, >= 1         [40]
     SAGAT_ADMIN_ADDR                  /metrics listener, or 'off'     [127.0.0.1:9090]
     SAGAT_OIDC_REQUIRED_TYP           required JOSE typ, e.g. at+jwt  [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]

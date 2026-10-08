@@ -80,10 +80,15 @@ fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
 
 /// Variables of the per-tenant request budget: (requests per second, burst).
 pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
+/// Variables of the per-subject request budget: (requests per second, burst).
+pub const SUBJECT_RATE_VARS: (&str, &str) = (
+    "SAGAT_SUBJECT_RATE_LIMIT_RPS",
+    "SAGAT_SUBJECT_RATE_LIMIT_BURST",
+);
 
 /// Reads a request budget from a requests-per-second and a burst variable and validates it with the
 /// same rules the limiter enforces (finite, rate at least 0.001, burst at least 1).
-fn rate_limit(
+fn read_rate_limit(
     get: Lookup<'_>,
     (rps_var, burst_var): (&'static str, &'static str),
     defaults: RateLimitConfig,
@@ -191,8 +196,11 @@ pub struct ServeConfig {
     pub limits: HttpLimits,
     /// Connection-level protections (slow clients, connection cap, shutdown grace).
     pub server: ServerConfig,
-    /// Per-tenant request budget.
+    /// Per-tenant request budget, charged after authentication.
     pub rate_limit: RateLimitConfig,
+    /// Per-subject request budget, charged right after the token verifies and before any database
+    /// lookup.
+    pub subject_rate_limit: RateLimitConfig,
     /// Where `/metrics` is served, on a listener separate from the public API. `None` disables it.
     pub admin_addr: Option<SocketAddr>,
     /// Apply pending migrations before listening. Off by default: production runs them as a
@@ -239,7 +247,9 @@ impl ServeConfig {
                 reason: "must be greater than zero".to_owned(),
             });
         }
-        let rate_limit = rate_limit(get, TENANT_RATE_VARS, RateLimitConfig::default())?;
+        let rate_limit = read_rate_limit(get, TENANT_RATE_VARS, RateLimitConfig::default())?;
+        let subject_rate_limit =
+            read_rate_limit(get, SUBJECT_RATE_VARS, RateLimitConfig::subject_default())?;
         let admin_addr =
             match get("SAGAT_ADMIN_ADDR").as_deref().map(str::trim) {
                 None | Some("") => Some(SocketAddr::from(([127, 0, 0, 1], 9090))),
@@ -292,6 +302,7 @@ impl ServeConfig {
                 max_in_flight,
             },
             rate_limit,
+            subject_rate_limit,
             admin_addr,
             server: ServerConfig {
                 header_read_timeout: Duration::from_secs(header_secs),

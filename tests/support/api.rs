@@ -3,6 +3,7 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use reqwest::{Client, Method, RequestBuilder, Response};
@@ -11,7 +12,12 @@ use sagat_api_http::{
     TokenVerifier, auth::install_crypto_provider, router,
 };
 use sagat_application::clock::SystemClock;
-use sagat_application::identity::IdentityService;
+use sagat_application::error::StoreError;
+use sagat_application::identity::{IdentityService, IdentityStore};
+use sagat_domain::audit::AuditRecord;
+use sagat_domain::identity::{
+    Membership, Namespace, NamespaceId, Slug, Subject, Tenant, TenantId, Workspace, WorkspaceId,
+};
 use sagat_infra_postgres::{PgIdentityStore, PgPool, PoolConfig, connect};
 use serde_json::{Value, json};
 
@@ -28,6 +34,105 @@ pub struct TestApi {
     pub owner_store: PgIdentityStore,
     /// The pool the API itself uses (`db.pool` is the tests' own administrative handle).
     pub api_pool: PgPool,
+    lookups: Arc<AtomicUsize>,
+}
+
+/// The store the API uses, counting the authentication lookups (tenant by slug, membership) so
+/// tests can prove that a throttled request never reached the database.
+#[derive(Clone)]
+struct CountingStore {
+    inner: PgIdentityStore,
+    lookups: Arc<AtomicUsize>,
+}
+
+impl IdentityStore for CountingStore {
+    async fn find_tenant_by_slug(&self, slug: &Slug) -> Result<Option<Tenant>, StoreError> {
+        self.lookups.fetch_add(1, Ordering::SeqCst);
+        self.inner.find_tenant_by_slug(slug).await
+    }
+
+    async fn find_membership(
+        &self,
+        tenant: TenantId,
+        subject: &Subject,
+    ) -> Result<Option<Membership>, StoreError> {
+        self.lookups.fetch_add(1, Ordering::SeqCst);
+        self.inner.find_membership(tenant, subject).await
+    }
+
+    async fn create_workspace(
+        &self,
+        workspace: &Workspace,
+        audit: &AuditRecord,
+    ) -> Result<(), StoreError> {
+        self.inner.create_workspace(workspace, audit).await
+    }
+
+    async fn get_workspace(
+        &self,
+        tenant: TenantId,
+        id: WorkspaceId,
+    ) -> Result<Option<Workspace>, StoreError> {
+        self.inner.get_workspace(tenant, id).await
+    }
+
+    async fn list_workspaces(
+        &self,
+        tenant: TenantId,
+        after: Option<WorkspaceId>,
+        limit: u32,
+    ) -> Result<Vec<Workspace>, StoreError> {
+        self.inner.list_workspaces(tenant, after, limit).await
+    }
+
+    async fn create_namespace(
+        &self,
+        namespace: &Namespace,
+        audit: &AuditRecord,
+    ) -> Result<(), StoreError> {
+        self.inner.create_namespace(namespace, audit).await
+    }
+
+    async fn get_namespace(
+        &self,
+        tenant: TenantId,
+        id: NamespaceId,
+    ) -> Result<Option<Namespace>, StoreError> {
+        self.inner.get_namespace(tenant, id).await
+    }
+
+    async fn list_namespaces(
+        &self,
+        tenant: TenantId,
+        after: Option<NamespaceId>,
+        limit: u32,
+    ) -> Result<Vec<Namespace>, StoreError> {
+        self.inner.list_namespaces(tenant, after, limit).await
+    }
+
+    async fn workspace_exists_outside(
+        &self,
+        tenant: TenantId,
+        id: WorkspaceId,
+    ) -> Result<bool, StoreError> {
+        self.inner.workspace_exists_outside(tenant, id).await
+    }
+
+    async fn namespace_exists_outside(
+        &self,
+        tenant: TenantId,
+        id: NamespaceId,
+    ) -> Result<bool, StoreError> {
+        self.inner.namespace_exists_outside(tenant, id).await
+    }
+
+    async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        self.inner.record_denial(audit).await
+    }
+
+    async fn ping(&self) -> Result<(), StoreError> {
+        self.inner.ping().await
+    }
 }
 
 /// Settings tests may tighten before the API starts.
@@ -42,6 +147,9 @@ pub struct Options {
     pub runtime_role: bool,
     /// Per-tenant request budget.
     pub rate_limit: RateLimitConfig,
+    /// Per-subject request budget, charged before the database is queried. Generous by default
+    /// because most tests make many calls as one subject; the tests about it set their own.
+    pub subject_rate_limit: RateLimitConfig,
 }
 
 impl Default for Options {
@@ -53,6 +161,10 @@ impl Default for Options {
             server: ServerConfig::default(),
             runtime_role: false,
             rate_limit: RateLimitConfig::default(),
+            subject_rate_limit: RateLimitConfig {
+                per_second: 1000.0,
+                burst: 2000.0,
+            },
         }
     }
 }
@@ -83,11 +195,19 @@ pub async fn start_with(options: Options) -> TestApi {
     let store = PgIdentityStore::new(api_pool.clone());
     let fetcher = HttpJwksFetcher::new(&auth).expect("fetcher");
     let verifier = TokenVerifier::new(Arc::new(fetcher), &auth);
-    let service = IdentityService::new(store.clone(), SystemClock);
-    let app = router(
-        AppState::with_rate_limit(service, verifier, options.rate_limit).expect("valid budget"),
-        options.limits,
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let service = IdentityService::new(
+        CountingStore {
+            inner: store.clone(),
+            lookups: Arc::clone(&lookups),
+        },
+        SystemClock,
     );
+    let state = AppState::with_rate_limit(service, verifier, options.rate_limit)
+        .expect("valid budget")
+        .with_subject_rate_limit(options.subject_rate_limit)
+        .expect("valid subject budget");
+    let app = router(state, options.limits);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -111,10 +231,16 @@ pub async fn start_with(options: Options) -> TestApi {
         store,
         owner_store,
         api_pool,
+        lookups,
     }
 }
 
 impl TestApi {
+    /// Tenant and membership lookups the API has made so far while authenticating requests.
+    pub fn authentication_lookups(&self) -> usize {
+        self.lookups.load(Ordering::SeqCst)
+    }
+
     /// Creates a tenant and its first admin directly in the database.
     pub async fn tenant(&self, slug: &str, admin: &str) -> sagat_domain::identity::TenantId {
         provision(&self.owner_store, slug, admin).await.0.id()

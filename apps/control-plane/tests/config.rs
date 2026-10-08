@@ -390,6 +390,52 @@ fn rate_limit_values_that_would_break_the_limiter_name_their_variable() {
 }
 
 #[test]
+fn the_per_subject_budget_has_its_own_defaults_and_validation() {
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+    assert!(
+        (serve.subject_rate_limit.per_second - 20.0).abs() < f64::EPSILON
+            && (serve.subject_rate_limit.burst - 40.0).abs() < f64::EPSILON,
+        "{:?}",
+        serve.subject_rate_limit
+    );
+    assert!(
+        serve.subject_rate_limit.per_second < serve.rate_limit.per_second,
+        "one subject gets less than a whole tenant"
+    );
+
+    let mut tuned = OIDC.to_vec();
+    tuned.extend([
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "5.5"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "11"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&tuned)).expect("tuned");
+    assert!(
+        (serve.subject_rate_limit.per_second - 5.5).abs() < f64::EPSILON
+            && (serve.subject_rate_limit.burst - 11.0).abs() < f64::EPSILON
+    );
+    // The tenant budget is independent of it.
+    assert!((serve.rate_limit.per_second - 100.0).abs() < f64::EPSILON);
+
+    let bad: [(&str, &str); 6] = [
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "0"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "1e-300"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "NaN"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "0.5"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "inf"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "lots"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        let error = ServeConfig::from_lookup(&env(&pairs)).expect_err(name);
+        assert!(
+            matches!(&error, ConfigError::Invalid { name: n, .. } if *n == name),
+            "{name}={value} -> {error:?}"
+        );
+    }
+}
+
+#[test]
 fn tenant_provisioning_has_no_defaults() {
     assert_eq!(
         ProvisionConfig::from_lookup(&env(&[])),

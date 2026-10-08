@@ -211,7 +211,9 @@ pub async fn serve_with_admin(
     // Already validated by `ServeConfig`; checked again because the limiter must never run with a
     // budget that could panic or never admit a request.
     let state = AppState::with_rate_limit(service, verifier, serve.rate_limit)
-        .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?;
+        .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?
+        .with_subject_rate_limit(serve.subject_rate_limit)
+        .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?;
     let app = router(state, serve.limits);
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
 

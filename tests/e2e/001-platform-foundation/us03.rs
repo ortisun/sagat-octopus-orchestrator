@@ -41,6 +41,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         limits: HttpLimits::default(),
         server: sagat_api_http::ServerConfig::default(),
         rate_limit: sagat_api_http::RateLimitConfig::default(),
+        subject_rate_limit: sagat_api_http::RateLimitConfig::subject_default(),
         admin_addr: None,
         migrate_on_start: false,
     }
