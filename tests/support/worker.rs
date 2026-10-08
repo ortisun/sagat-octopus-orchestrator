@@ -3,6 +3,8 @@
 //! one identity provider, exactly as the deployed processes do.
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
+use std::time::Duration;
+
 use reqwest::Method;
 use sagat_api_grpc::pb::worker_service_client::WorkerServiceClient;
 use sagat_api_grpc::pb::{
@@ -144,6 +146,12 @@ impl Platform {
             .expect("grant");
     }
 
+    /// Outbox messages not yet delivered.
+    pub async fn outbox_backlog(&self) -> u64 {
+        use sagat_application::maintenance::OutboxStore;
+        self.api.executions.outbox_backlog().await.expect("backlog")
+    }
+
     /// One pass of the scheduler over this platform's database (what the engine's loop does).
     pub async fn tick(&self) -> Report {
         Scheduler::new(
@@ -206,7 +214,18 @@ impl Platform {
 
     /// A client authenticating as `sub` of `tenant`, whatever its role (or lack of one).
     pub async fn connect(&self, sub: &str, tenant: &str) -> Worker<'_> {
-        let client = WorkerServiceClient::connect(self.api.grpc_url.clone())
+        self.connect_at(self.api.grpc_url.clone(), sub, tenant)
+            .await
+    }
+
+    /// A worker identity of acme speaking to the worker service at `url` (an engine process).
+    pub async fn worker_at(&self, url: &str, sub: &str) -> Worker<'_> {
+        self.grant(self.tenant, sub, Role::Worker).await;
+        self.connect_at(url.to_owned(), sub, TENANT).await
+    }
+
+    pub async fn connect_at(&self, url: String, sub: &str, tenant: &str) -> Worker<'_> {
+        let client = WorkerServiceClient::connect(url)
             .await
             .expect("connect to the worker service");
         Worker {
@@ -383,4 +402,139 @@ pub fn machine_code(status: &Status) -> String {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned()
+}
+
+// ------------------------------------------------------------------------------ the engine
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+
+use sagat_control_plane::RunError;
+use sagat_control_plane::config::Config;
+use sagat_execution_engine::EngineConfig;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+
+use super::TestDb;
+use super::oidc::{AUDIENCE, ISSUER, TestIdp};
+
+/// A real `execution-engine` (worker API, scheduler loop, outbox dispatcher, probes) serving a
+/// test database, started the way the binary starts it: from environment variables.
+pub struct RunningEngine {
+    pub grpc_url: String,
+    pub admin: SocketAddr,
+    stop: Option<oneshot::Sender<()>>,
+    handle: Option<JoinHandle<Result<(), RunError>>>,
+}
+
+/// Environment of an engine for `db`, with fast loops. `extra` overrides anything.
+pub fn engine_env(db: &TestDb, idp: &TestIdp, extra: &[(&str, &str)]) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = [
+        ("DATABASE_URL", db.url.as_str()),
+        ("SAGAT_ENV", "dev"),
+        ("SAGAT_OIDC_ISSUER", ISSUER),
+        ("SAGAT_OIDC_AUDIENCE", AUDIENCE),
+        ("SAGAT_OIDC_JWKS_URI", idp.jwks_url().as_str()),
+        ("SAGAT_ALLOW_INSECURE_JWKS_HTTP", "true"),
+        ("SAGAT_SCHEDULER_INTERVAL_MS", "50"),
+        ("SAGAT_LIVENESS_GRACE_SECS", "1"),
+        ("SAGAT_OUTBOX_POLL_MS", "50"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "1000"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "2000"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    for (key, value) in extra {
+        env.insert((*key).to_owned(), (*value).to_owned());
+    }
+    env
+}
+
+impl RunningEngine {
+    pub async fn start(env: HashMap<String, String>) -> Self {
+        Self::try_start(env).await.expect("the engine starts")
+    }
+
+    /// Starts the engine; an engine that refuses to start returns its error.
+    pub async fn try_start(env: HashMap<String, String>) -> Result<Self, RunError> {
+        let lookup = move |name: &str| env.get(name).cloned();
+        let config = Config::from_lookup(&lookup)?;
+        let engine = EngineConfig::from_lookup(&lookup, config.environment)?;
+        Self::try_start_with(config, engine).await
+    }
+
+    /// As [`Self::try_start`] for settings the environment parser would not produce (production
+    /// settings pointing at a test database without TLS).
+    pub async fn try_start_with(config: Config, engine: EngineConfig) -> Result<Self, RunError> {
+        let grpc = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind grpc");
+        let admin = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind admin");
+        let grpc_url = format!("http://{}", grpc.local_addr().expect("grpc addr"));
+        let admin_addr = admin.local_addr().expect("admin addr");
+        let (stop, stopped) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            sagat_execution_engine::serve(&config, &engine, grpc, Some(admin), async move {
+                let _ = stopped.await;
+            })
+            .await
+        });
+        let mut running = Self {
+            grpc_url,
+            admin: admin_addr,
+            stop: Some(stop),
+            handle: Some(handle),
+        };
+        // Wait for the listeners to be served, or for the start-up to fail.
+        for _ in 0..100 {
+            if running.handle.as_ref().is_some_and(JoinHandle::is_finished) {
+                return Err(running.finish().await.expect_err("it ended early"));
+            }
+            if running.status("/livez").await == Some(200) {
+                return Ok(running);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the engine never became alive");
+    }
+
+    /// Status code of `GET path` on the admin listener (`None` if it cannot be reached).
+    pub async fn status(&self, path: &str) -> Option<u16> {
+        reqwest::get(format!("http://{}{path}", self.admin))
+            .await
+            .ok()
+            .map(|response| response.status().as_u16())
+    }
+
+    pub async fn body(&self, path: &str) -> String {
+        reqwest::get(format!("http://{}{path}", self.admin))
+            .await
+            .expect("admin request")
+            .text()
+            .await
+            .expect("text")
+    }
+
+    /// Asks the engine to stop and waits for it; returns what `serve` returned.
+    pub async fn finish(&mut self) -> Result<(), RunError> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        let handle = self.handle.take().expect("already finished");
+        tokio::time::timeout(Duration::from_secs(20), handle)
+            .await
+            .expect("the engine stops within its grace period")
+            .expect("the engine task did not panic")
+    }
+}
+
+impl Drop for RunningEngine {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+    }
 }

@@ -86,7 +86,14 @@ fn pool_config(db: &DatabaseConfig, statement_timeout: Duration) -> PoolConfig {
     config
 }
 
-async fn open_pool(db: &DatabaseConfig, statement_timeout: Duration) -> Result<PgPool, RunError> {
+/// Connects a pool with the given per-statement cap.
+///
+/// # Errors
+/// [`RunError::Database`] (never containing the connection URL).
+pub async fn open_pool(
+    db: &DatabaseConfig,
+    statement_timeout: Duration,
+) -> Result<PgPool, RunError> {
     connect(&pool_config(db, statement_timeout))
         .await
         .map_err(|e| RunError::Database(e.to_string()))
@@ -309,10 +316,10 @@ pub async fn serve_with_admin(
 }
 
 /// How often idle metric series are released when nobody scrapes `/metrics`.
-const METRICS_UPKEEP_INTERVAL: Duration = Duration::from_secs(60);
+pub const METRICS_UPKEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Runs [`Metrics::prune_idle`] every `interval` until aborted.
-fn spawn_metrics_upkeep(
+pub fn spawn_metrics_upkeep(
     metrics: &'static Metrics,
     interval: Duration,
 ) -> tokio::task::JoinHandle<()> {
@@ -326,7 +333,7 @@ fn spawn_metrics_upkeep(
 }
 
 /// Completes once the shared shutdown flag is set.
-async fn stopped(mut flag: tokio::sync::watch::Receiver<bool>) {
+pub async fn stopped(mut flag: tokio::sync::watch::Receiver<bool>) {
     while !*flag.borrow() {
         if flag.changed().await.is_err() {
             return;
@@ -335,7 +342,12 @@ async fn stopped(mut flag: tokio::sync::watch::Receiver<bool>) {
 }
 
 /// The administrative surface: Prometheus metrics, nothing else.
-fn admin_router() -> axum::Router {
+pub fn admin_router() -> axum::Router {
+    admin_router_with(axum::Router::new())
+}
+
+/// [`admin_router`] plus `extra` routes (a process's own probes), under the same protections.
+pub fn admin_router_with(extra: axum::Router) -> axum::Router {
     use axum::http::{HeaderValue, header};
     use axum::routing::get;
     let metrics = || async {
@@ -348,7 +360,9 @@ fn admin_router() -> axum::Router {
         )
     };
     protect(
-        axum::Router::new().route("/metrics", get(metrics)),
+        axum::Router::new()
+            .route("/metrics", get(metrics))
+            .merge(extra),
         HttpLimits::default(),
     )
 }
@@ -382,10 +396,19 @@ pub async fn shutdown_signal() {
 /// # Errors
 /// [`RunError::Unhealthy`] unless a `200` arrives within three seconds.
 pub async fn healthcheck(addr: &str) -> Result<(), RunError> {
+    probe(addr, "/v1/health").await
+}
+
+/// Probes `GET <path>` on `addr` the same way; used by every process's container health check.
+///
+/// # Errors
+/// [`RunError::Unhealthy`] unless a `200` arrives within three seconds.
+pub async fn probe(addr: &str, path: &str) -> Result<(), RunError> {
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     let probe = async {
         let mut stream = TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
         stream
-            .write_all(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .write_all(request.as_bytes())
             .await
             .map_err(|e| e.to_string())?;
         let mut head = Vec::new();

@@ -3,8 +3,6 @@
 
 use std::time::Duration;
 
-use async_nats::jetstream::consumer::{AckPolicy, pull};
-use futures_util::StreamExt;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::maintenance::{EventPublisher, PublishError};
 use sagat_infra_nats::{NatsConfig, NatsPublisher};
@@ -12,43 +10,12 @@ use sagat_scheduler::{DispatchSettings, OutboxDispatcher};
 use serde_json::{Value, json};
 
 use crate::support::engine::{chain, world};
-use crate::support::nats;
+use crate::support::nats::{self, drain};
 
 fn config(url: String) -> NatsConfig {
     let mut config = NatsConfig::new(url);
     config.ack_timeout = Duration::from_secs(2);
     config
-}
-
-/// Everything currently in the stream on `filter`, without acknowledging a thing.
-async fn drain(publisher: &NatsPublisher, filter: &str) -> Vec<(String, Vec<u8>, Option<String>)> {
-    let stream = publisher.stream().await.expect("stream");
-    let consumer = stream
-        .create_consumer(pull::Config {
-            filter_subject: filter.to_owned(),
-            ack_policy: AckPolicy::None,
-            ..Default::default()
-        })
-        .await
-        .expect("consumer");
-    let mut batch = consumer
-        .fetch()
-        .max_messages(100)
-        .expires(Duration::from_millis(800))
-        .messages()
-        .await
-        .expect("fetch");
-    let mut out = Vec::new();
-    while let Some(message) = batch.next().await {
-        let message = message.expect("message");
-        let id = message
-            .headers
-            .as_ref()
-            .and_then(|h| h.get("Nats-Msg-Id"))
-            .map(ToString::to_string);
-        out.push((message.subject.to_string(), message.payload.to_vec(), id));
-    }
-    out
 }
 
 #[tokio::test]

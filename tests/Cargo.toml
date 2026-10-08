@@ -25,6 +25,7 @@ sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
+sagat-execution-engine.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true

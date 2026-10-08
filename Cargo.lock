@@ -3213,6 +3213,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-execution-engine"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "metrics",
+ "sagat-api-grpc",
+ "sagat-api-http",
+ "sagat-application",
+ "sagat-control-plane",
+ "sagat-infra-ir",
+ "sagat-infra-nats",
+ "sagat-infra-postgres",
+ "sagat-scheduler",
+ "sagat-telemetry",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sagat-infra-expr"
 version = "0.1.0"
 dependencies = [
@@ -3303,6 +3322,7 @@ dependencies = [
  "sagat-application",
  "sagat-control-plane",
  "sagat-domain",
+ "sagat-execution-engine",
  "sagat-infra-ir",
  "sagat-infra-nats",
  "sagat-infra-postgres",

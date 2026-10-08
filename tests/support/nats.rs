@@ -4,7 +4,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+use async_nats::jetstream::consumer::{AckPolicy, pull};
+use futures_util::StreamExt;
+use sagat_infra_nats::NatsPublisher;
 use testcontainers_modules::nats::{Nats, NatsServerCmd};
 use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::ImageExt;
@@ -99,4 +103,38 @@ pub async fn proxy_to(target: SocketAddr) -> Proxy {
         blocked,
         sever,
     }
+}
+
+/// Everything currently in the stream on `filter`, without acknowledging a thing.
+pub async fn drain(
+    publisher: &NatsPublisher,
+    filter: &str,
+) -> Vec<(String, Vec<u8>, Option<String>)> {
+    let stream = publisher.stream().await.expect("stream");
+    let consumer = stream
+        .create_consumer(pull::Config {
+            filter_subject: filter.to_owned(),
+            ack_policy: AckPolicy::None,
+            ..Default::default()
+        })
+        .await
+        .expect("consumer");
+    let mut batch = consumer
+        .fetch()
+        .max_messages(100)
+        .expires(Duration::from_millis(800))
+        .messages()
+        .await
+        .expect("fetch");
+    let mut out = Vec::new();
+    while let Some(message) = batch.next().await {
+        let message = message.expect("message");
+        let id = message
+            .headers
+            .as_ref()
+            .and_then(|h| h.get("Nats-Msg-Id"))
+            .map(ToString::to_string);
+        out.push((message.subject.to_string(), message.payload.to_vec(), id));
+    }
+    out
 }

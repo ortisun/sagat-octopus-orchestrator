@@ -44,13 +44,25 @@ pub enum ConfigError {
 /// A way to read variables; `std::env::var(..).ok()` in production, a map in tests.
 pub type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
-fn required(get: Lookup<'_>, name: &'static str) -> Result<String, ConfigError> {
+/// A variable that must be set and non-blank.
+///
+/// # Errors
+/// [`ConfigError::Missing`] otherwise.
+pub fn required(get: Lookup<'_>, name: &'static str) -> Result<String, ConfigError> {
     get(name)
         .filter(|v| !v.trim().is_empty())
         .ok_or(ConfigError::Missing(name))
 }
 
-fn optional<T: FromStr>(get: Lookup<'_>, name: &'static str, default: T) -> Result<T, ConfigError>
+/// A variable parsed as `T`, or `default` when unset or blank.
+///
+/// # Errors
+/// [`ConfigError::Invalid`] when it is set but does not parse.
+pub fn optional<T: FromStr>(
+    get: Lookup<'_>,
+    name: &'static str,
+    default: T,
+) -> Result<T, ConfigError>
 where
     T::Err: fmt::Display,
 {
@@ -66,7 +78,11 @@ where
     }
 }
 
-fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
+/// A boolean variable (`true`/`false`/`yes`/`no`/`1`/`0`); unset is `false`.
+///
+/// # Errors
+/// [`ConfigError::Invalid`] for anything else.
+pub fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
     match get(name).as_deref().map(str::trim) {
         None | Some("") => Ok(false),
         Some("1" | "true" | "yes") => Ok(true),
@@ -88,7 +104,7 @@ pub const SUBJECT_RATE_VARS: (&str, &str) = (
 
 /// Reads a request budget from a requests-per-second and a burst variable and validates it with the
 /// same rules the limiter enforces (finite, rate at least 0.001, burst at least 1).
-fn read_rate_limit(
+pub fn read_rate_limit(
     get: Lookup<'_>,
     (rps_var, burst_var): (&'static str, &'static str),
     defaults: RateLimitConfig,
@@ -188,6 +204,25 @@ impl Config {
     }
 }
 
+/// How tokens are verified, from the `SAGAT_OIDC_*` variables. Every process that authenticates
+/// callers (the API and the worker protocol) reads it the same way.
+///
+/// # Errors
+/// [`ConfigError`] naming the first missing or invalid variable.
+pub fn read_auth(get: Lookup<'_>) -> Result<AuthConfig, ConfigError> {
+    let mut auth = AuthConfig::new(
+        required(get, "SAGAT_OIDC_ISSUER")?,
+        required(get, "SAGAT_OIDC_AUDIENCE")?,
+        required(get, "SAGAT_OIDC_JWKS_URI")?,
+    );
+    auth.tenant_claim = optional(get, "SAGAT_OIDC_TENANT_CLAIM", auth.tenant_claim)?;
+    auth.allow_insecure_jwks_http = flag(get, "SAGAT_ALLOW_INSECURE_JWKS_HTTP")?;
+    auth.required_token_type = get("SAGAT_OIDC_REQUIRED_TYP")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty());
+    Ok(auth)
+}
+
 /// Extra settings for `serve`.
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
@@ -212,17 +247,7 @@ impl ServeConfig {
     /// # Errors
     /// [`ConfigError`] naming the first missing or invalid variable.
     pub fn from_lookup(get: Lookup<'_>) -> Result<Self, ConfigError> {
-        let mut auth = AuthConfig::new(
-            required(get, "SAGAT_OIDC_ISSUER")?,
-            required(get, "SAGAT_OIDC_AUDIENCE")?,
-            required(get, "SAGAT_OIDC_JWKS_URI")?,
-        );
-        auth.tenant_claim = optional(get, "SAGAT_OIDC_TENANT_CLAIM", auth.tenant_claim)?;
-        auth.allow_insecure_jwks_http = flag(get, "SAGAT_ALLOW_INSECURE_JWKS_HTTP")?;
-        auth.required_token_type = get("SAGAT_OIDC_REQUIRED_TYP")
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty());
-
+        let auth = read_auth(get)?;
         let defaults = HttpLimits::default();
         let max_body_bytes: usize = optional(get, "SAGAT_MAX_BODY_BYTES", defaults.max_body_bytes)?;
         if max_body_bytes == 0 {

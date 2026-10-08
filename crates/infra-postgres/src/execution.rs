@@ -59,6 +59,32 @@ impl PgRunStore {
         }
     }
 
+    /// Whether the execution plane can work: the server answers and every table it reads or writes
+    /// exists, so an engine pointed at an unmigrated database is never reported ready.
+    ///
+    /// # Errors
+    /// [`StoreError::Unavailable`] naming how many tables are missing (never their contents).
+    pub async fn ready(&self) -> Result<(), StoreError> {
+        sagat_application::identity::IdentityStore::ping(&self.identity).await?;
+        let missing: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM unnest(ARRAY['workflows', 'workflow_versions', 'runs', 'steps', \
+                 'run_events', 'payloads', 'event_outbox', 'worker_sessions', 'command_dedupe']) AS t(name) \
+             WHERE to_regclass('public.' || t.name) IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        if missing == 0 {
+            Ok(())
+        } else {
+            Err(StoreError::Unavailable {
+                detail: format!(
+                    "the execution schema has not been migrated ({missing} tables missing)"
+                ),
+            })
+        }
+    }
+
     pub(crate) fn pool(&self) -> &PgPool {
         &self.pool
     }

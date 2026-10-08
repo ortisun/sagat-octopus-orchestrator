@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "apps/execution-engine", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +23,7 @@ sagat-infra-expr = { path = "crates/infra-expr" }
 sagat-infra-ir = { path = "crates/infra-ir" }
 sagat-scheduler = { path = "crates/scheduler" }
 sagat-control-plane = { path = "apps/control-plane" }
+sagat-execution-engine = { path = "apps/execution-engine" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time", "json"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "nats", "watchdog"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
