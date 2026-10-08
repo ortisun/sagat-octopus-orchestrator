@@ -1,0 +1,542 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/workflow/v1.json",
+  "title": "Sagat Octopus Orchestrator Workflow IR v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "entrypoint",
+    "nodes"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "sagat-octopus-orchestrator.io/v1"
+    },
+    "kind": {
+      "const": "Workflow"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,63}$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "entrypoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputSchema": {
+      "type": "object"
+    },
+    "outputSchema": {
+      "type": "object"
+    },
+    "triggers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "manual",
+              "event",
+              "cron",
+              "webhook"
+            ]
+          },
+          "eventType": {
+            "type": "string"
+          },
+          "cron": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    }
+  },
+  "$defs": {
+    "node": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/activity"
+        },
+        {
+          "$ref": "#/$defs/timer"
+        },
+        {
+          "$ref": "#/$defs/waitEvent"
+        },
+        {
+          "$ref": "#/$defs/condition"
+        },
+        {
+          "$ref": "#/$defs/parallel"
+        },
+        {
+          "$ref": "#/$defs/child"
+        },
+        {
+          "$ref": "#/$defs/saga"
+        },
+        {
+          "$ref": "#/$defs/script"
+        },
+        {
+          "$ref": "#/$defs/foreach"
+        },
+        {
+          "$ref": "#/$defs/humanApproval"
+        },
+        {
+          "$ref": "#/$defs/end"
+        }
+      ]
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "id",
+        "type"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string"
+        },
+        "next": {
+          "type": "string"
+        },
+        "onError": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "activity": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "activity"
+          ],
+          "properties": {
+            "type": {
+              "const": "activity"
+            },
+            "activity": {
+              "type": "string"
+            },
+            "retry": {
+              "$ref": "#/$defs/retry"
+            },
+            "compensateWith": {
+              "type": "string"
+            },
+            "reconcileWith": {
+              "type": "string"
+            },
+            "idempotencyTemplate": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "timer": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "durationMs"
+          ],
+          "properties": {
+            "type": {
+              "const": "timer"
+            },
+            "durationMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "waitEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "eventType",
+            "correlationExpr",
+            "timeoutMs"
+          ],
+          "properties": {
+            "type": {
+              "const": "waitEvent"
+            },
+            "eventType": {
+              "type": "string"
+            },
+            "correlationExpr": {
+              "type": "string"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "onTimeout": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "condition": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "expression",
+            "ifTrue",
+            "ifFalse"
+          ],
+          "properties": {
+            "type": {
+              "const": "condition"
+            },
+            "expression": {
+              "type": "string"
+            },
+            "ifTrue": {
+              "type": "string"
+            },
+            "ifFalse": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "parallel": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "branches",
+            "join"
+          ],
+          "properties": {
+            "type": {
+              "const": "parallel"
+            },
+            "branches": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "string"
+              }
+            },
+            "join": {
+              "enum": [
+                "all",
+                "any"
+              ]
+            },
+            "next": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "child": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "workflowId"
+          ],
+          "properties": {
+            "type": {
+              "const": "child"
+            },
+            "workflowId": {
+              "type": "string"
+            },
+            "cancelPolicy": {
+              "enum": [
+                "propagate",
+                "detach",
+                "request_cancel"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "saga": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "begin"
+          ],
+          "properties": {
+            "type": {
+              "const": "saga"
+            },
+            "begin": {
+              "type": "string"
+            },
+            "onCompensationFailure": {
+              "enum": [
+                "manual_review",
+                "fail"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "initialDelayMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxDelayMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "strategy": {
+          "enum": [
+            "fixed",
+            "exponential"
+          ]
+        },
+        "jitter": {
+          "type": "boolean"
+        }
+      }
+    },
+    "script": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "artifactDigest"
+          ],
+          "properties": {
+            "type": {
+              "const": "script"
+            },
+            "artifactDigest": {
+              "type": "string",
+              "minLength": 12
+            },
+            "language": {
+              "enum": [
+                "typescript",
+                "python",
+                "csharp",
+                "go",
+                "java"
+              ]
+            },
+            "retry": {
+              "$ref": "#/$defs/retry"
+            },
+            "compensateWith": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "foreach": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "collectionExpr",
+            "itemKeyExpr",
+            "body",
+            "maxItems"
+          ],
+          "properties": {
+            "type": {
+              "const": "foreach"
+            },
+            "collectionExpr": {
+              "type": "string"
+            },
+            "itemKeyExpr": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "maxConcurrency": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "humanApproval": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type",
+            "approverPolicy",
+            "timeoutMs",
+            "formSchema"
+          ],
+          "properties": {
+            "type": {
+              "const": "humanApproval"
+            },
+            "approverPolicy": {
+              "type": "string"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "formSchema": {
+              "type": "object"
+            },
+            "onTimeout": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "end": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "end"
+            },
+            "outputExpr": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

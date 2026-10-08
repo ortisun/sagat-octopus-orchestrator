@@ -1,0 +1,84 @@
+asyncapi: 3.0.0
+info:
+  title: Sagat Octopus Orchestrator Integration Events
+  version: 0.1.0
+  description: Event contract; at-least-once; dedupe by eventId scoped to source/tenant.
+defaultContentType: application/json
+servers:
+  internal:
+    host: nats:4222
+    protocol: nats
+channels:
+  runEvents:
+    address: df.events.run
+    messages:
+      runStateChanged:
+        $ref: '#/components/messages/RunStateChanged'
+  taskReady:
+    address: df.tasks.{capability}
+    parameters:
+      capability:
+        description: Worker capability/pool
+    messages:
+      taskDispatched:
+        $ref: '#/components/messages/TaskDispatched'
+  connectorEvents:
+    address: df.integration.inbound
+    messages:
+      externalEvent:
+        $ref: '#/components/messages/ExternalEvent'
+operations:
+  publishRunState:
+    action: send
+    channel: {$ref: '#/channels/runEvents'}
+    messages: [{$ref: '#/channels/runEvents/messages/runStateChanged'}]
+  consumeTasks:
+    action: receive
+    channel: {$ref: '#/channels/taskReady'}
+    messages: [{$ref: '#/channels/taskReady/messages/taskDispatched'}]
+  receiveIntegration:
+    action: receive
+    channel: {$ref: '#/channels/connectorEvents'}
+    messages: [{$ref: '#/channels/connectorEvents/messages/externalEvent'}]
+components:
+  messages:
+    RunStateChanged:
+      name: RunStateChanged
+      contentType: application/json
+      payload:
+        type: object
+        required: [eventId, tenantId, runId, seq, status]
+        properties:
+          eventId: {type: string}
+          tenantId: {type: string}
+          runId: {type: string}
+          seq: {type: integer}
+          status: {type: string}
+          traceparent: {type: string}
+    TaskDispatched:
+      name: TaskDispatched
+      contentType: application/json
+      payload:
+        type: object
+        required: [taskId, tenantId, stepId, generation, capability]
+        properties:
+          taskId: {type: string}
+          tenantId: {type: string}
+          stepId: {type: string}
+          generation: {type: integer}
+          capability: {type: string}
+          traceparent: {type: string}
+    ExternalEvent:
+      name: ExternalEvent
+      contentType: application/json
+      payload:
+        type: object
+        required: [eventId, tenantId, source, eventType, schemaVersion, payloadRef]
+        properties:
+          eventId: {type: string}
+          tenantId: {type: string}
+          source: {type: string}
+          eventType: {type: string}
+          schemaVersion: {type: string}
+          correlationKey: {type: string}
+          payloadRef: {type: string}

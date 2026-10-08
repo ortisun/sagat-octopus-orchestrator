@@ -1,0 +1,88 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "corporate-payment",
+    "description": "Example saga with reservation/compensation and confirmation"
+  },
+  "entrypoint": "validate",
+  "triggers": [
+    {
+      "kind": "manual"
+    }
+  ],
+  "inputSchema": {
+    "type": "object",
+    "required": [
+      "paymentId",
+      "amount"
+    ],
+    "properties": {
+      "paymentId": {
+        "type": "string"
+      },
+      "amount": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "validate",
+      "type": "activity",
+      "activity": "payment.validate",
+      "next": "reserve"
+    },
+    {
+      "id": "reserve",
+      "type": "activity",
+      "activity": "limit.reserve",
+      "compensateWith": "limit.release",
+      "idempotencyTemplate": "reserve:${run.id}",
+      "next": "submit",
+      "retry": {
+        "maxAttempts": 3,
+        "strategy": "exponential",
+        "initialDelayMs": 500,
+        "maxDelayMs": 10000,
+        "jitter": true
+      }
+    },
+    {
+      "id": "submit",
+      "type": "activity",
+      "activity": "payment.submit",
+      "compensateWith": "payment.return.request",
+      "reconcileWith": "payment.lookup.status",
+      "idempotencyTemplate": "submit:${input.paymentId}",
+      "next": "wait_confirmation",
+      "retry": {
+        "maxAttempts": 3,
+        "strategy": "exponential",
+        "initialDelayMs": 1000,
+        "maxDelayMs": 30000,
+        "jitter": true
+      }
+    },
+    {
+      "id": "wait_confirmation",
+      "type": "waitEvent",
+      "eventType": "payment.confirmed",
+      "correlationExpr": "input.paymentId",
+      "timeoutMs": 300000,
+      "next": "notify",
+      "onTimeout": "manual_review"
+    },
+    {
+      "id": "notify",
+      "type": "activity",
+      "activity": "customer.notify"
+    },
+    {
+      "id": "manual_review",
+      "type": "activity",
+      "activity": "payment.manual-review"
+    }
+  ]
+}

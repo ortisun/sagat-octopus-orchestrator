@@ -1,0 +1,386 @@
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator Control & Execution API
+  version: 0.1.0
+  description: |
+    Design contract (not implemented). The database is the source of truth; commands may be redelivered.
+    Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
+servers:
+  - url: https://api.sagat-octopus-orchestrator.example/v1
+security:
+  - bearerAuth: []
+tags:
+  - name: Workflows
+  - name: Runs
+  - name: Events
+  - name: Scripts
+  - name: Operations
+paths:
+  /workflows:
+    get:
+      operationId: listWorkflows
+      tags: [Workflows]
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': {description: Page of workflows, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowPage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      operationId: createWorkflowDraft
+      tags: [Workflows]
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WorkflowDraft'}
+      responses:
+        '201': {description: Draft created, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /workflows/{workflowId}/publish:
+    post:
+      operationId: publishWorkflow
+      tags: [Workflows]
+      parameters:
+        - $ref: '#/components/parameters/WorkflowId'
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [draftRevision]
+              properties:
+                draftRevision: {type: integer, minimum: 1}
+                releaseNotes: {type: string, maxLength: 2048}
+      responses:
+        '201': {description: Immutable version published, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /runs:
+    get:
+      operationId: listRuns
+      tags: [Runs]
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/Cursor'
+        - name: workflowId
+          in: query
+          schema: {type: string}
+        - name: status
+          in: query
+          schema: {type: string}
+      responses:
+        '200': {description: Page of runs, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
+    post:
+      operationId: startRun
+      tags: [Runs]
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/StartRunRequest'}
+      responses:
+        '202': {description: Run durably accepted, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '400': {$ref: '#/components/responses/ValidationError'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /runs/{runId}:
+    get:
+      operationId: getRun
+      tags: [Runs]
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Namespace'
+      responses:
+        '200': {description: Run state, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /runs/{runId}/events:
+    get:
+      operationId: listRunJournalEvents
+      tags: [Runs]
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': {description: Paged journal timeline, content: {application/json: {schema: {$ref: '#/components/schemas/JournalPage'}}}}
+  /runs/{runId}/graph:
+    get:
+      operationId: getRuntimeGraph
+      tags: [Runs]
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Namespace'
+        - name: afterSeq
+          in: query
+          schema: {type: integer, format: int64, minimum: 0}
+      responses:
+        '200': {description: Projected runtime graph; may lag behind journal, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
+  /runs/{runId}/operations:
+    post:
+      operationId: operateRun
+      tags: [Operations]
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OperationRequest'}
+      responses:
+        '202': {description: Operation accepted, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResult'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /runs/{runId}/signals/{signalName}:
+    post:
+      operationId: signalRun
+      tags: [Events]
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: signalName
+          in: path
+          required: true
+          schema: {type: string, minLength: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EventPayload'}
+      responses:
+        '202': {description: Signal durably admitted}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /events:
+    post:
+      operationId: publishEvent
+      tags: [Events]
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/IncomingEvent'}
+      responses:
+        '202': {description: Event persisted to inbox}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /webhooks/{endpointId}:
+    post:
+      security: []
+      operationId: receiveSignedWebhook
+      tags: [Events]
+      parameters:
+        - name: endpointId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: X-DF-Signature
+          in: header
+          required: true
+          schema: {type: string}
+        - name: X-DF-Timestamp
+          in: header
+          required: true
+          schema: {type: string}
+        - name: X-DF-Event-Id
+          in: header
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EventPayload'}
+      responses:
+        '202': {description: Signature verified, event durably admitted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+  /scripts/builds:
+    post:
+      operationId: buildInlineScript
+      tags: [Scripts]
+      parameters:
+        - $ref: '#/components/parameters/Namespace'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BuildRequest'}
+      responses:
+        '202': {description: Async isolated build accepted, content: {application/json: {schema: {$ref: '#/components/schemas/BuildStatus'}}}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    Namespace:
+      name: X-DF-Namespace
+      in: header
+      required: true
+      description: Namespace; authorization derives tenant from token, not header.
+      schema: {type: string, minLength: 1}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 8, maxLength: 160}
+    Cursor:
+      name: cursor
+      in: query
+      schema: {type: string}
+    WorkflowId:
+      name: workflowId
+      in: path
+      required: true
+      schema: {type: string}
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  schemas:
+    JsonObject: {type: object, additionalProperties: true}
+    Error:
+      type: object
+      required: [code, message, retryable, traceId]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        retryable: {type: boolean}
+        traceId: {type: string}
+        details: {type: object, additionalProperties: true}
+    WorkflowDraft:
+      type: object
+      required: [name, ir]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        draftRevision: {type: integer, minimum: 1}
+        ir: {$ref: '#/components/schemas/JsonObject'}
+    WorkflowVersion:
+      type: object
+      required: [workflowId, versionId, digest]
+      properties:
+        workflowId: {type: string}
+        versionId: {type: string}
+        digest: {type: string}
+        publishedAt: {type: string, format: date-time}
+    WorkflowPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/WorkflowDraft'}}
+        nextCursor: {type: [string, 'null']}
+    StartRunRequest:
+      type: object
+      required: [workflowId, input]
+      properties:
+        workflowId: {type: string}
+        versionId: {type: string, description: Optional explicit pin.}
+        input: {$ref: '#/components/schemas/JsonObject'}
+        correlationId: {type: string}
+        deadline: {type: string, format: date-time}
+    Run:
+      type: object
+      required: [runId, workflowId, versionId, status, createdAt]
+      properties:
+        runId: {type: string, format: uuid}
+        workflowId: {type: string}
+        versionId: {type: string}
+        status: {type: string, enum: [CREATED, READY, RUNNING, WAITING, PAUSED, COMPENSATING, CANCELLING, SUCCEEDED, FAILED, COMPENSATED, COMPENSATION_FAILED, CANCELLED, TIMED_OUT]}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        traceId: {type: string}
+        correlationId: {type: string}
+    RunPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Run'}}
+        nextCursor: {type: [string, 'null']}
+    JournalEvent:
+      type: object
+      required: [seq, eventType, occurredAt]
+      properties:
+        seq: {type: integer, format: int64}
+        eventType: {type: string}
+        occurredAt: {type: string, format: date-time}
+        stepId: {type: string}
+        attempt: {type: integer}
+        traceId: {type: string}
+        payloadRef: {type: string}
+    JournalPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/JournalEvent'}}
+        nextCursor: {type: [string, 'null']}
+    RuntimeGraph:
+      type: object
+      required: [runId, projectionSeq, nodes, edges]
+      properties:
+        runId: {type: string, format: uuid}
+        projectionSeq: {type: integer, format: int64}
+        projectionLagMs: {type: integer, minimum: 0}
+        nodes: {type: array, items: {$ref: '#/components/schemas/JsonObject'}}
+        edges: {type: array, items: {$ref: '#/components/schemas/JsonObject'}}
+    OperationRequest:
+      type: object
+      required: [action, reason]
+      properties:
+        action: {type: string, enum: [PAUSE, RESUME, CANCEL, RETRY_STEP, RETRY_COMPENSATION, RERUN_AS_NEW, MARK_MANUAL_REVIEW]}
+        stepId: {type: string}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+        expectedRunVersion: {type: integer}
+    OperationResult:
+      type: object
+      required: [operationId, accepted]
+      properties:
+        operationId: {type: string, format: uuid}
+        accepted: {type: boolean}
+    EventPayload: {$ref: '#/components/schemas/JsonObject'}
+    IncomingEvent:
+      type: object
+      required: [eventId, type, data]
+      properties:
+        eventId: {type: string}
+        type: {type: string}
+        subject: {type: string}
+        occurredAt: {type: string, format: date-time}
+        correlationKey: {type: string}
+        data: {$ref: '#/components/schemas/JsonObject'}
+    BuildRequest:
+      type: object
+      required: [language, source, lockfile]
+      properties:
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
+        source: {type: string}
+        lockfile: {type: string}
+        toolchain: {type: string}
+    BuildStatus:
+      type: object
+      required: [buildId, status]
+      properties:
+        buildId: {type: string, format: uuid}
+        status: {type: string, enum: [QUEUED, BUILDING, SUCCEEDED, FAILED, CANCELLED]}
+        artifactDigest: {type: string}
+  responses:
+    Unauthorized: {description: Authentication failed, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Forbidden: {description: Permission denied, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: Resource not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Conflict: {description: Conflict or stale version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    ValidationError: {description: Invalid input/schema/graph, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    TooManyRequests: {description: Rate or quota exceeded, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

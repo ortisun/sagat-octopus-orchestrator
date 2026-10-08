@@ -1,0 +1,56 @@
+syntax = "proto3";
+package sagat_octopus_orchestrator.v1;
+option csharp_namespace = "SagatOctopusOrchestrator.Protocol.V1";
+option go_package = "github.com/ortisun/sagat-octopus-orchestrator/proto/sagat_octopus_orchestrator/v1;sagatoctopusorchestratorv1";
+option java_package = "dev.sagatoctopusorchestrator.protocol.v1";
+
+// Design contract; not generated from runtime code yet.
+service WorkerService {
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc PollTasks(PollTasksRequest) returns (PollTasksResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc CompleteStep(CompleteStepRequest) returns (StepCommandResponse);
+  rpc FailStep(FailStepRequest) returns (StepCommandResponse);
+}
+
+message WorkerCapabilities {
+  repeated string languages = 1;
+  repeated string activities = 2;
+  repeated string pools = 3;
+  int32 max_inflight = 4;
+  string protocol_version = 5;
+}
+message RegisterWorkerRequest { string worker_name = 1; string namespace = 2; WorkerCapabilities capabilities = 3; }
+message RegisterWorkerResponse { string worker_id = 1; string session_token = 2; string accepted_protocol_version = 3; }
+message PollTasksRequest { string worker_id = 1; string session_token = 2; int32 max_tasks = 3; }
+message TaskLease {
+  string task_id = 1;
+  string run_id = 2;
+  string step_id = 3;
+  int32 attempt = 4;
+  int64 generation = 5;
+  string lease_token = 6;
+  int64 expires_at_epoch_ms = 7;
+  string activity_name = 8;
+  string input_json = 9;
+  string input_blob_ref = 10;
+  string traceparent = 11;
+  string tenant_alias = 12;
+  string idempotency_key = 13;
+}
+message PollTasksResponse { repeated TaskLease tasks = 1; int32 retry_after_ms = 2; }
+message HeartbeatRequest { string task_id = 1; string worker_id = 2; int64 generation = 3; string lease_token = 4; }
+message HeartbeatResponse { int64 lease_expires_at_epoch_ms = 1; bool cancel_requested = 2; }
+message CompleteStepRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string idempotency_key = 7; string output_json = 8; string output_blob_ref = 9;
+  string output_sha256 = 10; string traceparent = 11;
+}
+message FailStepRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string idempotency_key = 7; string error_code = 8; string safe_message = 9;
+  bool retryable = 10; string traceparent = 11;
+}
+message StepCommandResponse { string command_id = 1; bool already_applied = 2; string step_status = 3; string run_status = 4; }

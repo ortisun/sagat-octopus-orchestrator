@@ -1,0 +1,21 @@
+# Glossary
+
+- **Workflow Definition:** versionable logical design of the process.
+- **Workflow Version:** published, immutable artifact, with IR and hash.
+- **Run:** workflow instance with its own inputs, status and history.
+- **Step:** logical work node, with stable identity.
+- **Attempt:** physical attempt of a step with lease/fencing.
+- **Activity:** code executed by a customer worker (SDK / BYO worker).
+- **Inline Script:** code stored/published in the registry, automatically compiled or prepared, and executed in the platform sandbox.
+- **Journal:** ordered append-only record of decisions/transitions.
+- **Outbox:** transactional queue for commands/events external to the DB.
+- **Inbox:** deduplication/durability of received external messages.
+- **Saga:** coordination of actions with semantically defined compensations.
+- **Reconciliation:** querying external state to resolve an ambiguous outcome.
+- **Signal:** message addressed to a specific Run.
+- **Wait subscription:** durable event→Run/step binding, with deadline.
+- **Lease/fencing:** temporary versioned authorization that prevents a stale attempt from committing.
+- **IR:** canonical intermediate representation of the workflow interpreted by the engine.
+- **Control plane:** APIs, definition, management, authoring.
+- **Execution plane:** scheduler, journal, workers, Saga engine.
+- **Observability plane:** projections, logs, traces, metrics and UI.
