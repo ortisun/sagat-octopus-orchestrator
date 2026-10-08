@@ -1,0 +1,21 @@
+[package]
+name = "sagat-infra-expr"
+description = "Bounded evaluator for the safe CEL subset used by workflow conditions, correlation keys and idempotency templates."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The reference implementation of CEL, used only as a test oracle (it recurses without bound on
+# hostile input, which is exactly why production code does not use it).
+cel = "0.15"
+proptest = { version = "1", default-features = false, features = ["std"] }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "apps/control-plane", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/infra-expr", "apps/control-plane", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,7 @@ sagat-application = { path = "crates/application" }
 sagat-infra-postgres = { path = "crates/infra-postgres" }
 sagat-telemetry = { path = "crates/telemetry" }
 sagat-api-http = { path = "crates/api-http" }
+sagat-infra-expr = { path = "crates/infra-expr" }
 sagat-control-plane = { path = "apps/control-plane" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"] }
