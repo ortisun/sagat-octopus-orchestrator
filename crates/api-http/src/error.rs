@@ -159,16 +159,34 @@ impl ApiError {
         e
     }
 
+    /// The client stopped sending its request body; it may retry.
+    #[must_use]
+    pub fn request_timeout() -> Self {
+        let mut e = Self::new(
+            StatusCode::REQUEST_TIMEOUT,
+            ErrorCode::Unavailable,
+            "the request body was not received in time",
+        );
+        e.parts.retryable = true;
+        e
+    }
+
     /// Dependency down; the client may retry.
     #[must_use]
     pub fn unavailable() -> Self {
+        Self::unavailable_after(5)
+    }
+
+    /// Temporarily unable to serve; the client may retry after `seconds` (at least one).
+    #[must_use]
+    pub fn unavailable_after(seconds: u32) -> Self {
         let mut e = Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::Unavailable,
             "service temporarily unavailable",
         );
         e.parts.retryable = true;
-        e.retry_after = Some(5);
+        e.retry_after = Some(seconds.max(1));
         e
     }
 

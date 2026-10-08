@@ -82,6 +82,13 @@ cargo run -p sagat-control-plane --bin control-plane -- serve
 cargo run -p sagat-control-plane --bin control-plane -- --help        # every setting
 ```
 
+With `SAGAT_ENV=dev` the commands above all run as the database owner. Outside dev, `migrate` and
+`provision-tenant` use the owner role, while `serve` must use the least-privilege role
+(`sagat_app`, created by `infra/docker/postgres-init/01-runtime-role.sh` or by your DBA before the
+first migration): `serve` checks its own database role at start and exits with code 2 if it is a
+superuser, owns `audit_records` or may `UPDATE`/`DELETE`/`TRUNCATE` it. `SAGAT_MIGRATE_ON_START` is
+accepted only in dev. See the runbook, sections 1 and 2.
+
 A caller needs a token whose `sub` is a member of the tenant named in its `tenant` claim (the seed
 creates tenant `dev` with administrator `dev-admin`). Memberships are read from the database on
 every request, so removing one takes effect immediately.
@@ -110,7 +117,7 @@ logs, trace ids and Prometheus metrics exist), no development identity provider 
 limits that are per process (G13; a shared limiter is feature 010). Access-token `typ` enforcement
 is available but off by default (G14). Operations: [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md).
 
-## Security review evidence (T001-034, partial)
+## Security review evidence (T001-034)
 
 An independent, read-only review of the 001 code (authentication, tenant isolation, SQL, error
 handling, the process, the container and CI) found no authentication bypass and no cross-tenant read
@@ -130,4 +137,43 @@ or write. It did find the issues below; each fix was written test-first or verif
 | 10 | Logs could carry URL credentials; unbounded echo of rejected input | Low | Fixed: redaction and clipping; spoofable trace id accepted: G15 |
 | 11 | Smoke test could wipe real volumes; mutable Action tags; no advisory scanning | Low | Fixed: throw-away project name, SHA-pinned actions, `cargo audit` (one justified ignore: G16) |
 
-The operational runbook is [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md). Still pending for T001-034: the result of a second review pass over the rate limiting, metrics and `provision-tenant` changes.
+The operational runbook is [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md).
+
+### Second pass (rate limiting, metrics, readiness, `provision-tenant`, start-up)
+
+A second independent review of the code added after the first pass found no authentication bypass and
+no cross-tenant access. It found the issues below. Every fix was written test-first: the new test
+was run against the old code and failed for the stated reason before the change (the commit message
+of each fix records it). "Report #" is the numbering of the review.
+
+| Report # | Finding | Severity | Outcome | Proof |
+|---|---|---|---|---|
+| 1 | The HTTP `method` label was the raw request method; hyper accepts any token, the recorder never forgot a series (300 methods -> 300 series; 100 KB methods -> 41 MB RSS), even with `SAGAT_ADMIN_ADDR=off` | High | Fixed: closed label set (`GET`..`OPTIONS`, else `OTHER`), 10-minute idle expiry of every series, released every minute by the process even when nothing scrapes (D18) | `fault/metrics.rs::arbitrary_http_methods_cannot_create_unbounded_metric_series`, `crates/telemetry/tests/metrics.rs` |
+| 2 | One authenticated member could hold every global slot with POSTs that announce a body and never send it (15 s each) | Medium | Fixed: body idle timeout (`SAGAT_BODY_IDLE_TIMEOUT_SECS`, 5 s, `408`) and a per-tenant concurrency cap (`SAGAT_MAX_IN_FLIGHT_PER_TENANT`, a quarter of the global cap, `429`) held by the `Caller` until the handler returns (D20). **Open:** a body trickled just under the idle timeout holds a slot until the 15 s request timeout, bounded by the per-tenant cap | `fault/limits.rs::stalled_uploads_of_one_tenant_cannot_starve_the_others`, `crates/api-http/tests/tenant_concurrency.rs`, `apps/control-plane/tests/config.rs` |
+| 3 | A valid token without membership (or with an unknown tenant) cost two lookups per request and never reached the tenant limiter (300 requests -> 600 lookups, no `429`) | Medium | Fixed: per-subject bucket (`sub`; 20 req/s, burst 40; `SAGAT_SUBJECT_RATE_LIMIT_RPS`/`BURST`) after the JWT verifies and before `authenticate` (D19) | `fault/limits.rs::a_valid_token_without_membership_is_throttled_before_it_costs_database_lookups` (counts the lookups through a decorated store) |
+| 7 | One viewer could spend the whole tenant bucket | Low | Fixed by the same per-subject bucket | `fault/limits.rs::one_member_cannot_exhaust_the_tenant_budget_on_their_own` |
+| 4, 14 | `/v1/ready` was not single-flight (300 concurrent probes -> 300 pings), had no ping timeout, discarded the error, and the schema-missing branch logged nothing | Low | Fixed: one shared ping, 500 ms timeout (not ready), cause logged at `warn` and never returned (D21) | `fault/readiness.rs` (three tests) |
+| 5 | `Subject::parse("system:provisioning")` succeeded although the doc said nobody can authenticate as it | Low | Fixed: the `system:` namespace is reserved (`SubjectViolation::Reserved`); `provision-tenant` and `seed-dev` refuse it with exit code 2 (D22) | `crates/domain/tests/identity.rs`, `crates/application/tests/identity_service.rs::a_token_cannot_authenticate_as_the_platform_actor_even_if_a_membership_exists`, `apps/control-plane/tests/cli.rs` |
+| 6 | `SAGAT_RATE_LIMIT_RPS=1e-300` was accepted and the first over-budget request panicked (`200, 200, 500, 500`) | Low | Fixed: finite rate of at least 0.001 and finite burst of at least 1 are validated in the limiter (typed `RateLimitConfigError`) and in the configuration; the wait is capped at one hour | `crates/api-http/tests/rate_limiter.rs`, `apps/control-plane/tests/config.rs` |
+| 8 | Above 10 000 tracked tenants every call swept the table under the global lock (217 us per call at 20 000) | Low | Fixed: the sweep runs at most once per refill window, the table holds at most 100 000 keys, keys beyond share an overflow bucket. The cost is bounded by construction and tested with a fake clock; the 217 us figure was **not** re-measured | `rate_limiter.rs::pruning_is_throttled_to_once_per_interval_not_once_per_call`, `keys_beyond_the_capacity_share_one_overflow_bucket` |
+| 9 | `check_at` could move its clock backwards; the shed `Retry-After` was a constant 5 | Info | Fixed: monotonic update; the shed hint cycles through 3 to 8 s | `rate_limiter.rs::a_late_stale_timestamp_cannot_rewind_the_refill_clock`, `fault/limits.rs::when_saturated_the_api_sheds_load_at_once_and_probes_keep_answering` |
+| 10 | Nothing stopped `serve` from running as the owner or a superuser | Low | Fixed: outside dev `serve` refuses a role that is a superuser, owns `audit_records` or may UPDATE/DELETE/TRUNCATE it, and an unmigrated database; `SAGAT_MIGRATE_ON_START` is dev-only (D24). Other role attributes are not checked, and the check runs once at start | `integration/least_privilege.rs`, `e2e/us03.rs` (five tests) |
+| 11 | The unauthenticated `/metrics` port could be exposed without any hint | Low | Mitigated: a `WARN` at start when it is bound to a non-loopback address, and the runbook says to restrict it with a NetworkPolicy (D25). Not enforced | `apps/control-plane/tests/config.rs`, `e2e/us03.rs::a_metrics_listener_reachable_from_a_network_logs_a_warning` |
+| 12 | `SAGAT_OIDC_REQUIRED_TYP` rejected `application/at+jwt` and, with a trailing newline, every token | Low | Fixed: media-type comparison and trimmed value (D23) | `contract/auth.rs` (two tests), `apps/control-plane/tests/config.rs` |
+| 13 | CI ran an unpinned `npx @asyncapi/cli@3` with install scripts | Low | Fixed: pinned to 3.6.0 with `--ignore-scripts`; the command line was run locally and exits 0. **Not run in CI from this branch.** Transitive dependencies are still resolved at run time | `.github/workflows/ci.yml` |
+| 9 (audit) | `provision-tenant` audit rows do not record the operator or the database session user | Low | **Not fixed**, recorded as G17 | research.md |
+| - | The shed `Retry-After` does not match the pool size (512 in flight vs 10 connections) | Low | **Not fixed**, recorded as G18 | research.md |
+
+Also changed: the two wall-clock assertions in `apps/control-plane/tests/cli.rs` (2 s) flaked under
+CPU load; exit code 2 without `database error` already proves that no connection was attempted, so
+the bound is now 10 s and only catches a hang.
+
+Result on the branch that closed this pass (macOS, Docker Desktop, PostgreSQL 16 through
+Testcontainers, 2026-10-08): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--locked -- -D warnings` and `python3 scripts/check-architecture.py` exit 0, and `cargo test
+--workspace --locked --no-fail-fast` passes 268 tests with 0 failures and 1 ignored (the benchmark).
+Three fault tests had timing-dependent results on a loaded machine (one of them, the tenant
+boundary flood, also on the code before this pass: 600 simultaneous connects overflow the macOS
+accept queue) and were made deterministic without weakening what they prove; the commit
+`test(fault): remove three sources of flakiness` explains each. Not run from this branch: the CI
+jobs themselves, `scripts/smoke-compose.sh` (the Docker image build) and `cargo audit`.

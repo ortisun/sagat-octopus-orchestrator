@@ -310,6 +310,29 @@ async fn authenticate_gives_the_same_answer_for_every_kind_of_failure() {
 }
 
 #[tokio::test]
+async fn a_token_cannot_authenticate_as_the_platform_actor_even_if_a_membership_exists() {
+    // Review finding 5: `Subject::parse("system:provisioning")` succeeded, so an operator who
+    // provisioned that subject as a tenant administrator could sign in as the audit actor.
+    let w = world();
+    let tenant = w.tenant_a.clone();
+    w.store.with(|s| {
+        s.memberships.push(Membership::bootstrap_admin(
+            &tenant,
+            Subject::provisioning(),
+            T0,
+        ));
+    });
+
+    for who in ["system:provisioning", "SYSTEM:PROVISIONING", "system:other"] {
+        assert_eq!(
+            w.svc.authenticate("acme", who).await,
+            Err(AppError::Unauthenticated),
+            "{who:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn authenticate_reports_a_storage_outage_as_unavailable_not_as_a_denial() {
     let w = world();
     w.store.with(|s| {

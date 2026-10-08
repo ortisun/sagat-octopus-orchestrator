@@ -8,9 +8,11 @@ use sqlx::migrate::Migrator;
 
 mod identity;
 mod pool;
+mod privilege;
 
 pub use identity::PgIdentityStore;
 pub use pool::{PoolConfig, connect, spawn_pool_metrics};
+pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use sqlx::PgPool;
 
 /// Embedded, ordered schema migrations (`migrations/<version>_<name>.{up,down}.sql`).

@@ -9,13 +9,19 @@ code in this repository; what is **not** covered is listed at the end so nobody 
 | Piece | Where | Notes |
 |---|---|---|
 | API | `control-plane serve`, default `127.0.0.1:8080` | Stateless; all state is in PostgreSQL |
-| Admin listener | `SAGAT_ADMIN_ADDR`, default `127.0.0.1:9090` | `/metrics` only. Keep it off public networks; `off` disables it |
+| Admin listener | `SAGAT_ADMIN_ADDR`, default `127.0.0.1:9090` | `/metrics` only, **without authentication**. Binding it to a non-loopback address (needed for a scraper in another pod) logs `the metrics endpoint is unauthenticated and listens on a non-loopback address` at `WARN` at start: restrict that port with a Kubernetes `NetworkPolicy` (allow only the Prometheus pods) or a firewall rule, and never publish it through an Ingress or load balancer. `off` disables it |
 | PostgreSQL 16 | `DATABASE_URL` | Source of truth. TLS is required outside `SAGAT_ENV=dev` |
 | OIDC provider | `SAGAT_OIDC_JWKS_URI` (HTTPS) | Only its public keys are fetched; no token is ever sent to it |
 
 Two database roles exist on purpose. The **owner** role runs `migrate` and `provision-tenant`. The
 API serves requests as **`sagat_app`**, which owns nothing, cannot alter or delete audit rows and
-cannot change the schema. Never point the API at the owner role.
+cannot change the schema. Never point the API at the owner role: outside `SAGAT_ENV=dev`, `serve`
+checks the role it is connected as and **refuses to start** (exit code 2, before it listens) when
+that role is a superuser, owns `audit_records` (directly or through a role it belongs to), or may
+`UPDATE`, `DELETE` or `TRUNCATE` it. It also refuses when `audit_records` does not exist yet,
+because the privileges cannot be verified: run `migrate` first. The check runs once at start; it
+does not look at other role attributes (`CREATEROLE`, `REPLICATION`, ...). With `SAGAT_ENV=dev` it
+is skipped, which is why the local Docker stack (dev) also works with the owner role.
 
 ## 2. Start, stop, upgrade
 
@@ -24,8 +30,10 @@ control-plane migrate            # owner role; idempotent, safe to run twice
 control-plane serve              # runtime role
 ```
 
-- `SAGAT_MIGRATE_ON_START=true` runs the migrations before serving; use it only with the owner role
-  and a single instance.
+- `SAGAT_MIGRATE_ON_START=true` runs the migrations before serving. It needs the owner role, which
+  `serve` refuses outside `SAGAT_ENV=dev`, so it is **only accepted in dev** (exit code 2 with a
+  message naming the variable otherwise). In staging and production run `migrate` as a separate step
+  with the owner role, then start `serve` with the runtime role.
 - **Upgrade:** run `migrate` first, then roll the new binary. Migrations are additive in this
   feature, so the previous binary keeps working against the new schema.
 - **Stop:** `SIGTERM` stops accepting connections and drains for `SAGAT_SHUTDOWN_GRACE_SECS`
@@ -41,7 +49,10 @@ control-plane serve              # runtime role
 SAGAT_PROVISION_TENANT=acme SAGAT_PROVISION_ADMIN=alice@example.com control-plane provision-tenant
 ```
 
-- Both values are mandatory; there are no defaults.
+- Both values are mandatory; there are no defaults. The administrator's subject must not start with
+  `system:` (any case): that namespace is reserved for platform actors such as the audit actor
+  `system:provisioning`, and the command exits with code 2 naming `SAGAT_PROVISION_ADMIN`. A token
+  whose `sub` is in that namespace is never accepted, whatever the database contains.
 - It exits non-zero if the slug already exists and changes nothing in that case.
 - It writes `tenant.provisioned` and `membership.granted` audit records (actor
   `system:provisioning`) in the same transaction as the tenant.
@@ -54,7 +65,11 @@ SAGAT_PROVISION_TENANT=acme SAGAT_PROVISION_ADMIN=alice@example.com control-plan
 | Probe | Meaning | Use for |
 |---|---|---|
 | `GET /v1/health` | The process is up. Touches nothing else | Liveness; a database outage must not restart pods |
-| `GET /v1/ready` | PostgreSQL answers **and** the identity tables exist; cached for 1 s | Readiness |
+| `GET /v1/ready` | PostgreSQL answers within 500 ms **and** the identity tables exist; cached for 1 s, and concurrent probes share one ping | Readiness |
+
+When `/v1/ready` is `503` the response never says why; the cause is a `WARN` line in the JSON log
+(`readiness probe failed`, preceded by `storage unavailable` with the detail, for example "the
+database schema has not been migrated" or a pool/connection error).
 
 Every response carries `X-Trace-Id`, and every error body repeats it as `traceId`. Search the JSON
 logs for that value to follow one request.
@@ -67,15 +82,43 @@ logs for that value to follow one request.
 | All requests `401` with `UNAUTHENTICATED` | Wrong `SAGAT_OIDC_ISSUER`/`AUDIENCE`, expired or too-old token (`iat` older than the maximum lifetime, 1 h) or the provider rotated keys | Compare the token's `iss`/`aud`/`kid`; check `jwks_refresh_total{outcome}` |
 | `401` only for tokens with a new `kid` | JWKS not refreshed yet | Refresh is rate-limited and stale keys keep serving; wait one refresh interval, check `outcome="error"` |
 | Authenticated user gets `404` for a tenant's resource | Resource belongs to another tenant, or does not exist (deliberately the same answer) | Look for `access.denied.cross_tenant` audit rows in the caller's tenant |
-| `429 RATE_LIMITED` | The tenant exceeded `SAGAT_RATE_LIMIT_RPS`/`BURST` | The response carries `Retry-After` and `retryable: true`; clients should honour it. Raise the limit only after checking `http_rate_limited_total` |
+| `429 RATE_LIMITED` | The tenant exceeded `SAGAT_RATE_LIMIT_RPS`/`BURST` (`scope="tenant"`), or one token subject exceeded `SAGAT_SUBJECT_RATE_LIMIT_RPS`/`BURST` (`scope="subject"`, default 20 req/s, burst 40, charged before any database lookup) | The response carries `Retry-After` and `retryable: true`; clients should honour it. A burst of `scope="subject"` from an unknown or non-member subject is a probe or a misconfigured client, not a reason to raise limits. Check `http_rate_limited_total{scope}` before raising anything |
 | `503` `UNAVAILABLE` on API routes, `/v1/ready` fine | Load shedding: more than `SAGAT_MAX_IN_FLIGHT` requests at once (the response carries `Retry-After`) | `http_load_shed_total`, `db_pool_connections{state="in_use"}`; scale out or raise the pool |
-| `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS` | Slow database or client; check `http_request_duration_seconds` |
+| `429` right after authenticating, with `http_tenant_concurrency_rejected_total` rising | One tenant already has `SAGAT_MAX_IN_FLIGHT_PER_TENANT` requests in flight (default a quarter of `SAGAT_MAX_IN_FLIGHT`, at least 1): slow or stalled uploads, or slow handlers. The other tenants are unaffected by design | Find the tenant's clients holding requests open; the stalled ones end by themselves after `SAGAT_BODY_IDLE_TIMEOUT_SECS`. Raise the cap only if the tenant's real concurrency needs it |
+| `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS`, or its body stopped arriving for `SAGAT_BODY_IDLE_TIMEOUT_SECS` (default 5 s between pieces of the body) | Slow database or client; check `http_request_duration_seconds`. A client that trickles one byte at a time is bounded only by the request timeout |
 | Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password |
+| Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate` and `provision-tenant` only. Do not grant the runtime role more to make this go away |
+| Process exits with code 2 and `the audit trail does not exist yet ... run control-plane migrate` | `serve` started before the migrations (outside dev the privileges cannot be verified without the table) | Run `migrate` with the owner role first; start the API afterwards (let the orchestrator restart it) |
+
+### Limits and the settings behind them
+
+All of these are **per process**: with several instances each applies its own limit (research G13).
+Defaults are safe; `control-plane --help` lists every setting.
+
+| Protection | Setting (default) | Over the limit |
+|---|---|---|
+| Request budget per verified token subject, charged before any database lookup | `SAGAT_SUBJECT_RATE_LIMIT_RPS` (20) and `_BURST` (40) | `429 RATE_LIMITED` with `Retry-After` |
+| Request budget per tenant, charged after authentication | `SAGAT_RATE_LIMIT_RPS` (100) and `_BURST` (200) | `429 RATE_LIMITED` with `Retry-After` |
+| Both budgets accept a rate of at least 0.001 and a burst of at least 1 | - | The process refuses to start (exit code 2, names the variable) |
+| Requests of one tenant in flight | `SAGAT_MAX_IN_FLIGHT_PER_TENANT` (a quarter of `SAGAT_MAX_IN_FLIGHT`, at least 1) | `429` at once, `http_tenant_concurrency_rejected_total` |
+| Requests in flight, all tenants (probes exempt) | `SAGAT_MAX_IN_FLIGHT` (512) | `503` at once with `Retry-After` of 3 to 8 s, `http_load_shed_total` |
+| Wait for the next piece of a request body | `SAGAT_BODY_IDLE_TIMEOUT_SECS` (5) | `408` |
+| Total time of one request | `SAGAT_REQUEST_TIMEOUT_SECS` (15) | `408` |
+| Request body size | `SAGAT_MAX_BODY_BYTES` (65536) | `413` |
+| Time to send a request head, idle keep-alive | `SAGAT_HEADER_READ_TIMEOUT_SECS` (10) | Connection closed |
+| Simultaneous connections | `SAGAT_MAX_CONNECTIONS` (1024) | New connections wait in the kernel backlog |
+
+The limiter tables are bounded (100 000 keys each). If a table is ever full, keys that are not yet
+tracked share one overflow bucket, so they are throttled together; this is silent today (no metric).
 
 ## 5. Metrics
 
 Scrape `http://<admin-addr>/metrics` (Prometheus text format). Labels are route **templates**,
-status and reason codes only. Identifiers, tenants and subjects are never labels.
+status codes, fixed reason names and an HTTP method taken from a closed set (`GET`, `POST`, `PUT`,
+`PATCH`, `DELETE`, `HEAD`, `OPTIONS`, and `OTHER` for any other token a client sends). Identifiers,
+tenants, subjects and client-chosen text are never labels. As a backstop, a series that is not
+updated for 10 minutes is dropped from the page, and the process releases such series every minute
+even when nothing scrapes it (the recorder only expires series while rendering).
 
 | Metric | Type | Useful for |
 |---|---|---|
@@ -84,7 +127,8 @@ status and reason codes only. Identifiers, tenants and subjects are never labels
 | `auth_failures_total{reason}` | counter | Spikes of a single reason (e.g. unknown key) |
 | `jwks_refresh_total{outcome}` | counter | `error` or `no_usable_keys` means the provider or network is failing |
 | `audit_denials_total{outcome}` | counter | `dropped` or `failed` means cross-tenant attempts were not recorded |
-| `http_rate_limited_total` | counter | Tenant-level throttling |
+| `http_rate_limited_total{scope}` | counter | Throttling, by `tenant` or `subject` budget |
+| `http_tenant_concurrency_rejected_total` | counter | A tenant hit its in-flight cap (stalled or slow requests) |
 | `http_load_shed_total` | counter | Overload |
 | `db_pool_connections{state}` | gauge | Pool saturation (`in_use` near `SAGAT_DB_MAX_CONNECTIONS`) |
 

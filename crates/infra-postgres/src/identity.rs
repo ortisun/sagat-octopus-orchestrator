@@ -1,5 +1,6 @@
 //! `IdentityStore` implementation over PostgreSQL (T001-010, T001-019).
 
+use crate::privilege::{self, LeastPrivilegeError};
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityStore;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -88,6 +89,19 @@ impl PgIdentityStore {
         )
         .await?;
         tx.commit().await.map_err(store_error)
+    }
+
+    /// Checks that the role this store is connected as cannot rewrite the audit trail: it must not
+    /// be a superuser, must not own `audit_records` (directly or through a role it belongs to) and
+    /// must hold no UPDATE, DELETE or TRUNCATE privilege on it.
+    ///
+    /// The control plane calls this at startup outside development, so pointing `DATABASE_URL` at
+    /// the owner role is a refusal to start instead of a silent loss of the append-only guarantee.
+    ///
+    /// # Errors
+    /// [`LeastPrivilegeError`] naming every reason; it never contains credentials.
+    pub async fn verify_least_privilege(&self) -> Result<(), LeastPrivilegeError> {
+        privilege::verify(&self.pool).await
     }
 
     /// Adds or replaces nothing: inserts a membership, failing if the subject already has one.
@@ -423,11 +437,13 @@ impl IdentityStore for PgIdentityStore {
         if missing == 0 {
             Ok(())
         } else {
-            Err(StoreError::Unavailable {
+            // Logged like every other storage failure: the response only says "unavailable", so
+            // this line is the only place an operator can learn that the migration has not run.
+            Err(record(StoreError::Unavailable {
                 detail: format!(
                     "the database schema has not been migrated ({missing} tables missing)"
                 ),
-            })
+            }))
         }
     }
 }
@@ -502,7 +518,11 @@ fn namespace_from_row(row: &PgRow) -> Result<Namespace, StoreError> {
 /// only place where an operator can learn *why* storage failed. Server messages carry no row
 /// values (those live in a separate `DETAIL` field that is not logged).
 fn store_error(error: sqlx::Error) -> StoreError {
-    let mapped = classify(&error);
+    record(classify(&error))
+}
+
+/// Logs a storage failure with its cause (never returned to clients) and passes it on.
+fn record(mapped: StoreError) -> StoreError {
     match &mapped {
         StoreError::Unavailable { detail } => tracing::warn!(%detail, "storage unavailable"),
         StoreError::Internal { detail } => tracing::error!(%detail, "storage failure"),

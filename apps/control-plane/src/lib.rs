@@ -14,7 +14,7 @@ use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityService;
 use sagat_domain::identity::{Membership, Slug, Subject, Tenant, TenantId};
 use sagat_infra_postgres::{
-    PgIdentityStore, PgPool, PoolConfig, connect, migrate, spawn_pool_metrics,
+    LeastPrivilegeError, PgIdentityStore, PgPool, PoolConfig, connect, migrate, spawn_pool_metrics,
 };
 use sagat_telemetry::Metrics;
 use time::OffsetDateTime;
@@ -44,6 +44,10 @@ pub enum RunError {
     Migrate(String),
     #[error("authentication setup failed: {0}")]
     Auth(String),
+    /// Outside development the API refuses to run with a database role that could rewrite the
+    /// audit trail. The message names the problem, never a connection string.
+    #[error("refusing to serve: {0}")]
+    LeastPrivilege(#[from] LeastPrivilegeError),
     #[error("a tenant with that slug already exists")]
     AlreadyExists,
     #[error("I/O error: {0}")]
@@ -56,7 +60,7 @@ impl RunError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Config(_) | Self::Refused(_) | Self::Auth(_) => 2,
+            Self::Config(_) | Self::Refused(_) | Self::Auth(_) | Self::LeastPrivilege(_) => 2,
             Self::Database(_)
             | Self::Migrate(_)
             | Self::Io(_)
@@ -198,19 +202,44 @@ pub async fn serve_with_admin(
             "SAGAT_ALLOW_INSECURE_JWKS_HTTP is only allowed when SAGAT_ENV=dev",
         ));
     }
+    // Migrating needs the schema-owning role, which is exactly what the check below refuses to serve
+    // with; say so up front instead of letting the operator discover it as a privilege error.
+    if serve.migrate_on_start && config.environment != Environment::Dev {
+        return Err(RunError::Refused(
+            "SAGAT_MIGRATE_ON_START needs the schema-owning database role and is only allowed when \
+             SAGAT_ENV=dev; run `control-plane migrate` as a separate step",
+        ));
+    }
+    // Everything that can be checked without the database comes first.
+    let fetcher = HttpJwksFetcher::new(&serve.auth).map_err(|e| RunError::Auth(e.to_string()))?;
+    let verifier = TokenVerifier::new(Arc::new(fetcher), &serve.auth);
     if serve.migrate_on_start {
         run_migrations(&config.database).await?;
     }
     let pool = open_pool(&config.database, config.database.statement_timeout).await?;
-    let fetcher = HttpJwksFetcher::new(&serve.auth).map_err(|e| RunError::Auth(e.to_string()))?;
-    let verifier = TokenVerifier::new(Arc::new(fetcher), &serve.auth);
-    let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
-    // Install the metrics recorder before the first request so nothing is missed.
-    let _ = Metrics::global();
-    let app = router(
-        AppState::with_rate_limit(service, verifier, serve.rate_limit),
-        serve.limits,
-    );
+    let store = PgIdentityStore::new(pool.clone());
+    if config.environment == Environment::Dev {
+        tracing::debug!("database role privileges are not checked when SAGAT_ENV=dev");
+    } else {
+        // The audit trail is only append-only if this process cannot undo it: refuse to serve as
+        // a superuser, as the owner of `audit_records`, or with write access to it.
+        if let Err(error) = store.verify_least_privilege().await {
+            pool.close().await;
+            return Err(error.into());
+        }
+        tracing::info!("database role verified: it cannot rewrite the audit trail");
+    }
+    let service = IdentityService::new(store, SystemClock);
+    // Install the metrics recorder before the first request so nothing is missed. Idle series are
+    // forgotten when the page is rendered, so a process nobody scrapes needs this timer.
+    let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
+    // Already validated by `ServeConfig`; checked again because the limiter must never run with a
+    // budget that could panic or never admit a request.
+    let state = AppState::with_rate_limit(service, verifier, serve.rate_limit)
+        .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?
+        .with_subject_rate_limit(serve.subject_rate_limit)
+        .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?;
+    let app = router(state, serve.limits);
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
 
     // One shutdown signal drives both listeners.
@@ -231,7 +260,16 @@ pub async fn serve_with_admin(
     );
     let admin = match admin_listener {
         Some(admin_listener) => {
-            tracing::info!(addr = %admin_listener.local_addr()?, "metrics listener");
+            let addr = admin_listener.local_addr()?;
+            tracing::info!(%addr, "metrics listener");
+            if config::admin_addr_is_exposed(addr) {
+                tracing::warn!(
+                    %addr,
+                    "the metrics endpoint is unauthenticated and listens on a non-loopback \
+                     address; restrict it with a NetworkPolicy or firewall rule, or bind \
+                     SAGAT_ADMIN_ADDR to 127.0.0.1"
+                );
+            }
             Some(tokio::spawn(sagat_api_http::serve(
                 admin_listener,
                 admin_router(),
@@ -247,8 +285,26 @@ pub async fn serve_with_admin(
     }
     tracing::info!("control plane stopped");
     pool_metrics.abort();
+    metrics_upkeep.abort();
     pool.close().await;
     Ok(())
+}
+
+/// How often idle metric series are released when nobody scrapes `/metrics`.
+const METRICS_UPKEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Runs [`Metrics::prune_idle`] every `interval` until aborted.
+fn spawn_metrics_upkeep(
+    metrics: &'static Metrics,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            metrics.prune_idle();
+        }
+    })
 }
 
 /// Completes once the shared shutdown flag is set.

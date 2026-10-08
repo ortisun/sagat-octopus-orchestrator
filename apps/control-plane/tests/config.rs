@@ -2,12 +2,13 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use sagat_control_plane::cli::{self, Command, UsageError};
 use sagat_control_plane::config::{
-    Config, ConfigError, Environment, ProvisionConfig, SeedConfig, ServeConfig, redact_url,
-    requires_tls,
+    Config, ConfigError, Environment, ProvisionConfig, SeedConfig, ServeConfig,
+    admin_addr_is_exposed, redact_url, requires_tls,
 };
 use sagat_telemetry::LogFormat;
 
@@ -348,6 +349,200 @@ fn nonsensical_overload_settings_are_rejected() {
         assert!(
             ServeConfig::from_lookup(&env(&pairs)).is_err(),
             "{name}={value}"
+        );
+    }
+}
+
+#[test]
+fn rate_limit_values_that_would_break_the_limiter_name_their_variable() {
+    // `1e-300` used to be accepted and made the first over-budget request panic (review finding 6).
+    let bad: [(&str, &str); 9] = [
+        ("SAGAT_RATE_LIMIT_RPS", "1e-300"),
+        ("SAGAT_RATE_LIMIT_RPS", "0.0005"),
+        ("SAGAT_RATE_LIMIT_RPS", "NaN"),
+        ("SAGAT_RATE_LIMIT_RPS", "-inf"),
+        ("SAGAT_RATE_LIMIT_BURST", "0.99"),
+        ("SAGAT_RATE_LIMIT_BURST", "NaN"),
+        ("SAGAT_RATE_LIMIT_BURST", "inf"),
+        ("SAGAT_RATE_LIMIT_BURST", "0"),
+        ("SAGAT_RATE_LIMIT_BURST", "-5"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        let error = ServeConfig::from_lookup(&env(&pairs)).expect_err(name);
+        assert!(
+            matches!(&error, ConfigError::Invalid { name: n, .. } if *n == name),
+            "{name}={value} -> {error:?}"
+        );
+    }
+
+    // The documented minimums themselves are accepted.
+    let mut edge = OIDC.to_vec();
+    edge.extend([
+        ("SAGAT_RATE_LIMIT_RPS", "0.001"),
+        ("SAGAT_RATE_LIMIT_BURST", "1"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&edge)).expect("minimums are valid");
+    assert!(
+        (serve.rate_limit.per_second - 0.001).abs() < f64::EPSILON
+            && (serve.rate_limit.burst - 1.0).abs() < f64::EPSILON
+    );
+}
+
+#[test]
+fn only_loopback_addresses_keep_the_unauthenticated_metrics_listener_private() {
+    let loopback = [
+        "127.0.0.1:9090",
+        "127.0.0.2:9090",
+        "[::1]:9090",
+        "[::ffff:127.0.0.1]:9090",
+    ];
+    for addr in loopback {
+        let addr: SocketAddr = addr.parse().expect("addr");
+        assert!(!admin_addr_is_exposed(addr), "{addr} is loopback");
+    }
+    let exposed = [
+        "0.0.0.0:9090",
+        "[::]:9090",
+        "10.1.2.3:9090",
+        "192.168.0.10:9090",
+        "203.0.113.9:9090",
+        "[2001:db8::1]:9090",
+        "[::ffff:10.0.0.1]:9090",
+    ];
+    for addr in exposed {
+        let addr: SocketAddr = addr.parse().expect("addr");
+        assert!(
+            admin_addr_is_exposed(addr),
+            "{addr} is reachable from a network"
+        );
+    }
+}
+
+#[test]
+fn the_required_token_type_is_trimmed_like_every_other_setting() {
+    // A value mounted from a file ends in a newline; with the newline kept, no token ever matched.
+    for (raw, expected) in [
+        ("at+jwt\n", Some("at+jwt")),
+        ("  application/at+jwt \r\n", Some("application/at+jwt")),
+        ("at+jwt", Some("at+jwt")),
+        ("   \n", None),
+        ("", None),
+    ] {
+        let mut pairs = OIDC.to_vec();
+        pairs.push(("SAGAT_OIDC_REQUIRED_TYP", raw));
+        let serve = ServeConfig::from_lookup(&env(&pairs)).expect("serve config");
+        assert_eq!(
+            serve.auth.required_token_type.as_deref(),
+            expected,
+            "{raw:?}"
+        );
+    }
+}
+
+#[test]
+fn slow_client_protection_has_finite_defaults() {
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+
+    assert_eq!(serve.limits.body_idle_timeout, Duration::from_secs(5));
+    // A quarter of the global cap (512), so one tenant cannot hold every slot.
+    assert_eq!(serve.limits.max_in_flight, 512);
+    assert_eq!(serve.limits.max_in_flight_per_tenant, 128);
+}
+
+#[test]
+fn the_per_tenant_cap_follows_the_global_cap_unless_set() {
+    let mut derived = OIDC.to_vec();
+    derived.push(("SAGAT_MAX_IN_FLIGHT", "64"));
+    let serve = ServeConfig::from_lookup(&env(&derived)).expect("derived");
+    assert_eq!(serve.limits.max_in_flight_per_tenant, 16);
+
+    let mut tiny = OIDC.to_vec();
+    tiny.push(("SAGAT_MAX_IN_FLIGHT", "2"));
+    assert_eq!(
+        ServeConfig::from_lookup(&env(&tiny))
+            .expect("tiny")
+            .limits
+            .max_in_flight_per_tenant,
+        1,
+        "never zero"
+    );
+
+    let mut explicit = OIDC.to_vec();
+    explicit.extend([
+        ("SAGAT_MAX_IN_FLIGHT", "64"),
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "7"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "2"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&explicit)).expect("explicit");
+    assert_eq!(serve.limits.max_in_flight_per_tenant, 7);
+    assert_eq!(serve.limits.body_idle_timeout, Duration::from_secs(2));
+}
+
+#[test]
+fn nonsensical_slow_client_settings_name_their_variable() {
+    let bad: [(&str, &str); 6] = [
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "0"),
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "-1"),
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "many"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "0"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "-3"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "soon"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        let error = ServeConfig::from_lookup(&env(&pairs)).expect_err(name);
+        assert!(
+            matches!(&error, ConfigError::Invalid { name: n, .. } if *n == name),
+            "{name}={value} -> {error:?}"
+        );
+    }
+}
+
+#[test]
+fn the_per_subject_budget_has_its_own_defaults_and_validation() {
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+    assert!(
+        (serve.subject_rate_limit.per_second - 20.0).abs() < f64::EPSILON
+            && (serve.subject_rate_limit.burst - 40.0).abs() < f64::EPSILON,
+        "{:?}",
+        serve.subject_rate_limit
+    );
+    assert!(
+        serve.subject_rate_limit.per_second < serve.rate_limit.per_second,
+        "one subject gets less than a whole tenant"
+    );
+
+    let mut tuned = OIDC.to_vec();
+    tuned.extend([
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "5.5"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "11"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&tuned)).expect("tuned");
+    assert!(
+        (serve.subject_rate_limit.per_second - 5.5).abs() < f64::EPSILON
+            && (serve.subject_rate_limit.burst - 11.0).abs() < f64::EPSILON
+    );
+    // The tenant budget is independent of it.
+    assert!((serve.rate_limit.per_second - 100.0).abs() < f64::EPSILON);
+
+    let bad: [(&str, &str); 6] = [
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "0"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "1e-300"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_RPS", "NaN"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "0.5"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "inf"),
+        ("SAGAT_SUBJECT_RATE_LIMIT_BURST", "lots"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        let error = ServeConfig::from_lookup(&env(&pairs)).expect_err(name);
+        assert!(
+            matches!(&error, ConfigError::Invalid { name: n, .. } if *n == name),
+            "{name}={value} -> {error:?}"
         );
     }
 }

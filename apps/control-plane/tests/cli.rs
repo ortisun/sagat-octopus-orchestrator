@@ -36,6 +36,30 @@ fn help_and_version_succeed() {
     assert!(text(&version.stdout).starts_with("control-plane "));
 }
 
+/// Every setting `serve` reads must be documented in `--help` (the operator's only reference in a
+/// container without the repository).
+#[test]
+fn help_documents_every_serve_setting() {
+    let help = text(&control_plane(&["--help"], &[]).stdout);
+    assert!(
+        help.contains("least-privilege") && help.contains("audit_records"),
+        "--help explains which database role serve needs outside dev"
+    );
+    for variable in [
+        "SAGAT_RATE_LIMIT_RPS",
+        "SAGAT_RATE_LIMIT_BURST",
+        "SAGAT_SUBJECT_RATE_LIMIT_RPS",
+        "SAGAT_SUBJECT_RATE_LIMIT_BURST",
+        "SAGAT_MAX_IN_FLIGHT_PER_TENANT",
+        "SAGAT_BODY_IDLE_TIMEOUT_SECS",
+    ] {
+        assert!(
+            help.contains(variable),
+            "--help does not mention {variable}"
+        );
+    }
+}
+
 #[test]
 fn unknown_commands_are_a_usage_error() {
     let output = control_plane(&["detonate"], &[]);
@@ -76,9 +100,11 @@ fn seed_dev_is_refused_outside_development_before_touching_the_database() {
 
         assert_eq!(output.status.code(), Some(2), "{env_value:?}");
         assert!(text(&output.stderr).contains("only runs when SAGAT_ENV=dev"));
-        // The URL points at a closed port: any connection attempt would add a visible delay or a
-        // different error. Refusal must come first.
-        assert!(started.elapsed() < Duration::from_secs(2));
+        // The URL points at a closed port: a connection attempt would end as exit code 1 with
+        // "database error". Exit code 2 and the message above are the proof that the refusal came
+        // first; the time bound only catches a hang (it is loose on purpose: a loaded CI machine
+        // makes a 2 s bound flaky without proving anything more).
+        assert!(started.elapsed() < Duration::from_secs(10));
         assert!(!text(&output.stderr).contains("database error"));
     }
 }
@@ -172,6 +198,58 @@ fn provisioning_rejects_an_invalid_slug_before_touching_the_database() {
         ],
     );
     assert_eq!(output.status.code(), Some(2));
-    assert!(text(&output.stderr).contains("SAGAT_PROVISION_TENANT"));
-    assert!(started.elapsed() < Duration::from_secs(2));
+    let err = text(&output.stderr);
+    assert!(err.contains("SAGAT_PROVISION_TENANT"));
+    // Same reasoning as for `seed-dev`: exit code 2 without "database error" shows that no
+    // connection was attempted; the bound only catches a hang.
+    assert!(!err.contains("database error"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+fn provisioning_refuses_an_administrator_in_the_reserved_system_namespace() {
+    // `system:provisioning` is the audit actor of this very command. Making it a tenant
+    // administrator would let a token with that `sub` act as the platform.
+    for admin in ["system:provisioning", "SYSTEM:anything", "system:"] {
+        let output = control_plane(
+            &["provision-tenant"],
+            &[
+                ("DATABASE_URL", SECRET_URL),
+                ("SAGAT_ENV", "prod"),
+                ("SAGAT_PROVISION_TENANT", "acme"),
+                ("SAGAT_PROVISION_ADMIN", admin),
+            ],
+        );
+
+        assert_eq!(output.status.code(), Some(2), "{admin}");
+        let err = text(&output.stderr);
+        assert!(
+            err.contains("SAGAT_PROVISION_ADMIN") && err.contains("reserved"),
+            "the error must name the variable and the reason: {err}"
+        );
+        assert!(
+            !err.contains("database error"),
+            "refused before any connection was attempted: {err}"
+        );
+    }
+}
+
+#[test]
+fn the_development_seed_refuses_a_reserved_administrator_too() {
+    let output = control_plane(
+        &["seed-dev"],
+        &[
+            ("DATABASE_URL", SECRET_URL),
+            ("SAGAT_ENV", "dev"),
+            ("SAGAT_SEED_ADMIN_SUBJECT", "system:provisioning"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let err = text(&output.stderr);
+    assert!(
+        err.contains("SAGAT_SEED_ADMIN_SUBJECT") && err.contains("reserved"),
+        "{err}"
+    );
+    assert!(!err.contains("database error"), "{err}");
 }
