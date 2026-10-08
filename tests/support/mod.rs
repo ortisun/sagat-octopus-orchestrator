@@ -15,6 +15,7 @@ pub mod contract;
 pub mod engine;
 pub mod logs;
 pub mod oidc;
+pub mod worker;
 
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 

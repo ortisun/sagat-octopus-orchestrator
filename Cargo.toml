@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,7 @@ sagat-application = { path = "crates/application" }
 sagat-infra-postgres = { path = "crates/infra-postgres" }
 sagat-telemetry = { path = "crates/telemetry" }
 sagat-api-http = { path = "crates/api-http" }
+sagat-api-grpc = { path = "crates/api-grpc" }
 sagat-infra-expr = { path = "crates/infra-expr" }
 sagat-infra-ir = { path = "crates/infra-ir" }
 sagat-scheduler = { path = "crates/scheduler" }
@@ -41,6 +42,13 @@ tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "json", "env-filter", "ansi"] }
 time = { version = "0.3", default-features = false, features = ["std"] }
+# gRPC (worker protocol). The .proto is compiled by `protox` (pure Rust) so builds need no `protoc`.
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+prost = "0.14"
+protox = "0.10"
+tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
 uuid = { version = "1", default-features = false, features = ["std", "v4", "v7"] }
 
 [workspace.lints.rust]

@@ -7,16 +7,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use reqwest::{Client, Method, RequestBuilder, Response};
+use sagat_api_grpc::{GrpcConfig, WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{
     AppState, AuthConfig, ExecState, HttpJwksFetcher, HttpLimits, RateLimitConfig, ServerConfig,
     TokenVerifier, auth::install_crypto_provider, router_with_execution,
 };
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::DefinitionService;
+use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityService, IdentityStore};
 use sagat_application::runs::RunService;
+use sagat_application::worker::{WorkerService, WorkerSettings};
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{
     Membership, Namespace, NamespaceId, Slug, Subject, Tenant, TenantId, Workspace, WorkspaceId,
@@ -38,6 +41,10 @@ pub struct TestApi {
     pub owner_store: PgIdentityStore,
     /// The pool the API itself uses (`db.pool` is the tests' own administrative handle).
     pub api_pool: PgPool,
+    /// The run store the API (and the gRPC worker service) use.
+    pub executions: PgRunStore,
+    /// `http://host:port` of the gRPC worker service.
+    pub grpc_url: String,
     lookups: Arc<AtomicUsize>,
     pings: Arc<AtomicUsize>,
 }
@@ -164,6 +171,8 @@ pub struct Options {
     pub subject_rate_limit: RateLimitConfig,
     /// Makes every readiness ping take at least this long (simulates a slow or hanging database).
     pub ping_delay: Duration,
+    /// Lease and session timings of the worker protocol.
+    pub worker: WorkerSettings,
 }
 
 impl Default for Options {
@@ -180,6 +189,7 @@ impl Default for Options {
                 burst: 2000.0,
             },
             ping_delay: Duration::ZERO,
+            worker: WorkerSettings::default(),
         }
     }
 }
@@ -230,8 +240,37 @@ pub async fn start_with(options: Options) -> TestApi {
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
-        RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache),
+        RunService::new(
+            executions.clone(),
+            SystemClock,
+            Engine::new(JsonEvaluator),
+            cache,
+        ),
     );
+    // The worker protocol shares the REST API's identity, budgets and database.
+    let grpc = WorkerGrpc::new(
+        exec.clone(),
+        WorkerService::new(
+            executions.clone(),
+            SystemClock,
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            options.worker,
+        ),
+    );
+    let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind grpc");
+    let grpc_addr = grpc_listener.local_addr().expect("grpc addr");
+    tokio::spawn(async move {
+        let _ = serve_grpc(
+            grpc_listener,
+            worker_service(grpc),
+            GrpcConfig::default(),
+            std::future::pending(),
+        )
+        .await;
+    });
     let app = router_with_execution(exec, options.limits);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -256,6 +295,8 @@ pub async fn start_with(options: Options) -> TestApi {
         store,
         owner_store,
         api_pool,
+        executions,
+        grpc_url: format!("http://{grpc_addr}"),
         lookups,
         pings,
     }

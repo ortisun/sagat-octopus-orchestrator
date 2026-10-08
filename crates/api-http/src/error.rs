@@ -196,6 +196,19 @@ impl ApiError {
         self.parts.status = status;
         self
     }
+
+    /// The error as it will be reported, for transports other than HTTP (the gRPC adapter maps the
+    /// same classification onto its own status codes, so both agree on what an error means).
+    #[must_use]
+    pub fn parts(&self) -> &ErrorParts {
+        &self.parts
+    }
+
+    /// Whole seconds after which the caller may retry, when the error says so.
+    #[must_use]
+    pub fn retry_after_seconds(&self) -> Option<u32> {
+        self.retry_after
+    }
 }
 
 impl From<AuthError> for ApiError {

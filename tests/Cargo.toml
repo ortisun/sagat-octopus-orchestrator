@@ -19,6 +19,7 @@ jsonschema = { version = "0.58", default-features = false }
 jsonwebtoken.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 reqwest = { workspace = true, features = ["json"] }
+sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-control-plane.workspace = true
@@ -33,6 +34,7 @@ sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true
 uuid.workspace = true
+tonic.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -68,3 +70,11 @@ path = "integration/002-durable-execution/main.rs"
 [[test]]
 name = "contract_rest_002"
 path = "contract/002-durable-execution/rest/main.rs"
+
+[[test]]
+name = "contract_grpc_002"
+path = "contract/002-durable-execution/grpc/main.rs"
+
+[[test]]
+name = "e2e_002"
+path = "e2e/002-durable-execution/main.rs"
