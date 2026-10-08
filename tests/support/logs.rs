@@ -40,6 +40,13 @@ impl MakeWriter<'_> for Captured {
 }
 
 /// Starts capturing warnings and errors; keep the guard alive for the duration of the test.
+///
+/// Call it as late as the test allows (after the slow set-up, right before the action whose log is
+/// asserted). `tracing` caches, per call site, whether any subscriber is interested; a call site
+/// that other tests register at the very moment this subscriber is installed can be cached as
+/// "nobody is interested" and then never reaches it. Installing late and rebuilding the cache
+/// makes that race practically impossible; it cannot be excluded in a test binary that runs many
+/// tests at once, which is why the assertions that use this fail loudly instead of passing quietly.
 pub fn capture() -> (DefaultGuard, Captured) {
     let captured = Captured::default();
     let subscriber = tracing_subscriber::fmt()
@@ -47,5 +54,7 @@ pub fn capture() -> (DefaultGuard, Captured) {
         .with_ansi(false)
         .with_max_level(tracing::Level::WARN)
         .finish();
-    (tracing::subscriber::set_default(subscriber), captured)
+    let guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+    (guard, captured)
 }

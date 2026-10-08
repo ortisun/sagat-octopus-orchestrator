@@ -277,10 +277,18 @@ async fn stalled_uploads_of_one_tenant_cannot_starve_the_others() {
         stalled_post(&api, &token).await,
         stalled_post(&api, &token).await,
     ];
-    tokio::time::sleep(Duration::from_millis(300)).await; // let both take their slots
 
-    // Tenant A is at its cap: one more request is refused at once, with the usual envelope.
-    let refused = api.get_as("/auth/context", "alice", "acme").await;
+    // Tenant A is at its cap once both stalled requests have taken their slots (a moment after the
+    // connections are written, longer on a loaded machine): one more request is refused at once,
+    // with the usual envelope.
+    let mut refused = api.get_as("/auth/context", "alice", "acme").await;
+    for _ in 0..60 {
+        if refused.status() == 429 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        refused = api.get_as("/auth/context", "alice", "acme").await;
+    }
     assert_eq!(refused.status(), 429);
     assert!(refused.headers().contains_key("retry-after"));
     let body = json_of(refused).await;

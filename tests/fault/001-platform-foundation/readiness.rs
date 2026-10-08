@@ -74,7 +74,6 @@ async fn a_ping_that_never_returns_makes_the_instance_not_ready_instead_of_hangi
 async fn the_reason_a_probe_failed_is_logged_but_not_returned() {
     // An unmigrated database: the schema check used to bypass the store's error logging, and the
     // handler threw the error away with `.is_ok()`, so an operator saw a bare 503 and no cause.
-    let (_logs, captured) = capture();
     let db = fresh_db().await; // no schema at all
     let mut auth = AuthConfig::new(ISSUER, AUDIENCE, "http://127.0.0.1:1/jwks.json");
     auth.allow_insecure_jwks_http = true;
@@ -109,15 +108,28 @@ async fn the_reason_a_probe_failed_is_logged_but_not_returned() {
         .await
     });
     let client = reqwest::Client::new();
-    let mut response = None;
+    let mut alive = false;
     for _ in 0..100 {
-        if let Ok(r) = client.get(format!("http://{addr}/v1/ready")).send().await {
-            response = Some(r);
+        if client
+            .get(format!("http://{addr}/v1/health"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status() == 200)
+        {
+            alive = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let response = response.expect("the server answered");
+    assert!(alive, "the server never came up");
+
+    // Installed only now, right before the action under test (see `capture`).
+    let (_logs, captured) = capture();
+    let response = client
+        .get(format!("http://{addr}/v1/ready"))
+        .send()
+        .await
+        .expect("send");
 
     assert_eq!(response.status(), 503);
     let body = response.text().await.expect("body");

@@ -632,7 +632,6 @@ fn has_series(page: &str, name: &str, labels: &[(&str, &str)]) -> bool {
 /// Starts the control plane with an admin (metrics) listener bound to `admin_bind`, waits until it is
 /// healthy, stops it, and returns what was logged at warn level or above meanwhile.
 async fn logs_of_a_run_with_admin_listener_on(admin_bind: &str) -> String {
-    let (_guard, captured) = crate::support::logs::capture();
     let db = migrated_db().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -641,6 +640,8 @@ async fn logs_of_a_run_with_admin_listener_on(admin_bind: &str) -> String {
         .await
         .expect("bind admin");
     let api_addr = listener.local_addr().expect("addr");
+    // Installed after the slow set-up, right before the action under test (see `capture`).
+    let (_guard, captured) = crate::support::logs::capture();
     let cfg = config(&db, Environment::Dev);
     let serve_cfg = serve_config("http://127.0.0.1:1/jwks.json");
     let (stop, stopped) = oneshot::channel::<()>();

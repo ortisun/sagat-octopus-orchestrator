@@ -59,11 +59,19 @@ async fn flood(
 ) -> HashMap<String, usize> {
     let mut rng = Xorshift(seed);
     let mut tasks = Vec::new();
+    // At most this many requests (and so connections) at once. 600 simultaneous connection attempts
+    // overflow the kernel's accept queue on macOS (`kern.ipc.somaxconn` is 128): the SYNs are
+    // dropped and the client times out connecting, which has nothing to do with what is tested.
+    // 100 at once is still far more than the 8 database connections can serve, so the pool
+    // starvation and the killed connections the test is about all still happen.
+    let in_flight = Arc::new(tokio::sync::Semaphore::new(100));
     for _ in 0..requests {
         let (caller, target, namespace) =
             (rng.below(3), rng.below(3), rng.next().is_multiple_of(2));
         let (api, tenants) = (Arc::clone(&api), Arc::clone(&tenants));
+        let in_flight = Arc::clone(&in_flight);
         tasks.push(tokio::spawn(async move {
+            let _slot = in_flight.acquire_owned().await.expect("semaphore open");
             let (who, owner) = (&tenants[caller], &tenants[target]);
             let (id, expected_slug, kind) = if namespace {
                 (&owner.namespace.0, owner.namespace.1, "namespaces")
