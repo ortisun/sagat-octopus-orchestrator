@@ -82,6 +82,9 @@ pub enum SubjectViolation {
     TooLong,
     #[error("must not contain control characters")]
     ControlCharacter,
+    /// The `system:` namespace belongs to platform actors such as `system:provisioning`.
+    #[error("the 'system:' prefix is reserved for platform actors")]
+    Reserved,
 }
 
 uuid_id!(
@@ -153,9 +156,14 @@ pub struct Subject(String);
 impl Subject {
     pub const MAX_LEN: usize = 255;
 
+    /// The namespace reserved for platform actors (compared case-insensitively).
+    pub const RESERVED_PREFIX: &'static str = "system:";
+
     /// The actor recorded for platform-level operations that have no tenant principal, such as
-    /// provisioning a tenant. Not an identity anyone can authenticate as: tokens go through
-    /// [`Subject::parse`] and membership lookup, and no membership carries this subject.
+    /// provisioning a tenant. Not an identity anyone can authenticate as: it lives in the reserved
+    /// `system:` namespace, so [`Subject::parse`] (the only way a token subject or an operator
+    /// supplied administrator becomes a `Subject`) refuses it. This constructor deliberately does
+    /// not go through `parse`.
     #[must_use]
     pub fn provisioning() -> Self {
         Self("system:provisioning".to_owned())
@@ -164,7 +172,8 @@ impl Subject {
     /// Validates and wraps a subject.
     ///
     /// # Errors
-    /// Returns [`IdentityError::InvalidSubject`] when empty, too long or containing control chars.
+    /// Returns [`IdentityError::InvalidSubject`] when empty, too long, containing control chars,
+    /// or inside the reserved `system:` namespace.
     pub fn parse(value: &str) -> Result<Self, IdentityError> {
         let violation = if value.trim().is_empty() {
             Some(SubjectViolation::Empty)
@@ -172,6 +181,11 @@ impl Subject {
             Some(SubjectViolation::TooLong)
         } else if value.chars().any(char::is_control) {
             Some(SubjectViolation::ControlCharacter)
+        } else if value
+            .get(..Self::RESERVED_PREFIX.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(Self::RESERVED_PREFIX))
+        {
+            Some(SubjectViolation::Reserved)
         } else {
             None
         };

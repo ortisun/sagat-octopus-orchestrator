@@ -41,7 +41,10 @@ control-plane serve              # runtime role
 SAGAT_PROVISION_TENANT=acme SAGAT_PROVISION_ADMIN=alice@example.com control-plane provision-tenant
 ```
 
-- Both values are mandatory; there are no defaults.
+- Both values are mandatory; there are no defaults. The administrator's subject must not start with
+  `system:` (any case): that namespace is reserved for platform actors such as the audit actor
+  `system:provisioning`, and the command exits with code 2 naming `SAGAT_PROVISION_ADMIN`. A token
+  whose `sub` is in that namespace is never accepted, whatever the database contains.
 - It exits non-zero if the slug already exists and changes nothing in that case.
 - It writes `tenant.provisioned` and `membership.granted` audit records (actor
   `system:provisioning`) in the same transaction as the tenant.
