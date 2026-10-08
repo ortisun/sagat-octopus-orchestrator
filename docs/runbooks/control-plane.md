@@ -9,7 +9,7 @@ code in this repository; what is **not** covered is listed at the end so nobody 
 | Piece | Where | Notes |
 |---|---|---|
 | API | `control-plane serve`, default `127.0.0.1:8080` | Stateless; all state is in PostgreSQL |
-| Admin listener | `SAGAT_ADMIN_ADDR`, default `127.0.0.1:9090` | `/metrics` only. Keep it off public networks; `off` disables it |
+| Admin listener | `SAGAT_ADMIN_ADDR`, default `127.0.0.1:9090` | `/metrics` only, **without authentication**. Binding it to a non-loopback address (needed for a scraper in another pod) logs `the metrics endpoint is unauthenticated and listens on a non-loopback address` at `WARN` at start: restrict that port with a Kubernetes `NetworkPolicy` (allow only the Prometheus pods) or a firewall rule, and never publish it through an Ingress or load balancer. `off` disables it |
 | PostgreSQL 16 | `DATABASE_URL` | Source of truth. TLS is required outside `SAGAT_ENV=dev` |
 | OIDC provider | `SAGAT_OIDC_JWKS_URI` (HTTPS) | Only its public keys are fetched; no token is ever sent to it |
 

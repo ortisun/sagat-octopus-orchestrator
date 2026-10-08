@@ -359,6 +359,14 @@ impl SeedConfig {
     }
 }
 
+/// Whether the (unauthenticated) metrics listener can be reached from a network, that is, whether
+/// it is bound to anything but a loopback address. IPv4-mapped IPv6 addresses count as the IPv4
+/// address they carry.
+#[must_use]
+pub fn admin_addr_is_exposed(addr: SocketAddr) -> bool {
+    !addr.ip().to_canonical().is_loopback()
+}
+
 /// Whether a PostgreSQL URL insists on TLS (`sslmode` / `ssl-mode` of `require`, `verify-ca` or
 /// `verify-full`). `disable`, `allow`, `prefer` and an absent parameter do not.
 #[must_use]

@@ -2,12 +2,13 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use sagat_control_plane::cli::{self, Command, UsageError};
 use sagat_control_plane::config::{
-    Config, ConfigError, Environment, ProvisionConfig, SeedConfig, ServeConfig, redact_url,
-    requires_tls,
+    Config, ConfigError, Environment, ProvisionConfig, SeedConfig, ServeConfig,
+    admin_addr_is_exposed, redact_url, requires_tls,
 };
 use sagat_telemetry::LogFormat;
 
@@ -387,6 +388,36 @@ fn rate_limit_values_that_would_break_the_limiter_name_their_variable() {
         (serve.rate_limit.per_second - 0.001).abs() < f64::EPSILON
             && (serve.rate_limit.burst - 1.0).abs() < f64::EPSILON
     );
+}
+
+#[test]
+fn only_loopback_addresses_keep_the_unauthenticated_metrics_listener_private() {
+    let loopback = [
+        "127.0.0.1:9090",
+        "127.0.0.2:9090",
+        "[::1]:9090",
+        "[::ffff:127.0.0.1]:9090",
+    ];
+    for addr in loopback {
+        let addr: SocketAddr = addr.parse().expect("addr");
+        assert!(!admin_addr_is_exposed(addr), "{addr} is loopback");
+    }
+    let exposed = [
+        "0.0.0.0:9090",
+        "[::]:9090",
+        "10.1.2.3:9090",
+        "192.168.0.10:9090",
+        "203.0.113.9:9090",
+        "[2001:db8::1]:9090",
+        "[::ffff:10.0.0.1]:9090",
+    ];
+    for addr in exposed {
+        let addr: SocketAddr = addr.parse().expect("addr");
+        assert!(
+            admin_addr_is_exposed(addr),
+            "{addr} is reachable from a network"
+        );
+    }
 }
 
 #[test]

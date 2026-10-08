@@ -629,6 +629,60 @@ fn has_series(page: &str, name: &str, labels: &[(&str, &str)]) -> bool {
     })
 }
 
+/// Starts the control plane with an admin (metrics) listener bound to `admin_bind`, waits until it is
+/// healthy, stops it, and returns what was logged at warn level or above meanwhile.
+async fn logs_of_a_run_with_admin_listener_on(admin_bind: &str) -> String {
+    let (_guard, captured) = crate::support::logs::capture();
+    let db = migrated_db().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let admin = tokio::net::TcpListener::bind(admin_bind)
+        .await
+        .expect("bind admin");
+    let api_addr = listener.local_addr().expect("addr");
+    let cfg = config(&db, Environment::Dev);
+    let serve_cfg = serve_config("http://127.0.0.1:1/jwks.json");
+    let (stop, stopped) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        sagat_control_plane::serve_with_admin(&cfg, &serve_cfg, listener, Some(admin), async {
+            let _ = stopped.await;
+        })
+        .await
+    });
+    for _ in 0..100 {
+        if healthcheck(&api_addr.to_string()).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("shutdown")
+        .expect("join")
+        .expect("clean");
+    captured.text()
+}
+
+#[tokio::test]
+async fn a_metrics_listener_reachable_from_a_network_logs_a_warning() {
+    // /metrics has no authentication by design (D15); the only protection is where it listens.
+    let logs = logs_of_a_run_with_admin_listener_on("0.0.0.0:0").await;
+
+    assert!(
+        logs.contains("WARN") && logs.contains("unauthenticated") && logs.contains("NetworkPolicy"),
+        "{logs}"
+    );
+}
+
+#[tokio::test]
+async fn a_loopback_metrics_listener_is_silent() {
+    let logs = logs_of_a_run_with_admin_listener_on("127.0.0.1:0").await;
+
+    assert!(!logs.contains("unauthenticated"), "{logs}");
+}
+
 #[tokio::test]
 async fn metrics_are_served_on_a_separate_listener_and_never_carry_identifiers() {
     let db = migrated_db().await;

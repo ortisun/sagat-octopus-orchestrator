@@ -260,7 +260,16 @@ pub async fn serve_with_admin(
     );
     let admin = match admin_listener {
         Some(admin_listener) => {
-            tracing::info!(addr = %admin_listener.local_addr()?, "metrics listener");
+            let addr = admin_listener.local_addr()?;
+            tracing::info!(%addr, "metrics listener");
+            if config::admin_addr_is_exposed(addr) {
+                tracing::warn!(
+                    %addr,
+                    "the metrics endpoint is unauthenticated and listens on a non-loopback \
+                     address; restrict it with a NetworkPolicy or firewall rule, or bind \
+                     SAGAT_ADMIN_ADDR to 127.0.0.1"
+                );
+            }
             Some(tokio::spawn(sagat_api_http::serve(
                 admin_listener,
                 admin_router(),
