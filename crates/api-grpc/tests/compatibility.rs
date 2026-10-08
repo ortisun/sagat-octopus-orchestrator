@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use prost_types::field_descriptor_proto::{Label, Type};
+use prost_types::field_descriptor_proto::Label;
 use prost_types::{FileDescriptorSet, ServiceDescriptorProto};
 use serde_json::{Value, json};
 
@@ -41,7 +41,7 @@ fn snapshot(set: &FileDescriptorSet) -> Value {
                             "name": f.name(),
                             "type": format!(
                                 "{:?}{}",
-                                Type::try_from(f.r#type()).expect("known type"),
+                                f.r#type(),
                                 if f.type_name().is_empty() { String::new() } else { format!(":{}", f.type_name()) }
                             ),
                             "repeated": f.label() == Label::Repeated,
