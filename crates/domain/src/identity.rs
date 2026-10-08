@@ -17,7 +17,7 @@ const ECHO_LIMIT: usize = 32;
 
 /// Truncates a rejected, caller-supplied value so an error message cannot be inflated or used to
 /// reflect a large payload back at the caller.
-fn clip(value: &str) -> String {
+pub(crate) fn clip(value: &str) -> String {
     let mut chars = value.chars();
     let head: String = chars.by_ref().take(ECHO_LIMIT).collect();
     if chars.next().is_some() {
@@ -243,11 +243,21 @@ pub enum Permission {
     DefinitionWrite,
     DefinitionPublish,
     AuditRead,
+    /// Start a run of a published workflow version.
+    RunStart,
+    /// Read runs, their journal and runtime graph.
+    RunRead,
+    /// Cancel, pause or resume a run.
+    RunOperate,
+    /// Deliver a signal to a run.
+    RunSignal,
+    /// Act as a worker: register, claim tasks, heartbeat, complete and fail steps.
+    WorkerExecute,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 14] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -257,6 +267,11 @@ impl Permission {
         Self::DefinitionWrite,
         Self::DefinitionPublish,
         Self::AuditRead,
+        Self::RunStart,
+        Self::RunRead,
+        Self::RunOperate,
+        Self::RunSignal,
+        Self::WorkerExecute,
     ];
 
     #[must_use]
@@ -271,6 +286,11 @@ impl Permission {
             Self::DefinitionWrite => "definition:write",
             Self::DefinitionPublish => "definition:publish",
             Self::AuditRead => "audit:read",
+            Self::RunStart => "run:start",
+            Self::RunRead => "run:read",
+            Self::RunOperate => "run:operate",
+            Self::RunSignal => "run:signal",
+            Self::WorkerExecute => "worker:execute",
         }
     }
 }
@@ -288,6 +308,8 @@ pub enum Role {
     Developer,
     Operator,
     Viewer,
+    /// A machine identity that executes tasks; it can do nothing else.
+    Worker,
 }
 
 impl Role {
@@ -298,17 +320,16 @@ impl Role {
             Self::Developer => "developer",
             Self::Operator => "operator",
             Self::Viewer => "viewer",
+            Self::Worker => "worker",
         }
     }
 
     /// Permissions granted to this role. Anything not listed is denied.
-    ///
-    /// Operator currently equals Viewer; run-level operations (pause, retry, ...) will extend it
-    /// in feature 002.
     #[must_use]
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, WorkspaceRead,
+            DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, RunOperate, RunRead,
+            RunSignal, RunStart, WorkerExecute, WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
@@ -318,8 +339,20 @@ impl Role {
                 DefinitionRead,
                 DefinitionWrite,
                 DefinitionPublish,
+                RunStart,
+                RunRead,
             ],
-            Self::Operator | Self::Viewer => &[WorkspaceRead, NamespaceRead, DefinitionRead],
+            Self::Operator => &[
+                WorkspaceRead,
+                NamespaceRead,
+                DefinitionRead,
+                RunStart,
+                RunRead,
+                RunOperate,
+                RunSignal,
+            ],
+            Self::Viewer => &[WorkspaceRead, NamespaceRead, DefinitionRead, RunRead],
+            Self::Worker => &[WorkerExecute],
         }
     }
 
@@ -345,6 +378,7 @@ impl FromStr for Role {
             "developer" => Ok(Self::Developer),
             "operator" => Ok(Self::Operator),
             "viewer" => Ok(Self::Viewer),
+            "worker" => Ok(Self::Worker),
             other => Err(IdentityError::UnknownRole(clip(other))),
         }
     }

@@ -108,10 +108,19 @@ fn subject_rejects_empty_oversized_and_control_characters() {
 
 // ------------------------------------------------------------------ RBAC
 
+const ALL_ROLES: [Role; 5] = [
+    Role::Admin,
+    Role::Developer,
+    Role::Operator,
+    Role::Viewer,
+    Role::Worker,
+];
+
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, WorkspaceRead,
+        DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, RunOperate, RunRead,
+        RunSignal, RunStart, WorkerExecute, WorkspaceRead,
     };
     match role {
         Role::Admin => Permission::ALL.to_vec(),
@@ -122,15 +131,27 @@ fn expected(role: Role) -> Vec<Permission> {
                 DefinitionRead,
                 DefinitionWrite,
                 DefinitionPublish,
+                RunStart,
+                RunRead,
             ]
         }
-        Role::Operator | Role::Viewer => vec![WorkspaceRead, NamespaceRead, DefinitionRead],
+        Role::Operator => vec![
+            WorkspaceRead,
+            NamespaceRead,
+            DefinitionRead,
+            RunStart,
+            RunRead,
+            RunOperate,
+            RunSignal,
+        ],
+        Role::Viewer => vec![WorkspaceRead, NamespaceRead, DefinitionRead, RunRead],
+        Role::Worker => vec![WorkerExecute],
     }
 }
 
 #[test]
 fn role_permission_matrix_is_exactly_as_specified() {
-    for role in [Role::Admin, Role::Developer, Role::Operator, Role::Viewer] {
+    for role in ALL_ROLES {
         let allowed = expected(role);
         for permission in Permission::ALL {
             assert_eq!(
@@ -151,10 +172,41 @@ fn only_admin_can_create_scopes_manage_members_or_read_audit() {
         Permission::AuditRead,
     ] {
         assert!(Role::Admin.grants(restricted));
-        for role in [Role::Developer, Role::Operator, Role::Viewer] {
+        for role in [Role::Developer, Role::Operator, Role::Viewer, Role::Worker] {
             assert!(
                 !role.grants(restricted),
                 "{role} must not hold {restricted}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_worker_can_execute_tasks_and_do_nothing_else() {
+    assert_eq!(Role::Worker.permissions(), &[Permission::WorkerExecute]);
+    for permission in Permission::ALL {
+        assert_eq!(
+            Role::Worker.grants(permission),
+            permission == Permission::WorkerExecute,
+            "{permission}"
+        );
+    }
+    for role in [Role::Developer, Role::Operator, Role::Viewer] {
+        assert!(
+            !role.grants(Permission::WorkerExecute),
+            "{role} is a human role"
+        );
+    }
+}
+
+#[test]
+fn only_operators_and_admins_can_operate_or_signal_runs() {
+    for permission in [Permission::RunOperate, Permission::RunSignal] {
+        for role in ALL_ROLES {
+            assert_eq!(
+                role.grants(permission),
+                matches!(role, Role::Admin | Role::Operator),
+                "{role} / {permission}"
             );
         }
     }
@@ -175,7 +227,7 @@ fn authorize_reports_role_and_permission_on_denial() {
 
 #[test]
 fn role_and_environment_round_trip_and_reject_unknown_values() {
-    for role in [Role::Admin, Role::Developer, Role::Operator, Role::Viewer] {
+    for role in ALL_ROLES {
         assert_eq!(role.as_str().parse::<Role>(), Ok(role));
     }
     for env in [Environment::Dev, Environment::Staging, Environment::Prod] {
@@ -217,7 +269,7 @@ fn admin_creates_workspace_in_their_own_tenant() {
 
 #[test]
 fn non_admin_roles_cannot_create_workspaces() {
-    for role in [Role::Developer, Role::Operator, Role::Viewer] {
+    for role in [Role::Developer, Role::Operator, Role::Viewer, Role::Worker] {
         let p = principal(TenantId::generate(), role);
         let result = Workspace::create(&p, WorkspaceId::generate(), slug("platform"), NOW);
         assert_eq!(
@@ -319,7 +371,7 @@ fn admin_grants_a_role_inside_their_own_tenant() {
 
 #[test]
 fn only_admin_can_grant_memberships() {
-    for role in [Role::Developer, Role::Operator, Role::Viewer] {
+    for role in [Role::Developer, Role::Operator, Role::Viewer, Role::Worker] {
         let p = principal(TenantId::generate(), role);
         assert_eq!(
             Membership::grant(&p, subject("mallory"), Role::Admin, NOW),
