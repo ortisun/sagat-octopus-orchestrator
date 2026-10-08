@@ -35,14 +35,18 @@ pub struct TestApi {
     /// The pool the API itself uses (`db.pool` is the tests' own administrative handle).
     pub api_pool: PgPool,
     lookups: Arc<AtomicUsize>,
+    pings: Arc<AtomicUsize>,
 }
 
-/// The store the API uses, counting the authentication lookups (tenant by slug, membership) so
-/// tests can prove that a throttled request never reached the database.
+/// The store the API uses, counting the authentication lookups (tenant by slug, membership) and the
+/// readiness pings so tests can prove that a throttled request never reached the database and that
+/// a flood of probes costs one ping. It can also make the ping slow.
 #[derive(Clone)]
 struct CountingStore {
     inner: PgIdentityStore,
     lookups: Arc<AtomicUsize>,
+    pings: Arc<AtomicUsize>,
+    ping_delay: Duration,
 }
 
 impl IdentityStore for CountingStore {
@@ -131,6 +135,10 @@ impl IdentityStore for CountingStore {
     }
 
     async fn ping(&self) -> Result<(), StoreError> {
+        self.pings.fetch_add(1, Ordering::SeqCst);
+        if !self.ping_delay.is_zero() {
+            tokio::time::sleep(self.ping_delay).await;
+        }
         self.inner.ping().await
     }
 }
@@ -150,6 +158,8 @@ pub struct Options {
     /// Per-subject request budget, charged before the database is queried. Generous by default
     /// because most tests make many calls as one subject; the tests about it set their own.
     pub subject_rate_limit: RateLimitConfig,
+    /// Makes every readiness ping take at least this long (simulates a slow or hanging database).
+    pub ping_delay: Duration,
 }
 
 impl Default for Options {
@@ -165,6 +175,7 @@ impl Default for Options {
                 per_second: 1000.0,
                 burst: 2000.0,
             },
+            ping_delay: Duration::ZERO,
         }
     }
 }
@@ -196,10 +207,13 @@ pub async fn start_with(options: Options) -> TestApi {
     let fetcher = HttpJwksFetcher::new(&auth).expect("fetcher");
     let verifier = TokenVerifier::new(Arc::new(fetcher), &auth);
     let lookups = Arc::new(AtomicUsize::new(0));
+    let pings = Arc::new(AtomicUsize::new(0));
     let service = IdentityService::new(
         CountingStore {
             inner: store.clone(),
             lookups: Arc::clone(&lookups),
+            pings: Arc::clone(&pings),
+            ping_delay: options.ping_delay,
         },
         SystemClock,
     );
@@ -232,6 +246,7 @@ pub async fn start_with(options: Options) -> TestApi {
         owner_store,
         api_pool,
         lookups,
+        pings,
     }
 }
 
@@ -239,6 +254,11 @@ impl TestApi {
     /// Tenant and membership lookups the API has made so far while authenticating requests.
     pub fn authentication_lookups(&self) -> usize {
         self.lookups.load(Ordering::SeqCst)
+    }
+
+    /// Readiness pings that reached the store so far.
+    pub fn pings(&self) -> usize {
+        self.pings.load(Ordering::SeqCst)
     }
 
     /// Creates a tenant and its first admin directly in the database.

@@ -2808,6 +2808,8 @@ dependencies = [
  "testcontainers-modules",
  "time",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

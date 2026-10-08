@@ -30,6 +30,8 @@ sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [[test]]
 name = "integration_001"

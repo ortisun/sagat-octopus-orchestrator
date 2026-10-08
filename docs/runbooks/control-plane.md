@@ -54,7 +54,11 @@ SAGAT_PROVISION_TENANT=acme SAGAT_PROVISION_ADMIN=alice@example.com control-plan
 | Probe | Meaning | Use for |
 |---|---|---|
 | `GET /v1/health` | The process is up. Touches nothing else | Liveness; a database outage must not restart pods |
-| `GET /v1/ready` | PostgreSQL answers **and** the identity tables exist; cached for 1 s | Readiness |
+| `GET /v1/ready` | PostgreSQL answers within 500 ms **and** the identity tables exist; cached for 1 s, and concurrent probes share one ping | Readiness |
+
+When `/v1/ready` is `503` the response never says why; the cause is a `WARN` line in the JSON log
+(`readiness probe failed`, preceded by `storage unavailable` with the detail, for example "the
+database schema has not been migrated" or a pool/connection error).
 
 Every response carries `X-Trace-Id`, and every error body repeats it as `traceId`. Search the JSON
 logs for that value to follow one request.

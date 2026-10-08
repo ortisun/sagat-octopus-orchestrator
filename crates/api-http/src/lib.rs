@@ -49,6 +49,8 @@ pub struct AppState<S, C> {
     pub tenant_concurrency: Arc<TenantConcurrency>,
     /// Last readiness probe result, so a flood of `/v1/ready` calls cannot exhaust the pool.
     pub(crate) ready_cache: Arc<Mutex<Option<(Instant, bool)>>>,
+    /// Serialises readiness refreshes so concurrent probes share one storage ping.
+    pub(crate) ready_refresh: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl<S, C> AppState<S, C> {
@@ -92,6 +94,7 @@ impl<S, C> AppState<S, C> {
                 HttpLimits::default().max_in_flight_per_tenant,
             )),
             ready_cache: Arc::new(Mutex::new(None)),
+            ready_refresh: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -117,6 +120,7 @@ impl<S, C> Clone for AppState<S, C> {
             subject_limiter: Arc::clone(&self.subject_limiter),
             tenant_concurrency: Arc::clone(&self.tenant_concurrency),
             ready_cache: Arc::clone(&self.ready_cache),
+            ready_refresh: Arc::clone(&self.ready_refresh),
         }
     }
 }

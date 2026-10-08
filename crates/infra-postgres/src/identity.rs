@@ -423,11 +423,13 @@ impl IdentityStore for PgIdentityStore {
         if missing == 0 {
             Ok(())
         } else {
-            Err(StoreError::Unavailable {
+            // Logged like every other storage failure: the response only says "unavailable", so
+            // this line is the only place an operator can learn that the migration has not run.
+            Err(record(StoreError::Unavailable {
                 detail: format!(
                     "the database schema has not been migrated ({missing} tables missing)"
                 ),
-            })
+            }))
         }
     }
 }
@@ -502,7 +504,11 @@ fn namespace_from_row(row: &PgRow) -> Result<Namespace, StoreError> {
 /// only place where an operator can learn *why* storage failed. Server messages carry no row
 /// values (those live in a separate `DETAIL` field that is not logged).
 fn store_error(error: sqlx::Error) -> StoreError {
-    let mapped = classify(&error);
+    record(classify(&error))
+}
+
+/// Logs a storage failure with its cause (never returned to clients) and passes it on.
+fn record(mapped: StoreError) -> StoreError {
     match &mapped {
         StoreError::Unavailable { detail } => tracing::warn!(%detail, "storage unavailable"),
         StoreError::Internal { detail } => tracing::error!(%detail, "storage failure"),
