@@ -407,3 +407,32 @@ async fn the_jwks_must_be_fetched_over_https_unless_explicitly_relaxed() {
     let ftp = AuthConfig::new(ISSUER, AUDIENCE, "ftp://idp.example.test/jwks.json");
     assert!(HttpJwksFetcher::new(&ftp).is_err());
 }
+
+#[tokio::test]
+async fn tokens_declaring_critical_header_extensions_are_refused() {
+    // RFC 7515 §4.1.11: a verifier that does not implement a `crit` extension must reject the token.
+    let idp = TestIdp::start().await;
+    let v = verifier(&idp).await;
+
+    let token = idp.token("alice", "acme").crit(&["exp"]).build();
+
+    assert_eq!(
+        v.verify(&token).await,
+        invalid(InvalidReason::CriticalHeader)
+    );
+}
+
+#[tokio::test]
+async fn the_issuer_must_be_a_string_not_a_list_containing_it() {
+    let idp = TestIdp::start().await;
+    let v = verifier(&idp).await;
+
+    let as_list = idp
+        .token("alice", "acme")
+        .claim("iss", json!([ISSUER, "https://evil.example/"]))
+        .build();
+    assert_eq!(v.verify(&as_list).await, invalid(InvalidReason::Issuer));
+
+    let exact = idp.token("alice", "acme").build();
+    assert!(v.verify(&exact).await.is_ok());
+}

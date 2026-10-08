@@ -24,6 +24,8 @@ const MAX_SUBJECT_BYTES: usize = 255;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidReason {
     Algorithm,
+    /// A `crit` header names extensions this verifier does not implement (RFC 7515 §4.1.11).
+    CriticalHeader,
     MissingKeyId,
     UnknownKey,
     Signature,
@@ -71,6 +73,7 @@ struct Claims {
 pub struct TokenVerifier {
     cache: JwksCache,
     base: Validation,
+    issuer: String,
     tenant_claim: String,
     leeway: u64,
     max_lifetime: u64,
@@ -89,6 +92,7 @@ impl TokenVerifier {
         Self {
             cache: JwksCache::new(fetcher, config),
             base,
+            issuer: config.issuer.clone(),
             tenant_claim: config.tenant_claim.clone(),
             leeway: config.leeway.as_secs(),
             max_lifetime: config.max_token_lifetime.as_secs(),
@@ -111,6 +115,10 @@ impl TokenVerifier {
         if !matches!(header.alg, Algorithm::RS256 | Algorithm::ES256) {
             return Err(AuthError::Invalid(InvalidReason::Algorithm));
         }
+        // We implement no JWS extensions, so a token that declares any as critical must be refused.
+        if header.crit.is_some() {
+            return Err(AuthError::Invalid(InvalidReason::CriticalHeader));
+        }
         let kid = header
             .kid
             .as_deref()
@@ -132,6 +140,12 @@ impl TokenVerifier {
             .map_err(|e| classify(e.kind()))?
             .claims;
 
+        // `iss` is a string by definition (RFC 7519); the library also accepts an array that contains
+        // the issuer, which this API never wants.
+        if claims.extra.get("iss").and_then(serde_json::Value::as_str) != Some(self.issuer.as_str())
+        {
+            return Err(AuthError::Invalid(InvalidReason::Issuer));
+        }
         self.check_lifetime(&claims)?;
         let tenant = self.tenant_of(&claims)?;
         let subject = claims

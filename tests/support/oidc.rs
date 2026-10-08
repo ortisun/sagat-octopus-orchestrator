@@ -209,6 +209,7 @@ pub struct TokenBuilder {
     kid: Option<String>,
     claims: Map<String, Value>,
     secret_override: Option<Vec<u8>>,
+    crit: Option<Vec<String>>,
 }
 
 impl TokenBuilder {
@@ -228,6 +229,7 @@ impl TokenBuilder {
             kid,
             claims,
             secret_override: None,
+            crit: None,
         }
     }
 
@@ -258,6 +260,12 @@ impl TokenBuilder {
             .claim("exp", json!(iat + lifetime))
     }
 
+    /// Declares extensions as critical in the JWS header (RFC 7515 §4.1.11).
+    pub fn crit(mut self, names: &[&str]) -> Self {
+        self.crit = Some(names.iter().map(|n| (*n).to_owned()).collect());
+        self
+    }
+
     /// HS256 token whose HMAC secret is the given bytes (key-confusion attempt).
     pub fn hmac_with(mut self, secret: Vec<u8>) -> Self {
         self.header_alg = Algorithm::HS256;
@@ -268,6 +276,7 @@ impl TokenBuilder {
     pub fn build(self) -> String {
         let mut header = Header::new(self.header_alg);
         header.kid = self.kid;
+        header.crit = self.crit;
         let key = match &self.secret_override {
             Some(secret) => EncodingKey::from_secret(secret),
             None => self.key.encoding_key(),
