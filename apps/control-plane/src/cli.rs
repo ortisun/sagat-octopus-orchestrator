@@ -73,6 +73,11 @@ ENVIRONMENT (serve):
     SAGAT_HEADER_READ_TIMEOUT_SECS    max time to send a request head [10]
     SAGAT_MAX_CONNECTIONS             simultaneous connections        [1024]
     SAGAT_SHUTDOWN_GRACE_SECS         drain time on shutdown          [30]
+    SAGAT_MAX_IN_FLIGHT               requests served at once         [512]
+    SAGAT_RATE_LIMIT_RPS              per-tenant sustained req/s      [100]
+    SAGAT_RATE_LIMIT_BURST            per-tenant burst                [200]
+    SAGAT_ADMIN_ADDR                  /metrics listener, or 'off'     [127.0.0.1:9090]
+    SAGAT_OIDC_REQUIRED_TYP           required JOSE typ, e.g. at+jwt  [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
 
 ENVIRONMENT (seed-dev):

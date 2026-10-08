@@ -4,12 +4,15 @@
 //!   error envelope, log line and audit record of a request carries the same trace id.
 //! * [`init_logging`] installs structured (JSON) logging.
 //!
-//! OTLP export of spans and metrics is **not implemented yet** (tracked in
-//! `specs/001-platform-foundation/research.md`, gap G6); the trace id is already propagated so the
-//! exporter can be added without touching call sites.
+//! * [`Metrics`] owns the Prometheus recorder behind the `metrics` facade.
+//!
+//! OTLP export of *spans* is not implemented yet (feature 008, gap G6); the trace id is already
+//! propagated so the exporter can be added without touching call sites.
 
 mod logging;
+mod metrics;
 mod trace;
 
 pub use logging::{LogFormat, init_logging};
+pub use metrics::Metrics;
 pub use trace::{TraceContext, TraceId};

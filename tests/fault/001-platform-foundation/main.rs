@@ -8,6 +8,7 @@
 mod support;
 
 mod database;
+mod limits;
 mod provider;
 mod resilience;
 mod server;

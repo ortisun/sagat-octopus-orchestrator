@@ -19,6 +19,7 @@ name = "control-plane"
 path = "src/main.rs"
 
 [dependencies]
+axum.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true

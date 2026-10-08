@@ -10,7 +10,7 @@ mod identity;
 mod pool;
 
 pub use identity::PgIdentityStore;
-pub use pool::{PoolConfig, connect};
+pub use pool::{PoolConfig, connect, spawn_pool_metrics};
 pub use sqlx::PgPool;
 
 /// Embedded, ordered schema migrations (`migrations/<version>_<name>.{up,down}.sql`).

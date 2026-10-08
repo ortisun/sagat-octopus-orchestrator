@@ -210,6 +210,7 @@ pub struct TokenBuilder {
     claims: Map<String, Value>,
     secret_override: Option<Vec<u8>>,
     crit: Option<Vec<String>>,
+    typ: Option<Option<String>>,
 }
 
 impl TokenBuilder {
@@ -230,6 +231,7 @@ impl TokenBuilder {
             claims,
             secret_override: None,
             crit: None,
+            typ: None,
         }
     }
 
@@ -260,6 +262,12 @@ impl TokenBuilder {
             .claim("exp", json!(iat + lifetime))
     }
 
+    /// Sets (or removes, with `None`) the JOSE `typ` header; the default is `JWT`.
+    pub fn typ(mut self, typ: Option<&str>) -> Self {
+        self.typ = Some(typ.map(str::to_owned));
+        self
+    }
+
     /// Declares extensions as critical in the JWS header (RFC 7515 §4.1.11).
     pub fn crit(mut self, names: &[&str]) -> Self {
         self.crit = Some(names.iter().map(|n| (*n).to_owned()).collect());
@@ -277,6 +285,9 @@ impl TokenBuilder {
         let mut header = Header::new(self.header_alg);
         header.kid = self.kid;
         header.crit = self.crit;
+        if let Some(typ) = self.typ {
+            header.typ = typ;
+        }
         let key = match &self.secret_override {
             Some(secret) => EncodingKey::from_secret(secret),
             None => self.key.encoding_key(),

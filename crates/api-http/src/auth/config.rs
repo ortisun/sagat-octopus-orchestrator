@@ -15,6 +15,10 @@ pub struct AuthConfig {
     pub jwks_uri: String,
     /// Name of the claim holding the caller's tenant slug.
     pub tenant_claim: String,
+    /// When set, only tokens whose JOSE `typ` header equals this value (case-insensitive) are
+    /// accepted, e.g. `at+jwt` (RFC 9068), which keeps an ID token from being used as an access
+    /// token. Off by default because providers disagree on the value (gap G14).
+    pub required_token_type: Option<String>,
     /// Tolerated clock skew for `exp`, `nbf` and `iat`.
     pub leeway: Duration,
     /// Longest `exp - iat` accepted. Bounds the window in which a revoked token still works, since
@@ -46,6 +50,7 @@ impl AuthConfig {
             audience: audience.into(),
             jwks_uri: jwks_uri.into(),
             tenant_claim: "tenant".to_owned(),
+            required_token_type: None,
             leeway: Duration::from_secs(30),
             max_token_lifetime: Duration::from_secs(3600),
             jwks_ttl: Duration::from_secs(600),

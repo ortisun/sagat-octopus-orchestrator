@@ -387,6 +387,7 @@ impl IdentityStore for PgIdentityStore {
         // Off the response path and bounded: a flood of denials must neither slow the caller (which
         // would reveal that the identifier exists elsewhere) nor pile up work in the database.
         let Ok(slot) = Arc::clone(&self.denial_slots).try_acquire_owned() else {
+            metrics::counter!("audit_denials_total", "outcome" => "dropped").increment(1);
             tracing::warn!(action = %audit.action(), "too many audit writes pending; dropping a denial event");
             return Ok(());
         };
@@ -395,8 +396,14 @@ impl IdentityStore for PgIdentityStore {
         let window = self.denial_window;
         tokio::spawn(async move {
             let _slot = slot;
-            if let Err(error) = insert_denial_once(&pool, &audit, window).await {
-                tracing::error!(%error, "failed to record a cross-tenant denial");
+            match insert_denial_once(&pool, &audit, window).await {
+                Ok(()) => {
+                    metrics::counter!("audit_denials_total", "outcome" => "accepted").increment(1);
+                }
+                Err(error) => {
+                    metrics::counter!("audit_denials_total", "outcome" => "failed").increment(1);
+                    tracing::error!(%error, "failed to record a cross-tenant denial");
+                }
             }
         });
         Ok(())

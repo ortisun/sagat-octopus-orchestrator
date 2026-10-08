@@ -24,6 +24,8 @@ const MAX_SUBJECT_BYTES: usize = 255;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidReason {
     Algorithm,
+    /// The token `typ` is not the required one (see `AuthConfig::required_token_type`).
+    TokenType,
     /// A `crit` header names extensions this verifier does not implement (RFC 7515 §4.1.11).
     CriticalHeader,
     MissingKeyId,
@@ -35,6 +37,27 @@ pub enum InvalidReason {
     NotYetValid,
     Lifetime,
     TenantClaim,
+}
+
+impl InvalidReason {
+    /// Stable, low-cardinality name for metrics and logs.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Algorithm => "algorithm",
+            Self::TokenType => "token_type",
+            Self::CriticalHeader => "critical_header",
+            Self::MissingKeyId => "missing_key_id",
+            Self::UnknownKey => "unknown_key",
+            Self::Signature => "signature",
+            Self::Issuer => "issuer",
+            Self::Audience => "audience",
+            Self::MissingClaim => "missing_claim",
+            Self::NotYetValid => "not_yet_valid",
+            Self::Lifetime => "lifetime",
+            Self::TenantClaim => "tenant_claim",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -74,9 +97,23 @@ pub struct TokenVerifier {
     cache: JwksCache,
     base: Validation,
     issuer: String,
+    required_typ: Option<String>,
     tenant_claim: String,
     leeway: u64,
     max_lifetime: u64,
+}
+
+impl AuthError {
+    /// Stable, low-cardinality name for metrics and logs.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::Expired => "expired",
+            Self::Invalid(reason) => reason.label(),
+            Self::Unavailable => "keys_unavailable",
+        }
+    }
 }
 
 impl TokenVerifier {
@@ -93,6 +130,7 @@ impl TokenVerifier {
             cache: JwksCache::new(fetcher, config),
             base,
             issuer: config.issuer.clone(),
+            required_typ: config.required_token_type.clone(),
             tenant_claim: config.tenant_claim.clone(),
             leeway: config.leeway.as_secs(),
             max_lifetime: config.max_token_lifetime.as_secs(),
@@ -114,6 +152,15 @@ impl TokenVerifier {
         // all three is caught by `hmac_tokens_signed_with_the_public_key_are_refused`.
         if !matches!(header.alg, Algorithm::RS256 | Algorithm::ES256) {
             return Err(AuthError::Invalid(InvalidReason::Algorithm));
+        }
+        if let Some(required) = &self.required_typ {
+            let ok = header
+                .typ
+                .as_deref()
+                .is_some_and(|t| t.eq_ignore_ascii_case(required));
+            if !ok {
+                return Err(AuthError::Invalid(InvalidReason::TokenType));
+            }
         }
         // We implement no JWS extensions, so a token that declares any as critical must be refused.
         if header.crit.is_some() {

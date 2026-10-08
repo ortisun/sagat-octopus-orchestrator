@@ -71,10 +71,15 @@ async fn run(command: Command) -> Result<(), RunError> {
         Command::Serve => {
             let serve = ServeConfig::from_lookup(&env_lookup)?;
             let listener = tokio::net::TcpListener::bind(serve.bind_addr).await?;
-            sagat_control_plane::serve(
+            let admin = match serve.admin_addr {
+                Some(addr) => Some(tokio::net::TcpListener::bind(addr).await?),
+                None => None,
+            };
+            sagat_control_plane::serve_with_admin(
                 &config,
                 &serve,
                 listener,
+                admin,
                 sagat_control_plane::shutdown_signal(),
             )
             .await
