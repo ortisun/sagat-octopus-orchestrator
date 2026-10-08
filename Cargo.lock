@@ -3131,11 +3131,13 @@ version = "0.1.0"
 dependencies = [
  "metrics",
  "prost",
+ "prost-types",
  "protox",
  "sagat-api-http",
  "sagat-application",
  "sagat-domain",
  "sagat-telemetry",
+ "serde_json",
  "sha2 0.11.0",
  "time",
  "tokio",
