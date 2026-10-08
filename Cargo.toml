@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,13 +15,15 @@ publish = false
 sagat-domain = { path = "crates/domain" }
 sagat-application = { path = "crates/application" }
 sagat-infra-postgres = { path = "crates/infra-postgres" }
+sagat-telemetry = { path = "crates/telemetry" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"] }
 thiserror = "2"
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "json", "env-filter", "ansi"] }
 time = { version = "0.3", default-features = false, features = ["std"] }
-uuid = { version = "1", default-features = false, features = ["std", "v7"] }
+uuid = { version = "1", default-features = false, features = ["std", "v4", "v7"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
