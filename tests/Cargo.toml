@@ -50,3 +50,7 @@ path = "fault/001-platform-foundation/main.rs"
 [[test]]
 name = "contract_rest_001"
 path = "contract/001-platform-foundation/rest/main.rs"
+
+[[test]]
+name = "perf_001"
+path = "performance/001-platform-foundation/main.rs"
