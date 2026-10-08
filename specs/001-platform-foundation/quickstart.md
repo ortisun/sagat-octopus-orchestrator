@@ -1,23 +1,95 @@
 # Validation quickstart: Platform foundation and contracts
 
-> This quickstart describes the target experience; the commands are **proposed contracts**, not executable until `001` and this feature are implemented.
+> Feature 001 is implemented in part. The commands below are real and were run; items marked
+> **pending** are not available yet. The authoritative status per requirement is in
+> [`docs/traceability.md`](../../docs/traceability.md).
 
 ## Prerequisites
 
-- Rust stable toolchain pinned by the repository, Docker, PostgreSQL and NATS JetStream.
-- Dev auth token, test tenant and feature fixtures.
+- Rust toolchain: `rustup` reads `rust-toolchain.toml` and installs the pinned compiler.
+- Docker (the integration tests start PostgreSQL 16 with Testcontainers; the local environment uses
+  Docker Compose).
+- Node.js 22 (only for the contract checks: OpenAPI lint and JSON Schema validation).
+- An OIDC provider for real tokens. **Pending:** a development identity provider shipped with the
+  repository (gap G10). Until then use your own provider, or the fake provider the test suites use.
 
-## Validation flow
+## 1. Run the tests
 
-1. Start `docker compose -f infra/docker/compose.yaml up -d`.
-2. Run the API/engine migrations.
-3. Start the workspace's APIs, scheduler and worker simulator.
-4. Run the scenarios from `spec.md` US01..US04 via the `tests/e2e/001-platform-foundation/` suite.
-5. Confirm outcomes, journal, outbox, traces, logs and that the isolation policies were applied.
-6. Take down the worker/scheduler at a controlled moment and confirm recovery.
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked                      # unit, contract, integration, e2e, fault
+python3 scripts/check-architecture.py                # layering and domain-purity rules
+python3 -m unittest discover -s scripts/tests        # tests of that checker
+npx --yes @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml
+```
+
+Each user story has its own file (`tests/e2e/001-platform-foundation/us01.rs` … `us04.rs`); the
+token matrix is `tests/contract/001-platform-foundation/auth.rs`; failure scenarios are in
+`tests/fault/001-platform-foundation/`.
+
+To reuse a PostgreSQL you already run instead of a container, set
+`SAGAT_TEST_DATABASE_URL=postgres://user:pass@127.0.0.1:PORT/postgres`.
+
+## 2. Bring up the local environment (US03)
+
+```sh
+cp infra/docker/.env.example infra/docker/.env       # edit the values
+docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env up -d --build
+docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env --profile seed run --rm seed
+curl -fsS http://127.0.0.1:18080/v1/health           # {"status":"ok"}
+curl -fsS http://127.0.0.1:18080/v1/ready            # checks PostgreSQL
+curl -fsS http://127.0.0.1:18222/healthz             # NATS JetStream
+```
+
+Everything is published on `127.0.0.1` with non-default host ports (`15432` PostgreSQL, `14222`
+NATS, `18222` NATS monitor, `18080` API) so it does not collide with services already running.
+
+The whole procedure, including building the image, running the migrations a second time and
+seeding twice, is automated and is what CI runs:
+
+```sh
+scripts/smoke-compose.sh
+```
+
+Not part of the environment yet: an S3-compatible object store (optional in this phase), and the
+NATS broker is not used by the control plane until feature 002.
+
+## 3. Run the control plane without Docker
+
+```sh
+export DATABASE_URL=postgres://user:pass@127.0.0.1:5432/sagat
+export SAGAT_ENV=dev
+export SAGAT_OIDC_ISSUER=https://your-idp/ SAGAT_OIDC_AUDIENCE=sagat-octopus-orchestrator
+export SAGAT_OIDC_JWKS_URI=https://your-idp/.well-known/jwks.json
+cargo run -p sagat-control-plane --bin control-plane -- migrate
+cargo run -p sagat-control-plane --bin control-plane -- seed-dev      # tenant "dev", admin "dev-admin"
+cargo run -p sagat-control-plane --bin control-plane -- serve
+cargo run -p sagat-control-plane --bin control-plane -- --help        # every setting
+```
+
+A caller needs a token whose `sub` is a member of the tenant named in its `tenant` claim (the seed
+creates tenant `dev` with administrator `dev-admin`). Memberships are read from the database on
+every request, so removing one takes effect immediately.
+
+## Validation flow of the scenarios
+
+| Story | Scenario | Automated by |
+|---|---|---|
+| US01 | An administrator creates a workspace and a `dev` namespace; both are persisted and visible | `tests/e2e/001-platform-foundation/us01.rs` |
+| US02 | A client with a valid tenant token lists namespaces and gets only its own, plus a trace id | `…/us02.rs` |
+| US03 | Migrate (twice), seed, start; API and database are healthy | `…/us03.rs`, `scripts/smoke-compose.sh` |
+| US04 | A tenant A user asks for tenant B's resource: nothing is revealed, the attempt is audited | `…/us04.rs` |
 
 ## Gates
 
-- Contract/API + tenant isolation suite and reproducible local environment with migrations executed twice.
-- Reproducible, annotated errors; no confirmed transition lost.
-- Update tasks `[x]` only when real tests have passed.
+- Contract/API + tenant isolation suite green, and a reproducible local environment with migrations
+  executed twice (`scripts/smoke-compose.sh`).
+- Errors are reproducible and annotated; no confirmed transition is lost.
+- A task in `tasks.md` becomes `[x]` only when real tests have passed.
+
+## Known limits
+
+Recorded in [`research.md`](./research.md): no token revocation list (G7), create operations are not
+idempotent through `Idempotency-Key` (G8), `403`s are not audited (G9), no OTLP export or metrics
+(G6), and no development identity provider (G10).

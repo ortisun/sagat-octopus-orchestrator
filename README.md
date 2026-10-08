@@ -1,6 +1,6 @@
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
-> **Status:** product and architecture specification, not an implementation. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
+> **Status:** specification with implementation in progress: feature 001 is partly built (see [`docs/traceability.md`](docs/traceability.md)); features 002–012 are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
 
 ## Mission
 
@@ -19,6 +19,17 @@ Inspired by **Temporal** (history and recovery), **Restate** (journal and durabl
 - **Security:** tenant/namespace isolation, RBAC, auditing and explicit egress/secrets policy.
 - **Observability:** OTel + auditable journal + execution timeline and DAG.
 
+## Build, test and run (feature 001)
+
+```sh
+cargo test --workspace --locked          # needs Docker: integration tests start PostgreSQL 16
+scripts/smoke-compose.sh                 # builds the image, starts PostgreSQL + NATS + API, checks health
+```
+
+The full procedure, the environment variables and what is not built yet are in
+[`specs/001-platform-foundation/quickstart.md`](specs/001-platform-foundation/quickstart.md).
+Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
+
 ## Folders
 
 ```text
@@ -30,6 +41,9 @@ docs/roadmap.md                 Phases, dependencies and exit criteria
 docs/traceability.md            Traceability of requirements and deliverables
 docs/test-strategy.md           Failure, load, contract and security tests
 AGENTS.md                       Instructions for implementation agents
+crates/ apps/ tests/            Rust workspace: domain, application, adapters, control plane, test suites
+infra/docker/                   Local environment (Docker Compose) and the control-plane image
+scripts/                        Architecture-rule checker and the compose smoke test
 ```
 
 ## Usage with GitHub Spec Kit
