@@ -248,6 +248,20 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::NotAllowed(message) => Self::validation(message),
+            AppError::StaleAttempt => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the attempt is no longer current",
+                );
+                e.parts.details = Some(json!({ "reason": "STALE_ATTEMPT" }));
+                e
+            }
+            AppError::StateConflict(message) => {
+                let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
+                e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
+                e
+            }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
             AppError::Unavailable => Self::unavailable(),
             AppError::Internal => Self::new(

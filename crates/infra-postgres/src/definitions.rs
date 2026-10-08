@@ -340,6 +340,25 @@ impl DefinitionStore for PgDefinitionStore {
             .transpose()
     }
 
+    async fn get_version_by_id(
+        &self,
+        tenant: TenantId,
+        id: WorkflowVersionId,
+    ) -> Result<Option<VersionRecord>, StoreError> {
+        sqlx::query(
+            "SELECT id, tenant_id, workflow_id, version_number, digest, document, release_notes, \
+                    published_by, published_at \
+             FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        .map(|row| version_record(&row))
+        .transpose()
+    }
+
     async fn list_versions(
         &self,
         tenant: TenantId,
@@ -393,13 +412,13 @@ const VERSION_SELECT_ONE: &str = "SELECT id, tenant_id, workflow_id, version_num
 
 // ----------------------------------------------------------------------------- idempotency
 
-fn hash(fingerprint: &[u8]) -> Vec<u8> {
+pub(crate) fn hash(fingerprint: &[u8]) -> Vec<u8> {
     Sha256::digest(fingerprint).to_vec()
 }
 
 /// Looks for an earlier request with the same key. `Some(resource)` is a replay; a different
 /// request under the same key is an error.
-async fn replay(
+pub(crate) async fn replay(
     conn: &mut PgConnection,
     tenant: TenantId,
     idempotency: &Idempotency,
@@ -428,7 +447,7 @@ async fn replay(
 
 /// Records the key. `false` means a concurrent request with the same key committed first; the
 /// caller rolls back and starts over, which turns this request into a replay.
-async fn remember(
+pub(crate) async fn remember(
     conn: &mut PgConnection,
     tenant: TenantId,
     idempotency: &Idempotency,

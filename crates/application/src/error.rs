@@ -57,9 +57,16 @@ pub enum AppError {
     /// The workflow document is not publishable. The issues name paths and nodes, never payloads.
     #[error("invalid workflow definition: {0}")]
     InvalidDefinition(Box<IrError>),
-    /// A well-formed request that the current state of the resource cannot accept.
+    /// A well-formed request that is not acceptable as asked (a limit, a feature not built yet).
     #[error("operation not allowed: {0}")]
     NotAllowed(&'static str),
+    /// The caller holds a lease that is no longer current (the attempt was reclaimed, cancelled or
+    /// already finished): its result is refused. Idempotent replays are answered before this.
+    #[error("the attempt is stale")]
+    StaleAttempt,
+    /// A request the *current state* of the resource cannot accept (cancelling a finished run).
+    #[error("conflict with the current state: {0}")]
+    StateConflict(&'static str),
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),

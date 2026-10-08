@@ -199,6 +199,13 @@ pub trait DefinitionStore: Send + Sync {
         number: u32,
     ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
 
+    /// A version by its identifier (runs pin the version they use by id).
+    fn get_version_by_id(
+        &self,
+        tenant: TenantId,
+        id: WorkflowVersionId,
+    ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
+
     /// Versions of one workflow with `number > after`, ascending, at most `limit`.
     fn list_versions(
         &self,

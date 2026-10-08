@@ -280,6 +280,23 @@ impl DefinitionStore for FakeStore {
         }))
     }
 
+    async fn get_version_by_id(
+        &self,
+        tenant: TenantId,
+        id: WorkflowVersionId,
+    ) -> Result<Option<VersionRecord>, StoreError> {
+        Ok(self.with(|s| {
+            s.versions
+                .iter()
+                .find(|(v, _)| v.tenant_id() == tenant && v.id() == id)
+                .map(|(v, d)| VersionRecord {
+                    version: v.clone(),
+                    document: d.clone(),
+                    release_notes: None,
+                })
+        }))
+    }
+
     async fn list_versions(
         &self,
         tenant: TenantId,

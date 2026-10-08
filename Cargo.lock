@@ -2910,11 +2910,14 @@ dependencies = [
 name = "sagat-application"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "sagat-domain",
+ "sha2 0.11.0",
  "thiserror",
  "time",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2983,6 +2986,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-scheduler"
+version = "0.1.0"
+dependencies = [
+ "metrics",
+ "sagat-application",
+ "sagat-domain",
+ "time",
+ "tracing",
+]
+
+[[package]]
 name = "sagat-telemetry"
 version = "0.1.0"
 dependencies = [
@@ -2999,6 +3013,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "futures-util",
  "jsonschema",
  "jsonwebtoken",
  "p256",
@@ -3009,6 +3024,7 @@ dependencies = [
  "sagat-domain",
  "sagat-infra-ir",
  "sagat-infra-postgres",
+ "sagat-scheduler",
  "sagat-telemetry",
  "serde_json",
  "serde_yaml_ng",
@@ -3016,6 +3032,7 @@ dependencies = [
  "testcontainers-modules",
  "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

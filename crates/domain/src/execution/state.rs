@@ -256,6 +256,37 @@ impl StepState {
         self.timed_out
     }
 
+    /// Rebuilds a step from trusted storage (a projection row). The reducer's checks do not run:
+    /// the rows were written from states the reducer produced, and tests compare the result with a
+    /// replay of the journal.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn restore(
+        status: StepStatus,
+        attempt: u32,
+        generation: u64,
+        cancel_requested: bool,
+        routed: bool,
+        next_attempt_at: Option<OffsetDateTime>,
+        waiting: Option<WaitingOn>,
+        failure: Option<FailureCode>,
+        condition: Option<bool>,
+        timed_out: bool,
+    ) -> Self {
+        Self {
+            status,
+            attempt,
+            generation,
+            cancel_requested,
+            routed,
+            next_attempt_at,
+            waiting,
+            failure,
+            condition,
+            timed_out,
+        }
+    }
+
     const fn fenced_by(&self, attempt: u32, generation: u64) -> bool {
         self.attempt == attempt && self.generation == generation
     }
@@ -299,6 +330,27 @@ impl RunState {
             state.apply(event)?;
         }
         Ok(state)
+    }
+
+    /// Rebuilds a run from trusted storage (the `runs` and `steps` rows). `version` is the number of
+    /// journal events the rows reflect.
+    #[must_use]
+    pub const fn restore(
+        run_id: RunId,
+        status: RunStatus,
+        stop: Option<(StopReason, Option<FailureCode>)>,
+        paused: bool,
+        steps: BTreeMap<NodeId, StepState>,
+        version: u64,
+    ) -> Self {
+        Self {
+            run_id,
+            status,
+            stop,
+            paused,
+            steps,
+            applied: version,
+        }
     }
 
     #[must_use]

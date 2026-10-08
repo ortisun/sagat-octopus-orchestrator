@@ -7,7 +7,10 @@
 
 mod canonical;
 mod convert;
+mod evaluator;
 mod schema;
+
+pub use evaluator::JsonEvaluator;
 
 use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
