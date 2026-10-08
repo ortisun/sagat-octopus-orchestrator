@@ -42,6 +42,10 @@ curl -fsS http://127.0.0.1:18080/v1/ready            # checks PostgreSQL
 curl -fsS http://127.0.0.1:18222/healthz             # NATS JetStream
 ```
 
+The database role used by the API (`sagat_app`) is created the first time the PostgreSQL volume is
+initialised. If you already had a volume from an earlier version, recreate it once with
+`docker compose -f infra/docker/compose.yaml down -v`.
+
 Everything is published on `127.0.0.1` with non-default host ports (`15432` PostgreSQL, `14222`
 NATS, `18222` NATS monitor, `18080` API) so it does not collide with services already running.
 

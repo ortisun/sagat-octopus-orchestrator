@@ -24,6 +24,8 @@ pub struct TestApi {
     pub idp: TestIdp,
     pub db: TestDb,
     pub store: PgIdentityStore,
+    /// Provisioning handle that always runs as the database owner (the API may not be allowed to).
+    pub owner_store: PgIdentityStore,
     /// The pool the API itself uses (`db.pool` is the tests' own administrative handle).
     pub api_pool: PgPool,
 }
@@ -36,6 +38,8 @@ pub struct Options {
     pub statement_timeout: Duration,
     /// Connection-level limits of the HTTP server.
     pub server: ServerConfig,
+    /// Connect the API as the least-privilege runtime role instead of the database owner.
+    pub runtime_role: bool,
 }
 
 impl Default for Options {
@@ -45,6 +49,7 @@ impl Default for Options {
             limits: HttpLimits::default(),
             statement_timeout: Duration::from_secs(2),
             server: ServerConfig::default(),
+            runtime_role: false,
         }
     }
 }
@@ -62,7 +67,12 @@ pub async fn start_with(options: Options) -> TestApi {
     auth.allow_insecure_jwks_http = true;
     (options.auth)(&mut auth);
 
-    let mut pool_config = PoolConfig::new(db.url.clone());
+    let api_url = if options.runtime_role {
+        db.url_for(super::RUNTIME_ROLE, super::RUNTIME_ROLE_PASSWORD)
+    } else {
+        db.url.clone()
+    };
+    let mut pool_config = PoolConfig::new(api_url);
     pool_config.max_connections = 8;
     pool_config.acquire_timeout = Duration::from_secs(2);
     pool_config.statement_timeout = options.statement_timeout;
@@ -86,12 +96,14 @@ pub async fn start_with(options: Options) -> TestApi {
         .timeout(Duration::from_secs(10))
         .build()
         .expect("client");
+    let owner_store = PgIdentityStore::new(db.pool.clone());
     TestApi {
         base: format!("http://{addr}/v1"),
         client,
         idp,
         db,
         store,
+        owner_store,
         api_pool,
     }
 }
@@ -99,7 +111,7 @@ pub async fn start_with(options: Options) -> TestApi {
 impl TestApi {
     /// Creates a tenant and its first admin directly in the database.
     pub async fn tenant(&self, slug: &str, admin: &str) {
-        provision(&self.store, slug, admin).await;
+        provision(&self.owner_store, slug, admin).await;
     }
 
     pub fn request(&self, method: Method, path: &str) -> RequestBuilder {

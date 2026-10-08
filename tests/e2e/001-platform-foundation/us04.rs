@@ -289,3 +289,69 @@ async fn a_cross_tenant_404_does_not_wait_for_the_audit_write() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn the_whole_flow_works_when_the_api_runs_as_the_least_privilege_role() {
+    // Proves the grants are sufficient: create, read, list, a cross-tenant denial (which writes the
+    // audit trail from a spawned task) and the probes, all without owner privileges.
+    use crate::support::api::{Options, start_with};
+    let api = start_with(Options {
+        runtime_role: true,
+        ..Options::default()
+    })
+    .await;
+    api.tenant("acme", "alice").await;
+    api.tenant("globex", "bob").await;
+    let ws_a = api.create_workspace("alice", "acme", "platform").await;
+    let ns_a = api
+        .create_namespace("alice", "acme", &ws_a, "dev", "dev")
+        .await;
+    let ws_b = api.create_workspace("bob", "globex", "other").await;
+
+    assert_eq!(
+        api.get_as(&format!("/workspaces/{ws_a}"), "alice", "acme")
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        api.get_as(&format!("/namespaces/{ns_a}"), "alice", "acme")
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        json_of(api.get_as("/namespaces", "alice", "acme").await).await["items"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        api.get_as(&format!("/workspaces/{ws_b}"), "alice", "acme")
+            .await
+            .status(),
+        404
+    );
+    assert_eq!(
+        api.request(Method::GET, "/ready")
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        200
+    );
+
+    eventually(
+        "the denial to be recorded by the least-privilege role",
+        || async {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+            )
+            .fetch_one(&api.db.pool)
+            .await
+            .expect("count");
+            (n == 1).then_some(())
+        },
+    )
+    .await;
+}

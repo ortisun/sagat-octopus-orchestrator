@@ -7,4 +7,5 @@ mod support;
 mod constraints;
 mod flows;
 mod migrations;
+mod runtime_role;
 mod store;
