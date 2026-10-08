@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,7 +12,14 @@ publish = false
 # Dependencies are declared once here and inherited with `workspace = true`.
 # Layering rules (enforced by scripts/check-architecture.py) restrict which crate may use what.
 [workspace.dependencies]
+sagat-domain = { path = "crates/domain" }
+sagat-application = { path = "crates/application" }
+sagat-infra-postgres = { path = "crates/infra-postgres" }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"] }
 thiserror = "2"
+tokio = { version = "1", default-features = false }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 time = { version = "0.3", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["std", "v7"] }
 

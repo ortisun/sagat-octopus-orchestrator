@@ -11,7 +11,6 @@ use std::fmt;
 use std::str::FromStr;
 
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 /// Typed errors of the identity model. Messages never contain identifiers of other tenants.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -68,48 +67,6 @@ pub enum SubjectViolation {
     TooLong,
     #[error("must not contain control characters")]
     ControlCharacter,
-}
-
-macro_rules! uuid_id {
-    ($(#[$meta:meta])* $name:ident) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        pub struct $name(Uuid);
-
-        impl $name {
-            /// Wraps an existing UUID (e.g. read back from storage).
-            #[must_use]
-            pub const fn new(id: Uuid) -> Self {
-                Self(id)
-            }
-
-            /// Generates a new time-ordered (UUIDv7) identifier.
-            #[must_use]
-            pub fn generate() -> Self {
-                Self(Uuid::now_v7())
-            }
-
-            /// The underlying UUID.
-            #[must_use]
-            pub const fn as_uuid(&self) -> Uuid {
-                self.0
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.0.fmt(f)
-            }
-        }
-
-        impl FromStr for $name {
-            type Err = IdentityError;
-
-            fn from_str(s: &str) -> Result<Self, Self::Err> {
-                Uuid::parse_str(s).map(Self).map_err(|_| IdentityError::MalformedId)
-            }
-        }
-    };
 }
 
 uuid_id!(

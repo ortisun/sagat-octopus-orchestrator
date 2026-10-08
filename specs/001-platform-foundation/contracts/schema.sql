@@ -1,8 +1,25 @@
 -- MODEL DESIGN ONLY. Not a ready-to-run production migration.
+-- The identity context (tenants, workspaces, namespaces, memberships, audit_records) is implemented by the
+-- authoritative migrations in crates/infra-postgres/migrations/; the tables below mirror their shape.
 -- PostgreSQL 16+ baseline example. Add enum/checks, partitions, RLS, auditing, FK, quotas and indexes in controlled migrations.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE TABLE tenants (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), slug text NOT NULL UNIQUE, created_at timestamptz NOT NULL DEFAULT now());
-CREATE TABLE namespaces (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), slug text NOT NULL, environment text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(tenant_id,slug));
+CREATE TABLE tenants (id uuid PRIMARY KEY, slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z][a-z0-9-]{1,61}[a-z0-9]$' AND slug !~ '--'), created_at timestamptz NOT NULL);
+CREATE TABLE workspaces (
+ id uuid PRIMARY KEY, tenant_id uuid NOT NULL REFERENCES tenants(id), slug text NOT NULL CHECK (slug ~ '^[a-z][a-z0-9-]{1,61}[a-z0-9]$' AND slug !~ '--'),
+ created_at timestamptz NOT NULL, UNIQUE(tenant_id,id), UNIQUE(tenant_id,slug)
+);
+-- A namespace is addressed by name alone inside its tenant, so its slug is unique per TENANT, not per workspace.
+-- The composite foreign key makes the database reject a workspace that belongs to another tenant.
+CREATE TABLE namespaces (
+ id uuid PRIMARY KEY, tenant_id uuid NOT NULL REFERENCES tenants(id), workspace_id uuid NOT NULL,
+ slug text NOT NULL CHECK (slug ~ '^[a-z][a-z0-9-]{1,61}[a-z0-9]$' AND slug !~ '--'),
+ environment text NOT NULL CHECK (environment IN ('dev','staging','prod')), created_at timestamptz NOT NULL,
+ UNIQUE(tenant_id,id), UNIQUE(tenant_id,slug), FOREIGN KEY (tenant_id,workspace_id) REFERENCES workspaces(tenant_id,id)
+);
+CREATE TABLE memberships (
+ tenant_id uuid NOT NULL REFERENCES tenants(id), subject text NOT NULL CHECK (char_length(subject) BETWEEN 1 AND 255 AND subject !~ '[[:cntrl:]]'),
+ role text NOT NULL CHECK (role IN ('admin','developer','operator','viewer')), created_at timestamptz NOT NULL, PRIMARY KEY (tenant_id,subject)
+);
 CREATE TABLE workflows (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), namespace_id uuid NOT NULL REFERENCES namespaces(id), name text NOT NULL, active_version_id uuid, draft_revision bigint NOT NULL DEFAULT 1, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(tenant_id,namespace_id,name));
 CREATE TABLE workflow_versions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), workflow_id uuid NOT NULL REFERENCES workflows(id), version_number integer NOT NULL, ir_json jsonb NOT NULL, digest text NOT NULL, published_at timestamptz NOT NULL DEFAULT now(), UNIQUE(workflow_id,version_number), UNIQUE(workflow_id,digest));
 ALTER TABLE workflows ADD CONSTRAINT workflows_active_fk FOREIGN KEY (active_version_id) REFERENCES workflow_versions(id);
@@ -75,10 +92,11 @@ CREATE TABLE script_versions (
  artifact_digest text, policy_digest text, manifest_json jsonb NOT NULL, published_at timestamptz,
  UNIQUE(tenant_id,namespace_id,name,version_number)
 );
+-- Append-only: UPDATE, DELETE and TRUNCATE are rejected by triggers (see the migration).
 CREATE TABLE audit_records (
- id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid NOT NULL REFERENCES tenants(id), actor text NOT NULL,
+ id uuid PRIMARY KEY, tenant_id uuid NOT NULL REFERENCES tenants(id), actor text NOT NULL,
  action text NOT NULL, resource_type text NOT NULL, resource_id text NOT NULL, reason text,
- trace_id text, created_at timestamptz NOT NULL DEFAULT now()
+ trace_id text CHECK (trace_id IS NULL OR trace_id ~ '^[0-9a-f]{32}$'), created_at timestamptz NOT NULL
 );
 -- Security: real migrations MUST verify tenant-scoped FKs (composite tenant_id/id), policies and query enforcement.
 -- Additional planned tables: worker_sessions, worker_pools, webhook_endpoints, webhook_deliveries,
