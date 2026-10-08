@@ -218,3 +218,24 @@ pub fn db_error(err: sqlx::Error) -> (String, Option<String>) {
         other => panic!("expected a database error, got {other:?}"),
     }
 }
+
+/// Polls `check` until it yields a value, failing the test after five seconds.
+///
+/// For effects that are deliberately written off the request path (the cross-tenant denial audit).
+pub async fn eventually<T, F, Fut>(what: &str, mut check: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(value) = check().await {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for: {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}

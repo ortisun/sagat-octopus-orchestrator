@@ -205,7 +205,7 @@ impl IdentityStore for FakeStore {
         }))
     }
 
-    async fn record_audit(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+    async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
         self.check()?;
         self.with(|s| {
             if s.fail_audit_writes {

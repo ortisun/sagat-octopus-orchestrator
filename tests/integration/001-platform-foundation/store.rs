@@ -10,7 +10,7 @@ use sagat_domain::identity::{
 };
 use sagat_infra_postgres::{PgIdentityStore, PoolConfig, connect};
 
-use crate::support::{migrated_db, now, slug, subject, two_tenants};
+use crate::support::{eventually, migrated_db, now, slug, subject, two_tenants};
 
 fn audit(
     p: &Principal,
@@ -459,4 +459,129 @@ async fn the_store_recovers_after_every_connection_is_killed() {
         Some(Some(ws)),
         "service resumed and nothing was lost"
     );
+}
+
+// ------------------------------------------------------- cross-tenant denial events (review)
+
+fn denial(p: &Principal, resource_id: &str) -> AuditRecord {
+    AuditRecord::by(
+        p,
+        AuditAction::CrossTenantAccessDenied,
+        ResourceType::Workspace,
+        resource_id,
+        None,
+        now(),
+    )
+}
+
+async fn denial_rows(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count")
+}
+
+#[tokio::test]
+async fn repeating_the_same_denial_does_not_grow_the_audit_trail() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let store = w
+        .store
+        .clone()
+        .with_denial_window(Duration::from_millis(800));
+    let alice = &w.admin_a;
+    let other_user = Principal::new(
+        w.tenant_a.id(),
+        subject("carol"),
+        sagat_domain::identity::Role::Viewer,
+    );
+
+    // 20 identical events fired at once: the per-event lock makes the check atomic.
+    let burst: Vec<_> = (0..20)
+        .map(|_| {
+            let store = store.clone();
+            let record = denial(alice, "ws-1");
+            tokio::spawn(async move { store.record_denial(&record).await })
+        })
+        .collect();
+    for call in burst {
+        call.await.expect("join").expect("accepted");
+    }
+    eventually("the first denial to be written", || async {
+        (denial_rows(&db.pool).await >= 1).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        denial_rows(&db.pool).await,
+        1,
+        "twenty identical events, one record"
+    );
+
+    // A different resource, and a different actor on the same resource, are different events.
+    store
+        .record_denial(&denial(alice, "ws-2"))
+        .await
+        .expect("accepted");
+    store
+        .record_denial(&denial(&other_user, "ws-1"))
+        .await
+        .expect("accepted");
+    eventually("distinct denials to be written", || async {
+        (denial_rows(&db.pool).await >= 3).then_some(())
+    })
+    .await;
+    assert_eq!(denial_rows(&db.pool).await, 3);
+
+    // Once the window has passed, the same event is worth recording again.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    store
+        .record_denial(&denial(alice, "ws-1"))
+        .await
+        .expect("accepted");
+    eventually("the post-window denial", || async {
+        (denial_rows(&db.pool).await >= 4).then_some(())
+    })
+    .await;
+    assert_eq!(denial_rows(&db.pool).await, 4);
+}
+
+#[tokio::test]
+async fn recording_a_denial_never_waits_for_the_database_write() {
+    // If the response had to wait for the INSERT, "the id exists in another tenant" would be
+    // measurable from outside as extra latency.
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let mut blocker = db.pool.acquire().await.expect("conn");
+    sqlx::query("BEGIN")
+        .execute(&mut *blocker)
+        .await
+        .expect("begin");
+    sqlx::query("LOCK TABLE audit_records IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await
+        .expect("lock");
+
+    let started = std::time::Instant::now();
+    w.store
+        .record_denial(&denial(&w.admin_a, "ws-1"))
+        .await
+        .expect("accepted");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "took {:?} with the audit table locked",
+        started.elapsed()
+    );
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .expect("release");
+    drop(blocker);
+    eventually("the write to land once the table is free", || async {
+        (denial_rows(&db.pool).await == 1).then_some(())
+    })
+    .await;
 }

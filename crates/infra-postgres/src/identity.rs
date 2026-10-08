@@ -7,21 +7,44 @@ use sagat_domain::identity::{
     Environment, Membership, Namespace, NamespaceId, Role, Slug, Subject, Tenant, TenantId,
     Workspace, WorkspaceId,
 };
+use std::sync::Arc;
+use std::time::Duration;
+
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool, Row};
 use time::OffsetDateTime;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
+
+/// Identical cross-tenant denials from one actor are recorded at most once per this window.
+pub const DEFAULT_DENIAL_WINDOW: Duration = Duration::from_secs(300);
+
+/// Most denial events being written at the same time; beyond this they are dropped (and logged).
+const MAX_PENDING_DENIALS: usize = 64;
 
 /// PostgreSQL-backed identity store.
 #[derive(Debug, Clone)]
 pub struct PgIdentityStore {
     pool: PgPool,
+    denial_window: Duration,
+    denial_slots: Arc<Semaphore>,
 }
 
 impl PgIdentityStore {
     #[must_use]
-    pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            denial_window: DEFAULT_DENIAL_WINDOW,
+            denial_slots: Arc::new(Semaphore::new(MAX_PENDING_DENIALS)),
+        }
+    }
+
+    /// Overrides the deduplication window of denial events (tests use a short one).
+    #[must_use]
+    pub fn with_denial_window(mut self, window: Duration) -> Self {
+        self.denial_window = window;
+        self
     }
 
     /// Creates a tenant and its first administrator atomically.
@@ -94,6 +117,56 @@ async fn insert_audit(conn: &mut PgConnection, audit: &AuditRecord) -> Result<()
     .await
     .map_err(store_error)?;
     Ok(())
+}
+
+/// Appends `audit` unless an identical event (same tenant, actor, action and resource) was already
+/// recorded within `window`.
+async fn insert_denial_once(
+    pool: &PgPool,
+    audit: &AuditRecord,
+    window: Duration,
+) -> Result<(), StoreError> {
+    // Two identical events racing would both pass the NOT EXISTS check before either commits.
+    // A transaction-scoped advisory lock on the event's identity serialises exactly those, so the
+    // second one sees the first one's row.
+    let key = format!(
+        "{}|{}|{}|{}|{}",
+        audit.tenant_id(),
+        audit.actor(),
+        audit.action(),
+        audit.resource_type(),
+        audit.resource_id()
+    );
+    let mut tx = pool.begin().await.map_err(store_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+        .bind(&key)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    sqlx::query(
+        "INSERT INTO audit_records \
+         (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at) \
+         SELECT $1::uuid, $2::uuid, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, $9::timestamptz \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM audit_records \
+             WHERE tenant_id = $2::uuid AND actor = $3::text AND action = $4::text \
+               AND resource_type = $5::text AND resource_id = $6::text \
+               AND created_at > $9::timestamptz - make_interval(secs => $10::double precision))",
+    )
+    .bind(audit.id().as_uuid())
+    .bind(audit.tenant_id().as_uuid())
+    .bind(audit.actor().as_str())
+    .bind(audit.action().as_str())
+    .bind(audit.resource_type().as_str())
+    .bind(audit.resource_id())
+    .bind(audit.reason())
+    .bind(audit.trace_id())
+    .bind(audit.created_at())
+    .bind(window.as_secs_f64())
+    .execute(&mut *tx)
+    .await
+    .map_err(store_error)?;
+    tx.commit().await.map_err(store_error)
 }
 
 impl IdentityStore for PgIdentityStore {
@@ -273,9 +346,23 @@ impl IdentityStore for PgIdentityStore {
         .map_err(store_error)
     }
 
-    async fn record_audit(&self, audit: &AuditRecord) -> Result<(), StoreError> {
-        let mut conn = self.pool.acquire().await.map_err(store_error)?;
-        insert_audit(&mut conn, audit).await
+    async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        // Off the response path and bounded: a flood of denials must neither slow the caller (which
+        // would reveal that the identifier exists elsewhere) nor pile up work in the database.
+        let Ok(slot) = Arc::clone(&self.denial_slots).try_acquire_owned() else {
+            tracing::warn!(action = %audit.action(), "too many audit writes pending; dropping a denial event");
+            return Ok(());
+        };
+        let pool = self.pool.clone();
+        let audit = audit.clone();
+        let window = self.denial_window;
+        tokio::spawn(async move {
+            let _slot = slot;
+            if let Err(error) = insert_denial_once(&pool, &audit, window).await {
+                tracing::error!(%error, "failed to record a cross-tenant denial");
+            }
+        });
+        Ok(())
     }
 
     async fn ping(&self) -> Result<(), StoreError> {

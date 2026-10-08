@@ -9,7 +9,7 @@ use sagat_domain::identity::{Membership, Role};
 use sagat_infra_postgres::PgIdentityStore;
 use sqlx::PgPool;
 
-use crate::support::{TestDb, migrated_db, now, provision, subject};
+use crate::support::{TestDb, eventually, migrated_db, now, provision, subject};
 
 type Service = IdentityService<PgIdentityStore, SystemClock>;
 
@@ -150,23 +150,28 @@ async fn us04_a_tenant_a_user_cannot_see_tenant_b_data_and_the_attempt_is_record
             .is_empty()
     );
 
-    // And the three attempts are recorded in ALICE's tenant, naming only what she sent
-    let alice_rows = audit_rows(&db.pool, "acme").await;
-    assert_eq!(alice_rows.len(), 3);
+    // And the attempts are recorded in ALICE's tenant, naming only what she sent. The write is
+    // off the request path, and the third attempt repeats the first one (same actor, same
+    // workspace), so it is collapsed: two records, not three.
+    let alice_rows = eventually("two denial records", || async {
+        let rows = audit_rows(&db.pool, "acme").await;
+        (rows.len() >= 2).then_some(rows)
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // a wrongly recorded third would land by now
+    let alice_rows = if alice_rows.len() == 2 {
+        audit_rows(&db.pool, "acme").await
+    } else {
+        alice_rows
+    };
+    assert_eq!(alice_rows.len(), 2);
     for (action, actor, _, trace) in &alice_rows {
         assert_eq!(action, "access.denied.cross_tenant");
         assert_eq!(actor, "alice");
         assert_eq!(trace.as_deref(), Some(TRACE));
     }
     let recorded: Vec<_> = alice_rows.iter().map(|r| r.2.clone()).collect();
-    assert_eq!(
-        recorded,
-        vec![
-            ws_b.id().to_string(),
-            ns_b.id().to_string(),
-            ws_b.id().to_string()
-        ]
-    );
+    assert_eq!(recorded, vec![ws_b.id().to_string(), ns_b.id().to_string()]);
 
     // Tenant B's audit trail contains only its own creations, nothing about alice's probing
     let bob_actions: Vec<_> = audit_rows(&db.pool, "globex")
