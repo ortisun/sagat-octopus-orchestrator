@@ -338,11 +338,15 @@ async fn keys_that_cannot_verify_access_tokens_are_never_used() {
     wrong_alg["alg"] = json!("RS256");
     let mut without_kid = real.public_jwk();
     without_kid.as_object_mut().expect("obj").remove("kid");
+    // The set must contain one genuinely usable key (of someone else), otherwise it would be a
+    // useless answer that the cache refuses to adopt at all.
+    let unrelated = TestKey::generate();
     idp.publish(vec![
         json!({"kty": "oct", "kid": "hmac-1", "k": "c2VjcmV0", "alg": "HS256"}),
         encryption_only,
         wrong_alg,
         without_kid,
+        unrelated.public_jwk(),
     ]);
     let v = verifier(&idp).await;
 

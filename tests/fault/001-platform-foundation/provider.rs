@@ -169,7 +169,10 @@ async fn an_outage_does_not_turn_into_a_stampede_of_provider_requests() {
 }
 
 #[tokio::test]
-async fn a_key_revoked_at_the_provider_stops_working_once_the_cache_refreshes() {
+async fn a_key_withdrawn_at_the_provider_stops_working_shortly_after_its_cache_entry_expires() {
+    // Trade-off, on purpose: expired keys keep serving while a refresh runs in the background (so a
+    // slow provider never stalls the API). A withdrawn key therefore works until `jwks_ttl` plus the
+    // time of one background refresh, not longer.
     let api = start_with(Options {
         auth: Box::new(short_cache),
         ..Options::default()
@@ -185,11 +188,161 @@ async fn a_key_revoked_at_the_provider_stops_working_once_the_cache_refreshes() 
     assert_eq!(call().await.expect("send").status(), 200);
 
     api.idp.rotate(false); // the signing key is withdrawn
-    tokio::time::sleep(Duration::from_millis(500)).await; // let the cached copy expire
+    tokio::time::sleep(Duration::from_millis(500)).await; // the cached copy is now past its ttl
+
+    let mut refused_after = None;
+    for attempt in 0..30 {
+        if call().await.expect("send").status() == 401 {
+            refused_after = Some(attempt);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        refused_after.is_some(),
+        "tokens signed by the withdrawn key must be refused soon"
+    );
+}
+
+#[tokio::test]
+async fn expired_keys_keep_serving_immediately_while_the_provider_hangs() {
+    let api = start_with(Options {
+        auth: Box::new(short_cache),
+        ..Options::default()
+    })
+    .await;
+    api.tenant("acme", "alice").await;
+    assert_eq!(
+        api.get_as("/auth/context", "alice", "acme").await.status(),
+        200,
+        "warm the cache"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await; // past ttl (400 ms), inside the stale window
+    api.idp.set_mode(Mode::Hang);
+
+    let started = std::time::Instant::now();
+    let response = api.get_as("/auth/context", "alice", "acme").await;
+
+    assert_eq!(response.status(), 200);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "stale keys must be served without waiting for the refresh, took {:?}",
+        started.elapsed()
+    );
+}
+
+// ------------------------------------------------------------ findings of the security review
+
+/// A token that is never going to verify but whose `kid` forces a key refresh: the lookup happens
+/// before the signature is checked, so any unauthenticated caller can send one.
+fn refresh_bait(api: &crate::support::api::TestApi, kid: &str) -> String {
+    api.idp.token("mallory", "acme").kid(Some(kid)).build()
+}
+
+fn no_rate_limit(auth: &mut sagat_api_http::AuthConfig) {
+    auth.jwks_min_refresh_interval = Duration::ZERO;
+}
+
+#[tokio::test]
+async fn a_slow_key_refresh_does_not_stall_requests_whose_key_is_cached() {
+    let api = start_with(Options {
+        auth: Box::new(no_rate_limit),
+        ..Options::default()
+    })
+    .await;
+    api.tenant("acme", "alice").await;
+    assert_eq!(
+        api.get_as("/auth/context", "alice", "acme").await.status(),
+        200,
+        "warm the cache"
+    );
+    api.idp.set_mode(Mode::Hang);
+
+    // An unauthenticated caller makes the API refresh keys against a provider that hangs ...
+    let bait = refresh_bait(&api, "forced-refresh");
+    let client = api.client.clone();
+    let url = format!("{}/auth/context", api.base);
+    let attacker = tokio::spawn(async move { client.get(url).bearer_auth(bait).send().await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // ... and legitimate callers whose key is already cached must not wait for it.
+    let started = std::time::Instant::now();
+    let legit = api.get_as("/auth/context", "alice", "acme").await;
+    assert_eq!(legit.status(), 200);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a cached key must be served without waiting for a refresh, took {:?}",
+        started.elapsed()
+    );
+    attacker.abort();
+}
+
+#[tokio::test]
+async fn a_blackholed_provider_at_startup_does_not_serialize_the_requests_behind_it() {
+    let api = start().await;
+    api.tenant("acme", "alice").await;
+    api.idp.set_mode(Mode::Hang);
+
+    let started = std::time::Instant::now();
+    let requests: Vec<_> = (0..6)
+        .map(|_| {
+            let client = api.client.clone();
+            let url = format!("{}/auth/context", api.base);
+            let token = api.idp.token("alice", "acme").build();
+            tokio::spawn(async move {
+                client
+                    .get(url)
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .expect("send")
+                    .status()
+            })
+        })
+        .collect();
+    for request in requests {
+        assert_eq!(request.await.expect("join"), 503);
+    }
+
+    // One bounded fetch (5 s) serves everyone; before the fix each waiter fetched in turn.
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "6 concurrent requests took {:?}; they were served one fetch at a time",
+        started.elapsed()
+    );
+    assert!(
+        api.idp.jwks_hits() <= 2,
+        "{} provider fetches",
+        api.idp.jwks_hits()
+    );
+}
+
+#[tokio::test]
+async fn an_empty_key_set_from_the_provider_does_not_replace_the_cached_keys() {
+    let api = start_with(Options {
+        auth: Box::new(no_rate_limit),
+        ..Options::default()
+    })
+    .await;
+    api.tenant("acme", "alice").await;
+    assert_eq!(
+        api.get_as("/auth/context", "alice", "acme").await.status(),
+        200,
+        "warm the cache"
+    );
+
+    // The provider answers 200 with a key set that has no usable key (an incident, never a policy).
+    api.idp.publish(vec![]);
+    let bait = refresh_bait(&api, "forced-refresh");
+    let _ = api
+        .request(Method::GET, "/auth/context")
+        .bearer_auth(bait)
+        .send()
+        .await;
 
     assert_eq!(
-        call().await.expect("send").status(),
-        401,
-        "tokens signed by the withdrawn key are refused"
+        api.get_as("/auth/context", "alice", "acme").await.status(),
+        200,
+        "a good cache must survive a useless answer"
     );
 }

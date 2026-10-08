@@ -20,13 +20,15 @@ pub struct AuthConfig {
     /// Longest `exp - iat` accepted. Bounds the window in which a revoked token still works, since
     /// revocation lists are not consulted (see research.md, gap G7).
     pub max_token_lifetime: Duration,
-    /// How long fetched keys are used before a refresh is attempted.
+    /// How long fetched keys are used before a refresh is attempted. Keys past this age keep
+    /// verifying (see `jwks_max_stale`) while a refresh runs in the background, so a key that the
+    /// provider has withdrawn stops working after this interval plus one background refresh.
     pub jwks_ttl: Duration,
     /// How long after `jwks_ttl` the last good keys may still be used if the provider is down.
     /// Beyond this the API fails closed (503).
     pub jwks_max_stale: Duration,
-    /// Minimum spacing of refresh attempts, so tokens with random `kid`s cannot make the API
-    /// hammer the provider.
+    /// Minimum spacing of refresh attempts, counted from the end of the previous attempt, so
+    /// tokens with random `kid`s (or a hanging provider) cannot make the API hammer the provider.
     pub jwks_min_refresh_interval: Duration,
     /// Allow a plain-`http` `jwks_uri`. For local development and tests only.
     pub allow_insecure_jwks_http: bool,
