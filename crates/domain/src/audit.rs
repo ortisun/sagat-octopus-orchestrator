@@ -17,6 +17,8 @@ uuid_id!(
 /// What happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AuditAction {
+    /// A tenant was created by an operator or the development seed.
+    TenantProvisioned,
     WorkspaceCreated,
     NamespaceCreated,
     MembershipGranted,
@@ -29,6 +31,7 @@ impl AuditAction {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TenantProvisioned => "tenant.provisioned",
             Self::WorkspaceCreated => "workspace.created",
             Self::NamespaceCreated => "namespace.created",
             Self::MembershipGranted => "membership.granted",
@@ -46,6 +49,7 @@ impl fmt::Display for AuditAction {
 /// Kind of resource an audit record refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceType {
+    Tenant,
     Workspace,
     Namespace,
     Membership,
@@ -55,6 +59,7 @@ impl ResourceType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Tenant => "tenant",
             Self::Workspace => "workspace",
             Self::Namespace => "namespace",
             Self::Membership => "membership",
@@ -102,6 +107,30 @@ impl AuditRecord {
             resource_id: resource_id.into(),
             reason: None,
             trace_id,
+            created_at: now,
+        }
+    }
+
+    /// Records a platform-level operation (no tenant principal) performed by an operator or the
+    /// development seed. The actor is [`Subject::provisioning`].
+    #[must_use]
+    pub fn provisioning(
+        tenant_id: TenantId,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id,
+            actor: Subject::provisioning(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id: None,
             created_at: now,
         }
     }

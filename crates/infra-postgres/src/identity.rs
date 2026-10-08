@@ -2,7 +2,7 @@
 
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityStore;
-use sagat_domain::audit::AuditRecord;
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{
     Environment, Membership, Namespace, NamespaceId, Role, Slug, Subject, Tenant, TenantId,
     Workspace, WorkspaceId,
@@ -68,6 +68,25 @@ impl PgIdentityStore {
             .await
             .map_err(store_error)?;
         insert_membership(&mut tx, first_admin).await?;
+        // Creating a tenant and its first administrator is the most privileged thing this system
+        // does, so it leaves a trace, atomically with the change itself.
+        insert_audit(
+            &mut tx,
+            &AuditRecord::provisioning(
+                tenant.id(),
+                AuditAction::TenantProvisioned,
+                ResourceType::Tenant,
+                tenant.id().to_string(),
+                "tenant provisioned by an operator or the development seed",
+                tenant.created_at(),
+            ),
+        )
+        .await?;
+        insert_audit(
+            &mut tx,
+            &membership_granted(first_admin, "first administrator of a new tenant"),
+        )
+        .await?;
         tx.commit().await.map_err(store_error)
     }
 
@@ -76,9 +95,27 @@ impl PgIdentityStore {
     /// # Errors
     /// [`StoreError::Internal`] on a duplicate `(tenant, subject)`; callers reconcile explicitly.
     pub async fn insert_membership(&self, membership: &Membership) -> Result<(), StoreError> {
-        let mut conn = self.pool.acquire().await.map_err(store_error)?;
-        insert_membership(&mut conn, membership).await
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        insert_membership(&mut tx, membership).await?;
+        insert_audit(
+            &mut tx,
+            &membership_granted(membership, "membership added by an operator"),
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)
     }
+}
+
+/// The audit entry for a role being granted outside the tenant API.
+fn membership_granted(membership: &Membership, reason: &str) -> AuditRecord {
+    AuditRecord::provisioning(
+        membership.tenant_id(),
+        AuditAction::MembershipGranted,
+        ResourceType::Membership,
+        membership.subject().as_str(),
+        format!("{reason} (role {})", membership.role()),
+        membership.created_at(),
+    )
 }
 
 async fn insert_membership(

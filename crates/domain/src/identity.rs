@@ -153,6 +153,14 @@ pub struct Subject(String);
 impl Subject {
     pub const MAX_LEN: usize = 255;
 
+    /// The actor recorded for platform-level operations that have no tenant principal, such as
+    /// provisioning a tenant. Not an identity anyone can authenticate as: tokens go through
+    /// [`Subject::parse`] and membership lookup, and no membership carries this subject.
+    #[must_use]
+    pub fn provisioning() -> Self {
+        Self("system:provisioning".to_owned())
+    }
+
     /// Validates and wraps a subject.
     ///
     /// # Errors

@@ -77,6 +77,11 @@ async fn the_runtime_role_cannot_rewrite_remove_or_restructure_anything() {
         .await
         .expect("seed audit row as owner");
 
+    let audit_rows_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records")
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+
     let forbidden: Vec<String> = ["tenants", "memberships", "workspaces", "namespaces", "audit_records"]
         .into_iter()
         .flat_map(|t| [format!("UPDATE {t} SET created_at = now()"), format!("DELETE FROM {t}"), format!("TRUNCATE {t}")])
@@ -125,11 +130,11 @@ async fn the_runtime_role_cannot_rewrite_remove_or_restructure_anything() {
     );
 
     // And nothing changed.
-    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records")
+    let audit_rows_after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records")
         .fetch_one(&db.pool)
         .await
         .expect("count");
-    assert_eq!(rows, 1);
+    assert_eq!(audit_rows_after, audit_rows_before);
 }
 
 #[tokio::test]

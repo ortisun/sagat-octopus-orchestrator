@@ -39,7 +39,7 @@ Last updated with the control-plane branch. "Partial" and "Open" are stated expl
 | FR-001-004 idempotent migrations; development-only seed | Done | `tests/integration/001-platform-foundation/migrations.rs`, `tests/e2e/001-platform-foundation/us03.rs`, `apps/control-plane/tests/cli.rs` |
 | FR-001-005 Docker Compose with PostgreSQL, NATS and optional S3-compatible store | Partial | `infra/docker/compose.yaml`, `scripts/smoke-compose.sh`; the S3-compatible store is deferred (optional in this phase) |
 | FR-001-006 canonical errors without sensitive data | Partial | One envelope `{code, message, retryable, traceId, details}` proven in `tests/e2e/001-platform-foundation/`; the spec's separate `request_id` is not implemented (the trace id serves) |
-| FR-001-007 OIDC/JWT, base RBAC on every route, audit trail | Done | `tests/contract/001-platform-foundation/auth.rs`, `tests/e2e/001-platform-foundation/{us02,us04}.rs`, `tests/fault/001-platform-foundation/provider.rs` |
+| FR-001-007 OIDC/JWT, base RBAC on every route, audit trail (including tenant and administrator provisioning) | Done | `tests/contract/001-platform-foundation/auth.rs`, `tests/e2e/001-platform-foundation/{us02,us04}.rs`, `tests/fault/001-platform-foundation/provider.rs` |
 | NFR-001-OBS structured logs, correlated traces, essential metrics | Partial | JSON logs and trace-id correlation (response, error body, audit) are tested; **OTLP export and metrics are not implemented** (G6) |
 | NFR-001-PERF p95 < 250 ms namespace read | Open | No benchmark has been run (T001-033) |
 | SC-001-001 contract/API + tenant isolation suite and reproducible local environment | Done | The suites above plus `scripts/smoke-compose.sh` |

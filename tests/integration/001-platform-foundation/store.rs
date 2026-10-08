@@ -585,3 +585,100 @@ async fn recording_a_denial_never_waits_for_the_database_write() {
     })
     .await;
 }
+
+// ------------------------------------------------------- privileged writes are audited (review)
+
+#[tokio::test]
+async fn provisioning_a_tenant_and_its_administrator_is_audited_with_the_change() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+
+    let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT action, actor, resource_type, resource_id, reason FROM audit_records \
+         WHERE tenant_id = $1 ORDER BY id",
+    )
+    .bind(w.tenant_a.id().as_uuid())
+    .fetch_all(&db.pool)
+    .await
+    .expect("audit");
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "tenant provisioned, then the first administrator granted"
+    );
+    assert_eq!(rows[0].0, "tenant.provisioned");
+    assert_eq!(rows[0].2, "tenant");
+    assert_eq!(rows[0].3, w.tenant_a.id().to_string());
+    assert_eq!(rows[1].0, "membership.granted");
+    assert_eq!(rows[1].2, "membership");
+    assert_eq!(rows[1].3, "alice", "the subject that received the role");
+    assert!(
+        rows[1].4.as_deref().is_some_and(|r| r.contains("admin")),
+        "the role is recorded: {:?}",
+        rows[1].4
+    );
+    assert!(rows.iter().all(|r| r.1 == "system:provisioning"));
+}
+
+#[tokio::test]
+async fn a_failed_provisioning_leaves_no_audit_rows_behind() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+
+    // Same slug as an existing tenant: the insert fails, so nothing of the attempt may remain.
+    let clash = sagat_domain::identity::Tenant::provision(
+        sagat_domain::identity::TenantId::generate(),
+        slug("acme"),
+        now(),
+    );
+    let admin =
+        sagat_domain::identity::Membership::bootstrap_admin(&clash, subject("mallory"), now());
+    let result = w.store.provision_tenant(&clash, &admin).await;
+
+    assert_eq!(result, Err(StoreError::Conflict(ConflictKind::TenantSlug)));
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+    assert_eq!(after, before);
+    let members: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM memberships WHERE subject = 'mallory'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("n");
+    assert_eq!(
+        members, 0,
+        "the rejected administrator was not created either"
+    );
+}
+
+#[tokio::test]
+async fn adding_a_membership_outside_the_api_is_audited_with_its_role() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let carol = sagat_domain::identity::Membership::restore(
+        w.tenant_a.id(),
+        subject("carol"),
+        sagat_domain::identity::Role::Developer,
+        now(),
+    );
+
+    w.store.insert_membership(&carol).await.expect("granted");
+
+    let (action, resource_id, reason): (String, String, Option<String>) = sqlx::query_as(
+        "SELECT action, resource_id, reason FROM audit_records WHERE resource_id = 'carol'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("audit row");
+    assert_eq!(
+        (action.as_str(), resource_id.as_str()),
+        ("membership.granted", "carol")
+    );
+    assert!(reason.is_some_and(|r| r.contains("developer")));
+}

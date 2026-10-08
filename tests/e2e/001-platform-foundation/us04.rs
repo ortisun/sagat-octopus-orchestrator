@@ -167,7 +167,15 @@ async fn each_attempt_is_audited_in_the_actors_tenant_and_correlates_with_its_tr
     .fetch_all(&api.db.pool)
     .await
     .expect("audit b");
-    assert_eq!(b_actions, ["workspace.created", "namespace.created"]);
+    assert_eq!(
+        b_actions,
+        [
+            "tenant.provisioned",
+            "membership.granted",
+            "workspace.created",
+            "namespace.created"
+        ]
+    );
 }
 
 #[tokio::test]
