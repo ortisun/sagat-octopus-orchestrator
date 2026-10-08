@@ -205,8 +205,9 @@ pub async fn serve_with_admin(
     let fetcher = HttpJwksFetcher::new(&serve.auth).map_err(|e| RunError::Auth(e.to_string()))?;
     let verifier = TokenVerifier::new(Arc::new(fetcher), &serve.auth);
     let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
-    // Install the metrics recorder before the first request so nothing is missed.
-    let _ = Metrics::global();
+    // Install the metrics recorder before the first request so nothing is missed. Idle series are
+    // forgotten when the page is rendered, so a process nobody scrapes needs this timer.
+    let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
     let app = router(
         AppState::with_rate_limit(service, verifier, serve.rate_limit),
         serve.limits,
@@ -247,8 +248,26 @@ pub async fn serve_with_admin(
     }
     tracing::info!("control plane stopped");
     pool_metrics.abort();
+    metrics_upkeep.abort();
     pool.close().await;
     Ok(())
+}
+
+/// How often idle metric series are released when nobody scrapes `/metrics`.
+const METRICS_UPKEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Runs [`Metrics::prune_idle`] every `interval` until aborted.
+fn spawn_metrics_upkeep(
+    metrics: &'static Metrics,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            metrics.prune_idle();
+        }
+    })
 }
 
 /// Completes once the shared shutdown flag is set.

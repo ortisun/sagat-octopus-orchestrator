@@ -10,6 +10,7 @@ mod support;
 mod database;
 mod environment;
 mod limits;
+mod metrics;
 mod provider;
 mod resilience;
 mod server;

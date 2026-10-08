@@ -75,7 +75,11 @@ logs for that value to follow one request.
 ## 5. Metrics
 
 Scrape `http://<admin-addr>/metrics` (Prometheus text format). Labels are route **templates**,
-status and reason codes only. Identifiers, tenants and subjects are never labels.
+status codes, fixed reason names and an HTTP method taken from a closed set (`GET`, `POST`, `PUT`,
+`PATCH`, `DELETE`, `HEAD`, `OPTIONS`, and `OTHER` for any other token a client sends). Identifiers,
+tenants, subjects and client-chosen text are never labels. As a backstop, a series that is not
+updated for 10 minutes is dropped from the page, and the process releases such series every minute
+even when nothing scrapes it (the recorder only expires series while rendering).
 
 | Metric | Type | Useful for |
 |---|---|---|

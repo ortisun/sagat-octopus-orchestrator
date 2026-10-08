@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::{MatchedPath, Request};
-use axum::http::{HeaderName, HeaderValue, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use sagat_telemetry::{TraceContext, TraceId};
@@ -34,6 +34,23 @@ pub async fn record_route(request: Request, next: Next) -> Response {
     response
 }
 
+/// The method as a metric label and log field: one of a closed set, `OTHER` for anything else.
+///
+/// HTTP/1 lets a client send any token as the method, and the recorder keeps every series it has
+/// seen, so using the raw method would let an anonymous client grow memory without bound.
+fn method_label(method: &Method) -> &'static str {
+    match *method {
+        Method::GET => "GET",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::PATCH => "PATCH",
+        Method::DELETE => "DELETE",
+        Method::HEAD => "HEAD",
+        Method::OPTIONS => "OPTIONS",
+        _ => "OTHER",
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorBody<'a> {
@@ -56,8 +73,8 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
     let trace_id = trace.trace_id();
     request.extensions_mut().insert(trace);
 
-    let method = request.method().clone();
-    let span = tracing::info_span!("http.request", trace_id = %trace_id, %method);
+    let method = method_label(request.method());
+    let span = tracing::info_span!("http.request", trace_id = %trace_id, method);
     let started = Instant::now();
 
     let response = next.run(request).instrument(span.clone()).await;
@@ -67,9 +84,10 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
         .map_or_else(|| "unmatched".to_owned(), |r| r.0.clone());
     let response = finalize(response, trace_id);
 
-    // Low-cardinality labels only: the route TEMPLATE, never the path, tenant or subject.
+    // Low-cardinality labels only: the route TEMPLATE, never the path, tenant or subject, and a
+    // method from a closed set (the server accepts any token as a method).
     let status = response.status().as_u16().to_string();
-    metrics::counter!("http_requests_total", "method" => method.to_string(), "route" => route.clone(), "status" => status).increment(1);
+    metrics::counter!("http_requests_total", "method" => method, "route" => route.clone(), "status" => status).increment(1);
     metrics::histogram!("http_request_duration_seconds", "route" => route.clone())
         .record(started.elapsed().as_secs_f64());
 
