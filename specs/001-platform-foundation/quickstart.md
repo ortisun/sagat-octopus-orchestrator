@@ -22,6 +22,7 @@ cargo test --workspace --locked                      # unit, contract, integrati
 python3 scripts/check-architecture.py                # layering and domain-purity rules
 python3 -m unittest discover -s scripts/tests        # tests of that checker
 npx --yes @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml
+cargo install cargo-audit --locked && cargo audit --deny warnings   # dependency advisories
 ```
 
 Each user story has its own file (`tests/e2e/001-platform-foundation/us01.rs` … `us04.rs`); the
@@ -41,6 +42,10 @@ curl -fsS http://127.0.0.1:18080/v1/health           # {"status":"ok"}
 curl -fsS http://127.0.0.1:18080/v1/ready            # checks PostgreSQL
 curl -fsS http://127.0.0.1:18222/healthz             # NATS JetStream
 ```
+
+The database role used by the API (`sagat_app`) is created the first time the PostgreSQL volume is
+initialised. If you already had a volume from an earlier version, recreate it once with
+`docker compose -f infra/docker/compose.yaml down -v`.
 
 Everything is published on `127.0.0.1` with non-default host ports (`15432` PostgreSQL, `14222`
 NATS, `18222` NATS monitor, `18080` API) so it does not collide with services already running.
@@ -92,4 +97,27 @@ every request, so removing one takes effect immediately.
 
 Recorded in [`research.md`](./research.md): no token revocation list (G7), create operations are not
 idempotent through `Idempotency-Key` (G8), `403`s are not audited (G9), no OTLP export or metrics
-(G6), and no development identity provider (G10).
+(G6), no development identity provider (G10), no rate limiting or per-tenant fairness (G13) and no
+access-token `typ` enforcement (G14).
+
+## Security review evidence (T001-034, partial)
+
+An independent, read-only review of the 001 code (authentication, tenant isolation, SQL, error
+handling, the process, the container and CI) found no authentication bypass and no cross-tenant read
+or write. It did find the issues below; each fix was written test-first or verified by removing it.
+
+| # | Finding | Severity | Outcome |
+|---|---|---|---|
+| 1 | The key-cache refresh held its lock across network I/O, so an unauthenticated token with an unknown `kid` could stall every request | Medium | Fixed: lock-free lookups, stale-while-revalidate, one detached bounded fetch (`fault/provider.rs`) |
+| 2 | Each cross-tenant 404 committed an unbounded audit row and leaked existence through latency | Medium | Fixed: off the response path, deduplicated atomically, bounded (`integration/store.rs`, `e2e/us04.rs`) |
+| 3 | No header-read timeout or connection cap (Slowloris); one stuck connection blocked shutdown | Medium | Fixed: own HTTP/1 loop with timer, cap and bounded grace (`fault/server.rs`) |
+| 4 | "Append-only audit" was a convention; the API ran as the owner | Medium | Fixed: least-privilege `sagat_app`, `ENABLE ALWAYS` triggers (`integration/runtime_role.rs`, `scripts/smoke-compose.sh`) |
+| 5 | The insecure-JWKS flag was honoured in production | Low-Medium | Fixed: refused unless `SAGAT_ENV=dev` |
+| 6 | No rate limiting; `/v1/ready` unauthenticated and DB-backed | Low | Open: G13 |
+| 7 | PostgreSQL TLS not enforced | Low | Fixed: required outside dev |
+| 8 | Role grants and provisioning not audited; compose pinned `SAGAT_ENV=dev` | Low | Fixed: audited atomically (D14); `SAGAT_ENV` configurable |
+| 9 | `crit` header, array `iss`, empty key set replacing a good cache | Low | Fixed; `typ` enforcement open: G14 |
+| 10 | Logs could carry URL credentials; unbounded echo of rejected input | Low | Fixed: redaction and clipping; spoofable trace id accepted: G15 |
+| 11 | Smoke test could wipe real volumes; mutable Action tags; no advisory scanning | Low | Fixed: throw-away project name, SHA-pinned actions, `cargo audit` (one justified ignore: G16) |
+
+Still pending for T001-034: an operational runbook, and a second pass after rate limiting (G13).

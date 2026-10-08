@@ -393,3 +393,26 @@ fn error_messages_never_disclose_identifiers() {
         "leaks the other tenant: {message}"
     );
 }
+
+#[test]
+fn rejected_values_are_clipped_in_error_messages() {
+    let huge = "x".repeat(100_000);
+    let role = huge.parse::<Role>().expect_err("unknown role").to_string();
+    let environment = huge
+        .parse::<Environment>()
+        .expect_err("unknown environment")
+        .to_string();
+    for message in [role, environment] {
+        assert!(
+            message.len() < 100,
+            "an error must not reflect a 100 kB payload: {} bytes",
+            message.len()
+        );
+        assert!(message.contains('…'), "{message}");
+    }
+    // Short values are shown whole.
+    assert_eq!(
+        "root".parse::<Role>(),
+        Err(IdentityError::UnknownRole("root".into()))
+    );
+}

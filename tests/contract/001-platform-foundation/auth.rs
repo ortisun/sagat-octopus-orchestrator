@@ -338,11 +338,15 @@ async fn keys_that_cannot_verify_access_tokens_are_never_used() {
     wrong_alg["alg"] = json!("RS256");
     let mut without_kid = real.public_jwk();
     without_kid.as_object_mut().expect("obj").remove("kid");
+    // The set must contain one genuinely usable key (of someone else), otherwise it would be a
+    // useless answer that the cache refuses to adopt at all.
+    let unrelated = TestKey::generate();
     idp.publish(vec![
         json!({"kty": "oct", "kid": "hmac-1", "k": "c2VjcmV0", "alg": "HS256"}),
         encryption_only,
         wrong_alg,
         without_kid,
+        unrelated.public_jwk(),
     ]);
     let v = verifier(&idp).await;
 
@@ -402,4 +406,33 @@ async fn the_jwks_must_be_fetched_over_https_unless_explicitly_relaxed() {
 
     let ftp = AuthConfig::new(ISSUER, AUDIENCE, "ftp://idp.example.test/jwks.json");
     assert!(HttpJwksFetcher::new(&ftp).is_err());
+}
+
+#[tokio::test]
+async fn tokens_declaring_critical_header_extensions_are_refused() {
+    // RFC 7515 §4.1.11: a verifier that does not implement a `crit` extension must reject the token.
+    let idp = TestIdp::start().await;
+    let v = verifier(&idp).await;
+
+    let token = idp.token("alice", "acme").crit(&["exp"]).build();
+
+    assert_eq!(
+        v.verify(&token).await,
+        invalid(InvalidReason::CriticalHeader)
+    );
+}
+
+#[tokio::test]
+async fn the_issuer_must_be_a_string_not_a_list_containing_it() {
+    let idp = TestIdp::start().await;
+    let v = verifier(&idp).await;
+
+    let as_list = idp
+        .token("alice", "acme")
+        .claim("iss", json!([ISSUER, "https://evil.example/"]))
+        .build();
+    assert_eq!(v.verify(&as_list).await, invalid(InvalidReason::Issuer));
+
+    let exact = idp.token("alice", "acme").build();
+    assert!(v.verify(&exact).await.is_ok());
 }

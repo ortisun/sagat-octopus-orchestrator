@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sagat_api_http::{AuthConfig, HttpLimits};
+use sagat_api_http::{AuthConfig, HttpLimits, ServerConfig};
 use sagat_telemetry::LogFormat;
 
 /// Where the process runs. Anything that could damage real data is gated on this; the default is
@@ -127,11 +127,22 @@ impl Config {
             });
         }
         let statement_timeout_ms: u64 = optional(get, "SAGAT_DB_STATEMENT_TIMEOUT_MS", 5_000)?;
+        let url = required(get, "DATABASE_URL")?;
+        // sqlx defaults to `sslmode=prefer`, which silently falls back to plaintext and never
+        // verifies the server. Outside development the connection must be encrypted.
+        if environment != Environment::Dev && !requires_tls(&url) {
+            return Err(ConfigError::Invalid {
+                name: "DATABASE_URL",
+                reason: "outside SAGAT_ENV=dev the database connection must require TLS \
+                         (add sslmode=require, verify-ca or verify-full)"
+                    .to_owned(),
+            });
+        }
         Ok(Self {
             environment,
             log_format,
             database: DatabaseConfig {
-                url: required(get, "DATABASE_URL")?,
+                url,
                 max_connections,
                 statement_timeout: Duration::from_millis(statement_timeout_ms),
             },
@@ -145,6 +156,8 @@ pub struct ServeConfig {
     pub bind_addr: SocketAddr,
     pub auth: AuthConfig,
     pub limits: HttpLimits,
+    /// Connection-level protections (slow clients, connection cap, shutdown grace).
+    pub server: ServerConfig,
     /// Apply pending migrations before listening. Off by default: production runs them as a
     /// separate, privileged step (`control-plane migrate`).
     pub migrate_on_start: bool,
@@ -181,6 +194,34 @@ impl ServeConfig {
                 reason: "must be greater than zero".to_owned(),
             });
         }
+        let server_defaults = ServerConfig::default();
+        let header_secs: u64 = optional(
+            get,
+            "SAGAT_HEADER_READ_TIMEOUT_SECS",
+            server_defaults.header_read_timeout.as_secs(),
+        )?;
+        let max_connections: usize = optional(
+            get,
+            "SAGAT_MAX_CONNECTIONS",
+            server_defaults.max_connections,
+        )?;
+        let grace_secs: u64 = optional(
+            get,
+            "SAGAT_SHUTDOWN_GRACE_SECS",
+            server_defaults.shutdown_grace.as_secs(),
+        )?;
+        for (name, value) in [
+            ("SAGAT_HEADER_READ_TIMEOUT_SECS", header_secs),
+            ("SAGAT_SHUTDOWN_GRACE_SECS", grace_secs),
+            ("SAGAT_MAX_CONNECTIONS", max_connections as u64),
+        ] {
+            if value == 0 {
+                return Err(ConfigError::Invalid {
+                    name,
+                    reason: "must be greater than zero".to_owned(),
+                });
+            }
+        }
         Ok(Self {
             bind_addr: optional(
                 get,
@@ -191,6 +232,11 @@ impl ServeConfig {
             limits: HttpLimits {
                 max_body_bytes,
                 request_timeout: Duration::from_secs(timeout_secs),
+            },
+            server: ServerConfig {
+                header_read_timeout: Duration::from_secs(header_secs),
+                max_connections,
+                shutdown_grace: Duration::from_secs(grace_secs),
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
         })
@@ -212,5 +258,40 @@ impl SeedConfig {
             tenant_slug: optional(get, "SAGAT_SEED_TENANT", "dev".to_owned())?,
             admin_subject: optional(get, "SAGAT_SEED_ADMIN_SUBJECT", "dev-admin".to_owned())?,
         })
+    }
+}
+
+/// Whether a PostgreSQL URL insists on TLS (`sslmode` / `ssl-mode` of `require`, `verify-ca` or
+/// `verify-full`). `disable`, `allow`, `prefer` and an absent parameter do not.
+#[must_use]
+pub fn requires_tls(url: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(key, value)| {
+            matches!(key, "sslmode" | "ssl-mode")
+                && matches!(value, "require" | "verify-ca" | "verify-full")
+        })
+}
+
+/// A URL that is safe to log: scheme, host, port and path only. Credentials (`user:password@`),
+/// query strings (which may carry tokens) and fragments are dropped.
+#[must_use]
+pub fn redact_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "<unparseable url>".to_owned();
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if path.is_empty() {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}/{path}")
     }
 }

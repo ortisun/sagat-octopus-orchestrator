@@ -67,7 +67,10 @@ CREATE TABLE audit_records (
 
 CREATE INDEX audit_records_tenant_created_idx ON audit_records (tenant_id, created_at DESC, id DESC);
 
--- The audit trail is append-only: rows can never be rewritten or removed by the application role.
+-- The audit trail is append-only for every role that is not the table owner or a superuser: the
+-- triggers reject UPDATE, DELETE and TRUNCATE. Whoever owns the table can still drop the triggers,
+-- which is why the runtime role neither owns it nor has those privileges (see the
+-- `runtime_role_grants` migration).
 CREATE FUNCTION audit_records_reject_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN

@@ -63,6 +63,7 @@ fn server() -> Arc<Server> {
 
 async fn start_server() -> Server {
     if let Ok(admin_url) = std::env::var("SAGAT_TEST_DATABASE_URL") {
+        ensure_runtime_role(&admin_url).await;
         return Server {
             _container: None,
             admin_url,
@@ -79,6 +80,7 @@ async fn start_server() -> Server {
         .expect("mapped port");
     let admin_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     wait_until_queryable(&admin_url).await;
+    ensure_runtime_role(&admin_url).await;
     Server {
         admin_url,
         _container: Some(container),
@@ -216,5 +218,53 @@ pub fn db_error(err: sqlx::Error) -> (String, Option<String>) {
             db.constraint().map(str::to_owned),
         ),
         other => panic!("expected a database error, got {other:?}"),
+    }
+}
+
+/// Polls `check` until it yields a value, failing the test after five seconds.
+///
+/// For effects that are deliberately written off the request path (the cross-tenant denial audit).
+pub async fn eventually<T, F, Fut>(what: &str, mut check: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(value) = check().await {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for: {what}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Password of the least-privilege runtime role in the test cluster (test-only value).
+pub const RUNTIME_ROLE: &str = "sagat_app";
+pub const RUNTIME_ROLE_PASSWORD: &str = "runtime-role-test-password";
+
+/// Creates the runtime role once per cluster. It must exist before migrations run so they can grant
+/// to it, exactly as an operator would provision it.
+async fn ensure_runtime_role(admin_url: &str) {
+    let mut conn = PgConnection::connect(admin_url)
+        .await
+        .expect("admin connection");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DO $$ BEGIN CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}' \
+         NOSUPERUSER NOCREATEDB NOCREATEROLE; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+    )))
+    .execute(&mut conn)
+    .await
+    .expect("create the runtime role");
+}
+
+impl TestDb {
+    /// The connection URL of this database for another user.
+    pub fn url_for(&self, user: &str, password: &str) -> String {
+        let (_, rest) = self.url.split_once('@').expect("credentials in url");
+        format!("postgres://{user}:{password}@{rest}")
     }
 }

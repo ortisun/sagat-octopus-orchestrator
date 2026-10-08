@@ -9,7 +9,7 @@ use sagat_domain::identity::{Membership, Role};
 use sagat_infra_postgres::PgIdentityStore;
 use sqlx::PgPool;
 
-use crate::support::{TestDb, migrated_db, now, provision, subject};
+use crate::support::{TestDb, eventually, migrated_db, now, provision, subject};
 
 type Service = IdentityService<PgIdentityStore, SystemClock>;
 
@@ -45,7 +45,7 @@ async fn us01_an_administrator_creates_a_workspace_and_a_dev_namespace() {
     // Given an authenticated administrator
     let db = migrated_db().await;
     let (svc, store) = service(&db);
-    provision(&store, "acme", "alice").await;
+    let (tenant, _) = provision(&store, "acme", "alice").await;
     let session = svc
         .authenticate("acme", "alice")
         .await
@@ -77,11 +77,25 @@ async fn us01_an_administrator_creates_a_workspace_and_a_dev_namespace() {
     assert_eq!(listed.items, vec![ns.clone()]);
     assert_eq!(ns.workspace_id(), ws.id());
 
-    // And each mutation left an audit record carrying actor and trace id
+    // And every change left an audit record: the privileged provisioning of the tenant and of its
+    // administrator (by the system, atomically with the change), then each mutation by alice with
+    // the request's trace id
     let rows = audit_rows(&db.pool, "acme").await;
     assert_eq!(
         rows,
         vec![
+            (
+                "tenant.provisioned".into(),
+                "system:provisioning".into(),
+                tenant.id().to_string(),
+                None
+            ),
+            (
+                "membership.granted".into(),
+                "system:provisioning".into(),
+                "alice".into(),
+                None
+            ),
             (
                 "workspace.created".into(),
                 "alice".into(),
@@ -150,23 +164,35 @@ async fn us04_a_tenant_a_user_cannot_see_tenant_b_data_and_the_attempt_is_record
             .is_empty()
     );
 
-    // And the three attempts are recorded in ALICE's tenant, naming only what she sent
-    let alice_rows = audit_rows(&db.pool, "acme").await;
-    assert_eq!(alice_rows.len(), 3);
+    // And the attempts are recorded in ALICE's tenant, naming only what she sent. The write is
+    // off the request path, and the third attempt repeats the first one (same actor, same
+    // workspace), so it is collapsed: two records, not three.
+    let denials = || async {
+        audit_rows(&db.pool, "acme")
+            .await
+            .into_iter()
+            .filter(|row| row.0 == "access.denied.cross_tenant")
+            .collect::<Vec<_>>()
+    };
+    let alice_rows = eventually("two denial records", || async {
+        let rows = denials().await;
+        (rows.len() >= 2).then_some(rows)
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // a wrongly recorded third would land by now
+    let alice_rows = if alice_rows.len() == 2 {
+        denials().await
+    } else {
+        alice_rows
+    };
+    assert_eq!(alice_rows.len(), 2);
     for (action, actor, _, trace) in &alice_rows {
         assert_eq!(action, "access.denied.cross_tenant");
         assert_eq!(actor, "alice");
         assert_eq!(trace.as_deref(), Some(TRACE));
     }
     let recorded: Vec<_> = alice_rows.iter().map(|r| r.2.clone()).collect();
-    assert_eq!(
-        recorded,
-        vec![
-            ws_b.id().to_string(),
-            ns_b.id().to_string(),
-            ws_b.id().to_string()
-        ]
-    );
+    assert_eq!(recorded, vec![ws_b.id().to_string(), ns_b.id().to_string()]);
 
     // Tenant B's audit trail contains only its own creations, nothing about alice's probing
     let bob_actions: Vec<_> = audit_rows(&db.pool, "globex")
@@ -174,7 +200,15 @@ async fn us04_a_tenant_a_user_cannot_see_tenant_b_data_and_the_attempt_is_record
         .into_iter()
         .map(|r| r.0)
         .collect();
-    assert_eq!(bob_actions, vec!["workspace.created", "namespace.created"]);
+    assert_eq!(
+        bob_actions,
+        vec![
+            "tenant.provisioned",
+            "membership.granted",
+            "workspace.created",
+            "namespace.created"
+        ]
+    );
 
     // No tenant B names or ids leaked into tenant A's trail
     let leaked: i64 = sqlx::query_scalar(
@@ -273,8 +307,14 @@ async fn racing_creators_of_the_same_workspace_produce_exactly_one_winner_and_on
     }
 
     assert_eq!((winners, conflicts), (1, 7));
-    let created = audit_rows(&db.pool, "acme").await;
-    assert_eq!(created.len(), 1, "losers must leave no audit row behind");
+    let rows = audit_rows(&db.pool, "acme").await;
+    let created = rows.iter().filter(|r| r.0 == "workspace.created").count();
+    assert_eq!(created, 1, "losers must leave no audit row behind");
+    assert_eq!(
+        rows.len(),
+        3,
+        "2 provisioning records + exactly 1 workspace.created"
+    );
     let workspaces: i64 = sqlx::query_scalar("SELECT count(*) FROM workspaces")
         .fetch_one(&db.pool)
         .await

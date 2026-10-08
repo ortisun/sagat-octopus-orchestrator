@@ -5,7 +5,8 @@
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-const SECRET_URL: &str = "postgres://leaky:hunter2-password@127.0.0.1:1/never";
+const SECRET_URL: &str = "postgres://leaky:hunter2-password@127.0.0.1:1/never?sslmode=require";
+const PLAINTEXT_URL: &str = "postgres://leaky:hunter2-password@127.0.0.1:1/never";
 
 fn control_plane(args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_control-plane"));
@@ -122,4 +123,24 @@ fn healthcheck_fails_when_nothing_listens_and_never_hangs() {
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).contains("health check failed"));
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_plaintext_database_url_is_refused_outside_development_without_leaking_it() {
+    for environment in [None, Some("prod"), Some("staging")] {
+        let mut env = vec![("DATABASE_URL", PLAINTEXT_URL)];
+        if let Some(value) = environment {
+            env.push(("SAGAT_ENV", value));
+        }
+        for command in ["migrate", "serve", "seed-dev"] {
+            let output = control_plane(&[command], &env);
+            assert_eq!(output.status.code(), Some(2), "{command} {environment:?}");
+            let err = text(&output.stderr);
+            assert!(err.contains("must require TLS"), "{err}");
+            assert!(
+                !err.contains("hunter2") && !err.contains("leaky"),
+                "credentials leaked: {err}"
+            );
+        }
+    }
 }

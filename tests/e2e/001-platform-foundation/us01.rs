@@ -74,7 +74,15 @@ async fn an_administrator_creates_a_workspace_and_a_dev_namespace_and_both_are_v
         .fetch_all(&api.db.pool)
         .await
         .expect("audit");
-    assert_eq!(actions, ["workspace.created", "namespace.created"]);
+    assert_eq!(
+        actions,
+        [
+            "tenant.provisioned",
+            "membership.granted",
+            "workspace.created",
+            "namespace.created"
+        ]
+    );
 }
 
 #[tokio::test]

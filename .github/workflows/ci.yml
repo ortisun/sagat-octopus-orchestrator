@@ -17,10 +17,10 @@ jobs:
     name: rust (fmt, clippy, tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
       - run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
@@ -30,7 +30,7 @@ jobs:
     name: architecture rules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: rustup show active-toolchain
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: python3 scripts/check-architecture.py
@@ -39,8 +39,8 @@ jobs:
     name: contracts (OpenAPI, protobuf, JSON Schema)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
       - name: OpenAPI lint
@@ -62,7 +62,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Builds the image, starts PostgreSQL + NATS + control plane, checks health, runs the seed
       # twice and tears everything down (see scripts/smoke-compose.sh).
       - run: scripts/smoke-compose.sh
+
+  dependencies:
+    name: dependency advisories (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      # The one ignored advisory and why is in .cargo/audit.toml and research.md (G16).
+      - run: cargo audit --deny warnings

@@ -1,0 +1,9 @@
+# cargo-audit policy. Every ignore needs a written justification in
+# specs/001-platform-foundation/research.md and must be revisited when it can be removed.
+[advisories]
+ignore = [
+  # rsa 0.9 "Marvin Attack" (timing side channel in RSA *private-key* operations). This service only
+  # VERIFIES signatures with public keys (jsonwebtoken, feature `rust_crypto`, for RS256 tokens), and
+  # never signs or decrypts with RSA. See research.md, gap G16.
+  "RUSTSEC-2023-0071",
+]

@@ -8,6 +8,7 @@ use serde_json::json;
 use sqlx::types::Uuid;
 
 use crate::support::api::{TestApi, json_of, start};
+use crate::support::eventually;
 use crate::{trace_id, without_trace};
 
 struct Setup {
@@ -118,14 +119,26 @@ async fn each_attempt_is_audited_in_the_actors_tenant_and_correlates_with_its_tr
         .await;
     assert_eq!(nobody.status(), 404);
 
-    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT a.action, a.actor, a.resource_id, a.trace_id, t.slug \
-         FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
-         WHERE a.action = 'access.denied.cross_tenant' ORDER BY a.id",
-    )
-    .fetch_all(&api.db.pool)
-    .await
-    .expect("audit");
+    // The denial record is written off the request path (so the response time reveals nothing),
+    // hence the polling.
+    let query = || async {
+        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT a.action, a.actor, a.resource_id, a.trace_id, t.slug \
+             FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
+             WHERE a.action = 'access.denied.cross_tenant' ORDER BY a.id",
+        )
+        .fetch_all(&api.db.pool)
+        .await
+        .expect("audit");
+        rows
+    };
+    eventually("the two denial records", || async {
+        let rows = query().await;
+        (rows.len() >= 2).then_some(())
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the plain miss must not appear
+    let rows = query().await;
 
     assert_eq!(rows.len(), 2, "exactly the two real attempts");
     for ((action, actor, resource_id, trace, tenant), (want_trace, want_resource)) in
@@ -154,7 +167,15 @@ async fn each_attempt_is_audited_in_the_actors_tenant_and_correlates_with_its_tr
     .fetch_all(&api.db.pool)
     .await
     .expect("audit b");
-    assert_eq!(b_actions, ["workspace.created", "namespace.created"]);
+    assert_eq!(
+        b_actions,
+        [
+            "tenant.provisioned",
+            "membership.granted",
+            "workspace.created",
+            "namespace.created"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -215,4 +236,130 @@ async fn a_tenant_supplied_by_the_client_is_never_honoured() {
         )
         .await;
     assert_eq!(body.status(), 422);
+}
+
+#[tokio::test]
+async fn a_cross_tenant_404_does_not_wait_for_the_audit_write() {
+    // The response must take the same time whether the id exists in another tenant or nowhere, so
+    // the audit INSERT cannot be on the request path. Prove it by making that INSERT block.
+    let Setup { api, ws_b, .. } = two_tenants().await;
+    let missing = Uuid::nil().to_string().replace('0', "7");
+    let mut blocker = api.db.pool.acquire().await.expect("conn");
+    sqlx::query("BEGIN")
+        .execute(&mut *blocker)
+        .await
+        .expect("begin");
+    sqlx::query("LOCK TABLE audit_records IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await
+        .expect("lock");
+
+    let started = std::time::Instant::now();
+    let elsewhere = api
+        .get_as(&format!("/workspaces/{ws_b}"), "alice", "acme")
+        .await;
+    let elsewhere_took = started.elapsed();
+    let started = std::time::Instant::now();
+    let nowhere = api
+        .get_as(&format!("/workspaces/{missing}"), "alice", "acme")
+        .await;
+    let nowhere_took = started.elapsed();
+
+    assert_eq!(
+        (elsewhere.status().as_u16(), nowhere.status().as_u16()),
+        (404, 404)
+    );
+    assert!(
+        elsewhere_took < std::time::Duration::from_millis(500),
+        "waited for the audit write: {elsewhere_took:?}"
+    );
+    assert!(
+        nowhere_took < std::time::Duration::from_millis(500),
+        "{nowhere_took:?}"
+    );
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .expect("release");
+    drop(blocker);
+    eventually(
+        "the denial to be recorded once the table is free",
+        || async {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+            )
+            .fetch_one(&api.db.pool)
+            .await
+            .expect("count");
+            (n == 1).then_some(())
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn the_whole_flow_works_when_the_api_runs_as_the_least_privilege_role() {
+    // Proves the grants are sufficient: create, read, list, a cross-tenant denial (which writes the
+    // audit trail from a spawned task) and the probes, all without owner privileges.
+    use crate::support::api::{Options, start_with};
+    let api = start_with(Options {
+        runtime_role: true,
+        ..Options::default()
+    })
+    .await;
+    api.tenant("acme", "alice").await;
+    api.tenant("globex", "bob").await;
+    let ws_a = api.create_workspace("alice", "acme", "platform").await;
+    let ns_a = api
+        .create_namespace("alice", "acme", &ws_a, "dev", "dev")
+        .await;
+    let ws_b = api.create_workspace("bob", "globex", "other").await;
+
+    assert_eq!(
+        api.get_as(&format!("/workspaces/{ws_a}"), "alice", "acme")
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        api.get_as(&format!("/namespaces/{ns_a}"), "alice", "acme")
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        json_of(api.get_as("/namespaces", "alice", "acme").await).await["items"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        api.get_as(&format!("/workspaces/{ws_b}"), "alice", "acme")
+            .await
+            .status(),
+        404
+    );
+    assert_eq!(
+        api.request(Method::GET, "/ready")
+            .send()
+            .await
+            .expect("send")
+            .status(),
+        200
+    );
+
+    eventually(
+        "the denial to be recorded by the least-privilege role",
+        || async {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+            )
+            .fetch_one(&api.db.pool)
+            .await
+            .expect("count");
+            (n == 1).then_some(())
+        },
+    )
+    .await;
 }

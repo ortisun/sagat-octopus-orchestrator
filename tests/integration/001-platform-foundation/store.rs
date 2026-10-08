@@ -10,7 +10,7 @@ use sagat_domain::identity::{
 };
 use sagat_infra_postgres::{PgIdentityStore, PoolConfig, connect};
 
-use crate::support::{migrated_db, now, slug, subject, two_tenants};
+use crate::support::{eventually, migrated_db, now, slug, subject, two_tenants};
 
 fn audit(
     p: &Principal,
@@ -459,4 +459,226 @@ async fn the_store_recovers_after_every_connection_is_killed() {
         Some(Some(ws)),
         "service resumed and nothing was lost"
     );
+}
+
+// ------------------------------------------------------- cross-tenant denial events (review)
+
+fn denial(p: &Principal, resource_id: &str) -> AuditRecord {
+    AuditRecord::by(
+        p,
+        AuditAction::CrossTenantAccessDenied,
+        ResourceType::Workspace,
+        resource_id,
+        None,
+        now(),
+    )
+}
+
+async fn denial_rows(pool: &sqlx::PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count")
+}
+
+#[tokio::test]
+async fn repeating_the_same_denial_does_not_grow_the_audit_trail() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let store = w
+        .store
+        .clone()
+        .with_denial_window(Duration::from_millis(800));
+    let alice = &w.admin_a;
+    let other_user = Principal::new(
+        w.tenant_a.id(),
+        subject("carol"),
+        sagat_domain::identity::Role::Viewer,
+    );
+
+    // 20 identical events fired at once: the per-event lock makes the check atomic.
+    let burst: Vec<_> = (0..20)
+        .map(|_| {
+            let store = store.clone();
+            let record = denial(alice, "ws-1");
+            tokio::spawn(async move { store.record_denial(&record).await })
+        })
+        .collect();
+    for call in burst {
+        call.await.expect("join").expect("accepted");
+    }
+    eventually("the first denial to be written", || async {
+        (denial_rows(&db.pool).await >= 1).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        denial_rows(&db.pool).await,
+        1,
+        "twenty identical events, one record"
+    );
+
+    // A different resource, and a different actor on the same resource, are different events.
+    store
+        .record_denial(&denial(alice, "ws-2"))
+        .await
+        .expect("accepted");
+    store
+        .record_denial(&denial(&other_user, "ws-1"))
+        .await
+        .expect("accepted");
+    eventually("distinct denials to be written", || async {
+        (denial_rows(&db.pool).await >= 3).then_some(())
+    })
+    .await;
+    assert_eq!(denial_rows(&db.pool).await, 3);
+
+    // Once the window has passed, the same event is worth recording again.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    store
+        .record_denial(&denial(alice, "ws-1"))
+        .await
+        .expect("accepted");
+    eventually("the post-window denial", || async {
+        (denial_rows(&db.pool).await >= 4).then_some(())
+    })
+    .await;
+    assert_eq!(denial_rows(&db.pool).await, 4);
+}
+
+#[tokio::test]
+async fn recording_a_denial_never_waits_for_the_database_write() {
+    // If the response had to wait for the INSERT, "the id exists in another tenant" would be
+    // measurable from outside as extra latency.
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let mut blocker = db.pool.acquire().await.expect("conn");
+    sqlx::query("BEGIN")
+        .execute(&mut *blocker)
+        .await
+        .expect("begin");
+    sqlx::query("LOCK TABLE audit_records IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await
+        .expect("lock");
+
+    let started = std::time::Instant::now();
+    w.store
+        .record_denial(&denial(&w.admin_a, "ws-1"))
+        .await
+        .expect("accepted");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "took {:?} with the audit table locked",
+        started.elapsed()
+    );
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .expect("release");
+    drop(blocker);
+    eventually("the write to land once the table is free", || async {
+        (denial_rows(&db.pool).await == 1).then_some(())
+    })
+    .await;
+}
+
+// ------------------------------------------------------- privileged writes are audited (review)
+
+#[tokio::test]
+async fn provisioning_a_tenant_and_its_administrator_is_audited_with_the_change() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+
+    let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT action, actor, resource_type, resource_id, reason FROM audit_records \
+         WHERE tenant_id = $1 ORDER BY id",
+    )
+    .bind(w.tenant_a.id().as_uuid())
+    .fetch_all(&db.pool)
+    .await
+    .expect("audit");
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "tenant provisioned, then the first administrator granted"
+    );
+    assert_eq!(rows[0].0, "tenant.provisioned");
+    assert_eq!(rows[0].2, "tenant");
+    assert_eq!(rows[0].3, w.tenant_a.id().to_string());
+    assert_eq!(rows[1].0, "membership.granted");
+    assert_eq!(rows[1].2, "membership");
+    assert_eq!(rows[1].3, "alice", "the subject that received the role");
+    assert!(
+        rows[1].4.as_deref().is_some_and(|r| r.contains("admin")),
+        "the role is recorded: {:?}",
+        rows[1].4
+    );
+    assert!(rows.iter().all(|r| r.1 == "system:provisioning"));
+}
+
+#[tokio::test]
+async fn a_failed_provisioning_leaves_no_audit_rows_behind() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+
+    // Same slug as an existing tenant: the insert fails, so nothing of the attempt may remain.
+    let clash = sagat_domain::identity::Tenant::provision(
+        sagat_domain::identity::TenantId::generate(),
+        slug("acme"),
+        now(),
+    );
+    let admin =
+        sagat_domain::identity::Membership::bootstrap_admin(&clash, subject("mallory"), now());
+    let result = w.store.provision_tenant(&clash, &admin).await;
+
+    assert_eq!(result, Err(StoreError::Conflict(ConflictKind::TenantSlug)));
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+    assert_eq!(after, before);
+    let members: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM memberships WHERE subject = 'mallory'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("n");
+    assert_eq!(
+        members, 0,
+        "the rejected administrator was not created either"
+    );
+}
+
+#[tokio::test]
+async fn adding_a_membership_outside_the_api_is_audited_with_its_role() {
+    let db = migrated_db().await;
+    let w = two_tenants(&db).await;
+    let carol = sagat_domain::identity::Membership::restore(
+        w.tenant_a.id(),
+        subject("carol"),
+        sagat_domain::identity::Role::Developer,
+        now(),
+    );
+
+    w.store.insert_membership(&carol).await.expect("granted");
+
+    let (action, resource_id, reason): (String, String, Option<String>) = sqlx::query_as(
+        "SELECT action, resource_id, reason FROM audit_records WHERE resource_id = 'carol'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("audit row");
+    assert_eq!(
+        (action.as_str(), resource_id.as_str()),
+        ("membership.granted", "carol")
+    );
+    assert!(reason.is_some_and(|r| r.contains("developer")));
 }

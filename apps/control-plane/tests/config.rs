@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use sagat_control_plane::cli::{self, Command, UsageError};
-use sagat_control_plane::config::{Config, ConfigError, Environment, SeedConfig, ServeConfig};
+use sagat_control_plane::config::{
+    Config, ConfigError, Environment, SeedConfig, ServeConfig, redact_url, requires_tls,
+};
 use sagat_telemetry::LogFormat;
 
 fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -16,7 +18,10 @@ fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
     move |name| map.get(name).cloned()
 }
 
-const DB: (&str, &str) = ("DATABASE_URL", "postgres://user:s3cret@db.internal/app");
+const DB: (&str, &str) = (
+    "DATABASE_URL",
+    "postgres://user:s3cret@db.internal/app?sslmode=require",
+);
 const OIDC: [(&str, &str); 3] = [
     ("SAGAT_OIDC_ISSUER", "https://idp.example/"),
     ("SAGAT_OIDC_AUDIENCE", "sagat"),
@@ -107,6 +112,10 @@ fn serve_defaults_bind_to_loopback_and_keep_the_secure_options() {
     );
     assert_eq!(serve.auth.tenant_claim, "tenant");
     assert!(serve.limits.max_body_bytes > 0 && serve.limits.request_timeout > Duration::ZERO);
+    // Slow-client protection is on by default, with finite values.
+    assert_eq!(serve.server.header_read_timeout, Duration::from_secs(10));
+    assert_eq!(serve.server.max_connections, 1024);
+    assert_eq!(serve.server.shutdown_grace, Duration::from_secs(30));
 }
 
 #[test]
@@ -119,6 +128,9 @@ fn serve_options_can_be_overridden() {
         ("SAGAT_MIGRATE_ON_START", "1"),
         ("SAGAT_MAX_BODY_BYTES", "1024"),
         ("SAGAT_REQUEST_TIMEOUT_SECS", "3"),
+        ("SAGAT_HEADER_READ_TIMEOUT_SECS", "4"),
+        ("SAGAT_MAX_CONNECTIONS", "50"),
+        ("SAGAT_SHUTDOWN_GRACE_SECS", "7"),
     ]);
     let serve = ServeConfig::from_lookup(&env(&pairs)).expect("serve config");
 
@@ -127,16 +139,22 @@ fn serve_options_can_be_overridden() {
     assert!(serve.auth.allow_insecure_jwks_http && serve.migrate_on_start);
     assert_eq!(serve.limits.max_body_bytes, 1024);
     assert_eq!(serve.limits.request_timeout, Duration::from_secs(3));
+    assert_eq!(serve.server.header_read_timeout, Duration::from_secs(4));
+    assert_eq!(serve.server.max_connections, 50);
+    assert_eq!(serve.server.shutdown_grace, Duration::from_secs(7));
 }
 
 #[test]
 fn nonsense_serve_values_are_rejected() {
-    let bad: [(&str, &str); 5] = [
+    let bad: [(&str, &str); 8] = [
         ("SAGAT_BIND_ADDR", "everywhere"),
         ("SAGAT_ALLOW_INSECURE_JWKS_HTTP", "maybe"),
         ("SAGAT_MAX_BODY_BYTES", "0"),
         ("SAGAT_REQUEST_TIMEOUT_SECS", "0"),
         ("SAGAT_REQUEST_TIMEOUT_SECS", "-1"),
+        ("SAGAT_HEADER_READ_TIMEOUT_SECS", "0"),
+        ("SAGAT_MAX_CONNECTIONS", "0"),
+        ("SAGAT_SHUTDOWN_GRACE_SECS", "0"),
     ];
     for (name, value) in bad {
         let mut pairs = OIDC.to_vec();
@@ -176,4 +194,90 @@ fn the_command_line_maps_to_commands() {
     assert!(matches!(parse(&["rm", "-rf"]), Err(UsageError(_))));
     assert!(matches!(parse(&["migrate", "now"]), Err(UsageError(m)) if m.contains("now")));
     assert!(matches!(parse(&["--unknown"]), Err(UsageError(_))));
+}
+
+#[test]
+fn outside_development_the_database_connection_must_require_tls() {
+    let insecure = [
+        "postgres://u:p@db/app",
+        "postgres://u:p@db/app?sslmode=prefer",
+        "postgres://u:p@db/app?sslmode=allow",
+        "postgres://u:p@db/app?sslmode=disable",
+        "postgres://u:p@db/app?application_name=x",
+        "postgres://u:p@db/app?sslmode=",
+    ];
+    for environment in ["prod", "staging"] {
+        for url in insecure {
+            let error =
+                Config::from_lookup(&env(&[("SAGAT_ENV", environment), ("DATABASE_URL", url)]))
+                    .expect_err(url);
+            assert!(
+                matches!(&error, ConfigError::Invalid { name: "DATABASE_URL", reason } if reason.contains("TLS")),
+                "{environment} {url} -> {error:?}"
+            );
+            assert!(
+                !error.to_string().contains("u:p"),
+                "credentials must not be echoed: {error}"
+            );
+        }
+        // The unset default is production, so it is covered too.
+    }
+    assert!(Config::from_lookup(&env(&[("DATABASE_URL", "postgres://u:p@db/app")])).is_err());
+
+    for url in [
+        "postgres://u:p@db/app?sslmode=require",
+        "postgres://u:p@db/app?sslmode=verify-ca",
+        "postgres://u:p@db/app?sslmode=verify-full",
+        "postgres://u:p@db/app?application_name=x&sslmode=require",
+        "postgres://u:p@db/app?ssl-mode=require",
+    ] {
+        assert!(
+            Config::from_lookup(&env(&[("SAGAT_ENV", "prod"), ("DATABASE_URL", url)])).is_ok(),
+            "{url}"
+        );
+    }
+
+    // Development keeps working against a plain local database.
+    assert!(
+        Config::from_lookup(&env(&[
+            ("SAGAT_ENV", "dev"),
+            ("DATABASE_URL", "postgres://u:p@localhost/app")
+        ]))
+        .is_ok()
+    );
+}
+
+#[test]
+fn tls_detection_fails_closed_on_odd_urls() {
+    assert!(requires_tls("postgres://u:p@h/db?sslmode=require"));
+    assert!(!requires_tls("postgres://u:p@h/db"));
+    // A password containing '?' must not be mistaken for the start of a query.
+    assert!(!requires_tls("postgres://u:pa?sslmode=require@h/db"));
+    assert!(!requires_tls("sslmode=require"));
+    assert!(
+        !requires_tls("postgres://u:p@h/db?sslmode=REQUIRE"),
+        "case-sensitive: refuse what we cannot recognise"
+    );
+}
+
+#[test]
+fn logged_urls_never_carry_credentials_or_query_strings() {
+    let cases = [
+        (
+            "https://idp.example/.well-known/jwks.json",
+            "https://idp.example/.well-known/jwks.json",
+        ),
+        (
+            "https://user:hunter2@idp.example/jwks.json?token=abc#frag",
+            "https://idp.example/jwks.json",
+        ),
+        ("https://idp.example:8443/", "https://idp.example:8443"),
+        ("https://a:b@c@idp.example/x", "https://idp.example/x"),
+        ("not a url", "<unparseable url>"),
+    ];
+    for (input, expected) in cases {
+        let shown = redact_url(input);
+        assert_eq!(shown, expected, "{input}");
+        assert!(!shown.contains("hunter2") && !shown.contains("token=") && !shown.contains("a:b"));
+    }
 }

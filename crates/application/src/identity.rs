@@ -132,7 +132,14 @@ pub trait IdentityStore: Send + Sync {
         id: NamespaceId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    fn record_audit(
+    /// Records that a caller tried to reach a resource of another tenant.
+    ///
+    /// Best effort by contract: implementations MUST NOT make the caller wait for the write (the
+    /// response must take the same time whether or not the identifier exists in another tenant),
+    /// MUST collapse identical events from the same actor within a window (an attacker repeating a
+    /// request must not grow the trail), and MUST bound their own resource use. A dropped event is
+    /// logged. The denial itself never depends on this call.
+    fn record_denial(
         &self,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
@@ -382,7 +389,7 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
             self.clock.now(),
         )
         .with_reason("resource not accessible from this tenant");
-        if let Err(error) = self.store.record_audit(&record).await {
+        if let Err(error) = self.store.record_denial(&record).await {
             tracing::error!(%error, action = %record.action(), "failed to record audit entry");
         }
     }

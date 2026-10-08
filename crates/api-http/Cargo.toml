@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 jsonwebtoken.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
@@ -22,7 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting", "parsing", "serde", "serde-well-known"] }
-tokio = { workspace = true, features = ["sync", "time", "rt"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "net", "macros"] }
 tower-http.workspace = true
 tracing.workspace = true
 

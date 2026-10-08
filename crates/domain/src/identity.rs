@@ -12,6 +12,21 @@ use std::str::FromStr;
 
 use time::OffsetDateTime;
 
+/// At most this many characters of a rejected value are echoed in an error message.
+const ECHO_LIMIT: usize = 32;
+
+/// Truncates a rejected, caller-supplied value so an error message cannot be inflated or used to
+/// reflect a large payload back at the caller.
+fn clip(value: &str) -> String {
+    let mut chars = value.chars();
+    let head: String = chars.by_ref().take(ECHO_LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 /// Typed errors of the identity model. Messages never contain identifiers of other tenants.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IdentityError {
@@ -138,6 +153,14 @@ pub struct Subject(String);
 impl Subject {
     pub const MAX_LEN: usize = 255;
 
+    /// The actor recorded for platform-level operations that have no tenant principal, such as
+    /// provisioning a tenant. Not an identity anyone can authenticate as: tokens go through
+    /// [`Subject::parse`] and membership lookup, and no membership carries this subject.
+    #[must_use]
+    pub fn provisioning() -> Self {
+        Self("system:provisioning".to_owned())
+    }
+
     /// Validates and wraps a subject.
     ///
     /// # Errors
@@ -203,7 +226,7 @@ impl FromStr for Environment {
             "dev" => Ok(Self::Dev),
             "staging" => Ok(Self::Staging),
             "prod" => Ok(Self::Prod),
-            other => Err(IdentityError::UnknownEnvironment(other.to_owned())),
+            other => Err(IdentityError::UnknownEnvironment(clip(other))),
         }
     }
 }
@@ -322,7 +345,7 @@ impl FromStr for Role {
             "developer" => Ok(Self::Developer),
             "operator" => Ok(Self::Operator),
             "viewer" => Ok(Self::Viewer),
-            other => Err(IdentityError::UnknownRole(other.to_owned())),
+            other => Err(IdentityError::UnknownRole(clip(other))),
         }
     }
 }

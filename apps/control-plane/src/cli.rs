@@ -70,6 +70,9 @@ ENVIRONMENT (serve):
     SAGAT_MIGRATE_ON_START            apply migrations before serving [false]
     SAGAT_REQUEST_TIMEOUT_SECS        request timeout                 [15]
     SAGAT_MAX_BODY_BYTES              request body limit              [65536]
+    SAGAT_HEADER_READ_TIMEOUT_SECS    max time to send a request head [10]
+    SAGAT_MAX_CONNECTIONS             simultaneous connections        [1024]
+    SAGAT_SHUTDOWN_GRACE_SECS         drain time on shutdown          [30]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
 
 ENVIRONMENT (seed-dev):

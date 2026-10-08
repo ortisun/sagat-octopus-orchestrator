@@ -73,6 +73,10 @@ fn each_record_gets_a_distinct_id() {
 /// changing one is a breaking change of the audit contract.
 #[test]
 fn stored_names_are_a_stable_contract() {
+    assert_eq!(
+        AuditAction::TenantProvisioned.as_str(),
+        "tenant.provisioned"
+    );
     assert_eq!(AuditAction::WorkspaceCreated.as_str(), "workspace.created");
     assert_eq!(AuditAction::NamespaceCreated.as_str(), "namespace.created");
     assert_eq!(
@@ -83,7 +87,28 @@ fn stored_names_are_a_stable_contract() {
         AuditAction::CrossTenantAccessDenied.as_str(),
         "access.denied.cross_tenant"
     );
+    assert_eq!(ResourceType::Tenant.as_str(), "tenant");
     assert_eq!(ResourceType::Workspace.as_str(), "workspace");
     assert_eq!(ResourceType::Namespace.as_str(), "namespace");
     assert_eq!(ResourceType::Membership.as_str(), "membership");
+}
+
+#[test]
+fn provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_a_user() {
+    let tenant = TenantId::generate();
+    let record = AuditRecord::provisioning(
+        tenant,
+        AuditAction::MembershipGranted,
+        ResourceType::Membership,
+        "alice",
+        "first administrator",
+        OffsetDateTime::UNIX_EPOCH,
+    );
+
+    assert_eq!(record.tenant_id(), tenant);
+    assert_eq!(record.actor().as_str(), "system:provisioning");
+    assert_eq!(record.reason(), Some("first administrator"));
+    assert_eq!(record.trace_id(), None);
+    // Tokens only ever authenticate through membership lookup, and none can carry this subject.
+    assert_eq!(*record.actor(), Subject::provisioning());
 }

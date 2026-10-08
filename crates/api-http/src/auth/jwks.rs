@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::jwk::{
     AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, PublicKeyUse,
 };
 use jsonwebtoken::{Algorithm, DecodingKey};
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 
 use super::config::AuthConfig;
 
@@ -163,56 +163,59 @@ struct Cached {
 #[derive(Default)]
 struct State {
     cached: Option<Cached>,
+    /// When the last provider round trip *finished* (successfully or not).
     last_attempt: Option<Instant>,
 }
 
-/// Caches the provider's keys with bounded staleness and rate-limited refreshes.
-pub struct JwksCache {
+/// What the cache can say about a `kid` right now, without any network.
+enum Lookup {
+    /// Known and within `ttl`.
+    Fresh(Arc<VerificationKey>),
+    /// Known, past `ttl` but within the stale window: usable, a refresh is due.
+    Stale(Arc<VerificationKey>),
+    /// The cache is usable but does not contain this `kid`.
+    Unknown,
+    /// Nothing cached yet.
+    Missing,
+    /// Cached keys are older than the stale window: too old to trust.
+    Expired,
+}
+
+struct Inner {
     fetcher: Arc<dyn JwksFetcher>,
     ttl: Duration,
     max_stale: Duration,
     min_refresh_interval: Duration,
+    /// Never held across an `.await`: lookups must not queue behind a slow provider.
     state: RwLock<State>,
+    /// Single flight for refreshes. Held by the task that talks to the provider, so a caller that
+    /// disconnects cannot release it while the fetch is still running.
+    refresh_gate: Arc<Mutex<()>>,
 }
 
-impl JwksCache {
-    #[must_use]
-    pub fn new(fetcher: Arc<dyn JwksFetcher>, config: &AuthConfig) -> Self {
-        Self {
-            fetcher,
-            ttl: config.jwks_ttl,
-            max_stale: config.jwks_max_stale,
-            min_refresh_interval: config.jwks_min_refresh_interval,
-            state: RwLock::new(State::default()),
+impl Inner {
+    fn lookup(&self, kid: &str) -> Lookup {
+        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        let Some(cached) = &state.cached else {
+            return Lookup::Missing;
+        };
+        let age = cached.fetched_at.elapsed();
+        if age >= self.ttl + self.max_stale {
+            return Lookup::Expired;
         }
-    }
-
-    /// The key for `kid`, refreshing the set when it is expired or the `kid` is unknown.
-    ///
-    /// # Errors
-    /// [`JwksError::UnknownKey`] when no key matches, [`JwksError::Unavailable`] when keys are
-    /// needed but cannot be obtained within the staleness bound (fail closed).
-    pub async fn key_for(&self, kid: &str) -> Result<Arc<VerificationKey>, JwksError> {
-        {
-            let state = self.state.read().await;
-            if let Some(cached) = &state.cached {
-                let fresh = cached.fetched_at.elapsed() < self.ttl;
-                if let Some(key) = cached.keys.get(kid) {
-                    if fresh {
-                        return Ok(Arc::clone(key));
-                    }
-                } else if fresh && !self.may_refresh(&state) {
-                    return Err(JwksError::UnknownKey);
-                }
-            }
+        match cached.keys.get(kid) {
+            Some(key) if age < self.ttl => Lookup::Fresh(Arc::clone(key)),
+            Some(key) => Lookup::Stale(Arc::clone(key)),
+            None => Lookup::Unknown,
         }
-        self.refresh_and_lookup(kid).await
     }
 
     /// Whether another provider round trip is allowed now. With no keys at all the wait is short
     /// (at most a second) so a provider that was down at startup is picked up quickly; once keys
-    /// exist, refreshes are spaced by `min_refresh_interval`.
-    fn may_refresh(&self, state: &State) -> bool {
+    /// exist, refreshes are spaced by `min_refresh_interval`. The interval counts from the end of
+    /// the previous attempt, so a slow or hanging provider cannot be retried back to back.
+    fn may_refresh(&self) -> bool {
+        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
         let interval = if state.cached.is_none() {
             self.min_refresh_interval.min(Duration::from_secs(1))
         } else {
@@ -221,65 +224,121 @@ impl JwksCache {
         state.last_attempt.is_none_or(|t| t.elapsed() >= interval)
     }
 
-    async fn refresh_and_lookup(&self, kid: &str) -> Result<Arc<VerificationKey>, JwksError> {
-        // Single flight: concurrent callers queue here and the first one refreshes for all.
-        let mut state = self.state.write().await;
-        let horizon = self.ttl + self.max_stale;
-
-        let expired = state
-            .cached
-            .as_ref()
-            .is_none_or(|c| c.fetched_at.elapsed() >= self.ttl);
-        let known = state
-            .cached
-            .as_ref()
-            .is_some_and(|c| c.keys.contains_key(kid));
-        if !expired && known {
-            // Another caller refreshed while we waited for the lock.
-            return from_cache(&state, kid, horizon);
-        }
-        // Whether the cache is expired or the kid is unknown, never contact the provider more than
-        // once per interval: a down provider or a flood of random kids must not turn into a
-        // queue of slow outbound requests.
-        if !self.may_refresh(&state) {
-            return from_cache(&state, kid, horizon);
-        }
-
+    /// One provider round trip. Runs with no lock held.
+    async fn refresh(&self) {
+        let outcome = self.fetcher.fetch().await;
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         state.last_attempt = Some(Instant::now());
-        match self.fetcher.fetch().await {
+        match outcome {
             Ok(set) => {
                 let keys = usable_keys(&set);
-                let found = keys.get(kid).cloned();
-                state.cached = Some(Cached {
-                    keys,
-                    fetched_at: Instant::now(),
-                });
-                found.ok_or(JwksError::UnknownKey)
+                if keys.is_empty() {
+                    // A 200 without a single usable key is an incident at the provider, never a
+                    // policy: keep whatever good keys we have rather than locking everyone out.
+                    tracing::warn!(
+                        "key provider returned no usable signing keys; keeping the previous keys"
+                    );
+                } else {
+                    state.cached = Some(Cached {
+                        keys,
+                        fetched_at: Instant::now(),
+                    });
+                }
             }
-            Err(error) => {
-                tracing::warn!(%error, "JWKS refresh failed");
-                // Serve the last good keys for a bounded time so a short outage is survivable.
-                from_cache(&state, kid, horizon)
-            }
+            Err(error) => tracing::warn!(%error, "JWKS refresh failed"),
         }
     }
 }
 
-/// Looks `kid` up in the cache if it is younger than `horizon`; otherwise fails closed.
-fn from_cache(
-    state: &State,
-    kid: &str,
-    horizon: Duration,
-) -> Result<Arc<VerificationKey>, JwksError> {
-    match &state.cached {
-        Some(cached) if cached.fetched_at.elapsed() < horizon => {
-            cached.keys.get(kid).cloned().ok_or(JwksError::UnknownKey)
+/// Caches the provider's keys with bounded staleness and rate-limited refreshes.
+///
+/// Availability properties (each covered by a fault test):
+/// * a `kid` that is cached is served immediately, even while the provider hangs;
+/// * expired-but-recent keys keep working while a refresh runs in the background;
+/// * only a caller that truly needs new keys waits, and all of them share one bounded fetch;
+/// * the provider is contacted at most once per interval, measured from the previous attempt's end.
+pub struct JwksCache {
+    inner: Arc<Inner>,
+}
+
+impl JwksCache {
+    #[must_use]
+    pub fn new(fetcher: Arc<dyn JwksFetcher>, config: &AuthConfig) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                fetcher,
+                ttl: config.jwks_ttl,
+                max_stale: config.jwks_max_stale,
+                min_refresh_interval: config.jwks_min_refresh_interval,
+                state: RwLock::new(State::default()),
+                refresh_gate: Arc::new(Mutex::new(())),
+            }),
         }
-        Some(_) => Err(JwksError::Unavailable(
-            "cached keys are too old and the provider is unreachable".to_owned(),
-        )),
-        None => Err(JwksError::Unavailable(
-            "no signing keys available".to_owned(),
-        )),
+    }
+
+    /// The key for `kid`.
+    ///
+    /// # Errors
+    /// [`JwksError::UnknownKey`] when no key matches, [`JwksError::Unavailable`] when keys are
+    /// needed but cannot be obtained within the staleness bound (fail closed).
+    pub async fn key_for(&self, kid: &str) -> Result<Arc<VerificationKey>, JwksError> {
+        match self.inner.lookup(kid) {
+            Lookup::Fresh(key) => return Ok(key),
+            Lookup::Stale(key) => {
+                self.refresh_in_background();
+                return Ok(key);
+            }
+            Lookup::Unknown | Lookup::Missing | Lookup::Expired => {}
+        }
+
+        // Only a refresh can answer; share one bounded fetch with every other caller in this
+        // position, and fall back to whatever the cache can say if refreshing is not allowed.
+        self.refresh_and_wait().await;
+        match self.inner.lookup(kid) {
+            Lookup::Fresh(key) | Lookup::Stale(key) => Ok(key),
+            Lookup::Unknown => Err(JwksError::UnknownKey),
+            Lookup::Missing => Err(JwksError::Unavailable(
+                "no signing keys available".to_owned(),
+            )),
+            Lookup::Expired => Err(JwksError::Unavailable(
+                "cached keys are too old and the provider is unreachable".to_owned(),
+            )),
+        }
+    }
+
+    /// Refreshes if allowed, waiting for the result. Waiters queue on the gate only, never on the
+    /// state, so callers whose key is cached are unaffected.
+    async fn refresh_and_wait(&self) {
+        if !self.inner.may_refresh() {
+            return;
+        }
+        let guard = Arc::clone(&self.inner.refresh_gate).lock_owned().await;
+        if !self.inner.may_refresh() {
+            return; // the caller ahead of us just refreshed (or tried to)
+        }
+        let inner = Arc::clone(&self.inner);
+        // Detached: if this request is dropped, the fetch still finishes and still releases the gate.
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            inner.refresh().await;
+        });
+        let _ = task.await;
+    }
+
+    /// Starts a refresh without making anyone wait for it, if one is allowed and none is running.
+    fn refresh_in_background(&self) {
+        if !self.inner.may_refresh() {
+            return;
+        }
+        let Ok(guard) = Arc::clone(&self.inner.refresh_gate).try_lock_owned() else {
+            return; // a refresh is already running
+        };
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            let _guard = guard;
+            if inner.may_refresh() {
+                inner.refresh().await;
+            }
+        });
     }
 }
