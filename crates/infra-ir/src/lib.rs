@@ -19,6 +19,16 @@ use serde_json::Value;
 pub struct JsonIrCodec;
 
 impl IrCodec for JsonIrCodec {
+    fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
+        if document.len() > MAX_IR_BYTES {
+            return Err(IrError::TooLarge);
+        }
+        match serde_json::from_slice::<Value>(document) {
+            Ok(Value::Object(_)) => Ok(()),
+            _ => Err(IrError::Malformed),
+        }
+    }
+
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         if document.len() > MAX_IR_BYTES {
             return Err(IrError::TooLarge);

@@ -22,12 +22,16 @@ fn forward_migrations() -> i64 {
     i64::try_from(count).expect("count fits")
 }
 
-const TABLES: [&str; 5] = [
+const TABLES: [&str; 8] = [
     "tenants",
     "workspaces",
     "namespaces",
     "memberships",
     "audit_records",
+    // Added by feature 002; the rollback must remove them too.
+    "workflows",
+    "workflow_versions",
+    "command_dedupe",
 ];
 
 #[tokio::test]

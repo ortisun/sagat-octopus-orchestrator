@@ -71,6 +71,13 @@ pub struct ParsedDefinition {
 
 /// Parses, validates and canonicalises a workflow document (implemented by `sagat-infra-ir`).
 pub trait IrCodec: Send + Sync {
+    /// Cheap check that a draft is storable: well-formed JSON, an object, within
+    /// [`MAX_IR_BYTES`]. Whether it is *publishable* is [`Self::parse`]'s job.
+    ///
+    /// # Errors
+    /// [`IrError::TooLarge`] or [`IrError::Malformed`].
+    fn check_draft(&self, document: &[u8]) -> Result<(), IrError>;
+
     /// # Errors
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
@@ -233,6 +240,13 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
     }
 
+    /// A draft is any JSON object up to [`MAX_IR_BYTES`]; full validation happens at publish.
+    fn check_draft(&self, draft: &[u8]) -> Result<(), AppError> {
+        self.codec
+            .check_draft(draft)
+            .map_err(|e| AppError::InvalidDefinition(Box::new(e)))
+    }
+
     async fn namespace(&self, principal: &Principal, slug: &str) -> Result<Namespace, AppError> {
         // A malformed slug cannot match anything: it is "not found", like an unknown namespace.
         let slug = Slug::parse(slug).map_err(|_| AppError::NotFound)?;
@@ -259,7 +273,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         ctx: &RequestContext,
     ) -> Result<WorkflowRecord, AppError> {
         principal.authorize(Permission::DefinitionWrite)?;
-        check_draft(draft)?;
+        self.check_draft(draft)?;
         let name = Slug::parse(name)?;
         let namespace = self.namespace(principal, namespace).await?;
         let now = self.clock.now();
@@ -311,7 +325,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         ctx: &RequestContext,
     ) -> Result<WorkflowRecord, AppError> {
         principal.authorize(Permission::DefinitionWrite)?;
-        check_draft(draft)?;
+        self.check_draft(draft)?;
         let now = self.clock.now();
         let audit = AuditRecord::by(
             principal,
@@ -545,17 +559,6 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
         AppError::NotFound
     }
-}
-
-/// A draft is any JSON object up to [`MAX_IR_BYTES`]; full validation happens at publish.
-fn check_draft(draft: &[u8]) -> Result<(), AppError> {
-    if draft.len() > MAX_IR_BYTES {
-        return Err(AppError::InvalidDefinition(Box::new(IrError::TooLarge)));
-    }
-    if draft.first() != Some(&b'{') {
-        return Err(AppError::InvalidDefinition(Box::new(IrError::Malformed)));
-    }
-    Ok(())
 }
 
 /// Length-prefixed concatenation, so `("ab", "c")` and `("a", "bc")` differ.

@@ -328,6 +328,16 @@ struct FakeCodec {
 }
 
 impl IrCodec for FakeCodec {
+    fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
+        if document.len() > sagat_application::definitions::MAX_IR_BYTES {
+            Err(IrError::TooLarge)
+        } else if document.first() == Some(&b'{') {
+            Ok(())
+        } else {
+            Err(IrError::Malformed)
+        }
+    }
+
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         self.outcome.clone()?;
         let node = Node::new(

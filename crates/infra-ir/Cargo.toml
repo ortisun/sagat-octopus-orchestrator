@@ -20,7 +20,4 @@ sha2 = "0.11"
 jsonschema = { version = "0.58", default-features = false }
 
 [dev-dependencies]
-# Insertion-ordered maps in the tests: the canonical form must not depend on the map type, so the
-# explicit key sort is exercised (without this feature the default map is already sorted).
-serde_json = { workspace = true, features = ["preserve_order"] }
 proptest = { version = "1", default-features = false, features = ["std"] }

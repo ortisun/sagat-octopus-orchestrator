@@ -6,9 +6,11 @@
 
 use sqlx::migrate::Migrator;
 
+mod definitions;
 mod identity;
 mod pool;
 
+pub use definitions::PgDefinitionStore;
 pub use identity::PgIdentityStore;
 pub use pool::{PoolConfig, connect, spawn_pool_metrics};
 pub use sqlx::PgPool;

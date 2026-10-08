@@ -135,7 +135,10 @@ async fn insert_membership(
     Ok(())
 }
 
-async fn insert_audit(conn: &mut PgConnection, audit: &AuditRecord) -> Result<(), StoreError> {
+pub(crate) async fn insert_audit(
+    conn: &mut PgConnection,
+    audit: &AuditRecord,
+) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO audit_records \
          (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at) \
@@ -434,7 +437,7 @@ impl IdentityStore for PgIdentityStore {
 
 // ----------------------------------------------------------------------------- row decoding
 
-fn col<'r, T>(row: &'r PgRow, name: &str) -> Result<T, StoreError>
+pub(crate) fn col<'r, T>(row: &'r PgRow, name: &str) -> Result<T, StoreError>
 where
     T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
 {
@@ -443,7 +446,7 @@ where
 
 /// A stored value that no longer satisfies a domain rule means the database was changed behind the
 /// application's back; surface it as an internal error instead of guessing.
-fn corrupt(what: &str) -> StoreError {
+pub(crate) fn corrupt(what: &str) -> StoreError {
     StoreError::Internal {
         detail: format!("stored {what} violates a domain invariant"),
     }
@@ -479,7 +482,7 @@ fn workspace_from_row(row: &PgRow) -> Result<Workspace, StoreError> {
     ))
 }
 
-fn namespace_from_row(row: &PgRow) -> Result<Namespace, StoreError> {
+pub(crate) fn namespace_from_row(row: &PgRow) -> Result<Namespace, StoreError> {
     let slug: String = col(row, "slug")?;
     let environment: String = col(row, "environment")?;
     Ok(Namespace::restore(
@@ -501,12 +504,15 @@ fn namespace_from_row(row: &PgRow) -> Result<Namespace, StoreError> {
 /// The application layer deliberately drops the detail (clients must never see it), so this is the
 /// only place where an operator can learn *why* storage failed. Server messages carry no row
 /// values (those live in a separate `DETAIL` field that is not logged).
-fn store_error(error: sqlx::Error) -> StoreError {
+pub(crate) fn store_error(error: sqlx::Error) -> StoreError {
     let mapped = classify(&error);
     match &mapped {
         StoreError::Unavailable { detail } => tracing::warn!(%detail, "storage unavailable"),
         StoreError::Internal { detail } => tracing::error!(%detail, "storage failure"),
-        StoreError::Conflict(_) | StoreError::MissingReference => {}
+        StoreError::Conflict(_)
+        | StoreError::MissingReference
+        | StoreError::RevisionConflict { .. }
+        | StoreError::IdempotencyKeyReused => {}
     }
     mapped
 }
@@ -527,6 +533,9 @@ fn classify(error: &sqlx::Error) -> StoreError {
                     }
                     Some("namespaces_tenant_slug_uniq") => {
                         StoreError::Conflict(ConflictKind::NamespaceSlug)
+                    }
+                    Some("workflows_tenant_namespace_name_uniq") => {
+                        StoreError::Conflict(ConflictKind::WorkflowName)
                     }
                     _ => StoreError::Internal { detail },
                 },

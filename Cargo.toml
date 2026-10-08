@@ -20,7 +20,7 @@ sagat-api-http = { path = "crates/api-http" }
 sagat-infra-expr = { path = "crates/infra-expr" }
 sagat-infra-ir = { path = "crates/infra-ir" }
 sagat-control-plane = { path = "apps/control-plane" }
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time", "json"] }
 testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }

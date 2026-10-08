@@ -14,6 +14,8 @@ workspace = true
 sagat-application.workspace = true
 metrics.workspace = true
 sagat-domain.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
 sqlx.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

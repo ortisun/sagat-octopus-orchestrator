@@ -17,20 +17,7 @@ pub(crate) fn canonical_json(value: &Value) -> Vec<u8> {
 
 fn write(value: &Value, out: &mut Vec<u8>) {
     match value {
-        Value::Object(map) => {
-            out.push(b'{');
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            for (i, key) in keys.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(b',');
-                }
-                write_string(key, out);
-                out.push(b':');
-                write(&map[key], out);
-            }
-            out.push(b'}');
-        }
+        Value::Object(map) => write_object(map.iter().collect(), out),
         Value::Array(items) => {
             out.push(b'[');
             for (i, item) in items.iter().enumerate() {
@@ -46,6 +33,23 @@ fn write(value: &Value, out: &mut Vec<u8>) {
     }
 }
 
+/// Writes an object with its keys in byte order, whatever order the entries arrive in. The default
+/// map type is already sorted, but a dependency enabling `serde_json/preserve_order` (features are
+/// unified across the workspace) would silently change every digest without this.
+fn write_object(mut entries: Vec<(&String, &Value)>, out: &mut Vec<u8>) {
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    out.push(b'{');
+    for (i, (key, value)) in entries.into_iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        write_string(key, out);
+        out.push(b':');
+        write(value, out);
+    }
+    out.push(b'}');
+}
+
 fn write_string(s: &str, out: &mut Vec<u8>) {
     // Serialising a `&str` cannot fail.
     if let Ok(escaped) = serde_json::to_string(s) {
@@ -55,4 +59,30 @@ fn write_string(s: &str, out: &mut Vec<u8>) {
 
 pub(crate) fn digest_of(bytes: &[u8]) -> Digest {
     Digest::new(Sha256::digest(bytes).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_are_sorted_even_when_the_entries_arrive_in_another_order() {
+        let (a, b, c) = ("b".to_owned(), "a".to_owned(), "c".to_owned());
+        let (one, two, three) = (Value::from(1), Value::from(2), Value::from(3));
+        let mut out = Vec::new();
+        write_object(vec![(&a, &one), (&c, &three), (&b, &two)], &mut out);
+        assert_eq!(out, br#"{"a":2,"b":1,"c":3}"#);
+    }
+
+    #[test]
+    fn sorting_is_by_bytes_not_by_locale() {
+        let (upper, lower, accent) = ("B".to_owned(), "a".to_owned(), "é".to_owned());
+        let one = Value::from(1);
+        let mut out = Vec::new();
+        write_object(
+            vec![(&accent, &one), (&lower, &one), (&upper, &one)],
+            &mut out,
+        );
+        assert_eq!(out, "{\"B\":1,\"a\":1,\"é\":1}".as_bytes());
+    }
 }
