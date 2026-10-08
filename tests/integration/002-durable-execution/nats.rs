@@ -113,7 +113,7 @@ async fn hints_flow_from_the_outbox_to_jetstream_and_survive_a_broker_outage() {
     let round = dispatcher.run_once().await;
     assert_eq!((round.published, round.failed), (1, 0));
     let tenant = w.admin.tenant_id();
-    let filter = format!("sagat.v1.task.ready.{tenant}");
+    let filter = format!("sagat.v1.task.ready.{tenant}.act.a");
     let seen = drain(&publisher, &filter).await;
     assert_eq!(seen.len(), 1);
     let hint: Value = serde_json::from_slice(&seen[0].1).expect("json");

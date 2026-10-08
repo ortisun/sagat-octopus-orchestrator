@@ -67,7 +67,7 @@ async fn the_engine_fires_timers_announces_work_and_serves_workers_with_nobody_d
 
     // The dispatcher announced the step (and the finish) on NATS without being asked either.
     let tenant = p.tenant;
-    let subject = format!("sagat.v1.task.ready.{tenant}");
+    let subject = format!("sagat.v1.task.ready.{tenant}.act.a");
     let publisher =
         sagat_infra_nats::NatsPublisher::connect(sagat_infra_nats::NatsConfig::new(broker.url()))
             .await

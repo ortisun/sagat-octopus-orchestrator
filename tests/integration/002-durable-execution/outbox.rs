@@ -224,7 +224,8 @@ mod dispatching {
         assert_eq!(sent.len(), 1);
         assert_eq!(
             sent[0].subject,
-            format!("sagat.v1.task.ready.{}", w.admin.tenant_id())
+            format!("sagat.v1.task.ready.{}.act.a", w.admin.tenant_id()),
+            "per tenant and activity"
         );
         let id: String = sqlx::query_scalar("SELECT id::text FROM event_outbox LIMIT 1")
             .fetch_one(&w.db.pool)

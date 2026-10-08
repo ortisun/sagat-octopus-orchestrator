@@ -194,6 +194,8 @@ pub struct OutboxMessage {
     pub tenant_id: TenantId,
     pub aggregate_id: Uuid,
     pub event_type: String,
+    /// Narrows the subject the message is published on (the activity of a `task.ready` hint).
+    pub routing_key: Option<String>,
     pub payload: Vec<u8>,
     pub attempt_count: u32,
     pub created_at: OffsetDateTime,

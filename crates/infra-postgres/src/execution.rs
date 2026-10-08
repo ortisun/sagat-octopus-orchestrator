@@ -1038,12 +1038,13 @@ impl PgRunTx {
             _ => return Ok(()),
         };
         sqlx::query(
-            "INSERT INTO event_outbox (id, tenant_id, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, $3, 'task.ready', $4)",
+            "INSERT INTO event_outbox (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
+             VALUES ($1, $2, $3, 'task.ready', $4, $5)",
         )
         .bind(Uuid::now_v7())
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
+        .bind(&activity)
         .bind(serde_json::json!({
             "tenantId": self.info.tenant_id.to_string(),
             "namespaceId": self.info.namespace_id.to_string(),

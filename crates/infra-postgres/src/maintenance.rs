@@ -283,7 +283,7 @@ impl OutboxStore for PgRunStore {
                 SET next_attempt_at = clock_timestamp() + $2 * interval '1 microsecond', \
                     attempt_count = o.attempt_count + 1 \
                FROM due WHERE o.id = due.id \
-             RETURNING o.id, o.tenant_id, o.aggregate_id, o.event_type, o.payload, \
+             RETURNING o.id, o.tenant_id, o.aggregate_id, o.event_type, o.routing_key, o.payload, \
                        o.attempt_count, o.created_at",
         )
         .bind(i64::from(limit))
@@ -301,6 +301,7 @@ impl OutboxStore for PgRunStore {
                     tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
                     aggregate_id: col(row, "aggregate_id")?,
                     event_type: col(row, "event_type")?,
+                    routing_key: col(row, "routing_key")?,
                     payload: serde_json::to_vec(&payload).map_err(|_| corrupt("outbox payload"))?,
                     attempt_count: u32::try_from(attempts).map_err(|_| corrupt("attempts"))?,
                     created_at: col(row, "created_at")?,

@@ -2,72 +2,91 @@ asyncapi: 3.0.0
 info:
   title: Sagat Octopus Orchestrator Integration Events
   version: 0.1.0
-  description: Event contract; at-least-once; dedupe by eventId scoped to source/tenant.
+  description: Event contract; at-least-once. Outbound messages are deduplicated by the Nats-Msg-Id header (the outbox row id); inbound events by eventId scoped to source/tenant.
 defaultContentType: application/json
 servers:
   internal:
     host: nats:4222
     protocol: nats
 channels:
-  runEvents:
-    address: df.events.run
-    messages:
-      runStateChanged:
-        $ref: '#/components/messages/RunStateChanged'
+  # --- Implemented by feature 002 (the outbox dispatcher of the execution engine) ---------------
+  # Hints and events carry identifiers only: never payloads, tokens or secrets. Delivery is
+  # at-least-once; the `Nats-Msg-Id` header is the outbox row id, so JetStream drops duplicates
+  # inside its window. A message is a hint: a worker still has to claim the step through the worker
+  # API (PollTasks), and a consumer must treat `run.finished` as a notification to read the run.
   taskReady:
-    address: df.tasks.{capability}
+    address: sagat.v1.task.ready.{tenant}.{activity}
+    description: A step became ready for a worker. One subject per tenant and activity name (bounded by the tenant's definitions, never by runs); the activity name may contain dots, which are further subject tokens, so a pool filters with `sagat.v1.task.ready.<tenant>.<activity>`.
     parameters:
-      capability:
-        description: Worker capability/pool
+      tenant:
+        description: Tenant id (UUID).
+      activity:
+        description: Activity name as declared by the definition, for example payments.charge.
     messages:
-      taskDispatched:
-        $ref: '#/components/messages/TaskDispatched'
+      taskReady:
+        $ref: '#/components/messages/TaskReady'
+  runFinished:
+    address: sagat.v1.run.finished.{tenant}
+    description: A run reached a terminal status.
+    parameters:
+      tenant:
+        description: Tenant id (UUID).
+    messages:
+      runFinished:
+        $ref: '#/components/messages/RunFinished'
+  # --- Planned (feature 004) --------------------------------------------------------------------
   connectorEvents:
-    address: df.integration.inbound
+    address: sagat.v1.integration.inbound
     messages:
       externalEvent:
         $ref: '#/components/messages/ExternalEvent'
 operations:
-  publishRunState:
+  publishTaskReady:
     action: send
-    channel: {$ref: '#/channels/runEvents'}
-    messages: [{$ref: '#/channels/runEvents/messages/runStateChanged'}]
-  consumeTasks:
-    action: receive
     channel: {$ref: '#/channels/taskReady'}
-    messages: [{$ref: '#/channels/taskReady/messages/taskDispatched'}]
+    messages: [{$ref: '#/channels/taskReady/messages/taskReady'}]
+  publishRunFinished:
+    action: send
+    channel: {$ref: '#/channels/runFinished'}
+    messages: [{$ref: '#/channels/runFinished/messages/runFinished'}]
   receiveIntegration:
     action: receive
     channel: {$ref: '#/channels/connectorEvents'}
     messages: [{$ref: '#/channels/connectorEvents/messages/externalEvent'}]
 components:
   messages:
-    RunStateChanged:
-      name: RunStateChanged
+    TaskReady:
+      name: TaskReady
       contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
       payload:
         type: object
-        required: [eventId, tenantId, runId, seq, status]
+        required: [tenantId, namespaceId, runId, node, activity]
         properties:
-          eventId: {type: string}
-          tenantId: {type: string}
-          runId: {type: string}
-          seq: {type: integer}
-          status: {type: string}
-          traceparent: {type: string}
-    TaskDispatched:
-      name: TaskDispatched
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          node: {type: string}
+          activity: {type: string}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+    RunFinished:
+      name: RunFinished
       contentType: application/json
+      headers:
+        type: object
+        properties:
+          Nats-Msg-Id: {type: string, description: 'The outbox row id; stable across redeliveries.'}
       payload:
         type: object
-        required: [taskId, tenantId, stepId, generation, capability]
+        required: [tenantId, namespaceId, runId, status]
         properties:
-          taskId: {type: string}
-          tenantId: {type: string}
-          stepId: {type: string}
-          generation: {type: integer}
-          capability: {type: string}
-          traceparent: {type: string}
+          tenantId: {type: string, format: uuid}
+          namespaceId: {type: string, format: uuid}
+          runId: {type: string, format: uuid}
+          status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]}
     ExternalEvent:
       name: ExternalEvent
       contentType: application/json

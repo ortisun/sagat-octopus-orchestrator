@@ -171,9 +171,11 @@ fn known(event_type: &str) -> &'static str {
     }
 }
 
-/// `sagat.v1.<event type>.<tenant>`: bounded by tenants and event types, not by runs. Every token
-/// is checked, because a subject is a wildcard-bearing pattern language and a message must never
-/// be able to address a subject outside its own tenant.
+/// `sagat.v1.<event type>.<tenant>[.<routing key>]`: bounded by tenants, event types and the
+/// activities a tenant declares, never by runs. Every token is checked, because a subject is a
+/// wildcard-bearing pattern language and a message must never be able to address a subject outside
+/// its own tenant; the routing key (an activity name) is mapped onto the characters a subject token
+/// may safely use.
 fn subject_of(message: &OutboxMessage) -> Result<String, PublishError> {
     let valid =
         |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-');
@@ -187,11 +189,45 @@ fn subject_of(message: &OutboxMessage) -> Result<String, PublishError> {
             "the event type is not a valid subject",
         ));
     }
-    Ok(format!(
-        "sagat.v1.{}.{}",
-        message.event_type, message.tenant_id
-    ))
+    let mut subject = format!("sagat.v1.{}.{}", message.event_type, message.tenant_id);
+    if let Some(key) = &message.routing_key {
+        subject.push('.');
+        subject.push_str(&routing_tokens(key)?);
+    }
+    Ok(subject)
 }
+
+/// Dot-separated tokens of `[A-Za-z0-9_-]`; anything else, and an empty token, becomes `_`. Two keys
+/// that differ only in such characters share a subject, which is harmless for a hint (the payload
+/// names the exact activity).
+fn routing_tokens(key: &str) -> Result<String, PublishError> {
+    if key.is_empty() || key.len() > MAX_ROUTING_KEY {
+        return Err(PublishError::Rejected(
+            "the routing key is not usable in a subject",
+        ));
+    }
+    let safe = |c: char| {
+        if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
+            c
+        } else {
+            '_'
+        }
+    };
+    Ok(key
+        .split('.')
+        .map(|token| {
+            if token.is_empty() {
+                "_".to_owned()
+            } else {
+                token.chars().map(safe).collect()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("."))
+}
+
+/// A NATS subject may be long, but a hint's routing key is an activity name (at most this).
+const MAX_ROUTING_KEY: usize = 128;
 
 #[cfg(test)]
 mod tests {
@@ -206,6 +242,7 @@ mod tests {
             tenant_id: TenantId::generate(),
             aggregate_id: Uuid::nil(),
             event_type: event_type.to_owned(),
+            routing_key: None,
             payload: Vec::new(),
             attempt_count: 1,
             created_at: OffsetDateTime::UNIX_EPOCH,
@@ -298,6 +335,48 @@ mod tests {
             subject_of(&m).expect("valid"),
             format!("sagat.v1.task.ready.{}", m.tenant_id)
         );
+    }
+
+    #[test]
+    fn a_routing_key_narrows_the_subject_and_can_never_widen_or_split_it() {
+        let m = message("task.ready");
+        let with_key = |key: &str| {
+            let mut keyed = m.clone();
+            keyed.routing_key = Some(key.to_owned());
+            subject_of(&keyed)
+        };
+        let base = format!("sagat.v1.task.ready.{}", m.tenant_id);
+        let suffix = |key: &str| {
+            with_key(key)
+                .expect("usable")
+                .strip_prefix(&format!("{base}."))
+                .expect("under the tenant subject")
+                .to_owned()
+        };
+        assert_eq!(suffix("payments.charge"), "payments.charge");
+        assert_eq!(suffix("Payments:Charge"), "Payments_Charge");
+        // Wildcards, separators and odd characters can only become underscores, never new tokens
+        // beyond the dots the name has.
+        assert_eq!(suffix("a*b"), "a_b");
+        assert_eq!(suffix("a>"), "a_");
+        assert_eq!(suffix("a b/c\nd"), "a_b_c_d");
+        assert_eq!(suffix("a..b"), "a._.b");
+        assert_eq!(suffix("a."), "a._");
+        assert_eq!(suffix("ü"), "_");
+        assert!(with_key("").is_err());
+        assert!(with_key(&"a".repeat(129)).is_err());
+        // However hostile the key, the subject stays under the tenant's.
+        for hostile in ["*", ">", "..", "x.>", "$JS.API", "_INBOX.x"] {
+            let subject = with_key(hostile).expect("sanitised");
+            assert!(
+                subject.starts_with(&format!("{base}.")),
+                "{hostile}: {subject}"
+            );
+            assert!(
+                !subject.contains(['*', '>', ' ', '$']),
+                "{hostile}: {subject}"
+            );
+        }
     }
 
     #[test]

@@ -200,6 +200,9 @@ CREATE TABLE event_outbox (
     tenant_id       uuid        NOT NULL REFERENCES tenants (id),
     aggregate_id    uuid        NOT NULL,
     event_type      text        NOT NULL,
+    -- Narrows the broker subject (the activity of a `task.ready` hint); NULL when the event type
+    -- and the tenant are enough.
+    routing_key     text,
     payload         jsonb       NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
     next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
