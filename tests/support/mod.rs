@@ -10,6 +10,9 @@
 //! test databases are then left behind for inspection.
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
+pub mod api;
+pub mod oidc;
+
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use sagat_domain::identity::{Membership, Principal, Slug, Subject, Tenant, TenantId};

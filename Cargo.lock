@@ -2197,6 +2197,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -2432,9 +2434,17 @@ dependencies = [
 name = "sagat-tests"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "jsonwebtoken",
+ "p256",
+ "reqwest",
+ "sagat-api-http",
  "sagat-application",
  "sagat-domain",
  "sagat-infra-postgres",
+ "sagat-telemetry",
+ "serde_json",
  "sqlx",
  "testcontainers-modules",
  "time",
