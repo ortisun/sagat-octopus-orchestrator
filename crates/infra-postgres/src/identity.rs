@@ -410,11 +410,25 @@ impl IdentityStore for PgIdentityStore {
     }
 
     async fn ping(&self) -> Result<(), StoreError> {
-        sqlx::query("SELECT 1")
-            .execute(&self.pool)
-            .await
-            .map_err(store_error)?;
-        Ok(())
+        // Readiness means "can do this process's work", not merely "the server answers": every
+        // table it reads or writes must exist, so an instance pointed at an unmigrated database is
+        // never sent traffic and becomes ready on its own once the migration has run.
+        let missing: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM unnest(ARRAY['tenants', 'memberships', 'workspaces', 'namespaces', 'audit_records']) AS t(name) \
+             WHERE to_regclass('public.' || t.name) IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        if missing == 0 {
+            Ok(())
+        } else {
+            Err(StoreError::Unavailable {
+                detail: format!(
+                    "the database schema has not been migrated ({missing} tables missing)"
+                ),
+            })
+        }
     }
 }
 
