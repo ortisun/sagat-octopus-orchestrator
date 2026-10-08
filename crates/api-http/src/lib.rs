@@ -22,8 +22,10 @@ mod dto;
 pub mod error;
 mod extract;
 mod routes;
+mod server;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
+pub use server::{ServerConfig, serve};
 
 /// Shared handler state. Cloning is cheap (two `Arc`s).
 pub struct AppState<S, C> {

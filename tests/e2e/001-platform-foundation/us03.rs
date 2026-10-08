@@ -39,6 +39,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         auth,
         limits: HttpLimits::default(),
+        server: sagat_api_http::ServerConfig::default(),
         migrate_on_start: false,
     }
 }

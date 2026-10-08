@@ -107,6 +107,10 @@ fn serve_defaults_bind_to_loopback_and_keep_the_secure_options() {
     );
     assert_eq!(serve.auth.tenant_claim, "tenant");
     assert!(serve.limits.max_body_bytes > 0 && serve.limits.request_timeout > Duration::ZERO);
+    // Slow-client protection is on by default, with finite values.
+    assert_eq!(serve.server.header_read_timeout, Duration::from_secs(10));
+    assert_eq!(serve.server.max_connections, 1024);
+    assert_eq!(serve.server.shutdown_grace, Duration::from_secs(30));
 }
 
 #[test]
@@ -119,6 +123,9 @@ fn serve_options_can_be_overridden() {
         ("SAGAT_MIGRATE_ON_START", "1"),
         ("SAGAT_MAX_BODY_BYTES", "1024"),
         ("SAGAT_REQUEST_TIMEOUT_SECS", "3"),
+        ("SAGAT_HEADER_READ_TIMEOUT_SECS", "4"),
+        ("SAGAT_MAX_CONNECTIONS", "50"),
+        ("SAGAT_SHUTDOWN_GRACE_SECS", "7"),
     ]);
     let serve = ServeConfig::from_lookup(&env(&pairs)).expect("serve config");
 
@@ -127,16 +134,22 @@ fn serve_options_can_be_overridden() {
     assert!(serve.auth.allow_insecure_jwks_http && serve.migrate_on_start);
     assert_eq!(serve.limits.max_body_bytes, 1024);
     assert_eq!(serve.limits.request_timeout, Duration::from_secs(3));
+    assert_eq!(serve.server.header_read_timeout, Duration::from_secs(4));
+    assert_eq!(serve.server.max_connections, 50);
+    assert_eq!(serve.server.shutdown_grace, Duration::from_secs(7));
 }
 
 #[test]
 fn nonsense_serve_values_are_rejected() {
-    let bad: [(&str, &str); 5] = [
+    let bad: [(&str, &str); 8] = [
         ("SAGAT_BIND_ADDR", "everywhere"),
         ("SAGAT_ALLOW_INSECURE_JWKS_HTTP", "maybe"),
         ("SAGAT_MAX_BODY_BYTES", "0"),
         ("SAGAT_REQUEST_TIMEOUT_SECS", "0"),
         ("SAGAT_REQUEST_TIMEOUT_SECS", "-1"),
+        ("SAGAT_HEADER_READ_TIMEOUT_SECS", "0"),
+        ("SAGAT_MAX_CONNECTIONS", "0"),
+        ("SAGAT_SHUTDOWN_GRACE_SECS", "0"),
     ];
     for (name, value) in bad {
         let mut pairs = OIDC.to_vec();

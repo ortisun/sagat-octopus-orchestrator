@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sagat_api_http::{AuthConfig, HttpLimits};
+use sagat_api_http::{AuthConfig, HttpLimits, ServerConfig};
 use sagat_telemetry::LogFormat;
 
 /// Where the process runs. Anything that could damage real data is gated on this; the default is
@@ -145,6 +145,8 @@ pub struct ServeConfig {
     pub bind_addr: SocketAddr,
     pub auth: AuthConfig,
     pub limits: HttpLimits,
+    /// Connection-level protections (slow clients, connection cap, shutdown grace).
+    pub server: ServerConfig,
     /// Apply pending migrations before listening. Off by default: production runs them as a
     /// separate, privileged step (`control-plane migrate`).
     pub migrate_on_start: bool,
@@ -181,6 +183,34 @@ impl ServeConfig {
                 reason: "must be greater than zero".to_owned(),
             });
         }
+        let server_defaults = ServerConfig::default();
+        let header_secs: u64 = optional(
+            get,
+            "SAGAT_HEADER_READ_TIMEOUT_SECS",
+            server_defaults.header_read_timeout.as_secs(),
+        )?;
+        let max_connections: usize = optional(
+            get,
+            "SAGAT_MAX_CONNECTIONS",
+            server_defaults.max_connections,
+        )?;
+        let grace_secs: u64 = optional(
+            get,
+            "SAGAT_SHUTDOWN_GRACE_SECS",
+            server_defaults.shutdown_grace.as_secs(),
+        )?;
+        for (name, value) in [
+            ("SAGAT_HEADER_READ_TIMEOUT_SECS", header_secs),
+            ("SAGAT_SHUTDOWN_GRACE_SECS", grace_secs),
+            ("SAGAT_MAX_CONNECTIONS", max_connections as u64),
+        ] {
+            if value == 0 {
+                return Err(ConfigError::Invalid {
+                    name,
+                    reason: "must be greater than zero".to_owned(),
+                });
+            }
+        }
         Ok(Self {
             bind_addr: optional(
                 get,
@@ -191,6 +221,11 @@ impl ServeConfig {
             limits: HttpLimits {
                 max_body_bytes,
                 request_timeout: Duration::from_secs(timeout_secs),
+            },
+            server: ServerConfig {
+                header_read_timeout: Duration::from_secs(header_secs),
+                max_connections,
+                shutdown_grace: Duration::from_secs(grace_secs),
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
         })

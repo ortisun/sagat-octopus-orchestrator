@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use reqwest::{Client, Method, RequestBuilder, Response};
 use sagat_api_http::{
-    AppState, AuthConfig, HttpJwksFetcher, HttpLimits, TokenVerifier,
+    AppState, AuthConfig, HttpJwksFetcher, HttpLimits, ServerConfig, TokenVerifier,
     auth::install_crypto_provider, router,
 };
 use sagat_application::clock::SystemClock;
@@ -34,6 +34,8 @@ pub struct Options {
     pub limits: HttpLimits,
     /// Server-side cap per statement for the API's database pool.
     pub statement_timeout: Duration,
+    /// Connection-level limits of the HTTP server.
+    pub server: ServerConfig,
 }
 
 impl Default for Options {
@@ -42,6 +44,7 @@ impl Default for Options {
             auth: Box::new(|_| {}),
             limits: HttpLimits::default(),
             statement_timeout: Duration::from_secs(2),
+            server: ServerConfig::default(),
         }
     }
 }
@@ -74,8 +77,9 @@ pub async fn start_with(options: Options) -> TestApi {
         .await
         .expect("bind api");
     let addr = listener.local_addr().expect("addr");
+    let server = options.server;
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = sagat_api_http::serve(listener, app, server, std::future::pending()).await;
     });
 
     let client = Client::builder()

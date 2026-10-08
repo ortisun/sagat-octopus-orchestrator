@@ -152,9 +152,7 @@ pub async fn serve(
         jwks_uri = %serve.auth.jwks_uri,
         "control plane listening"
     );
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    sagat_api_http::serve(listener, app, serve.server, shutdown).await?;
     tracing::info!("control plane stopped");
     pool.close().await;
     Ok(())
