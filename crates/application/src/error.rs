@@ -2,12 +2,16 @@
 
 use sagat_domain::identity::{IdentityError, Permission};
 
+use crate::definitions::IrError;
+
 /// Which uniqueness rule a conflict refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictKind {
     TenantSlug,
     WorkspaceSlug,
     NamespaceSlug,
+    /// A workflow with that name already exists in the namespace.
+    WorkflowName,
 }
 
 /// Failure reported by a storage adapter. `detail` is for logs only and must never be returned to
@@ -18,6 +22,12 @@ pub enum StoreError {
     Conflict(ConflictKind),
     #[error("referenced row does not exist")]
     MissingReference,
+    /// The draft was changed since the caller read it; `current` is the revision now stored.
+    #[error("revision conflict (current: {current})")]
+    RevisionConflict { current: u64 },
+    /// The `Idempotency-Key` was already used for a different request.
+    #[error("idempotency key reused for a different request")]
+    IdempotencyKeyReused,
     #[error("storage unavailable: {detail}")]
     Unavailable { detail: String },
     #[error("storage failure: {detail}")]
@@ -38,6 +48,18 @@ pub enum AppError {
     NotFound,
     #[error("resource already exists")]
     Conflict(ConflictKind),
+    /// Someone else changed the draft first; the caller should re-read and retry.
+    #[error("the draft changed (current revision {current})")]
+    RevisionConflict { current: u64 },
+    /// The same `Idempotency-Key` was sent with a different request.
+    #[error("idempotency key reused for a different request")]
+    IdempotencyKeyReused,
+    /// The workflow document is not publishable. The issues name paths and nodes, never payloads.
+    #[error("invalid workflow definition: {0}")]
+    InvalidDefinition(Box<IrError>),
+    /// A well-formed request that the current state of the resource cannot accept.
+    #[error("operation not allowed: {0}")]
+    NotAllowed(&'static str),
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),
@@ -72,6 +94,8 @@ impl From<StoreError> for AppError {
         match err {
             StoreError::Conflict(kind) => Self::Conflict(kind),
             StoreError::MissingReference => Self::NotFound,
+            StoreError::RevisionConflict { current } => Self::RevisionConflict { current },
+            StoreError::IdempotencyKeyReused => Self::IdempotencyKeyReused,
             StoreError::Unavailable { .. } => Self::Unavailable,
             StoreError::Internal { .. } => Self::Internal,
         }
