@@ -85,7 +85,8 @@ ENVIRONMENT (serve):
     SAGAT_SUBJECT_RATE_LIMIT_RPS      per-subject req/s, charged before any DB lookup, >= 0.001 [20]
     SAGAT_SUBJECT_RATE_LIMIT_BURST    per-subject burst, >= 1         [40]
     SAGAT_ADMIN_ADDR                  /metrics listener, or 'off'     [127.0.0.1:9090]
-    SAGAT_OIDC_REQUIRED_TYP           required JOSE typ, e.g. at+jwt  [unset]
+    SAGAT_OIDC_REQUIRED_TYP           required JOSE typ; at+jwt and application/at+jwt are the
+                                      same type, case-insensitive, whitespace trimmed [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
 
 ENVIRONMENT (seed-dev):

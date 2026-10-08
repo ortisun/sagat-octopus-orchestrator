@@ -130,7 +130,14 @@ impl TokenVerifier {
             cache: JwksCache::new(fetcher, config),
             base,
             issuer: config.issuer.clone(),
-            required_typ: config.required_token_type.clone(),
+            // Trimmed because the value usually comes from a mounted file that ends in a newline;
+            // normalised so the comparison is between media types, not between spellings.
+            required_typ: config
+                .required_token_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(media_type),
             tenant_claim: config.tenant_claim.clone(),
             leeway: config.leeway.as_secs(),
             max_lifetime: config.max_token_lifetime.as_secs(),
@@ -157,7 +164,7 @@ impl TokenVerifier {
             let ok = header
                 .typ
                 .as_deref()
-                .is_some_and(|t| t.eq_ignore_ascii_case(required));
+                .is_some_and(|t| media_type(t) == *required);
             if !ok {
                 return Err(AuthError::Invalid(InvalidReason::TokenType));
             }
@@ -226,6 +233,18 @@ impl TokenVerifier {
             .filter(|t| !t.is_empty() && t.len() <= MAX_TENANT_BYTES)
             .map(str::to_owned)
             .ok_or(AuthError::Invalid(InvalidReason::TenantClaim))
+    }
+}
+
+/// The JOSE `typ` as a lowercase media type. RFC 7515 4.1.9: a `typ` without a '/' is read as if
+/// `application/` were prepended, so `at+jwt` and `application/at+jwt` are the same type (and
+/// RFC 9068 expects resource servers to accept both). Media types are case-insensitive.
+fn media_type(typ: &str) -> String {
+    let lower = typ.to_ascii_lowercase();
+    if lower.contains('/') {
+        lower
+    } else {
+        format!("application/{lower}")
     }
 }
 

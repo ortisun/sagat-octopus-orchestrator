@@ -456,3 +456,53 @@ async fn a_required_token_type_keeps_other_kinds_of_token_out() {
     let lenient = verifier(&idp).await;
     assert!(lenient.verify(&plain).await.is_ok());
 }
+
+#[tokio::test]
+async fn the_required_token_type_accepts_both_spellings_of_the_media_type() {
+    // RFC 7515 4.1.9: a recipient treats a `typ` without a '/' as if `application/` were prepended,
+    // and RFC 9068 4 expects resource servers to accept `at+jwt` and `application/at+jwt`.
+    let idp = TestIdp::start().await;
+    for configured in ["at+jwt", "application/at+jwt", "Application/AT+JWT"] {
+        let v = verifier_with(&idp, |c| c.required_token_type = Some(configured.into())).await;
+        for presented in [
+            "at+jwt",
+            "application/at+jwt",
+            "AT+JWT",
+            "Application/At+Jwt",
+        ] {
+            let token = idp.token("alice", "acme").typ(Some(presented)).build();
+            assert!(
+                v.verify(&token).await.is_ok(),
+                "configured {configured:?}, presented {presented:?}"
+            );
+        }
+        // Anything that is not that media type stays out.
+        for presented in [
+            "JWT",
+            "application/jwt",
+            "at+jwt+x",
+            "xat+jwt",
+            "text/at+jwt",
+            "application/at+jwt ",
+            "",
+        ] {
+            let token = idp.token("alice", "acme").typ(Some(presented)).build();
+            assert_eq!(
+                v.verify(&token).await,
+                invalid(InvalidReason::TokenType),
+                "configured {configured:?}, presented {presented:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn whitespace_around_the_configured_token_type_is_ignored() {
+    // A secret mounted from a file usually ends with a newline; that used to reject every token.
+    let idp = TestIdp::start().await;
+    let v = verifier_with(&idp, |c| c.required_token_type = Some("  at+jwt\n".into())).await;
+
+    let token = idp.token("alice", "acme").typ(Some("at+jwt")).build();
+
+    assert!(v.verify(&token).await.is_ok());
+}

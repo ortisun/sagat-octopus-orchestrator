@@ -390,6 +390,27 @@ fn rate_limit_values_that_would_break_the_limiter_name_their_variable() {
 }
 
 #[test]
+fn the_required_token_type_is_trimmed_like_every_other_setting() {
+    // A value mounted from a file ends in a newline; with the newline kept, no token ever matched.
+    for (raw, expected) in [
+        ("at+jwt\n", Some("at+jwt")),
+        ("  application/at+jwt \r\n", Some("application/at+jwt")),
+        ("at+jwt", Some("at+jwt")),
+        ("   \n", None),
+        ("", None),
+    ] {
+        let mut pairs = OIDC.to_vec();
+        pairs.push(("SAGAT_OIDC_REQUIRED_TYP", raw));
+        let serve = ServeConfig::from_lookup(&env(&pairs)).expect("serve config");
+        assert_eq!(
+            serve.auth.required_token_type.as_deref(),
+            expected,
+            "{raw:?}"
+        );
+    }
+}
+
+#[test]
 fn slow_client_protection_has_finite_defaults() {
     let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
 

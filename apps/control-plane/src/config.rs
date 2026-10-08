@@ -219,7 +219,9 @@ impl ServeConfig {
         );
         auth.tenant_claim = optional(get, "SAGAT_OIDC_TENANT_CLAIM", auth.tenant_claim)?;
         auth.allow_insecure_jwks_http = flag(get, "SAGAT_ALLOW_INSECURE_JWKS_HTTP")?;
-        auth.required_token_type = get("SAGAT_OIDC_REQUIRED_TYP").filter(|v| !v.trim().is_empty());
+        auth.required_token_type = get("SAGAT_OIDC_REQUIRED_TYP")
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty());
 
         let defaults = HttpLimits::default();
         let max_body_bytes: usize = optional(get, "SAGAT_MAX_BODY_BYTES", defaults.max_body_bytes)?;
