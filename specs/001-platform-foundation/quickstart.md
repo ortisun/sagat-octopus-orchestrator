@@ -117,7 +117,7 @@ logs, trace ids and Prometheus metrics exist), no development identity provider 
 limits that are per process (G13; a shared limiter is feature 010). Access-token `typ` enforcement
 is available but off by default (G14). Operations: [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md).
 
-## Security review evidence (T001-034, partial)
+## Security review evidence (T001-034)
 
 An independent, read-only review of the 001 code (authentication, tenant isolation, SQL, error
 handling, the process, the container and CI) found no authentication bypass and no cross-tenant read
@@ -167,3 +167,13 @@ of each fix records it). "Report #" is the numbering of the review.
 Also changed: the two wall-clock assertions in `apps/control-plane/tests/cli.rs` (2 s) flaked under
 CPU load; exit code 2 without `database error` already proves that no connection was attempted, so
 the bound is now 10 s and only catches a hang.
+
+Result on the branch that closed this pass (macOS, Docker Desktop, PostgreSQL 16 through
+Testcontainers, 2026-10-08): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--locked -- -D warnings` and `python3 scripts/check-architecture.py` exit 0, and `cargo test
+--workspace --locked --no-fail-fast` passes 268 tests with 0 failures and 1 ignored (the benchmark).
+Three fault tests had timing-dependent results on a loaded machine (one of them, the tenant
+boundary flood, also on the code before this pass: 600 simultaneous connects overflow the macOS
+accept queue) and were made deterministic without weakening what they prove; the commit
+`test(fault): remove three sources of flakiness` explains each. Not run from this branch: the CI
+jobs themselves, `scripts/smoke-compose.sh` (the Docker image build) and `cargo audit`.

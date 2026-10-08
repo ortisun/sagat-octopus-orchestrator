@@ -90,6 +90,27 @@ logs for that value to follow one request.
 | Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate` and `provision-tenant` only. Do not grant the runtime role more to make this go away |
 | Process exits with code 2 and `the audit trail does not exist yet ... run control-plane migrate` | `serve` started before the migrations (outside dev the privileges cannot be verified without the table) | Run `migrate` with the owner role first; start the API afterwards (let the orchestrator restart it) |
 
+### Limits and the settings behind them
+
+All of these are **per process**: with several instances each applies its own limit (research G13).
+Defaults are safe; `control-plane --help` lists every setting.
+
+| Protection | Setting (default) | Over the limit |
+|---|---|---|
+| Request budget per verified token subject, charged before any database lookup | `SAGAT_SUBJECT_RATE_LIMIT_RPS` (20) and `_BURST` (40) | `429 RATE_LIMITED` with `Retry-After` |
+| Request budget per tenant, charged after authentication | `SAGAT_RATE_LIMIT_RPS` (100) and `_BURST` (200) | `429 RATE_LIMITED` with `Retry-After` |
+| Both budgets accept a rate of at least 0.001 and a burst of at least 1 | - | The process refuses to start (exit code 2, names the variable) |
+| Requests of one tenant in flight | `SAGAT_MAX_IN_FLIGHT_PER_TENANT` (a quarter of `SAGAT_MAX_IN_FLIGHT`, at least 1) | `429` at once, `http_tenant_concurrency_rejected_total` |
+| Requests in flight, all tenants (probes exempt) | `SAGAT_MAX_IN_FLIGHT` (512) | `503` at once with `Retry-After` of 3 to 8 s, `http_load_shed_total` |
+| Wait for the next piece of a request body | `SAGAT_BODY_IDLE_TIMEOUT_SECS` (5) | `408` |
+| Total time of one request | `SAGAT_REQUEST_TIMEOUT_SECS` (15) | `408` |
+| Request body size | `SAGAT_MAX_BODY_BYTES` (65536) | `413` |
+| Time to send a request head, idle keep-alive | `SAGAT_HEADER_READ_TIMEOUT_SECS` (10) | Connection closed |
+| Simultaneous connections | `SAGAT_MAX_CONNECTIONS` (1024) | New connections wait in the kernel backlog |
+
+The limiter tables are bounded (100 000 keys each). If a table is ever full, keys that are not yet
+tracked share one overflow bucket, so they are throttled together; this is silent today (no metric).
+
 ## 5. Metrics
 
 Scrape `http://<admin-addr>/metrics` (Prometheus text format). Labels are route **templates**,
