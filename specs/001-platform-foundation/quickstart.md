@@ -22,6 +22,7 @@ cargo test --workspace --locked                      # unit, contract, integrati
 python3 scripts/check-architecture.py                # layering and domain-purity rules
 python3 -m unittest discover -s scripts/tests        # tests of that checker
 npx --yes @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml
+cargo install cargo-audit --locked && cargo audit --deny warnings   # dependency advisories
 ```
 
 Each user story has its own file (`tests/e2e/001-platform-foundation/us01.rs` … `us04.rs`); the
@@ -96,4 +97,5 @@ every request, so removing one takes effect immediately.
 
 Recorded in [`research.md`](./research.md): no token revocation list (G7), create operations are not
 idempotent through `Idempotency-Key` (G8), `403`s are not audited (G9), no OTLP export or metrics
-(G6), and no development identity provider (G10).
+(G6), no development identity provider (G10), no rate limiting or per-tenant fairness (G13) and no
+access-token `typ` enforcement (G14).
