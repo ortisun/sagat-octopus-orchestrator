@@ -1,0 +1,422 @@
+//! US03 — Bring up a complete local environment (FR-001-004, FR-001-005).
+//!
+//! Given the repository and its prerequisites, when the developer migrates, seeds and starts the
+//! control plane, then the API and PostgreSQL are healthy and migrations are idempotent.
+//!
+//! These tests run the same code paths as the `control-plane` executable (`run_migrations`,
+//! `seed_dev`, `serve`) against a real PostgreSQL. The container composition itself
+//! (`infra/docker/compose.yaml`) is verified by the procedure in `quickstart.md`.
+
+use std::time::Duration;
+
+use reqwest::Client;
+use sagat_api_http::{AuthConfig, HttpLimits};
+use sagat_control_plane::config::{Config, DatabaseConfig, Environment, SeedConfig, ServeConfig};
+use sagat_control_plane::{RunError, SeedOutcome, healthcheck, run_migrations, seed_dev, serve};
+use sagat_telemetry::LogFormat;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+
+use crate::support::oidc::{AUDIENCE, ISSUER, TestIdp};
+use crate::support::{TestDb, fresh_db, migrated_db};
+
+fn config(db: &TestDb, environment: Environment) -> Config {
+    Config {
+        environment,
+        log_format: LogFormat::Json,
+        database: DatabaseConfig {
+            url: db.url.clone(),
+            max_connections: 5,
+            statement_timeout: Duration::from_secs(3),
+        },
+    }
+}
+
+fn serve_config(jwks_uri: &str) -> ServeConfig {
+    let mut auth = AuthConfig::new(ISSUER, AUDIENCE, jwks_uri);
+    auth.allow_insecure_jwks_http = true;
+    ServeConfig {
+        bind_addr: "127.0.0.1:0".parse().expect("addr"),
+        auth,
+        limits: HttpLimits::default(),
+        migrate_on_start: false,
+    }
+}
+
+/// A running control plane that can be stopped gracefully.
+struct Running {
+    addr: std::net::SocketAddr,
+    stop: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<Result<(), RunError>>,
+}
+
+impl Running {
+    async fn start(config: Config, serve_config: ServeConfig) -> Self {
+        let listener = tokio::net::TcpListener::bind(serve_config.bind_addr)
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (stop, stopped) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            serve(&config, &serve_config, listener, async {
+                let _ = stopped.await;
+            })
+            .await
+        });
+        // Wait until it answers, so tests do not race the start-up.
+        for _ in 0..100 {
+            if healthcheck(&addr.to_string()).await.is_ok() {
+                return Self {
+                    addr,
+                    stop: Some(stop),
+                    handle,
+                };
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the control plane never became healthy");
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://{}/v1{path}", self.addr)
+    }
+
+    async fn stop(mut self) -> Result<(), RunError> {
+        let _ = self.stop.take().expect("not stopped yet").send(());
+        tokio::time::timeout(Duration::from_secs(10), self.handle)
+            .await
+            .expect("graceful shutdown must finish")
+            .expect("task joined")
+    }
+}
+
+async fn applied_migrations(db: &TestDb) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE success")
+        .fetch_one(&db.pool)
+        .await
+        .expect("count")
+}
+
+#[tokio::test]
+async fn migrating_twice_changes_nothing_and_the_api_comes_up_healthy() {
+    // Given an empty database
+    let db = fresh_db().await;
+    let cfg = config(&db, Environment::Dev);
+
+    // When the developer runs the migrations twice (and several runners start at once)
+    run_migrations(&cfg.database).await.expect("first run");
+    let after_first = applied_migrations(&db).await;
+    run_migrations(&cfg.database)
+        .await
+        .expect("second run is a no-op");
+    let concurrent: Vec<_> = (0..4)
+        .map(|_| {
+            let database = cfg.database.clone();
+            tokio::spawn(async move { run_migrations(&database).await })
+        })
+        .collect();
+    for run in concurrent {
+        run.await
+            .expect("join")
+            .expect("concurrent runners succeed");
+    }
+    assert_eq!(
+        applied_migrations(&db).await,
+        after_first,
+        "nothing was applied twice"
+    );
+    assert!(after_first >= 1);
+
+    // And starts the API
+    let api = Running::start(cfg, serve_config("http://127.0.0.1:1/jwks.json")).await;
+    let client = Client::new();
+
+    // Then the API and PostgreSQL report healthy
+    let health = client.get(api.url("/health")).send().await.expect("send");
+    assert_eq!(health.status(), 200);
+    let ready = client.get(api.url("/ready")).send().await.expect("send");
+    assert_eq!(ready.status(), 200, "readiness includes the database");
+    assert!(
+        healthcheck(&api.addr.to_string()).await.is_ok(),
+        "the container probe agrees"
+    );
+
+    api.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test]
+async fn the_development_seed_yields_a_tenant_that_can_really_sign_in_and_is_idempotent() {
+    let db = migrated_db().await;
+    let cfg = config(&db, Environment::Dev);
+    let seed = SeedConfig {
+        tenant_slug: "dev".into(),
+        admin_subject: "dev-admin".into(),
+    };
+
+    assert_eq!(
+        seed_dev(&cfg, &seed).await.expect("first seed"),
+        SeedOutcome::Created
+    );
+    assert_eq!(
+        seed_dev(&cfg, &seed).await.expect("second seed"),
+        SeedOutcome::AlreadyPresent
+    );
+
+    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM tenants")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+    let admins: Vec<(String, String)> = sqlx::query_as("SELECT subject, role FROM memberships")
+        .fetch_all(&db.pool)
+        .await
+        .expect("rows");
+    assert_eq!(tenants, 1);
+    assert_eq!(admins, vec![("dev-admin".to_owned(), "admin".to_owned())]);
+
+    // The seeded administrator can authenticate against the running API with a real token.
+    let idp = TestIdp::start().await;
+    let api = Running::start(cfg, serve_config(&idp.jwks_url())).await;
+    let response = Client::new()
+        .get(api.url("/auth/context"))
+        .bearer_auth(idp.token("dev-admin", "dev").build())
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.expect("json");
+    assert_eq!(
+        (body["tenant"].as_str(), body["role"].as_str()),
+        (Some("dev"), Some("admin"))
+    );
+    api.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test]
+async fn the_seed_is_refused_outside_development_and_leaves_the_database_untouched() {
+    let db = migrated_db().await;
+    let seed = SeedConfig {
+        tenant_slug: "dev".into(),
+        admin_subject: "dev-admin".into(),
+    };
+
+    for environment in [Environment::Prod, Environment::Staging] {
+        let result = seed_dev(&config(&db, environment), &seed).await;
+        assert!(
+            matches!(result, Err(RunError::Refused(_))),
+            "{environment:?}: {result:?}"
+        );
+    }
+
+    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM tenants")
+        .fetch_one(&db.pool)
+        .await
+        .expect("n");
+    assert_eq!(tenants, 0, "no data was written");
+}
+
+#[tokio::test]
+async fn an_invalid_seed_identity_is_a_configuration_error() {
+    let db = migrated_db().await;
+    let cfg = config(&db, Environment::Dev);
+    let bad_slug = SeedConfig {
+        tenant_slug: "NOT A SLUG".into(),
+        admin_subject: "dev-admin".into(),
+    };
+    let bad_subject = SeedConfig {
+        tenant_slug: "dev".into(),
+        admin_subject: String::new(),
+    };
+
+    for seed in [bad_slug, bad_subject] {
+        let error = seed_dev(&cfg, &seed).await.expect_err("invalid");
+        assert!(matches!(error, RunError::Config(_)), "{error:?}");
+        assert_eq!(error.exit_code(), 2);
+    }
+}
+
+#[tokio::test]
+async fn migrating_on_start_prepares_an_empty_database_before_listening() {
+    let db = fresh_db().await; // no schema at all
+    let mut serve_cfg = serve_config("http://127.0.0.1:1/jwks.json");
+    serve_cfg.migrate_on_start = true;
+
+    let api = Running::start(config(&db, Environment::Dev), serve_cfg).await;
+
+    let ready = Client::new()
+        .get(api.url("/ready"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(
+        ready.status(),
+        200,
+        "the schema existed before the first request"
+    );
+    api.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test]
+async fn a_bad_setup_stops_the_process_before_it_listens() {
+    let db = migrated_db().await;
+
+    // An http JWKS URL without the explicit development opt-in.
+    let mut insecure = serve_config("http://idp.example.test/jwks.json");
+    insecure.auth.allow_insecure_jwks_http = false;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let error = serve(
+        &config(&db, Environment::Prod),
+        &insecure,
+        listener,
+        std::future::pending(),
+    )
+    .await
+    .expect_err("insecure JWKS URL");
+    assert!(matches!(error, RunError::Auth(_)), "{error:?}");
+    assert_eq!(error.exit_code(), 2);
+
+    // A database that is not there.
+    let mut unreachable = config(&db, Environment::Prod);
+    unreachable.database.url = "postgres://nobody:none@127.0.0.1:1/missing".into();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let error = serve(
+        &unreachable,
+        &serve_config("http://127.0.0.1:1/j"),
+        listener,
+        std::future::pending(),
+    )
+    .await
+    .expect_err("unreachable database");
+    assert!(matches!(error, RunError::Database(_)), "{error:?}");
+    assert!(
+        !error.to_string().contains("none"),
+        "credentials must not leak: {error}"
+    );
+}
+
+#[tokio::test]
+async fn migrations_are_not_subject_to_the_statement_timeout_that_protects_normal_traffic() {
+    // A legitimate DDL statement can outlast the per-statement limit used for requests.
+    let db = fresh_db().await;
+    let mut cfg = config(&db, Environment::Dev);
+    cfg.database.statement_timeout = Duration::from_millis(1);
+
+    run_migrations(&cfg.database)
+        .await
+        .expect("migrations ignore the request statement timeout");
+
+    assert!(applied_migrations(&db).await >= 1);
+}
+
+#[tokio::test]
+async fn shutdown_lets_a_request_that_is_still_waiting_on_the_identity_provider_finish() {
+    // This request holds no database connection, so only the server's own graceful shutdown (not
+    // the pool drain) can keep it alive.
+    let db = migrated_db().await;
+    let idp = TestIdp::start().await;
+    idp.set_mode(crate::support::oidc::Mode::Hang); // key fetch blocks until the client timeout
+    let cfg = config(&db, Environment::Dev);
+    seed_dev(
+        &cfg,
+        &SeedConfig {
+            tenant_slug: "dev".into(),
+            admin_subject: "dev-admin".into(),
+        },
+    )
+    .await
+    .expect("seed");
+    let api = Running::start(cfg, serve_config(&idp.jwks_url())).await;
+    let token = idp.token("dev-admin", "dev").build();
+    let url = api.url("/auth/context");
+    let in_flight = tokio::spawn(async move {
+        Client::new()
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("in-flight request completes")
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let stopping = tokio::spawn(api.stop());
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        !stopping.is_finished(),
+        "shutdown must wait for the request that is still running"
+    );
+
+    let response = in_flight.await.expect("join");
+    assert_eq!(
+        response.status(),
+        503,
+        "it received its real (fail-closed) answer, not a reset"
+    );
+    stopping
+        .await
+        .expect("join")
+        .expect("clean shutdown after draining");
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_database_work_that_is_still_running() {
+    let db = migrated_db().await;
+    let idp = TestIdp::start().await;
+    let cfg = config(&db, Environment::Dev);
+    seed_dev(
+        &cfg,
+        &SeedConfig {
+            tenant_slug: "dev".into(),
+            admin_subject: "dev-admin".into(),
+        },
+    )
+    .await
+    .expect("seed");
+    let api = Running::start(cfg, serve_config(&idp.jwks_url())).await;
+    let token = idp.token("dev-admin", "dev").build();
+
+    // Hold a lock so the next request is blocked in the database when shutdown is requested.
+    let mut blocker = db.pool.acquire().await.expect("conn");
+    sqlx::query("BEGIN")
+        .execute(&mut *blocker)
+        .await
+        .expect("begin");
+    sqlx::query("LOCK TABLE workspaces IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await
+        .expect("lock");
+    let url = api.url("/workspaces");
+    let in_flight = tokio::spawn(async move {
+        Client::new()
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .expect("in-flight request completes")
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let stopping = tokio::spawn(api.stop());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !stopping.is_finished(),
+        "shutdown must wait for the request that is still running"
+    );
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .expect("release");
+
+    let response = in_flight.await.expect("join");
+    assert_eq!(
+        response.status(),
+        200,
+        "the in-flight request got its real answer"
+    );
+    stopping
+        .await
+        .expect("join")
+        .expect("clean shutdown after draining");
+}

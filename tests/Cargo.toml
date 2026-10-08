@@ -19,6 +19,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 reqwest = { workspace = true, features = ["json"] }
 sagat-api-http.workspace = true
 sagat-application.workspace = true
+sagat-control-plane.workspace = true
 sagat-domain.workspace = true
 sagat-infra-postgres.workspace = true
 sagat-telemetry.workspace = true

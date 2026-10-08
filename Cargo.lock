@@ -2457,6 +2457,7 @@ dependencies = [
  "reqwest",
  "sagat-api-http",
  "sagat-application",
+ "sagat-control-plane",
  "sagat-domain",
  "sagat-infra-postgres",
  "sagat-telemetry",
