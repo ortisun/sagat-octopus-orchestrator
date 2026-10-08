@@ -4,12 +4,12 @@
 **Format:** `[ID] [P?] [US?] Description with exact paths`. Run each phase's gates sequentially.
 
 ## Phase 1: Setup / contracts
-- [ ] T001-001 Check FR-001-001..FR-001-007, SCs and ADRs; record gaps in `specs/001-platform-foundation/research.md`.
+- [x] T001-001 Check FR-001-001..FR-001-007, SCs and ADRs; record gaps in `specs/001-platform-foundation/research.md`.
 - [ ] T001-002 [P] Define fixtures and contract validation in `tests/contract/001-platform-foundation/fixtures/`.
-- [ ] T001-003 [P] Document types, transitions and invariants in `specs/001-platform-foundation/data-model.md`.
+- [x] T001-003 [P] Document types, transitions and invariants in `specs/001-platform-foundation/data-model.md`.
 
 ## Phase 2: Foundation
-- [ ] T001-004 Create the necessary domain contracts/interfaces in `crates/domain/src/identity.rs` and invariant tests.
+- [x] T001-004 Create the necessary domain contracts/interfaces in `crates/domain/src/identity.rs` and invariant tests.
 - [ ] T001-005 Implement ports/use cases in the appropriate module based on `specs/001-platform-foundation/plan.md`.
 - [ ] T001-006 Write additive migrations and rollback/forward tests in `crates/infra-postgres/migrations/`.
 - [ ] T001-007 Create PostgreSQL integration and tenant isolation tests in `tests/integration/001-platform-foundation/`.
@@ -17,7 +17,7 @@
 ## Phase 3: US01 — Create a workspace and namespace (P1)
 **Independent test:** Given an authenticated administrator; When they create a workspace and dev namespace; Then the workspace is persisted, and the scope appears in the API/Studio.
 - [ ] T001-008 [P] [US01] Write a Given/When/Then test to create a workspace and namespace in `tests/e2e/001-platform-foundation/us01.rs`.
-- [ ] T001-009 [US01] Implement the domain path and error handling to create a workspace and namespace in `crates/domain/src/identity.rs`.
+- [x] T001-009 [US01] Implement the domain path and error handling to create a workspace and namespace in `crates/domain/src/identity.rs`.
 - [ ] T001-010 [US01] Integrate adapters and persistence for the US01 scenario in `crates/application/` and `crates/infra-postgres/`.
 - [ ] T001-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to the US01 scenario in `crates/telemetry/`.
 - [ ] T001-012 [US01] Run and document tests for duplicates, timeout, worker failure and tenant boundary for US01 in `tests/fault/001-platform-foundation/`.
