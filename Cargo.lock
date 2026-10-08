@@ -2904,6 +2904,7 @@ dependencies = [
  "tokio",
  "tower-http 0.7.1",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2928,6 +2929,7 @@ dependencies = [
  "sagat-api-http",
  "sagat-application",
  "sagat-domain",
+ "sagat-infra-ir",
  "sagat-infra-postgres",
  "sagat-telemetry",
  "thiserror",

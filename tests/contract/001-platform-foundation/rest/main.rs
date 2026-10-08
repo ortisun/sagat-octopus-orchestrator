@@ -6,4 +6,3 @@
 mod support;
 
 mod conformance;
-mod spec;

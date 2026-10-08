@@ -9,14 +9,13 @@ use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
-use sagat_application::clock::Clock;
-use sagat_application::identity::{IdentityStore, RequestContext, Session};
+use sagat_application::identity::{RequestContext, Session};
 use sagat_telemetry::TraceContext;
 use serde::de::DeserializeOwned;
 use tower_http::timeout::TimeoutError;
 
-use crate::AppState;
 use crate::concurrency::TenantPermit;
+use crate::core::Core;
 use crate::error::ApiError;
 
 /// An authenticated caller plus the correlation data of its request.
@@ -31,41 +30,31 @@ pub struct Caller {
     _slot: TenantPermit,
 }
 
-impl<S, C> FromRequestParts<AppState<S, C>> for Caller
-where
-    S: IdentityStore + 'static,
-    C: Clock + 'static,
-{
+impl<St: Core> FromRequestParts<St> for Caller {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState<S, C>,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers)?;
-        let claims = state.verifier.verify(token).await?;
+        let claims = state.verifier().verify(token).await?;
         // Budget per verified subject, before the database is touched: `authenticate` costs two
         // lookups, and a holder of a valid token who is not a member (or names an unknown tenant)
         // would otherwise get them for free, without ever reaching the tenant budget below. Only a
         // token that verified is charged, so an anonymous flood cannot spend anyone's budget.
-        if let Err(retry_after) = state.subject_limiter.check(claims.subject.clone()) {
+        if let Err(retry_after) = state.subject_limiter().check(claims.subject.clone()) {
             metrics::counter!("http_rate_limited_total", "scope" => "subject").increment(1);
             return Err(ApiError::rate_limited(retry_after));
         }
-        let session = state
-            .identity
-            .authenticate(&claims.tenant, &claims.subject)
-            .await?;
+        let session = state.authenticate(&claims.tenant, &claims.subject).await?;
         // Budget per tenant, charged only to callers that proved who they are: an anonymous flood
         // cannot spend (or be blamed on) a tenant's budget.
-        if let Err(retry_after) = state.limiter.check(session.principal.tenant_id()) {
+        if let Err(retry_after) = state.tenant_limiter().check(session.principal.tenant_id()) {
             metrics::counter!("http_rate_limited_total", "scope" => "tenant").increment(1);
             return Err(ApiError::rate_limited(retry_after));
         }
         // How many requests of this tenant may be in flight at once: a tenant that parks requests
         // (a stalled upload) can fill only its own share of the global slots.
         let slot = state
-            .tenant_concurrency
+            .tenant_concurrency()
             .try_acquire(session.principal.tenant_id())
             .map_err(|_| {
                 metrics::counter!("http_tenant_concurrency_rejected_total").increment(1);

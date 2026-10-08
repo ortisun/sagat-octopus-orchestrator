@@ -3,8 +3,10 @@ info:
   title: Sagat Octopus Orchestrator Control & Execution API
   version: 0.1.0
   description: |
-    Design contract. Operations tagged `Identity` are implemented by the control plane (feature 001);
-    every other operation is a design proposal that is not implemented yet.
+    Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
+    `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
+    execution engine (feature 002). Every other operation is a design proposal that is not implemented
+    yet. The worker protocol is gRPC (`worker.proto`), not REST.
     The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
 
@@ -36,7 +38,7 @@ paths:
       tags: [Identity]
       security: []
       responses:
-        '200': {description: The process is alive, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '200': {description: 'The process is alive', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '500': {$ref: '#/components/responses/InternalError'}
         default: {$ref: '#/components/responses/InternalError'}
   /ready:
@@ -46,7 +48,7 @@ paths:
       tags: [Identity]
       security: []
       responses:
-        '200': {description: Ready to serve traffic, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '200': {description: 'Ready to serve traffic', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
   /auth/context:
@@ -55,7 +57,7 @@ paths:
       summary: Describe the authenticated caller
       tags: [Identity]
       responses:
-        '200': {description: Resolved identity of the caller, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
+        '200': {description: 'Resolved identity of the caller', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -69,7 +71,7 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
-        '200': {description: Page of workspaces, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspacePage'}}}}
+        '200': {description: 'Page of workspaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspacePage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -86,7 +88,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateWorkspaceRequest'}
       responses:
-        '201': {description: Workspace created, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '201': {description: 'Workspace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -105,7 +107,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
-        '200': {description: The workspace, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '200': {description: 'The workspace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -128,7 +130,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateNamespaceRequest'}
       responses:
-        '201': {description: Namespace created, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '201': {description: 'Namespace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -146,7 +148,7 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
-        '200': {description: Page of namespaces, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePage'}}}}
+        '200': {description: 'Page of namespaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -164,7 +166,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
-        '200': {description: The namespace, headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '200': {description: 'The namespace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -174,159 +176,296 @@ paths:
   /workflows:
     get:
       operationId: listWorkflows
-      summary: List workflows
+      summary: List the workflows of a namespace
       tags: [Workflows]
+      x-implemented: '002'
       parameters:
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/Cursor'
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: Page of workflows, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowPage'}}}}
+        '200': {description: 'Page of workflows', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
     post:
       operationId: createWorkflowDraft
-      summary: Create a workflow draft
+      summary: Create a workflow with its first draft
       tags: [Workflows]
+      x-implemented: '002'
       parameters:
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/WorkflowDraft'}
+            schema: {$ref: '#/components/schemas/CreateWorkflowRequest'}
       responses:
-        '201': {description: Draft created, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '201': {description: 'Draft created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}:
+    get:
+      operationId: getWorkflow
+      summary: Get a workflow with its draft and active version
+      tags: [Workflows]
+      x-implemented: '002'
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+      responses:
+        '200': {description: 'The workflow', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateWorkflowDraft
+      summary: Replace the draft if it is still at the given revision
+      tags: [Workflows]
+      x-implemented: '002'
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateDraftRequest'}
+      responses:
+        '200': {description: 'Draft updated', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /workflows/{workflowId}/publish:
     post:
       operationId: publishWorkflow
-      summary: Publish an immutable workflow version
+      summary: Publish an immutable workflow version and make it active
       tags: [Workflows]
+      x-implemented: '002'
+      description: Validates the draft against the workflow schema, the graph rules and the expression subset. A document with no engine yet (saga, script, child, foreach, humanApproval) is refused with a reason. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
       parameters:
-        - $ref: '#/components/parameters/WorkflowId'
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [draftRevision]
-              properties:
-                draftRevision: {type: integer, minimum: 1}
-                releaseNotes: {type: string, maxLength: 2048}
+            schema: {$ref: '#/components/schemas/PublishRequest'}
       responses:
-        '201': {description: Immutable version published, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '201': {description: 'Immutable version published (or an identical one re-activated)', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/versions:
+    get:
+      operationId: listWorkflowVersions
+      summary: List the published versions of a workflow
+      tags: [Workflows]
+      x-implemented: '002'
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'Page of versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/VersionPage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/versions/{versionNumber}:
+    get:
+      operationId: getWorkflowVersion
+      summary: Get a published version with the document it froze
+      tags: [Workflows]
+      x-implemented: '002'
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/VersionNumber'}
+      responses:
+        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersionDocument'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs:
     get:
       operationId: listRuns
-      summary: List runs
+      summary: List the runs of a namespace, newest first
       tags: [Runs]
+      x-implemented: '002'
       parameters:
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/Cursor'
-        - name: workflowId
-          in: query
-          schema: {type: string}
-        - name: status
-          in: query
-          schema: {type: string}
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: workflowId, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]}}
       responses:
-        '200': {description: Page of runs, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
+        '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
     post:
       operationId: startRun
-      summary: Start a run
+      summary: Start a run of a published version
       tags: [Runs]
+      x-implemented: '002'
       parameters:
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/StartRunRequest'}
       responses:
-        '202': {description: Run durably accepted, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
-        '400': {$ref: '#/components/responses/ValidationError'}
+        '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}:
     get:
       operationId: getRun
       summary: Get run state
       tags: [Runs]
+      x-implemented: '002'
       parameters:
-        - $ref: '#/components/parameters/RunId'
-        - $ref: '#/components/parameters/Namespace'
+        - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: Run state, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '200': {description: 'Run state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/events:
     get:
       operationId: listRunJournalEvents
-      summary: List run journal events
+      summary: List run journal events in sequence order
       tags: [Runs]
+      x-implemented: '002'
       parameters:
-        - $ref: '#/components/parameters/RunId'
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/Cursor'
+        - {$ref: '#/components/parameters/RunId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: Paged journal timeline, content: {application/json: {schema: {$ref: '#/components/schemas/JournalPage'}}}}
+        '200': {description: 'Paged journal timeline', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/JournalPage'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/graph:
     get:
       operationId: getRuntimeGraph
-      summary: Get the projected runtime graph
+      summary: Get the definition graph overlaid with the run state of every step
       tags: [Runs]
+      x-implemented: '002'
       parameters:
-        - $ref: '#/components/parameters/RunId'
-        - $ref: '#/components/parameters/Namespace'
-        - name: afterSeq
-          in: query
-          schema: {type: integer, format: int64, minimum: 0}
+        - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: Projected runtime graph; may lag behind journal, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
+        '200': {description: 'Runtime graph', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/operations:
     post:
       operationId: operateRun
-      summary: Apply an operator action to a run
+      summary: Cancel, pause or resume a run
       tags: [Operations]
+      x-implemented: '002'
+      description: CANCEL, PAUSE and RESUME are supported. The other actions of the enumeration are declared for later features and are refused with 422.
       parameters:
-        - $ref: '#/components/parameters/RunId'
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/RunId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/OperationRequest'}
       responses:
-        '202': {description: Operation accepted, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResult'}}}}
+        '202': {description: 'Operation accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/signals/{signalName}:
     post:
       operationId: signalRun
-      summary: Send a signal to a run
+      summary: Send a signal to the waiting steps of a run that expect it
       tags: [Events]
+      x-implemented: '002'
+      description: The payload becomes the output of each woken waitEvent step. A signal that no step is waiting for is refused with 409, never buffered or dropped silently.
       parameters:
-        - $ref: '#/components/parameters/RunId'
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - name: signalName
-          in: path
-          required: true
-          schema: {type: string, minLength: 1}
+        - {$ref: '#/components/parameters/RunId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {name: signalName, in: path, required: true, schema: {type: string, minLength: 1}}
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/EventPayload'}
       responses:
-        '202': {description: Signal durably admitted}
+        '202': {description: 'Signal durably admitted; names the waiting steps it woke', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SignalResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /events:
     post:
       operationId: publishEvent
@@ -424,6 +563,11 @@ components:
       in: path
       required: true
       schema: {type: string}
+    VersionNumber:
+      name: versionNumber
+      in: path
+      required: true
+      schema: {type: integer, minimum: 1}
     RunId:
       name: runId
       in: path
@@ -500,22 +644,69 @@ components:
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/NamespaceResource'}}
         nextCursor: {type: [string, 'null']}
-    WorkflowDraft:
+    CreateWorkflowRequest:
       type: object
       required: [name, ir]
       properties:
-        id: {type: string}
+        name: {type: string, description: 'Workflow name (a slug); the document must name the same workflow.'}
+        ir: {$ref: '#/components/schemas/JsonObject'}
+    UpdateDraftRequest:
+      type: object
+      required: [draftRevision, ir]
+      additionalProperties: false
+      properties:
+        draftRevision: {type: integer, minimum: 1, description: 'The revision the client edited; a stale one is refused with 409.'}
+        ir: {$ref: '#/components/schemas/JsonObject'}
+    PublishRequest:
+      type: object
+      required: [draftRevision]
+      additionalProperties: false
+      properties:
+        draftRevision: {type: integer, minimum: 1}
+        releaseNotes: {type: string, maxLength: 2048}
+    VersionSummary:
+      type: object
+      required: [workflowId, versionId, versionNumber, digest]
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        versionNumber: {type: integer, minimum: 1}
+        digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+        publishedBy: {type: string}
+        publishedAt: {type: string, format: date-time}
+    WorkflowDraft:
+      type: object
+      required: [id, name, draftRevision, ir]
+      properties:
+        id: {type: string, format: uuid}
         name: {type: string}
         draftRevision: {type: integer, minimum: 1}
         ir: {$ref: '#/components/schemas/JsonObject'}
+        activeVersion: {oneOf: [{$ref: '#/components/schemas/VersionSummary'}, {type: 'null'}]}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
     WorkflowVersion:
+      allOf:
+        - $ref: '#/components/schemas/VersionSummary'
+        - type: object
+          required: [created, warnings]
+          properties:
+            created: {type: boolean, description: 'False when the document was identical to an existing version, which was re-activated.'}
+            warnings: {type: array, items: {type: string}}
+    WorkflowVersionDocument:
+      allOf:
+        - $ref: '#/components/schemas/VersionSummary'
+        - type: object
+          required: [document]
+          properties:
+            releaseNotes: {type: [string, 'null']}
+            document: {$ref: '#/components/schemas/JsonObject'}
+    VersionPage:
       type: object
-      required: [workflowId, versionId, digest]
+      required: [items]
       properties:
-        workflowId: {type: string}
-        versionId: {type: string}
-        digest: {type: string}
-        publishedAt: {type: string, format: date-time}
+        items: {type: array, items: {$ref: '#/components/schemas/WorkflowVersionDocument'}}
+        nextCursor: {type: [string, 'null']}
     WorkflowPage:
       type: object
       required: [items]
@@ -525,24 +716,30 @@ components:
     StartRunRequest:
       type: object
       required: [workflowId, input]
+      additionalProperties: false
       properties:
-        workflowId: {type: string}
-        versionId: {type: string, description: Optional explicit pin.}
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid, description: 'Optional explicit pin; the active version otherwise.'}
         input: {$ref: '#/components/schemas/JsonObject'}
-        correlationId: {type: string}
-        deadline: {type: string, format: date-time}
+        correlationId: {type: string, maxLength: 160}
+        deadline: {type: string, format: date-time, description: 'Must be in the future and within a year; the run times out at this instant.'}
     Run:
       type: object
-      required: [runId, workflowId, versionId, status, createdAt]
+      required: [runId, workflowId, versionId, status, version, createdAt]
       properties:
         runId: {type: string, format: uuid}
-        workflowId: {type: string}
-        versionId: {type: string}
-        status: {type: string, enum: [CREATED, READY, RUNNING, WAITING, PAUSED, COMPENSATING, CANCELLING, SUCCEEDED, FAILED, COMPENSATED, COMPENSATION_FAILED, CANCELLED, TIMED_OUT]}
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        status: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]}
+        version: {type: integer, format: int64, minimum: 0, description: 'Number of journal events applied; usable as expectedRunVersion.'}
+        paused: {type: boolean}
+        startedBy: {type: string}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
-        traceId: {type: string}
-        correlationId: {type: string}
+        finishedAt: {type: [string, 'null'], format: date-time}
+        deadline: {type: [string, 'null'], format: date-time}
+        traceId: {type: [string, 'null']}
+        correlationId: {type: [string, 'null']}
     RunPage:
       type: object
       required: [items]
@@ -551,15 +748,16 @@ components:
         nextCursor: {type: [string, 'null']}
     JournalEvent:
       type: object
-      required: [seq, eventType, occurredAt]
+      required: [seq, eventType, occurredAt, actor]
       properties:
-        seq: {type: integer, format: int64}
+        seq: {type: integer, format: int64, minimum: 1}
         eventType: {type: string}
         occurredAt: {type: string, format: date-time}
-        stepId: {type: string}
-        attempt: {type: integer}
-        traceId: {type: string}
-        payloadRef: {type: string}
+        stepId: {type: [string, 'null'], description: 'The node id the event concerns.'}
+        attempt: {type: [integer, 'null']}
+        actor: {type: string, description: 'user:<sub>, worker:<id> or system:<component>.'}
+        traceId: {type: [string, 'null']}
+        payloadRef: {type: [string, 'null'], description: 'SHA-256 of the output payload the event refers to.'}
     JournalPage:
       type: object
       required: [items]
@@ -571,10 +769,34 @@ components:
       required: [runId, projectionSeq, nodes, edges]
       properties:
         runId: {type: string, format: uuid}
+        status: {type: string}
         projectionSeq: {type: integer, format: int64}
         projectionLagMs: {type: integer, minimum: 0}
-        nodes: {type: array, items: {$ref: '#/components/schemas/JsonObject'}}
-        edges: {type: array, items: {$ref: '#/components/schemas/JsonObject'}}
+        nodes:
+          type: array
+          items:
+            type: object
+            required: [id, type, status]
+            properties:
+              id: {type: string}
+              type: {type: string}
+              status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED]}
+              attempt: {type: integer}
+              generation: {type: integer}
+              cancelRequested: {type: boolean}
+              failureCode: {type: [string, 'null']}
+              nextAttemptAt: {type: [string, 'null'], format: date-time}
+              dueAt: {type: [string, 'null'], format: date-time}
+              waitingOn: {type: [string, 'null'], enum: [timer, event, branches, null]}
+        edges:
+          type: array
+          items:
+            type: object
+            required: [from, to, kind]
+            properties:
+              from: {type: string}
+              to: {type: string}
+              kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout]}
     OperationRequest:
       type: object
       required: [action, reason]
@@ -582,13 +804,20 @@ components:
         action: {type: string, enum: [PAUSE, RESUME, CANCEL, RETRY_STEP, RETRY_COMPENSATION, RERUN_AS_NEW, MARK_MANUAL_REVIEW]}
         stepId: {type: string}
         reason: {type: string, minLength: 8, maxLength: 2000}
-        expectedRunVersion: {type: integer}
+        expectedRunVersion: {type: integer, minimum: 0, description: 'Optimistic concurrency: refused with 409 if the run moved on.'}
     OperationResult:
       type: object
       required: [operationId, accepted]
       properties:
         operationId: {type: string, format: uuid}
         accepted: {type: boolean}
+        runStatus: {type: string}
+        runVersion: {type: integer, format: int64}
+    SignalResult:
+      type: object
+      required: [deliveredTo]
+      properties:
+        deliveredTo: {type: array, items: {type: string}, description: 'The waitEvent nodes the signal woke.'}
     EventPayload: {$ref: '#/components/schemas/JsonObject'}
     IncomingEvent:
       type: object
@@ -616,6 +845,7 @@ components:
         status: {type: string, enum: [QUEUED, BUILDING, SUCCEEDED, FAILED, CANCELLED]}
         artifactDigest: {type: string}
   responses:
+    BadRequest: {description: 'A required header is missing or the body is not valid JSON', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unauthorized: {description: Authentication failed, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Forbidden: {description: Permission denied, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     NotFound: {description: Resource not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

@@ -8,17 +8,21 @@ use std::time::Duration;
 
 use reqwest::{Client, Method, RequestBuilder, Response};
 use sagat_api_http::{
-    AppState, AuthConfig, HttpJwksFetcher, HttpLimits, RateLimitConfig, ServerConfig,
-    TokenVerifier, auth::install_crypto_provider, router,
+    AppState, AuthConfig, ExecState, HttpJwksFetcher, HttpLimits, RateLimitConfig, ServerConfig,
+    TokenVerifier, auth::install_crypto_provider, router_with_execution,
 };
 use sagat_application::clock::SystemClock;
+use sagat_application::definitions::DefinitionService;
 use sagat_application::error::StoreError;
+use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityService, IdentityStore};
+use sagat_application::runs::RunService;
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{
     Membership, Namespace, NamespaceId, Slug, Subject, Tenant, TenantId, Workspace, WorkspaceId,
 };
-use sagat_infra_postgres::{PgIdentityStore, PgPool, PoolConfig, connect};
+use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+use sagat_infra_postgres::{PgIdentityStore, PgPool, PgRunStore, PoolConfig, connect};
 use serde_json::{Value, json};
 
 use super::oidc::{AUDIENCE, ISSUER, TestIdp};
@@ -221,7 +225,14 @@ pub async fn start_with(options: Options) -> TestApi {
         .expect("valid budget")
         .with_subject_rate_limit(options.subject_rate_limit)
         .expect("valid subject budget");
-    let app = router(state, options.limits);
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
+    let executions = PgRunStore::new(api_pool.clone(), cache.clone());
+    let exec = ExecState::new(
+        state,
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache),
+    );
+    let app = router_with_execution(exec, options.limits);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

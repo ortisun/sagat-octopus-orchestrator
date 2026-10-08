@@ -3,107 +3,14 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use reqwest::Method;
 use sagat_api_http::error::ErrorCode;
 use sagat_api_http::{HttpLimits, RateLimitConfig};
 use sagat_domain::identity::{Membership, Role};
-use serde_json::{Value, json};
+use serde_json::json;
 
-use crate::spec::OpenApi;
-use crate::support::api::{Options, TestApi, start, start_with};
+use crate::support::api::{Options, start, start_with};
+use crate::support::contract::{As, OpenApi, Scenario, check, scenario};
 use crate::support::{now, subject};
-
-#[derive(Clone)]
-enum As {
-    Anonymous,
-    Garbage,
-    User(&'static str, &'static str),
-}
-
-struct Scenario {
-    method: &'static str,
-    template: &'static str,
-    path: String,
-    caller: As,
-    body: Option<Value>,
-    expect: u16,
-}
-
-fn scenario(
-    method: &'static str,
-    template: &'static str,
-    path: &str,
-    caller: As,
-    body: Option<Value>,
-    expect: u16,
-) -> Scenario {
-    Scenario {
-        method,
-        template,
-        path: path.to_owned(),
-        caller,
-        body,
-        expect,
-    }
-}
-
-/// Sends the scenario and checks it against the contract. Returns `(method, template, status)`.
-async fn check(api: &TestApi, spec: &OpenApi, s: &Scenario) -> (String, String, u16) {
-    let method = Method::from_bytes(s.method.as_bytes()).expect("method");
-    let mut request = api.request(method, &s.path);
-    request = match &s.caller {
-        As::Anonymous => request,
-        As::Garbage => request.bearer_auth("not.a.jwt"),
-        As::User(sub, tenant) => request.bearer_auth(api.idp.token(sub, tenant).build()),
-    };
-    if let Some(body) = &s.body {
-        request = request.json(body);
-    }
-    let response = request.send().await.expect("send");
-    let status = response.status().as_u16();
-    let headers = response.headers().clone();
-    let text = response.text().await.expect("body");
-    let label = format!("{} {} -> {status}", s.method, s.path);
-
-    assert_eq!(status, s.expect, "unexpected status for {label}: {text}");
-    assert!(
-        spec.documents(s.method, s.template, status),
-        "{label}: status {status} is NOT documented for {} {}",
-        s.method,
-        s.template
-    );
-
-    if !text.is_empty() {
-        let body: Value = serde_json::from_str(&text)
-            .unwrap_or_else(|e| panic!("{label}: body is not JSON ({e}): {text}"));
-        if let Some(result) = spec.validate_body(s.method, s.template, status, &body) {
-            result.unwrap_or_else(|e| {
-                panic!("{label}: body does not conform to the contract: {e}\n{body}")
-            });
-        }
-        if status >= 400 {
-            assert_eq!(
-                body["traceId"],
-                headers["x-trace-id"].to_str().expect("ascii"),
-                "{label}: error traceId == X-Trace-Id"
-            );
-        }
-    }
-    for name in spec.documented_headers(s.method, s.template, status) {
-        let value = headers
-            .get(name.to_ascii_lowercase().as_str())
-            .unwrap_or_else(|| panic!("{label}: documented header {name} is missing"));
-        let schema = spec.header_schema(s.method, s.template, status, &name);
-        let as_json = value
-            .to_str()
-            .expect("ascii")
-            .parse::<u64>()
-            .map_or_else(|_| json!(value.to_str().expect("ascii")), |n| json!(n));
-        spec.validate(&schema, &as_json)
-            .unwrap_or_else(|e| panic!("{label}: header {name} violates the contract: {e}"));
-    }
-    (s.method.to_owned(), s.template.to_owned(), status)
-}
 
 #[tokio::test]
 async fn every_identity_operation_conforms_to_the_contract_on_its_normal_and_error_paths() {
