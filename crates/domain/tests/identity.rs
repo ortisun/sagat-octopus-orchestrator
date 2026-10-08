@@ -106,6 +106,58 @@ fn subject_rejects_empty_oversized_and_control_characters() {
     }
 }
 
+#[test]
+fn the_system_namespace_is_reserved_for_platform_actors() {
+    // `system:provisioning` is the actor written into the audit trail for operator actions. A
+    // subject that could be parsed from a token or an operator command would let someone
+    // authenticate as (or impersonate in the audit trail) the platform itself.
+    for reserved in [
+        "system:provisioning",
+        "system:anything-else",
+        "system:",
+        "SYSTEM:provisioning",
+        "System:Provisioning",
+    ] {
+        assert_eq!(
+            Subject::parse(reserved),
+            Err(IdentityError::InvalidSubject(SubjectViolation::Reserved)),
+            "{reserved:?}"
+        );
+    }
+    // Only the namespace is reserved, not words that merely start the same way.
+    for ok in [
+        "system",
+        "systemd",
+        "system-user",
+        "svc:system:x",
+        "my-system:x",
+        " system:x",
+    ] {
+        assert!(Subject::parse(ok).is_ok(), "{ok:?} is an ordinary subject");
+    }
+}
+
+#[test]
+fn the_platform_actor_exists_but_cannot_be_parsed_back_into_a_subject() {
+    let actor = Subject::provisioning();
+
+    assert_eq!(actor.as_str(), "system:provisioning");
+    assert_eq!(
+        Subject::parse(actor.as_str()),
+        Err(IdentityError::InvalidSubject(SubjectViolation::Reserved))
+    );
+}
+
+#[test]
+fn a_reserved_subject_violation_explains_itself() {
+    let message = IdentityError::InvalidSubject(SubjectViolation::Reserved).to_string();
+
+    assert!(
+        message.contains("system:") && message.contains("reserved"),
+        "{message}"
+    );
+}
+
 // ------------------------------------------------------------------ RBAC
 
 const ALL_ROLES: [Role; 5] = [

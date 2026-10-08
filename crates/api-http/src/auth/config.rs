@@ -15,9 +15,11 @@ pub struct AuthConfig {
     pub jwks_uri: String,
     /// Name of the claim holding the caller's tenant slug.
     pub tenant_claim: String,
-    /// When set, only tokens whose JOSE `typ` header equals this value (case-insensitive) are
-    /// accepted, e.g. `at+jwt` (RFC 9068), which keeps an ID token from being used as an access
-    /// token. Off by default because providers disagree on the value (gap G14).
+    /// When set, only tokens whose JOSE `typ` header is this media type are accepted, e.g. `at+jwt`
+    /// (RFC 9068), which keeps an ID token from being used as an access token. The comparison is
+    /// between media types: case-insensitive, and `at+jwt` equals `application/at+jwt` (RFC 7515
+    /// 4.1.9). Surrounding whitespace in the configured value is ignored. Off by default because
+    /// providers disagree on the value (gap G14).
     pub required_token_type: Option<String>,
     /// Tolerated clock skew for `exp`, `nbf` and `iat`.
     pub leeway: Duration,

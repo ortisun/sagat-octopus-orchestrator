@@ -52,7 +52,11 @@ jobs:
                  --descriptor_set_out=/dev/null \
                  specs/001-platform-foundation/contracts/worker.proto
       - name: AsyncAPI is valid
-        run: npx --yes @asyncapi/cli@3 validate specs/001-platform-foundation/contracts/events.asyncapi.yaml
+        # The exact version that `npx @asyncapi/cli@3` resolved on 2026-10-08 (3.6.0), with install
+        # scripts disabled, so a new release or a compromised dependency script cannot change what
+        # CI executes unnoticed. Transitive dependencies are still resolved at run time (npx has no
+        # lockfile); bump the version deliberately and re-run this step locally when you do.
+        run: npx --yes --ignore-scripts @asyncapi/cli@3.6.0 validate specs/001-platform-foundation/contracts/events.asyncapi.yaml
       - name: Workflow example validates against the IR schema
         run: |
           npx --yes -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats \

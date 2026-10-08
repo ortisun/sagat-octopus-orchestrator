@@ -12,12 +12,14 @@ mod execution;
 mod identity;
 mod maintenance;
 mod pool;
+mod privilege;
 mod workers;
 
 pub use definitions::PgDefinitionStore;
 pub use execution::{PgRunStore, PgRunTx};
 pub use identity::PgIdentityStore;
 pub use pool::{PoolConfig, connect, spawn_pool_metrics};
+pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use sqlx::PgPool;
 
 /// Embedded, ordered schema migrations (`migrations/<version>_<name>.{up,down}.sql`).

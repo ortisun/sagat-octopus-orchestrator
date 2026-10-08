@@ -66,22 +66,31 @@ ENVIRONMENT (all commands):
     SAGAT_DB_STATEMENT_TIMEOUT_MS     per-statement server timeout    [5000]
 
 ENVIRONMENT (serve):
-    SAGAT_OIDC_ISSUER                 expected token issuer (required)
+    Outside SAGAT_ENV=dev, serve checks its database role at start and exits with code 2 if the
+    role is a superuser, owns audit_records, or may UPDATE/DELETE/TRUNCATE it: use the
+    least-privilege runtime role (sagat_app) here and the owner role only for migrate and
+    provision-tenant.
+    SAGAT_OIDC_ISSUER                expected token issuer (required)
     SAGAT_OIDC_AUDIENCE               expected token audience (required)
     SAGAT_OIDC_JWKS_URI               signing keys URL, https (required)
     SAGAT_OIDC_TENANT_CLAIM           claim holding the tenant slug   [tenant]
     SAGAT_BIND_ADDR                   listen address                  [127.0.0.1:8080]
-    SAGAT_MIGRATE_ON_START            apply migrations before serving [false]
+    SAGAT_MIGRATE_ON_START            apply migrations before serving, dev only [false]
     SAGAT_REQUEST_TIMEOUT_SECS        request timeout                 [15]
     SAGAT_MAX_BODY_BYTES              request body limit              [65536]
     SAGAT_HEADER_READ_TIMEOUT_SECS    max time to send a request head [10]
     SAGAT_MAX_CONNECTIONS             simultaneous connections        [1024]
     SAGAT_SHUTDOWN_GRACE_SECS         drain time on shutdown          [30]
     SAGAT_MAX_IN_FLIGHT               requests served at once         [512]
-    SAGAT_RATE_LIMIT_RPS              per-tenant sustained req/s      [100]
-    SAGAT_RATE_LIMIT_BURST            per-tenant burst                [200]
+    SAGAT_MAX_IN_FLIGHT_PER_TENANT    requests of one tenant at once  [max_in_flight / 4, min 1]
+    SAGAT_BODY_IDLE_TIMEOUT_SECS      max wait for the next body part [5]
+    SAGAT_RATE_LIMIT_RPS              per-tenant sustained req/s, >= 0.001 [100]
+    SAGAT_RATE_LIMIT_BURST            per-tenant burst, >= 1          [200]
+    SAGAT_SUBJECT_RATE_LIMIT_RPS      per-subject req/s, charged before any DB lookup, >= 0.001 [20]
+    SAGAT_SUBJECT_RATE_LIMIT_BURST    per-subject burst, >= 1         [40]
     SAGAT_ADMIN_ADDR                  /metrics listener, or 'off'     [127.0.0.1:9090]
-    SAGAT_OIDC_REQUIRED_TYP           required JOSE typ, e.g. at+jwt  [unset]
+    SAGAT_OIDC_REQUIRED_TYP           required JOSE typ; at+jwt and application/at+jwt are the
+                                      same type, case-insensitive, whitespace trimmed [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
 
 ENVIRONMENT (seed-dev):

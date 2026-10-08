@@ -58,7 +58,7 @@
   _REST: done (`rest/`, live conformance). AsyncAPI: validated (0 errors) locally and in CI. gRPC: `worker.proto` compiles, but the compatibility check (`buf breaking`) is not wired yet; it needs a baseline and arrives with the worker protocol server in feature 002._
 - [x] T001-032 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`.
 - [x] T001-033 Run the benchmark defined in `specs/001-platform-foundation/plan.md` and publish the report in `tests/performance/reports/001-platform-foundation.md`.
-- [ ] T001-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/001-platform-foundation/quickstart.md`.
+- [x] T001-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/001-platform-foundation/quickstart.md`.
 - [x] T001-035 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`.
 
 ## Dependencies & independent delivery

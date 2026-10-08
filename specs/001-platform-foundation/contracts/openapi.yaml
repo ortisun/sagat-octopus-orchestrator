@@ -621,6 +621,6 @@ components:
     NotFound: {description: Resource not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Conflict: {description: Conflict or stale version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     ValidationError: {description: Invalid input/schema/graph, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
-    TooManyRequests: {description: The tenant exceeded its request budget; retry after the delay in Retry-After, headers: {Retry-After: {schema: {type: integer, minimum: 1}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    TooManyRequests: {description: 'The caller exceeded its request budget (per token subject, checked before any database lookup, or per tenant); retry after the delay in Retry-After', headers: {Retry-After: {schema: {type: integer, minimum: 1}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unavailable: {description: A dependency is temporarily unavailable; retry later, headers: {Retry-After: {schema: {type: integer, minimum: 0}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     InternalError: {description: "Any other failure: 500 for an unexpected error, 408 when the request timed out. Same envelope.", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

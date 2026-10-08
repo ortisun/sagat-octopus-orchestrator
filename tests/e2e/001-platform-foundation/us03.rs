@@ -13,6 +13,7 @@ use reqwest::Client;
 use sagat_api_http::{AuthConfig, HttpLimits};
 use sagat_control_plane::config::{Config, DatabaseConfig, Environment, SeedConfig, ServeConfig};
 use sagat_control_plane::{RunError, SeedOutcome, healthcheck, run_migrations, seed_dev, serve};
+use sagat_infra_postgres::LeastPrivilegeError;
 use sagat_telemetry::LogFormat;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -41,6 +42,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         limits: HttpLimits::default(),
         server: sagat_api_http::ServerConfig::default(),
         rate_limit: sagat_api_http::RateLimitConfig::default(),
+        subject_rate_limit: sagat_api_http::RateLimitConfig::subject_default(),
         admin_addr: None,
         migrate_on_start: false,
     }
@@ -258,6 +260,163 @@ async fn migrating_on_start_prepares_an_empty_database_before_listening() {
     api.stop().await.expect("clean shutdown");
 }
 
+/// Serve settings that are legal outside development: an https key URL and no insecure opt-in.
+fn production_serve_config() -> ServeConfig {
+    let mut serve_cfg = serve_config("https://idp.example.invalid/.well-known/jwks.json");
+    serve_cfg.auth.allow_insecure_jwks_http = false;
+    serve_cfg
+}
+
+/// A config that connects with the given database user instead of the owner.
+fn config_as(db: &TestDb, environment: Environment, user: &str, password: &str) -> Config {
+    let mut cfg = config(db, environment);
+    cfg.database.url = db.url_for(user, password);
+    cfg
+}
+
+#[tokio::test]
+async fn outside_development_the_process_refuses_to_serve_as_the_database_owner() {
+    // Review finding 10: nothing stopped an operator from pointing DATABASE_URL at the owner role,
+    // which can disable the audit triggers that make the trail append-only.
+    let db = migrated_db().await;
+    for environment in [Environment::Prod, Environment::Staging] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            serve(
+                &config(&db, environment), // the owner (a superuser) in the test cluster
+                &production_serve_config(),
+                listener,
+                std::future::pending(),
+            ),
+        )
+        .await
+        .expect("it must refuse at once instead of starting to serve");
+
+        let error = outcome.expect_err("refused");
+        assert!(
+            matches!(
+                error,
+                RunError::LeastPrivilege(LeastPrivilegeError::TooPrivileged { .. })
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.exit_code(),
+            2,
+            "{environment:?}: a configuration problem"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("superuser") && message.contains("audit"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("postgres://") && !message.contains("@127.0.0.1"),
+            "no connection string in: {message}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn outside_development_the_runtime_role_serves_normally() {
+    let db = migrated_db().await;
+    let cfg = config_as(
+        &db,
+        Environment::Staging,
+        crate::support::RUNTIME_ROLE,
+        crate::support::RUNTIME_ROLE_PASSWORD,
+    );
+
+    let api = Running::start(cfg, production_serve_config()).await;
+
+    let ready = Client::new()
+        .get(api.url("/ready"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(ready.status(), 200);
+    api.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test]
+async fn in_development_the_role_is_not_checked() {
+    // The development stack and most tests run as the owner; only real environments are guarded.
+    let db = migrated_db().await;
+
+    let api = Running::start(
+        config(&db, Environment::Dev),
+        serve_config("http://127.0.0.1:1/jwks.json"),
+    )
+    .await;
+
+    api.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test]
+async fn outside_development_an_unmigrated_database_is_refused_at_start() {
+    let db = fresh_db().await;
+    let cfg = config_as(
+        &db,
+        Environment::Prod,
+        crate::support::RUNTIME_ROLE,
+        crate::support::RUNTIME_ROLE_PASSWORD,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        serve(
+            &cfg,
+            &production_serve_config(),
+            listener,
+            std::future::pending(),
+        ),
+    )
+    .await
+    .expect("refused at once")
+    .expect_err("no schema");
+
+    assert_eq!(error.exit_code(), 2);
+    assert!(error.to_string().contains("migrate"), "{error}");
+}
+
+#[tokio::test]
+async fn migrating_on_start_is_refused_outside_development() {
+    // It needs the schema-owning role, which is exactly what the guard above refuses to serve with.
+    let db = migrated_db().await;
+    let mut serve_cfg = production_serve_config();
+    serve_cfg.migrate_on_start = true;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        serve(
+            &config(&db, Environment::Prod),
+            &serve_cfg,
+            listener,
+            std::future::pending(),
+        ),
+    )
+    .await
+    .expect("refused at once instead of migrating and serving")
+    .expect_err("refused");
+
+    assert!(matches!(error, RunError::Refused(_)), "{error:?}");
+    assert_eq!(error.exit_code(), 2);
+    assert!(
+        error.to_string().contains("SAGAT_MIGRATE_ON_START"),
+        "{error}"
+    );
+}
+
 #[tokio::test]
 async fn a_bad_setup_stops_the_process_before_it_listens() {
     let db = migrated_db().await;
@@ -468,6 +627,61 @@ fn has_series(page: &str, name: &str, labels: &[(&str, &str)]) -> bool {
                 .iter()
                 .all(|(k, v)| line.contains(&format!("{k}=\"{v}\"")))
     })
+}
+
+/// Starts the control plane with an admin (metrics) listener bound to `admin_bind`, waits until it is
+/// healthy, stops it, and returns what was logged at warn level or above meanwhile.
+async fn logs_of_a_run_with_admin_listener_on(admin_bind: &str) -> String {
+    let db = migrated_db().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let admin = tokio::net::TcpListener::bind(admin_bind)
+        .await
+        .expect("bind admin");
+    let api_addr = listener.local_addr().expect("addr");
+    // Installed after the slow set-up, right before the action under test (see `capture`).
+    let (_guard, captured) = crate::support::logs::capture();
+    let cfg = config(&db, Environment::Dev);
+    let serve_cfg = serve_config("http://127.0.0.1:1/jwks.json");
+    let (stop, stopped) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        sagat_control_plane::serve_with_admin(&cfg, &serve_cfg, listener, Some(admin), async {
+            let _ = stopped.await;
+        })
+        .await
+    });
+    for _ in 0..100 {
+        if healthcheck(&api_addr.to_string()).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("shutdown")
+        .expect("join")
+        .expect("clean");
+    captured.text()
+}
+
+#[tokio::test]
+async fn a_metrics_listener_reachable_from_a_network_logs_a_warning() {
+    // /metrics has no authentication by design (D15); the only protection is where it listens.
+    let logs = logs_of_a_run_with_admin_listener_on("0.0.0.0:0").await;
+
+    assert!(
+        logs.contains("WARN") && logs.contains("unauthenticated") && logs.contains("NetworkPolicy"),
+        "{logs}"
+    );
+}
+
+#[tokio::test]
+async fn a_loopback_metrics_listener_is_silent() {
+    let logs = logs_of_a_run_with_admin_listener_on("127.0.0.1:0").await;
+
+    assert!(!logs.contains("unauthenticated"), "{logs}");
 }
 
 #[tokio::test]

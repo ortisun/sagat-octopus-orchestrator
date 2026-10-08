@@ -12,6 +12,7 @@
 
 pub mod api;
 pub mod engine;
+pub mod logs;
 pub mod oidc;
 
 use std::sync::{Arc, LazyLock, Mutex, Weak};

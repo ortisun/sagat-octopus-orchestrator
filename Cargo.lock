@@ -3002,6 +3002,7 @@ version = "0.1.0"
 dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
+ "metrics-util",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3032,6 +3033,8 @@ dependencies = [
  "testcontainers-modules",
  "time",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

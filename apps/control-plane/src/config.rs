@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use sagat_api_http::{AuthConfig, HttpLimits, RateLimitConfig, ServerConfig};
+use sagat_api_http::{AuthConfig, HttpLimits, RateLimitConfig, RateLimitConfigError, ServerConfig};
 use sagat_telemetry::LogFormat;
 
 /// Where the process runs. Anything that could damage real data is gated on this; the default is
@@ -75,6 +75,44 @@ fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
             name,
             reason: format!("'{other}' is not a boolean (use true or false)"),
         }),
+    }
+}
+
+/// Variables of the per-tenant request budget: (requests per second, burst).
+pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
+/// Variables of the per-subject request budget: (requests per second, burst).
+pub const SUBJECT_RATE_VARS: (&str, &str) = (
+    "SAGAT_SUBJECT_RATE_LIMIT_RPS",
+    "SAGAT_SUBJECT_RATE_LIMIT_BURST",
+);
+
+/// Reads a request budget from a requests-per-second and a burst variable and validates it with the
+/// same rules the limiter enforces (finite, rate at least 0.001, burst at least 1).
+fn read_rate_limit(
+    get: Lookup<'_>,
+    (rps_var, burst_var): (&'static str, &'static str),
+    defaults: RateLimitConfig,
+) -> Result<RateLimitConfig, ConfigError> {
+    let per_second: f64 = optional(get, rps_var, defaults.per_second)?;
+    let burst: f64 = optional(get, burst_var, defaults.burst)?;
+    RateLimitConfig { per_second, burst }
+        .validate()
+        .map_err(|e| rate_limit_error((rps_var, burst_var), e))
+}
+
+/// The configuration error for a refused budget, naming the variable that caused it.
+#[must_use]
+pub fn rate_limit_error(
+    (rps_var, burst_var): (&'static str, &'static str),
+    error: RateLimitConfigError,
+) -> ConfigError {
+    let name = match error {
+        RateLimitConfigError::PerSecond => rps_var,
+        RateLimitConfigError::Burst => burst_var,
+    };
+    ConfigError::Invalid {
+        name,
+        reason: error.to_string(),
     }
 }
 
@@ -158,8 +196,11 @@ pub struct ServeConfig {
     pub limits: HttpLimits,
     /// Connection-level protections (slow clients, connection cap, shutdown grace).
     pub server: ServerConfig,
-    /// Per-tenant request budget.
+    /// Per-tenant request budget, charged after authentication.
     pub rate_limit: RateLimitConfig,
+    /// Per-subject request budget, charged right after the token verifies and before any database
+    /// lookup.
+    pub subject_rate_limit: RateLimitConfig,
     /// Where `/metrics` is served, on a listener separate from the public API. `None` disables it.
     pub admin_addr: Option<SocketAddr>,
     /// Apply pending migrations before listening. Off by default: production runs them as a
@@ -178,7 +219,9 @@ impl ServeConfig {
         );
         auth.tenant_claim = optional(get, "SAGAT_OIDC_TENANT_CLAIM", auth.tenant_claim)?;
         auth.allow_insecure_jwks_http = flag(get, "SAGAT_ALLOW_INSECURE_JWKS_HTTP")?;
-        auth.required_token_type = get("SAGAT_OIDC_REQUIRED_TYP").filter(|v| !v.trim().is_empty());
+        auth.required_token_type = get("SAGAT_OIDC_REQUIRED_TYP")
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty());
 
         let defaults = HttpLimits::default();
         let max_body_bytes: usize = optional(get, "SAGAT_MAX_BODY_BYTES", defaults.max_body_bytes)?;
@@ -206,21 +249,32 @@ impl ServeConfig {
                 reason: "must be greater than zero".to_owned(),
             });
         }
-        let rate_defaults = RateLimitConfig::default();
-        let rate_per_second: f64 = optional(get, "SAGAT_RATE_LIMIT_RPS", rate_defaults.per_second)?;
-        let rate_burst: f64 = optional(get, "SAGAT_RATE_LIMIT_BURST", rate_defaults.burst)?;
-        if !(rate_per_second.is_finite() && rate_per_second > 0.0) {
+        // A quarter of the global cap unless set: one tenant cannot hold every slot.
+        let max_in_flight_per_tenant: usize = optional(
+            get,
+            "SAGAT_MAX_IN_FLIGHT_PER_TENANT",
+            HttpLimits::default_per_tenant(max_in_flight),
+        )?;
+        if max_in_flight_per_tenant == 0 {
             return Err(ConfigError::Invalid {
-                name: "SAGAT_RATE_LIMIT_RPS",
-                reason: "must be a positive number".to_owned(),
+                name: "SAGAT_MAX_IN_FLIGHT_PER_TENANT",
+                reason: "must be greater than zero".to_owned(),
             });
         }
-        if !(rate_burst.is_finite() && rate_burst >= 1.0) {
+        let body_idle_secs: u64 = optional(
+            get,
+            "SAGAT_BODY_IDLE_TIMEOUT_SECS",
+            defaults.body_idle_timeout.as_secs(),
+        )?;
+        if body_idle_secs == 0 {
             return Err(ConfigError::Invalid {
-                name: "SAGAT_RATE_LIMIT_BURST",
-                reason: "must be at least 1".to_owned(),
+                name: "SAGAT_BODY_IDLE_TIMEOUT_SECS",
+                reason: "must be greater than zero".to_owned(),
             });
         }
+        let rate_limit = read_rate_limit(get, TENANT_RATE_VARS, RateLimitConfig::default())?;
+        let subject_rate_limit =
+            read_rate_limit(get, SUBJECT_RATE_VARS, RateLimitConfig::subject_default())?;
         let admin_addr =
             match get("SAGAT_ADMIN_ADDR").as_deref().map(str::trim) {
                 None | Some("") => Some(SocketAddr::from(([127, 0, 0, 1], 9090))),
@@ -271,11 +325,11 @@ impl ServeConfig {
                 max_body_bytes,
                 request_timeout: Duration::from_secs(timeout_secs),
                 max_in_flight,
+                max_in_flight_per_tenant,
+                body_idle_timeout: Duration::from_secs(body_idle_secs),
             },
-            rate_limit: RateLimitConfig {
-                per_second: rate_per_second,
-                burst: rate_burst,
-            },
+            rate_limit,
+            subject_rate_limit,
             admin_addr,
             server: ServerConfig {
                 header_read_timeout: Duration::from_secs(header_secs),
@@ -303,6 +357,14 @@ impl SeedConfig {
             admin_subject: optional(get, "SAGAT_SEED_ADMIN_SUBJECT", "dev-admin".to_owned())?,
         })
     }
+}
+
+/// Whether the (unauthenticated) metrics listener can be reached from a network, that is, whether
+/// it is bound to anything but a loopback address. IPv4-mapped IPv6 addresses count as the IPv4
+/// address they carry.
+#[must_use]
+pub fn admin_addr_is_exposed(addr: SocketAddr) -> bool {
+    !addr.ip().to_canonical().is_loopback()
 }
 
 /// Whether a PostgreSQL URL insists on TLS (`sslmode` / `ssl-mode` of `require`, `verify-ca` or
