@@ -19,6 +19,7 @@ paths:
   /workflows:
     get:
       operationId: listWorkflows
+      summary: List workflows
       tags: [Workflows]
       parameters:
         - $ref: '#/components/parameters/Namespace'
@@ -28,6 +29,7 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
     post:
       operationId: createWorkflowDraft
+      summary: Create a workflow draft
       tags: [Workflows]
       parameters:
         - $ref: '#/components/parameters/Namespace'
@@ -43,6 +45,7 @@ paths:
   /workflows/{workflowId}/publish:
     post:
       operationId: publishWorkflow
+      summary: Publish an immutable workflow version
       tags: [Workflows]
       parameters:
         - $ref: '#/components/parameters/WorkflowId'
@@ -65,6 +68,7 @@ paths:
   /runs:
     get:
       operationId: listRuns
+      summary: List runs
       tags: [Runs]
       parameters:
         - $ref: '#/components/parameters/Namespace'
@@ -79,6 +83,7 @@ paths:
         '200': {description: Page of runs, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
     post:
       operationId: startRun
+      summary: Start a run
       tags: [Runs]
       parameters:
         - $ref: '#/components/parameters/Namespace'
@@ -96,6 +101,7 @@ paths:
   /runs/{runId}:
     get:
       operationId: getRun
+      summary: Get run state
       tags: [Runs]
       parameters:
         - $ref: '#/components/parameters/RunId'
@@ -106,6 +112,7 @@ paths:
   /runs/{runId}/events:
     get:
       operationId: listRunJournalEvents
+      summary: List run journal events
       tags: [Runs]
       parameters:
         - $ref: '#/components/parameters/RunId'
@@ -116,6 +123,7 @@ paths:
   /runs/{runId}/graph:
     get:
       operationId: getRuntimeGraph
+      summary: Get the projected runtime graph
       tags: [Runs]
       parameters:
         - $ref: '#/components/parameters/RunId'
@@ -128,6 +136,7 @@ paths:
   /runs/{runId}/operations:
     post:
       operationId: operateRun
+      summary: Apply an operator action to a run
       tags: [Operations]
       parameters:
         - $ref: '#/components/parameters/RunId'
@@ -145,6 +154,7 @@ paths:
   /runs/{runId}/signals/{signalName}:
     post:
       operationId: signalRun
+      summary: Send a signal to a run
       tags: [Events]
       parameters:
         - $ref: '#/components/parameters/RunId'
@@ -165,6 +175,7 @@ paths:
   /events:
     post:
       operationId: publishEvent
+      summary: Publish an event to the inbox
       tags: [Events]
       parameters:
         - $ref: '#/components/parameters/Namespace'
@@ -181,6 +192,7 @@ paths:
     post:
       security: []
       operationId: receiveSignedWebhook
+      summary: Receive a signed webhook
       tags: [Events]
       parameters:
         - name: endpointId
@@ -205,12 +217,13 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/EventPayload'}
       responses:
-        '202': {description: Signature verified, event durably admitted}
+        '202': {description: "Signature verified, event durably admitted"}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
   /scripts/builds:
     post:
       operationId: buildInlineScript
+      summary: Build an inline script
       tags: [Scripts]
       parameters:
         - $ref: '#/components/parameters/Namespace'
