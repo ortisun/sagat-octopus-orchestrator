@@ -27,6 +27,9 @@ x-control-plane: &control-plane
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   tmpfs: ["/tmp"]
+  # A runaway or abused process must not take the host down with it.
+  mem_limit: 512m
+  pids_limit: 256
 
 services:
   postgres:
