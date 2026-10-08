@@ -247,6 +247,29 @@ impl ServeConfig {
                 reason: "must be greater than zero".to_owned(),
             });
         }
+        // A quarter of the global cap unless set: one tenant cannot hold every slot.
+        let max_in_flight_per_tenant: usize = optional(
+            get,
+            "SAGAT_MAX_IN_FLIGHT_PER_TENANT",
+            HttpLimits::default_per_tenant(max_in_flight),
+        )?;
+        if max_in_flight_per_tenant == 0 {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_MAX_IN_FLIGHT_PER_TENANT",
+                reason: "must be greater than zero".to_owned(),
+            });
+        }
+        let body_idle_secs: u64 = optional(
+            get,
+            "SAGAT_BODY_IDLE_TIMEOUT_SECS",
+            defaults.body_idle_timeout.as_secs(),
+        )?;
+        if body_idle_secs == 0 {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_BODY_IDLE_TIMEOUT_SECS",
+                reason: "must be greater than zero".to_owned(),
+            });
+        }
         let rate_limit = read_rate_limit(get, TENANT_RATE_VARS, RateLimitConfig::default())?;
         let subject_rate_limit =
             read_rate_limit(get, SUBJECT_RATE_VARS, RateLimitConfig::subject_default())?;
@@ -300,6 +323,8 @@ impl ServeConfig {
                 max_body_bytes,
                 request_timeout: Duration::from_secs(timeout_secs),
                 max_in_flight,
+                max_in_flight_per_tenant,
+                body_idle_timeout: Duration::from_secs(body_idle_secs),
             },
             rate_limit,
             subject_rate_limit,

@@ -4,8 +4,11 @@ use std::time::Duration;
 
 use reqwest::Method;
 use sagat_api_http::{HttpLimits, RateLimitConfig};
+use sagat_telemetry::Metrics;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
-use crate::support::api::{Options, json_of, start_with};
+use crate::support::api::{Options, TestApi, json_of, start_with};
 
 fn tight_budget() -> Options {
     Options {
@@ -207,6 +210,120 @@ async fn add_member(
     .execute(&api.db.pool)
     .await
     .expect("membership");
+}
+
+/// Sends the head of an authenticated `POST /v1/workspaces` that announces a 64-byte body and never
+/// sends it: the request holds its slot until the server gives up on it.
+async fn stalled_post(api: &TestApi, token: &str) -> TcpStream {
+    let authority = api
+        .base
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .expect("authority");
+    let mut stream = TcpStream::connect(authority).await.expect("connect");
+    let head = format!(
+        "POST /v1/workspaces HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: 64\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).await.expect("head");
+    stream
+}
+
+/// The status code the server answers with within `limit`, or `None` if it stays silent or closes.
+async fn status_within(stream: &mut TcpStream, limit: Duration) -> Option<u16> {
+    let mut received = Vec::new();
+    let read = async {
+        let mut chunk = [0u8; 512];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    received.extend_from_slice(&chunk[..n]);
+                    if received.windows(2).any(|w| w == b"\r\n") {
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    tokio::time::timeout(limit, read).await.ok()?;
+    String::from_utf8_lossy(&received)
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+#[tokio::test]
+async fn stalled_uploads_of_one_tenant_cannot_starve_the_others() {
+    // Review finding 2: the global slot is taken before the body is read, so N authenticated
+    // requests that announce a body and never send it starved every tenant for 15 s each.
+    let metrics = Metrics::global();
+    let api = start_with(Options {
+        limits: HttpLimits {
+            max_in_flight: 4,
+            max_in_flight_per_tenant: 2,
+            body_idle_timeout: Duration::from_secs(1),
+            ..HttpLimits::default()
+        },
+        ..Options::default()
+    })
+    .await;
+    api.tenant("acme", "alice").await;
+    api.tenant("globex", "bob").await;
+    let token = api.idp.token("alice", "acme").build();
+    let mut stalled = vec![
+        stalled_post(&api, &token).await,
+        stalled_post(&api, &token).await,
+    ];
+    tokio::time::sleep(Duration::from_millis(300)).await; // let both take their slots
+
+    // Tenant A is at its cap: one more request is refused at once, with the usual envelope.
+    let refused = api.get_as("/auth/context", "alice", "acme").await;
+    assert_eq!(refused.status(), 429);
+    assert!(refused.headers().contains_key("retry-after"));
+    let body = json_of(refused).await;
+    assert_eq!(body["code"], "RATE_LIMITED");
+    assert_eq!(body["retryable"], true);
+    assert!(
+        metrics
+            .render()
+            .contains("http_tenant_concurrency_rejected_total"),
+        "the refusal is counted"
+    );
+
+    // Tenant B is untouched: two global slots are still free.
+    assert_eq!(
+        api.get_as("/auth/context", "bob", "globex").await.status(),
+        200
+    );
+    assert_eq!(
+        api.post_as(
+            "/workspaces",
+            "bob",
+            "globex",
+            &serde_json::json!({ "slug": "platform" })
+        )
+        .await
+        .status(),
+        201
+    );
+
+    // The stalled requests are cut at the body idle timeout (1 s), long before the 15 s request
+    // timeout, with a retryable 408.
+    for connection in &mut stalled {
+        assert_eq!(
+            status_within(connection, Duration::from_secs(4)).await,
+            Some(408),
+            "a stalled body must not hold its slot until the request timeout"
+        );
+    }
+    // And the slots are free again.
+    assert_eq!(
+        api.get_as("/auth/context", "alice", "acme").await.status(),
+        200
+    );
 }
 
 #[tokio::test]

@@ -78,6 +78,8 @@ ENVIRONMENT (serve):
     SAGAT_MAX_CONNECTIONS             simultaneous connections        [1024]
     SAGAT_SHUTDOWN_GRACE_SECS         drain time on shutdown          [30]
     SAGAT_MAX_IN_FLIGHT               requests served at once         [512]
+    SAGAT_MAX_IN_FLIGHT_PER_TENANT    requests of one tenant at once  [max_in_flight / 4, min 1]
+    SAGAT_BODY_IDLE_TIMEOUT_SECS      max wait for the next body part [5]
     SAGAT_RATE_LIMIT_RPS              per-tenant sustained req/s, >= 0.001 [100]
     SAGAT_RATE_LIMIT_BURST            per-tenant burst, >= 1          [200]
     SAGAT_SUBJECT_RATE_LIMIT_RPS      per-subject req/s, charged before any DB lookup, >= 0.001 [20]

@@ -69,7 +69,8 @@ logs for that value to follow one request.
 | Authenticated user gets `404` for a tenant's resource | Resource belongs to another tenant, or does not exist (deliberately the same answer) | Look for `access.denied.cross_tenant` audit rows in the caller's tenant |
 | `429 RATE_LIMITED` | The tenant exceeded `SAGAT_RATE_LIMIT_RPS`/`BURST` (`scope="tenant"`), or one token subject exceeded `SAGAT_SUBJECT_RATE_LIMIT_RPS`/`BURST` (`scope="subject"`, default 20 req/s, burst 40, charged before any database lookup) | The response carries `Retry-After` and `retryable: true`; clients should honour it. A burst of `scope="subject"` from an unknown or non-member subject is a probe or a misconfigured client, not a reason to raise limits. Check `http_rate_limited_total{scope}` before raising anything |
 | `503` `UNAVAILABLE` on API routes, `/v1/ready` fine | Load shedding: more than `SAGAT_MAX_IN_FLIGHT` requests at once (the response carries `Retry-After`) | `http_load_shed_total`, `db_pool_connections{state="in_use"}`; scale out or raise the pool |
-| `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS` | Slow database or client; check `http_request_duration_seconds` |
+| `429` right after authenticating, with `http_tenant_concurrency_rejected_total` rising | One tenant already has `SAGAT_MAX_IN_FLIGHT_PER_TENANT` requests in flight (default a quarter of `SAGAT_MAX_IN_FLIGHT`, at least 1): slow or stalled uploads, or slow handlers. The other tenants are unaffected by design | Find the tenant's clients holding requests open; the stalled ones end by themselves after `SAGAT_BODY_IDLE_TIMEOUT_SECS`. Raise the cap only if the tenant's real concurrency needs it |
+| `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS`, or its body stopped arriving for `SAGAT_BODY_IDLE_TIMEOUT_SECS` (default 5 s between pieces of the body) | Slow database or client; check `http_request_duration_seconds`. A client that trickles one byte at a time is bounded only by the request timeout |
 | Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password |
 
 ## 5. Metrics
@@ -89,6 +90,7 @@ even when nothing scrapes it (the recorder only expires series while rendering).
 | `jwks_refresh_total{outcome}` | counter | `error` or `no_usable_keys` means the provider or network is failing |
 | `audit_denials_total{outcome}` | counter | `dropped` or `failed` means cross-tenant attempts were not recorded |
 | `http_rate_limited_total{scope}` | counter | Throttling, by `tenant` or `subject` budget |
+| `http_tenant_concurrency_rejected_total` | counter | A tenant hit its in-flight cap (stalled or slow requests) |
 | `http_load_shed_total` | counter | Overload |
 | `db_pool_connections{state}` | gauge | Pool saturation (`in_use` near `SAGAT_DB_MAX_CONNECTIONS`) |
 

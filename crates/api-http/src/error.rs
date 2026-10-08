@@ -159,6 +159,18 @@ impl ApiError {
         e
     }
 
+    /// The client stopped sending its request body; it may retry.
+    #[must_use]
+    pub fn request_timeout() -> Self {
+        let mut e = Self::new(
+            StatusCode::REQUEST_TIMEOUT,
+            ErrorCode::Unavailable,
+            "the request body was not received in time",
+        );
+        e.parts.retryable = true;
+        e
+    }
+
     /// Dependency down; the client may retry.
     #[must_use]
     pub fn unavailable() -> Self {

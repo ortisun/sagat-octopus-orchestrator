@@ -390,6 +390,66 @@ fn rate_limit_values_that_would_break_the_limiter_name_their_variable() {
 }
 
 #[test]
+fn slow_client_protection_has_finite_defaults() {
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+
+    assert_eq!(serve.limits.body_idle_timeout, Duration::from_secs(5));
+    // A quarter of the global cap (512), so one tenant cannot hold every slot.
+    assert_eq!(serve.limits.max_in_flight, 512);
+    assert_eq!(serve.limits.max_in_flight_per_tenant, 128);
+}
+
+#[test]
+fn the_per_tenant_cap_follows_the_global_cap_unless_set() {
+    let mut derived = OIDC.to_vec();
+    derived.push(("SAGAT_MAX_IN_FLIGHT", "64"));
+    let serve = ServeConfig::from_lookup(&env(&derived)).expect("derived");
+    assert_eq!(serve.limits.max_in_flight_per_tenant, 16);
+
+    let mut tiny = OIDC.to_vec();
+    tiny.push(("SAGAT_MAX_IN_FLIGHT", "2"));
+    assert_eq!(
+        ServeConfig::from_lookup(&env(&tiny))
+            .expect("tiny")
+            .limits
+            .max_in_flight_per_tenant,
+        1,
+        "never zero"
+    );
+
+    let mut explicit = OIDC.to_vec();
+    explicit.extend([
+        ("SAGAT_MAX_IN_FLIGHT", "64"),
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "7"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "2"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&explicit)).expect("explicit");
+    assert_eq!(serve.limits.max_in_flight_per_tenant, 7);
+    assert_eq!(serve.limits.body_idle_timeout, Duration::from_secs(2));
+}
+
+#[test]
+fn nonsensical_slow_client_settings_name_their_variable() {
+    let bad: [(&str, &str); 6] = [
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "0"),
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "-1"),
+        ("SAGAT_MAX_IN_FLIGHT_PER_TENANT", "many"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "0"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "-3"),
+        ("SAGAT_BODY_IDLE_TIMEOUT_SECS", "soon"),
+    ];
+    for (name, value) in bad {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, value));
+        let error = ServeConfig::from_lookup(&env(&pairs)).expect_err(name);
+        assert!(
+            matches!(&error, ConfigError::Invalid { name: n, .. } if *n == name),
+            "{name}={value} -> {error:?}"
+        );
+    }
+}
+
+#[test]
 fn the_per_subject_budget_has_its_own_defaults_and_validation() {
     let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
     assert!(
