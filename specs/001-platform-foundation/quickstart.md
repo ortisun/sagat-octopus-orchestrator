@@ -82,6 +82,13 @@ cargo run -p sagat-control-plane --bin control-plane -- serve
 cargo run -p sagat-control-plane --bin control-plane -- --help        # every setting
 ```
 
+With `SAGAT_ENV=dev` the commands above all run as the database owner. Outside dev, `migrate` and
+`provision-tenant` use the owner role, while `serve` must use the least-privilege role
+(`sagat_app`, created by `infra/docker/postgres-init/01-runtime-role.sh` or by your DBA before the
+first migration): `serve` checks its own database role at start and exits with code 2 if it is a
+superuser, owns `audit_records` or may `UPDATE`/`DELETE`/`TRUNCATE` it. `SAGAT_MIGRATE_ON_START` is
+accepted only in dev. See the runbook, sections 1 and 2.
+
 A caller needs a token whose `sub` is a member of the tenant named in its `tenant` claim (the seed
 creates tenant `dev` with administrator `dev-admin`). Memberships are read from the database on
 every request, so removing one takes effect immediately.

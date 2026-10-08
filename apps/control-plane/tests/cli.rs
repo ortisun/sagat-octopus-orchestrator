@@ -41,6 +41,10 @@ fn help_and_version_succeed() {
 #[test]
 fn help_documents_every_serve_setting() {
     let help = text(&control_plane(&["--help"], &[]).stdout);
+    assert!(
+        help.contains("least-privilege") && help.contains("audit_records"),
+        "--help explains which database role serve needs outside dev"
+    );
     for variable in [
         "SAGAT_RATE_LIMIT_RPS",
         "SAGAT_RATE_LIMIT_BURST",

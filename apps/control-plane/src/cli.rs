@@ -66,12 +66,16 @@ ENVIRONMENT (all commands):
     SAGAT_DB_STATEMENT_TIMEOUT_MS     per-statement server timeout    [5000]
 
 ENVIRONMENT (serve):
-    SAGAT_OIDC_ISSUER                 expected token issuer (required)
+    Outside SAGAT_ENV=dev, serve checks its database role at start and exits with code 2 if the
+    role is a superuser, owns audit_records, or may UPDATE/DELETE/TRUNCATE it: use the
+    least-privilege runtime role (sagat_app) here and the owner role only for migrate and
+    provision-tenant.
+    SAGAT_OIDC_ISSUER                expected token issuer (required)
     SAGAT_OIDC_AUDIENCE               expected token audience (required)
     SAGAT_OIDC_JWKS_URI               signing keys URL, https (required)
     SAGAT_OIDC_TENANT_CLAIM           claim holding the tenant slug   [tenant]
     SAGAT_BIND_ADDR                   listen address                  [127.0.0.1:8080]
-    SAGAT_MIGRATE_ON_START            apply migrations before serving [false]
+    SAGAT_MIGRATE_ON_START            apply migrations before serving, dev only [false]
     SAGAT_REQUEST_TIMEOUT_SECS        request timeout                 [15]
     SAGAT_MAX_BODY_BYTES              request body limit              [65536]
     SAGAT_HEADER_READ_TIMEOUT_SECS    max time to send a request head [10]

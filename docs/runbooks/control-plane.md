@@ -15,7 +15,13 @@ code in this repository; what is **not** covered is listed at the end so nobody 
 
 Two database roles exist on purpose. The **owner** role runs `migrate` and `provision-tenant`. The
 API serves requests as **`sagat_app`**, which owns nothing, cannot alter or delete audit rows and
-cannot change the schema. Never point the API at the owner role.
+cannot change the schema. Never point the API at the owner role: outside `SAGAT_ENV=dev`, `serve`
+checks the role it is connected as and **refuses to start** (exit code 2, before it listens) when
+that role is a superuser, owns `audit_records` (directly or through a role it belongs to), or may
+`UPDATE`, `DELETE` or `TRUNCATE` it. It also refuses when `audit_records` does not exist yet,
+because the privileges cannot be verified: run `migrate` first. The check runs once at start; it
+does not look at other role attributes (`CREATEROLE`, `REPLICATION`, ...). With `SAGAT_ENV=dev` it
+is skipped, which is why the local Docker stack (dev) also works with the owner role.
 
 ## 2. Start, stop, upgrade
 
@@ -24,8 +30,10 @@ control-plane migrate            # owner role; idempotent, safe to run twice
 control-plane serve              # runtime role
 ```
 
-- `SAGAT_MIGRATE_ON_START=true` runs the migrations before serving; use it only with the owner role
-  and a single instance.
+- `SAGAT_MIGRATE_ON_START=true` runs the migrations before serving. It needs the owner role, which
+  `serve` refuses outside `SAGAT_ENV=dev`, so it is **only accepted in dev** (exit code 2 with a
+  message naming the variable otherwise). In staging and production run `migrate` as a separate step
+  with the owner role, then start `serve` with the runtime role.
 - **Upgrade:** run `migrate` first, then roll the new binary. Migrations are additive in this
   feature, so the previous binary keeps working against the new schema.
 - **Stop:** `SIGTERM` stops accepting connections and drains for `SAGAT_SHUTDOWN_GRACE_SECS`
@@ -79,6 +87,8 @@ logs for that value to follow one request.
 | `429` right after authenticating, with `http_tenant_concurrency_rejected_total` rising | One tenant already has `SAGAT_MAX_IN_FLIGHT_PER_TENANT` requests in flight (default a quarter of `SAGAT_MAX_IN_FLIGHT`, at least 1): slow or stalled uploads, or slow handlers. The other tenants are unaffected by design | Find the tenant's clients holding requests open; the stalled ones end by themselves after `SAGAT_BODY_IDLE_TIMEOUT_SECS`. Raise the cap only if the tenant's real concurrency needs it |
 | `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS`, or its body stopped arriving for `SAGAT_BODY_IDLE_TIMEOUT_SECS` (default 5 s between pieces of the body) | Slow database or client; check `http_request_duration_seconds`. A client that trickles one byte at a time is bounded only by the request timeout |
 | Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password |
+| Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate` and `provision-tenant` only. Do not grant the runtime role more to make this go away |
+| Process exits with code 2 and `the audit trail does not exist yet ... run control-plane migrate` | `serve` started before the migrations (outside dev the privileges cannot be verified without the table) | Run `migrate` with the owner role first; start the API afterwards (let the orchestrator restart it) |
 
 ## 5. Metrics
 
