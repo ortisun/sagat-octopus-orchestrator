@@ -81,3 +81,7 @@ path = "contract/002-durable-execution/grpc/main.rs"
 [[test]]
 name = "e2e_002"
 path = "e2e/002-durable-execution/main.rs"
+
+[[test]]
+name = "perf_002"
+path = "performance/002-durable-execution/main.rs"
