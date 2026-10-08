@@ -5,6 +5,7 @@ use sagat_domain::identity::{IdentityError, Permission};
 /// Which uniqueness rule a conflict refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictKind {
+    TenantSlug,
     WorkspaceSlug,
     NamespaceSlug,
 }

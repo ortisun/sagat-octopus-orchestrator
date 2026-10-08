@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,9 @@ publish = false
 [workspace.dependencies]
 sagat-domain = { path = "crates/domain" }
 sagat-application = { path = "crates/application" }
+sagat-infra-postgres = { path = "crates/infra-postgres" }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "watchdog"] }
 thiserror = "2"
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
