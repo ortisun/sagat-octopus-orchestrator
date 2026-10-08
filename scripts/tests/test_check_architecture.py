@@ -64,6 +64,37 @@ class ArchitectureRules(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("layer violation", out)
 
+    def test_the_scheduler_is_an_application_service_not_an_adapter(self):
+        # It may use the domain and the ports...
+        code, out = run_check([
+            pkg("d", "crates/domain", []),
+            pkg("a", "crates/application", ["d"]),
+            pkg("s", "crates/scheduler", ["a", "d"]),
+            pkg("bin", "apps/execution-engine", ["s", "a", "d", "p"]),
+            pkg("p", "crates/infra-postgres", ["a", "d"]),
+        ])
+        self.assertEqual(code, 0, out)
+
+    def test_the_scheduler_must_not_know_the_adapters(self):
+        code, out = run_check([
+            pkg("d", "crates/domain", []),
+            pkg("a", "crates/application", ["d"]),
+            pkg("p", "crates/infra-postgres", ["a", "d"]),
+            pkg("s", "crates/scheduler", ["a", "d", "p"]),
+        ])
+        self.assertEqual(code, 1)
+        self.assertIn("layer violation", out)
+        self.assertIn("'s' (application) must not depend on 'p' (adapter)", out)
+
+    def test_adapters_may_not_be_depended_on_by_the_application_layer_through_the_scheduler(self):
+        code, out = run_check([
+            pkg("d", "crates/domain", []),
+            pkg("a", "crates/application", ["d", "s"]),
+            pkg("s", "crates/scheduler", ["d"]),
+        ])
+        # application -> application is allowed; this documents that it is not an adapter edge.
+        self.assertEqual(code, 0, out)
+
     def test_cycles_are_reported(self):
         code, out = run_check([
             pkg("x", "crates/telemetry", ["y"]),

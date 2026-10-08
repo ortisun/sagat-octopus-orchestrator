@@ -25,6 +25,9 @@ DOMAIN_FORBIDDEN = {
     "serde_json", "tokio", "tracing-opentelemetry", "opentelemetry",
 }
 
+# Crates that are application services (they orchestrate ports) rather than adapters or utilities.
+APPLICATION_CRATES = {"scheduler", "saga"}
+
 # Layer of each workspace package, derived from its directory under the repo root.
 def layer_of(manifest_path: str, root: str) -> str:
     rel = manifest_path[len(root):].lstrip("/") if manifest_path.startswith(root) else manifest_path
@@ -41,7 +44,9 @@ def layer_of(manifest_path: str, root: str) -> str:
             return "adapter"
         if name.startswith("api-"):
             return "adapter"
-        return "support"  # telemetry, scheduler, saga, ... (no extra restriction beyond acyclicity)
+        if name in APPLICATION_CRATES:
+            return "application"  # services built on the ports: they know the domain and the ports only
+        return "support"  # telemetry, ... (no extra restriction beyond acyclicity)
     return "other"
 
 # layer -> layers it may depend on
