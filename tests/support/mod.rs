@@ -11,6 +11,7 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 pub mod api;
+pub mod engine;
 pub mod oidc;
 
 use std::sync::{Arc, LazyLock, Mutex, Weak};
