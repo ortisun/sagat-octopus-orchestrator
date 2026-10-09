@@ -3810,6 +3810,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-infra-sandbox"
+version = "0.1.0"
+dependencies = [
+ "bollard",
+ "futures-util",
+ "jsonschema",
+ "metrics",
+ "sagat-application",
+ "sagat-domain",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "sagat-infra-secrets"
 version = "0.1.0"
 dependencies = [
@@ -3875,6 +3893,7 @@ dependencies = [
  "sagat-infra-ir",
  "sagat-infra-nats",
  "sagat-infra-postgres",
+ "sagat-infra-sandbox",
  "sagat-infra-secrets",
  "sagat-scheduler",
  "sagat-telemetry",

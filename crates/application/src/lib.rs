@@ -19,6 +19,7 @@ pub mod maintenance;
 pub mod outbound;
 pub mod quotas;
 pub mod runs;
+pub mod sandbox;
 pub mod secrets;
 pub mod signing;
 pub mod worker;

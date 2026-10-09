@@ -1,0 +1,910 @@
+//! The sandbox, made of containers.
+//!
+//! One container per build and per run, and nothing is shared between two of them. Each is created
+//! with: no network interface (`none`), a read-only root filesystem, a small writable `/tmp` that is
+//! not executable, every Linux capability dropped, `no-new-privileges`, the engine's default seccomp
+//! profile, an unprivileged user, a private PID and IPC namespace, a memory limit with swap off, a
+//! CPU quota and a CPU-time limit, a limit on processes, on file size and on open files, no log
+//! driver, no mounts and nothing from the host. The code gets in as a tar archive before the
+//! container starts and gets out as one line on standard output.
+//!
+//! This is as strong as the container runtime under it (`runc` here; a kernel bug or a runtime bug
+//! is an escape). A stronger runtime (gVisor, Kata) is a matter of the engine's configuration, not
+//! of this code, and is the recommended setting for a shared deployment.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use bollard::Docker;
+use bollard::container::LogOutput;
+use bollard::models::{ContainerCreateBody, HostConfig, HostConfigLogConfig, ResourcesUlimits};
+use bollard::query_parameters::{
+    AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
+    RemoveContainerOptionsBuilder, StatsOptionsBuilder,
+};
+use futures_util::StreamExt as _;
+use sagat_application::sandbox::{
+    BuildFailure, BuildRequest, Built, HostCalls, HttpRequest, MAX_RESULT_BYTES, Refusal,
+    RunOutcome, RunRequest, Sandbox,
+};
+use sagat_domain::scripts::{Failure, Language, Limits, redact};
+use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
+use tokio::io::AsyncWriteExt as _;
+
+use crate::protocol::{self, Message};
+use crate::{lockfile, schema};
+
+/// The images the languages run in. Name them by digest in a deployment: a tag moves, a digest
+/// does not, and the digest is part of every build key.
+#[derive(Debug, Clone)]
+pub struct Images {
+    pub typescript: String,
+    pub python: String,
+}
+
+impl Default for Images {
+    fn default() -> Self {
+        Self {
+            typescript: "node:24-alpine".to_owned(),
+            python: "python:3.13-alpine".to_owned(),
+        }
+    }
+}
+
+const LABEL: &str = "sagat.sandbox";
+
+/// Logs which step with the container engine failed and why, and turns the failure into `()`: what
+/// the engine said is for the operator, never for the author of the script.
+fn failed_at<E: std::fmt::Display>(stage: &'static str) -> impl FnOnce(E) {
+    move |error| tracing::error!(stage, %error, "the sandbox could not be driven")
+}
+/// Standard error read from a script before it is cut off, as a multiple of what is kept: a script
+/// that floods its log is stopped, not read for ever.
+const LOG_FLOOD_FACTOR: usize = 16;
+/// A line of the channel is at most the largest result plus its framing.
+const MAX_LINE: usize = MAX_RESULT_BYTES + 16 * 1024;
+const KILL_GRACE: Duration = Duration::from_secs(2);
+/// How long the log is read after the script has said its last word: standard output and standard
+/// error reach the supervisor by separate paths, so the end of one can arrive before the end of the
+/// other. The shims exit right after their last message, so the stream normally ends at once.
+const DRAIN: Duration = Duration::from_millis(750);
+
+/// The container engine, as a sandbox.
+pub struct DockerSandbox {
+    docker: Docker,
+    images: Images,
+    pulled: Mutex<HashSet<String>>,
+}
+
+impl std::fmt::Debug for DockerSandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerSandbox")
+            .field("images", &self.images)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a container did, before anyone decides what it means.
+#[derive(Debug, Default)]
+struct Driven {
+    message: Option<Message>,
+    log: Vec<u8>,
+    log_truncated: bool,
+    denied: Vec<String>,
+    exit_code: Option<i64>,
+    oom: bool,
+    timed_out: bool,
+    flooded: bool,
+    wall: Duration,
+    start: Duration,
+    memory_peak: Option<u64>,
+    unavailable: bool,
+    /// Values the supervisor handed to the script during the run: to be kept out of its log.
+    handed: Vec<String>,
+}
+
+struct Job {
+    image: String,
+    command: Vec<String>,
+    first_message: Vec<u8>,
+    limits: Limits,
+}
+
+impl DockerSandbox {
+    /// Connects to the container engine the environment names (the local socket by default).
+    ///
+    /// # Errors
+    /// The engine cannot be reached.
+    pub fn connect(images: Images) -> Result<Self, bollard::errors::Error> {
+        Ok(Self {
+            docker: Docker::connect_with_local_defaults()?,
+            images,
+            pulled: Mutex::new(HashSet::new()),
+        })
+    }
+
+    fn image_of(&self, language: Language) -> Option<&str> {
+        match language {
+            Language::TypeScript => Some(&self.images.typescript),
+            Language::Python => Some(&self.images.python),
+            _ => None,
+        }
+    }
+
+    async fn ensure_image(&self, reference: &str) -> Result<String, ()> {
+        if let Ok(found) = self.docker.inspect_image(reference).await {
+            return found.id.ok_or(());
+        }
+        let (name, tag) = reference
+            .rsplit_once(':')
+            .filter(|(_, t)| !t.contains('/'))
+            .unwrap_or((reference, "latest"));
+        let options = CreateImageOptionsBuilder::default()
+            .from_image(name)
+            .tag(tag)
+            .build();
+        let mut pull = self.docker.create_image(Some(options), None, None);
+        while let Some(progress) = pull.next().await {
+            if let Err(error) = progress {
+                tracing::error!(image = reference, %error, "the image could not be pulled");
+                return Err(());
+            }
+        }
+        self.pulled
+            .lock()
+            .map_err(|_| ())?
+            .insert(reference.to_owned());
+        self.docker
+            .inspect_image(reference)
+            .await
+            .map_err(|_| ())?
+            .id
+            .ok_or(())
+    }
+
+    /// Removes the sandboxes older than `age` that something left behind (a supervisor that died
+    /// mid-run): every container this crate makes carries a label.
+    pub async fn sweep(&self, age: Duration) -> usize {
+        use bollard::query_parameters::ListContainersOptionsBuilder;
+        let filters = HashMap::from([("label".to_owned(), vec![format!("{LABEL}=1")])]);
+        let options = ListContainersOptionsBuilder::default()
+            .all(true)
+            .filters(&filters)
+            .build();
+        let Ok(found) = self.docker.list_containers(Some(options)).await else {
+            return 0;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let mut removed = 0;
+        for container in found {
+            let created = u64::try_from(container.created.unwrap_or(0)).unwrap_or(0);
+            if now.saturating_sub(created) >= age.as_secs()
+                && let Some(id) = container.id
+                && self.remove(&id).await
+            {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    async fn remove(&self, name: &str) -> bool {
+        let options = RemoveContainerOptionsBuilder::default()
+            .force(true)
+            .v(true)
+            .build();
+        self.docker
+            .remove_container(name, Some(options))
+            .await
+            .is_ok()
+    }
+
+    fn config(job: &Job) -> ContainerCreateBody {
+        let limits = &job.limits;
+        let memory = i64::try_from(limits.memory_bytes()).unwrap_or(i64::MAX);
+        let scratch = limits.scratch_bytes();
+        let ulimit = |name: &str, soft: i64, hard: i64| ResourcesUlimits {
+            name: Some(name.to_owned()),
+            soft: Some(soft),
+            hard: Some(hard),
+        };
+        ContainerCreateBody {
+            image: Some(job.image.clone()),
+            cmd: Some(job.command.clone()),
+            working_dir: Some("/tmp".to_owned()),
+            user: Some("65534:65534".to_owned()),
+            env: Some(vec![
+                "HOME=/tmp".to_owned(),
+                "LANG=C.UTF-8".to_owned(),
+                "PYTHONDONTWRITEBYTECODE=1".to_owned(),
+            ]),
+            labels: Some(HashMap::from([(LABEL.to_owned(), "1".to_owned())])),
+            network_disabled: Some(true),
+            open_stdin: Some(true),
+            stdin_once: Some(true),
+            attach_stdin: Some(true),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            tty: Some(false),
+            host_config: Some(HostConfig {
+                network_mode: Some("none".to_owned()),
+                readonly_rootfs: Some(true),
+                cap_drop: Some(vec!["ALL".to_owned()]),
+                security_opt: Some(vec!["no-new-privileges".to_owned()]),
+                privileged: Some(false),
+                memory: Some(memory),
+                memory_swap: Some(memory),
+                nano_cpus: Some(i64::from(limits.cpu_millis()) * 1_000_000),
+                pids_limit: Some(i64::from(limits.processes())),
+                tmpfs: Some(HashMap::from([(
+                    "/tmp".to_owned(),
+                    format!("rw,noexec,nosuid,nodev,size={}", scratch),
+                )])),
+                ulimits: Some(vec![
+                    ulimit("nofile", 256, 256),
+                    ulimit("core", 0, 0),
+                    ulimit(
+                        "fsize",
+                        i64::try_from(scratch).unwrap_or(i64::MAX),
+                        i64::try_from(scratch).unwrap_or(i64::MAX),
+                    ),
+                    ulimit(
+                        "cpu",
+                        i64::try_from(limits.cpu_seconds()).unwrap_or(i64::MAX),
+                        i64::try_from(limits.cpu_seconds() + 1).unwrap_or(i64::MAX),
+                    ),
+                ]),
+                init: Some(true),
+                ipc_mode: Some("private".to_owned()),
+                auto_remove: Some(false),
+                log_config: Some(HostConfigLogConfig {
+                    typ: Some("none".to_owned()),
+                    config: None,
+                }),
+                ..HostConfig::default()
+            }),
+            ..ContainerCreateBody::default()
+        }
+    }
+
+    /// Runs `job` to its end, serving the host calls of the code in it with `host`.
+    async fn drive<H: HostCalls>(&self, job: Job, host: Option<&H>) -> Driven {
+        let began = Instant::now();
+        let mut driven = Driven::default();
+        let name = format!("sagat-sbx-{}", uuid::Uuid::now_v7());
+        let create = CreateContainerOptionsBuilder::default().name(&name).build();
+        if let Err(error) = self
+            .docker
+            .create_container(Some(create), Self::config(&job))
+            .await
+        {
+            failed_at("create")(error);
+            driven.unavailable = true;
+            return driven;
+        }
+        let outcome = self
+            .drive_created(&name, &job, host, began, &mut driven)
+            .await;
+        if outcome.is_err() {
+            driven.unavailable = true;
+        }
+        self.remove(&name).await;
+        driven.wall = began.elapsed();
+        driven
+    }
+
+    async fn drive_created<H: HostCalls>(
+        &self,
+        name: &str,
+        job: &Job,
+        host: Option<&H>,
+        began: Instant,
+        driven: &mut Driven,
+    ) -> Result<(), ()> {
+        let attach = AttachContainerOptionsBuilder::default()
+            .stream(true)
+            .stdin(true)
+            .stdout(true)
+            .stderr(true)
+            .build();
+        let mut attached = self
+            .docker
+            .attach_container(name, Some(attach))
+            .await
+            .map_err(failed_at("attach"))?;
+        self.docker
+            .start_container(name, None)
+            .await
+            .map_err(failed_at("start"))?;
+        let sampler = self.sample_memory(name);
+        attached
+            .input
+            .write_all(&job.first_message)
+            .await
+            .map_err(failed_at("send"))?;
+        attached.input.flush().await.map_err(failed_at("send"))?;
+
+        let limits = job.limits;
+        let deadline = tokio::time::Instant::now() + limits.wall();
+        let keep = limits.output_bytes();
+        let mut line: Vec<u8> = Vec::new();
+        let mut secrets_handed: Vec<String> = Vec::new();
+        let mut stderr_seen = 0_usize;
+        let mut drain_until: Option<tokio::time::Instant> = None;
+        'read: loop {
+            let limit = drain_until.map_or(deadline, |end| end.min(deadline));
+            let next = tokio::time::timeout_at(limit, attached.output.next()).await;
+            let chunk = match next {
+                Err(_) => {
+                    driven.timed_out = driven.message.is_none();
+                    break;
+                }
+                Ok(None) | Ok(Some(Err(_))) => break,
+                Ok(Some(Ok(chunk))) => chunk,
+            };
+            match chunk {
+                LogOutput::StdErr { message } => {
+                    let room = keep.saturating_sub(driven.log.len());
+                    driven
+                        .log
+                        .extend_from_slice(&message[..message.len().min(room)]);
+                    if message.len() > room {
+                        driven.log_truncated = true;
+                    }
+                    // Past what is kept the script is read a while longer and then stopped.
+                    stderr_seen = stderr_seen.saturating_add(message.len());
+                    if driven.log_truncated && stderr_seen > keep.saturating_mul(LOG_FLOOD_FACTOR) {
+                        driven.flooded = true;
+                        break;
+                    }
+                }
+                LogOutput::StdOut { .. } | LogOutput::Console { .. }
+                    if driven.message.is_some() => {}
+                LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                    for byte in message.iter().copied() {
+                        if byte != b'\n' {
+                            line.push(byte);
+                            if line.len() > MAX_LINE {
+                                driven.flooded = true;
+                                break 'read;
+                            }
+                            continue;
+                        }
+                        let parsed = protocol::parse(&line);
+                        line.clear();
+                        let Some(parsed) = parsed else { continue };
+                        match parsed {
+                            Message::Ready => {
+                                driven.start = began.elapsed();
+                            }
+                            Message::Fetch { id, request } => {
+                                let reply =
+                                    self.serve_fetch(host, id, request, driven, deadline).await;
+                                match reply {
+                                    Some(bytes) => {
+                                        let _ = attached.input.write_all(&bytes).await;
+                                        let _ = attached.input.flush().await;
+                                    }
+                                    None => {
+                                        driven.timed_out = true;
+                                        break 'read;
+                                    }
+                                }
+                            }
+                            Message::Secret { id, name: secret } => {
+                                let reply = match host {
+                                    None => {
+                                        driven.denied.push(format!("secret {secret}"));
+                                        protocol::refusal(id, "denied")
+                                    }
+                                    Some(host) => match tokio::time::timeout_at(
+                                        deadline,
+                                        host.secret(&secret),
+                                    )
+                                    .await
+                                    {
+                                        Err(_) => {
+                                            driven.timed_out = true;
+                                            break 'read;
+                                        }
+                                        Ok(Ok(value)) => {
+                                            secrets_handed.push(value.clone());
+                                            protocol::secret_reply(id, &value)
+                                        }
+                                        Ok(Err(Refusal::Denied)) => {
+                                            driven.denied.push(format!("secret {secret}"));
+                                            protocol::refusal(id, "denied")
+                                        }
+                                        Ok(Err(Refusal::Failed)) => {
+                                            protocol::refusal(id, "unavailable")
+                                        }
+                                    },
+                                };
+                                let _ = attached.input.write_all(&reply).await;
+                                let _ = attached.input.flush().await;
+                            }
+                            done @ (Message::Result(_)
+                            | Message::Error { .. }
+                            | Message::Built { .. }
+                            | Message::Rejected(_)) => {
+                                driven.message = Some(done);
+                                drain_until = Some(tokio::time::Instant::now() + DRAIN);
+                                // Whatever else the script says on the channel after this is not heard.
+                                break;
+                            }
+                        }
+                    }
+                }
+                LogOutput::StdIn { .. } => {}
+            }
+        }
+        // The code has said what it had to say, or run out of time or room: end it, then see how.
+        drop(attached);
+        let _ = self
+            .docker
+            .kill_container(
+                name,
+                None::<bollard::query_parameters::KillContainerOptions>,
+            )
+            .await;
+        driven.memory_peak = sampler.finish().await;
+        let end = Instant::now() + KILL_GRACE;
+        loop {
+            if let Ok(state) = self.docker.inspect_container(name, None).await {
+                let state = state.state.unwrap_or_default();
+                if state.running != Some(true) || Instant::now() >= end {
+                    driven.exit_code = state.exit_code;
+                    driven.oom = state.oom_killed == Some(true);
+                    break;
+                }
+            } else {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        driven.handed = secrets_handed;
+        Ok(())
+    }
+
+    async fn serve_fetch<H: HostCalls>(
+        &self,
+        host: Option<&H>,
+        id: u64,
+        request: HttpRequest,
+        driven: &mut Driven,
+        deadline: tokio::time::Instant,
+    ) -> Option<Vec<u8>> {
+        let target = destination(&request.url);
+        let Some(host) = host else {
+            driven.denied.push(format!("fetch {target}"));
+            return Some(protocol::refusal(id, "denied"));
+        };
+        match tokio::time::timeout_at(deadline, host.fetch(request)).await {
+            Err(_) => None,
+            Ok(Ok(reply)) => Some(protocol::fetch_reply(id, &reply)),
+            Ok(Err(Refusal::Denied)) => {
+                driven.denied.push(format!("fetch {target}"));
+                Some(protocol::refusal(id, "denied"))
+            }
+            Ok(Err(Refusal::Failed)) => Some(protocol::refusal(id, "unavailable")),
+        }
+    }
+
+    fn sample_memory(&self, name: &str) -> Sampler {
+        let docker = self.docker.clone();
+        let name = name.to_owned();
+        let handle = tokio::spawn(async move {
+            let options = StatsOptionsBuilder::default().stream(true).build();
+            let mut stats = docker.stats(&name, Some(options));
+            let mut peak: Option<u64> = None;
+            while let Some(Ok(sample)) = stats.next().await {
+                if let Some(usage) = sample.memory_stats.and_then(|m| m.usage) {
+                    peak = Some(peak.map_or(usage, |p| p.max(usage)));
+                }
+            }
+            peak
+        });
+        Sampler(handle)
+    }
+}
+
+struct Sampler(tokio::task::JoinHandle<Option<u64>>);
+
+impl Sampler {
+    async fn finish(self) -> Option<u64> {
+        // The stream ends with the container; give it a moment to say its last sample.
+        match tokio::time::timeout(Duration::from_millis(300), self.0).await {
+            Ok(Ok(peak)) => peak,
+            _ => None,
+        }
+    }
+}
+
+/// `scheme://host[:port]` of a URL: what may be recorded about a refused request. The path and the
+/// query can be the credential.
+fn destination(url: &str) -> String {
+    let end = url
+        .find("://")
+        .map(|at| at + 3)
+        .and_then(|from| url[from..].find(['/', '?', '#']).map(|rel| from + rel))
+        .unwrap_or(url.len());
+    url[..end.min(url.len())].chars().take(200).collect()
+}
+
+fn shim_version() -> String {
+    let mut hash = Sha256::new();
+    for part in [RUNTIME_MJS, RUNTIME_PY, BUILD_MJS, BUILD_PY] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    hash.finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+const RUNTIME_MJS: &str = include_str!("../shims/runtime.mjs");
+const RUNTIME_PY: &str = include_str!("../shims/runtime.py");
+const BUILD_MJS: &str = include_str!("../shims/build.mjs");
+const BUILD_PY: &str = include_str!("../shims/build.py");
+
+fn artifact_json(language: Language, entry: &str, files: &[(String, String)]) -> Vec<u8> {
+    let files: std::collections::BTreeMap<&str, &str> = files
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    serde_json::to_vec(
+        &json!({"v": 1, "language": language.as_str(), "entry": entry, "files": files}),
+    )
+    .unwrap_or_default()
+}
+
+fn parse_artifact(bytes: &[u8], language: Language) -> Option<Vec<(String, String)>> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if value.get("v")?.as_u64()? != 1 || value.get("language")?.as_str()? != language.as_str() {
+        return None;
+    }
+    let files = value.get("files")?.as_object()?;
+    if files.is_empty() || files.len() > 32 {
+        return None;
+    }
+    files
+        .iter()
+        .map(|(name, content)| {
+            let safe = !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+                && !name.starts_with('.');
+            safe.then(|| {
+                (
+                    name.clone(),
+                    content.as_str().unwrap_or_default().to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+impl Sandbox for DockerSandbox {
+    async fn toolchain(&self, language: Language) -> Result<String, BuildFailure> {
+        let image = self.image_of(language).ok_or(BuildFailure::Unsupported)?;
+        let id = self
+            .ensure_image(image)
+            .await
+            .map_err(|()| BuildFailure::Unavailable)?;
+        Ok(format!("{id};shim={}", shim_version()))
+    }
+
+    async fn build(&self, request: BuildRequest) -> Result<Built, BuildFailure> {
+        let language = request.language;
+        let image = self
+            .image_of(language)
+            .ok_or(BuildFailure::Unsupported)?
+            .to_owned();
+        lockfile::accept(language, request.lockfile.as_ref()).map_err(BuildFailure::Lockfile)?;
+        let toolchain = self.toolchain(language).await?;
+        let command = match language {
+            Language::TypeScript => [
+                "node",
+                "--no-warnings",
+                "--input-type=module",
+                "-e",
+                BUILD_MJS,
+            ],
+            _ => ["python", "-I", "-B", "-c", BUILD_PY],
+        };
+        let job = Job {
+            image,
+            command: command.map(str::to_owned).to_vec(),
+            first_message: protocol::build_message(request.source.as_str()),
+            limits: request.policy.limits,
+        };
+        let driven = self.drive::<NoHost>(job, None).await;
+        if driven.unavailable {
+            return Err(BuildFailure::Unavailable);
+        }
+        let log = redact(&String::from_utf8_lossy(&driven.log), &[]);
+        match driven.message {
+            Some(Message::Built { entry, files }) => {
+                let artifact = artifact_json(language, &entry, &files);
+                let sbom = serde_json::to_vec(&json!({
+                    "bomFormat": "CycloneDX", "specVersion": "1.5",
+                    "metadata": {"component": {"type": "application", "name": "script", "version": "1"}},
+                    "components": [{"type": "platform", "name": language.as_str(), "version": toolchain}],
+                }))
+                .unwrap_or_default();
+                Ok(Built {
+                    artifact,
+                    sbom,
+                    toolchain,
+                    log,
+                })
+            }
+            Some(Message::Rejected(message)) => Err(BuildFailure::Rejected(redact(&message, &[]))),
+            _ if driven.timed_out || driven.oom || driven.flooded => Err(BuildFailure::Limit),
+            _ => {
+                let first = log.lines().next().unwrap_or_default();
+                Err(BuildFailure::Rejected(if first.is_empty() {
+                    "the build produced nothing".to_owned()
+                } else {
+                    format!("the build produced nothing: {first}")
+                }))
+            }
+        }
+    }
+
+    async fn run<H: HostCalls>(&self, request: RunRequest, host: &H) -> RunOutcome {
+        let language = request.language;
+        let failed = |failure: Failure, log: String| RunOutcome {
+            result: Err(failure),
+            log,
+            log_truncated: false,
+            denied: Vec::new(),
+            exit_code: None,
+            wall: Duration::ZERO,
+            memory_peak_bytes: None,
+            start: Duration::ZERO,
+            inferred_input_schema: None,
+            inferred_output_schema: None,
+        };
+        let Some(image) = self.image_of(language).map(str::to_owned) else {
+            return failed(
+                Failure::Unavailable,
+                "no runner for this language".to_owned(),
+            );
+        };
+        let Some(files) = parse_artifact(&request.artifact, language) else {
+            return failed(
+                Failure::Unavailable,
+                "the artifact is not one this runner can load".to_owned(),
+            );
+        };
+        let Ok(input) = serde_json::from_slice::<Value>(&request.input) else {
+            return failed(Failure::SchemaViolation, "the input is not JSON".to_owned());
+        };
+        if let Some(declared) = &request.input_schema
+            && let Ok(declared) = serde_json::from_slice::<Value>(declared)
+            && let Err(why) = schema::validate(&declared, &input)
+        {
+            return failed(
+                Failure::SchemaViolation,
+                format!("the input does not match its schema: {why}"),
+            );
+        }
+        let command = match language {
+            Language::TypeScript => [
+                "node",
+                "--no-warnings",
+                "--input-type=module",
+                "-e",
+                RUNTIME_MJS,
+            ],
+            _ => ["python", "-I", "-B", "-c", RUNTIME_PY],
+        };
+        if self.ensure_image(&image).await.is_err() {
+            return failed(
+                Failure::Unavailable,
+                "the runtime image is not available".to_owned(),
+            );
+        }
+        let job = Job {
+            image,
+            command: command.map(str::to_owned).to_vec(),
+            first_message: protocol::run_message(&input, &files),
+            limits: request.policy.limits,
+        };
+        let driven = self.drive(job, Some(host)).await;
+
+        let mut hide: Vec<&str> = request.secrets_to_hide.iter().map(String::as_str).collect();
+        hide.extend(driven.handed.iter().map(String::as_str));
+        let log = redact(&String::from_utf8_lossy(&driven.log), &hide);
+        let result = if driven.unavailable {
+            Err(Failure::Unavailable)
+        } else if driven.timed_out {
+            Err(Failure::Timeout)
+        } else if driven.oom {
+            Err(Failure::OutOfMemory)
+        } else if driven.flooded {
+            Err(Failure::OutputLimit)
+        } else {
+            match &driven.message {
+                Some(Message::Result(value)) => {
+                    let bytes = serde_json::to_vec(value).unwrap_or_default();
+                    if bytes.len() > MAX_RESULT_BYTES {
+                        Err(Failure::OutputLimit)
+                    } else if let Some(declared) = &request.output_schema
+                        && let Ok(declared) = serde_json::from_slice::<Value>(declared)
+                        && schema::validate(&declared, value).is_err()
+                    {
+                        Err(Failure::SchemaViolation)
+                    } else {
+                        let shown = redact(&String::from_utf8_lossy(&bytes), &hide);
+                        if shown == String::from_utf8_lossy(&bytes) {
+                            Ok(bytes)
+                        } else {
+                            // A secret in the result is kept out of it, and the run says so.
+                            Ok(shown.into_bytes())
+                        }
+                    }
+                }
+                Some(Message::Error { message, stack }) => {
+                    let mut text = redact(message, &hide);
+                    if !stack.is_empty() {
+                        text.push('\n');
+                        text.push_str(&redact(stack, &hide));
+                    }
+                    return RunOutcome {
+                        result: Err(if !driven.denied.is_empty() && text.contains("denied") {
+                            Failure::Denied
+                        } else {
+                            Failure::Error
+                        }),
+                        log: join_log(log, &text, request.policy.limits.output_bytes()),
+                        log_truncated: driven.log_truncated,
+                        denied: driven.denied,
+                        exit_code: driven.exit_code,
+                        wall: driven.wall,
+                        memory_peak_bytes: driven.memory_peak,
+                        start: driven.start,
+                        inferred_input_schema: None,
+                        inferred_output_schema: None,
+                    };
+                }
+                _ => Err(Failure::NoResult),
+            }
+        };
+        let (inferred_input, inferred_output) = match &result {
+            Ok(bytes) => (
+                request
+                    .input_schema
+                    .is_none()
+                    .then(|| schema::infer(&input)),
+                request
+                    .output_schema
+                    .is_none()
+                    .then(|| {
+                        serde_json::from_slice::<Value>(bytes)
+                            .map(|v| schema::infer(&v))
+                            .ok()
+                    })
+                    .flatten(),
+            ),
+            Err(_) => (None, None),
+        };
+        RunOutcome {
+            result,
+            log,
+            log_truncated: driven.log_truncated,
+            denied: driven.denied,
+            exit_code: driven.exit_code,
+            wall: driven.wall,
+            memory_peak_bytes: driven.memory_peak,
+            start: driven.start,
+            inferred_input_schema: inferred_input.and_then(|v| serde_json::to_vec(&v).ok()),
+            inferred_output_schema: inferred_output.and_then(|v| serde_json::to_vec(&v).ok()),
+        }
+    }
+}
+
+fn join_log(log: String, error: &str, max: usize) -> String {
+    let mut text = log;
+    if !error.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(error);
+    }
+    if text.len() > max {
+        let mut cut = max;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+    }
+    text
+}
+
+/// A builder asks nothing of the outside world.
+struct NoHost;
+
+impl HostCalls for NoHost {
+    async fn fetch(
+        &self,
+        _: HttpRequest,
+    ) -> Result<sagat_application::sandbox::HttpReply, Refusal> {
+        Err(Refusal::Denied)
+    }
+
+    async fn secret(&self, _: &str) -> Result<String, Refusal> {
+        Err(Refusal::Denied)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_host_of_a_refused_request_is_recorded() {
+        assert_eq!(
+            destination("http://169.254.169.254/latest/meta-data/iam?token=abc"),
+            "http://169.254.169.254"
+        );
+        assert_eq!(
+            destination("https://api.example.com:8443/x/secret-path"),
+            "https://api.example.com:8443"
+        );
+        assert_eq!(destination("https://host"), "https://host");
+        assert_eq!(destination("not a url"), "not a url");
+    }
+
+    #[test]
+    fn an_artifact_names_only_plain_files_and_only_its_own_language() {
+        let ok = artifact_json(
+            Language::TypeScript,
+            "main.mjs",
+            &[("main.mjs".to_owned(), "1".to_owned())],
+        );
+        assert!(parse_artifact(&ok, Language::TypeScript).is_some());
+        assert!(
+            parse_artifact(&ok, Language::Python).is_none(),
+            "another language's artifact"
+        );
+        for bad in [
+            br#"{"v":2,"language":"typescript","entry":"a","files":{"a":"1"}}"#.as_slice(),
+            br#"{"v":1,"language":"typescript","entry":"a","files":{}}"#.as_slice(),
+            br#"{"v":1,"language":"typescript","entry":"a","files":{"../etc/passwd":"1"}}"#
+                .as_slice(),
+            br#"{"v":1,"language":"typescript","entry":"a","files":{"a/b":"1"}}"#.as_slice(),
+            br#"{"v":1,"language":"typescript","entry":"a","files":{".hidden":"1"}}"#.as_slice(),
+            b"not json".as_slice(),
+        ] {
+            assert!(
+                parse_artifact(bad, Language::TypeScript).is_none(),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
+
+    #[test]
+    fn the_shims_are_part_of_the_toolchain_identity() {
+        let version = shim_version();
+        assert_eq!(version.len(), 16);
+        assert_eq!(version, shim_version(), "stable for the same files");
+    }
+
+    #[test]
+    fn a_log_with_the_error_appended_stays_within_its_bound_on_a_character() {
+        let joined = join_log("héllo".to_owned(), "wörld ✓ more text", 12);
+        assert!(joined.len() <= 12);
+        assert!(joined.is_char_boundary(joined.len()));
+    }
+}
