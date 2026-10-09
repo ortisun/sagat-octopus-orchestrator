@@ -171,8 +171,8 @@ const ALL_ROLES: [Role; 5] = [
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
-        DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, RunOperate, RunRead,
-        RunSignal, RunStart, WorkerExecute, WorkspaceRead,
+        DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, QuotaRead, RunOperate,
+        RunRead, RunSignal, RunStart, SecretRead, SecretUse, WorkerExecute, WorkspaceRead,
     };
     match role {
         Role::Admin => Permission::ALL.to_vec(),
@@ -185,6 +185,9 @@ fn expected(role: Role) -> Vec<Permission> {
                 DefinitionPublish,
                 RunStart,
                 RunRead,
+                SecretRead,
+                SecretUse,
+                QuotaRead,
             ]
         }
         Role::Operator => vec![
@@ -195,8 +198,15 @@ fn expected(role: Role) -> Vec<Permission> {
             RunRead,
             RunOperate,
             RunSignal,
+            QuotaRead,
         ],
-        Role::Viewer => vec![WorkspaceRead, NamespaceRead, DefinitionRead, RunRead],
+        Role::Viewer => vec![
+            WorkspaceRead,
+            NamespaceRead,
+            DefinitionRead,
+            RunRead,
+            QuotaRead,
+        ],
         Role::Worker => vec![WorkerExecute],
     }
 }
@@ -222,6 +232,11 @@ fn only_admin_can_create_scopes_manage_members_or_read_audit() {
         Permission::NamespaceCreate,
         Permission::MembershipManage,
         Permission::AuditRead,
+        // Who may change what a tenant's secrets, quotas, egress and workers are allowed to do.
+        Permission::SecretManage,
+        Permission::QuotaManage,
+        Permission::EgressManage,
+        Permission::WorkerBind,
     ] {
         assert!(Role::Admin.grants(restricted));
         for role in [Role::Developer, Role::Operator, Role::Viewer, Role::Worker] {

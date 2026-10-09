@@ -35,6 +35,25 @@ pub enum AuditAction {
     /// The caller asked for a resource that exists only in another tenant. The record carries the
     /// identifier the caller supplied and nothing about the other tenant.
     CrossTenantAccessDenied,
+    /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
+    SecretStored,
+    SecretDeleted,
+    /// Someone was allowed to reference a secret from workflows, or no longer is.
+    SecretAccessGranted,
+    SecretAccessRevoked,
+    /// A worker received the value of a secret for one leased attempt.
+    SecretResolved,
+    /// A workflow referenced a secret its publisher may not use, or a lease asked for one it was
+    /// not given.
+    SecretDenied,
+    QuotaChanged,
+    /// The egress policy of a namespace was replaced.
+    EgressPolicyChanged,
+    /// An outbound request was refused by the egress policy.
+    EgressDenied,
+    /// A worker identity was bound to a namespace and activities, or unbound.
+    WorkerBound,
+    WorkerUnbound,
 }
 
 impl AuditAction {
@@ -54,6 +73,17 @@ impl AuditAction {
             Self::RunResumed => "run.resumed",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
+            Self::SecretStored => "secret.stored",
+            Self::SecretDeleted => "secret.deleted",
+            Self::SecretAccessGranted => "secret.access_granted",
+            Self::SecretAccessRevoked => "secret.access_revoked",
+            Self::SecretResolved => "secret.resolved",
+            Self::SecretDenied => "secret.denied",
+            Self::QuotaChanged => "quota.changed",
+            Self::EgressPolicyChanged => "egress.policy_changed",
+            Self::EgressDenied => "egress.denied",
+            Self::WorkerBound => "worker.bound",
+            Self::WorkerUnbound => "worker.unbound",
         }
     }
 }
@@ -74,6 +104,10 @@ pub enum ResourceType {
     Workflow,
     WorkflowVersion,
     Run,
+    Secret,
+    Quota,
+    EgressPolicy,
+    WorkerBinding,
 }
 
 impl ResourceType {
@@ -87,6 +121,10 @@ impl ResourceType {
             Self::Workflow => "workflow",
             Self::WorkflowVersion => "workflow_version",
             Self::Run => "run",
+            Self::Secret => "secret",
+            Self::Quota => "quota",
+            Self::EgressPolicy => "egress_policy",
+            Self::WorkerBinding => "worker_binding",
         }
     }
 }
