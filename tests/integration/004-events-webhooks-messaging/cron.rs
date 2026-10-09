@@ -199,6 +199,16 @@ async fn a_firing_that_cannot_start_is_tried_again_later_and_does_not_hammer() {
         !w.dispatcher.tick().await.did_work(),
         "and not again before then"
     );
+    let still_waiting: f64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM retry_at - clock_timestamp())::float8 FROM workflow_triggers",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("retry planned");
+    assert!(
+        still_waiting < wait,
+        "the retry time is where it was left, not pushed back by another attempt: {wait} then {still_waiting}"
+    );
 
     w.quotas
         .set(
@@ -405,4 +415,40 @@ async fn a_tick_that_could_not_start_is_tried_again_under_the_same_key_so_it_can
         next > tick && retry.is_none(),
         "the schedule moved on and forgot the retry"
     );
+}
+
+#[tokio::test]
+async fn only_the_dispatcher_that_still_sees_the_tick_moves_the_schedule_on() {
+    use sagat_application::dispatch::EventDispatchStore;
+    let w = world().await;
+    w.publish(scheduled("hourly", "0 * * * *", "UTC")).await;
+    w.dispatcher.tick().await;
+    let (id, tick): (uuid::Uuid, time::OffsetDateTime) =
+        sqlx::query_as("SELECT id, next_fire_at FROM workflow_triggers")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("trigger");
+    let first = tick + time::Duration::hours(1);
+    let late = tick + time::Duration::hours(2);
+
+    assert!(
+        w.store
+            .advance_cron_trigger(id, Some(tick), first)
+            .await
+            .expect("advance"),
+        "the dispatcher that fired the tick moves it"
+    );
+    assert!(
+        !w.store
+            .advance_cron_trigger(id, Some(tick), late)
+            .await
+            .expect("advance"),
+        "one that fired the same tick and arrives late finds it moved, and leaves it where it is"
+    );
+    let now: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT next_fire_at FROM workflow_triggers")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("time");
+    assert_eq!(now, first);
 }

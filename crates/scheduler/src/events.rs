@@ -236,12 +236,11 @@ where
                 // does not use up its attempts and is tried again soon, for a day. Anything else is
                 // counted, backs off, and ends in `DEAD`.
                 let waiting = is_waiting_for_room(&error);
-                let attempts = event.attempts + u32::from(!waiting);
                 let age = self.clock.now() - event.received_at;
                 let dead = if waiting {
                     age > time::Duration::try_from(GIVE_UP_AFTER).unwrap_or(time::Duration::DAY)
                 } else {
-                    attempts >= MAX_DISPATCH_ATTEMPTS
+                    event.attempts + 1 >= MAX_DISPATCH_ATTEMPTS
                 };
                 let delay = if waiting {
                     capacity_backoff(self.entropy.unit())
@@ -249,7 +248,7 @@ where
                     dispatch_backoff(event.attempts, self.entropy.unit())
                 };
                 let why = describe(&error);
-                tracing::warn!(%error, attempts, dead, waiting, "dispatching an event failed");
+                tracing::warn!(%error, attempts = event.attempts, dead, waiting, "dispatching an event failed");
                 if let Err(store) = self
                     .store
                     .retry_event(event, why, delay, dead, !waiting)

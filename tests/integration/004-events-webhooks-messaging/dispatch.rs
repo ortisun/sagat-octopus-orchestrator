@@ -1060,3 +1060,52 @@ async fn the_migration_gives_the_waits_it_finds_a_start_and_marks_them_searched(
     .await;
     assert_eq!(w.dispatcher.tick().await.steps_woken, 1);
 }
+
+#[tokio::test]
+async fn two_sources_may_use_the_same_event_id_at_the_same_instant_and_each_starts_its_run() {
+    let w = world().await;
+    w.publish(triggered(
+        "on-order",
+        vec![json!({"kind": "event", "eventType": "order.created"})],
+    ))
+    .await;
+    publish_event(&w, "same-id", "order.created", None, &json!({"n": 1})).await;
+    // The same id from another source, admitted at the very same microsecond.
+    sqlx::query(
+        "INSERT INTO inbox_events (tenant_id, source, event_id, namespace_id, event_type, \
+            correlation_key, subject, occurred_at, payload, payload_digest, received_at, \
+            expires_at, status, attempts, next_attempt_at) \
+         SELECT tenant_id, 'billing', event_id, namespace_id, event_type, correlation_key, \
+            subject, occurred_at, payload, payload_digest, received_at, expires_at, status, \
+            attempts, next_attempt_at FROM inbox_events WHERE source = 'api'",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("a second source");
+    let round = w.dispatcher.tick().await;
+    assert_eq!((round.dispatched, round.runs_started), (2, 2));
+    assert_eq!(runs_of_workflow(&w, "on-order").await.len(), 2);
+}
+
+#[tokio::test]
+async fn an_event_that_was_admitted_before_a_wait_began_does_not_wake_it_from_the_events_side() {
+    let w = world().await;
+    let (without, _) = w.publish(waiting("no-lookback", 0)).await;
+    // Admitted, and not yet dispatched, when the wait begins.
+    publish_event(
+        &w,
+        "early",
+        "payment.confirmed",
+        Some("ord-1"),
+        &json!({"n": 1}),
+    )
+    .await;
+    let run = w.start(without, &json!({"orderId": "ord-1"})).await;
+    let round = w.dispatcher.tick().await;
+    assert_eq!(round.dispatched, 1);
+    assert_eq!(
+        round.steps_woken, 0,
+        "it predates the wait and the wait did not ask to look back"
+    );
+    assert_eq!(w.step_status(run, "pay").await, Some(StepStatus::Waiting));
+}

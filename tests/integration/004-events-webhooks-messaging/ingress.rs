@@ -1081,3 +1081,78 @@ async fn an_event_published_through_the_api_may_have_a_short_window_and_not_a_si
         Err(AppError::NotAllowed(_))
     ));
 }
+
+#[tokio::test]
+async fn an_event_that_was_never_dispatched_keeps_its_id_after_its_window_and_is_not_made_new() {
+    let (w, endpoint) = with_endpoint().await;
+    let first = Signed::typed(SECRET, now_seconds(), "evt-1", "a.b", r#"{"n":1}"#);
+    w.events
+        .receive(endpoint.id, &first.request(Some("a.b")))
+        .await
+        .expect("admitted");
+    // The window ends while the matcher has not got to it: the event is still owed to its triggers.
+    sqlx::query("UPDATE inbox_events SET expires_at = clock_timestamp() - interval '1 second'")
+        .execute(&w.db.pool)
+        .await
+        .expect("age");
+
+    let again = w
+        .events
+        .receive(endpoint.id, &first.request(Some("a.b")))
+        .await
+        .expect("answered");
+    assert!(
+        again.duplicate,
+        "it is still the same event: it was never dispatched, so it has not yet done what it is for"
+    );
+    assert_eq!(inbox_count(&w).await, 1, "and nothing was replaced");
+}
+
+#[tokio::test]
+async fn a_flood_of_requests_that_prove_nothing_is_turned_away_before_anything_is_read() {
+    let (w, endpoint) = with_endpoint().await;
+    // A modest endpoint: the bound on what an unproven caller may spend is a multiple of its rate.
+    let mut modest = settings();
+    modest.limits = EndpointLimits::new(
+        sagat_domain::events::DEFAULT_DEDUPE_TTL,
+        sagat_domain::events::DEFAULT_SKEW,
+        1024,
+        1,
+    )
+    .expect("limits");
+    w.events
+        .update_endpoint(&w.admin, endpoint.id, modest, &ctx())
+        .await
+        .expect("rate");
+
+    // Correctly formed, signed with the wrong secret.
+    let mut refused = 0;
+    let mut turned_away = 0;
+    for i in 0..80 {
+        let junk = Signed::typed(
+            "not-the-secret-not-the-secret-000000",
+            now_seconds(),
+            &format!("junk-{i}"),
+            "a.b",
+            "{}",
+        );
+        match w
+            .events
+            .receive(endpoint.id, &junk.request(Some("a.b")))
+            .await
+        {
+            Err(AppError::Unauthenticated) => refused += 1,
+            Err(AppError::Busy { .. }) => turned_away += 1,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(
+        refused >= 15,
+        "the first requests are looked at and refused: {refused}"
+    );
+    assert!(
+        turned_away >= 40,
+        "and the flood after them is told to wait, without being looked at: {turned_away}"
+    );
+    assert_eq!(inbox_count(&w).await, 0);
+}
