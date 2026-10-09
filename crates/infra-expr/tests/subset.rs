@@ -545,3 +545,23 @@ fn template_variables_are_the_union_of_the_parts() {
         ["input", "run", "steps"]
     );
 }
+
+#[test]
+fn an_error_never_names_a_key_that_came_from_the_data() {
+    // `input.table[input.customerToken]`: the key is a value of the run, here a credential.
+    let env = Env::new().with(
+        "input",
+        json!({"table": {"known": 1}, "customerToken": "tok_live_51Hx9SECRETSECRETSECRET"}),
+    );
+    let compiled = Compiled::compile("input.table[input.customerToken] == 1").expect("compiles");
+    let error = compiled.eval(&env).expect_err("the key is missing");
+    let text = format!("{error} {error:?}");
+    assert!(
+        !text.contains("tok_live") && !text.contains("SECRET"),
+        "{text}"
+    );
+    // A key written in the expression is the author's own text and may be named.
+    let named = Compiled::compile("input.table.missing").expect("compiles");
+    let error = named.eval(&env).expect_err("missing");
+    assert!(format!("{error}").contains("missing"), "{error}");
+}

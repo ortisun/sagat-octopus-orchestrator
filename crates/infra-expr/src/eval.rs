@@ -289,8 +289,11 @@ impl<'e> Run<'e> {
         'x: 'e,
     {
         let base = self.eval(base)?;
+        // A key written in the expression is the author's and may be named; one computed from the
+        // run's data is not (see `select`).
+        let authored = matches!(index, Expr::Literal(_));
         let index = self.eval(index)?;
-        select(base, index.as_ref())
+        select(base, index.as_ref(), authored)
     }
 
     #[inline(never)]
@@ -367,7 +370,21 @@ impl<'e> Run<'e> {
 }
 
 /// Indexing a list by position or a map by key; borrows from the input where it can.
-fn select<'e>(base: Cow<'e, Value>, index: &Value) -> Result<Cow<'e, Value>, ExprError> {
+///
+/// `authored` says the index is a literal of the expression. A key computed from the run's data
+/// may be a customer identifier or a token, and the error reaches logs, so it is never named.
+fn select<'e>(
+    base: Cow<'e, Value>,
+    index: &Value,
+    authored: bool,
+) -> Result<Cow<'e, Value>, ExprError> {
+    let missing = |key: &str| {
+        ExprError::NoSuchKey(if authored {
+            clip(key)
+        } else {
+            COMPUTED_KEY.to_owned()
+        })
+    };
     let position = |n: &serde_json::Number| n.as_u64().and_then(|i| usize::try_from(i).ok());
     match (base, index) {
         (Cow::Borrowed(Value::Array(items)), Value::Number(n)) => position(n)
@@ -380,17 +397,18 @@ fn select<'e>(base: Cow<'e, Value>, index: &Value) -> Result<Cow<'e, Value>, Exp
                 .ok_or(ExprError::IndexOutOfRange)?;
             Ok(Cow::Owned(items.swap_remove(i)))
         }
-        (Cow::Borrowed(Value::Object(map)), Value::String(key)) => map
-            .get(key)
-            .map(Cow::Borrowed)
-            .ok_or_else(|| ExprError::NoSuchKey(clip(key))),
-        (Cow::Owned(Value::Object(mut map)), Value::String(key)) => map
-            .remove(key)
-            .map(Cow::Owned)
-            .ok_or_else(|| ExprError::NoSuchKey(clip(key))),
+        (Cow::Borrowed(Value::Object(map)), Value::String(key)) => {
+            map.get(key).map(Cow::Borrowed).ok_or_else(|| missing(key))
+        }
+        (Cow::Owned(Value::Object(mut map)), Value::String(key)) => {
+            map.remove(key).map(Cow::Owned).ok_or_else(|| missing(key))
+        }
         _ => Err(ExprError::Type("cannot index this value with that key")),
     }
 }
+
+/// What an error says in place of a key that was computed from data.
+const COMPUTED_KEY: &str = "<computed>";
 
 fn boolean(value: &Value) -> Result<bool, ExprError> {
     match value {
