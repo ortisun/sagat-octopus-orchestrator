@@ -1,0 +1,194 @@
+//! US02: an author with access to a staging secret publishes a workflow; the worker receives only a
+//! temporary capability and the authorized secrets (FR-009-002, FR-009-003, NFR-009-SEC).
+
+use reqwest::Method;
+use sagat_domain::identity::Role;
+use serde_json::{Value, json};
+
+use crate::support::worker::{machine_code, platform};
+
+const CANARY: &str = "sk-live-4eC39HqLyjWDarjtT1zdp7dc";
+
+async fn publish_as_dora(p: &crate::support::worker::Platform, id: &str) -> (u16, Value) {
+    p.rest_as(
+        "dora",
+        Method::POST,
+        &format!("/workflows/{id}/publish"),
+        Some(&json!({"draftRevision": 1})),
+    )
+    .await
+}
+
+fn charge_ir(name: &str, secrets: &[&str]) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": name}, "entrypoint": "a",
+        "nodes": [{"id": "a", "type": "activity", "activity": "act.a", "secrets": secrets}]
+    })
+}
+
+#[tokio::test]
+async fn an_author_with_access_publishes_and_the_worker_receives_only_the_authorized_secret() {
+    let p = platform().await;
+    let ns = p.namespace_id().await;
+    p.grant(p.tenant, "dora", Role::Developer).await;
+
+    // The administrator stores two secrets and lets dora use only one of them.
+    for (name, value) in [
+        ("stripe-key", CANARY),
+        ("other-key", "not-for-this-workflow-0001"),
+    ] {
+        let (status, body) = p
+            .rest(
+                Method::PUT,
+                &format!("/namespaces/{ns}/secrets/{name}"),
+                Some(&json!({"value": value})),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body.get("value").is_none(), "{body}");
+    }
+
+    // Without being on the list, dora cannot publish a workflow that names the secret.
+    let (status, created) = p
+        .rest_as(
+            "dora",
+            Method::POST,
+            "/workflows",
+            Some(&json!({"name": "charge-flow", "ir": charge_ir("charge-flow", &["stripe-key"])})),
+        )
+        .await;
+    assert_eq!(status, 201, "{created}");
+    let id = created["id"].as_str().expect("id").to_owned();
+    let (status, refused) = publish_as_dora(&p, &id).await;
+    assert_eq!(status, 403, "{refused}");
+    assert_eq!(refused["code"], "FORBIDDEN");
+    assert_eq!(refused["details"]["reason"], "SECRET_NOT_USABLE");
+
+    // Put on the list, she can.
+    let (status, _) = p
+        .rest_as(
+            "alice",
+            Method::PUT,
+            &format!("/namespaces/{ns}/secrets/stripe-key/access/dora"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 204);
+    let (status, published) = publish_as_dora(&p, &id).await;
+    assert_eq!(status, 201, "{published}");
+
+    // A worker takes the task and asks for the secrets of its step.
+    let run = p.start(&id, &json!({})).await;
+    let mut worker = p.worker("wendy").await;
+    worker.register(&["act.a"]).await;
+    let lease = worker.one_task().await;
+    let secrets = worker.resolve_secrets(&lease).await.expect("resolve");
+    assert_eq!(secrets.len(), 1, "only what the step declares");
+    assert_eq!(secrets[0].name, "stripe-key");
+    assert_eq!(secrets[0].value, CANARY.as_bytes());
+    assert_eq!(secrets[0].version, 1);
+    assert!(
+        !format!("{secrets:?}").contains(CANARY),
+        "the generated message never prints a value"
+    );
+    assert!(
+        !lease.input_json.contains(CANARY),
+        "the lease itself carries no secret: {}",
+        lease.input_json
+    );
+
+    // The capability is the lease: another token gets nothing.
+    let mut forged = lease.clone();
+    forged.lease_token = "not-the-token".into();
+    let denied = worker.resolve_secrets(&forged).await.expect_err("stale");
+    assert_eq!(denied.code(), tonic::Code::Aborted);
+    assert_eq!(machine_code(&denied), "STALE_ATTEMPT");
+
+    // The step finishes; the capability ends with the attempt.
+    worker
+        .complete(&lease, &json!({"charged": true}))
+        .await
+        .expect("complete");
+    let after = worker.resolve_secrets(&lease).await.expect_err("over");
+    assert_eq!(machine_code(&after), "STALE_ATTEMPT");
+    assert_eq!(p.status(&run).await, "SUCCEEDED");
+}
+
+#[tokio::test]
+async fn the_secret_reaches_no_response_log_row_or_error_on_the_way() {
+    let p = platform().await;
+    let ns = p.namespace_id().await;
+    let (status, _) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/secrets/stripe-key"),
+            Some(&json!({"value": CANARY})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let id = p
+        .publish("charge-flow", &charge_ir("charge-flow", &["stripe-key"]))
+        .await;
+    let run = p.start(&id, &json!({})).await;
+    let mut worker = p.worker("wendy").await;
+    worker.register(&["act.a"]).await;
+    let lease = worker.one_task().await;
+    let secrets = worker.resolve_secrets(&lease).await.expect("resolve");
+    assert_eq!(secrets[0].value, CANARY.as_bytes());
+
+    // A careless activity echoes its secret back: the platform fails the step instead of storing it.
+    let done = worker
+        .complete(&lease, &json!({"debug": format!("using {CANARY}")}))
+        .await
+        .expect("accepted as a failure");
+    assert_eq!(done.step_status, "FAILED");
+    assert_eq!(p.status(&run).await, "FAILED");
+
+    // Everything the platform keeps about the run, and everything it said about it.
+    let journal = p
+        .rest(Method::GET, &format!("/runs/{run}/events"), None)
+        .await
+        .1;
+    let graph = p
+        .rest(Method::GET, &format!("/runs/{run}/graph"), None)
+        .await
+        .1;
+    let run_body = p.run(&run).await;
+    for (what, body) in [("journal", journal), ("graph", graph), ("run", run_body)] {
+        assert!(!body.to_string().contains(CANARY), "{what}: {body}");
+    }
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            .fetch_all(&p.api.db.pool)
+            .await
+            .expect("tables");
+    for table in tables {
+        let sql = format!("SELECT count(*) FROM \"{table}\" x WHERE strpos(x::text, $1) > 0");
+        let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(CANARY)
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "the value is in {table}");
+    }
+}
+
+#[tokio::test]
+async fn without_a_binding_a_worker_cannot_even_register_and_the_status_says_why() {
+    let p = platform().await;
+    // A worker identity that holds the role but whose administrator never bound it.
+    p.grant(p.tenant, "stray", Role::Worker).await;
+    let mut stray = p.connect("stray", crate::support::worker::TENANT).await;
+    let request = stray.req(crate::support::worker::Worker::register_message(
+        &["act.a"],
+        10,
+    ));
+    let status = stray
+        .client
+        .register_worker(request)
+        .await
+        .expect_err("not bound");
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    assert_eq!(machine_code(&status), "NOT_BOUND");
+}

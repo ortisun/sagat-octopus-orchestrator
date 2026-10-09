@@ -9,6 +9,7 @@
 //! have happened (hence idempotency keys).
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -30,8 +31,10 @@ use crate::execution::{
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
+use crate::secrets::{SecretProblem, SecretState, check_usable};
 use sagat_domain::binding::ActivityPattern;
 use sagat_domain::quota::QuotaResource;
+use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_data};
 
 /// The only protocol version this server speaks.
 pub const PROTOCOL_VERSION: &str = "1";
@@ -225,6 +228,45 @@ impl std::fmt::Debug for TaskRef<'_> {
     }
 }
 
+/// A secret handed to a worker for one attempt. The value prints as `<redacted>`.
+#[derive(Debug)]
+pub struct ResolvedSecret {
+    pub name: SecretName,
+    pub version: u32,
+    pub value: SecretValue,
+}
+
+/// `text` as it would appear inside a JSON string: quotes, backslashes and control characters
+/// escaped, and with `ascii_only` every non-ASCII character as `\uXXXX` (what serializers that
+/// escape non-ASCII output do).
+fn json_escaped(text: &str, ascii_only: bool) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len() + 8);
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c if ascii_only && !c.is_ascii() => {
+                let mut units = [0u16; 2];
+                for unit in c.encode_utf16(&mut units) {
+                    let _ = write!(out, "\\u{unit:04x}");
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Shortest secret value the output scan looks for.
+const MIN_SCANNED_SECRET_BYTES: usize = 8;
+
 /// Outcome of a step command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepAck {
@@ -249,6 +291,8 @@ pub struct WorkerService<S, C, E, R> {
     engine: Engine<E>,
     entropy: R,
     settings: WorkerSettings,
+    /// Opens secrets for workers; `None` when the instance has no key ring (secrets are off).
+    vault: Option<Arc<dyn SecretCipher>>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -277,7 +321,15 @@ where
             engine,
             entropy,
             settings,
+            vault: None,
         }
+    }
+
+    /// Lets workers resolve the secrets their steps declare, opened with `cipher`.
+    #[must_use]
+    pub fn with_vault(mut self, cipher: Arc<dyn SecretCipher>) -> Self {
+        self.vault = Some(cipher);
+        self
     }
 
     #[must_use]
@@ -749,6 +801,39 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        // A secret the step was given must not come back in its output, where it would be stored in
+        // the journal and handed to every later step: the step fails for good instead.
+        if let Some(name) = self.secret_in_output(&mut tx, task, output).await? {
+            effects.audit = Some(
+                AuditRecord::by(
+                    principal,
+                    AuditAction::SecretDenied,
+                    ResourceType::Secret,
+                    format!("{}/{name}", tx.info().namespace_id),
+                    None,
+                    self.clock.now(),
+                )
+                .with_reason(format!(
+                    "output of {} on run {} contained the value of a secret",
+                    task.node, task.run_id
+                )),
+            );
+            let node = task.node.clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let failure = execution::Failure {
+                        fence,
+                        code: FailureCode::secret_in_output(),
+                        retryable: false,
+                        jitter_sample: 0.0,
+                    };
+                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
+                })
+                .await
+                .map_err(engine_error)?;
+            return self.finish(tx, task, idempotency).await;
+        }
         // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
         // a completion that would exceed it fails the step (a retry would only exceed it again).
         let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
@@ -889,6 +974,191 @@ where
             .replay(idempotency)
             .await?
             .map(|stored| parse_ack(&stored, true, task.run_id)))
+    }
+
+    /// The secrets the step declares, from its definition.
+    fn declared_secrets<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> Vec<SecretName> {
+        let (def, _) = tx.parts();
+        def.node(task.node)
+            .map(|node| node.secrets().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Hands a worker the values of the secrets its step declares, for the length of the attempt it
+    /// holds the lease of (FR-009-002, US02).
+    ///
+    /// The lease is the temporary capability: it must be current, the identity still bound to the
+    /// activity, and the *publisher* of the workflow version must still be allowed to use every
+    /// secret, now and not only when they published (an access list that changed is honoured by the
+    /// next resolution). All or nothing: one unusable secret and the worker gets none. The
+    /// resolution is audited in the same transaction that read the values, with names and never
+    /// values, so a value cannot be handed out without a record.
+    ///
+    /// # Errors
+    /// [`AppError::StaleAttempt`], [`AppError::NotBound`], [`AppError::SecretUnavailable`] (a secret
+    /// is gone or its publisher may no longer use it; audited), [`AppError::NotAllowed`] when this
+    /// instance has no key ring.
+    pub async fn resolve_secrets(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<ResolvedSecret>, AppError> {
+        principal.authorize(Permission::WorkerExecute)?;
+        let Some(cipher) = &self.vault else {
+            return Err(AppError::NotAllowed(
+                "secrets are not configured on this instance",
+            ));
+        };
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        let names = Self::declared_secrets(&mut tx, task);
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let info = tx.info().clone();
+        let inputs = tx.secret_inputs(&names).await?;
+        let states: Vec<_> = inputs
+            .items
+            .iter()
+            .map(|item| {
+                let state = if item.stored.is_some() {
+                    SecretState::Present {
+                        granted: item.granted,
+                    }
+                } else {
+                    SecretState::Missing
+                };
+                (item.name.clone(), state)
+            })
+            .collect();
+        let audit = |action, reason: String| {
+            let mut effects = Effects::by(
+                Actor::Worker(principal.subject().as_str().to_owned()),
+                trace_id.map(str::to_owned),
+            );
+            effects.audit = Some(
+                AuditRecord::by(
+                    principal,
+                    action,
+                    ResourceType::Secret,
+                    format!("{}/run {}", info.namespace_id, info.run_id),
+                    trace_id.map(str::to_owned),
+                    self.clock.now(),
+                )
+                .with_reason(reason),
+            );
+            effects
+        };
+        if let Err(SecretProblem(name)) = check_usable(inputs.publisher_role, &states) {
+            // The denial is written and committed: it is the trail of why a worker got nothing.
+            let effects = audit(
+                AuditAction::SecretDenied,
+                format!(
+                    "node {} attempt {}: {name} not usable by its publisher",
+                    task.node, task.fence.attempt
+                ),
+            );
+            tx.persist(&[], effects).await?;
+            tx.commit().await?;
+            return Err(AppError::SecretUnavailable {
+                name: name.to_string(),
+            });
+        }
+        let mut resolved = Vec::with_capacity(names.len());
+        for name in &names {
+            let stored = inputs
+                .items
+                .iter()
+                .find(|item| &item.name == name)
+                .and_then(|item| item.stored.as_ref())
+                .ok_or(AppError::Internal)?;
+            let aad = associated_data(
+                info.tenant_id,
+                info.namespace_id,
+                name,
+                stored.meta.id,
+                &stored.sealed.key_id,
+            );
+            let value = cipher.open(&stored.sealed, &aad).map_err(|_| {
+                tracing::error!(secret = %name, key = %stored.sealed.key_id, "a stored secret cannot be opened");
+                AppError::Internal
+            })?;
+            resolved.push(ResolvedSecret {
+                name: name.clone(),
+                version: stored.meta.version,
+                value,
+            });
+        }
+        let listed = resolved
+            .iter()
+            .map(|r| format!("{} v{}", r.name, r.version))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let effects = audit(
+            AuditAction::SecretResolved,
+            format!(
+                "node {} attempt {}: {listed}",
+                task.node, task.fence.attempt
+            ),
+        );
+        tx.persist(&[], effects).await?;
+        tx.commit().await?;
+        Ok(resolved)
+    }
+
+    /// The name of a secret the step declares whose value appears in `output`, if one does. Only
+    /// steps that declare secrets pay for the check, and only values of at least eight bytes are
+    /// looked for (a shorter one would match ordinary text); a value that is not UTF-8 is not
+    /// looked for either. Both the value and its JSON-escaped form are searched.
+    async fn secret_in_output<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        output: &[u8],
+    ) -> Result<Option<SecretName>, AppError> {
+        let Some(cipher) = &self.vault else {
+            return Ok(None);
+        };
+        let names = Self::declared_secrets(tx, task);
+        if names.is_empty() {
+            return Ok(None);
+        }
+        let (tenant, namespace) = {
+            let info = tx.info();
+            (info.tenant_id, info.namespace_id)
+        };
+        let inputs = tx.secret_inputs(&names).await?;
+        let Ok(text) = std::str::from_utf8(output) else {
+            return Ok(None);
+        };
+        for item in &inputs.items {
+            let Some(stored) = &item.stored else { continue };
+            let aad = associated_data(
+                tenant,
+                namespace,
+                &item.name,
+                stored.meta.id,
+                &stored.sealed.key_id,
+            );
+            let Ok(value) = cipher.open(&stored.sealed, &aad) else {
+                continue;
+            };
+            if value.len() < MIN_SCANNED_SECRET_BYTES {
+                continue;
+            }
+            let Ok(plain) = std::str::from_utf8(value.expose()) else {
+                continue;
+            };
+            if text.contains(plain)
+                || text.contains(&json_escaped(plain, false))
+                || text.contains(&json_escaped(plain, true))
+            {
+                return Ok(Some(item.name.clone()));
+            }
+        }
+        Ok(None)
     }
 
     /// The caller must still be bound to the activity of the step it reports on. Evaluated at use,
@@ -1044,4 +1314,25 @@ fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {
 #[must_use]
 pub fn describe(events: &[RunEvent]) -> Vec<&'static str> {
     events.iter().map(RunEvent::name).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_escaped;
+
+    #[test]
+    fn a_value_is_searched_for_as_it_would_be_written_in_json() {
+        assert_eq!(json_escaped("plain-value-1", false), "plain-value-1");
+        assert_eq!(json_escaped(r#"a"b\c"#, false), r#"a\"b\\c"#);
+        assert_eq!(
+            json_escaped("line\nbreak\ttab\r", false),
+            r"line\nbreak\ttab\r"
+        );
+        assert_eq!(json_escaped("bell\u{7}", false), r"bell\u0007");
+        // Non-ASCII is left alone by default and spelled out by serializers that escape it.
+        assert_eq!(json_escaped("caf\u{e9}", false), "caf\u{e9}");
+        assert_eq!(json_escaped("caf\u{e9}", true), "caf\\u00e9");
+        // Beyond the BMP it is a surrogate pair.
+        assert_eq!(json_escaped("\u{1f511}", true), "\\ud83d\\udd11");
+    }
 }

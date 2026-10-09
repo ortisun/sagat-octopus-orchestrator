@@ -182,6 +182,16 @@
             },
             "idempotencyTemplate": {
               "type": "string"
+            },
+            "secrets": {
+              "type": "array",
+              "maxItems": 16,
+              "uniqueItems": true,
+              "description": "Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition.",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              }
             }
           }
         }

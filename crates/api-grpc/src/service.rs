@@ -201,6 +201,45 @@ where
         .await
     }
 
+    async fn resolve_secrets(
+        &self,
+        request: Request<pb::ResolveSecretsRequest>,
+    ) -> Result<Response<pb::ResolveSecretsResponse>, Status> {
+        let trace = trace_of(&request);
+        observe("ResolveSecrets", trace, async {
+            let auth = self.authenticate(&request).await?;
+            let message = request.get_ref();
+            let attempt = Attempt::parse(
+                &message.task_id,
+                &message.run_id,
+                &message.step_id,
+                message.attempt,
+                message.generation,
+                &message.lease_token,
+            )?;
+            let resolved = self
+                .workers
+                .resolve_secrets(
+                    &auth.session.principal,
+                    &attempt.task_ref(),
+                    Some(&trace.trace_id().to_string()),
+                )
+                .await
+                .map_err(app)?;
+            Ok(pb::ResolveSecretsResponse {
+                secrets: resolved
+                    .iter()
+                    .map(|secret| pb::ResolvedSecret {
+                        name: secret.name.to_string(),
+                        value: secret.value.expose().to_vec(),
+                        version: secret.version,
+                    })
+                    .collect(),
+            })
+        })
+        .await
+    }
+
     async fn heartbeat(
         &self,
         request: Request<pb::HeartbeatRequest>,

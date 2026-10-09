@@ -45,6 +45,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         subject_rate_limit: sagat_api_http::RateLimitConfig::subject_default(),
         admin_addr: None,
         migrate_on_start: false,
+        secrets: None,
     }
 }
 

@@ -247,7 +247,10 @@ pub fn router_with_governance<S, C, P, X, E, G>(
 where
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore + sagat_application::bindings::BindingStore + 'static,
+    G: sagat_application::quotas::QuotaStore
+        + sagat_application::bindings::BindingStore
+        + sagat_application::secrets::SecretStore
+        + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
     compose(state, limits, move |slots, limits| {
@@ -264,12 +267,16 @@ where
     T: Clone + Send + Sync + 'static,
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore + sagat_application::bindings::BindingStore + 'static,
+    G: sagat_application::quotas::QuotaStore
+        + sagat_application::bindings::BindingStore
+        + sagat_application::secrets::SecretStore
+        + 'static,
 {
     use routes::governance as gov;
     type B<S, C, G> = GovState<S, C, G>;
 
-    Router::new()
+    let serves_secrets = state.secrets().is_some();
+    let mut router = Router::new()
         .route("/quotas", get(gov::list_tenant_quotas::<B<S, C, G>>))
         .route(
             "/quotas/{resource}",
@@ -293,7 +300,30 @@ where
             "/namespaces/{namespace_id}/worker-bindings/{subject}",
             axum::routing::put(gov::bind_worker::<B<S, C, G>>)
                 .delete(gov::unbind_worker::<B<S, C, G>>),
-        )
+        );
+    // Without a key ring there is nothing to seal with: the secret routes do not exist.
+    if serves_secrets {
+        router = router
+            .route(
+                "/namespaces/{namespace_id}/secrets",
+                get(gov::list_secrets::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/secrets/{name}",
+                axum::routing::put(gov::put_secret::<B<S, C, G>>)
+                    .delete(gov::delete_secret::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/secrets/{name}/access",
+                get(gov::list_secret_access::<B<S, C, G>>),
+            )
+            .route(
+                "/namespaces/{namespace_id}/secrets/{name}/access/{subject}",
+                axum::routing::put(gov::grant_secret_access::<B<S, C, G>>)
+                    .delete(gov::revoke_secret_access::<B<S, C, G>>),
+            );
+    }
+    router
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(slots),

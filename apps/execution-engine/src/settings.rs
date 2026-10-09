@@ -9,7 +9,7 @@ use sagat_api_http::{AuthConfig, RateLimitConfig};
 use sagat_application::worker::WorkerSettings;
 use sagat_control_plane::config::{
     ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, optional,
-    rate_limit_error, read_auth, read_rate_limit,
+    rate_limit_error, read_auth, read_rate_limit, read_secrets,
 };
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{DispatchSettings, SchedulerSettings};
@@ -39,6 +39,9 @@ pub struct EngineConfig {
     pub outbox_poll: Duration,
     /// `None`: hints are not published (workers poll; the outbox accumulates).
     pub nats: Option<NatsConfig>,
+    /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
+    /// `ResolveSecrets` call off.
+    pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
 }
 
 fn positive(name: &'static str, value: u64) -> Result<u64, ConfigError> {
@@ -241,6 +244,7 @@ impl EngineConfig {
             dispatch,
             outbox_poll,
             nats,
+            secrets: read_secrets(get)?,
         })
     }
 }

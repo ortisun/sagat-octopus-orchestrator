@@ -24,6 +24,8 @@ use sagat_domain::audit::AuditRecord;
 
 use crate::definitions::{Idempotency, IrCodec, IrError};
 use crate::error::StoreError;
+use crate::secrets::SecretInputs;
+use sagat_domain::secrets::SecretName;
 
 /// Largest payload (run input, step output) kept inline; bigger ones need a blob store, which is not
 /// built yet (research.md, gap G19).
@@ -307,6 +309,14 @@ pub trait RunTx: Send {
         &mut self,
         subject: &str,
     ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
+    /// The declared `names` as they are stored for the publisher of this run's version, with the
+    /// publisher's current role: what a worker's resolution is decided on. Read on the
+    /// transaction's own connection.
+    fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
 
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(

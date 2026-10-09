@@ -715,3 +715,80 @@ fn cases() -> u32 {
         .and_then(|v| v.parse().ok())
         .unwrap_or(300)
 }
+
+// ------------------------------------------------------------------ declared secrets (FR-009-002)
+
+fn with_secrets(secrets: Value) -> Value {
+    let mut a = activity("a");
+    a["secrets"] = secrets;
+    minimal(json!([a]), "a")
+}
+
+#[test]
+fn an_activity_declares_secrets_by_name_and_the_definition_lists_them() {
+    let parsed = parse(&with_secrets(json!(["stripe-key", "smtp.password"]))).expect("parses");
+    let node = parsed
+        .definition
+        .node(&NodeId::parse("a").expect("id"))
+        .expect("node");
+    let names: Vec<_> = node.secrets().iter().map(|s| s.as_str()).collect();
+    assert_eq!(names, ["stripe-key", "smtp.password"]);
+    let all: Vec<_> = parsed
+        .definition
+        .declared_secrets()
+        .into_iter()
+        .map(|s| s.as_str().to_owned())
+        .collect();
+    assert_eq!(
+        all,
+        ["smtp.password", "stripe-key"],
+        "once each, in name order"
+    );
+
+    // No declaration is no secret, and the digest of a document without the field is what it was.
+    let plain = parse(&minimal(json!([activity("a")]), "a")).expect("parses");
+    assert!(plain.definition.declared_secrets().is_empty());
+    assert_ne!(
+        plain.digest, parsed.digest,
+        "the declaration is part of the pinned version"
+    );
+}
+
+#[test]
+fn a_secret_declaration_that_is_not_a_list_of_names_is_refused_with_its_path() {
+    for (what, value) in [
+        ("not an array", json!("stripe-key")),
+        ("a number", json!([5])),
+        ("a value written where a name belongs", json!(["has space"])),
+        ("upper case", json!(["Stripe"])),
+        ("starting with a digit", json!(["1stripe"])),
+        ("an object", json!([{"name": "stripe"}])),
+        ("a repeat", json!(["stripe", "stripe"])),
+        (
+            "too many",
+            json!((0..17).map(|i| format!("s{i}")).collect::<Vec<_>>()),
+        ),
+        ("too long", json!(["a".repeat(65)])),
+    ] {
+        let doc = with_secrets(value);
+        let result = parse(&doc);
+        assert!(
+            matches!(result, Err(IrError::Schema(_))),
+            "{what}: {result:?}"
+        );
+    }
+    let issues = issues_of(&with_secrets(json!(["ok", "NOT OK"])));
+    assert!(!issues.is_empty(), "the refusal says where to look");
+}
+
+#[test]
+fn only_an_activity_can_declare_secrets() {
+    // A timer with a `secrets` field is just an unknown field of that node, ignored like any other
+    // extra field; nothing is declared by it.
+    let doc = minimal(
+        json!([{"id": "t", "type": "timer", "durationMs": 1000, "secrets": ["stripe-key"]}]),
+        "t",
+    );
+    let parsed = parse(&doc).expect("parses");
+    assert!(parsed.definition.declared_secrets().is_empty());
+}

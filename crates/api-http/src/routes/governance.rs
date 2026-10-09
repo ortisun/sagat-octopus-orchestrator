@@ -3,12 +3,13 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::quota::QuotaResource;
 
 use crate::dto_gov::{
-    BindingBody, BindingListBody, QuotaBody, QuotaListBody, RevokedBody, SetBindingBody,
-    SetQuotaBody,
+    BindingBody, BindingListBody, QuotaBody, QuotaListBody, RevokedBody, SecretAccessBody,
+    SecretBody, SecretListBody, SetBindingBody, SetQuotaBody, SetSecretBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -183,4 +184,113 @@ pub async fn unbind_worker<B: Governance>(
         )
         .await?;
     Ok(Json(RevokedBody::from(revoked)))
+}
+
+// ------------------------------------------------------------------------------ secrets
+
+fn secrets<B: Governance>(
+    state: &B,
+) -> Result<&sagat_application::secrets::SecretService<B::Store, B::Clock>, ApiError> {
+    state.secrets().ok_or_else(ApiError::not_found)
+}
+
+pub async fn list_secrets<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+) -> Result<Json<SecretListBody>, ApiError> {
+    let views = secrets(&state)?
+        .list(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(SecretListBody {
+        items: views.iter().map(SecretBody::from).collect(),
+    }))
+}
+
+pub async fn put_secret<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name)): Path<(String, String)>,
+    ApiJson(body): ApiJson<SetSecretBody>,
+) -> Result<Json<SecretBody>, ApiError> {
+    let view = secrets(&state)?
+        .put(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &name,
+            body.value.into_bytes(),
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(SecretBody::from(&view)))
+}
+
+pub async fn delete_secret<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    secrets(&state)?
+        .delete(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &name,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_secret_access<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<Json<SecretAccessBody>, ApiError> {
+    let subjects = secrets(&state)?
+        .access(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &name,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(SecretAccessBody { subjects }))
+}
+
+pub async fn grant_secret_access<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name, subject)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    secrets(&state)?
+        .grant(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &name,
+            &subject,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn revoke_secret_access<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, name, subject)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    secrets(&state)?
+        .revoke(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &name,
+            &subject,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -95,6 +95,7 @@ async fn the_reason_a_probe_failed_is_logged_but_not_returned() {
         subject_rate_limit: sagat_api_http::RateLimitConfig::subject_default(),
         admin_addr: None,
         migrate_on_start: false,
+        secrets: None,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

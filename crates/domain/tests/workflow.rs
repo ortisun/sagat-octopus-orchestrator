@@ -27,6 +27,7 @@ fn activity(node: &str) -> Node {
             compensate_with: None,
             reconcile_with: None,
             idempotency_template: None,
+            secrets: Vec::new(),
         },
     )
 }
@@ -303,6 +304,7 @@ fn payment_flow() -> WorkflowDefinition {
                     compensate_with: Some(ActivityName::parse("limit.release").expect("n")),
                     reconcile_with: None,
                     idempotency_template: Some(expr("run.id")),
+                    secrets: Vec::new(),
                 },
             )
             .with_next(id("wait_confirmation")),
@@ -747,6 +749,7 @@ mod cost {
                 compensate_with: None,
                 reconcile_with: None,
                 idempotency_template: None,
+                secrets: Vec::new(),
             },
         )
     }

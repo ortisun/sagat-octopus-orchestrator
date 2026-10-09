@@ -18,6 +18,7 @@ use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
+use sagat_application::secrets::SecretService;
 use sagat_domain::identity::{Membership, Slug, Subject, Tenant, TenantId};
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{
@@ -261,11 +262,18 @@ pub async fn serve_with_admin(
     let codec: Arc<dyn IrCodec> = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, DEFINITION_CACHE_ENTRIES);
     let executions = PgRunStore::new(pool.clone(), cache.clone());
-    let governance = GovState::new(
+    let mut governance = GovState::new(
         state.clone(),
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
     );
+    if let Some(secrets) = &serve.secrets {
+        governance = governance.with_secrets(SecretService::new(
+            executions.clone(),
+            SystemClock,
+            secrets.cipher(),
+        ));
+    }
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),

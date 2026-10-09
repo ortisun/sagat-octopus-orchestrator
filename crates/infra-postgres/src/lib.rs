@@ -15,6 +15,7 @@ mod maintenance;
 mod pool;
 mod privilege;
 mod quotas;
+mod secrets;
 mod workers;
 
 pub use definitions::PgDefinitionStore;

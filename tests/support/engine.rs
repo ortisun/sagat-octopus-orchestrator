@@ -15,6 +15,7 @@ use sagat_application::identity::{IdentityStore, RequestContext};
 use sagat_application::maintenance::OutboxStore;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::{RunFilter, RunOperation, RunService, RunStore, StartRun};
+use sagat_application::secrets::SecretService;
 use sagat_application::worker::{
     Capabilities, ClaimedTask, StepAck, TaskRef, WorkerService, WorkerSettings,
 };
@@ -39,6 +40,7 @@ pub type Defs = DefinitionService<PgRunStore, SystemClock, JsonIrCodec>;
 pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type Quotas = QuotaService<PgRunStore, SystemClock>;
 pub type Bindings = BindingService<PgRunStore, SystemClock>;
+pub type Secrets = SecretService<PgRunStore, SystemClock>;
 
 pub struct World {
     pub db: TestDb,
@@ -47,6 +49,11 @@ pub struct World {
     pub runs: Runs,
     pub quotas: Quotas,
     pub bindings: Bindings,
+    pub secrets: Secrets,
+    /// The key ring behind [`Self::secrets`] and the workers (a fresh random key per world).
+    pub keys: sagat_infra_secrets::SecretsConfig,
+    /// The base64 material of key `k1`, for tests that build a rotated ring around it.
+    pub key_k1: String,
     pub workers: Workers,
     pub scheduler: Sched,
     /// Administrator of the first tenant (can do everything a human can).
@@ -85,18 +92,25 @@ pub async fn world_with(settings: WorkerSettings) -> World {
     let cache = DefinitionCache::new(codec, 64);
     let store = PgRunStore::new(db.pool.clone(), cache.clone());
     let engine = Engine::new(JsonEvaluator);
+    let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
+    let keys =
+        sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
     let world = World {
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
         quotas: QuotaService::new(store.clone(), SystemClock),
         bindings: BindingService::new(store.clone(), SystemClock),
+        secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),
+        keys: keys.clone(),
+        key_k1,
         workers: WorkerService::new(
             store.clone(),
             SystemClock,
             engine.clone(),
             SystemEntropy,
             settings,
-        ),
+        )
+        .with_vault(keys.cipher()),
         scheduler: Scheduler::new(
             store.clone(),
             engine,
@@ -257,6 +271,17 @@ pub fn chain(name: &str) -> Value {
 
 impl World {
     pub async fn publish(&self, doc: Value) -> (WorkflowId, WorkflowVersionId) {
+        self.try_publish_as(&self.admin, doc)
+            .await
+            .expect("publish")
+    }
+
+    /// Creates the workflow and tries to publish it as `who`; the creation must succeed.
+    pub async fn try_publish_as(
+        &self,
+        who: &Principal,
+        doc: Value,
+    ) -> Result<(WorkflowId, WorkflowVersionId), sagat_application::error::AppError> {
         let name = doc["metadata"]["name"].as_str().expect("name").to_owned();
         let bytes = serde_json::to_vec(&doc).expect("json");
         let key = format!("create-{}", Uuid::now_v7());
@@ -269,16 +294,44 @@ impl World {
         let published = self
             .defs
             .publish(
-                &self.admin,
+                who,
                 id,
                 workflow.workflow.draft_revision(),
                 None,
                 &format!("publish-{}", Uuid::now_v7()),
                 &ctx(),
             )
+            .await?;
+        Ok((id, published.version.id()))
+    }
+
+    /// A member of the first tenant with `role`, added the way an operator adds one.
+    pub async fn member(&self, name: &str, role: Role) -> Principal {
+        let tenant = self.admin.tenant_id();
+        sagat_infra_postgres::PgIdentityStore::new(self.db.pool.clone())
+            .insert_membership(&sagat_domain::identity::Membership::restore(
+                tenant,
+                subject(name),
+                role,
+                now(),
+            ))
             .await
-            .expect("publish");
-        (id, published.version.id())
+            .expect("add the member");
+        Principal::new(tenant, subject(name), role)
+    }
+
+    /// Stores `value` as the next version of the secret `name` of the first tenant's namespace.
+    pub async fn put_secret(&self, name: &str, value: &str) {
+        self.secrets
+            .put(
+                &self.admin,
+                self.namespace.id(),
+                name,
+                value.as_bytes().to_vec(),
+                &ctx(),
+            )
+            .await
+            .expect("store the secret");
     }
 
     /// Publishes `doc` as the next version of an existing workflow.

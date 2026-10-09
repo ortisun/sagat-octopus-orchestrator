@@ -204,6 +204,27 @@ impl Config {
     }
 }
 
+/// The key ring that seals secrets, from `SAGAT_SECRETS_KEYS` (`id:base64,id2:base64`, the first
+/// entry seals new values and every entry opens what it sealed). Absent means secrets are off.
+/// The error never contains the value.
+///
+/// # Errors
+/// [`ConfigError::Invalid`] when the value is not a usable key list.
+pub fn read_secrets(
+    get: Lookup<'_>,
+) -> Result<Option<sagat_infra_secrets::SecretsConfig>, ConfigError> {
+    match get("SAGAT_SECRETS_KEYS").map(|v| v.trim().to_owned()) {
+        None => Ok(None),
+        Some(spec) if spec.is_empty() => Ok(None),
+        Some(spec) => sagat_infra_secrets::SecretsConfig::parse(&spec)
+            .map(Some)
+            .map_err(|e| ConfigError::Invalid {
+                name: "SAGAT_SECRETS_KEYS",
+                reason: e.to_string(),
+            }),
+    }
+}
+
 /// How tokens are verified, from the `SAGAT_OIDC_*` variables. Every process that authenticates
 /// callers (the API and the worker protocol) reads it the same way.
 ///
@@ -241,6 +262,9 @@ pub struct ServeConfig {
     /// Apply pending migrations before listening. Off by default: production runs them as a
     /// separate, privileged step (`control-plane migrate`).
     pub migrate_on_start: bool,
+    /// The key ring that seals secrets (`SAGAT_SECRETS_KEYS`); without it the secret routes do not
+    /// exist.
+    pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
 }
 
 impl ServeConfig {
@@ -362,6 +386,7 @@ impl ServeConfig {
                 shutdown_grace: Duration::from_secs(grace_secs),
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
+            secrets: read_secrets(get)?,
         })
     }
 }

@@ -14,4 +14,5 @@ pub mod identity;
 pub mod maintenance;
 pub mod quotas;
 pub mod runs;
+pub mod secrets;
 pub mod worker;

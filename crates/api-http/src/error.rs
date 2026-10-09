@@ -241,6 +241,15 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::NotFound => Self::not_found(),
+            AppError::SecretUnavailable { name } => {
+                let mut e = Self::new(
+                    StatusCode::FORBIDDEN,
+                    ErrorCode::Forbidden,
+                    "a secret does not exist or may not be used",
+                );
+                e.parts.details = Some(json!({ "reason": "SECRET_NOT_USABLE", "secret": name }));
+                e
+            }
             AppError::NotBound => {
                 let mut e = Self::new(
                     StatusCode::FORBIDDEN,

@@ -29,6 +29,7 @@ sagat-execution-engine.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
+sagat-infra-secrets.workspace = true
 sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
@@ -89,6 +90,10 @@ path = "integration/009-security-multitenancy/main.rs"
 [[test]]
 name = "contract_rest_009"
 path = "contract/009-security-multitenancy/rest/main.rs"
+
+[[test]]
+name = "e2e_009"
+path = "e2e/009-security-multitenancy/main.rs"
 
 [[test]]
 name = "perf_002"

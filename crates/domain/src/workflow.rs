@@ -18,6 +18,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::identity::{Slug, clip};
+use crate::secrets::SecretName;
 
 /// A workflow may have at most this many nodes (matches `nodes.maxItems` in the schema).
 pub const MAX_NODES: usize = 10_000;
@@ -459,6 +460,9 @@ pub enum NodeKind {
         reconcile_with: Option<ActivityName>,
         /// Template of the idempotency key handed to the worker; `None` means the default key.
         idempotency_template: Option<Expression>,
+        /// Secrets the worker may ask for while it holds a lease on this step (FR-009-002). Names
+        /// only: a value is never part of a definition, a journal or a lease.
+        secrets: Vec<SecretName>,
     },
     /// Waits for a delay without holding any process.
     Timer { delay: Duration },
@@ -586,6 +590,15 @@ impl Node {
         match &self.kind {
             NodeKind::Activity { retry, .. } => *retry,
             _ => RetryPolicy::no_retry(),
+        }
+    }
+
+    /// The secrets this node declares (only an activity can).
+    #[must_use]
+    pub fn secrets(&self) -> &[SecretName] {
+        match &self.kind {
+            NodeKind::Activity { secrets, .. } => secrets,
+            _ => &[],
         }
     }
 
@@ -719,6 +732,12 @@ impl WorkflowDefinition {
     /// All nodes, ordered by id.
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
+    }
+
+    /// Every secret any activity of the definition declares, once each, in name order.
+    #[must_use]
+    pub fn declared_secrets(&self) -> BTreeSet<&SecretName> {
+        self.nodes().flat_map(|node| node.secrets()).collect()
     }
 
     #[must_use]

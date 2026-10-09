@@ -7,3 +7,4 @@ mod support;
 
 mod bindings;
 mod quotas;
+mod secrets;

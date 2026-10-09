@@ -388,6 +388,7 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::TenantActiveRuns, true),
             (QuotaResource::Workflows, false),
             (QuotaResource::WorkerSessions, true),
+            (QuotaResource::Secrets, false),
         ]
     );
     let used = tenant_view
@@ -411,6 +412,7 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
         vec![
             (QuotaResource::ActiveRuns, Some(1)),
             (QuotaResource::Workflows, Some(1)),
+            (QuotaResource::Secrets, Some(0)),
         ]
     );
 }

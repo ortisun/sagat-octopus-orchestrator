@@ -17,7 +17,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use sagat_domain::secrets::{SealedSecret, SecretValue};
+use sagat_domain::secrets::{SealedSecret, SecretCipher, SecretValue};
 use zeroize::Zeroizing;
 
 const KEY_BYTES: usize = 32;
@@ -40,15 +40,7 @@ pub enum KeyError {
     Entropy,
 }
 
-/// Why sealing or opening failed. Carries no detail: a failure to open is the same whether the key
-/// is unknown, the data was tampered with, or the ciphertext was moved to another row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum CipherError {
-    #[error("the secret could not be sealed")]
-    Seal,
-    #[error("the secret could not be opened")]
-    Open,
-}
+pub use sagat_domain::secrets::CipherError;
 
 /// The keys, the active one first.
 pub struct KeyRing {
@@ -163,6 +155,58 @@ impl KeyRing {
             )
             .map_err(|_| CipherError::Open)?;
         SecretValue::new(plain).map_err(|_| CipherError::Open)
+    }
+}
+
+impl SecretCipher for KeyRing {
+    fn active_key_id(&self) -> &str {
+        self.active_key()
+    }
+
+    fn knows(&self, key_id: &str) -> bool {
+        Self::knows(self, key_id)
+    }
+
+    fn seal(&self, value: &SecretValue, aad: &[u8]) -> Result<SealedSecret, CipherError> {
+        Self::seal(self, value, aad)
+    }
+
+    fn open(&self, sealed: &SealedSecret, aad: &[u8]) -> Result<SecretValue, CipherError> {
+        Self::open(self, sealed, aad)
+    }
+}
+
+/// The key ring a process was configured with. It prints as its active key id and nothing else, so
+/// a configuration struct holding it can be logged without ever showing key material.
+#[derive(Clone)]
+pub struct SecretsConfig {
+    ring: std::sync::Arc<KeyRing>,
+}
+
+impl SecretsConfig {
+    /// Parses the value of `SAGAT_SECRETS_KEYS`.
+    ///
+    /// # Errors
+    /// [`KeyError`], whose message never contains the value.
+    pub fn parse(spec: &str) -> Result<Self, KeyError> {
+        Ok(Self {
+            ring: std::sync::Arc::new(KeyRing::parse(spec)?),
+        })
+    }
+
+    /// The ring, as the domain's port.
+    #[must_use]
+    pub fn cipher(&self) -> std::sync::Arc<dyn SecretCipher> {
+        self.ring.clone()
+    }
+}
+
+impl std::fmt::Debug for SecretsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretsConfig")
+            .field("active_key", &self.ring.active_key())
+            .field("keys", &"<redacted>")
+            .finish()
     }
 }
 

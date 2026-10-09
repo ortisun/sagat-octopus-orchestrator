@@ -176,7 +176,7 @@ enum Class {
 impl Class {
     fn of(path: &str) -> Self {
         match path.rsplit('/').next() {
-            Some("Heartbeat" | "CompleteStep" | "FailStep") => Self::Lease,
+            Some("Heartbeat" | "CompleteStep" | "FailStep" | "ResolveSecrets") => Self::Lease,
             // Registering and polling, and whatever a future method does until it is classified.
             _ => Self::Discovery,
         }
@@ -312,6 +312,11 @@ mod tests {
         assert_eq!(class("Heartbeat"), Class::Lease);
         assert_eq!(class("CompleteStep"), Class::Lease);
         assert_eq!(class("FailStep"), Class::Lease);
+        assert_eq!(
+            class("ResolveSecrets"),
+            Class::Lease,
+            "a step that is running is waiting for its secrets"
+        );
         assert_eq!(
             class("SomethingNew"),
             Class::Discovery,

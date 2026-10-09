@@ -119,6 +119,34 @@ pub(crate) async fn ensure_room_for_session(
     judge(QuotaResource::WorkerSessions, count, limit)
 }
 
+/// Takes the lock of the secrets of one namespace for the rest of the transaction: creating a secret
+/// and counting them are one decision, and so are two creators of the same name.
+pub(crate) async fn lock_secrets(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::Secrets, tenant, Some(namespace)).await
+}
+
+/// A new secret fits in its namespace. The caller holds [`lock_secrets`].
+pub(crate) async fn ensure_room_for_secret(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM secrets WHERE tenant_id = $1 AND namespace_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::Secrets, count, limit)
+}
+
 async fn effective(
     pool: &PgPool,
     tenant: TenantId,
@@ -322,6 +350,15 @@ impl QuotaStore for PgRunStore {
             QuotaResource::Workflows => {
                 sqlx::query_scalar(
                     "SELECT count(*) FROM workflows WHERE tenant_id = $1 AND namespace_id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace)
+                .fetch_one(&self.pool)
+                .await
+            }
+            QuotaResource::Secrets => {
+                sqlx::query_scalar(
+                    "SELECT count(*) FROM secrets WHERE tenant_id = $1 AND namespace_id = $2",
                 )
                 .bind(tenant.as_uuid())
                 .bind(namespace)

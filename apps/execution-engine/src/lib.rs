@@ -87,13 +87,16 @@ pub async fn serve(
     .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?
     .with_subject_rate_limit(engine.subject_rate_limit)
     .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?;
-    let workers = WorkerService::new(
+    let mut workers = WorkerService::new(
         store.clone(),
         SystemClock,
         Engine::new(JsonEvaluator),
         SystemEntropy,
         engine.worker,
     );
+    if let Some(secrets) = &engine.secrets {
+        workers = workers.with_vault(secrets.cipher());
+    }
     let scheduler: Arc<EngineScheduler> = Arc::new(
         Scheduler::new(
             store.clone(),

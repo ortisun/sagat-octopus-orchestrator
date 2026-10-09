@@ -29,6 +29,7 @@ use sagat_domain::execution::{
     StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
+use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
@@ -842,6 +843,20 @@ impl RunTx for PgRunTx {
             })
         })
         .transpose()
+    }
+
+    async fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> Result<sagat_application::secrets::SecretInputs, StoreError> {
+        crate::secrets::inputs(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            self.info.version_id.as_uuid(),
+            names,
+        )
+        .await
     }
 
     async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {

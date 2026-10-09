@@ -54,6 +54,14 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
     let bind_one_t = "/namespaces/{namespaceId}/worker-bindings/{subject}";
     let bind_path = format!("/namespaces/{ns}/worker-bindings");
     let bind_one = |subject: &str| format!("/namespaces/{ns}/worker-bindings/{subject}");
+    let sec_t = "/namespaces/{namespaceId}/secrets";
+    let sec_one_t = "/namespaces/{namespaceId}/secrets/{secretName}";
+    let sec_access_t = "/namespaces/{namespaceId}/secrets/{secretName}/access";
+    let sec_grant_t = "/namespaces/{namespaceId}/secrets/{secretName}/access/{subject}";
+    let sec_path = format!("/namespaces/{ns}/secrets");
+    let sec_one = |name: &str| format!("/namespaces/{ns}/secrets/{name}");
+    let sec_access = |name: &str| format!("/namespaces/{ns}/secrets/{name}/access");
+    let sec_grant = |name: &str, who: &str| format!("/namespaces/{ns}/secrets/{name}/access/{who}");
 
     let scenarios = vec![
         // ---- the tenant level
@@ -337,6 +345,196 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
             None,
             404,
         ),
+        // ---- secrets
+        scenario("GET", sec_t, &sec_path, alice.clone(), None, 200),
+        scenario("GET", sec_t, &sec_path, dave.clone(), None, 200),
+        scenario("GET", sec_t, &sec_path, vera.clone(), None, 403),
+        scenario("GET", sec_t, &sec_path, As::Anonymous, None, 401),
+        scenario("GET", sec_t, &sec_path, bob.clone(), None, 404),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            alice.clone(),
+            Some(json!({"value": "sk-live-conformance-0001"})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            alice.clone(),
+            Some(json!({"value": "sk-live-conformance-0002"})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            dave.clone(),
+            Some(json!({"value": "x-value-from-a-developer"})),
+            403,
+        ),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            bob.clone(),
+            Some(json!({"value": "x-value-from-another-tenant"})),
+            404,
+        ),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("Stripe-Key"),
+            alice.clone(),
+            Some(json!({"value": "some-value-0001"})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            alice.clone(),
+            Some(json!({"value": ""})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            alice.clone(),
+            Some(json!({"value": "ok-value-0001", "extra": 1})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            alice.clone(),
+            Some(json!({})),
+            422,
+        ),
+        scenario(
+            "GET",
+            sec_access_t,
+            &sec_access("stripe-key"),
+            alice.clone(),
+            None,
+            200,
+        ),
+        scenario(
+            "GET",
+            sec_access_t,
+            &sec_access("stripe-key"),
+            dave.clone(),
+            None,
+            403,
+        ),
+        scenario(
+            "GET",
+            sec_access_t,
+            &sec_access("stripe-key"),
+            bob.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "GET",
+            sec_access_t,
+            &sec_access("missing-key"),
+            alice.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "PUT",
+            sec_grant_t,
+            &sec_grant("stripe-key", "dave"),
+            alice.clone(),
+            None,
+            204,
+        ),
+        scenario(
+            "PUT",
+            sec_grant_t,
+            &sec_grant("stripe-key", "dave"),
+            dave.clone(),
+            None,
+            403,
+        ),
+        scenario(
+            "PUT",
+            sec_grant_t,
+            &sec_grant("stripe-key", "dave"),
+            bob.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "PUT",
+            sec_grant_t,
+            &sec_grant("missing-key", "dave"),
+            alice.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "DELETE",
+            sec_grant_t,
+            &sec_grant("stripe-key", "dave"),
+            dave.clone(),
+            None,
+            403,
+        ),
+        scenario(
+            "DELETE",
+            sec_grant_t,
+            &sec_grant("stripe-key", "dave"),
+            alice.clone(),
+            None,
+            204,
+        ),
+        scenario(
+            "DELETE",
+            sec_grant_t,
+            &sec_grant("stripe-key", "dave"),
+            alice.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "DELETE",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            dave.clone(),
+            None,
+            403,
+        ),
+        scenario(
+            "DELETE",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            bob.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "DELETE",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            alice.clone(),
+            None,
+            204,
+        ),
+        scenario(
+            "DELETE",
+            sec_one_t,
+            &sec_one("stripe-key"),
+            alice.clone(),
+            None,
+            404,
+        ),
     ];
 
     let mut covered = BTreeSet::new();
@@ -424,4 +622,74 @@ async fn the_quota_endpoints_show_what_the_engine_enforces() {
         (workflows["limit"].as_u64(), workflows["used"].as_u64()),
         (Some(1), Some(1))
     );
+}
+
+#[tokio::test]
+async fn no_secret_operation_ever_returns_the_value() {
+    const VALUE: &str = "sk-live-canary-7f3a9c1e5b2d";
+    let api = start().await;
+    api.tenant("acme", "alice").await;
+    let ws = api.create_workspace("alice", "acme", "platform").await;
+    let ns = api
+        .create_namespace("alice", "acme", &ws, "payments", "dev")
+        .await;
+
+    let put = api
+        .as_user(
+            reqwest::Method::PUT,
+            &format!("/namespaces/{ns}/secrets/stripe-key"),
+            "alice",
+            "acme",
+        )
+        .json(&json!({"value": VALUE}))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(put.status(), 200);
+    let mut seen = vec![put.text().await.expect("body")];
+    for path in [
+        format!("/namespaces/{ns}/secrets"),
+        format!("/namespaces/{ns}/secrets/stripe-key/access"),
+    ] {
+        let response = api.get_as(&path, "alice", "acme").await;
+        assert_eq!(response.status(), 200);
+        seen.push(response.text().await.expect("body"));
+    }
+    // A refused attempt echoes nothing either: wrong role, malformed name, unknown field.
+    api.tenant("globex", "bob").await;
+    for (who, tenant, path, body) in [
+        (
+            "bob",
+            "globex",
+            format!("/namespaces/{ns}/secrets/stripe-key"),
+            json!({"value": VALUE}),
+        ),
+        (
+            "alice",
+            "acme",
+            format!("/namespaces/{ns}/secrets/Bad-Name"),
+            json!({"value": VALUE}),
+        ),
+        (
+            "alice",
+            "acme",
+            format!("/namespaces/{ns}/secrets/stripe-key"),
+            json!({"value": VALUE, "extra": 1}),
+        ),
+    ] {
+        let response = api
+            .as_user(reqwest::Method::PUT, &path, who, tenant)
+            .json(&body)
+            .send()
+            .await
+            .expect("send");
+        assert!(response.status().is_client_error());
+        seen.push(response.text().await.expect("body"));
+    }
+    for body in &seen {
+        assert!(
+            !body.contains(VALUE),
+            "a response carried the value: {body}"
+        );
+    }
 }

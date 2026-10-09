@@ -21,6 +21,7 @@ use sagat_application::definitions::{
 use sagat_application::error::{AppError, ConflictKind, StoreError};
 use sagat_application::identity::{PageRequest, RequestContext};
 use sagat_application::quotas::QuotaLookup;
+use sagat_application::secrets::{SecretAccessLookup, SecretState};
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{
@@ -28,6 +29,7 @@ use sagat_domain::identity::{
     WorkspaceId,
 };
 use sagat_domain::quota::QuotaResource;
+use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::{
     ActivityName, Digest, Node, NodeId, NodeKind, RetryPolicy, WorkflowDefinition,
 };
@@ -54,6 +56,8 @@ struct State {
     calls: Vec<String>,
     /// The workflow quota the fake reports; `None` is the platform default.
     workflow_limit: Option<u64>,
+    /// The secrets of the namespace and whether the publisher is on each one's access list.
+    secrets: BTreeMap<String, bool>,
 }
 
 #[derive(Clone, Default)]
@@ -75,6 +79,32 @@ impl QuotaLookup for FakeStore {
         Ok(self.with(|s| match resource {
             QuotaResource::Workflows => s.workflow_limit.unwrap_or(resource.default_limit()),
             other => other.default_limit(),
+        }))
+    }
+}
+
+impl SecretAccessLookup for FakeStore {
+    async fn secret_states(
+        &self,
+        _tenant: TenantId,
+        _namespace: NamespaceId,
+        names: &[SecretName],
+        _subject: &str,
+    ) -> Result<Vec<(SecretName, SecretState)>, StoreError> {
+        Ok(self.with(|s| {
+            s.calls.push("secret_states".into());
+            names
+                .iter()
+                .map(|name| {
+                    let state = s
+                        .secrets
+                        .get(name.as_str())
+                        .map_or(SecretState::Missing, |granted| SecretState::Present {
+                            granted: *granted,
+                        });
+                    (name.clone(), state)
+                })
+                .collect()
         }))
     }
 }
@@ -394,6 +424,8 @@ impl DefinitionStore for FakeStore {
 struct FakeCodec {
     name: &'static str,
     outcome: Result<(), IrError>,
+    /// Secrets the parsed definition declares on its activity.
+    secrets: &'static [&'static str],
 }
 
 impl IrCodec for FakeCodec {
@@ -417,6 +449,11 @@ impl IrCodec for FakeCodec {
                 compensate_with: None,
                 reconcile_with: None,
                 idempotency_template: None,
+                secrets: self
+                    .secrets
+                    .iter()
+                    .map(|name| SecretName::parse(name).expect("secret name"))
+                    .collect(),
             },
         );
         let definition = WorkflowDefinition::new(
@@ -471,6 +508,7 @@ fn fixture() -> Fixture {
     fixture_with(FakeCodec {
         name: "invoice-flow",
         outcome: Ok(()),
+        secrets: &[],
     })
 }
 
@@ -839,6 +877,78 @@ async fn editing_is_compare_and_swap_on_the_revision() {
 // ------------------------------------------------------------------ publishing
 
 #[tokio::test]
+async fn publishing_a_workflow_that_declares_a_secret_needs_a_publisher_who_may_use_it() {
+    let f = fixture_with(FakeCodec {
+        name: "invoice-flow",
+        outcome: Ok(()),
+        secrets: &["stripe-key"],
+    });
+    let created = create(&f, Role::Admin, "key-0000001")
+        .await
+        .expect("created");
+    let id = created.workflow.id();
+    let publish = |role: Role, key: &str| {
+        let p = principal(f.tenant, role);
+        let key = key.to_owned();
+        let service = &f.service;
+        async move {
+            service
+                .publish(&p, id, 1, None, &key, &ctx())
+                .await
+                .map(|_| ())
+        }
+    };
+    let unusable = Err(AppError::SecretUnavailable {
+        name: "stripe-key".into(),
+    });
+
+    // The secret does not exist: refused, for an administrator too.
+    assert_eq!(publish(Role::Admin, "pub-0000001").await, unusable);
+    assert_eq!(publish(Role::Developer, "pub-0000002").await, unusable);
+
+    // It exists but the developer is not on its list: refused, with exactly the same answer, so a
+    // publisher cannot tell a missing secret from one they may not use. The administrator is not
+    // subject to the list.
+    f.store.with(|s| {
+        s.secrets.insert("stripe-key".into(), false);
+    });
+    assert_eq!(publish(Role::Developer, "pub-0000003").await, unusable);
+    assert_eq!(publish(Role::Admin, "pub-0000004").await, Ok(()));
+
+    // On the list, the developer may.
+    f.store.with(|s| {
+        s.secrets.insert("stripe-key".into(), true);
+    });
+    assert_eq!(publish(Role::Developer, "pub-0000005").await, Ok(()));
+
+    // The refusals left a trace, recorded as denials (off the response path).
+    let denials = f.store.with(|s| {
+        s.denials
+            .iter()
+            .filter(|d| d.action() == AuditAction::SecretDenied)
+            .count()
+    });
+    assert_eq!(denials, 3);
+}
+
+#[tokio::test]
+async fn a_workflow_without_secrets_never_asks_the_store_about_them() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let created = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    f.service
+        .publish(&p, created.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+    let asked = f
+        .store
+        .with(|s| s.calls.iter().any(|c| c == "secret_states"));
+    assert!(!asked, "no declaration, no lookup");
+}
+
+#[tokio::test]
 async fn publishing_freezes_the_draft_as_numbered_versions() {
     let f = fixture();
     let p = principal(f.tenant, Role::Developer);
@@ -1017,6 +1127,7 @@ async fn an_unpublishable_document_is_reported_and_nothing_is_stored() {
     let f = fixture_with(FakeCodec {
         name: "invoice-flow",
         outcome: Err(invalid.clone()),
+        secrets: &[],
     });
     let p = principal(f.tenant, Role::Admin);
     let w = create(&f, Role::Admin, "key-0000001")
@@ -1038,6 +1149,7 @@ async fn the_document_must_name_the_workflow_it_belongs_to() {
     let f = fixture_with(FakeCodec {
         name: "other-flow",
         outcome: Ok(()),
+        secrets: &[],
     });
     let p = principal(f.tenant, Role::Admin);
     let w = create(&f, Role::Admin, "key-0000001")
@@ -1115,6 +1227,7 @@ async fn a_stale_revision_is_reported_before_the_document_is_validated() {
     let f = fixture_with(FakeCodec {
         name: "invoice-flow",
         outcome: Err(invalid),
+        secrets: &[],
     });
     let p = principal(f.tenant, Role::Admin);
     let w = create(&f, Role::Admin, "key-0000001")

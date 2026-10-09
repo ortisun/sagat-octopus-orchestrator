@@ -5,7 +5,7 @@ info:
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
-    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas, worker bindings) by the governance routes
+    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas, worker bindings, secrets) by the governance routes
     of feature 009. Every other operation is a design proposal that is not implemented yet. The worker protocol is gRPC (`worker.proto`), not REST.
     The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
@@ -31,7 +31,7 @@ tags:
   - name: Scripts
   - name: Operations
   - name: Governance
-    description: Quotas and worker bindings, and (as they are built) secrets and egress policy of a tenant or namespace (feature 009).
+    description: Quotas, worker bindings and secrets, and (as it is built) egress policy of a tenant or namespace (feature 009).
 paths:
   /health:
     get:
@@ -642,6 +642,122 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets:
+    get:
+      operationId: listSecrets
+      summary: The secrets of a namespace, by name, without values
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `secret:read`. These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The secrets', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}:
+    put:
+      operationId: putSecret
+      summary: Store a secret, or a new version of it
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `secret:manage`. Stores the value sealed under the active key and keeps the last five versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetSecretRequest'}
+      responses:
+        '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteSecret
+      summary: Delete a secret with all its versions and its access list
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. Workflows that declare it stop resolving it at once. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      responses:
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}/access:
+    get:
+      operationId: listSecretAccess
+      summary: Who may reference the secret from workflows they publish
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. Administrators may always use a secret and are not listed.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      responses:
+        '200': {description: 'The identities on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretAccess'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}/access/{subject}:
+    put:
+      operationId: grantSecretAccess
+      summary: Let an identity reference the secret from workflows it publishes
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. Idempotent. The identity also needs a role that holds `secret:use`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      responses:
+        '204': {description: 'The identity is on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: revokeSecretAccess
+      summary: Take an identity off the secret's list
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. The next time a worker asks for the value of a step that identity published, it is refused. 404 when the identity was not on the list. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      responses:
+        '204': {description: 'The identity is off the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /events:
     post:
       operationId: publishEvent
@@ -740,6 +856,11 @@ components:
       required: true
       description: The identity (the `sub` of its token), URL-encoded.
       schema: {type: string, minLength: 1, maxLength: 255}
+    SecretName:
+      name: secretName
+      in: path
+      required: true
+      schema: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
     NamespaceId:
       name: namespaceId
       in: path
@@ -749,7 +870,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets]}
     WorkflowId:
       name: workflowId
       in: path
@@ -1039,11 +1160,36 @@ components:
       required: [activities]
       properties:
         activities: {type: array, minItems: 1, maxItems: 64, items: {type: string, minLength: 1, maxLength: 130}}
+    Secret:
+      type: object
+      required: [name, version, keyId, createdBy, updatedAt]
+      properties:
+        name: {type: string}
+        version: {type: integer, minimum: 1}
+        keyId: {type: string, description: 'The key of the ring the current version is sealed under.'}
+        createdBy: {type: string}
+        updatedAt: {type: string, format: date-time}
+    SecretList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Secret'}}
+    SecretAccess:
+      type: object
+      required: [subjects]
+      properties:
+        subjects: {type: array, items: {type: string}}
+    SetSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value: {type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 'The secret, UTF-8 text of 1 to 16384 bytes. Never returned.'}
     Quota:
       type: object
       required: [resource, limit, source]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from.'}
         used: {type: integer, format: int64, minimum: 0, description: 'Exact count now. Absent for a per-namespace resource in the tenant-wide view.'}

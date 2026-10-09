@@ -2,6 +2,7 @@
 
 use sagat_application::bindings::{BindingView, Revoked};
 use sagat_application::quotas::QuotaView;
+use sagat_application::secrets::SecretView;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
@@ -94,4 +95,54 @@ pub struct BindingListBody {
 #[serde(deny_unknown_fields)]
 pub struct SetBindingBody {
     pub activities: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretBody {
+    pub name: String,
+    pub version: u32,
+    /// Which key of the ring the current version is sealed under.
+    pub key_id: String,
+    pub created_by: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: time::OffsetDateTime,
+}
+
+impl From<&SecretView> for SecretBody {
+    fn from(view: &SecretView) -> Self {
+        Self {
+            name: view.name.clone(),
+            version: view.version,
+            key_id: view.key_id.clone(),
+            created_by: view.created_by.clone(),
+            updated_at: view.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct SecretListBody {
+    pub items: Vec<SecretBody>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SecretAccessBody {
+    pub subjects: Vec<String>,
+}
+
+/// The value of a secret on its way in. It is the only place the API accepts one, and it never
+/// prints.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSecretBody {
+    pub value: String,
+}
+
+impl std::fmt::Debug for SetSecretBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetSecretBody")
+            .field("value", &"<redacted>")
+            .finish()
+    }
 }

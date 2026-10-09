@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::identity::{NamespaceId, TenantId};
+use crate::identity::{NamespaceId, Permission, Role, TenantId};
 
 /// Longest secret value accepted. A secret is a credential, not a document.
 pub const MAX_SECRET_BYTES: usize = 16 * 1024;
@@ -139,6 +139,47 @@ pub struct SecretMeta {
     pub created_at: OffsetDateTime,
 }
 
+/// Why sealing or opening failed. Carries no detail: a failure to open is the same whether the key
+/// is unknown, the data was tampered with, or the ciphertext was moved to another row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CipherError {
+    #[error("the secret could not be sealed")]
+    Seal,
+    #[error("the secret could not be opened")]
+    Open,
+}
+
+/// Seals and opens secret values. The domain only needs the shape; `sagat-infra-secrets` is the
+/// implementation (AES-256-GCM under a ring of rotatable keys).
+pub trait SecretCipher: Send + Sync {
+    /// The id of the key that seals new values.
+    fn active_key_id(&self) -> &str;
+
+    /// Whether a value sealed under `key_id` can still be opened.
+    fn knows(&self, key_id: &str) -> bool;
+
+    /// Seals `value` under the active key, authenticating `aad` with it.
+    ///
+    /// # Errors
+    /// [`CipherError::Seal`].
+    fn seal(&self, value: &SecretValue, aad: &[u8]) -> Result<SealedSecret, CipherError>;
+
+    /// Opens a sealed value, checking that `aad` is what it was sealed with.
+    ///
+    /// # Errors
+    /// [`CipherError::Open`].
+    fn open(&self, sealed: &SealedSecret, aad: &[u8]) -> Result<SecretValue, CipherError>;
+}
+
+/// Whether a member who holds `role` may reference a secret from a workflow, given whether the
+/// secret's own access list names them. Both are needed: the role says people of that kind may use
+/// secrets at all (`secret:use`), the list says this secret is theirs to use. Administrators are
+/// not subject to the list.
+#[must_use]
+pub fn may_use(role: Role, granted: bool) -> bool {
+    role.grants(Permission::SecretUse) && (role == Role::Admin || granted)
+}
+
 /// The bytes the cipher authenticates along with the ciphertext (AEAD associated data).
 ///
 /// Everything that identifies the secret is in it, length-prefixed so two different tuples can never
@@ -168,6 +209,21 @@ pub fn associated_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn using_a_secret_needs_the_role_and_the_secrets_own_list() {
+        // Administrators are not subject to the list.
+        assert!(may_use(Role::Admin, false));
+        assert!(may_use(Role::Admin, true));
+        // A developer needs to be on the list.
+        assert!(may_use(Role::Developer, true));
+        assert!(!may_use(Role::Developer, false));
+        // Roles that cannot reference secrets at all are not helped by a list entry.
+        for role in [Role::Operator, Role::Viewer, Role::Worker] {
+            assert!(!may_use(role, true), "{role}");
+            assert!(!may_use(role, false), "{role}");
+        }
+    }
 
     #[test]
     fn names_are_lower_case_and_bounded() {

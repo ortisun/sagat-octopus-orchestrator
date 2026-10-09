@@ -27,6 +27,8 @@ pub enum QuotaResource {
     Workflows,
     /// Live worker sessions of the tenant.
     WorkerSessions,
+    /// Secrets in one namespace.
+    Secrets,
 }
 
 /// At which level a resource is counted.
@@ -39,11 +41,12 @@ pub enum QuotaScope {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
         Self::WorkerSessions,
+        Self::Secrets,
     ];
 
     #[must_use]
@@ -53,13 +56,14 @@ impl QuotaResource {
             Self::TenantActiveRuns => "tenant_active_runs",
             Self::Workflows => "workflows",
             Self::WorkerSessions => "worker_sessions",
+            Self::Secrets => "secrets",
         }
     }
 
     #[must_use]
     pub const fn scope(self) -> QuotaScope {
         match self {
-            Self::ActiveRuns | Self::Workflows => QuotaScope::Namespace,
+            Self::ActiveRuns | Self::Workflows | Self::Secrets => QuotaScope::Namespace,
             Self::TenantActiveRuns | Self::WorkerSessions => QuotaScope::Tenant,
         }
     }
@@ -72,6 +76,7 @@ impl QuotaResource {
             Self::TenantActiveRuns => 50_000,
             Self::Workflows => 1_000,
             Self::WorkerSessions => 1_000,
+            Self::Secrets => 500,
         }
     }
 
@@ -83,6 +88,7 @@ impl QuotaResource {
             Self::TenantActiveRuns => "active runs of the tenant",
             Self::Workflows => "workflows in the namespace",
             Self::WorkerSessions => "worker sessions of the tenant",
+            Self::Secrets => "secrets in the namespace",
         }
     }
 }

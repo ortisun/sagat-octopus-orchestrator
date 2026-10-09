@@ -43,6 +43,7 @@ pub fn activity_with(node: &str, retry: RetryPolicy) -> Node {
             compensate_with: None,
             reconcile_with: None,
             idempotency_template: None,
+            secrets: Vec::new(),
         },
     )
 }

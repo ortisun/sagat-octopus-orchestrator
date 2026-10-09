@@ -11,6 +11,10 @@ option java_package = "dev.sagatoctopusorchestrator.protocol.v1";
 // Errors (gRPC status; the stable machine code is in the `x-sagat-error` trailing metadata):
 //   UNAUTHENTICATED     no or invalid credentials, unknown or expired session
 //   PERMISSION_DENIED   the identity is not a worker
+//                       x-sagat-error: NOT_BOUND            the identity is not bound to the namespace and
+//                       activity it asked to serve (an administrator binds it, feature 009)
+//                       x-sagat-error: SECRET_NOT_USABLE    a secret the step declares does not exist or
+//                       its publisher may no longer use it
 //   INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
 //   ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
 //                       cancelled or finished): stop, do not retry the report
@@ -25,6 +29,11 @@ service WorkerService {
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc CompleteStep(CompleteStepRequest) returns (StepCommandResponse);
   rpc FailStep(FailStepRequest) returns (StepCommandResponse);
+  // Added in 1.2 (additive, feature 009). The values of the secrets the step's definition declares,
+  // for the length of the attempt the lease belongs to: the lease is the capability. All or nothing.
+  // The values are credentials: use this call only over TLS, never log or persist them, and drop them
+  // when the attempt ends. Every call is audited (names and versions, never values).
+  rpc ResolveSecrets(ResolveSecretsRequest) returns (ResolveSecretsResponse);
 }
 
 message WorkerCapabilities {
@@ -71,4 +80,11 @@ message FailStepRequest {
   string idempotency_key = 7; string error_code = 8; string safe_message = 9;
   bool retryable = 10; string traceparent = 11;
 }
+message ResolveSecretsRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string traceparent = 7;
+}
+message ResolvedSecret { string name = 1; bytes value = 2; uint32 version = 3; }
+message ResolveSecretsResponse { repeated ResolvedSecret secrets = 1; }
 message StepCommandResponse { string command_id = 1; bool already_applied = 2; string step_status = 3; string run_status = 4; }

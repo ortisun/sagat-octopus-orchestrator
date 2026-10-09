@@ -67,6 +67,11 @@ pub enum AppError {
     /// (FR-009-002): it holds `worker:execute`, which is not the same as being allowed this work.
     #[error("the identity is not bound to that namespace and activity")]
     NotBound,
+    /// A workflow names a secret that does not exist or that its publisher may not use. Which of
+    /// the two is deliberately not said: someone who may not use a secret must not learn which
+    /// names exist in the namespace.
+    #[error("a secret does not exist or may not be used")]
+    SecretUnavailable { name: String },
     /// The caller holds a lease that is no longer current (the attempt was reclaimed, cancelled or
     /// already finished): its result is refused. Idempotent replays are answered before this.
     #[error("the attempt is stale")]
