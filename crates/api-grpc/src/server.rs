@@ -5,13 +5,33 @@ use std::time::Duration;
 
 use sagat_application::execution::MAX_PAYLOAD_BYTES;
 use tokio::net::TcpListener;
-use tonic::transport::Server;
+use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 
 use crate::limits::{Admission, Incoming};
 use crate::pb::worker_service_server::{WorkerService, WorkerServiceServer};
 
 /// Largest message the server accepts: an inline output (256 KiB) plus the envelope.
 const MAX_MESSAGE_BYTES: usize = MAX_PAYLOAD_BYTES + 64 * 1024;
+
+/// The server's certificate and key, and (for mutual TLS) the CA that signs the clients' certificates,
+/// all PEM. The private key never prints.
+#[derive(Clone)]
+pub struct TlsConfig {
+    pub certificate_pem: Vec<u8>,
+    pub private_key_pem: Vec<u8>,
+    /// When set, a client must present a certificate signed by this CA (mutual TLS). The channel is
+    /// then authenticated as well as encrypted; the bearer token still names the worker.
+    pub client_ca_pem: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for TlsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsConfig")
+            .field("private_key_pem", &"<redacted>")
+            .field("mutual", &self.client_ca_pem.is_some())
+            .finish_non_exhaustive()
+    }
+}
 
 /// Connection-level limits of the gRPC server.
 #[derive(Debug, Clone)]
@@ -32,6 +52,9 @@ pub struct GrpcConfig {
     pub keepalive_interval: Duration,
     /// How long to wait for the ping answer before dropping the connection.
     pub keepalive_timeout: Duration,
+    /// TLS on the listener. `None` serves plaintext HTTP/2, which is only right behind something
+    /// that terminates TLS (a mesh sidecar, an ingress) or in development.
+    pub tls: Option<TlsConfig>,
 }
 
 impl Default for GrpcConfig {
@@ -44,6 +67,7 @@ impl Default for GrpcConfig {
             max_in_flight: 1024,
             keepalive_interval: Duration::from_secs(30),
             keepalive_timeout: Duration::from_secs(10),
+            tls: None,
         }
     }
 }
@@ -64,7 +88,18 @@ pub async fn serve<T: WorkerService>(
     config: GrpcConfig,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), tonic::transport::Error> {
-    Server::builder()
+    let mut builder = Server::builder();
+    if let Some(tls) = &config.tls {
+        let mut server_tls = ServerTlsConfig::new().identity(Identity::from_pem(
+            &tls.certificate_pem,
+            &tls.private_key_pem,
+        ));
+        if let Some(ca) = &tls.client_ca_pem {
+            server_tls = server_tls.client_ca_root(Certificate::from_pem(ca));
+        }
+        builder = builder.tls_config(server_tls)?;
+    }
+    builder
         .timeout(config.request_timeout)
         .concurrency_limit_per_connection(config.concurrency_per_connection)
         .max_concurrent_streams(config.max_concurrent_streams)

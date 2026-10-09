@@ -34,6 +34,6 @@ impl std::fmt::Debug for pb::ResolvedSecret {
     }
 }
 
-pub use server::{GrpcConfig, serve, worker_service};
+pub use server::{GrpcConfig, TlsConfig, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};

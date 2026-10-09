@@ -49,7 +49,7 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 # gRPC (worker protocol). The .proto is compiled by `protox` (pure Rust) so builds need no `protoc`.
 # NATS JetStream (outbox hints). Only the JetStream client is needed.
 async-nats = { version = "0.50", default-features = false, features = ["jetstream", "ring", "nkeys", "server_2_10"] }
-tonic = "0.14"
+tonic = { version = "0.14", features = ["tls-ring"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 prost = "0.14"

@@ -249,3 +249,182 @@ fn commands_are_parsed_strictly() {
         Err(UsageError("unexpected argument '--now'".into()))
     );
 }
+
+// ---------------------------------------------------------------- TLS and secrets (feature 009)
+
+/// A file with `contents` that lives as long as the test process, in a directory of its own.
+fn pem(name: &str, contents: &str) -> String {
+    let dir = std::env::temp_dir().join(format!(
+        "sagat-engine-config-{}-{}",
+        std::process::id(),
+        name
+    ));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let path = dir.join("file.pem");
+    std::fs::write(&path, contents).expect("write");
+    path.to_str().expect("utf-8 path").to_owned()
+}
+
+const FAKE_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+const KEYS: &str = "k1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+
+fn parse_with(
+    pairs: &[(&str, &str)],
+    environment: Environment,
+) -> Result<EngineConfig, ConfigError> {
+    let mut all: Vec<(&str, &str)> = OIDC.to_vec();
+    all.extend_from_slice(pairs);
+    EngineConfig::from_lookup(&env(&all), environment)
+}
+
+#[test]
+fn tls_needs_the_certificate_and_the_key_together_and_mutual_tls_needs_both() {
+    let cert = pem("cert", FAKE_PEM);
+    let key = pem("key", FAKE_PEM);
+    let ca = pem("ca", FAKE_PEM);
+
+    let ok = parse_with(
+        &[
+            ("SAGAT_GRPC_TLS_CERT_FILE", &cert),
+            ("SAGAT_GRPC_TLS_KEY_FILE", &key),
+        ],
+        Environment::Prod,
+    )
+    .expect("config");
+    let tls = ok.grpc.tls.expect("tls");
+    assert!(tls.client_ca_pem.is_none(), "server TLS only");
+    assert!(!format!("{tls:?}").contains("MIIB"), "the key never prints");
+
+    let mutual = parse_with(
+        &[
+            ("SAGAT_GRPC_TLS_CERT_FILE", &cert),
+            ("SAGAT_GRPC_TLS_KEY_FILE", &key),
+            ("SAGAT_GRPC_TLS_CLIENT_CA_FILE", &ca),
+        ],
+        Environment::Prod,
+    )
+    .expect("config");
+    assert!(mutual.grpc.tls.expect("tls").client_ca_pem.is_some());
+
+    for (what, pairs, name) in [
+        (
+            "a certificate without a key",
+            vec![("SAGAT_GRPC_TLS_CERT_FILE", cert.as_str())],
+            "SAGAT_GRPC_TLS_KEY_FILE",
+        ),
+        (
+            "a key without a certificate",
+            vec![("SAGAT_GRPC_TLS_KEY_FILE", key.as_str())],
+            "SAGAT_GRPC_TLS_CERT_FILE",
+        ),
+        (
+            "a client CA without a server certificate",
+            vec![("SAGAT_GRPC_TLS_CLIENT_CA_FILE", ca.as_str())],
+            "SAGAT_GRPC_TLS_CLIENT_CA_FILE",
+        ),
+    ] {
+        match parse_with(&pairs, Environment::Prod) {
+            Err(ConfigError::Invalid { name: reported, .. }) => {
+                assert_eq!(reported, name, "{what}")
+            }
+            other => panic!("{what}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_tls_file_that_is_missing_or_not_pem_is_refused_by_name_without_its_contents() {
+    let cert = pem("c2", FAKE_PEM);
+    let not_pem = pem("not-pem", "this is not a certificate");
+    let gone = "/nonexistent/sagat/engine/key.pem";
+    for (pairs, name) in [
+        (
+            vec![
+                ("SAGAT_GRPC_TLS_CERT_FILE", cert.as_str()),
+                ("SAGAT_GRPC_TLS_KEY_FILE", gone),
+            ],
+            "SAGAT_GRPC_TLS_KEY_FILE",
+        ),
+        (
+            vec![
+                ("SAGAT_GRPC_TLS_CERT_FILE", not_pem.as_str()),
+                ("SAGAT_GRPC_TLS_KEY_FILE", cert.as_str()),
+            ],
+            "SAGAT_GRPC_TLS_CERT_FILE",
+        ),
+    ] {
+        match parse_with(&pairs, Environment::Prod) {
+            Err(ConfigError::Invalid {
+                name: reported,
+                reason,
+            }) => {
+                assert_eq!(reported, name);
+                assert!(!reason.contains("this is not a certificate"), "{reason}");
+            }
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn secrets_are_not_served_over_plaintext_outside_development_unless_the_operator_says_tls_is_in_front()
+ {
+    let cert = pem("c3", FAKE_PEM);
+    let key = pem("k3", FAKE_PEM);
+    let secrets = [("SAGAT_SECRETS_KEYS", KEYS)];
+
+    // Production without TLS and without the statement: refused, and the error names the way out.
+    match parse_with(&secrets, Environment::Prod) {
+        Err(ConfigError::Invalid { name, reason }) => {
+            assert_eq!(name, "SAGAT_SECRETS_KEYS");
+            assert!(reason.contains("SAGAT_GRPC_TLS_CERT_FILE"), "{reason}");
+            assert!(!reason.contains("AAECAw"), "never the key: {reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // With TLS, with the statement, or in development: fine.
+    assert!(
+        parse_with(
+            &[
+                secrets[0],
+                ("SAGAT_GRPC_TLS_CERT_FILE", &cert),
+                ("SAGAT_GRPC_TLS_KEY_FILE", &key),
+            ],
+            Environment::Prod
+        )
+        .is_ok()
+    );
+    assert!(
+        parse_with(
+            &[secrets[0], ("SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS", "true")],
+            Environment::Prod
+        )
+        .is_ok()
+    );
+    assert!(parse_with(&secrets, Environment::Dev).is_ok());
+    // No secrets configured, no requirement.
+    assert!(parse_with(&[], Environment::Prod).is_ok());
+}
+
+#[test]
+fn a_bad_key_ring_is_refused_without_echoing_it() {
+    for bad in [
+        "not-a-ring",
+        "k1:AAAA",
+        "K1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    ] {
+        match parse_with(&[("SAGAT_SECRETS_KEYS", bad)], Environment::Dev) {
+            Err(ConfigError::Invalid { name, reason }) => {
+                assert_eq!(name, "SAGAT_SECRETS_KEYS");
+                assert!(!reason.contains(bad), "{reason}");
+            }
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
+    let config = parse_with(&[("SAGAT_SECRETS_KEYS", KEYS)], Environment::Dev).expect("config");
+    let printed = format!("{config:?}");
+    assert!(
+        !printed.contains("AAECAwQF"),
+        "the key ring never prints: {printed}"
+    );
+}

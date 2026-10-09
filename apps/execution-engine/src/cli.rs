@@ -62,6 +62,10 @@ ENVIRONMENT (serve):
     SAGAT_GRPC_REQUEST_TIMEOUT_SECS   upper bound for one call        [30]
     SAGAT_GRPC_MAX_CONNECTIONS        open connections, all clients   [2048]
     SAGAT_GRPC_MAX_IN_FLIGHT          calls running at once; polls shed at 3/4 [1024]
+    SAGAT_GRPC_TLS_CERT_FILE / _KEY_FILE   serve the worker API over TLS (PEM files)
+    SAGAT_GRPC_TLS_CLIENT_CA_FILE     also require client certificates signed by this CA (mTLS)
+    SAGAT_SECRETS_KEYS                key ring that opens secrets for workers: id:base64,id2:base64
+    SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS  allow secrets without TLS here (TLS terminated in front)
     SAGAT_RATE_LIMIT_RPS / _BURST     per-tenant worker budget        [2000 / 4000]
     SAGAT_SUBJECT_RATE_LIMIT_RPS / _BURST   per-identity budget       [200 / 400]
     SAGAT_LEASE_TTL_SECS              lease without a heartbeat       [30]
