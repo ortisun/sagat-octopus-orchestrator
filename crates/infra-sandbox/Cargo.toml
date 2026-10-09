@@ -13,10 +13,10 @@ workspace = true
 [dependencies]
 bollard = "0.20"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-jsonschema = { version = "0.58", default-features = false }
 metrics.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
+sagat-infra-schema.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 sha2 = "0.11"

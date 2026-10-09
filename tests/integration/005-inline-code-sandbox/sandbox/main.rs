@@ -58,17 +58,18 @@ pub fn sandbox() -> DockerSandbox {
 
 /// The policy with a short wall clock so a test that should be stopped is stopped quickly.
 pub fn quick(wall: Duration, memory_mib: u64) -> Policy {
-    let mut policy = Policy::default();
-    policy.limits = Limits::new(
-        memory_mib * 1024 * 1024,
-        1000,
-        wall,
-        64,
-        64 * 1024,
-        16 * 1024 * 1024,
-    )
-    .expect("limits");
-    policy
+    Policy {
+        limits: Limits::new(
+            memory_mib * 1024 * 1024,
+            1000,
+            wall,
+            64,
+            64 * 1024,
+            16 * 1024 * 1024,
+        )
+        .expect("limits"),
+        ..Policy::default()
+    }
 }
 
 pub async fn build(

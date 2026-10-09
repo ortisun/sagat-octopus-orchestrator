@@ -1,0 +1,18 @@
+[package]
+name = "sagat-infra-schema"
+description = "Adapter: JSON Schema for the input and result of scripts — checking a schema, validating a value against it without echoing the value, inferring a schema from a value."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sagat-application.workspace = true
+sagat-domain.workspace = true
+serde_json.workspace = true
+# No network or file resolution: a `$ref` to anything outside the document is an error, never a request.
+jsonschema = { version = "0.58", default-features = false }

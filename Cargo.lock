@@ -3658,6 +3658,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac 0.13.0",
  "metrics",
+ "ring",
  "sagat-domain",
  "sha2 0.11.0",
  "thiserror 2.0.21",
@@ -3815,16 +3816,26 @@ version = "0.1.0"
 dependencies = [
  "bollard",
  "futures-util",
- "jsonschema",
  "metrics",
  "sagat-application",
  "sagat-domain",
+ "sagat-infra-schema",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "sagat-infra-schema"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "sagat-application",
+ "sagat-domain",
+ "serde_json",
 ]
 
 [[package]]
@@ -3894,6 +3905,7 @@ dependencies = [
  "sagat-infra-nats",
  "sagat-infra-postgres",
  "sagat-infra-sandbox",
+ "sagat-infra-schema",
  "sagat-infra-secrets",
  "sagat-scheduler",
  "sagat-telemetry",

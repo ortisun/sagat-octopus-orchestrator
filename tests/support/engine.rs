@@ -19,6 +19,8 @@ use sagat_application::maintenance::OutboxStore;
 use sagat_application::outbound::OutboundService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::{RunFilter, RunOperation, RunService, RunStore, StartRun};
+use sagat_application::script_signing::Signer;
+use sagat_application::scripts::{RunnerService, ScriptService};
 use sagat_application::secrets::SecretService;
 use sagat_application::worker::{
     Capabilities, ClaimedTask, StepAck, TaskRef, WorkerService, WorkerSettings,
@@ -31,6 +33,7 @@ use sagat_domain::identity::{
 };
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{PgRunStore, PoolConfig, connect};
+use sagat_infra_schema::Schemas;
 use sagat_scheduler::{
     DeliverySettings, DeliveryWorker, EventDispatchSettings, EventDispatcher, Scheduler,
     SchedulerSettings,
@@ -53,6 +56,8 @@ pub type Egress = EgressService<PgRunStore, SystemClock>;
 pub type Events = EventService<PgRunStore, SystemClock>;
 pub type Outbound = OutboundService<PgRunStore, SystemClock>;
 pub type Connectors = ConnectorService<PgRunStore, SystemClock>;
+pub type Scripts = ScriptService<PgRunStore, SystemClock, Schemas>;
+pub type Runner = RunnerService<PgRunStore, SystemClock, SystemEntropy>;
 pub type DeliveryLoop = DeliveryWorker<PgRunStore, super::receiver::LoopbackSender, SystemEntropy>;
 
 pub struct World {
@@ -67,6 +72,13 @@ pub struct World {
     pub events: Events,
     pub outbound: Outbound,
     pub connectors: Connectors,
+    pub scripts: Scripts,
+    /// The runner of the sandbox, which signs what it is handed with a key made for this world.
+    pub runner: Runner,
+    /// The public half of the key behind [`Self::runner`].
+    pub signing_key: Vec<u8>,
+    /// The identity of the runner of the first tenant.
+    pub runner_identity: Principal,
     /// The worker that sends outbound webhooks, to a local receiver (tests tick it by hand).
     pub deliveries: DeliveryLoop,
     /// The key ring behind [`Self::secrets`] and the workers (a fresh random key per world).
@@ -130,6 +142,9 @@ pub async fn world_with_breaker(
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
+    let signer =
+        Signer::from_pkcs8(&Signer::generate_pkcs8().expect("a signing key")).expect("a signer");
+    let signing_key = signer.public_key();
     let world = World {
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
@@ -154,6 +169,21 @@ pub async fn world_with_breaker(
             EgressService::new(store.clone(), SystemClock),
             Arc::new(JsonEvaluator),
         ),
+        scripts: ScriptService::new(
+            store.clone(),
+            SystemClock,
+            Schemas,
+            sagat_domain::scripts::Policy::default(),
+        ),
+        runner: RunnerService::new(
+            store.clone(),
+            SystemClock,
+            SystemEntropy,
+            signer,
+            sagat_domain::scripts::Policy::default(),
+        ),
+        signing_key,
+        runner_identity: Principal::new(t.admin_a.tenant_id(), subject("runner-1"), Role::Runner),
         deliveries: DeliveryWorker::new(
             store.clone(),
             super::receiver::LoopbackSender::new(),

@@ -10,6 +10,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use sagat_application::definitions::IrError;
 use sagat_application::error::{AppError, ConflictKind};
+use sagat_domain::scripts::ScriptError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -286,10 +287,13 @@ impl From<AppError> for ApiError {
                         "a webhook subscription with this name already exists"
                     }
                     ConflictKind::ConnectorSlug => "a connector with this slug already exists",
+                    ConflictKind::ScriptName => "a script with this name already exists",
                 };
                 let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
                 e.parts.details = Some(match kind {
-                    ConflictKind::WorkflowName | ConflictKind::WebhookSubscriptionName => {
+                    ConflictKind::WorkflowName
+                    | ConflictKind::WebhookSubscriptionName
+                    | ConflictKind::ScriptName => {
                         json!({ "field": "name" })
                     }
                     ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
@@ -337,6 +341,11 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
+            AppError::InvalidScript(inner) => {
+                let mut e = Self::validation(inner.to_string());
+                e.parts.details = Some(json!({ "reason": script_reason(inner) }));
+                e
+            }
             AppError::QuotaExceeded(what) => {
                 // `what` is always a literal of this codebase, so the label set is closed.
                 metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
@@ -395,6 +404,27 @@ impl IntoResponse for ApiError {
         }
         response.extensions_mut().insert(self.parts);
         response
+    }
+}
+
+/// The stable reason a script was refused, for a client to branch on.
+const fn script_reason(error: ScriptError) -> &'static str {
+    match error {
+        ScriptError::AboveCeiling => "ABOVE_CEILING",
+        ScriptError::LanguageNotBuilt => "LANGUAGE_NOT_BUILT",
+        ScriptError::InvalidSchema => "SCHEMA",
+        ScriptError::InvalidSource | ScriptError::InvalidLockfile => "SOURCE",
+        ScriptError::InvalidMemory
+        | ScriptError::InvalidCpu
+        | ScriptError::InvalidWallTime
+        | ScriptError::InvalidProcesses
+        | ScriptError::InvalidOutputLimit
+        | ScriptError::InvalidScratch
+        | ScriptError::InvalidPolicy => "LIMIT",
+        ScriptError::InvalidRetention => "RETENTION",
+        ScriptError::UnknownLanguage => "LANGUAGE",
+        ScriptError::InvalidDigest | ScriptError::InvalidVersion => "IDENTIFIER",
+        ScriptError::NotATrustedArtifact => "UNTRUSTED_ARTIFACT",
     }
 }
 

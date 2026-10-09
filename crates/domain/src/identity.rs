@@ -312,11 +312,23 @@ pub enum Permission {
     EventRead,
     /// Create, change and delete webhook endpoints.
     EventManage,
+    /// See the scripts of a namespace, their versions, builds, test runs and executions.
+    ScriptRead,
+    /// Write the draft of a script and try it in the sandbox. Not publishing.
+    ScriptWrite,
+    /// Publish a version of a script: the code that is built and that workflows can pin.
+    ScriptPublish,
+    /// Take the builds and test runs of the tenant: read the source of a script, make its
+    /// artifact. Held by the runner of the sandbox and by nobody else.
+    ScriptBuild,
+    /// Fetch a built artifact and ask for what a running script is allowed to ask for (a request
+    /// to the outside, an execution record). Held by the runner of the sandbox and by nobody else.
+    ScriptExecute,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 30] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -342,6 +354,11 @@ impl Permission {
         Self::EventPublish,
         Self::EventRead,
         Self::EventManage,
+        Self::ScriptRead,
+        Self::ScriptWrite,
+        Self::ScriptPublish,
+        Self::ScriptBuild,
+        Self::ScriptExecute,
     ];
 
     #[must_use]
@@ -372,6 +389,11 @@ impl Permission {
             Self::EventPublish => "event:publish",
             Self::EventRead => "event:read",
             Self::EventManage => "event:manage",
+            Self::ScriptRead => "script:read",
+            Self::ScriptWrite => "script:write",
+            Self::ScriptPublish => "script:publish",
+            Self::ScriptBuild => "script:build",
+            Self::ScriptExecute => "script:execute",
         }
     }
 }
@@ -391,6 +413,10 @@ pub enum Role {
     Viewer,
     /// A machine identity that executes tasks; it can do nothing else.
     Worker,
+    /// The identity of a sandbox runner: it executes tasks and builds and runs scripts, and can do
+    /// nothing else. Kept apart from [`Self::Worker`] so that a worker that serves activities
+    /// never reads the source of a script.
+    Runner,
 }
 
 impl Role {
@@ -402,6 +428,7 @@ impl Role {
             Self::Operator => "operator",
             Self::Viewer => "viewer",
             Self::Worker => "worker",
+            Self::Runner => "runner",
         }
     }
 
@@ -411,7 +438,8 @@ impl Role {
         use Permission::{
             DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
             EventRead, NamespaceRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart,
-            SecretRead, SecretUse, WorkerExecute, WorkspaceRead,
+            ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead,
+            SecretUse, WorkerExecute, WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
@@ -429,6 +457,9 @@ impl Role {
                 EventPublish,
                 EventRead,
                 EventManage,
+                ScriptRead,
+                ScriptWrite,
+                ScriptPublish,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -441,6 +472,7 @@ impl Role {
                 QuotaRead,
                 EventPublish,
                 EventRead,
+                ScriptRead,
             ],
             Self::Viewer => &[
                 WorkspaceRead,
@@ -449,8 +481,10 @@ impl Role {
                 RunRead,
                 QuotaRead,
                 EventRead,
+                ScriptRead,
             ],
             Self::Worker => &[WorkerExecute],
+            Self::Runner => &[WorkerExecute, ScriptBuild, ScriptExecute],
         }
     }
 
@@ -477,6 +511,7 @@ impl FromStr for Role {
             "operator" => Ok(Self::Operator),
             "viewer" => Ok(Self::Viewer),
             "worker" => Ok(Self::Worker),
+            "runner" => Ok(Self::Runner),
             other => Err(IdentityError::UnknownRole(clip(other))),
         }
     }

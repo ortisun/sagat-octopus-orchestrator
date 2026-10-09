@@ -232,6 +232,72 @@ pub(crate) async fn ensure_room_for_connector(
     judge(QuotaResource::Connectors, count, limit)
 }
 
+/// Takes the lock of the scripts of one namespace for the rest of the transaction.
+pub(crate) async fn lock_scripts(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::Scripts, tenant, Some(namespace)).await
+}
+
+/// A new script fits in its namespace. The caller holds [`lock_scripts`].
+pub(crate) async fn ensure_room_for_script(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM scripts WHERE tenant_id = $1 AND namespace_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::Scripts, count, limit)
+}
+
+/// Takes the lock of the builds and test runs of one namespace for the rest of the transaction.
+pub(crate) async fn lock_script_jobs(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::ScriptJobs, tenant, Some(namespace)).await
+}
+
+/// The builds and test runs of a namespace that have not finished.
+pub(crate) async fn script_jobs_in_progress(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<i64, StoreError> {
+    sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM script_build_jobs \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND status IN ('QUEUED', 'RUNNING')) \
+              + (SELECT count(*) FROM script_test_runs \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND status IN ('QUEUED', 'RUNNING'))",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)
+}
+
+/// A new build or test run fits in its namespace. The caller holds [`lock_script_jobs`].
+pub(crate) async fn ensure_room_for_script_job(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count = script_jobs_in_progress(conn, tenant, namespace).await?;
+    judge(QuotaResource::ScriptJobs, count, limit)
+}
+
 /// A new secret fits in its namespace. The caller holds [`lock_secrets`].
 pub(crate) async fn ensure_room_for_secret(
     conn: &mut PgConnection,
@@ -542,6 +608,29 @@ impl QuotaStore for PgRunStore {
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
+            QuotaResource::Scripts => {
+                sqlx::query_scalar(
+                    "SELECT count(*) FROM scripts WHERE tenant_id = $1 AND namespace_id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace)
+                .fetch_one(&self.pool)
+                .await
+            }
+            QuotaResource::ScriptJobs => {
+                sqlx::query_scalar(
+                    "SELECT (SELECT count(*) FROM script_build_jobs \
+                              WHERE tenant_id = $1 AND namespace_id = $2 \
+                                AND status IN ('QUEUED', 'RUNNING')) \
+                          + (SELECT count(*) FROM script_test_runs \
+                              WHERE tenant_id = $1 AND namespace_id = $2 \
+                                AND status IN ('QUEUED', 'RUNNING'))",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace)
+                .fetch_one(&self.pool)
+                .await
+            }
             QuotaResource::WorkerSessions => {
                 sqlx::query_scalar(
                     "SELECT count(*) FROM worker_sessions \

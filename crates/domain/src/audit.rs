@@ -88,6 +88,20 @@ pub enum AuditAction {
     /// An operator discarded or tried again a message a connector had set aside.
     ConnectorMessageDiscarded,
     ConnectorMessageRedriven,
+    /// A script was created, its draft changed, or it was deleted.
+    ScriptCreated,
+    ScriptChanged,
+    ScriptDeleted,
+    /// A version of a script was published (its build queued).
+    ScriptPublished,
+    /// The build of a version finished: the runner that made it is the actor.
+    ScriptBuilt,
+    /// A draft was tried in the sandbox.
+    ScriptTested,
+    /// A script asked for something it may not have (a request the egress policy refuses, a secret
+    /// it did not declare). Written once per script, kind and reason in a window: a script in a
+    /// loop can ask as often as it likes.
+    ScriptViolation,
 }
 
 impl AuditAction {
@@ -100,7 +114,7 @@ impl AuditAction {
     pub const fn collapses_repeats(self) -> bool {
         matches!(
             self,
-            Self::SecretResolved | Self::SecretDenied | Self::EventRejected
+            Self::SecretResolved | Self::SecretDenied | Self::EventRejected | Self::ScriptViolation
         )
     }
 
@@ -150,6 +164,13 @@ impl AuditAction {
             Self::ConnectorDeleted => "connector.deleted",
             Self::ConnectorMessageDiscarded => "connector.message_discarded",
             Self::ConnectorMessageRedriven => "connector.message_redriven",
+            Self::ScriptCreated => "script.created",
+            Self::ScriptChanged => "script.changed",
+            Self::ScriptDeleted => "script.deleted",
+            Self::ScriptPublished => "script.published",
+            Self::ScriptBuilt => "script.built",
+            Self::ScriptTested => "script.tested",
+            Self::ScriptViolation => "script.violation",
         }
     }
 }
@@ -179,6 +200,9 @@ pub enum ResourceType {
     Event,
     WebhookSubscription,
     Connector,
+    Script,
+    /// A version of a script, as `script-id/number`.
+    ScriptVersion,
 }
 
 impl ResourceType {
@@ -200,6 +224,8 @@ impl ResourceType {
             Self::Event => "event",
             Self::WebhookSubscription => "webhook_subscription",
             Self::Connector => "connector",
+            Self::Script => "script",
+            Self::ScriptVersion => "script_version",
         }
     }
 }

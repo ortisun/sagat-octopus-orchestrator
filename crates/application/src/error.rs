@@ -1,6 +1,7 @@
 //! Typed errors of the application layer and of its storage port (AGENTS.md rule 10).
 
 use sagat_domain::identity::{IdentityError, Permission};
+use sagat_domain::scripts::ScriptError;
 
 use crate::definitions::IrError;
 
@@ -20,6 +21,8 @@ pub enum ConflictKind {
     WebhookSubscriptionName,
     /// A connector with that name already exists in the namespace.
     ConnectorSlug,
+    /// A script with that name already exists in the namespace.
+    ScriptName,
 }
 
 /// Failure reported by a storage adapter. `detail` is for logs only and must never be returned to
@@ -90,6 +93,9 @@ pub enum AppError {
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),
+    /// A script, a schema or a limit of a script that the platform cannot take.
+    #[error("invalid script: {0}")]
+    InvalidScript(ScriptError),
     /// A limit was reached (for example the size of a child-run tree); `what` names it.
     #[error("limit reached: {0}")]
     QuotaExceeded(&'static str),

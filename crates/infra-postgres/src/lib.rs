@@ -21,6 +21,7 @@ mod outbound;
 mod pool;
 mod privilege;
 mod quotas;
+mod scripts;
 mod secrets;
 mod signals;
 mod workers;

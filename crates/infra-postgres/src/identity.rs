@@ -584,6 +584,7 @@ fn classify(error: &sqlx::Error) -> StoreError {
                     Some("event_connectors_slug_uniq") => {
                         StoreError::Conflict(ConflictKind::ConnectorSlug)
                     }
+                    Some("scripts_name_uniq") => StoreError::Conflict(ConflictKind::ScriptName),
                     _ => StoreError::Internal { detail },
                 },
                 // foreign_key_violation

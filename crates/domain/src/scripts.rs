@@ -55,6 +55,18 @@ pub enum ScriptError {
     InvalidScratch,
     #[error("the version is not a build the platform made, or its signature does not verify")]
     NotATrustedArtifact,
+    #[error("a policy is `v1;memory=..;cpu=..;wall=..;pids=..;output=..;scratch=..;egress=..`")]
+    InvalidPolicy,
+    #[error("a schema is a JSON Schema object of at most 64 KiB")]
+    InvalidSchema,
+    #[error("the version number is 1 or more")]
+    InvalidVersion,
+    #[error("retention is between 1 and 365 days")]
+    InvalidRetention,
+    #[error("a limit is above what the platform allows")]
+    AboveCeiling,
+    #[error("the language is not built yet: typescript and python are")]
+    LanguageNotBuilt,
 }
 
 /// Longest source accepted, in bytes.
@@ -258,6 +270,18 @@ impl Egress {
     }
 }
 
+impl std::str::FromStr for Egress {
+    type Err = ScriptError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "namespace" => Ok(Self::Namespace),
+            _ => Err(ScriptError::InvalidPolicy),
+        }
+    }
+}
+
 /// What one run of a script may use. Every limit has a floor and a ceiling; a tenant may ask for
 /// less than the ceiling and never for more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +417,67 @@ impl Policy {
     }
 }
 
+impl Policy {
+    /// Reads back what [`Self::canonical`] wrote. The text is what travels with an artifact, so it
+    /// is read as input from outside: every limit is checked again against its floor and ceiling.
+    ///
+    /// # Errors
+    /// [`ScriptError::InvalidPolicy`] unless the text is exactly the canonical form;
+    /// the [`ScriptError`] of the first limit out of bounds.
+    pub fn parse_canonical(text: &str) -> Result<Self, ScriptError> {
+        let mut parts = text.split(';');
+        if parts.next() != Some("v1") {
+            return Err(ScriptError::InvalidPolicy);
+        }
+        let mut value = |key: &str| -> Result<&str, ScriptError> {
+            parts
+                .next()
+                .and_then(|part| part.strip_prefix(key))
+                .and_then(|rest| rest.strip_prefix('='))
+                .ok_or(ScriptError::InvalidPolicy)
+        };
+        let number = |text: &str| text.parse::<u64>().map_err(|_| ScriptError::InvalidPolicy);
+        let memory = number(value("memory")?)?;
+        let cpu = u32::try_from(number(value("cpu")?)?).map_err(|_| ScriptError::InvalidCpu)?;
+        let wall = Duration::from_secs(number(value("wall")?)?);
+        let pids =
+            u32::try_from(number(value("pids")?)?).map_err(|_| ScriptError::InvalidProcesses)?;
+        let output = usize::try_from(number(value("output")?)?)
+            .map_err(|_| ScriptError::InvalidOutputLimit)?;
+        let scratch = number(value("scratch")?)?;
+        let egress = value("egress")?.parse::<Egress>()?;
+        if parts.next().is_some() {
+            return Err(ScriptError::InvalidPolicy);
+        }
+        Ok(Self {
+            limits: Limits::new(memory, cpu, wall, pids, output, scratch)?,
+            egress,
+        })
+    }
+
+    /// The policy that holds when `self` is asked for under a ceiling: each limit is the smaller of
+    /// the two, and a script that may not reach the network under the ceiling never may.
+    #[must_use]
+    pub fn within(&self, ceiling: &Self) -> Self {
+        let (a, b) = (&self.limits, &ceiling.limits);
+        Self {
+            limits: Limits {
+                memory_bytes: a.memory_bytes.min(b.memory_bytes),
+                cpu_millis: a.cpu_millis.min(b.cpu_millis),
+                wall: a.wall.min(b.wall),
+                processes: a.processes.min(b.processes),
+                output_bytes: a.output_bytes.min(b.output_bytes),
+                scratch_bytes: a.scratch_bytes.min(b.scratch_bytes),
+            },
+            egress: if matches!(ceiling.egress, Egress::None) {
+                Egress::None
+            } else {
+                self.egress
+            },
+        }
+    }
+}
+
 impl Default for Policy {
     fn default() -> Self {
         Self {
@@ -401,6 +486,124 @@ impl Default for Policy {
         }
     }
 }
+
+/// Which number a version has among those of its script: 1, 2, 3... Never reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VersionNumber(u32);
+
+impl VersionNumber {
+    /// # Errors
+    /// [`ScriptError::InvalidVersion`] for zero.
+    pub const fn new(value: u32) -> Result<Self, ScriptError> {
+        if value == 0 {
+            Err(ScriptError::InvalidVersion)
+        } else {
+            Ok(Self(value))
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for VersionNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Where a published version is. A version is immutable from the moment it exists; what changes is
+/// only whether its build has finished and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionStatus {
+    /// Its build is queued or running; workflows cannot pin it yet.
+    Building,
+    /// Built, signed and ready to be pinned and run.
+    Ready,
+    /// The build produced nothing: the source did not compile, or the lockfile was refused, or the
+    /// build ran out of what it was given. The version stays, with the reason, so the author can
+    /// see it; publishing the fixed draft makes the next version.
+    Failed,
+}
+
+impl VersionStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Building => "BUILDING",
+            Self::Ready => "READY",
+            Self::Failed => "FAILED",
+        }
+    }
+
+    /// Forward only: a version never goes back to building, and a finished one never changes.
+    #[must_use]
+    pub const fn can_become(self, next: Self) -> bool {
+        matches!((self, next), (Self::Building, Self::Ready | Self::Failed))
+    }
+}
+
+impl std::str::FromStr for VersionStatus {
+    type Err = ScriptError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "BUILDING" => Ok(Self::Building),
+            "READY" => Ok(Self::Ready),
+            "FAILED" => Ok(Self::Failed),
+            _ => Err(ScriptError::InvalidVersion),
+        }
+    }
+}
+
+/// How long the record of an execution (its log, result and metrics) is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention(u16);
+
+impl Retention {
+    pub const DEFAULT: Self = Self(14);
+
+    /// # Errors
+    /// [`ScriptError::InvalidRetention`] outside 1 to 365 days.
+    pub const fn days(days: u16) -> Result<Self, ScriptError> {
+        if days == 0 || days > 365 {
+            Err(ScriptError::InvalidRetention)
+        } else {
+            Ok(Self(days))
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+/// The name of the activity a `script` node becomes: it carries the digest, so a step of a run
+/// names the exact code it runs, and nothing but the digest (and the artifact it stands for) can
+/// change what that is.
+pub const ACTIVITY_PREFIX: &str = "script.sha256-";
+
+/// `script.sha256-<hex>`.
+#[must_use]
+pub fn activity_of(digest: &Digest) -> String {
+    format!(
+        "{ACTIVITY_PREFIX}{}",
+        &digest.as_str()[Digest::PREFIX.len()..]
+    )
+}
+
+/// The digest an activity name stands for, if it is a script's.
+#[must_use]
+pub fn digest_of_activity(activity: &str) -> Option<Digest> {
+    let hex = activity.strip_prefix(ACTIVITY_PREFIX)?;
+    Digest::parse(&format!("{}{hex}", Digest::PREFIX)).ok()
+}
+
+/// Longest JSON Schema kept with a script, in bytes.
+pub const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 
 /// Where a build or a test run is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,6 +677,8 @@ pub enum Failure {
     NoResult,
     /// The sandbox itself could not run it (not the script's fault).
     Unavailable,
+    /// A test run whose source does not build: the first message of the toolchain is the log.
+    BuildRejected,
 }
 
 impl Failure {
@@ -488,7 +693,26 @@ impl Failure {
             Self::SchemaViolation => "SCRIPT_SCHEMA_VIOLATION",
             Self::NoResult => "SCRIPT_NO_RESULT",
             Self::Unavailable => "SCRIPT_SANDBOX_UNAVAILABLE",
+            Self::BuildRejected => "SCRIPT_BUILD_REJECTED",
         }
+    }
+
+    /// Reads a code back from a row.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        [
+            Self::Error,
+            Self::Timeout,
+            Self::OutOfMemory,
+            Self::OutputLimit,
+            Self::Denied,
+            Self::SchemaViolation,
+            Self::NoResult,
+            Self::Unavailable,
+            Self::BuildRejected,
+        ]
+        .into_iter()
+        .find(|failure| failure.code() == code)
     }
 
     /// Whether running it again could end differently. A script that ran out of memory or broke its
@@ -586,6 +810,96 @@ fn redact_credentials(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_policy_reads_back_exactly_what_it_wrote_and_nothing_else() {
+        let policy = Policy {
+            egress: Egress::Namespace,
+            ..Policy::default()
+        };
+        assert_eq!(Policy::parse_canonical(&policy.canonical()), Ok(policy));
+        for bad in [
+            "",
+            "v2;memory=1",
+            "v1;cpu=1000;memory=268435456;wall=30;pids=64;output=65536;scratch=33554432;egress=none",
+            &format!("{};extra=1", Policy::default().canonical()),
+            &Policy::default()
+                .canonical()
+                .replace("egress=none", "egress=all"),
+            &Policy::default()
+                .canonical()
+                .replace("memory=268435456", "memory=1"),
+            &Policy::default()
+                .canonical()
+                .replace("wall=30", "wall=99999"),
+        ] {
+            assert!(Policy::parse_canonical(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_policy_asked_for_under_a_ceiling_is_the_smaller_of_both() {
+        let asked = Policy {
+            limits: Limits::new(
+                1024 * 1024 * 1024,
+                4000,
+                Duration::from_secs(600),
+                512,
+                1024 * 1024,
+                512 * 1024 * 1024,
+            )
+            .expect("limits"),
+            egress: Egress::Namespace,
+        };
+        let ceiling = Policy::default();
+        let held = asked.within(&ceiling);
+        assert_eq!(held.limits, ceiling.limits);
+        assert_eq!(held.egress, Egress::None, "the ceiling has no network");
+        let open = Policy {
+            egress: Egress::Namespace,
+            ..ceiling
+        };
+        assert_eq!(asked.within(&open).egress, Egress::Namespace);
+        assert_eq!(
+            ceiling.within(&asked).limits,
+            ceiling.limits,
+            "never more than asked"
+        );
+    }
+
+    #[test]
+    fn a_script_activity_carries_its_digest_and_only_a_digest() {
+        let digest = Digest::from_bytes([7; 32]);
+        let activity = activity_of(&digest);
+        assert!(activity.starts_with("script.sha256-") && activity.len() == 14 + 64);
+        assert_eq!(digest_of_activity(&activity), Some(digest));
+        for other in [
+            "script.run",
+            "script.sha256-xyz",
+            "script.sha256-",
+            "payment.sha256-aa",
+            "",
+        ] {
+            assert_eq!(digest_of_activity(other), None, "{other}");
+        }
+        // Upper case or short hex is not a digest, so it is not a script.
+        assert_eq!(digest_of_activity(&activity.to_uppercase()), None);
+    }
+
+    #[test]
+    fn a_version_only_goes_forward_once() {
+        use VersionStatus::{Building, Failed, Ready};
+        assert!(Building.can_become(Ready) && Building.can_become(Failed));
+        for from in [Ready, Failed] {
+            for to in [Building, Ready, Failed] {
+                assert!(!from.can_become(to), "{from:?} -> {to:?}");
+            }
+        }
+        assert!(VersionNumber::new(0).is_err());
+        assert_eq!(VersionNumber::new(3).map(VersionNumber::get), Ok(3));
+        assert!(Retention::days(0).is_err() && Retention::days(366).is_err());
+        assert_eq!(Retention::days(365).map(Retention::get), Ok(365));
+    }
 
     #[test]
     fn a_language_round_trips_and_only_some_are_built() {

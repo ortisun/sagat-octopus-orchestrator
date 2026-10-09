@@ -37,6 +37,7 @@ sagat-infra-ir.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
 sagat-infra-sandbox.workspace = true
+sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
 sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
@@ -171,4 +172,8 @@ path = "performance/004-events-webhooks-messaging/main.rs"
 
 [[test]]
 name = "integration_005_sandbox"
-path = "integration/005-inline-code-sandbox/main.rs"
+path = "integration/005-inline-code-sandbox/sandbox/main.rs"
+
+[[test]]
+name = "integration_005"
+path = "integration/005-inline-code-sandbox/registry/main.rs"

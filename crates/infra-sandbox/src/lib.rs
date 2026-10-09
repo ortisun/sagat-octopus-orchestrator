@@ -9,6 +9,5 @@
 pub mod docker;
 pub mod lockfile;
 pub mod protocol;
-pub mod schema;
 
 pub use docker::{DockerSandbox, Images};

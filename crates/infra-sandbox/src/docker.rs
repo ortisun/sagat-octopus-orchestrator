@@ -33,8 +33,9 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
 
+use crate::lockfile;
 use crate::protocol::{self, Message};
-use crate::{lockfile, schema};
+use sagat_infra_schema as schema;
 
 /// The images the languages run in. Name them by digest in a deployment: a tag moves, a digest
 /// does not, and the digest is part of every build key.

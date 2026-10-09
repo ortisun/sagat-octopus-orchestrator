@@ -1,7 +1,29 @@
-//! JSON Schema for the input and the result of a script: checking a value against the schema the
-//! author declared, and inferring a schema from a value that was seen (`FR-005-006`).
+//! JSON Schema for the input and the result of a script: checking a schema when it is written,
+//! checking a value against the schema the author declared, and inferring a schema from a value
+//! that was seen (`FR-005-006`).
 
+use sagat_application::scripts::{SchemaChecker, SchemaProblem};
+use sagat_domain::scripts::MAX_SCHEMA_BYTES;
 use serde_json::{Map, Value, json};
+
+/// Checks schemas when an author writes them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Schemas;
+
+impl SchemaChecker for Schemas {
+    fn check(&self, schema: &[u8]) -> Result<(), SchemaProblem> {
+        if schema.len() > MAX_SCHEMA_BYTES {
+            return Err(SchemaProblem::TooLarge);
+        }
+        let value: Value = serde_json::from_slice(schema).map_err(|_| SchemaProblem::NotJson)?;
+        if !value.is_object() {
+            return Err(SchemaProblem::NotAnObject);
+        }
+        // Compiles it, which also refuses a reference to anything outside the document.
+        jsonschema::validator_for(&value).map_err(|_| SchemaProblem::Invalid)?;
+        Ok(())
+    }
+}
 
 /// Why a value does not satisfy a schema, in a form that names where and which rule but never the
 /// value itself: a result may hold what must not be shown.
