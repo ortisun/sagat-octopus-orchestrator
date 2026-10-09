@@ -54,11 +54,17 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 | Exit code 2: `SAGAT_ALLOW_INSECURE_JWKS_HTTP is only allowed when SAGAT_ENV=dev` | Plain-http key URL outside dev | Use an `https://` JWKS URL |
 | Workers get `UNAUTHENTICATED` | Token invalid/expired, tenant claim unknown, subject not a member of the tenant, or the worker session expired (idle `SAGAT_SESSION_TTL_SECS`) | Check the token; re-register after a session expiry (`PollTasks` answers `UNAUTHENTICATED`) |
 | Workers get `PERMISSION_DENIED` (`x-sagat-error: FORBIDDEN`) | The identity's role in the tenant is not `worker`/`admin` | Grant the `worker` role to the worker identity |
-| Workers get `RESOURCE_EXHAUSTED` with `retry-after-ms` | Per-identity or per-tenant budget (`SAGAT_SUBJECT_RATE_LIMIT_*`, `SAGAT_RATE_LIMIT_*`) | Poll less often (use the `retry_after_ms` the server returns when idle); raise the budget deliberately |
+| Workers get `RESOURCE_EXHAUSTED` with `retry-after-ms` | Per-identity or per-tenant budget (`SAGAT_SUBJECT_RATE_LIMIT_*`, `SAGAT_RATE_LIMIT_*`), or the engine is full (`grpc_shed_total`; `grpc_in_flight` close to `SAGAT_GRPC_MAX_IN_FLIGHT`) | Poll less often (use the `retry_after_ms` the server returns when idle); when the engine is full add replicas or raise `SAGAT_GRPC_MAX_IN_FLIGHT` after checking the database pool can serve it. Heartbeats and reports are shed last, so leases are not lost while polls are refused |
+| New worker connections hang | `SAGAT_GRPC_MAX_CONNECTIONS` connections are open: the next one is accepted when one closes | Find the clients holding connections (one per process is enough: a gRPC channel multiplexes), then raise the limit or add replicas |
 | Workers get `ABORTED` with `x-sagat-error: STALE_ATTEMPT` | The lease was reclaimed, the run was cancelled or finished, or the report is a duplicate with a new key | Stop working on that task; this is not an error to retry |
 | Tasks sit `READY` and nobody claims them | No worker advertises that activity in that namespace, or workers are at `max_inflight` | `SELECT activity, count(*) FROM steps WHERE status = 'READY' GROUP BY 1`; check `grpc_requests_total{method="PollTasks"}` |
 | Runs stay `WAITING` past their timer | The scheduler is not running, is stuck, or the database clock is wrong | `/livez`; `scheduler_actions_total`; compare `steps.due_at` with `clock_timestamp()` |
 | `outbox_backlog` grows | NATS is down or unreachable, or `SAGAT_NATS_URL` is unset | Nothing is lost: the backlog drains after recovery. Check `outbox_publish_failed_total{code}` and the `last_error_code` column |
+| `QUOTA_EXCEEDED` (REST 429) on a signal, or a step failed with `RUN_DATA_LIMIT` | The run retains 4 MiB of outputs and signals (every lease carries them) | Return less from the activities (references, not documents); this is a limit of the run, retrying will not help |
+| A step failed with `CHILD_LIMIT_EXCEEDED` | The tree of child runs reached 1024 runs, usually a workflow that starts itself without a base case | Fix the recursion; the tree has already stopped growing |
+| `RegisterWorker` answers `RESOURCE_EXHAUSTED` | The identity already holds 32 sessions under other names, or its worker names change on every start | Use a stable worker name (a restart then replaces its own session), or one identity per fleet |
+| A worker's token stops working right after another worker registered | Two workers use the same identity and the same worker name, so the second replaced the first's session | Give every process its own `worker_name` |
+| `PollTasks` answers an error while other tenants' polls work | A run of this tenant cannot be leased (a failing statement on it); healthy runs are still served, the error appears only when nothing else is claimable | Find it in the engine log (`leasing the steps of a run failed`, with the run id) and cancel or repair that run |
 | A child run never starts | The scheduler cannot create it (target workflow missing is reported to the parent as `CHILD_NOT_FOUND`; other failures are logged as `starting a child run failed`) | Look at `scheduler_actions_total{kind="child_start",outcome="failed"}` and the engine log |
 
 Useful read-only queries (as the owner or `sagat_app`):
@@ -82,6 +88,9 @@ SELECT count(*) FILTER (WHERE delivered_at IS NULL) AS pending, max(attempt_coun
 |---|---|---|
 | `grpc_requests_total` | `method`, `code` | Worker API calls by outcome (closed sets) |
 | `grpc_request_duration_seconds` | `method` | Latency of each call |
+| `grpc_in_flight` | | Calls running now, all connections (limit `SAGAT_GRPC_MAX_IN_FLIGHT`) |
+| `grpc_shed_total` | `class` | Calls refused because the engine was full: `discovery` (`RegisterWorker`, `PollTasks`, shed above 3/4 of the limit) or `lease` (`Heartbeat`, `CompleteStep`, `FailStep`, shed only when it is completely full) |
+| `grpc_connections_total` | | Connections accepted (at most `SAGAT_GRPC_MAX_CONNECTIONS` are open at once) |
 | `scheduler_actions_total` | `kind`, `outcome` | What the loop did: `timer`, `wait_timeout`, `retry`, `lease`, `deadline`, `rehint`, `child_start`, `child_finish`, `child_cancel`; `done`, `skipped` (someone else got there first), `failed` |
 | `child_runs_started_total` | | Child runs created |
 | `outbox_published_total` | `event` | Messages sent to NATS (`task.ready`, `run.finished`, `other`) |
@@ -110,6 +119,13 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
 
 ## 7. Not covered (read before relying on this)
 
+- **A worker may serve the whole tenant (G31).** Any identity with the `worker` role can register for
+  any activity of any namespace of its tenant and receives those tasks with their run data. Give the
+  role only to identities whose workers may see every run of the tenant; per-namespace and
+  per-activity bindings are feature 009.
+- **Fairness between tenants is partial (G32).** Each tenant has its own call budget and the engine
+  caps connections and calls as a whole, but the database pool and the scheduler batches are shared:
+  weighted claims are feature 010.
 - TLS and mutual TLS on the worker API (G27) and a dev token issuer (G10).
 - A blob store for payloads over 256 KiB (G19), run results (G21), `foreach` and `humanApproval` nodes (G20).
 - Scaling the scheduler beyond about 100 timers per second per loop and disjoint candidates across

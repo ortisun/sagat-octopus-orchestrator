@@ -278,7 +278,7 @@ pub struct RetryPolicy {
 
 impl RetryPolicy {
     /// What a node gets when the definition says nothing: three attempts, exponential from one
-    /// second up to one minute, with jitter. A decision, recorded in `research.md` (D18).
+    /// second up to one minute, with jitter. A decision, recorded in `specs/002-durable-execution/research.md` (D26).
     pub const DEFAULT: Self = Self {
         max_attempts: 3,
         initial_delay: Duration::from_secs(1),

@@ -39,6 +39,30 @@ Everything below was run against this repository. The pieces that are **not** bu
 
 5. **Operating it:** `docs/runbooks/execution-engine.md`.
 
+## Security review (T002-035)
+
+The review of the engine (abuse by a tenant, a worker or a run; isolation; secrets) found fifteen things. Each is fixed or recorded as a gap, and each fix has a test that fails without it: the guards were weakened one at a time (the mutation checks below) and the named test failed every time.
+
+| # | Finding | Result | Evidence |
+|---|---|---|---|
+| 1 | A workflow could start itself in parallel and grow a tree of 8^8 runs | Fixed: 1024 runs per tree, `CHILD_LIMIT_EXCEEDED` (D37) | `children.rs::a_fan_out_bomb_stops_at_the_tree_budget_*` |
+| 2 | Validating or caching a hostile definition cost unbounded CPU and memory | Fixed: 32 `parallel` nodes, cache weighed by footprint (D37) | `crates/domain/tests/workflow.rs` (`cost`), `crates/infra-ir/tests/cache.rs` |
+| 3 | A run could retain unbounded output, and every lease carried it | Fixed: 4 MiB per run, `RUN_DATA_LIMIT`, signals refused with `QUOTA_EXCEEDED`; a poll stops at 8 MiB (D37, D38) | `hardening.rs::{a_run_cannot_retain_*, a_signal_that_would_exceed_*, a_poll_is_bounded_in_bytes_*}` |
+| 4 | A worker could register unboundedly many sessions and arbitrary labels | Fixed: 32 sessions per identity, the same name replaces its session, labels validated (D38) | `hardening.rs::{what_a_worker_advertises_*, an_identity_holds_a_bounded_number_of_sessions_*}` |
+| 5 | The claim query aggregated every ready step of the tenant | Fixed: a bounded probe of `steps_ready_idx` per activity (D38) | `hardening.rs::the_claim_query_walks_the_ready_index_*` (plan) and the benchmark |
+| 6 | A poll that failed after leasing some steps lost their tokens, and one bad run blocked the tenant | Fixed: tasks join the response after their commit, a failing run is skipped (D38) | `hardening.rs::{a_task_leased_before_another_run_failed_*, a_run_that_cannot_be_leased_*}` |
+| 7 | A missing consumer made the outbox grow without bound | Fixed: five re-announcements per ready step, purge until caught up (D39) | `hardening.rs::{a_task_nobody_takes_*, housekeeping_purges_a_backlog_*}` |
+| 8 | Nothing limited the connections or the calls of the worker API as a whole | Fixed: connection cap and load shedding with a reserve for heartbeats and reports (D41). Per-tenant fairness is G32 | `grpc/limits.rs` (real sockets), `crates/api-grpc/src/limits.rs` (unit) |
+| 9 | A worker's authority is the whole tenant | **Open, recorded** (G31, feature 009); the runbook says who may hold the role | runbook section 7 |
+| 10 | An idempotency key was an oracle for a worker without the lease | Fixed: records scoped by the lease token (D40) | `hardening.rs::a_key_is_no_oracle_*` |
+| 11 | An error echoed a map key computed from run data | Fixed: `<computed>`; literals of the expression are still named | `crates/infra-expr/tests/subset.rs` |
+| 12 | The runtime role could delete an undelivered outbox message or rewrite journal tables it owned | Fixed: `BEFORE DELETE` trigger; the start-up guard refuses an owner of `run_events`, `payloads`, `workflow_versions` | `least_privilege.rs::{the_runtime_role_cannot_delete_*, each_append_only_table_*, a_role_that_owns_a_journal_table_*}`, `migrations.rs` |
+| 13 | A late heartbeat could be overridden by a reclaim decided on stale data | Fixed: the lease is re-checked under the run's lock (D39) | `hardening.rs::a_lease_renewed_after_the_candidate_was_read_*` |
+| 14 | Worker calls on another tenant's run were not audited | Fixed: audited against the caller's tenant (D40) | `hardening.rs::a_worker_of_another_tenant_is_refused_*` |
+| 15 | A `TaskRef` could print its lease token | Fixed: redacted `Debug` | `hardening.rs::a_lease_token_is_never_printed` |
+
+Mutation checks (a guard weakened, the suite must fail): 20 of 20 mutants killed: tree budget (2), run output budget, signal budget, poll byte cap, poison run, claimed-before-failure, key oracle, rehint cap, purge rounds, lease re-check, cross-tenant audit, session cap, label bounds, ready-index plan, shed threshold, reserve, ticket release, connection cap and heartbeat classification. One further mutant of the earlier work (`status = 'WAITING'`) was proven equivalent.
+
 ## Gates
 
 - Crash at each point of claim, effect, commit, publish: journal intact and no double transition (`faults.rs`, `outbox.rs`, the property tests).
@@ -47,4 +71,4 @@ Everything below was run against this repository. The pieces that are **not** bu
 
 ## Not built (so nobody assumes it)
 
-TLS and mutual TLS on the worker API (G27); a blob store for payloads over 256 KiB (G19); the result of a run or child (G21); `foreach` and `humanApproval` (G20); sagas (003); inbound events and webhooks (004); span export (008); partitioning and retention of the journal, bounded-concurrency timer firing and disjoint scheduler candidates across replicas (G22, G28; 010); a worker simulator binary and the SDKs (006).
+TLS and mutual TLS on the worker API (G27); a worker bound to the namespaces and activities it may serve (G31); fairness between tenants beyond their call budgets (G32); a blob store for payloads over 256 KiB (G19); the result of a run or child (G21); `foreach` and `humanApproval` (G20); sagas (003); inbound events and webhooks (004); span export (008); partitioning and retention of the journal, bounded-concurrency timer firing and disjoint scheduler candidates across replicas (G22, G28; 010); a worker simulator binary and the SDKs (006).
