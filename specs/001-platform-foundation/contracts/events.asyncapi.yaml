@@ -1,13 +1,20 @@
 asyncapi: 3.0.0
 info:
   title: Sagat Octopus Orchestrator Integration Events
-  version: 0.1.0
-  description: Event contract; at-least-once. Outbound messages are deduplicated by the Nats-Msg-Id header (the outbox row id); inbound events by eventId scoped to source/tenant.
+  version: 0.2.0
+  description: |
+    Event contract; at-least-once everywhere. Hints on NATS are deduplicated by the Nats-Msg-Id header (the outbox row id); events that come in (webhook, API, broker) are deduplicated by (tenant, namespace, source, eventId) for the endpoint's window; events that go out (webhooks) carry a stable delivery id.
+
+    Evolution (FR-004-007): within a version of this document a message only grows. A property is never removed, renamed or given another type; a new property is optional; an enumeration gains values and never loses them; `required` never gains a member. A change that cannot be made that way is a new message with a new name next to the old one, and the old one is kept for the period the deprecation notice in `docs/event-schema-evolution.md` states. `tests/contract/004-events-webhooks-messaging/asyncapi` holds the previous shape of every message (`events.baseline.json`) and fails a change that breaks it.
 defaultContentType: application/json
 servers:
   internal:
     host: nats:4222
     protocol: nats
+  public:
+    host: platform.example.com
+    protocol: https
+    description: The control plane, where providers post webhooks.
 channels:
   # --- Implemented by feature 002 (the outbox dispatcher of the execution engine) ---------------
   # Hints and events carry identifiers only: never payloads, tokens or secrets. Delivery is
@@ -34,12 +41,35 @@ channels:
     messages:
       runFinished:
         $ref: '#/components/messages/RunFinished'
-  # --- Planned (feature 004) --------------------------------------------------------------------
-  connectorEvents:
-    address: sagat.v1.integration.inbound
+  # --- Implemented by feature 004 ------------------------------------------------------------
+  inboundWebhook:
+    address: /v1/webhooks/{endpointId}
+    description: A provider posts a signed event. The signature is the credential; every request that does not verify gets the same 401.
+    servers: [{$ref: '#/servers/public'}]
+    parameters:
+      endpointId:
+        description: The id of an event endpoint (a random UUID).
     messages:
-      externalEvent:
-        $ref: '#/components/messages/ExternalEvent'
+      webhookEvent:
+        $ref: '#/components/messages/WebhookEvent'
+  outboundWebhook:
+    address: '{subscriberUrl}'
+    description: The platform posts an event to a subscriber's URL, signed with a secret of the namespace, from the egress client that obeys the namespace's egress policy.
+    parameters:
+      subscriberUrl:
+        description: The URL of a webhook subscription.
+    messages:
+      runFinishedWebhook:
+        $ref: '#/components/messages/RunFinishedWebhook'
+  brokerMessages:
+    address: '{topicOrQueue}'
+    description: A Kafka topic, an SQS queue or a NATS JetStream stream that a connector reads. Whatever the broker, the message is the event data (a JSON object) and the envelope travels in headers (Kafka, NATS) or message attributes (SQS).
+    parameters:
+      topicOrQueue:
+        description: The topic, queue or stream a connector is configured with.
+    messages:
+      brokerMessage:
+        $ref: '#/components/messages/BrokerMessage'
 operations:
   publishTaskReady:
     action: send
@@ -49,10 +79,18 @@ operations:
     action: send
     channel: {$ref: '#/channels/runFinished'}
     messages: [{$ref: '#/channels/runFinished/messages/runFinished'}]
-  receiveIntegration:
+  receiveWebhook:
     action: receive
-    channel: {$ref: '#/channels/connectorEvents'}
-    messages: [{$ref: '#/channels/connectorEvents/messages/externalEvent'}]
+    channel: {$ref: '#/channels/inboundWebhook'}
+    messages: [{$ref: '#/channels/inboundWebhook/messages/webhookEvent'}]
+  sendRunFinishedWebhook:
+    action: send
+    channel: {$ref: '#/channels/outboundWebhook'}
+    messages: [{$ref: '#/channels/outboundWebhook/messages/runFinishedWebhook'}]
+  consumeBrokerMessage:
+    action: receive
+    channel: {$ref: '#/channels/brokerMessages'}
+    messages: [{$ref: '#/channels/brokerMessages/messages/brokerMessage'}]
 components:
   messages:
     TaskReady:
@@ -87,17 +125,88 @@ components:
           namespaceId: {type: string, format: uuid}
           runId: {type: string, format: uuid}
           status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED], description: "How the run ended. COMPENSATED, PARTIAL and COMPENSATION_FAILED are the ends of a run whose saga undid its work (feature 003); a cancelled or timed-out run is reported as such once what it had done was undone."}
-    ExternalEvent:
-      name: ExternalEvent
+    WebhookEvent:
+      name: WebhookEvent
       contentType: application/json
+      headers:
+        type: object
+        required: [X-Octopus-Signature, X-Octopus-Timestamp, X-Octopus-Event-Id]
+        properties:
+          X-Octopus-Signature: {type: string, description: '`v1=` and the hex HMAC-SHA256 of "octopus-event-in-v1\n{timestamp}\n{eventId}\n{eventType}\n{subject}\n{correlationKey}\n" followed by the body, with the type, the subject and the correlation key as sent in the headers below (absent: empty). Up to four, comma separated, 512 bytes at most, are accepted while a secret is rotated.'}
+          X-Octopus-Timestamp: {type: string, pattern: '^[0-9]+$', description: 'Seconds since the epoch; within the endpoint''s skew (300 s by default) of the platform''s clock.'}
+          X-Octopus-Event-Id: {type: string, description: 'Unique within the endpoint for the deduplication window (24 hours by default, at least twice the skew).'}
+          X-Octopus-Event-Type: {type: string, description: 'Required unless the endpoint has a default type.'}
+          X-Octopus-Subject: {type: string}
+          X-Octopus-Correlation-Key: {type: string}
       payload:
         type: object
-        required: [eventId, tenantId, source, eventType, schemaVersion, payloadRef]
+        description: 'The event data: any JSON object of at most 240 KiB.'
+        additionalProperties: true
+    EventDocument:
+      name: EventDocument
+      contentType: application/json
+      summary: What a run started by an event is given as its input, and what a step woken by an event gets as its output.
+      payload:
+        type: object
+        required: [event, data]
         properties:
-          eventId: {type: string}
-          tenantId: {type: string}
-          source: {type: string}
-          eventType: {type: string}
-          schemaVersion: {type: string}
+          event:
+            type: object
+            required: [id, source, type, receivedAt]
+            properties:
+              id: {type: string}
+              source: {type: string, description: 'api, the slug of an endpoint or of a connector, or cron.'}
+              type: {type: string}
+              subject: {type: [string, 'null']}
+              correlationKey: {type: [string, 'null']}
+              occurredAt: {type: [string, 'null'], format: date-time}
+              receivedAt: {type: string, format: date-time}
+          data:
+            type: object
+            additionalProperties: true
+    BrokerMessage:
+      name: BrokerMessage
+      contentType: application/json
+      headers:
+        type: object
+        description: Kafka headers, NATS headers or SQS message attributes (String). Names are case-insensitive.
+        properties:
+          eventId: {type: string, description: 'Absent: the broker''s own identity of the message (topic/partition/offset, stream sequence or Nats-Msg-Id, message id).'}
+          eventType: {type: string, description: 'Absent: the connector''s default event type; absent too, the message is set aside.'}
+          subject: {type: string}
           correlationKey: {type: string}
-          payloadRef: {type: string}
+          occurredAt: {type: string, format: date-time}
+      payload:
+        type: object
+        description: 'The event data: a JSON object of at most 240 KiB. Anything else is set aside as a dead letter.'
+        additionalProperties: true
+    RunFinishedWebhook:
+      name: RunFinishedWebhook
+      contentType: application/json
+      headers:
+        type: object
+        required: [X-Octopus-Signature, X-Octopus-Timestamp, X-Octopus-Event-Id, X-Octopus-Event-Type, X-Octopus-Delivery-Id, X-Octopus-Attempt, X-Octopus-Schema-Version]
+        properties:
+          X-Octopus-Signature: {type: string, description: 'As for an inbound webhook, over "octopus-event-out-v1\n{timestamp}\n{eventId}\n{eventType}\n\n\n" followed by the body; one signature for each of the two newest versions of the secret, comma separated.'}
+          X-Octopus-Timestamp: {type: string}
+          X-Octopus-Event-Id: {type: string, description: 'The id of the event (the outbox message): the same for every subscription it goes to.'}
+          X-Octopus-Event-Type: {type: string, enum: [run.finished]}
+          X-Octopus-Delivery-Id: {type: string, format: uuid, description: 'Identifies this delivery and does not change between attempts: a receiver that keeps it can drop a repeat.'}
+          X-Octopus-Attempt: {type: string, pattern: '^[0-9]+$'}
+          X-Octopus-Schema-Version: {type: string, description: 'The version of the shape of the payload.'}
+      payload:
+        type: object
+        required: [id, type, time, data]
+        properties:
+          id: {type: string}
+          type: {type: string, enum: [run.finished]}
+          time: {type: string, format: date-time}
+          data:
+            type: object
+            required: [tenantId, namespaceId, runId, workflow, status]
+            properties:
+              tenantId: {type: string, format: uuid}
+              namespaceId: {type: string, format: uuid}
+              runId: {type: string, format: uuid}
+              workflow: {type: string}
+              status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}

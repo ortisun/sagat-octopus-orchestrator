@@ -11,8 +11,12 @@
 //! The [`OutboxDispatcher`] is the other half: it moves committed outbox messages to the broker,
 //! at-least-once, so a lost wake-up costs latency but never correctness.
 
+mod deliveries;
+mod events;
 mod outbox;
 mod passes;
 
+pub use deliveries::{DeliveryRound, DeliverySettings, DeliveryWorker};
+pub use events::{EventDispatchSettings, EventDispatcher, EventRound};
 pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{Report, Scheduler, SchedulerSettings};

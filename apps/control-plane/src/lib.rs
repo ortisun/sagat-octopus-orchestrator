@@ -12,11 +12,14 @@ use sagat_api_http::{
 };
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
+use sagat_application::connectors::ConnectorService;
 use sagat_application::definitions::{DefinitionService, IrCodec};
 use sagat_application::egress::EgressService;
 use sagat_application::error::{ConflictKind, StoreError};
+use sagat_application::events::EventService;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
+use sagat_application::outbound::OutboundService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
 use sagat_application::secrets::SecretService;
@@ -358,11 +361,31 @@ pub async fn serve_with_admin(
         EgressService::new(executions.clone(), SystemClock),
     );
     if let Some(secrets) = &serve.secrets {
-        governance = governance.with_secrets(SecretService::new(
-            executions.clone(),
-            SystemClock,
-            secrets.cipher(),
-        ));
+        governance = governance
+            .with_secrets(SecretService::new(
+                executions.clone(),
+                SystemClock,
+                secrets.cipher(),
+            ))
+            // Webhooks are verified with secrets of the namespace, so they need the key ring too.
+            .with_events(EventService::new(
+                executions.clone(),
+                SystemClock,
+                secrets.cipher(),
+                Arc::new(JsonEvaluator),
+            ))
+            // Deliveries are signed with a secret of the namespace, so they need the key ring too.
+            .with_outbound(OutboundService::new(
+                executions.clone(),
+                SystemClock,
+                EgressService::new(executions.clone(), SystemClock),
+            ))
+            .with_connectors(ConnectorService::new(
+                executions.clone(),
+                SystemClock,
+                EgressService::new(executions.clone(), SystemClock),
+                Arc::new(JsonEvaluator),
+            ));
     }
     let exec = ExecState::new(
         state,

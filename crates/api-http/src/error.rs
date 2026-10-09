@@ -122,6 +122,17 @@ impl ApiError {
         e
     }
 
+    /// A request to a public webhook URL that did not verify. Every reason looks the same, and
+    /// there is no challenge: nothing the caller could present would be a bearer token.
+    #[must_use]
+    pub fn webhook_rejected() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthenticated,
+            "the request could not be verified",
+        )
+    }
+
     #[must_use]
     pub fn bad_request(message: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, ErrorCode::BadRequest, message)
@@ -265,14 +276,25 @@ impl From<AppError> for ApiError {
                     ConflictKind::WorkspaceSlug => "a workspace with this slug already exists",
                     ConflictKind::NamespaceSlug => "a namespace with this slug already exists",
                     ConflictKind::WorkflowName => "a workflow with this name already exists",
-                };
-                let field = if matches!(kind, ConflictKind::WorkflowName) {
-                    "name"
-                } else {
-                    "slug"
+                    ConflictKind::EventEndpointSlug => {
+                        "an event endpoint with this slug already exists"
+                    }
+                    ConflictKind::EventIdReused => {
+                        "this event id was already used for a different payload"
+                    }
+                    ConflictKind::WebhookSubscriptionName => {
+                        "a webhook subscription with this name already exists"
+                    }
+                    ConflictKind::ConnectorSlug => "a connector with this slug already exists",
                 };
                 let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
-                e.parts.details = Some(json!({ "field": field }));
+                e.parts.details = Some(match kind {
+                    ConflictKind::WorkflowName | ConflictKind::WebhookSubscriptionName => {
+                        json!({ "field": "name" })
+                    }
+                    ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
+                    _ => json!({ "field": "slug" }),
+                });
                 e
             }
             AppError::RevisionConflict { current } => {
@@ -327,6 +349,26 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::Unavailable => Self::unavailable(),
+            AppError::PayloadTooLarge(what) => {
+                let mut e = Self::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    ErrorCode::BadRequest,
+                    "the payload is larger than this endpoint takes",
+                );
+                e.parts.details = Some(json!({ "reason": "PAYLOAD_TOO_LARGE", "limit": what }));
+                e
+            }
+            AppError::Busy { retry_after_secs } => {
+                let mut e = Self::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    ErrorCode::RateLimited,
+                    "the platform is catching up on earlier events; retry later",
+                );
+                e.parts.retryable = true;
+                e.parts.details = Some(json!({ "reason": "BACKLOG" }));
+                e.retry_after = Some(retry_after_secs.max(1));
+                e
+            }
             AppError::Internal => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ErrorCode::Internal,

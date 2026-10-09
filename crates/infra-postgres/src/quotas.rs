@@ -129,6 +129,109 @@ pub(crate) async fn lock_secrets(
     lock(conn, QuotaResource::Secrets, tenant, Some(namespace)).await
 }
 
+/// Takes the lock of the webhook endpoints of one namespace for the rest of the transaction.
+pub(crate) async fn lock_event_endpoints(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::EventEndpoints, tenant, Some(namespace)).await
+}
+
+/// Takes the lock on the names of the sources of events of one namespace (endpoints and connectors
+/// share them) for the rest of the transaction.
+pub(crate) async fn lock_event_sources(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("event-sources:{tenant}:{namespace}"))
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
+/// A new endpoint fits in its namespace. The caller holds [`lock_event_endpoints`].
+pub(crate) async fn ensure_room_for_endpoint(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event_endpoints WHERE tenant_id = $1 AND namespace_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::EventEndpoints, count, limit)
+}
+
+/// Takes the lock of the outbound webhook subscriptions of one namespace for the rest of the
+/// transaction.
+pub(crate) async fn lock_subscriptions(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(
+        conn,
+        QuotaResource::WebhookSubscriptions,
+        tenant,
+        Some(namespace),
+    )
+    .await
+}
+
+/// A new subscription fits in its namespace. The caller holds [`lock_subscriptions`].
+pub(crate) async fn ensure_room_for_subscription(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM webhook_subscriptions WHERE tenant_id = $1 AND namespace_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::WebhookSubscriptions, count, limit)
+}
+
+/// Takes the lock of the connectors of one namespace for the rest of the transaction.
+pub(crate) async fn lock_connectors(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::Connectors, tenant, Some(namespace)).await
+}
+
+/// A new connector fits in its namespace. The caller holds [`lock_connectors`].
+pub(crate) async fn ensure_room_for_connector(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event_connectors WHERE tenant_id = $1 AND namespace_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::Connectors, count, limit)
+}
+
 /// A new secret fits in its namespace. The caller holds [`lock_secrets`].
 pub(crate) async fn ensure_room_for_secret(
     conn: &mut PgConnection,
@@ -415,6 +518,30 @@ impl QuotaStore for PgRunStore {
                 .fetch_one(&self.pool)
                 .await
             }
+            QuotaResource::EventEndpoints => sqlx::query_scalar(
+                "SELECT count(*) FROM event_endpoints WHERE tenant_id = $1 AND namespace_id = $2",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::WebhookSubscriptions => {
+                sqlx::query_scalar(
+                    "SELECT count(*) FROM webhook_subscriptions \
+                 WHERE tenant_id = $1 AND namespace_id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace)
+                .fetch_one(&self.pool)
+                .await
+            }
+            QuotaResource::Connectors => sqlx::query_scalar(
+                "SELECT count(*) FROM event_connectors WHERE tenant_id = $1 AND namespace_id = $2",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
             QuotaResource::WorkerSessions => {
                 sqlx::query_scalar(
                     "SELECT count(*) FROM worker_sessions \

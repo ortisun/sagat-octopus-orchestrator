@@ -9,11 +9,15 @@ mod macros;
 
 pub mod audit;
 pub mod binding;
+pub mod connectors;
 pub mod definition;
 pub mod egress;
+pub mod events;
 pub mod execution;
 pub mod identity;
+pub mod outbound;
 pub mod quota;
 pub mod saga;
 pub mod secrets;
+pub mod triggers;
 pub mod workflow;

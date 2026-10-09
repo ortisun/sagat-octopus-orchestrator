@@ -12,11 +12,12 @@ workspace = true
 
 [dependencies]
 getrandom = "0.4"
+hmac = "0.13"
 metrics.workspace = true
 sagat-domain.workspace = true
 sha2 = "0.11"
 thiserror.workspace = true
-time.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }
 tracing.workspace = true
 uuid.workspace = true
 

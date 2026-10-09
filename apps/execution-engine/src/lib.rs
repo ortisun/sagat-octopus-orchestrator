@@ -28,7 +28,7 @@ use sagat_control_plane::{
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{PgIdentityStore, PgRunStore, spawn_pool_metrics};
-use sagat_scheduler::{OutboxDispatcher, Scheduler};
+use sagat_scheduler::{DeliveryWorker, EventDispatcher, OutboxDispatcher, Scheduler};
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -40,7 +40,7 @@ pub mod settings;
 pub use sagat_control_plane::{probe, shutdown_signal};
 pub use settings::EngineConfig;
 
-use loops::{EngineDispatcher, EngineScheduler, Health};
+use loops::{EngineDeliveries, EngineDispatcher, EngineEvents, EngineScheduler, Health};
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
 const DEFINITION_CACHE_ENTRIES: usize = 1024;
@@ -104,8 +104,42 @@ pub async fn serve(
             SystemEntropy,
             engine.scheduler,
         )
-        .with_children(cache),
+        .with_children(cache.clone()),
     );
+    let events: Arc<EngineEvents> = Arc::new(
+        EventDispatcher::new(
+            store.clone(),
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            cache,
+            engine.events,
+        )
+        .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
+    );
+    // Deliveries are signed with a secret of the namespace, so without a key ring there is nothing to
+    // deliver with.
+    let deliveries: Option<Arc<EngineDeliveries>> = engine.secrets.as_ref().map(|keys| {
+        Arc::new(DeliveryWorker::new(
+            store.clone(),
+            sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
+            SystemEntropy,
+            keys.cipher(),
+            engine.deliveries,
+        ))
+    });
+    // The consumers of the connectors read brokers with credentials that are secrets of the
+    // namespace, so they need the key ring too.
+    let connectors = engine.secrets.as_ref().map(|keys| {
+        Arc::new(sagat_infra_connectors::supervisor::Supervisor::new(
+            Arc::new(store.clone()),
+            sagat_infra_connectors::guard::PolicyGuard::new(store.clone()),
+            sagat_infra_connectors::webhook::Clients::new(store.clone()),
+            keys.cipher(),
+            Arc::new(JsonEvaluator),
+            format!("engine-{}", uuid::Uuid::new_v4()),
+            engine.connector_refresh,
+        ))
+    });
     let dispatcher: Option<Arc<EngineDispatcher>> = match &engine.nats {
         Some(nats) => {
             let publisher = NatsPublisher::connect(nats.clone()).await.map_err(|e| {
@@ -157,15 +191,49 @@ pub async fn serve(
         tokio::spawn(loops::run_housekeeping(
             {
                 let scheduler = Arc::clone(&scheduler);
+                let events = Arc::clone(&events);
+                let deliveries = deliveries.clone();
                 move || {
                     let scheduler = Arc::clone(&scheduler);
-                    async move { scheduler.housekeeping().await }
+                    let events = Arc::clone(&events);
+                    let deliveries = deliveries.clone();
+                    async move {
+                        scheduler.housekeeping().await;
+                        events.housekeeping().await;
+                        if let Some(deliveries) = deliveries {
+                            deliveries.housekeeping().await;
+                        }
+                    }
                 }
             },
             engine.housekeeping_interval,
             stop_rx.clone(),
         )),
+        tokio::spawn(loops::run_events(
+            {
+                let events = Arc::clone(&events);
+                move || {
+                    let events = Arc::clone(&events);
+                    async move { events.tick().await }
+                }
+            },
+            engine.event_poll,
+            stop_rx.clone(),
+        )),
     ];
+    if let Some(connectors) = connectors {
+        tasks.push(tokio::spawn(connectors.run(stop_rx.clone())));
+    }
+    if let Some(deliveries) = deliveries {
+        tasks.push(tokio::spawn(loops::run_deliveries(
+            move || {
+                let deliveries = Arc::clone(&deliveries);
+                async move { deliveries.tick().await }
+            },
+            engine.delivery_poll,
+            stop_rx.clone(),
+        )));
+    }
     if let Some(dispatcher) = dispatcher {
         tasks.push(tokio::spawn(loops::run_dispatcher(
             move || {

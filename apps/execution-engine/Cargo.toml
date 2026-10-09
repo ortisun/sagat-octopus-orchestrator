@@ -25,6 +25,7 @@ sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-control-plane.workspace = true
+sagat-infra-connectors.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
@@ -33,5 +34,6 @@ sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]

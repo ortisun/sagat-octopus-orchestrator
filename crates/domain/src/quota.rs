@@ -35,6 +35,12 @@ pub enum QuotaResource {
     WorkerSessions,
     /// Secrets in one namespace.
     Secrets,
+    /// Webhook endpoints in one namespace (feature 004).
+    EventEndpoints,
+    /// Subscriptions to outbound events in one namespace (feature 004).
+    WebhookSubscriptions,
+    /// Connectors to message brokers in one namespace (feature 004).
+    Connectors,
 }
 
 /// At which level a resource is counted.
@@ -47,12 +53,15 @@ pub enum QuotaScope {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 8] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
         Self::WorkerSessions,
         Self::Secrets,
+        Self::EventEndpoints,
+        Self::WebhookSubscriptions,
+        Self::Connectors,
     ];
 
     #[must_use]
@@ -63,13 +72,21 @@ impl QuotaResource {
             Self::Workflows => "workflows",
             Self::WorkerSessions => "worker_sessions",
             Self::Secrets => "secrets",
+            Self::EventEndpoints => "event_endpoints",
+            Self::WebhookSubscriptions => "webhook_subscriptions",
+            Self::Connectors => "event_connectors",
         }
     }
 
     #[must_use]
     pub const fn scope(self) -> QuotaScope {
         match self {
-            Self::ActiveRuns | Self::Workflows | Self::Secrets => QuotaScope::Namespace,
+            Self::ActiveRuns
+            | Self::Workflows
+            | Self::Secrets
+            | Self::EventEndpoints
+            | Self::WebhookSubscriptions
+            | Self::Connectors => QuotaScope::Namespace,
             Self::TenantActiveRuns | Self::WorkerSessions => QuotaScope::Tenant,
         }
     }
@@ -84,6 +101,9 @@ impl QuotaResource {
             Self::Workflows => 1_000,
             Self::WorkerSessions => 1_000,
             Self::Secrets => 500,
+            Self::EventEndpoints => 100,
+            Self::WebhookSubscriptions => 50,
+            Self::Connectors => 20,
         }
     }
 
@@ -96,6 +116,9 @@ impl QuotaResource {
             Self::Workflows => "workflows in the namespace",
             Self::WorkerSessions => "worker sessions of the tenant",
             Self::Secrets => "secrets in the namespace",
+            Self::EventEndpoints => "webhook endpoints in the namespace",
+            Self::WebhookSubscriptions => "outbound webhook subscriptions in the namespace",
+            Self::Connectors => "message connectors in the namespace",
         }
     }
 }

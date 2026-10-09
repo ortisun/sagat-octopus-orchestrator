@@ -50,7 +50,7 @@ pub struct PgRunStore {
     pub(crate) pool: PgPool,
     pub(crate) cache: DefinitionCache,
     identity: PgIdentityStore,
-    definitions: PgDefinitionStore,
+    pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
 }
 
@@ -1308,6 +1308,35 @@ impl RunTx for PgRunTx {
         Ok(())
     }
 
+    async fn record_delivery(
+        &mut self,
+        delivery: &sagat_application::dispatch::DeliveryRef,
+    ) -> Result<bool, StoreError> {
+        // The primary key is (event, consumer): the second delivery of the same event to the same
+        // consumer inserts nothing, and the caller then does not repeat what the delivery did.
+        let inserted = sqlx::query(
+            "INSERT INTO event_deliveries \
+             (tenant_id, namespace_id, source, event_id, consumer, run_id, node, trigger_id, \
+              delivered_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp()) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(delivery.namespace_id.as_uuid())
+        .bind(&delivery.source)
+        .bind(&delivery.event_id)
+        .bind(&delivery.consumer)
+        .bind(delivery.run_id.map(RunId::as_uuid))
+        .bind(delivery.node.as_deref())
+        .bind(delivery.trigger_id)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected()
+            > 0;
+        Ok(inserted)
+    }
+
     async fn commit(self) -> Result<(), StoreError> {
         self.tx.commit().await.map_err(store_error)?;
         for signal in self.signals {
@@ -1438,11 +1467,12 @@ impl PgRunTx {
     }
 
     async fn outbox_run_finished(&mut self, status: RunStatus) -> Result<(), StoreError> {
+        let message = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO event_outbox (id, tenant_id, aggregate_id, event_type, payload) \
              VALUES ($1, $2, $3, 'run.finished', $4)",
         )
-        .bind(Uuid::now_v7())
+        .bind(message)
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
         .bind(serde_json::json!({
@@ -1454,6 +1484,34 @@ impl PgRunTx {
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
+        // What subscribers are told, owed to each of them from this very commit: the event and the
+        // obligation to deliver it are written together or not at all. Identifiers and the status,
+        // never data of the run.
+        let body = serde_json::json!({
+            "id": message.to_string(),
+            "type": "run.finished",
+            "time": self
+                .now
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            "data": {
+                "tenantId": self.info.tenant_id.to_string(),
+                "namespaceId": self.info.namespace_id.to_string(),
+                "runId": self.info.run_id.to_string(),
+                "workflow": self.def.name().as_str(),
+                "status": status.as_str(),
+            },
+        });
+        crate::outbound::fan_out(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            sagat_domain::outbound::OutboundKind::RunFinished,
+            &message.to_string(),
+            &serde_json::to_vec(&body).unwrap_or_default(),
+            self.now,
+        )
+        .await?;
         Ok(())
     }
 
@@ -1560,6 +1618,11 @@ impl PgRunTx {
             Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None, None),
             Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None, None),
         };
+        // How far back an event wait accepts events, beyond the moment it began waiting.
+        let lookback = match def_node.map(sagat_domain::workflow::Node::kind) {
+            Some(NodeKind::WaitEvent { lookback, .. }) => micros(*lookback),
+            _ => 0,
+        };
         let kind = def_node.map_or("FORWARD", |n| n.origin().label());
         // A `child` step reserved in this transaction: the run id, and the input it starts with.
         let spawn = effects.children.iter().find(|c| &c.node == node);
@@ -1588,10 +1651,12 @@ impl PgRunTx {
                  (tenant_id, run_id, node, step_id, namespace_id, status, attempt, generation, \
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
-                  last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind) \
+                  last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
+                  event_since) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
-                         $22, $23, $24, $20, $25)",
+                         $22, $23, $24, $20, $25, \
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -1618,6 +1683,7 @@ impl PgRunTx {
             .bind(child_run)
             .bind(child_input)
             .bind(kind)
+            .bind(lookback)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -1655,6 +1721,11 @@ impl PgRunTx {
                 child_run_id = COALESCE($28, child_run_id), \
                 child_input = CASE WHEN $29::bytea IS NOT NULL THEN $29 \
                                    WHEN $6 = 'WAITING' THEN child_input ELSE NULL END, \
+                event_since = CASE WHEN $15::text IS DISTINCT FROM 'EVENT' THEN NULL \
+                                   ELSE COALESCE(CASE WHEN waiting_kind = 'EVENT' THEN event_since END, \
+                                                 $20 - $31 * interval '1 microsecond') END, \
+                event_scanned_at = CASE WHEN $15 = 'EVENT' AND waiting_kind = 'EVENT' \
+                                        THEN event_scanned_at END, \
                 updated_at = $20 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3",
         )
@@ -1688,6 +1759,7 @@ impl PgRunTx {
         .bind(child_run)
         .bind(child_input)
         .bind(rehinted)
+        .bind(lookback)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;
@@ -1774,6 +1846,7 @@ impl DefinitionStore for PgRunStore {
         document: &[u8],
         release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
+        triggers: &[sagat_application::dispatch::TriggerRegistration],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -1788,6 +1861,7 @@ impl DefinitionStore for PgRunStore {
                 document,
                 release_notes,
                 plans,
+                triggers,
                 audit,
                 idempotency,
                 now,

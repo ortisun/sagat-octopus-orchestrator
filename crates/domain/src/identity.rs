@@ -183,6 +183,13 @@ impl Subject {
         Self("system:engine".to_owned())
     }
 
+    /// The actor recorded for what a caller outside the platform did without being a principal: a
+    /// request to a webhook endpoint that was refused. Reserved like the other platform actors.
+    #[must_use]
+    pub fn gateway() -> Self {
+        Self("system:gateway".to_owned())
+    }
+
     /// Validates and wraps a subject.
     ///
     /// # Errors
@@ -299,11 +306,17 @@ pub enum Permission {
     /// a compensation, or say that a step with an unknown outcome did or did not happen. Retrying
     /// is `run:operate`; this one is explicit permission with a justification (`FR-003-005`).
     SagaOverride,
+    /// Publish an event to the inbox through the API.
+    EventPublish,
+    /// See the endpoints and the inbox of a namespace, and what each event woke or started.
+    EventRead,
+    /// Create, change and delete webhook endpoints.
+    EventManage,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 25] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -326,6 +339,9 @@ impl Permission {
         Self::EgressManage,
         Self::WorkerBind,
         Self::SagaOverride,
+        Self::EventPublish,
+        Self::EventRead,
+        Self::EventManage,
     ];
 
     #[must_use]
@@ -353,6 +369,9 @@ impl Permission {
             Self::EgressManage => "egress:manage",
             Self::WorkerBind => "worker:bind",
             Self::SagaOverride => "saga:override",
+            Self::EventPublish => "event:publish",
+            Self::EventRead => "event:read",
+            Self::EventManage => "event:manage",
         }
     }
 }
@@ -390,9 +409,9 @@ impl Role {
     #[must_use]
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, QuotaRead,
-            RunOperate, RunRead, RunSignal, RunStart, SecretRead, SecretUse, WorkerExecute,
-            WorkspaceRead,
+            DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
+            EventRead, NamespaceRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart,
+            SecretRead, SecretUse, WorkerExecute, WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
@@ -407,6 +426,9 @@ impl Role {
                 SecretRead,
                 SecretUse,
                 QuotaRead,
+                EventPublish,
+                EventRead,
+                EventManage,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -417,6 +439,8 @@ impl Role {
                 RunOperate,
                 RunSignal,
                 QuotaRead,
+                EventPublish,
+                EventRead,
             ],
             Self::Viewer => &[
                 WorkspaceRead,
@@ -424,6 +448,7 @@ impl Role {
                 DefinitionRead,
                 RunRead,
                 QuotaRead,
+                EventRead,
             ],
             Self::Worker => &[WorkerExecute],
         }

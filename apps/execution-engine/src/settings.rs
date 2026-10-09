@@ -14,7 +14,9 @@ use sagat_control_plane::config::{
     rate_limit_error, read_auth, read_rate_limit, read_secrets,
 };
 use sagat_infra_nats::NatsConfig;
-use sagat_scheduler::{DispatchSettings, SchedulerSettings};
+use sagat_scheduler::{
+    DeliverySettings, DispatchSettings, EventDispatchSettings, SchedulerSettings,
+};
 
 /// Everything `serve` needs beyond the shared database settings.
 #[derive(Debug, Clone)]
@@ -41,6 +43,16 @@ pub struct EngineConfig {
     pub dispatch: DispatchSettings,
     /// Pause between dispatch rounds when the last one found nothing to send.
     pub outbox_poll: Duration,
+    /// The dispatcher that turns admitted events into started runs and woken steps.
+    pub events: EventDispatchSettings,
+    /// Pause between event dispatch rounds when the last one found nothing to do.
+    pub event_poll: Duration,
+    /// The worker that sends outbound webhooks.
+    pub deliveries: DeliverySettings,
+    /// Pause between delivery rounds when the last one found nothing to send.
+    pub delivery_poll: Duration,
+    /// How often the connectors are looked at, to start and stop their consumers.
+    pub connector_refresh: Duration,
     /// `None`: hints are not published (workers poll; the outbox accumulates).
     pub nats: Option<NatsConfig>,
     /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
@@ -327,6 +339,56 @@ impl EngineConfig {
             optional(get, "SAGAT_OUTBOX_POLL_MS", 250u64)?,
         )?);
 
+        let event_defaults = EventDispatchSettings::default();
+        let events = EventDispatchSettings {
+            batch: u32::try_from(positive(
+                "SAGAT_EVENT_BATCH",
+                optional(get, "SAGAT_EVENT_BATCH", u64::from(event_defaults.batch))?,
+            )?)
+            .map_err(|_| ConfigError::Invalid {
+                name: "SAGAT_EVENT_BATCH",
+                reason: "is too large".to_owned(),
+            })?,
+            ..event_defaults
+        };
+        let event_poll = Duration::from_millis(positive(
+            "SAGAT_EVENT_POLL_MS",
+            optional(get, "SAGAT_EVENT_POLL_MS", 200u64)?,
+        )?);
+
+        let delivery_defaults = DeliverySettings::default();
+        let deliveries = DeliverySettings {
+            batch: u32::try_from(positive(
+                "SAGAT_DELIVERY_BATCH",
+                optional(
+                    get,
+                    "SAGAT_DELIVERY_BATCH",
+                    u64::from(delivery_defaults.batch),
+                )?,
+            )?)
+            .map_err(|_| ConfigError::Invalid {
+                name: "SAGAT_DELIVERY_BATCH",
+                reason: "is too large".to_owned(),
+            })?,
+            retention: Duration::from_secs(
+                positive(
+                    "SAGAT_DELIVERY_RETENTION_DAYS",
+                    optional(get, "SAGAT_DELIVERY_RETENTION_DAYS", 14u64)?,
+                )?
+                .saturating_mul(24 * 3600),
+            ),
+            ..delivery_defaults
+        };
+        let delivery_poll = Duration::from_millis(positive(
+            "SAGAT_DELIVERY_POLL_MS",
+            optional(get, "SAGAT_DELIVERY_POLL_MS", 250u64)?,
+        )?);
+
+        let connector_refresh = Duration::from_secs(positive(
+            "SAGAT_CONNECTOR_REFRESH_SECS",
+            optional(get, "SAGAT_CONNECTOR_REFRESH_SECS", 5u64)?,
+        )?);
+
         let nats = match get("SAGAT_NATS_URL")
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
@@ -382,6 +444,11 @@ impl EngineConfig {
             liveness_grace,
             dispatch,
             outbox_poll,
+            events,
+            event_poll,
+            deliveries,
+            delivery_poll,
+            connector_refresh,
             nats,
             secrets,
         })
