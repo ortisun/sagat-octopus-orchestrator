@@ -60,6 +60,8 @@ ENVIRONMENT (shared with the control plane):
 ENVIRONMENT (serve):
     SAGAT_GRPC_ADDR                   worker API listen address       [127.0.0.1:9000]
     SAGAT_GRPC_REQUEST_TIMEOUT_SECS   upper bound for one call        [30]
+    SAGAT_GRPC_MAX_CONNECTIONS        open connections, all clients   [2048]
+    SAGAT_GRPC_MAX_IN_FLIGHT          calls running at once; polls shed at 3/4 [1024]
     SAGAT_RATE_LIMIT_RPS / _BURST     per-tenant worker budget        [2000 / 4000]
     SAGAT_SUBJECT_RATE_LIMIT_RPS / _BURST   per-identity budget       [200 / 400]
     SAGAT_LEASE_TTL_SECS              lease without a heartbeat       [30]

@@ -96,6 +96,8 @@ fn identity_settings_are_required_like_the_api_s() {
 fn intervals_and_sizes_must_be_positive_numbers() {
     for name in [
         "SAGAT_GRPC_REQUEST_TIMEOUT_SECS",
+        "SAGAT_GRPC_MAX_CONNECTIONS",
+        "SAGAT_GRPC_MAX_IN_FLIGHT",
         "SAGAT_LEASE_TTL_SECS",
         "SAGAT_SESSION_TTL_SECS",
         "SAGAT_POLL_IDLE_RETRY_MS",
@@ -119,12 +121,16 @@ fn intervals_and_sizes_must_be_positive_numbers() {
         ("SAGAT_SCHEDULER_INTERVAL_MS", "50"),
         ("SAGAT_SCHEDULER_BATCH", "7"),
         ("SAGAT_OUTBOX_BATCH", "9"),
+        ("SAGAT_GRPC_MAX_CONNECTIONS", "11"),
+        ("SAGAT_GRPC_MAX_IN_FLIGHT", "13"),
     ])
     .expect("config");
     assert_eq!(config.worker.lease_ttl, Duration::from_secs(5));
     assert_eq!(config.tick_interval, Duration::from_millis(50));
     assert_eq!(config.scheduler.batch, 7);
     assert_eq!(config.dispatch.batch, 9);
+    assert_eq!(config.grpc.max_connections, 11);
+    assert_eq!(config.grpc.max_in_flight, 13);
 }
 
 #[test]

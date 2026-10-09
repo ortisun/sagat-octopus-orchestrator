@@ -24,6 +24,7 @@ tokio = { workspace = true, features = ["net", "time"] }
 tokio-stream.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
+tower-layer = "0.3"
 tracing.workspace = true
 uuid.workspace = true
 

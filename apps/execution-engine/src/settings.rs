@@ -51,6 +51,15 @@ fn positive(name: &'static str, value: u64) -> Result<u64, ConfigError> {
     Ok(value)
 }
 
+/// A positive count read from `name`, or `default`.
+fn capacity(get: Lookup<'_>, name: &'static str, default: usize) -> Result<usize, ConfigError> {
+    let value = positive(name, optional(get, name, default as u64)?)?;
+    usize::try_from(value).map_err(|_| ConfigError::Invalid {
+        name,
+        reason: "is too large".to_owned(),
+    })
+}
+
 impl EngineConfig {
     /// # Errors
     /// [`ConfigError`] naming the first missing or invalid variable.
@@ -105,6 +114,12 @@ impl EngineConfig {
                     grpc_defaults.request_timeout.as_secs(),
                 )?,
             )?),
+            max_connections: capacity(
+                get,
+                "SAGAT_GRPC_MAX_CONNECTIONS",
+                grpc_defaults.max_connections,
+            )?,
+            max_in_flight: capacity(get, "SAGAT_GRPC_MAX_IN_FLIGHT", grpc_defaults.max_in_flight)?,
             ..grpc_defaults
         };
 
