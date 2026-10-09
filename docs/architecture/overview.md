@@ -86,6 +86,8 @@ infra/helm/
 tests/{contract,integration,fault,performance,e2e}/
 ```
 
+**As built so far.** `crates/saga` and `crates/events` were not made: the saga coordinator is a function of the run state in the domain (ADR-0010), and the inbox, the matcher and the delivery rules are domain and application code with their SQL in `infra-postgres` and their loops in `scheduler` (ADR-0012). `crates/connectors` is `crates/infra-connectors`, an adapter crate: the broker libraries and the guarded outbound sender (feature 004). Also present: `crates/infra-expr`, `crates/infra-ir`, `crates/infra-egress`, `crates/infra-secrets` and `crates/infra-nats`; 16 packages in all (13 crates, two apps and the test crate), checked by `scripts/check-architecture.py`.
+
 ## V1 vertical slice
 
 Publish declarative JSON definition → start Run via REST → persist journal → enqueue task → test worker executes → complete step → update state → view graph and audit log → kill and restart worker with safe retry.

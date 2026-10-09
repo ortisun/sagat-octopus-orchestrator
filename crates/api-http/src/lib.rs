@@ -21,6 +21,7 @@ mod concurrency;
 mod context;
 mod core;
 mod dto;
+mod dto_events;
 mod dto_exec;
 mod dto_gov;
 pub mod error;
@@ -251,6 +252,9 @@ where
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::egress::EgressStore
+        + sagat_application::events::EventStore
+        + sagat_application::outbound::OutboundStore
+        + sagat_application::connectors::ConnectorStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
@@ -272,12 +276,18 @@ where
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::egress::EgressStore
+        + sagat_application::events::EventStore
+        + sagat_application::outbound::OutboundStore
+        + sagat_application::connectors::ConnectorStore
         + 'static,
 {
     use routes::governance as gov;
     type B<S, C, G> = GovState<S, C, G>;
 
     let serves_secrets = state.secrets().is_some();
+    let serves_events = state.events().is_some();
+    let serves_outbound = state.outbound().is_some();
+    let serves_connectors = state.connectors().is_some();
     let mut router = Router::new()
         .route("/quotas", get(gov::list_tenant_quotas::<B<S, C, G>>))
         .route(
@@ -331,8 +341,103 @@ where
                     .delete(gov::revoke_secret_access::<B<S, C, G>>),
             );
     }
+    let mut router = router.layer(RequestBodyLimitLayer::new(limits.max_body_bytes));
+    // Without a key ring a webhook cannot be verified: the event routes do not exist.
+    if serves_events {
+        use routes::events as ev;
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/event-endpoints",
+                    get(ev::list_endpoints::<B<S, C, G>>).post(ev::create_endpoint::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/event-endpoints/{endpoint_id}",
+                    get(ev::get_endpoint::<B<S, C, G>>)
+                        .put(ev::update_endpoint::<B<S, C, G>>)
+                        .delete(ev::delete_endpoint::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/events/{source}/{event_id}",
+                    get(ev::get_event::<B<S, C, G>>),
+                )
+                .route(
+                    "/events",
+                    axum::routing::post(ev::publish_event::<B<S, C, G>>),
+                )
+                .route(
+                    "/webhooks/{endpoint_id}",
+                    axum::routing::post(ev::receive_webhook::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(ev::EVENT_MAX_BODY_BYTES)),
+        );
+    }
+    if serves_outbound {
+        use routes::outbound as ob;
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/webhook-subscriptions",
+                    get(ob::list_subscriptions::<B<S, C, G>>)
+                        .post(ob::create_subscription::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/webhook-subscriptions/{subscription_id}",
+                    get(ob::get_subscription::<B<S, C, G>>)
+                        .put(ob::update_subscription::<B<S, C, G>>)
+                        .delete(ob::delete_subscription::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/webhook-subscriptions/{subscription_id}/deliveries",
+                    get(ob::list_deliveries::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/webhook-subscriptions/{subscription_id}/deliveries/{delivery_id}",
+                    get(ob::get_delivery::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/webhook-subscriptions/{subscription_id}/deliveries/{delivery_id}/redrive",
+                    axum::routing::post(ob::redrive_delivery::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/webhook-subscriptions/{subscription_id}/redrive",
+                    axum::routing::post(ob::redrive_dead::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)),
+        );
+    }
+    if serves_connectors {
+        use routes::connectors as cn;
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/connectors",
+                    get(cn::list_connectors::<B<S, C, G>>)
+                        .post(cn::create_connector::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/connectors/{connector_id}",
+                    get(cn::get_connector::<B<S, C, G>>)
+                        .put(cn::update_connector::<B<S, C, G>>)
+                        .delete(cn::delete_connector::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/connectors/{connector_id}/dead-letters",
+                    get(cn::list_dead_letters::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/connectors/{connector_id}/dead-letters/{dead_letter_id}",
+                    get(cn::get_dead_letter::<B<S, C, G>>)
+                        .delete(cn::discard_dead_letter::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/connectors/{connector_id}/dead-letters/{dead_letter_id}/redrive",
+                    axum::routing::post(cn::redrive_dead_letter::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)),
+        );
+    }
     router
-        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(slots),
             limits::shed_excess,

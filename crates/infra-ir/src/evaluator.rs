@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 
+use sagat_application::dispatch::EventView;
 use sagat_application::execution::{
     ExpressionEvaluator, ExpressionFailure, ReconcileAnswer, RunData,
 };
@@ -117,6 +118,44 @@ impl ExpressionEvaluator for JsonEvaluator {
             "steps": steps,
         });
         serde_json::to_vec(&document).unwrap_or_default()
+    }
+
+    fn event_document(&self, event: &EventView<'_>) -> Vec<u8> {
+        let data = parse(event.data).unwrap_or(Value::Null);
+        let document = json!({
+            "event": {
+                "id": event.id,
+                "source": event.source,
+                "type": event.event_type,
+                "subject": event.subject,
+                "correlationKey": event.correlation_key,
+                "occurredAt": event.occurred_at,
+                "receivedAt": event.received_at,
+            },
+            "data": data,
+        });
+        serde_json::to_vec(&document).unwrap_or_default()
+    }
+
+    fn event_filter(
+        &self,
+        filter: &Expression,
+        document: &[u8],
+    ) -> Result<bool, ExpressionFailure> {
+        let compiled = Compiled::compile(filter.as_str()).map_err(failure)?;
+        let needed = compiled.variables();
+        let mut env = Env::new();
+        if needed.contains("event") || needed.contains("data") {
+            let Value::Object(mut parts) = parse(document)? else {
+                return Err(failure("an event document is an object"));
+            };
+            for name in ["event", "data"] {
+                if needed.contains(name) {
+                    env = env.with(name, parts.remove(name).unwrap_or(Value::Null));
+                }
+            }
+        }
+        compiled.eval_bool(&env).map_err(failure)
     }
 
     fn reconcile_answer(&self, output: &[u8]) -> Result<ReconcileAnswer, ExpressionFailure> {

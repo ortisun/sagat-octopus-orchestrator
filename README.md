@@ -1,6 +1,6 @@
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
-> **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution), 003 (sagas and compensations, apart from the SDK DSL, Studio screens and dashboards, which belong to other features) and 009 (security and multi-tenant governance, apart from the sandbox, inbound webhooks and a Helm chart, which belong to other features) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
+> **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution), 003 (sagas and compensations, apart from the SDK DSL, Studio screens and dashboards, which belong to other features), 004 (triggers, webhooks and messaging, apart from OIDC/mTLS webhook profiles, outbound broker producers and Studio screens) and 009 (security and multi-tenant governance, apart from the sandbox and a Helm chart, which belong to other features) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
 
 ## Mission
 
@@ -19,7 +19,7 @@ Inspired by **Temporal** (history and recovery), **Restate** (journal and durabl
 - **Security:** tenant/namespace isolation, RBAC, auditing and explicit egress/secrets policy.
 - **Observability:** OTel + auditable journal + execution timeline and DAG.
 
-## Build, test and run (features 001, 002, 003 and 009)
+## Build, test and run (features 001, 002, 003, 004 and 009)
 
 ```sh
 cargo test --workspace --locked          # needs Docker: integration tests start PostgreSQL 16
@@ -31,6 +31,8 @@ SAGAT_PERF_REPORT=tests/performance/reports/002-durable-execution.md \
 cargo test -p sagat-tests --test contract_rest_009 --test e2e_009 --test integration_009 --test fault_009
 # sagas, compensations and reconciliation (feature 003): stories, PostgreSQL, contracts, failure injection:
 cargo test -p sagat-tests --test e2e_003 --test integration_003 --test contract_rest_003 --test contract_grpc_003 --test fault_003
+# events, webhooks and messaging (feature 004): signed webhooks, triggers and waits, cron, Kafka/SQS/NATS in containers, outbound deliveries:
+cargo test -p sagat-tests --test e2e_004 --test integration_004 --test contract_rest_004 --test contract_asyncapi_004 --test fault_004
 ```
 
 The full procedure, the environment variables and what is not built yet are in
@@ -44,13 +46,17 @@ on the worker API) is in [`docs/runbooks/security-governance.md`](docs/runbooks/
 the validation flow and the security review of feature 009 are in
 [`specs/009-security-multitenancy/quickstart.md`](specs/009-security-multitenancy/quickstart.md). Operating sagas (what happens when a step fails, the runs that wait for a person, the circuit breaker) is in
 [`docs/runbooks/sagas.md`](docs/runbooks/sagas.md); the validation flow and review of feature 003 are in
-[`specs/003-sagas-compensations/quickstart.md`](specs/003-sagas-compensations/quickstart.md); `examples/payment-saga.workflow.json` is a saga you can publish.
+[`specs/003-sagas-compensations/quickstart.md`](specs/003-sagas-compensations/quickstart.md); `examples/payment-saga.workflow.json` is a saga you can publish. Receiving and sending events (signed webhooks and how to sign them, triggers, waits for events, cron, Kafka/SQS/NATS connectors, outbound webhooks, dead letters and redrive) is in
+[`docs/runbooks/events.md`](docs/runbooks/events.md); the design is [ADR-0012](docs/adr/ADR-0012-events-pass-through-a-durable-inbox-and-delivery-table.md), the message policy [`docs/event-schema-evolution.md`](docs/event-schema-evolution.md), and the validation flow and review of feature 004 are in
+[`specs/004-events-webhooks-messaging/quickstart.md`](specs/004-events-webhooks-messaging/quickstart.md).
 Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
 
 ## Folders
 
 ```text
-.specify/memory/constitution.md   Architecture and product constitution
+.specify/memory/constitution.md   Architecture and product constitution (principles I–VIII)
+.specify/                       Spec Kit 1.1.2 (Claude integration): templates, scripts, workflow
+.claude/skills/speckit-*/       The /speckit-* commands
 specs/001..012/                 Spec Kit features: spec.md, plan.md, tasks.md, ...
 docs/architecture/              Cross-cutting architecture and semantic contracts
 docs/adr/                       Architectural Decision Records
@@ -66,13 +72,18 @@ scripts/                        Architecture-rule checker and the compose smoke 
 
 ## Usage with GitHub Spec Kit
 
-1. Install and initialize Spec Kit in the **real code repository** following https://github.com/github/spec-kit (do not overwrite `.specify/memory/constitution.md` from this package).
-2. Copy `.specify/memory`, `specs/`, `docs/` and `AGENTS.md` to the repository root. If `specify init` creates files that already exist, merge deliberately.
-3. Treat `specs/001-platform-foundation` as the starting point; evolve one feature per branch with `/speckit-clarify`, `/speckit-plan`, `/speckit-checklist`, `/speckit-tasks`, `/speckit-analyze`, `/speckit-implement` and `/speckit-converge` according to the agent integration.
-4. The plan and task files are already **initial proposals**, subject to review by the agent; they do not represent existing code.
+Spec Kit is initialized in this repository (`.specify/`, Claude integration). The constitution at
+`.specify/memory/constitution.md` was derived from `AGENTS.md`, the ADRs and the Constitution Check that
+every plan already carried; it is **version 1.0.0 with the ratification date still to be confirmed by the
+maintainers** (see the comment at the top of the file).
+
+1. Read `.specify/memory/constitution.md`, then the `spec.md`, `plan.md` and `tasks.md` of the feature you work on.
+2. Evolve one feature per branch (`feature/<spec-id>-<slug>`, see `AGENTS.md`) with `/speckit-clarify`, `/speckit-plan`, `/speckit-checklist`, `/speckit-tasks`, `/speckit-analyze`, `/speckit-implement` and `/speckit-converge`. A new feature starts with `/speckit-specify` and continues the numbering from 013.
+3. Spec Kit finds the active feature through `.specify/feature.json` (per checkout, git-ignored) or `SPECIFY_FEATURE_DIRECTORY`, not through the branch name, so the Gitflow branch names do not conflict with it.
+4. For features 001, 002, 003 and 009 the checked tasks in `tasks.md` record what is built and its evidence; the other features' plans and tasks are still **initial proposals** and do not represent existing code.
 5. Before implementing, validate the ADRs, test the protocol against a real worker and run the indicated quality gates.
 
-**Spec Kit note:** there are 12 independent features ordered by dependency, not a single monolithic spec. Cross-cutting architecture artifacts live in `docs/`; initial canonical contracts in `specs/001-platform-foundation/contracts/`.
+**Spec Kit note:** there are 12 independent features ordered by dependency, not a single monolithic spec. Spec Kit has no place for cross-cutting material, so it stays in `docs/` (architecture, ADRs, runbooks, glossary, roadmap, traceability, test strategy), and the constitution points to it; initial canonical contracts are in `specs/001-platform-foundation/contracts/`.
 
 ## Guarantees and limits
 
@@ -82,7 +93,9 @@ scripts/                        Architecture-rule checker and the compose smoke 
 - The graphical editor is a faithful representation of the **declarative** DSL/IR. Arbitrary imperative code is not always convertible to a static graph; Studio merges the planned graph and the actual execution.
 - Throughput and latency targets are **benchmark criteria to verify**, not commercial promises.
 - A saga undoes what it did by asking the provider to (a compensation), which is not a rollback: an effect that cannot be undone ends the run `PARTIAL`, and a compensation that keeps failing waits for a person instead of being assumed done. An attempt whose outcome is unknown is looked up before it is repeated. The platform asks at least once with stable keys; a provider that does not deduplicate by them can still do an effect twice. What is not built (the SDK DSL, Studio screens, dashboards) is in [`specs/003-sagas-compensations/research.md`](specs/003-sagas-compensations/research.md).
-- Tenant isolation, quotas, worker bindings, the secret store and the egress policy are enforced and tested (feature 009). **Not yet built:** running untrusted code in a sandbox, inbound webhook signature and replay controls, quotas for builds/storage/logs, a KMS behind the secret key ring, and a Helm chart with network policies. The list, with the reason for each, is in [`specs/009-security-multitenancy/research.md`](specs/009-security-multitenancy/research.md).
+- Tenant isolation, quotas, worker bindings, the secret store and the egress policy are enforced and tested (feature 009). **Not yet built:** running untrusted code in a sandbox, quotas for builds/storage/logs, a KMS behind the secret key ring, and a Helm chart with network policies. The list, with the reason for each, is in [`specs/009-security-multitenancy/research.md`](specs/009-security-multitenancy/research.md).
+
+- Events: an event the platform answered `202` for is durable and is deduplicated by tenant, namespace, source and id for a window; each run it starts and each wait it wakes is started or woken once per admission, however the dispatcher is interrupted. There is **no ordering** between events, and delivery to and from the outside is at-least-once: outgoing webhooks carry a stable delivery id and a receiver that keeps it can drop a repeat. A webhook is trusted by its signature, which covers the type, subject and correlation key as well as the payload. Not built: OIDC/mTLS webhook profiles, producers to customers' Kafka/SQS/NATS, a per-address ingress limit and an inbox size quota. The list, with the reasons, is in [`specs/004-events-webhooks-messaging/research.md`](specs/004-events-webhooks-messaging/research.md).
 
 ## Reading order
 

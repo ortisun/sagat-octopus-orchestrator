@@ -16,6 +16,13 @@ COPY tests tests
 # The contracts are compiled into the binaries: the workflow IR schema is embedded by the codec and
 # the worker protocol is generated from worker.proto at build time.
 COPY specs/001-platform-foundation/contracts specs/001-platform-foundation/contracts
+# The cache mount below is shared by every checkout that builds this Dockerfile on the host, and
+# cargo decides that a workspace crate or a build script is up to date by comparing modification
+# times. COPY keeps the times of the files in the context, which can be older than what another
+# checkout left in the cache: the build would then reuse its generated code (a worker.proto of
+# another branch) or its compiled crates. Touching the sources makes the workspace crates rebuild;
+# dependencies are identified by checksum and stay cached.
+RUN find crates apps tests specs rust-toolchain.toml Cargo.toml Cargo.lock -type f -exec touch {} +
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked \

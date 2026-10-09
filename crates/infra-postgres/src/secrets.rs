@@ -153,6 +153,33 @@ pub(crate) async fn all_versions(
     rows.iter().map(stored_from).collect()
 }
 
+/// The `limit` newest stored versions of one secret, newest first. Bounded in the query: a secret
+/// rotated many times costs the same to read as one rotated twice, which matters on the path that
+/// any caller who knows a webhook URL can drive.
+pub(crate) async fn newest_versions(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    name: &SecretName,
+    limit: u32,
+) -> Result<Vec<StoredSecret>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT s.tenant_id, s.namespace_id, s.name, v.id AS version_id, v.version, v.key_id, \
+                v.nonce, v.ciphertext, v.created_by, v.created_at \
+         FROM secrets s JOIN secret_versions v ON v.secret_id = s.id \
+         WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.name = $3 \
+         ORDER BY v.version DESC LIMIT $4",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(name.as_str())
+    .bind(i64::from(limit))
+    .fetch_all(conn)
+    .await
+    .map_err(store_error)?;
+    rows.iter().map(stored_from).collect()
+}
+
 /// What a step's declared secrets resolve to, read on the caller's transaction.
 pub(crate) async fn inputs(
     conn: &mut PgConnection,

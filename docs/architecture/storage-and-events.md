@@ -42,3 +42,13 @@
 `event_key`, `tenant_id`, `aggregate_id`, `event_type`, `payload_ref`, `schema_version`, `created_at`, `delivered_at`, `attempt_count`, `next_attempt_at`.
 
 Invariants: no cross-tenant correlation; at-least-once delivery; no silent loss; bounded and observable retries.
+
+## As built (feature 004)
+
+What `docs/runbooks/events.md` operates and `specs/004-events-webhooks-messaging/research.md` records. Differences from the text above:
+
+- The inbox key is `(tenant, namespace, source, event_id)`, not `(tenant, source, external_event_id)`: two namespaces of a tenant may each have a source of the same name. The payload is kept inline for the deduplication window (a dedupe row that outlived its payload would not be able to tell a retry from a reuse).
+- A webhook is verified against the three newest versions of its secret; the signature covers the envelope (type, subject, correlation key) as well as the body. A duplicate responds `202` with `DUPLICATE`; the same id with another payload is `409`.
+- Matching is asynchronous: ingress answers `202` when the row is committed, and a dispatcher starts runs and wakes waits, recording each effect with its delivery in one transaction. An out-of-order event has one policy, `process`: a wait takes the first event with its key that reaches it, and may ask to look back (`lookbackMs`) at events that arrived before it (G74, G89).
+- Kafka is read without consumer groups: positions are rows, partitions are leased (G81). SQS and NATS are acknowledged after the inbox commit. The "outbox→produce" adapters for Kafka, SQS and NATS are not built (G77); outgoing events go to HTTP subscribers.
+- Outbound webhooks: 12 attempts over about three days with jitter, `Retry-After` honoured, 4xx set aside as `DEAD` (not configurable), redrive, switch-off after 20 dead in a row or 10 000 waiting.

@@ -62,6 +62,32 @@ pub enum AuditAction {
     SagaStepSkipped,
     /// An operator settled a step with an unknown outcome (or a compensation done elsewhere).
     SagaStepResolved,
+    /// A webhook endpoint was created, changed or deleted.
+    EventEndpointCreated,
+    EventEndpointChanged,
+    EventEndpointDeleted,
+    /// A principal published an event through the API. Who did it is here and nowhere else: the
+    /// runs the event starts are the engine's, and the inbox row is purged with its window.
+    EventPublished,
+    /// A request to a webhook endpoint was refused (a signature that does not verify, a stale
+    /// timestamp, an event id reused for another payload). Written once per endpoint and reason in
+    /// a window: whoever can reach the endpoint can repeat it as often as they like.
+    EventRejected,
+    /// An outbound webhook subscription was created, changed or deleted.
+    WebhookSubscriptionCreated,
+    WebhookSubscriptionChanged,
+    WebhookSubscriptionDeleted,
+    /// The platform switched a subscription off after too many deliveries were set aside.
+    WebhookSubscriptionDisabled,
+    /// An operator put dead deliveries back in the queue.
+    WebhookDeliveryRedriven,
+    /// A connector to a broker was created, changed or deleted.
+    ConnectorCreated,
+    ConnectorChanged,
+    ConnectorDeleted,
+    /// An operator discarded or tried again a message a connector had set aside.
+    ConnectorMessageDiscarded,
+    ConnectorMessageRedriven,
 }
 
 impl AuditAction {
@@ -72,7 +98,10 @@ impl AuditAction {
     /// per run, node and attempt), not by how many times somebody asked.
     #[must_use]
     pub const fn collapses_repeats(self) -> bool {
-        matches!(self, Self::SecretResolved | Self::SecretDenied)
+        matches!(
+            self,
+            Self::SecretResolved | Self::SecretDenied | Self::EventRejected
+        )
     }
 
     #[must_use]
@@ -106,6 +135,21 @@ impl AuditAction {
             Self::SagaStepRetried => "saga.step_retried",
             Self::SagaStepSkipped => "saga.step_skipped",
             Self::SagaStepResolved => "saga.step_resolved",
+            Self::EventEndpointCreated => "event.endpoint_created",
+            Self::EventEndpointChanged => "event.endpoint_changed",
+            Self::EventEndpointDeleted => "event.endpoint_deleted",
+            Self::EventPublished => "event.published",
+            Self::EventRejected => "event.rejected",
+            Self::WebhookSubscriptionCreated => "webhook.subscription_created",
+            Self::WebhookSubscriptionChanged => "webhook.subscription_changed",
+            Self::WebhookSubscriptionDeleted => "webhook.subscription_deleted",
+            Self::WebhookSubscriptionDisabled => "webhook.subscription_disabled",
+            Self::WebhookDeliveryRedriven => "webhook.delivery_redriven",
+            Self::ConnectorCreated => "connector.created",
+            Self::ConnectorChanged => "connector.changed",
+            Self::ConnectorDeleted => "connector.deleted",
+            Self::ConnectorMessageDiscarded => "connector.message_discarded",
+            Self::ConnectorMessageRedriven => "connector.message_redriven",
         }
     }
 }
@@ -130,6 +174,11 @@ pub enum ResourceType {
     Quota,
     EgressPolicy,
     WorkerBinding,
+    EventEndpoint,
+    /// An event admitted to the inbox, as `source/id`.
+    Event,
+    WebhookSubscription,
+    Connector,
 }
 
 impl ResourceType {
@@ -147,6 +196,10 @@ impl ResourceType {
             Self::Quota => "quota",
             Self::EgressPolicy => "egress_policy",
             Self::WorkerBinding => "worker_binding",
+            Self::EventEndpoint => "event_endpoint",
+            Self::Event => "event",
+            Self::WebhookSubscription => "webhook_subscription",
+            Self::Connector => "connector",
         }
     }
 }
@@ -240,6 +293,30 @@ impl AuditRecord {
             resource_id: resource_id.into(),
             reason: Some(reason.into()),
             trace_id,
+            created_at: now,
+        }
+    }
+
+    /// Records something an unauthenticated caller attempted at a public endpoint. The actor is
+    /// [`Subject::gateway`]; the tenant is the one that owns the endpoint.
+    #[must_use]
+    pub fn gateway(
+        tenant_id: TenantId,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id,
+            actor: Subject::gateway(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id: None,
             created_at: now,
         }
     }

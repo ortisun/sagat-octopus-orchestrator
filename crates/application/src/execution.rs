@@ -209,6 +209,20 @@ pub trait ExpressionEvaluator: Send + Sync {
     /// [`ExpressionFailure`] when the output is not such an object.
     fn reconcile_answer(&self, output: &[u8]) -> Result<ReconcileAnswer, ExpressionFailure>;
 
+    /// The document a run started by an event, or a step woken by one, is given:
+    /// `{"event": {id, source, type, subject, correlationKey, occurredAt, receivedAt}, "data": ...}`.
+    /// The same document is what a trigger's filter is evaluated over, as `input`.
+    fn event_document(&self, event: &crate::dispatch::EventView<'_>) -> Vec<u8>;
+
+    /// Whether `filter` holds for an event: a condition over `event` (its envelope) and `data`.
+    /// `document` is what [`Self::event_document`] produced.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression cannot be evaluated over this event (a field it
+    /// names is missing, a type does not fit): the event then does not match.
+    fn event_filter(&self, filter: &Expression, document: &[u8])
+    -> Result<bool, ExpressionFailure>;
+
     /// Whether `bytes` is a well-formed JSON document of any kind.
     fn is_json(&self, bytes: &[u8]) -> bool;
 
@@ -454,6 +468,16 @@ pub trait RunTx: Send {
         events: &[RunEvent],
         effects: Effects,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Records, in this transaction, that an event was delivered to a consumer of this run (a step
+    /// it wakes, or the trigger that starts it). `true` when the delivery is new; `false` when the
+    /// event had been delivered to that consumer before, in which case nothing may be done again.
+    /// A rolled-back transaction leaves no delivery behind, so the event can still reach the
+    /// consumer later.
+    fn record_delivery(
+        &mut self,
+        delivery: &crate::dispatch::DeliveryRef,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Commits. Dropping the transaction instead rolls everything back.
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;

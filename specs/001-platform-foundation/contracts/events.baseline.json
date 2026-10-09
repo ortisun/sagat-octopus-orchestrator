@@ -1,0 +1,379 @@
+{
+  "BrokerMessage": {
+    "headers": {
+      "properties": {
+        "correlationKey": {
+          "type": [
+            "string"
+          ]
+        },
+        "eventId": {
+          "type": [
+            "string"
+          ]
+        },
+        "eventType": {
+          "type": [
+            "string"
+          ]
+        },
+        "occurredAt": {
+          "type": [
+            "string"
+          ]
+        },
+        "subject": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {},
+      "required": []
+    }
+  },
+  "EventDocument": {
+    "headers": {
+      "properties": {},
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "data": {
+          "type": [
+            "object"
+          ]
+        },
+        "event": {
+          "type": [
+            "object"
+          ]
+        },
+        "event.correlationKey": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "event.id": {
+          "type": [
+            "string"
+          ]
+        },
+        "event.occurredAt": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "event.receivedAt": {
+          "type": [
+            "string"
+          ]
+        },
+        "event.source": {
+          "type": [
+            "string"
+          ]
+        },
+        "event.subject": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "event.type": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "event",
+        "event.id",
+        "event.receivedAt",
+        "event.source",
+        "event.type"
+      ]
+    }
+  },
+  "RunFinished": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "status": {
+          "enum": [
+            "CANCELLED",
+            "COMPENSATED",
+            "COMPENSATION_FAILED",
+            "FAILED",
+            "PARTIAL",
+            "SUCCEEDED",
+            "TIMED_OUT"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "namespaceId",
+        "runId",
+        "status",
+        "tenantId"
+      ]
+    }
+  },
+  "RunFinishedWebhook": {
+    "headers": {
+      "properties": {
+        "X-Octopus-Attempt": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Delivery-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Type": {
+          "enum": [
+            "run.finished"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Schema-Version": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Signature": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Timestamp": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "X-Octopus-Attempt",
+        "X-Octopus-Delivery-Id",
+        "X-Octopus-Event-Id",
+        "X-Octopus-Event-Type",
+        "X-Octopus-Schema-Version",
+        "X-Octopus-Signature",
+        "X-Octopus-Timestamp"
+      ]
+    },
+    "payload": {
+      "properties": {
+        "data": {
+          "type": [
+            "object"
+          ]
+        },
+        "data.namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.status": {
+          "enum": [
+            "CANCELLED",
+            "COMPENSATED",
+            "COMPENSATION_FAILED",
+            "FAILED",
+            "PARTIAL",
+            "SUCCEEDED",
+            "TIMED_OUT"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.workflow": {
+          "type": [
+            "string"
+          ]
+        },
+        "id": {
+          "type": [
+            "string"
+          ]
+        },
+        "time": {
+          "type": [
+            "string"
+          ]
+        },
+        "type": {
+          "enum": [
+            "run.finished"
+          ],
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "data.namespaceId",
+        "data.runId",
+        "data.status",
+        "data.tenantId",
+        "data.workflow",
+        "id",
+        "time",
+        "type"
+      ]
+    }
+  },
+  "TaskReady": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": []
+    },
+    "payload": {
+      "properties": {
+        "activity": {
+          "type": [
+            "string"
+          ]
+        },
+        "namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "node": {
+          "type": [
+            "string"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "activity",
+        "namespaceId",
+        "node",
+        "runId",
+        "tenantId"
+      ]
+    }
+  },
+  "WebhookEvent": {
+    "headers": {
+      "properties": {
+        "X-Octopus-Correlation-Key": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Type": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Signature": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Subject": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Timestamp": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "X-Octopus-Event-Id",
+        "X-Octopus-Signature",
+        "X-Octopus-Timestamp"
+      ]
+    },
+    "payload": {
+      "properties": {},
+      "required": []
+    }
+  }
+}

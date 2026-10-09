@@ -80,6 +80,7 @@ pub fn wait(node: &str, timeout_secs: u64, on_timeout: Option<&str>) -> Node {
             correlation: expr("input.paymentId"),
             timeout: Duration::from_secs(timeout_secs),
             on_timeout: on_timeout.map(id),
+            lookback: Duration::ZERO,
         },
     )
 }

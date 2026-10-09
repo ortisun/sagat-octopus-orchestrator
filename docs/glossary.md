@@ -18,6 +18,18 @@
 - **Manual review:** the state of a run (`MANUAL_REVIEW`) while a step waits for a person to retry it, skip a compensation or declare what happened.
 - **Partial:** how a saga ends when something could not be undone (`irreversible`, or a compensation an operator skipped).
 - **Circuit breaker (compensations):** the rule that stops handing out the compensations of an activity that keeps failing, then lets one probe through.
+- **Event:** a fact that came from outside (a signed webhook, the API, a broker message, a calendar tick), with a source, a type, an id the provider chose and optionally a subject and a correlation key. Identified by `(tenant, namespace, source, event id)`.
+- **Source:** where an event came from: the slug of an event endpoint or a connector, `api` or `cron`.
+- **Event endpoint:** the random URL (`/v1/webhooks/{id}`) a provider posts signed events to, with its secret, limits and dedupe window.
+- **Inbox event:** an admitted event in `inbox_events`: durable once the provider was told `202`, deduplicated for its window, dispatched asynchronously.
+- **Trigger:** what starts a run from an event or a schedule (`event`, `webhook`, `message`, `cron`, `manual`), registered when a version is published; its id is stable across versions.
+- **Correlation key:** the value a waiting step and the events it wants have in common (an order id).
+- **Look-back:** how far before a wait began an event may have arrived and still wake it (`lookbackMs`).
+- **Dispatcher:** the loop that matches admitted events to triggers and waiting steps and records, in the same transaction as each effect, that it did.
+- **Webhook subscription:** a receiver of outgoing events (`run.finished`) with its URL, signing secret, rate and health.
+- **Delivery:** one event owed to one subscription: attempts, outcome, and a stable delivery id; `DEAD` when it can never work, then redrivable.
+- **Connector:** a reader of a Kafka topic, an SQS queue or a NATS JetStream stream that turns messages into events, acknowledging only after the event is in the inbox.
+- **Dead letter (connector):** a message that could not become an event, kept (bounded) with the reason for a person to redrive or discard.
 - **Signal:** message addressed to a specific Run.
 - **Wait subscription:** durable event→Run/step binding, with deadline.
 - **Lease/fencing:** temporary versioned authorization that prevents a stale attempt from committing.

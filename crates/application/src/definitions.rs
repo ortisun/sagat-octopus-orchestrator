@@ -16,6 +16,7 @@ use sagat_domain::workflow::{DefinitionWarning, Digest, WorkflowDefinition, Work
 use time::OffsetDateTime;
 
 use crate::clock::Clock;
+use crate::dispatch::{TriggerRegistration, triggers_of};
 use crate::error::{AppError, StoreError};
 use crate::identity::{Page, PageRequest, RequestContext};
 use crate::quotas::QuotaLookup;
@@ -212,8 +213,9 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + Send + Sync {
 
     /// Publishes `parsed` as the next version if the draft is still at `draft_revision`, or
     /// re-activates the existing version with the same digest. Also stores the compensation `plans`
-    /// of a new version with it, audits and records `idempotency`, all in one transaction. `None`
-    /// when the workflow does not exist.
+    /// of a new version with it, registers its `triggers` as the ones in force for the workflow
+    /// (replacing those of the version it succeeds), audits and records `idempotency`, all in one
+    /// transaction. `None` when the workflow does not exist.
     #[allow(clippy::too_many_arguments)]
     fn publish(
         &self,
@@ -225,6 +227,7 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + Send + Sync {
         document: &[u8],
         release_notes: Option<&str>,
         plans: &[SagaPlan],
+        triggers: &[TriggerRegistration],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -522,6 +525,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 &parsed.canonical,
                 release_notes,
                 &compensation_plans(&parsed.definition),
+                &triggers_of(id, &parsed.definition),
                 &audit,
                 &idempotency,
                 now,

@@ -7,6 +7,7 @@
 
 mod canonical;
 mod convert;
+pub mod cron;
 mod evaluator;
 mod schema;
 
@@ -96,6 +97,29 @@ fn check_expressions(definition: &WorkflowDefinition) -> Result<(), IrError> {
                     .map_err(|e| expression_error(id, "idempotencyTemplate", e))?;
             }
             _ => {}
+        }
+    }
+    // A trigger's filter sees the event and its data, and nothing of any run: a run does not exist
+    // yet when the filter is evaluated.
+    for (i, trigger) in definition.triggers().iter().enumerate() {
+        if let Some(schedule) = trigger.schedule() {
+            sagat_application::dispatch::CronSchedule::validate(&cron::CronCalendar, schedule)
+                .map_err(|e| expression_error(&format!("triggers[{i}]"), "cron", e))?;
+        }
+        if let Some(filter) = trigger.filter() {
+            let compiled = Compiled::compile(filter.as_str())
+                .map_err(|e| expression_error(&format!("triggers[{i}]"), "filter", e))?;
+            if let Some(other) = compiled
+                .variables()
+                .into_iter()
+                .find(|v| v != "event" && v != "data")
+            {
+                return Err(expression_error(
+                    &format!("triggers[{i}]"),
+                    "filter",
+                    format!("a trigger filter reads `event` and `data`, not `{other}`"),
+                ));
+            }
         }
     }
     Ok(())

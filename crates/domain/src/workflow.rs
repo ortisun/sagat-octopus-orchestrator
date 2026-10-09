@@ -26,6 +26,7 @@ use std::time::Duration;
 use crate::identity::{Slug, clip};
 use crate::saga::{EffectPolicy, NodeOrigin, OnCompensationFailure, SagaCancelPolicy};
 use crate::secrets::{MAX_DECLARED_SECRETS, SecretName};
+use crate::triggers::{MAX_TRIGGERS, Trigger};
 
 /// A workflow may have at most this many nodes (matches `nodes.maxItems` in the schema).
 pub const MAX_NODES: usize = 10_000;
@@ -40,6 +41,8 @@ pub const MAX_PARALLELS: usize = 32;
 pub const MAX_SAGAS: usize = 32;
 /// Longest timer or wait: a run waiting for months is viable, one waiting for decades is a mistake.
 pub const MAX_WAIT: Duration = Duration::from_secs(366 * 24 * 60 * 60);
+/// Longest an event may have arrived before a wait started and still be accepted by it.
+pub const MAX_LOOKBACK: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Longest single retry delay.
 pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Most attempts a retry policy may grant (matches `retry.maxAttempts` in the schema).
@@ -116,6 +119,12 @@ pub enum WorkflowError {
         "node '{0}': effect settings (irreversible, highRisk, compensation retry or timeout) only apply to an activity"
     )]
     EffectOnNonActivity(NodeId),
+    #[error("invalid trigger: {0}")]
+    InvalidTrigger(&'static str),
+    #[error("a workflow may have at most {MAX_TRIGGERS} triggers, found {0}")]
+    TooManyTriggers(usize),
+    #[error("the workflow declares the same trigger twice")]
+    DuplicateTrigger,
 }
 
 /// Why an expression was rejected.
@@ -580,6 +589,10 @@ pub enum NodeKind {
         correlation: Expression,
         timeout: Duration,
         on_timeout: Option<NodeId>,
+        /// How long before the wait started an event of this type and correlation may have arrived
+        /// and still wake it (zero: only an event that arrives while it waits does). The event may
+        /// come from any source; it is delivered once.
+        lookback: Duration,
     },
     /// Chooses between two successors by a side-effect-free expression.
     Condition {
@@ -806,6 +819,8 @@ pub struct WorkflowDefinition {
     saga_regions: BTreeMap<NodeId, BTreeSet<NodeId>>,
     /// The innermost region (of a `parallel` or a `saga` node) that contains a node.
     scopes: BTreeMap<NodeId, Scope>,
+    /// What starts a run other than somebody asking (feature 004).
+    triggers: Vec<Trigger>,
 }
 
 /// A region of the graph that decides what a failure inside it means.
@@ -902,7 +917,37 @@ impl WorkflowDefinition {
             regions,
             saga_regions,
             scopes,
+            triggers: Vec::new(),
         })
+    }
+
+    /// The definition with `triggers` (feature 004): each must be well formed, there are at most
+    /// [`MAX_TRIGGERS`] and none is about the same thing as another (a filter does not tell two apart).
+    ///
+    /// # Errors
+    /// [`WorkflowError::InvalidTrigger`], [`WorkflowError::TooManyTriggers`] or
+    /// [`WorkflowError::DuplicateTrigger`].
+    pub fn with_triggers(mut self, triggers: Vec<Trigger>) -> Result<Self, WorkflowError> {
+        if triggers.len() > MAX_TRIGGERS {
+            return Err(WorkflowError::TooManyTriggers(triggers.len()));
+        }
+        for (i, trigger) in triggers.iter().enumerate() {
+            trigger.validate()?;
+            if triggers[..i]
+                .iter()
+                .any(|earlier| earlier.is_same_trigger(trigger))
+            {
+                return Err(WorkflowError::DuplicateTrigger);
+            }
+        }
+        self.triggers = triggers;
+        Ok(self)
+    }
+
+    /// What starts a run other than somebody asking.
+    #[must_use]
+    pub fn triggers(&self) -> &[Trigger] {
+        &self.triggers
     }
 
     #[must_use]
@@ -1085,8 +1130,18 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
     }
     match &node.kind {
         NodeKind::Timer { delay } => duration_in_range(&node.id, "delay", *delay)?,
-        NodeKind::WaitEvent { timeout, .. } => {
-            duration_in_range(&node.id, "wait timeout", *timeout)?
+        NodeKind::WaitEvent {
+            timeout, lookback, ..
+        } => {
+            duration_in_range(&node.id, "wait timeout", *timeout)?;
+            if *lookback > MAX_LOOKBACK {
+                return Err(WorkflowError::DurationOutOfRange {
+                    node: node.id.clone(),
+                    what: "lookback",
+                    millis: lookback.as_millis(),
+                    max_millis: MAX_LOOKBACK.as_millis(),
+                });
+            }
         }
         NodeKind::Parallel { branches, .. } => {
             let distinct: BTreeSet<&NodeId> = branches.iter().collect();

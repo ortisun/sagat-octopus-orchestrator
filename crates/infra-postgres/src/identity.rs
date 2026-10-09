@@ -575,6 +575,15 @@ fn classify(error: &sqlx::Error) -> StoreError {
                     Some("workflows_tenant_namespace_name_uniq") => {
                         StoreError::Conflict(ConflictKind::WorkflowName)
                     }
+                    Some("event_endpoints_slug_uniq") => {
+                        StoreError::Conflict(ConflictKind::EventEndpointSlug)
+                    }
+                    Some("webhook_subscriptions_name_uniq") => {
+                        StoreError::Conflict(ConflictKind::WebhookSubscriptionName)
+                    }
+                    Some("event_connectors_slug_uniq") => {
+                        StoreError::Conflict(ConflictKind::ConnectorSlug)
+                    }
                     _ => StoreError::Internal { detail },
                 },
                 // foreign_key_violation

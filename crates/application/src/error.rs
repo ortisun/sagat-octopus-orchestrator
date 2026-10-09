@@ -12,6 +12,14 @@ pub enum ConflictKind {
     NamespaceSlug,
     /// A workflow with that name already exists in the namespace.
     WorkflowName,
+    /// An endpoint (or connector, or subscription) with that name already exists in the namespace.
+    EventEndpointSlug,
+    /// An event id was used again for a different payload: the same name for something else.
+    EventIdReused,
+    /// A subscription to outbound events with that name already exists in the namespace.
+    WebhookSubscriptionName,
+    /// A connector with that name already exists in the namespace.
+    ConnectorSlug,
 }
 
 /// Failure reported by a storage adapter. `detail` is for logs only and must never be returned to
@@ -88,6 +96,13 @@ pub enum AppError {
     /// A dependency is temporarily unavailable; the caller may retry.
     #[error("service temporarily unavailable")]
     Unavailable,
+    /// What was sent is larger than the endpoint takes.
+    #[error("the payload is larger than allowed: {0}")]
+    PayloadTooLarge(&'static str),
+    /// The platform is full of this caller's work and asks it to come back in `retry_after_secs`
+    /// seconds: nothing is wrong with the request.
+    #[error("busy; retry in {retry_after_secs} s")]
+    Busy { retry_after_secs: u32 },
     #[error("internal error")]
     Internal,
 }
@@ -96,7 +111,7 @@ impl AppError {
     /// Whether the same request may succeed if repeated later.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        matches!(self, Self::Unavailable)
+        matches!(self, Self::Unavailable | Self::Busy { .. })
     }
 }
 

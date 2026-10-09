@@ -8,12 +8,16 @@ use sqlx::migrate::Migrator;
 
 mod bindings;
 mod breaker;
+mod connectors;
 mod definitions;
+mod dispatch;
 mod egress;
 mod event_codec;
+mod events;
 mod execution;
 mod identity;
 mod maintenance;
+mod outbound;
 mod pool;
 mod privilege;
 mod quotas;

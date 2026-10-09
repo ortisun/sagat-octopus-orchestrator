@@ -49,6 +49,23 @@ tests/fault/
 tests/e2e/004-events-webhooks-messaging/
 ```
 
+**As built.** The structure above was a proposal. The inbox and the matcher are not a crate: the rules are in the domain, the services in the application and the SQL in the persistence adapter, as for every other feature; the broker clients are adapters in a crate of their own (decision D78, ADR-0012, gap G73).
+
+```text
+crates/domain/src/{events,triggers,outbound,connectors}.rs   envelope, limits, verdicts, backoff, triggers, connector settings (no I/O)
+crates/domain/src/workflow.rs                  triggers and the event wait (`lookbackMs`) in the definition
+crates/application/src/signing.rs              HMAC-SHA256 `v1=` signing and verification, shared by in and out
+crates/application/src/{events,dispatch,outbound,connectors}.rs   services and ports: ingress, publish, endpoints; the dispatcher's store; subscriptions and deliveries; connectors and their runtime port
+crates/infra-postgres/src/{events,dispatch,outbound,connectors}.rs   inbox, dispatcher claims, deliveries, connector state
+crates/infra-postgres/migrations/20261012000000_events.{up,down}.sql
+crates/scheduler/src/{events,deliveries}.rs    the dispatcher (events -> runs and wakes, cron) and the delivery worker
+crates/infra-connectors/                       NATS, Kafka (rskafka), SQS (SigV4 + XML) readers, the guarded sender, the supervisor
+crates/infra-ir/src/cron.rs                    the calendar behind cron triggers (croner, chrono-tz)
+crates/api-http/src/routes/{events,outbound,connectors}.rs   the public webhook route and the management routes
+apps/execution-engine/src/{lib,loops,settings}.rs   the three loops (dispatcher, deliveries, connectors) and their settings
+tests/{integration,e2e,fault,contract,performance}/004-events-webhooks-messaging/
+```
+
 ## Implementation phases
 
 1. Domain contracts and types, invariant validation + tests.

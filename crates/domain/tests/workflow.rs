@@ -315,6 +315,7 @@ fn payment_flow() -> WorkflowDefinition {
                     correlation: expr("input.paymentId"),
                     timeout: Duration::from_secs(300),
                     on_timeout: Some(id("manual_review")),
+                    lookback: Duration::ZERO,
                 },
             )
             .with_next(id("notify")),
@@ -453,6 +454,7 @@ fn every_kind_of_dangling_reference_is_reported() {
                     correlation: expr("x"),
                     timeout: ms(10),
                     on_timeout: Some(id("ghost")),
+                    lookback: Duration::ZERO,
                 },
             ),
         ),

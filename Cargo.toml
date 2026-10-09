@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "apps/execution-engine", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/scheduler", "apps/control-plane", "apps/execution-engine", "tests"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,6 +20,7 @@ sagat-api-http = { path = "crates/api-http" }
 sagat-api-grpc = { path = "crates/api-grpc" }
 sagat-infra-nats = { path = "crates/infra-nats" }
 sagat-infra-egress = { path = "crates/infra-egress" }
+sagat-infra-connectors = { path = "crates/infra-connectors" }
 sagat-infra-secrets = { path = "crates/infra-secrets" }
 sagat-infra-expr = { path = "crates/infra-expr" }
 sagat-infra-ir = { path = "crates/infra-ir" }
@@ -27,7 +28,7 @@ sagat-scheduler = { path = "crates/scheduler" }
 sagat-control-plane = { path = "apps/control-plane" }
 sagat-execution-engine = { path = "apps/execution-engine" }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time", "json"] }
-testcontainers-modules = { version = "0.15", features = ["postgres", "nats", "watchdog"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "nats", "kafka", "elasticmq", "watchdog"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio", "service", "server", "http1"] }

@@ -240,6 +240,17 @@ impl Scenario {
 
 /// Sends the scenario and checks it against the contract. Returns `(method, template, status)`.
 pub async fn check(api: &TestApi, spec: &OpenApi, s: &Scenario) -> (String, String, u16) {
+    let (method, template, status, _) = check_body(api, spec, s).await;
+    (method, template, status)
+}
+
+/// [`check`], and the body of the response (`Null` when there was none), for a scenario whose answer
+/// the next one depends on (the id of what it created).
+pub async fn check_body(
+    api: &TestApi,
+    spec: &OpenApi,
+    s: &Scenario,
+) -> (String, String, u16, Value) {
     let method = Method::from_bytes(s.method.as_bytes()).expect("method");
     let mut request = api.request(method, &s.path);
     request = match &s.caller {
@@ -267,9 +278,11 @@ pub async fn check(api: &TestApi, spec: &OpenApi, s: &Scenario) -> (String, Stri
         s.template
     );
 
+    let mut returned = Value::Null;
     if !text.is_empty() {
         let body: Value = serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("{label}: body is not JSON ({e}): {text}"));
+        returned = body.clone();
         if let Some(result) = spec.validate_body(s.method, s.template, status, &body) {
             result.unwrap_or_else(|e| {
                 panic!("{label}: body does not conform to the contract: {e}\n{body}")
@@ -296,5 +309,5 @@ pub async fn check(api: &TestApi, spec: &OpenApi, s: &Scenario) -> (String, Stri
         spec.validate(&schema, &as_json)
             .unwrap_or_else(|e| panic!("{label}: header {name} violates the contract: {e}"));
     }
-    (s.method.to_owned(), s.template.to_owned(), status)
+    (s.method.to_owned(), s.template.to_owned(), status, returned)
 }

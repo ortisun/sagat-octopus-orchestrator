@@ -12,11 +12,20 @@ use sagat_control_plane::stopped;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::PgRunStore;
-use sagat_scheduler::{Dispatched, OutboxDispatcher, Report, Scheduler};
+use sagat_scheduler::{
+    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, OutboxDispatcher,
+    Report, Scheduler,
+};
 use tokio::sync::watch;
 
 pub type EngineScheduler = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type EngineDispatcher = OutboxDispatcher<PgRunStore, NatsPublisher, SystemEntropy>;
+pub type EngineEvents = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
+pub type EngineDeliveries = DeliveryWorker<
+    PgRunStore,
+    sagat_infra_connectors::webhook::GuardedSender<PgRunStore>,
+    SystemEntropy,
+>;
 
 /// Liveness of the scheduler loop: it must keep ticking, even when a tick finds nothing (or the
 /// database is down and every pass fails fast).
@@ -130,6 +139,43 @@ pub async fn run_dispatcher<F, Fut>(
         }
     }
     tracing::info!("outbox dispatcher stopped");
+}
+
+/// Dispatches admitted events until stopped. A round that did something is followed at once by the
+/// next, so a backlog drains at full speed; an idle one by a pause.
+pub async fn run_events<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = EventRound>,
+{
+    while !*stop.borrow() {
+        if round().await.did_work() {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        if stop_during(jittered(poll, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("event dispatcher stopped");
+}
+
+/// Sends outbound webhooks until stopped: the same rhythm as the event dispatcher.
+pub async fn run_deliveries<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = DeliveryRound>,
+{
+    while !*stop.borrow() {
+        if round().await.did_work() {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        if stop_during(jittered(poll, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("delivery worker stopped");
 }
 
 #[cfg(test)]

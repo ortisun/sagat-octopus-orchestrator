@@ -393,6 +393,9 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::Workflows, false),
             (QuotaResource::WorkerSessions, true),
             (QuotaResource::Secrets, false),
+            (QuotaResource::EventEndpoints, false),
+            (QuotaResource::WebhookSubscriptions, false),
+            (QuotaResource::Connectors, false),
         ]
     );
     let used = tenant_view
@@ -417,6 +420,9 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::ActiveRuns, Some(1)),
             (QuotaResource::Workflows, Some(1)),
             (QuotaResource::Secrets, Some(0)),
+            (QuotaResource::EventEndpoints, Some(0)),
+            (QuotaResource::WebhookSubscriptions, Some(0)),
+            (QuotaResource::Connectors, Some(0)),
         ]
     );
 }

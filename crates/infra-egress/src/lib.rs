@@ -125,6 +125,16 @@ pub struct EgressRequest {
     pub body: Vec<u8>,
 }
 
+/// What to do with the body of a response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseBody {
+    /// Read it, up to this many bytes; a longer one is [`EgressError::ResponseTooLarge`].
+    Keep(usize),
+    /// Only the status and the headers matter: the body is not read, however long it is. For a
+    /// caller that wants to know how a receiver answered and not what it said.
+    Skip,
+}
+
 /// What came back.
 #[derive(Debug, Clone)]
 pub struct EgressResponse {
@@ -219,11 +229,25 @@ impl EgressClient {
         })
     }
 
-    /// Sends `request`, enforcing the policy on the destination and on every redirect hop.
+    /// Sends `request`, enforcing the policy on the destination and on every redirect hop, and reads
+    /// the response body up to the client's limit.
     ///
     /// # Errors
     /// [`EgressError`]; [`EgressError::Denied`] when the policy refused.
     pub async fn send(&self, request: EgressRequest) -> Result<EgressResponse, EgressError> {
+        self.send_with(request, ResponseBody::Keep(self.limits.max_response_bytes))
+            .await
+    }
+
+    /// As [`Self::send`], with the caller saying what is to be done with the response body.
+    ///
+    /// # Errors
+    /// [`EgressError`]; [`EgressError::Denied`] when the policy refused.
+    pub async fn send_with(
+        &self,
+        request: EgressRequest,
+        body_policy: ResponseBody,
+    ) -> Result<EgressResponse, EgressError> {
         let follows = matches!(request.method, Method::GET | Method::HEAD);
         let mut url = Url::parse(&request.url).map_err(|_| EgressError::InvalidUrl)?;
         let mut hops = 0u8;
@@ -263,11 +287,13 @@ impl EgressClient {
                 })
                 .collect();
             let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(classify)? {
-                if body.len() + chunk.len() > self.limits.max_response_bytes {
-                    return Err(EgressError::ResponseTooLarge);
+            if let ResponseBody::Keep(limit) = body_policy {
+                while let Some(chunk) = response.chunk().await.map_err(classify)? {
+                    if body.len() + chunk.len() > limit {
+                        return Err(EgressError::ResponseTooLarge);
+                    }
+                    body.extend_from_slice(&chunk);
                 }
-                body.extend_from_slice(&chunk);
             }
             return Ok(EgressResponse {
                 status,
@@ -691,6 +717,37 @@ mod tests {
             client.send(get(format!("http://good.test:{port}/"))).await,
             Err(EgressError::ResponseTooLarge)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_only_wants_the_status_gets_it_whatever_the_body_and_one_that_wants_more_can_say_so()
+     {
+        let (port, _) = server(|_| ok(&"x".repeat(4096))).await;
+        let limits = EgressLimits {
+            max_response_bytes: 1024,
+            ..EgressLimits::default()
+        };
+        let client = lab(
+            &["good.test"],
+            zone(&[("good.test", &["127.0.0.1"])]),
+            limits,
+        );
+        let url = format!("http://good.test:{port}/");
+        let skipped = client
+            .send_with(get(url.clone()), ResponseBody::Skip)
+            .await
+            .expect("an answer");
+        assert_eq!(skipped.status, StatusCode::OK);
+        assert!(skipped.body.is_empty(), "the body was not kept");
+        let kept = client
+            .send_with(get(url), ResponseBody::Keep(8192))
+            .await
+            .expect("an answer");
+        assert_eq!(
+            kept.body.len(),
+            4096,
+            "the caller's limit, not the client's"
+        );
     }
 
     #[tokio::test]

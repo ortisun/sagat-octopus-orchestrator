@@ -8,12 +8,15 @@ use std::sync::Arc;
 
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
+use sagat_application::connectors::ConnectorService;
 use sagat_application::definitions::DefinitionService;
 use sagat_application::egress::EgressService;
 use sagat_application::entropy::SystemEntropy;
+use sagat_application::events::EventService;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityStore, RequestContext};
 use sagat_application::maintenance::OutboxStore;
+use sagat_application::outbound::OutboundService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::{RunFilter, RunOperation, RunService, RunStore, StartRun};
 use sagat_application::secrets::SecretService;
@@ -28,7 +31,10 @@ use sagat_domain::identity::{
 };
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{PgRunStore, PoolConfig, connect};
-use sagat_scheduler::{Scheduler, SchedulerSettings};
+use sagat_scheduler::{
+    DeliverySettings, DeliveryWorker, EventDispatchSettings, EventDispatcher, Scheduler,
+    SchedulerSettings,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -39,10 +45,15 @@ pub type Runs = RunService<PgRunStore, SystemClock, JsonEvaluator>;
 pub type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 pub type Defs = DefinitionService<PgRunStore, SystemClock, JsonIrCodec>;
 pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
+pub type EventLoop = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type Quotas = QuotaService<PgRunStore, SystemClock>;
 pub type Bindings = BindingService<PgRunStore, SystemClock>;
 pub type Secrets = SecretService<PgRunStore, SystemClock>;
 pub type Egress = EgressService<PgRunStore, SystemClock>;
+pub type Events = EventService<PgRunStore, SystemClock>;
+pub type Outbound = OutboundService<PgRunStore, SystemClock>;
+pub type Connectors = ConnectorService<PgRunStore, SystemClock>;
+pub type DeliveryLoop = DeliveryWorker<PgRunStore, super::receiver::LoopbackSender, SystemEntropy>;
 
 pub struct World {
     pub db: TestDb,
@@ -53,12 +64,21 @@ pub struct World {
     pub bindings: Bindings,
     pub secrets: Secrets,
     pub egress: Egress,
+    pub events: Events,
+    pub outbound: Outbound,
+    pub connectors: Connectors,
+    /// The worker that sends outbound webhooks, to a local receiver (tests tick it by hand).
+    pub deliveries: DeliveryLoop,
     /// The key ring behind [`Self::secrets`] and the workers (a fresh random key per world).
     pub keys: sagat_infra_secrets::SecretsConfig,
     /// The base64 material of key `k1`, for tests that build a rotated ring around it.
     pub key_k1: String,
     pub workers: Workers,
     pub scheduler: Sched,
+    /// The dispatcher of admitted events (tests tick it by hand).
+    pub dispatcher: EventLoop,
+    /// The parsed definitions every service of this world shares.
+    pub cache: DefinitionCache,
     /// Administrator of the first tenant (can do everything a human can).
     pub admin: Principal,
     /// A machine identity of the first tenant.
@@ -117,6 +137,30 @@ pub async fn world_with_breaker(
         bindings: BindingService::new(store.clone(), SystemClock),
         secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),
         egress: EgressService::new(store.clone(), SystemClock),
+        events: EventService::new(
+            store.clone(),
+            SystemClock,
+            keys.cipher(),
+            Arc::new(JsonEvaluator),
+        ),
+        outbound: OutboundService::new(
+            store.clone(),
+            SystemClock,
+            EgressService::new(store.clone(), SystemClock),
+        ),
+        connectors: ConnectorService::new(
+            store.clone(),
+            SystemClock,
+            EgressService::new(store.clone(), SystemClock),
+            Arc::new(JsonEvaluator),
+        ),
+        deliveries: DeliveryWorker::new(
+            store.clone(),
+            super::receiver::LoopbackSender::new(),
+            SystemEntropy,
+            keys.cipher(),
+            DeliverySettings::default(),
+        ),
         keys: keys.clone(),
         key_k1,
         workers: WorkerService::new(
@@ -133,7 +177,16 @@ pub async fn world_with_breaker(
             SystemEntropy,
             SchedulerSettings::default(),
         )
-        .with_children(cache),
+        .with_children(cache.clone()),
+        dispatcher: EventDispatcher::new(
+            store.clone(),
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            cache.clone(),
+            EventDispatchSettings::default(),
+        )
+        .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
+        cache,
         worker: Principal::new(t.admin_a.tenant_id(), subject("worker-1"), Role::Worker),
         admin: t.admin_a,
         other_admin: t.admin_b,
@@ -377,6 +430,32 @@ impl World {
             .put(
                 &self.admin,
                 self.namespace.id(),
+                name,
+                value.as_bytes().to_vec(),
+                &ctx(),
+            )
+            .await
+            .expect("store the secret");
+    }
+
+    /// An event dispatcher with other limits than the default.
+    pub fn dispatcher_with(&self, settings: EventDispatchSettings) -> EventLoop {
+        EventDispatcher::new(
+            self.store.clone(),
+            Engine::new(JsonEvaluator),
+            SystemEntropy,
+            self.cache.clone(),
+            settings,
+        )
+        .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar))
+    }
+
+    /// [`Self::put_secret`] for a namespace other than `payments`.
+    pub async fn put_secret_in(&self, namespace: NamespaceId, name: &str, value: &str) {
+        self.secrets
+            .put(
+                &self.admin,
+                namespace,
                 name,
                 value.as_bytes().to_vec(),
                 &ctx(),

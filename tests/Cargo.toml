@@ -15,19 +15,23 @@ workspace = true
 async-nats.workspace = true
 axum.workspace = true
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rskafka = { version = "0.6", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
+hmac = "0.13"
 jsonwebtoken.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 h2 = "0.4"
 rcgen = "0.13"
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "form"] }
 sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
 sagat-execution-engine.workspace = true
+sagat-infra-connectors = { workspace = true, features = ["unguarded-for-tests"] }
 sagat-infra-egress.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-nats.workspace = true
@@ -36,6 +40,7 @@ sagat-infra-secrets.workspace = true
 sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
+sha2 = "0.11"
 serde_yaml_ng = "0.10"
 sqlx.workspace = true
 testcontainers-modules.workspace = true
@@ -138,3 +143,27 @@ path = "contract/003-sagas-compensations/grpc/main.rs"
 [[test]]
 name = "perf_003"
 path = "performance/003-sagas-compensations/main.rs"
+
+[[test]]
+name = "integration_004"
+path = "integration/004-events-webhooks-messaging/main.rs"
+
+[[test]]
+name = "contract_rest_004"
+path = "contract/004-events-webhooks-messaging/rest/main.rs"
+
+[[test]]
+name = "e2e_004"
+path = "e2e/004-events-webhooks-messaging/main.rs"
+
+[[test]]
+name = "contract_asyncapi_004"
+path = "contract/004-events-webhooks-messaging/asyncapi/main.rs"
+
+[[test]]
+name = "fault_004"
+path = "fault/004-events-webhooks-messaging/main.rs"
+
+[[test]]
+name = "perf_004"
+path = "performance/004-events-webhooks-messaging/main.rs"

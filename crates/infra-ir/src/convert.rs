@@ -10,9 +10,10 @@ use sagat_application::definitions::{IrError, IrIssue};
 use sagat_domain::identity::Slug;
 use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, SagaCancelPolicy};
 use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
+use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{
     ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
-    NodeKind, RetryPolicy, WorkflowDefinition,
+    NodeKind, RetryPolicy, WorkflowDefinition, WorkflowError,
 };
 use serde_json::{Map, Value};
 
@@ -222,6 +223,15 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
             )?,
             timeout: millis(node, "timeoutMs", at)?,
             on_timeout: reference(node, "onTimeout", at)?,
+            lookback: match node.get("lookbackMs") {
+                None => Duration::ZERO,
+                Some(value) => value.as_u64().map(Duration::from_millis).ok_or_else(|| {
+                    issue(
+                        format!("{at}/lookbackMs"),
+                        "expected a non-negative integer number of milliseconds",
+                    )
+                })?,
+            },
         },
         "condition" => NodeKind::Condition {
             expression: expression(text(node, "expression", at)?, &format!("{at}/expression"))?,
@@ -363,5 +373,91 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
         }
         nodes.push(built);
     }
-    WorkflowDefinition::new(name, entrypoint, nodes).map_err(IrError::Invalid)
+    WorkflowDefinition::new(name, entrypoint, nodes)
+        .and_then(|definition| definition.with_triggers(triggers(document)?))
+        .map_err(IrError::Invalid)
+}
+
+/// The `triggers` of a document. An absent list is no trigger: runs are started by the API.
+fn triggers(document: &Value) -> Result<Vec<Trigger>, WorkflowError> {
+    let Some(raw) = document.get("triggers") else {
+        return Ok(Vec::new());
+    };
+    let items = raw
+        .as_array()
+        .ok_or(WorkflowError::InvalidTrigger("triggers is an array"))?;
+    let slug = |item: &Map<String, Value>, field: &str| -> Result<Option<Slug>, WorkflowError> {
+        item.get(field)
+            .map(|v| {
+                v.as_str().and_then(|text| Slug::parse(text).ok()).ok_or(
+                    WorkflowError::InvalidTrigger(
+                        "a source, endpoint or connector is a lower-case slug",
+                    ),
+                )
+            })
+            .transpose()
+    };
+    let event_type = |item: &Map<String, Value>| -> Result<Option<EventType>, WorkflowError> {
+        item.get("eventType")
+            .map(|v| {
+                v.as_str()
+                    .ok_or(WorkflowError::InvalidTrigger("eventType is a string"))
+                    .and_then(EventType::parse)
+            })
+            .transpose()
+    };
+    items
+        .iter()
+        .map(|item| {
+            let item = item
+                .as_object()
+                .ok_or(WorkflowError::InvalidTrigger("a trigger is an object"))?;
+            let kind = item
+                .get("kind")
+                .and_then(Value::as_str)
+                .and_then(|k| k.parse::<TriggerKind>().ok())
+                .ok_or(WorkflowError::InvalidTrigger("unknown trigger kind"))?;
+            let trigger = match kind {
+                TriggerKind::Manual => Trigger::manual(),
+                TriggerKind::Event => Trigger::event(
+                    event_type(item)?.ok_or(WorkflowError::InvalidTrigger(
+                        "an event trigger needs an eventType",
+                    ))?,
+                    slug(item, "source")?,
+                ),
+                TriggerKind::Webhook => Trigger::webhook(
+                    slug(item, "endpoint")?.ok_or(WorkflowError::InvalidTrigger(
+                        "a webhook trigger needs the endpoint that receives it",
+                    ))?,
+                    event_type(item)?,
+                ),
+                TriggerKind::Message => Trigger::message(
+                    slug(item, "connector")?.ok_or(WorkflowError::InvalidTrigger(
+                        "a message trigger needs the connector that consumes it",
+                    ))?,
+                    event_type(item)?,
+                ),
+                TriggerKind::Cron => {
+                    let expression = item.get("cron").and_then(Value::as_str).ok_or(
+                        WorkflowError::InvalidTrigger("a cron trigger needs a cron expression"),
+                    )?;
+                    let timezone = item
+                        .get("timezone")
+                        .and_then(Value::as_str)
+                        .unwrap_or("UTC");
+                    Trigger::cron(CronSpec::parse(expression, timezone)?)
+                }
+            };
+            match item.get("filter") {
+                None => Ok(trigger),
+                Some(filter) => filter
+                    .as_str()
+                    .ok_or(WorkflowError::InvalidTrigger(
+                        "a filter is an expression string",
+                    ))
+                    .and_then(Expression::parse)
+                    .map(|filter| trigger.with_filter(filter)),
+            }
+        })
+        .collect()
 }

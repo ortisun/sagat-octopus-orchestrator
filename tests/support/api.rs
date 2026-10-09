@@ -14,12 +14,15 @@ use sagat_api_http::{
 };
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
+use sagat_application::connectors::ConnectorService;
 use sagat_application::definitions::DefinitionService;
 use sagat_application::egress::EgressService;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::StoreError;
+use sagat_application::events::EventService;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityService, IdentityStore};
+use sagat_application::outbound::OutboundService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
 use sagat_application::secrets::SecretService;
@@ -51,6 +54,8 @@ pub struct TestApi {
     pub grpc_url: String,
     /// The key ring the API seals secrets with and the worker service opens them with.
     pub keys: sagat_infra_secrets::SecretsConfig,
+    /// The base64 material of key `k1`, so an engine started for this API can open its secrets.
+    pub key_k1: String,
     lookups: Arc<AtomicUsize>,
     pings: Arc<AtomicUsize>,
 }
@@ -244,11 +249,9 @@ pub async fn start_with(options: Options) -> TestApi {
         .expect("valid subject budget");
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
     let executions = PgRunStore::new(api_pool.clone(), cache.clone());
-    let keys = sagat_infra_secrets::SecretsConfig::parse(&format!(
-        "k1:{}",
-        sagat_infra_secrets::generate_key().expect("a key")
-    ))
-    .expect("a key ring");
+    let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
+    let keys =
+        sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
     let governance = GovState::new(
         state.clone(),
         QuotaService::new(executions.clone(), SystemClock),
@@ -259,6 +262,23 @@ pub async fn start_with(options: Options) -> TestApi {
         executions.clone(),
         SystemClock,
         keys.cipher(),
+    ))
+    .with_events(EventService::new(
+        executions.clone(),
+        SystemClock,
+        keys.cipher(),
+        Arc::new(JsonEvaluator),
+    ))
+    .with_outbound(OutboundService::new(
+        executions.clone(),
+        SystemClock,
+        EgressService::new(executions.clone(), SystemClock),
+    ))
+    .with_connectors(ConnectorService::new(
+        executions.clone(),
+        SystemClock,
+        EgressService::new(executions.clone(), SystemClock),
+        Arc::new(JsonEvaluator),
     ));
     let exec = ExecState::new(
         state,
@@ -322,6 +342,7 @@ pub async fn start_with(options: Options) -> TestApi {
         executions,
         grpc_url: format!("http://{grpc_addr}"),
         keys,
+        key_k1,
         lookups,
         pings,
     }

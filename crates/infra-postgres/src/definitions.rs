@@ -9,6 +9,7 @@ use sagat_application::definitions::{
     Applied, DefinitionStore, Idempotency, StoredPlan, StoredPlanEntry, VersionRecord,
     WorkflowRecord,
 };
+use sagat_application::dispatch::TriggerRegistration;
 use sagat_application::error::StoreError;
 use sagat_application::execution::compensation_id;
 use sagat_domain::audit::AuditRecord;
@@ -62,6 +63,53 @@ macro_rules! select_workflow {
             $tail
         )
     };
+}
+
+/// Makes `triggers` the ones in force for the workflow: the triggers of the version it succeeds that
+/// are not in the new one stop matching, and one that is kept keeps its id (and so the memory of
+/// which events already started a run) and its place in the schedule.
+async fn register_triggers(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workflow: &Workflow,
+    version: WorkflowVersionId,
+    triggers: &[TriggerRegistration],
+) -> Result<(), StoreError> {
+    let tenant = workflow.tenant_id();
+    let kept: Vec<Uuid> = triggers.iter().map(|t| t.id).collect();
+    sqlx::query(
+        "DELETE FROM workflow_triggers WHERE tenant_id = $1 AND workflow_id = $2 AND id <> ALL($3)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(workflow.id().as_uuid())
+    .bind(&kept)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    for trigger in triggers {
+        sqlx::query(
+            "INSERT INTO workflow_triggers \
+             (id, tenant_id, namespace_id, workflow_id, version_id, kind, match_source, match_type, \
+              filter, cron, timezone) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             ON CONFLICT (id) DO UPDATE SET version_id = EXCLUDED.version_id, \
+                 filter = EXCLUDED.filter",
+        )
+        .bind(trigger.id)
+        .bind(tenant.as_uuid())
+        .bind(workflow.namespace_id().as_uuid())
+        .bind(workflow.id().as_uuid())
+        .bind(version.as_uuid())
+        .bind(trigger.kind.as_str())
+        .bind(trigger.source.as_ref().map(Slug::as_str))
+        .bind(trigger.event_type.as_ref().map(sagat_domain::workflow::EventType::as_str))
+        .bind(trigger.filter.as_ref().map(sagat_domain::workflow::Expression::as_str))
+        .bind(trigger.schedule.as_ref().map(sagat_domain::triggers::CronSpec::expression))
+        .bind(trigger.schedule.as_ref().map(sagat_domain::triggers::CronSpec::timezone))
+        .execute(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    }
+    Ok(())
 }
 
 impl DefinitionStore for PgDefinitionStore {
@@ -255,6 +303,7 @@ impl DefinitionStore for PgDefinitionStore {
         document: &[u8],
         release_notes: Option<&str>,
         plans: &[SagaPlan],
+        triggers: &[TriggerRegistration],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -347,6 +396,7 @@ impl DefinitionStore for PgDefinitionStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            register_triggers(&mut tx, &workflow, version.id(), triggers).await?;
             insert_audit(&mut tx, audit).await?;
             if remember(
                 &mut tx,

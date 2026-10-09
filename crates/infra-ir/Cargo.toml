@@ -11,9 +11,13 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
+croner = "4"
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-expr.workspace = true
+time = { workspace = true, features = ["parsing"] }
 serde_json.workspace = true
 sha2 = "0.11"
 # No network or file resolution: the schema is embedded and has no external references.
