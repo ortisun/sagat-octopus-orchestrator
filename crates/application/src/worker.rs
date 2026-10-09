@@ -11,6 +11,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
     self, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
@@ -25,7 +26,7 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, RunTx, step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, step_id,
 };
 use crate::runs::{Lock, RunStore, execution_error};
 
@@ -35,6 +36,20 @@ pub const PROTOCOL_VERSION: &str = "1";
 pub const MAX_ACTIVITIES: usize = 256;
 /// Most tasks one poll may claim.
 pub const MAX_POLL: u32 = 64;
+/// Most live sessions one worker identity may hold. A session is identified by the identity and the
+/// worker name, so registering again replaces the previous one instead of adding a row.
+pub const MAX_SESSIONS_PER_IDENTITY: u32 = 32;
+/// Runs that may fail to be leased in one poll before it gives up (a store that is failing, not a
+/// run).
+const MAX_CLAIM_FAILURES: u8 = 3;
+/// Most entries in the `languages` and `pools` a worker advertises.
+pub const MAX_LABELS: usize = 16;
+/// Longest `languages` or `pools` entry.
+pub const MAX_LABEL_LEN: usize = 64;
+/// Most task input one poll hands out (the sum over its tasks); steps that do not fit stay ready for
+/// the next poll. Each task carries the run's data, so without this a poll of many steps of a run
+/// with large outputs would be many times the run's size.
+pub const MAX_POLL_BYTES: usize = 8 * 1024 * 1024;
 
 /// Tunable timings of the worker protocol.
 #[derive(Debug, Clone, Copy)]
@@ -98,10 +113,14 @@ pub struct NewSession {
 
 /// Storage port for workers. Implemented by `sagat-infra-postgres`.
 pub trait WorkerStore: Send + Sync {
+    /// Stores the session, replacing the one the same identity opened under the same worker name, and
+    /// returns the id of the stored session (the replaced one keeps its id, so the steps it has
+    /// leased stay counted against it). [`StoreError::QuotaExceeded`] when the identity already
+    /// holds [`MAX_SESSIONS_PER_IDENTITY`] live sessions under other names.
     fn create_session(
         &self,
         session: &NewSession,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+    ) -> impl Future<Output = Result<Uuid, StoreError>> + Send;
 
     /// The live session `id` of `tenant` whose token hashes to `token_hash`, renewing its expiry.
     fn use_session(
@@ -162,7 +181,7 @@ impl ClaimedTask {
 }
 
 /// Identifies the attempt a worker is reporting on.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TaskRef<'a> {
     pub run_id: RunId,
     pub node: &'a NodeId,
@@ -170,6 +189,19 @@ pub struct TaskRef<'a> {
     pub step_id: Option<Uuid>,
     pub fence: Fence,
     pub lease_token: &'a str,
+}
+
+impl std::fmt::Debug for TaskRef<'_> {
+    /// The lease token is a bearer secret: it is never printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskRef")
+            .field("run_id", &self.run_id)
+            .field("node", &self.node)
+            .field("step_id", &self.step_id)
+            .field("fence", &self.fence)
+            .field("lease_token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Outcome of a step command.
@@ -267,6 +299,26 @@ where
                 "max_inflight must be between 1 and 1000",
             ));
         }
+        for (labels, what) in [
+            (&capabilities.languages, "languages"),
+            (&capabilities.pools, "pools"),
+        ] {
+            let label_ok = |label: &String| {
+                !label.is_empty()
+                    && label.len() <= MAX_LABEL_LEN
+                    && label.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '+')
+                    })
+            };
+            if labels.len() > MAX_LABELS || !labels.iter().all(label_ok) {
+                return Err(AppError::NotAllowed(match what {
+                    "languages" => {
+                        "languages: at most 16 entries of 1 to 64 letters, digits or . _ - : +"
+                    }
+                    _ => "pools: at most 16 entries of 1 to 64 letters, digits or . _ - : +",
+                }));
+            }
+        }
         if worker_name.is_empty()
             || worker_name.len() > 120
             || worker_name.chars().any(char::is_control)
@@ -282,11 +334,12 @@ where
             .await?
             .ok_or(AppError::NotFound)?;
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
-        let id = Uuid::now_v7();
+        let proposed = Uuid::now_v7();
         let ttl = self.settings.session_ttl;
-        self.store
+        let id = self
+            .store
             .create_session(&NewSession {
-                id,
+                id: proposed,
                 tenant_id: principal.tenant_id(),
                 namespace_id: namespace.id(),
                 subject: principal.subject().as_str().to_owned(),
@@ -363,51 +416,119 @@ where
             )
             .await?;
         let mut claimed = Vec::new();
+        self.claim(
+            &session,
+            candidates,
+            wanted as usize,
+            trace_id,
+            &mut claimed,
+        )
+        .await?;
+        Ok(claimed)
+    }
+
+    /// Leases ready steps of the `candidates` runs into `claimed`, one transaction per run. A task is
+    /// added only once its run's transaction has committed, so what is in `claimed` is leased and
+    /// is returned to the worker even when a later run fails: its token exists only here, and
+    /// dropping it would strand the step until its lease expires and burn an attempt.
+    ///
+    /// A run that cannot be leased (a corrupt journal, a constraint) is skipped, so one bad run never
+    /// keeps a tenant's workers from the others. The error is returned only when nothing at all was
+    /// claimed; an unavailable store ends the poll at once.
+    async fn claim(
+        &self,
+        session: &SessionRecord,
+        candidates: Vec<RunId>,
+        wanted: usize,
+        trace_id: Option<&str>,
+        claimed: &mut Vec<ClaimedTask>,
+    ) -> Result<(), AppError> {
+        let mut bytes = 0usize;
+        let mut failures = 0u8;
+        let mut first_error = None;
         for run in candidates {
-            let remaining = wanted as usize - claimed.len();
-            if remaining == 0 {
+            let remaining = wanted - claimed.len();
+            if remaining == 0 || bytes >= MAX_POLL_BYTES {
                 break;
             }
-            let Some(mut tx) = self
-                .store
-                .begin(session.tenant_id, run, Lock::SkipLocked)
-                .await?
-            else {
-                continue; // locked by someone else, or gone
-            };
-            let ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {
-                let (def, state) = tx.parts();
-                state
-                    .steps()
-                    .filter(|(_, step)| step.status() == StepStatus::Ready)
-                    .filter_map(|(node, _)| {
-                        let n = def.node(node)?;
-                        match n.kind() {
-                            NodeKind::Activity { activity, .. }
-                                if session.activities.iter().any(|a| a == activity.as_str()) =>
-                            {
-                                Some((node.clone(), activity.clone(), n.timeout()))
-                            }
-                            _ => None,
-                        }
-                    })
-                    .take(remaining)
-                    .collect()
-            };
-            for (node, activity, timeout) in ready {
-                let task = self
-                    .lease_one(&mut tx, &session, &node, activity, timeout, trace_id)
-                    .await;
-                match task {
-                    Ok(task) => claimed.push(task),
-                    // The run stopped, paused or changed under us: skip it, keep the others.
-                    Err(AppError::StateConflict(_)) => break,
-                    Err(other) => return Err(other),
+            match self
+                .claim_run(session, run, remaining, trace_id, &mut bytes)
+                .await
+            {
+                Ok(tasks) => claimed.extend(tasks),
+                Err(error) => {
+                    tracing::warn!(%error, %run, "leasing the steps of a run failed");
+                    let down = matches!(error, AppError::Unavailable);
+                    first_error.get_or_insert(error);
+                    failures += 1;
+                    if down || failures >= MAX_CLAIM_FAILURES {
+                        break;
+                    }
                 }
             }
-            tx.commit().await?;
         }
-        Ok(claimed)
+        match first_error {
+            Some(error) if claimed.is_empty() => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    /// Leases up to `remaining` ready steps of one run in one transaction and commits it.
+    async fn claim_run(
+        &self,
+        session: &SessionRecord,
+        run: RunId,
+        remaining: usize,
+        trace_id: Option<&str>,
+        bytes: &mut usize,
+    ) -> Result<Vec<ClaimedTask>, AppError> {
+        let Some(mut tx) = self
+            .store
+            .begin(session.tenant_id, run, Lock::SkipLocked)
+            .await?
+        else {
+            return Ok(Vec::new()); // locked by someone else, or gone
+        };
+        let ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {
+            let (def, state) = tx.parts();
+            state
+                .steps()
+                .filter(|(_, step)| step.status() == StepStatus::Ready)
+                .filter_map(|(node, _)| {
+                    let n = def.node(node)?;
+                    match n.kind() {
+                        NodeKind::Activity { activity, .. }
+                            if session.activities.iter().any(|a| a == activity.as_str()) =>
+                        {
+                            Some((node.clone(), activity.clone(), n.timeout()))
+                        }
+                        _ => None,
+                    }
+                })
+                .take(remaining)
+                .collect()
+        };
+        let mut leased = Vec::new();
+        for (node, activity, timeout) in ready {
+            // Every task carries the run's data; the response is bounded by what it carries.
+            if *bytes >= MAX_POLL_BYTES {
+                break;
+            }
+            match self
+                .lease_one(&mut tx, session, &node, activity, timeout, trace_id)
+                .await
+            {
+                Ok(task) => {
+                    *bytes += task.input.len();
+                    leased.push(task);
+                }
+                // The run stopped, paused or changed under us: skip it, keep the others.
+                Err(AppError::StateConflict(_)) => break,
+                Err(other) => return Err(other),
+            }
+        }
+        tx.commit().await?;
+        Ok(leased)
     }
 
     async fn lease_one<Tx: RunTx>(
@@ -453,30 +574,30 @@ where
             .unwrap_or_else(|| tx.now() + self.settings.lease_ttl);
         let run_id = info.run_id;
         let version = info.version_id;
-        let (data, template) = {
-            let template = {
-                let (def, _) = tx.parts();
-                match def.node(node).map(sagat_domain::workflow::Node::kind) {
-                    Some(NodeKind::Activity {
-                        idempotency_template,
-                        ..
-                    }) => idempotency_template.clone(),
-                    _ => None,
-                }
-            };
-            (tx.data().await?.clone(), template)
+        let template = {
+            let (def, _) = tx.parts();
+            match def.node(node).map(sagat_domain::workflow::Node::kind) {
+                Some(NodeKind::Activity {
+                    idempotency_template,
+                    ..
+                }) => idempotency_template.clone(),
+                _ => None,
+            }
         };
+        // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
+        let data = tx.data().await?;
         let idempotency_key = match template {
             Some(template) => self
                 .engine
                 .evaluator()
-                .idempotency_key(&template, &data, node)
+                .idempotency_key(&template, data, node)
                 .unwrap_or_else(|failure| {
                     tracing::warn!(error = %failure, node = %node, "idempotency template failed; using the default key");
                     format!("{run_id}:{node}")
                 }),
             None => format!("{run_id}:{node}"),
         };
+        let input = self.engine.evaluator().task_input(data, node);
         Ok(ClaimedTask {
             run_id,
             node: node.clone(),
@@ -485,7 +606,7 @@ where
             lease_token: token,
             expires_at,
             activity,
-            input: self.engine.evaluator().task_input(&data, node),
+            input,
             idempotency_key,
             trace_id: info.trace_id,
         })
@@ -556,7 +677,7 @@ where
             ));
         }
         let idempotency = Idempotency {
-            scope: format!("step:{}:{}", task.run_id, task.node),
+            scope: report_scope(task),
             key: idempotency_key.to_owned(),
             fingerprint: fingerprint(&[
                 b"complete",
@@ -566,11 +687,31 @@ where
             ]),
         };
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(stored) = tx.replay(&idempotency).await? {
-            return Ok(parse_ack(&stored, true, task.run_id));
+        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+            return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
+        // a completion that would exceed it fails the step (a retry would only exceed it again).
+        let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
+        if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
+            let node = task.node.clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let failure = execution::Failure {
+                        fence,
+                        code: FailureCode::run_data_limit(),
+                        retryable: false,
+                        jitter_sample: 0.0,
+                    };
+                    Ok(((), execution::fail_step(def, state, &node, failure, now)?))
+                })
+                .await
+                .map_err(engine_error)?;
+            return self.finish(tx, task, idempotency).await;
+        }
         effects.outputs = vec![(task.node.clone(), output.to_vec())];
         let node = task.node.clone();
         let fence = task.fence;
@@ -599,7 +740,7 @@ where
         principal.authorize(Permission::WorkerExecute)?;
         let code = FailureCode::parse(error_code).unwrap_or_else(|_| FailureCode::worker_error());
         let idempotency = Idempotency {
-            scope: format!("step:{}:{}", task.run_id, task.node),
+            scope: report_scope(task),
             key: idempotency_key.to_owned(),
             fingerprint: fingerprint(&[
                 b"fail",
@@ -610,8 +751,8 @@ where
             ]),
         };
         let mut tx = self.open(principal, task, Lock::Wait).await?;
-        if let Some(stored) = tx.replay(&idempotency).await? {
-            return Ok(parse_ack(&stored, true, task.run_id));
+        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+            return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
         let effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
@@ -645,11 +786,51 @@ where
         task: &TaskRef<'_>,
         lock: Lock,
     ) -> Result<S::Tx, AppError> {
-        // A run of another tenant is indistinguishable from a missing one: a stale attempt.
-        self.store
+        if let Some(tx) = self
+            .store
             .begin(principal.tenant_id(), task.run_id, lock)
             .await?
-            .ok_or(AppError::StaleAttempt)
+        {
+            return Ok(tx);
+        }
+        // A run of another tenant is indistinguishable from a missing one: a stale attempt. It is
+        // audited all the same, like every other path that reaches for a foreign run.
+        if let Ok(true) = self
+            .store
+            .run_exists_outside(principal.tenant_id(), task.run_id)
+            .await
+        {
+            let record = AuditRecord::by(
+                principal,
+                AuditAction::CrossTenantAccessDenied,
+                ResourceType::Run,
+                task.run_id.to_string(),
+                None,
+                self.clock.now(),
+            )
+            .with_reason("worker call on a resource not accessible from this tenant");
+            if let Err(error) = RunStore::record_denial(&self.store, &record).await {
+                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
+            }
+        }
+        Err(AppError::StaleAttempt)
+    }
+
+    /// The answer stored for a repeated report, if there is one.
+    ///
+    /// Records are scoped by the lease token ([`report_scope`]), so a caller that does not hold the
+    /// token never reaches another holder's records: whether a key exists is not an oracle for a
+    /// worker that merely knows a run id, a node and a guessable key.
+    async fn replayed(
+        &self,
+        tx: &mut S::Tx,
+        task: &TaskRef<'_>,
+        idempotency: &Idempotency,
+    ) -> Result<Option<StepAck>, AppError> {
+        Ok(tx
+            .replay(idempotency)
+            .await?
+            .map(|stored| parse_ack(&stored, true, task.run_id)))
     }
 
     /// The presented token must be the one hashed into the step's current lease.
@@ -748,6 +929,19 @@ fn engine_error(error: EngineError) -> AppError {
         ) => AppError::StaleAttempt,
         EngineError::Execution(other) => execution_error(&other),
     }
+}
+
+/// The idempotency scope of the reports of one attempt: the step plus a prefix of the hash of the
+/// lease token the reporter presented. Another token, another scope, so a stale or foreign caller
+/// finds nothing to replay (and is refused as stale) instead of learning that a key exists.
+fn report_scope(task: &TaskRef<'_>) -> String {
+    use std::fmt::Write as _;
+    let hash = Token::hash_of(task.lease_token);
+    let mut scope = format!("step:{}:{}:", task.run_id, task.node);
+    for byte in hash.iter().take(8) {
+        let _ = write!(scope, "{byte:02x}");
+    }
+    scope
 }
 
 fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {

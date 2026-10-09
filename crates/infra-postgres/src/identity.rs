@@ -532,6 +532,7 @@ fn record(mapped: StoreError) -> StoreError {
         StoreError::Conflict(_)
         | StoreError::MissingReference
         | StoreError::RevisionConflict { .. }
+        | StoreError::QuotaExceeded { .. }
         | StoreError::IdempotencyKeyReused => {}
     }
     mapped

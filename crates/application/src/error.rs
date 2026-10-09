@@ -28,6 +28,9 @@ pub enum StoreError {
     /// The `Idempotency-Key` was already used for a different request.
     #[error("idempotency key reused for a different request")]
     IdempotencyKeyReused,
+    /// A limit of the tenant or of the platform was reached; `what` names it (never a value).
+    #[error("limit reached: {what}")]
+    QuotaExceeded { what: &'static str },
     #[error("storage unavailable: {detail}")]
     Unavailable { detail: String },
     #[error("storage failure: {detail}")]
@@ -70,6 +73,9 @@ pub enum AppError {
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),
+    /// A limit was reached (for example the size of a child-run tree); `what` names it.
+    #[error("limit reached: {0}")]
+    QuotaExceeded(&'static str),
     /// A dependency is temporarily unavailable; the caller may retry.
     #[error("service temporarily unavailable")]
     Unavailable,
@@ -103,6 +109,7 @@ impl From<StoreError> for AppError {
             StoreError::MissingReference => Self::NotFound,
             StoreError::RevisionConflict { current } => Self::RevisionConflict { current },
             StoreError::IdempotencyKeyReused => Self::IdempotencyKeyReused,
+            StoreError::QuotaExceeded { what } => Self::QuotaExceeded(what),
             StoreError::Unavailable { .. } => Self::Unavailable,
             StoreError::Internal { .. } => Self::Internal,
         }

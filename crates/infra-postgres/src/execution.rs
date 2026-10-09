@@ -16,7 +16,8 @@ use sagat_application::definitions::{
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    DefinitionCache, Effects, ParentLink, RunData, RunInfo, RunRecord, RunTx, step_id,
+    DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo, RunRecord, RunTx,
+    step_id,
 };
 use sagat_application::runs::{
     GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, StepView,
@@ -191,15 +192,15 @@ impl RunStore for PgRunStore {
                 .map_err(store_error)?;
             let info = &new.info;
             if let Some(parent) = &info.parent {
-                claim_reservation(&mut tx, tenant, parent, info.run_id).await?;
+                claim_reservation(&mut tx, tenant, parent, info.root, info.run_id).await?;
             }
             sqlx::query(
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth) \
+                 depth, root_run_id) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15)",
+                         $12, $13, $14, $15, $16)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -216,6 +217,7 @@ impl RunStore for PgRunStore {
             .bind(info.parent.as_ref().map(|p| p.node.as_str().to_owned()))
             .bind(info.parent.as_ref().map(|p| p.cancel_policy.as_str()))
             .bind(i16::from(info.depth))
+            .bind(info.root.as_uuid())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -346,8 +348,8 @@ impl RunStore for PgRunStore {
         sqlx::query(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
-                    created_at, updated_at, finished_at, parent_run_id, parent_node, cancel_policy, \
-                    depth \
+                    created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
+                    cancel_policy, depth \
              FROM runs \
              WHERE tenant_id = $1 AND namespace_id = $2 \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -512,6 +514,7 @@ async fn claim_reservation(
     tx: &mut Transaction<'static, Postgres>,
     tenant: TenantId,
     parent: &ParentLink,
+    root: RunId,
     child: RunId,
 ) -> Result<(), StoreError> {
     let locked = sqlx::query_scalar::<_, i32>(
@@ -524,6 +527,28 @@ async fn claim_reservation(
     .map_err(store_error)?;
     if locked.is_none() {
         return Err(StoreError::MissingReference);
+    }
+    // One tree, one budget. The advisory lock serialises only the creators of this tree's runs (each
+    // already holds its own parent's lock, and none waits for anything else while holding it), so the
+    // count cannot be overshot by racing siblings and no row lock of the root is ever needed, which
+    // would deadlock against the root's own commands.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("run-tree:{tenant}:{root}"))
+        .execute(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    let members: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM runs WHERE tenant_id = $1 AND root_run_id = $2")
+            .bind(tenant.as_uuid())
+            .bind(root.as_uuid())
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(store_error)?;
+    if usize::try_from(members).unwrap_or(usize::MAX) >= sagat_application::execution::MAX_TREE_RUNS
+    {
+        return Err(StoreError::QuotaExceeded {
+            what: "runs in one child-run tree",
+        });
     }
     let claimed = sqlx::query(
         "UPDATE steps SET child_started = true, child_input = NULL, updated_at = clock_timestamp() \
@@ -548,18 +573,18 @@ async fn claim_reservation(
 
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
-     created_at, updated_at, finished_at, parent_run_id, parent_node, cancel_policy, depth \
+     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth \
      FROM runs WHERE tenant_id = $1 AND id = $2";
 
 const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
-     trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, parent_node, \
+     trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
      cancel_policy, depth, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE";
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
-     trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, parent_node, \
+     trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
      cancel_policy, depth, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE SKIP LOCKED";
 
@@ -596,6 +621,7 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             created_at: col(row, "created_at")?,
             parent: parent_link(row)?,
             depth: u8::try_from(col::<i16>(row, "depth")?).map_err(|_| corrupt("run depth"))?,
+            root: RunId::new(col::<Uuid>(row, "root_run_id")?),
         },
         status: status.parse().map_err(|_| corrupt("run status"))?,
         version: u64::try_from(version).map_err(|_| corrupt("run version"))?,
@@ -761,6 +787,29 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn lease_deadlines(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<LeaseDeadlines>, StoreError> {
+        let row = sqlx::query(
+            "SELECT lease_expires_at, attempt_deadline_at FROM steps \
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND status IN ('LEASED', 'RUNNING')",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        row.map(|row| {
+            Ok(LeaseDeadlines {
+                expires_at: col(&row, "lease_expires_at")?,
+                attempt_deadline_at: col(&row, "attempt_deadline_at")?,
+            })
+        })
+        .transpose()
+    }
+
     async fn lease_matches(
         &mut self,
         node: &NodeId,
@@ -823,6 +872,9 @@ impl RunTx for PgRunTx {
         // 2. The journal, and the nodes the events touched.
         let mut touched: BTreeSet<NodeId> = BTreeSet::new();
         let mut hinted: BTreeSet<NodeId> = BTreeSet::new();
+        // Hints written again because the first one may have been lost (they are counted: a step
+        // nobody claims is announced a bounded number of times, not forever).
+        let mut rehinted: BTreeSet<NodeId> = BTreeSet::new();
         for (offset, event) in events.iter().enumerate() {
             let seq = i64::try_from(self.persisted + 1 + offset as u64)
                 .map_err(|_| corrupt("sequence"))?;
@@ -889,6 +941,7 @@ impl RunTx for PgRunTx {
                 .is_some_and(|s| s.status() == StepStatus::Ready)
             {
                 hinted.insert(node.clone());
+                rehinted.insert(node.clone());
                 touched.insert(node.clone());
                 self.outbox_task_ready(node).await?;
             }
@@ -900,6 +953,7 @@ impl RunTx for PgRunTx {
                 node,
                 &effects,
                 hinted.contains(node),
+                rehinted.contains(node),
                 output_digest.get(node),
             )
             .await?;
@@ -1085,6 +1139,7 @@ impl PgRunTx {
         node: &NodeId,
         effects: &Effects,
         hinted: bool,
+        rehinted: bool,
         output: Option<&Vec<u8>>,
     ) -> Result<(), StoreError> {
         let Some(step) = self.state.step(node) else {
@@ -1185,6 +1240,7 @@ impl PgRunTx {
                                 THEN COALESCE(CASE WHEN status = 'READY' THEN ready_at END, $20) \
                                 ELSE ready_at END, \
                 last_hinted_at = CASE WHEN $21 THEN $20 ELSE last_hinted_at END, \
+                hint_count = CASE WHEN $30 THEN hint_count + 1 WHEN $21 THEN 0 ELSE hint_count END, \
                 lease_token_hash = CASE WHEN $6 IN ('LEASED', 'RUNNING') \
                                         THEN COALESCE($22, lease_token_hash) END, \
                 lease_expires_at = CASE WHEN $6 NOT IN ('LEASED', 'RUNNING') THEN NULL \
@@ -1237,6 +1293,7 @@ impl PgRunTx {
         .bind(renewal.map(|r| micros(r.ttl)))
         .bind(child_run)
         .bind(child_input)
+        .bind(rehinted)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;

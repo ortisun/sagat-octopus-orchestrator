@@ -398,6 +398,7 @@ fn the_error_codes_of_the_contract_are_exactly_the_ones_the_code_can_emit() {
             ErrorCode::Conflict => "CONFLICT",
             ErrorCode::ValidationFailed => "VALIDATION_FAILED",
             ErrorCode::RateLimited => "RATE_LIMITED",
+            ErrorCode::QuotaExceeded => "QUOTA_EXCEEDED",
             ErrorCode::Unavailable => "UNAVAILABLE",
             ErrorCode::Internal => "INTERNAL",
         }
@@ -410,6 +411,7 @@ fn the_error_codes_of_the_contract_are_exactly_the_ones_the_code_can_emit() {
         ErrorCode::Conflict,
         ErrorCode::ValidationFailed,
         ErrorCode::RateLimited,
+        ErrorCode::QuotaExceeded,
         ErrorCode::Unavailable,
         ErrorCode::Internal,
     ]

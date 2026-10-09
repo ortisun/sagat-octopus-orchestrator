@@ -445,7 +445,7 @@ paths:
       summary: Send a signal to the waiting steps of a run that expect it
       tags: [Events]
       x-implemented: '002'
-      description: The payload becomes the output of each woken waitEvent step. A signal that no step is waiting for is refused with 409, never buffered or dropped silently.
+      description: The payload becomes the output of each woken waitEvent step. A signal that no step is waiting for is refused with 409, never buffered or dropped silently. A signal that would take the run over what a run may retain (4 MiB of step outputs and signal payloads) is refused with 429 and code `QUOTA_EXCEEDED`; retrying it will not help.
       parameters:
         - {$ref: '#/components/parameters/RunId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -582,7 +582,7 @@ components:
         code:
           type: string
           description: Stable machine-readable code.
-          enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, RATE_LIMITED, UNAVAILABLE, INTERNAL]
+          enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, RATE_LIMITED, QUOTA_EXCEEDED, UNAVAILABLE, INTERNAL]
         message: {type: string, description: "Safe, human-readable summary. Never contains secrets, payloads or other tenants' data."}
         retryable: {type: boolean}
         traceId: {type: string, pattern: '^[0-9a-f]{32}$'}

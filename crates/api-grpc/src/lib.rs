@@ -5,6 +5,7 @@
 //! pipeline as the REST API ([`sagat_api_http::authenticate_bearer`]), maps errors with the same
 //! classification, and delegates every rule to `sagat_application::worker::WorkerService`.
 
+mod limits;
 mod request;
 mod server;
 mod service;

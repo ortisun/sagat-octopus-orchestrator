@@ -23,6 +23,10 @@ use crate::identity::{Slug, clip};
 pub const MAX_NODES: usize = 10_000;
 /// A `parallel` node may fan out to at most this many branches.
 pub const MAX_BRANCHES: usize = 256;
+/// A workflow may contain at most this many `parallel` nodes. Validating one costs time and memory
+/// proportional to its size, so this bounds the cost of a definition to this many times the size of
+/// the graph (a document of 650 KB with 5000 nested parallels once cost 17 s and 1.1 GB).
+pub const MAX_PARALLELS: usize = 32;
 /// Longest timer or wait: a run waiting for months is viable, one waiting for decades is a mistake.
 pub const MAX_WAIT: Duration = Duration::from_secs(366 * 24 * 60 * 60);
 /// Longest single retry delay.
@@ -49,6 +53,8 @@ pub enum WorkflowError {
     NoNodes,
     #[error("a workflow may have at most {MAX_NODES} nodes, found {0}")]
     TooManyNodes(usize),
+    #[error("a workflow may have at most {MAX_PARALLELS} parallel nodes, found {0}")]
+    TooManyParallels(usize),
     #[error("node '{0}' is defined more than once")]
     DuplicateNode(NodeId),
     #[error("entrypoint '{0}' is not a node of the workflow")]
@@ -272,7 +278,7 @@ pub struct RetryPolicy {
 
 impl RetryPolicy {
     /// What a node gets when the definition says nothing: three attempts, exponential from one
-    /// second up to one minute, with jitter. A decision, recorded in `research.md` (D18).
+    /// second up to one minute, with jitter. A decision, recorded in `specs/002-durable-execution/research.md` (D26).
     pub const DEFAULT: Self = Self {
         max_attempts: 3,
         initial_delay: Duration::from_secs(1),
@@ -674,6 +680,14 @@ impl WorkflowDefinition {
                 }
             }
         }
+        // Before anything proportional to (parallels x nodes) is computed.
+        let parallels = map
+            .values()
+            .filter(|n| matches!(n.kind(), NodeKind::Parallel { .. }))
+            .count();
+        if parallels > MAX_PARALLELS {
+            return Err(WorkflowError::TooManyParallels(parallels));
+        }
         check_acyclic(&map)?;
         check_reachable(&map, &entrypoint)?;
         let regions = parallel_regions(&map)?;
@@ -710,6 +724,23 @@ impl WorkflowDefinition {
     #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// A conservative estimate of the memory this definition occupies, in bytes, so caches can be
+    /// bounded by weight and not just by count.
+    #[must_use]
+    pub fn footprint(&self) -> usize {
+        // A node: the struct, its id and edges, expressions; generous on purpose.
+        const PER_NODE: usize = 640;
+        // A region entry: a `NodeId` (a `String`) in a tree set.
+        const PER_REGION_ENTRY: usize = 96;
+        let region_entries: usize = self
+            .regions
+            .values()
+            .map(|branches| branches.iter().map(BTreeSet::len).sum::<usize>())
+            .sum();
+        4096 + self.nodes.len() * PER_NODE
+            + (region_entries + self.enclosing.len()) * PER_REGION_ENTRY
     }
 
     #[must_use]

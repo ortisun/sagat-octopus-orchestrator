@@ -9,6 +9,7 @@ mod concurrency;
 mod definitions;
 mod faults;
 mod flows;
+mod hardening;
 mod isolation;
 mod nats;
 mod outbox;

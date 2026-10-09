@@ -3238,6 +3238,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tower-layer",
  "tracing",
  "uuid",
 ]

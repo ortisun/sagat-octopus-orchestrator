@@ -414,7 +414,9 @@ impl World {
         };
         let registered = self
             .workers
-            .register(principal, "payments", "test-worker", &caps)
+            // Each session is a worker of its own: registering the same name again replaces the
+            // previous session (a worker that reconnects), which is not what a pool of workers is.
+            .register(principal, "payments", &unique_worker_name(), &caps)
             .await
             .expect("register");
         Session {
@@ -686,4 +688,11 @@ impl EventPublisher for RecordingBroker {
         });
         Ok(())
     }
+}
+
+/// A worker name no other session of this test run has used.
+fn unique_worker_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("test-worker-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }

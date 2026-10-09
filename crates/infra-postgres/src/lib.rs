@@ -21,6 +21,9 @@ pub use identity::PgIdentityStore;
 pub use pool::{PoolConfig, connect, spawn_pool_metrics};
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use sqlx::PgPool;
+/// The query that finds the runs a worker may claim, exposed so a test can check its plan.
+#[doc(hidden)]
+pub use workers::CLAIMABLE as CLAIMABLE_SQL;
 
 /// Embedded, ordered schema migrations (`migrations/<version>_<name>.{up,down}.sql`).
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");

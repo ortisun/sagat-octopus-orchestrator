@@ -314,6 +314,7 @@ where
             created_at: now,
             parent: None,
             depth: 0,
+            root: run_id,
         };
         let audit = AuditRecord::by(
             principal,
@@ -624,6 +625,14 @@ where
             return Err(AppError::StateConflict(
                 "the run is not waiting for that signal",
             ));
+        }
+        // What a run retains is bounded (every lease carries it): a signal that would exceed it is
+        // refused instead of stored.
+        let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
+        if retained.saturating_add(payload.len().saturating_mul(targets.len()))
+            > crate::execution::MAX_RUN_OUTPUT_BYTES
+        {
+            return Err(AppError::QuotaExceeded("output retained by one run"));
         }
         let now = self.clock.now();
         let mut effects = Effects::by(

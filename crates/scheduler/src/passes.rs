@@ -22,6 +22,8 @@ use time::OffsetDateTime;
 
 /// Delivered outbox messages deleted per housekeeping round.
 const PURGE_BATCH: u32 = 5_000;
+/// Batches one housekeeping call may purge (about 100 000 messages).
+const PURGE_ROUNDS: u32 = 20;
 
 /// Tunable limits of the passes.
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +81,35 @@ impl Report {
             + self.children_finished
             + self.children_cancelled
             > 0
+    }
+}
+
+/// What must still be true under the run's lock for a scheduler action to proceed.
+enum Condition<'a> {
+    Always,
+    /// The attempt on `node` is still over: its lease expired (or its own deadline passed) *now*, by
+    /// the database clock, not merely when the candidate query ran.
+    LeaseLost {
+        node: &'a sagat_domain::workflow::NodeId,
+        cause: LeaseLoss,
+    },
+}
+
+impl Condition<'_> {
+    async fn holds<Tx: RunTx>(&self, tx: &mut Tx) -> Result<bool, StoreError> {
+        match self {
+            Self::Always => Ok(true),
+            Self::LeaseLost { node, cause } => {
+                let now = tx.now();
+                Ok(tx
+                    .lease_deadlines(node)
+                    .await?
+                    .is_some_and(|d| match cause {
+                        LeaseLoss::Expired => d.expires_at <= now,
+                        LeaseLoss::TimedOut => d.attempt_deadline_at.is_some_and(|at| at <= now),
+                    }))
+            }
+        }
     }
 }
 
@@ -160,24 +191,42 @@ where
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "could not purge worker sessions"),
         }
-        // Bounded per call so a large backlog of delivered messages never holds a long statement.
-        match self
-            .store
-            .purge_outbox(self.settings.outbox_retention, PURGE_BATCH)
-            .await
-        {
-            Ok(n) if n > 0 => tracing::info!(removed = n, "purged delivered outbox messages"),
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "could not purge the outbox"),
+        // One bounded statement at a time, so a backlog never holds a long one, repeated until the
+        // backlog is gone (or this call has done its share): the purge must outrun what is written.
+        let mut removed = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self
+                .store
+                .purge_outbox(self.settings.outbox_retention, PURGE_BATCH)
+                .await
+            {
+                Ok(n) => {
+                    removed += n;
+                    if n < u64::from(PURGE_BATCH) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge the outbox");
+                    break;
+                }
+            }
+        }
+        if removed > 0 {
+            tracing::info!(removed, "purged delivered outbox messages");
         }
     }
 
-    /// Applies `command` to a run under its row lock and commits.
-    async fn apply<F>(
+    /// Applies `command` to a run under its row lock and commits, provided `condition` still holds
+    /// there. The candidate queries read without a lock, so what made a run a candidate may have
+    /// changed since (a heartbeat renewed the lease, a retry was already released): the check
+    /// is repeated under the lock, and a candidate that no longer qualifies is skipped.
+    async fn apply_if<F>(
         &self,
         tenant: TenantId,
         run: RunId,
         kind: &'static str,
+        condition: Condition<'_>,
         effects: Effects,
         command: F,
     ) -> Outcome
@@ -197,6 +246,9 @@ where
             else {
                 return Ok(Outcome::Skipped);
             };
+            if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
+                return Ok(Outcome::Skipped);
+            }
             match self.engine.run(&mut tx, effects, command).await {
                 Ok(()) => {
                     tx.commit().await.map_err(EngineError::Store)?;
@@ -224,6 +276,26 @@ where
         })
         .increment(1);
         outcome
+    }
+
+    /// [`Self::apply_if`] with nothing to re-check: the domain command itself refuses what is stale.
+    async fn apply<F>(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        kind: &'static str,
+        effects: Effects,
+        command: F,
+    ) -> Outcome
+    where
+        F: FnOnce(
+            &sagat_domain::workflow::WorkflowDefinition,
+            &mut sagat_domain::execution::RunState,
+            OffsetDateTime,
+        ) -> Result<((), Progress), ExecutionError>,
+    {
+        self.apply_if(tenant, run, kind, Condition::Always, effects, command)
+            .await
     }
 
     fn effects(&self) -> Effects {
@@ -345,10 +417,14 @@ where
             };
             let (node, fence) = (lost.step.node.clone(), lost.fence);
             let outcome = self
-                .apply(
+                .apply_if(
                     lost.step.tenant_id,
                     lost.step.run_id,
                     "lease",
+                    Condition::LeaseLost {
+                        node: &lost.step.node,
+                        cause: lost.cause,
+                    },
                     self.effects(),
                     move |def, state, now| {
                         Ok((
@@ -560,6 +636,7 @@ where
                 cancel_policy: *cancel_policy,
             }),
             depth: parent.info.depth.saturating_add(1),
+            root: parent.info.root,
         };
         let audit = AuditRecord::engine(
             tenant,
@@ -586,6 +663,17 @@ where
             Ok(Applied::Replayed(_)) => Ok(Outcome::Skipped),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
             Err(StoreError::MissingReference) => Ok(Outcome::Skipped),
+            // The tree is as large as a tree may get: the step fails instead of waiting forever.
+            Err(StoreError::QuotaExceeded { .. }) => Ok({
+                self.finish_with(
+                    tenant,
+                    parent_id,
+                    node.clone(),
+                    pending.child,
+                    ChildOutcome::Failed(FailureCode::child_limit_exceeded()),
+                )
+                .await
+            }),
             Err(other) => Err(other.into()),
             Ok(Applied::Done(mut tx)) => {
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());

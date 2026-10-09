@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use sagat_application::execution::MAX_PAYLOAD_BYTES;
 use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
+use crate::limits::{Admission, Incoming};
 use crate::pb::worker_service_server::{WorkerService, WorkerServiceServer};
 
 /// Largest message the server accepts: an inline output (256 KiB) plus the envelope.
@@ -22,6 +22,12 @@ pub struct GrpcConfig {
     pub concurrency_per_connection: usize,
     /// HTTP/2 streams a client may open at once.
     pub max_concurrent_streams: u32,
+    /// Connections open at once; the next one is accepted when one closes.
+    pub max_connections: usize,
+    /// Calls running at once across all connections. Above three quarters of it the calls that look
+    /// for work (`RegisterWorker`, `PollTasks`) are shed with `RESOURCE_EXHAUSTED`, the rest only
+    /// when it is full, so a reserve stays for the calls that keep leased work alive.
+    pub max_in_flight: usize,
     /// Ping interval that detects dead peers behind a NAT or a silent load balancer.
     pub keepalive_interval: Duration,
     /// How long to wait for the ping answer before dropping the connection.
@@ -34,6 +40,8 @@ impl Default for GrpcConfig {
             request_timeout: Duration::from_secs(30),
             concurrency_per_connection: 64,
             max_concurrent_streams: 128,
+            max_connections: 2048,
+            max_in_flight: 1024,
             keepalive_interval: Duration::from_secs(30),
             keepalive_timeout: Duration::from_secs(10),
         }
@@ -62,7 +70,8 @@ pub async fn serve<T: WorkerService>(
         .max_concurrent_streams(config.max_concurrent_streams)
         .http2_keepalive_interval(Some(config.keepalive_interval))
         .http2_keepalive_timeout(Some(config.keepalive_timeout))
+        .layer(Admission::new(config.max_in_flight))
         .add_service(service)
-        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), shutdown)
+        .serve_with_incoming_shutdown(Incoming::new(listener, config.max_connections), shutdown)
         .await
 }

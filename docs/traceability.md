@@ -50,7 +50,7 @@ Last updated with the control-plane branch. "Partial" and "Open" are stated expl
 
 ## Evidence: 002 durable-execution
 
-"Partial" and "Open" are stated explicitly; see `specs/002-durable-execution/research.md` for the gaps (G19-G30) and the decisions (D25-D36) behind them.
+"Partial" and "Open" are stated explicitly; see `specs/002-durable-execution/research.md` for the gaps (G19-G34) and the decisions (D25-D41) behind them.
 
 | Requirement | State | Evidence |
 |---|---|---|
@@ -62,8 +62,8 @@ Last updated with the control-plane branch. "Partial" and "Open" are stated expl
 | FR-002-006 reconciler for the outbox, orphaned READY tasks and expired leases | Done | `crates/scheduler` (`hints`, `leases`, dispatcher); `scheduler.rs`, `outbox.rs`, `nats.rs`; the engine runs them: `tests/e2e/002-durable-execution/engine.rs` |
 | FR-002-007 Paused/Waiting without a dedicated process and without a NATS consumer per run | Done | A waiting run is a row (benchmark: 2.4 KiB, idle tick flat from 1k to 10k runs); `stories.rs::us03_*` |
 | FR-002-008 bind runs to the immutable version; control payload/result size via blob refs | Partial | Version pinning and size limits are enforced and tested; blob refs are not implemented (G19) |
-| FR-002-009 persist the child-run parent link and the cancellation propagation policy | Done | `tests/integration/002-durable-execution/children.rs` (17 tests: creation race, cancelled meanwhile, tenant isolation, recursion bound, deadlines, every policy), `crates/domain/tests/execution.rs::children`, full stack in `tests/e2e/002-durable-execution/engine.rs`. The child's result is not passed to the parent (G21) |
-| NFR-002-SEC tenant isolation, RBAC, least privilege, no secrets in logs | Done for a single instance | `isolation.rs`, `tests/contract/002-durable-execution/grpc/protocol.rs` (authentication, role, cross-tenant, session binding, no echo of secrets), engine start-up refusal (`engine.rs`); review evidence in `quickstart.md`. Open: TLS/mTLS on the worker API (G27) |
+| FR-002-009 persist the child-run parent link and the cancellation propagation policy | Done | `tests/integration/002-durable-execution/children.rs` (17 tests: creation race, cancelled meanwhile, tenant isolation, recursion bound, tree budget, deadlines, every policy), `crates/domain/tests/execution.rs::children`, full stack in `tests/e2e/002-durable-execution/engine.rs`. The child's result is not passed to the parent (G21) |
+| NFR-002-SEC tenant isolation, RBAC, least privilege, no secrets in logs | Done for a single instance | `isolation.rs`, `tests/contract/002-durable-execution/grpc/protocol.rs` (authentication, role, cross-tenant, session binding, no echo of secrets), engine start-up refusal (`engine.rs`); the limits and isolation added by the security review in `tests/integration/002-durable-execution/hardening.rs` and `tests/contract/002-durable-execution/grpc/limits.rs` (finding-by-finding table in `quickstart.md`). Open: TLS/mTLS on the worker API (G27), a worker's authority is the whole tenant (G31, feature 009), fairness between tenants (G32, feature 010) |
 | NFR-002-DUR after commit, losing a worker or the broker cannot lose a transition | Done | `faults.rs`, `outbox.rs` (crash between publish and confirm), `nats.rs` (broker outage through a severed connection), `engine.rs` |
 | NFR-002-OBS structured logs, correlated traces, essential metrics, auditability per run/step | Done except span export | Journal with actor and trace id per event, audit records for operator actions and child starts, metrics in the runbook; OTLP spans belong to feature 008 |
 | NFR-002-COMP versioned protocol and schemas; do not break runs in progress | Partial | `worker.proto` changed additively (heartbeat identifies the step); protocol version `1` negotiated at registration; no `buf breaking` check yet |

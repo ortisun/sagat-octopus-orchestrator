@@ -85,6 +85,16 @@ async fn rollback_removes_everything_and_forward_restores_it() {
         !leftover_execution,
         "rollback must also drop the journal's trigger function"
     );
+    let leftover_outbox: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'outbox_reject_undelivered_delete')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("query");
+    assert!(
+        !leftover_outbox,
+        "rollback must also drop the outbox's trigger function"
+    );
 
     migrate(&db.pool).await.expect("forward again");
     for table in TABLES {

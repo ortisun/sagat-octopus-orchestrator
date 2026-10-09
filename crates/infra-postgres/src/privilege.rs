@@ -20,6 +20,10 @@ pub enum PrivilegeFinding {
     CanUpdateAuditTrail,
     CanDeleteAuditTrail,
     CanTruncateAuditTrail,
+    /// The role owns an append-only table of the execution plane.
+    OwnsAppendOnly(&'static str),
+    /// The role may update, delete from or truncate an append-only table of the execution plane.
+    CanRewriteAppendOnly(&'static str),
 }
 
 impl fmt::Display for PrivilegeFinding {
@@ -32,6 +36,15 @@ impl fmt::Display for PrivilegeFinding {
             Self::CanUpdateAuditTrail => "it may UPDATE audit records",
             Self::CanDeleteAuditTrail => "it may DELETE audit records",
             Self::CanTruncateAuditTrail => "it may TRUNCATE the audit trail",
+            Self::OwnsAppendOnly(table) => {
+                return write!(f, "it owns the append-only table '{table}'");
+            }
+            Self::CanRewriteAppendOnly(table) => {
+                return write!(
+                    f,
+                    "it may UPDATE, DELETE or TRUNCATE the append-only table '{table}'"
+                );
+            }
         })
     }
 }
@@ -101,6 +114,18 @@ FROM pg_roles r \
 LEFT JOIN pg_class c ON c.oid = to_regclass('public.audit_records')::oid \
 WHERE r.rolname = current_user";
 
+/// Tables nobody may rewrite or erase: the journal, the payloads and the published versions. Checked
+/// when they exist (a schema migrated only up to feature 001 has none of them).
+const APPEND_ONLY: [&str; 3] = ["run_events", "payloads", "workflow_versions"];
+
+const INSPECT_APPEND_ONLY: &str = "\
+SELECT c.oid IS NOT NULL AS table_exists, \
+    COALESCE(pg_has_role(current_user, c.relowner, 'MEMBER'), false) AS owns, \
+    COALESCE(has_any_column_privilege(current_user, c.oid, 'UPDATE'), false) \
+        OR COALESCE(has_table_privilege(current_user, c.oid, 'DELETE'), false) \
+        OR COALESCE(has_table_privilege(current_user, c.oid, 'TRUNCATE'), false) AS can_rewrite \
+FROM (SELECT to_regclass($1)::oid AS oid) t LEFT JOIN pg_class c ON c.oid = t.oid";
+
 pub(crate) async fn verify(pool: &PgPool) -> Result<(), LeastPrivilegeError> {
     let unavailable = |error: sqlx::Error| LeastPrivilegeError::Unavailable(error.to_string());
     let row = sqlx::query(INSPECT)
@@ -125,6 +150,25 @@ pub(crate) async fn verify(pool: &PgPool) -> Result<(), LeastPrivilegeError> {
             if flag(column)? {
                 findings.push(finding);
             }
+        }
+    }
+    for table in APPEND_ONLY {
+        let row = sqlx::query(INSPECT_APPEND_ONLY)
+            .bind(format!("public.{table}"))
+            .fetch_one(pool)
+            .await
+            .map_err(unavailable)?;
+        if !row
+            .try_get::<bool, _>("table_exists")
+            .map_err(unavailable)?
+        {
+            continue;
+        }
+        if row.try_get::<bool, _>("owns").map_err(unavailable)? {
+            findings.push(PrivilegeFinding::OwnsAppendOnly(table));
+        }
+        if row.try_get::<bool, _>("can_rewrite").map_err(unavailable)? {
+            findings.push(PrivilegeFinding::CanRewriteAppendOnly(table));
         }
     }
     if !findings.is_empty() {
