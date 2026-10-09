@@ -1,0 +1,362 @@
+//! Quotas: reading the limits in force and changing them (FR-009-006, US04).
+//!
+//! *Enforcing* a quota is not done here. The stores that create the things a quota counts (runs,
+//! workflows, worker sessions, secrets) take the limit from [`QuotaLookup`] and refuse the creation
+//! with `StoreError::QuotaExceeded` from inside the transaction that would create it, under a lock
+//! on the counted scope, so two replicas racing for the last place cannot both get it. This service
+//! is the administrative side: it shows the limit and the usage and lets an administrator change it.
+
+use std::future::Future;
+
+use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
+use sagat_domain::quota::{self, QuotaError, QuotaResource, QuotaScope, QuotaSource};
+
+use crate::clock::Clock;
+use crate::error::{AppError, StoreError};
+use crate::identity::RequestContext;
+
+/// The limit in force for a resource, which every creating store consults.
+///
+/// `namespace` is `None` for a resource counted across the tenant.
+pub trait QuotaLookup: Send + Sync {
+    fn effective_limit(
+        &self,
+        tenant: TenantId,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+}
+
+/// The limits a run is created under, resolved just before the creation and judged by the store, in
+/// the transaction that inserts the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunLimits {
+    /// Runs that have not finished in the run's namespace.
+    pub namespace: u64,
+    /// Runs that have not finished in the whole tenant.
+    pub tenant: u64,
+}
+
+impl RunLimits {
+    /// No limit in practice; for tests of other things.
+    pub const UNLIMITED: Self = Self {
+        namespace: quota::MAX_LIMIT,
+        tenant: quota::MAX_LIMIT,
+    };
+
+    /// The limits in force for a run of `namespace`.
+    ///
+    /// # Errors
+    /// [`StoreError`] when a limit cannot be read.
+    pub async fn of<Q: QuotaLookup>(
+        store: &Q,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<Self, StoreError> {
+        Ok(Self {
+            namespace: store
+                .effective_limit(tenant, Some(namespace), QuotaResource::ActiveRuns)
+                .await?,
+            tenant: store
+                .effective_limit(tenant, None, QuotaResource::TenantActiveRuns)
+                .await?,
+        })
+    }
+}
+
+/// A limit somebody set, as stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredLimit {
+    pub resource: QuotaResource,
+    pub value: u64,
+}
+
+/// Storage port of the quota administration. Implemented by `sagat-infra-postgres`.
+pub trait QuotaStore: QuotaLookup {
+    /// Whether the namespace exists in `tenant`.
+    fn namespace_exists(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Whether the namespace exists in a tenant *other than* `tenant` (only to decide whether a
+    /// miss deserves a cross-tenant audit record; never shown to clients).
+    fn namespace_exists_outside(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Records an access to a resource of another tenant (best effort, off the response path).
+    fn record_denial(
+        &self,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// What was set at one level: `namespace == None` is the tenant-wide level.
+    fn settings(
+        &self,
+        tenant: TenantId,
+        namespace: Option<NamespaceId>,
+    ) -> impl Future<Output = Result<Vec<StoredLimit>, StoreError>> + Send;
+
+    /// Stores (`Some`) or removes (`None`) a setting, with its audit record, in one transaction.
+    fn put_setting(
+        &self,
+        tenant: TenantId,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+        value: Option<u64>,
+        changed_by: &str,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// How much of the resource is used: in the namespace for a namespace-scoped resource, in the
+    /// tenant for a tenant-scoped one (`namespace` is ignored for those).
+    fn usage(
+        &self,
+        tenant: TenantId,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+}
+
+/// One line of the quota view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotaView {
+    pub resource: QuotaResource,
+    pub limit: u64,
+    pub source: QuotaSource,
+    /// `None` when the view is the tenant-wide default of a resource that is counted per namespace.
+    pub used: Option<u64>,
+}
+
+/// Reads and changes quotas.
+pub struct QuotaService<S, C> {
+    store: S,
+    clock: C,
+}
+
+impl<S, C> QuotaService<S, C>
+where
+    S: QuotaStore,
+    C: Clock,
+{
+    #[must_use]
+    pub const fn new(store: S, clock: C) -> Self {
+        Self { store, clock }
+    }
+
+    /// The limits in force and their use, for the tenant (`namespace == None`) or one namespace.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`]; [`AppError::NotFound`] for a namespace the tenant does not have
+    /// (including one that belongs to another tenant, which is audited).
+    pub async fn list(
+        &self,
+        principal: &Principal,
+        namespace: Option<NamespaceId>,
+        ctx: &RequestContext,
+    ) -> Result<Vec<QuotaView>, AppError> {
+        principal.authorize(Permission::QuotaRead)?;
+        let tenant = principal.tenant_id();
+        self.check_namespace(principal, namespace, ctx).await?;
+        let tenant_level = self.store.settings(tenant, None).await?;
+        let namespace_level = match namespace {
+            Some(id) => self.store.settings(tenant, Some(id)).await?,
+            None => Vec::new(),
+        };
+        let setting = |rows: &[StoredLimit], resource| {
+            rows.iter()
+                .find(|r| r.resource == resource)
+                .map(|r| r.value)
+        };
+        let mut views = Vec::new();
+        for resource in QuotaResource::ALL {
+            // A namespace view shows what is counted there; a tenant view shows everything, but a
+            // per-namespace resource has no single usage at that level.
+            if namespace.is_some() && resource.scope() == QuotaScope::Tenant {
+                continue;
+            }
+            let (limit, source) = quota::resolve(
+                resource,
+                setting(&namespace_level, resource),
+                setting(&tenant_level, resource),
+            );
+            let used = match (resource.scope(), namespace) {
+                (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
+                    Some(self.store.usage(tenant, namespace, resource).await?)
+                }
+                (QuotaScope::Namespace, None) => None,
+            };
+            views.push(QuotaView {
+                resource,
+                limit,
+                source,
+                used,
+            });
+        }
+        Ok(views)
+    }
+
+    /// Sets the limit of `resource` at the tenant level or for one namespace.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`]; [`AppError::NotFound`]; [`AppError::NotAllowed`] for a value out of
+    /// range or a namespace-level value for a tenant-wide resource.
+    pub async fn set(
+        &self,
+        principal: &Principal,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+        value: u64,
+        ctx: &RequestContext,
+    ) -> Result<QuotaView, AppError> {
+        principal.authorize(Permission::QuotaManage)?;
+        self.check_namespace(principal, namespace, ctx).await?;
+        let value = quota::validate(resource, namespace.is_some(), value).map_err(invalid)?;
+        self.write(principal, namespace, resource, Some(value), ctx)
+            .await?;
+        self.view(principal, namespace, resource).await
+    }
+
+    /// Removes a setting, so the next level (or the default) applies again.
+    ///
+    /// # Errors
+    /// As [`Self::set`].
+    pub async fn clear(
+        &self,
+        principal: &Principal,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+        ctx: &RequestContext,
+    ) -> Result<QuotaView, AppError> {
+        principal.authorize(Permission::QuotaManage)?;
+        self.check_namespace(principal, namespace, ctx).await?;
+        self.write(principal, namespace, resource, None, ctx)
+            .await?;
+        self.view(principal, namespace, resource).await
+    }
+
+    async fn write(
+        &self,
+        principal: &Principal,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+        value: Option<u64>,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        let target = namespace.map_or_else(|| "tenant".to_owned(), |n| n.to_string());
+        let reason = match value {
+            Some(v) => format!("{resource} = {v}"),
+            None => format!("{resource} reset"),
+        };
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::QuotaChanged,
+            ResourceType::Quota,
+            target,
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(reason);
+        self.store
+            .put_setting(
+                principal.tenant_id(),
+                namespace,
+                resource,
+                value,
+                principal.subject().as_str(),
+                &audit,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn view(
+        &self,
+        principal: &Principal,
+        namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+    ) -> Result<QuotaView, AppError> {
+        let tenant = principal.tenant_id();
+        let (limit, source) = quota::resolve(
+            resource,
+            match namespace {
+                Some(id) => self
+                    .store
+                    .settings(tenant, Some(id))
+                    .await?
+                    .into_iter()
+                    .find(|r| r.resource == resource)
+                    .map(|r| r.value),
+                None => None,
+            },
+            self.store
+                .settings(tenant, None)
+                .await?
+                .into_iter()
+                .find(|r| r.resource == resource)
+                .map(|r| r.value),
+        );
+        let used = match (resource.scope(), namespace) {
+            (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
+                Some(self.store.usage(tenant, namespace, resource).await?)
+            }
+            (QuotaScope::Namespace, None) => None,
+        };
+        Ok(QuotaView {
+            resource,
+            limit,
+            source,
+            used,
+        })
+    }
+
+    /// A namespace of another tenant looks exactly like one that does not exist, and is audited.
+    async fn check_namespace(
+        &self,
+        principal: &Principal,
+        namespace: Option<NamespaceId>,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        let Some(id) = namespace else {
+            return Ok(());
+        };
+        if self
+            .store
+            .namespace_exists(principal.tenant_id(), id)
+            .await?
+        {
+            return Ok(());
+        }
+        if let Ok(true) = self
+            .store
+            .namespace_exists_outside(principal.tenant_id(), id)
+            .await
+        {
+            let record = AuditRecord::by(
+                principal,
+                AuditAction::CrossTenantAccessDenied,
+                ResourceType::Namespace,
+                id.to_string(),
+                ctx.trace_id.clone(),
+                self.clock.now(),
+            )
+            .with_reason("resource not accessible from this tenant");
+            if let Err(error) = self.store.record_denial(&record).await {
+                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
+            }
+        }
+        Err(AppError::NotFound)
+    }
+}
+
+fn invalid(error: QuotaError) -> AppError {
+    AppError::NotAllowed(match error {
+        QuotaError::TooLarge => "a quota limit is at most 1000000000",
+        QuotaError::NotPerNamespace => "this quota is counted for the whole tenant",
+    })
+}

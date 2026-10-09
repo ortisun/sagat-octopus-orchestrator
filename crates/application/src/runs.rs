@@ -26,6 +26,7 @@ use crate::execution::{
     RunInfo, RunRecord, RunTx,
 };
 use crate::identity::{Page, PageRequest, RequestContext};
+use crate::quotas::{QuotaLookup, RunLimits};
 
 /// Longest a run may be given to finish.
 pub const MAX_RUN_DEADLINE: Duration = Duration::from_secs(366 * 24 * 60 * 60);
@@ -44,6 +45,8 @@ pub enum Lock {
 /// A run about to be created.
 #[derive(Debug, Clone)]
 pub struct NewRun {
+    /// The quotas the creation is judged against, atomically with the insert.
+    pub limits: RunLimits,
     pub info: RunInfo,
     pub definition: Arc<WorkflowDefinition>,
     pub input: Vec<u8>,
@@ -99,7 +102,7 @@ pub struct RunFilter {
 /// Storage port for runs. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait RunStore: Send + Sync {
+pub trait RunStore: QuotaLookup + Send + Sync {
     type Tx: RunTx;
 
     /// Creates the run (row, input payload, empty state) and returns its open transaction, or
@@ -339,7 +342,9 @@ where
                     .as_slice(),
             ]),
         };
+        let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id()).await?;
         let new = NewRun {
+            limits,
             info,
             definition: Arc::clone(&definition),
             input: request.input.to_vec(),

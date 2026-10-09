@@ -128,6 +128,7 @@ async fn create(
             DRAFT,
             &a,
             &idem(&format!("workflow.create:{}", ns.id()), key, name),
+            sagat_domain::quota::MAX_LIMIT,
         )
         .await?
     {
@@ -319,6 +320,7 @@ async fn a_repeated_create_with_the_same_key_replays_and_changes_nothing() {
                 "key-0000001",
                 "invoice-flow",
             ),
+            sagat_domain::quota::MAX_LIMIT,
         )
         .await
         .expect("replay");
@@ -364,6 +366,7 @@ async fn the_same_key_for_a_different_request_is_refused() {
                 "key-0000001",
                 "different fingerprint",
             ),
+            sagat_domain::quota::MAX_LIMIT,
         )
         .await;
     assert_eq!(result, Err(StoreError::IdempotencyKeyReused));
@@ -411,6 +414,7 @@ async fn sixteen_simultaneous_creates_with_one_key_produce_one_workflow() {
                         "key-0000001",
                         "invoice-flow",
                     ),
+                    sagat_domain::quota::MAX_LIMIT,
                 )
                 .await
         }));

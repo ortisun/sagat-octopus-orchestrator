@@ -39,6 +39,7 @@ use uuid::Uuid;
 use crate::definitions::{PgDefinitionStore, hash, remember, replay};
 use crate::event_codec::{decode, encode};
 use crate::identity::{PgIdentityStore, col, corrupt, insert_audit, store_error};
+use crate::quotas::ensure_room_for_run;
 
 /// PostgreSQL-backed run store.
 #[derive(Debug, Clone)]
@@ -191,8 +192,26 @@ impl RunStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
             let info = &new.info;
-            if let Some(parent) = &info.parent {
-                claim_reservation(&mut tx, tenant, parent, info.root, info.run_id).await?;
+            // On a refusal the transaction is rolled back at once: its locks (the parent's row, the
+            // tree's, the quota scopes') must not wait for the connection to be reused.
+            if let Some(parent) = &info.parent
+                && let Err(error) =
+                    claim_reservation(&mut tx, tenant, parent, info.root, info.run_id).await
+            {
+                let _ = tx.rollback().await;
+                return Err(error);
+            }
+            if let Err(error) = ensure_room_for_run(
+                &mut tx,
+                tenant,
+                info.namespace_id,
+                new.limits.namespace,
+                new.limits.tenant,
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
             sqlx::query(
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
@@ -1317,9 +1336,10 @@ impl DefinitionStore for PgRunStore {
         draft: &[u8],
         audit: &AuditRecord,
         idempotency: &Idempotency,
+        max_in_namespace: u64,
     ) -> Result<Applied<()>, StoreError> {
         self.definitions
-            .create_workflow(workflow, draft, audit, idempotency)
+            .create_workflow(workflow, draft, audit, idempotency, max_in_namespace)
             .await
     }
 

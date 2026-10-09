@@ -12,5 +12,6 @@ pub mod definition;
 pub mod egress;
 pub mod execution;
 pub mod identity;
+pub mod quota;
 pub mod secrets;
 pub mod workflow;

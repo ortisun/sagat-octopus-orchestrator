@@ -17,6 +17,8 @@ use time::OffsetDateTime;
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
 use crate::identity::{Page, PageRequest, RequestContext};
+use crate::quotas::QuotaLookup;
+use sagat_domain::quota::QuotaResource;
 
 /// Largest accepted workflow document.
 pub const MAX_IR_BYTES: usize = 1024 * 1024;
@@ -130,7 +132,7 @@ pub struct Published {
 /// Storage port for definitions. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait DefinitionStore: Send + Sync {
+pub trait DefinitionStore: QuotaLookup + Send + Sync {
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -145,6 +147,7 @@ pub trait DefinitionStore: Send + Sync {
         draft: &[u8],
         audit: &AuditRecord,
         idempotency: &Idempotency,
+        max_in_namespace: u64,
     ) -> impl Future<Output = Result<Applied<()>, StoreError>> + Send;
 
     fn get_workflow(
@@ -306,9 +309,17 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             key: key.to_owned(),
             fingerprint: fingerprint(&[workflow.name().as_str().as_bytes(), draft]),
         };
+        let max_in_namespace = self
+            .store
+            .effective_limit(
+                principal.tenant_id(),
+                Some(namespace.id()),
+                QuotaResource::Workflows,
+            )
+            .await?;
         match self
             .store
-            .create_workflow(&workflow, draft, &audit, &idempotency)
+            .create_workflow(&workflow, draft, &audit, &idempotency, max_in_namespace)
             .await?
         {
             Applied::Done(()) => Ok(WorkflowRecord {

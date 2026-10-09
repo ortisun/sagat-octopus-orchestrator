@@ -28,7 +28,9 @@ use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
     MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, step_id,
 };
+use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
+use sagat_domain::quota::QuotaResource;
 
 /// The only protocol version this server speaks.
 pub const PROTOCOL_VERSION: &str = "1";
@@ -109,10 +111,12 @@ pub struct NewSession {
     pub pools: Vec<String>,
     pub max_inflight: u32,
     pub ttl: Duration,
+    /// Live sessions the tenant may hold (a quota), judged atomically with the insert.
+    pub tenant_limit: u64,
 }
 
 /// Storage port for workers. Implemented by `sagat-infra-postgres`.
-pub trait WorkerStore: Send + Sync {
+pub trait WorkerStore: QuotaLookup + Send + Sync {
     /// Stores the session, replacing the one the same identity opened under the same worker name, and
     /// returns the id of the stored session (the replaced one keeps its id, so the steps it has
     /// leased stay counted against it). [`StoreError::QuotaExceeded`] when the identity already
@@ -336,6 +340,10 @@ where
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
         let proposed = Uuid::now_v7();
         let ttl = self.settings.session_ttl;
+        let tenant_limit = self
+            .store
+            .effective_limit(principal.tenant_id(), None, QuotaResource::WorkerSessions)
+            .await?;
         let id = self
             .store
             .create_session(&NewSession {
@@ -350,6 +358,7 @@ where
                 pools: dedup(&capabilities.pools),
                 max_inflight: capabilities.max_inflight,
                 ttl,
+                tenant_limit,
             })
             .await?;
         Ok(Registered {

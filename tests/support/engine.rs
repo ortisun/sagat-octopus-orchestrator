@@ -12,6 +12,7 @@ use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityStore, RequestContext};
 use sagat_application::maintenance::OutboxStore;
+use sagat_application::quotas::QuotaService;
 use sagat_application::runs::{RunFilter, RunOperation, RunService, RunStore, StartRun};
 use sagat_application::worker::{
     Capabilities, ClaimedTask, StepAck, TaskRef, WorkerService, WorkerSettings,
@@ -23,7 +24,7 @@ use sagat_domain::identity::{
     Environment, Namespace, NamespaceId, Principal, Role, Subject, TenantId, Workspace, WorkspaceId,
 };
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
-use sagat_infra_postgres::PgRunStore;
+use sagat_infra_postgres::{PgRunStore, PoolConfig, connect};
 use sagat_scheduler::{Scheduler, SchedulerSettings};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -35,12 +36,14 @@ pub type Runs = RunService<PgRunStore, SystemClock, JsonEvaluator>;
 pub type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 pub type Defs = DefinitionService<PgRunStore, SystemClock, JsonIrCodec>;
 pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
+pub type Quotas = QuotaService<PgRunStore, SystemClock>;
 
 pub struct World {
     pub db: TestDb,
     pub store: PgRunStore,
     pub defs: Defs,
     pub runs: Runs,
+    pub quotas: Quotas,
     pub workers: Workers,
     pub scheduler: Sched,
     /// Administrator of the first tenant (can do everything a human can).
@@ -82,6 +85,7 @@ pub async fn world_with(settings: WorkerSettings) -> World {
     World {
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
+        quotas: QuotaService::new(store.clone(), SystemClock),
         workers: WorkerService::new(
             store.clone(),
             SystemClock,
@@ -394,6 +398,57 @@ impl World {
             .map(|r| r.info.run_id)
     }
 
+    /// A run of the *second* tenant (the workflow must have been published there).
+    pub async fn start_as_other_tenant(
+        &self,
+        workflow: WorkflowId,
+        input: &Value,
+    ) -> Result<RunId, sagat_application::error::AppError> {
+        let bytes = serde_json::to_vec(input).expect("json");
+        self.runs
+            .start(
+                &self.other_admin,
+                &StartRun {
+                    namespace: "payments",
+                    workflow,
+                    version: None,
+                    input: &bytes,
+                    correlation_id: None,
+                    deadline: None,
+                    key: &format!("start-{}", Uuid::now_v7()),
+                },
+                &ctx(),
+            )
+            .await
+            .map(|r| r.info.run_id)
+    }
+
+    /// Another replica of the control plane: its own connection pool and its own services over the
+    /// same database, as a second process would have.
+    pub async fn replica(&self) -> Replica {
+        let pool = connect(&PoolConfig::new(self.db.url.clone()))
+            .await
+            .expect("a second pool");
+        let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
+        let store = PgRunStore::new(pool, cache.clone());
+        Replica {
+            runs: RunService::new(
+                store.clone(),
+                SystemClock,
+                Engine::new(JsonEvaluator),
+                cache,
+            ),
+            workers: WorkerService::new(
+                store.clone(),
+                SystemClock,
+                Engine::new(JsonEvaluator),
+                SystemEntropy,
+                WorkerSettings::default(),
+            ),
+            store,
+        }
+    }
+
     /// Registers a worker for `activities` and returns its session.
     pub async fn session(&self, activities: &[&str]) -> Session {
         self.session_as(&self.worker, activities, 100).await
@@ -615,6 +670,13 @@ async fn exec(pool: &PgPool, sql: &'static str, run: RunId, node: &str) {
         .await
         .expect("age");
     assert_eq!(done.rows_affected(), 1, "no such step to age");
+}
+
+/// A second process over the same database (see [`World::replica`]).
+pub struct Replica {
+    pub store: PgRunStore,
+    pub runs: Runs,
+    pub workers: Workers,
 }
 
 pub struct Session {

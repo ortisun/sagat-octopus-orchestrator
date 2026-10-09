@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::identity::{
     PgIdentityStore, col, corrupt, insert_audit, namespace_from_row, store_error,
 };
+use crate::quotas::ensure_room_for_workflow;
 
 /// PostgreSQL-backed definition store.
 #[derive(Debug, Clone)]
@@ -37,6 +38,10 @@ impl PgDefinitionStore {
             identity: PgIdentityStore::new(pool.clone()),
             pool,
         }
+    }
+
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
     }
 }
 
@@ -81,6 +86,7 @@ impl DefinitionStore for PgDefinitionStore {
         draft: &[u8],
         audit: &AuditRecord,
         idempotency: &Idempotency,
+        max_in_namespace: u64,
     ) -> Result<Applied<()>, StoreError> {
         let draft = parse_json(draft)?;
         let hash = hash(&idempotency.fingerprint);
@@ -93,6 +99,15 @@ impl DefinitionStore for PgDefinitionStore {
             {
                 return Ok(Applied::Replayed(resource));
             }
+            // After the replay check, so repeating a request that already succeeded never counts
+            // against the quota; before the insert, so the count and the insert are one decision.
+            ensure_room_for_workflow(
+                &mut tx,
+                workflow.tenant_id(),
+                workflow.namespace_id(),
+                max_in_namespace,
+            )
+            .await?;
             sqlx::query(
                 "INSERT INTO workflows \
                  (id, tenant_id, namespace_id, name, draft_revision, draft, active_version_id, \

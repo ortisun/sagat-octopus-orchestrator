@@ -83,5 +83,13 @@ name = "e2e_002"
 path = "e2e/002-durable-execution/main.rs"
 
 [[test]]
+name = "integration_009"
+path = "integration/009-security-multitenancy/main.rs"
+
+[[test]]
+name = "contract_rest_009"
+path = "contract/009-security-multitenancy/rest/main.rs"
+
+[[test]]
 name = "perf_002"
 path = "performance/002-durable-execution/main.rs"

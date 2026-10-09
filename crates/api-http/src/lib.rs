@@ -22,9 +22,11 @@ mod context;
 mod core;
 mod dto;
 mod dto_exec;
+mod dto_gov;
 pub mod error;
 pub mod exec;
 mod extract;
+pub mod governance;
 mod limits;
 mod routes;
 mod server;
@@ -34,6 +36,7 @@ pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
 pub use core::Core;
 pub use exec::{Exec, ExecState};
 pub use extract::{Authenticated, authenticate_bearer, parse_bearer};
+pub use governance::{GovState, Governance};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
 };
@@ -223,8 +226,77 @@ pub const EXEC_MAX_BODY_BYTES: usize = 1024 * 1024 + 4096;
 
 /// Builds the API router with the definition and run routes next to the identity ones.
 pub fn router_with_execution<S, C, P, X, E>(
+    state: ExecState<S, C, P, X, E>,
+    limits: HttpLimits,
+) -> Router
+where
+    S: IdentityStore + 'static,
+    C: Clock + 'static,
+    ExecState<S, C, P, X, E>: Exec,
+{
+    compose(state, limits, |_, _| Router::new())
+}
+
+/// Builds the API router with the governance routes (quotas) next to the definition, run and
+/// identity ones. The governance routes share the in-flight budget and the protective layers.
+pub fn router_with_governance<S, C, P, X, E, G>(
+    state: ExecState<S, C, P, X, E>,
+    governance: GovState<S, C, G>,
+    limits: HttpLimits,
+) -> Router
+where
+    S: IdentityStore + 'static,
+    C: Clock + 'static,
+    G: sagat_application::quotas::QuotaStore + 'static,
+    ExecState<S, C, P, X, E>: Exec,
+{
+    compose(state, limits, move |slots, limits| {
+        governance_routes(governance, slots, limits)
+    })
+}
+
+fn governance_routes<S, C, G, T>(
+    state: GovState<S, C, G>,
+    slots: &Arc<tokio::sync::Semaphore>,
+    limits: &HttpLimits,
+) -> Router<T>
+where
+    T: Clone + Send + Sync + 'static,
+    S: IdentityStore + 'static,
+    C: Clock + 'static,
+    G: sagat_application::quotas::QuotaStore + 'static,
+{
+    use routes::governance as gov;
+    type B<S, C, G> = GovState<S, C, G>;
+
+    Router::new()
+        .route("/quotas", get(gov::list_tenant_quotas::<B<S, C, G>>))
+        .route(
+            "/quotas/{resource}",
+            axum::routing::put(gov::set_tenant_quota::<B<S, C, G>>)
+                .delete(gov::clear_tenant_quota::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/quotas",
+            get(gov::list_namespace_quotas::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/quotas/{resource}",
+            axum::routing::put(gov::set_namespace_quota::<B<S, C, G>>)
+                .delete(gov::clear_namespace_quota::<B<S, C, G>>),
+        )
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
+        .route_layer(axum::middleware::from_fn_with_state(
+            Arc::clone(slots),
+            limits::shed_excess,
+        ))
+        .with_state(state)
+}
+
+fn compose<S, C, P, X, E>(
     mut state: ExecState<S, C, P, X, E>,
     limits: HttpLimits,
+    extra: impl FnOnce(&Arc<tokio::sync::Semaphore>, &HttpLimits) -> Router<AppState<S, C>>,
 ) -> Router
 where
     S: IdentityStore + 'static,
@@ -313,11 +385,13 @@ where
         .route_layer(shed())
         .with_state(state);
 
+    let extra_routes = extra(&slots, &limits);
     let v1 = Router::new()
         .route("/health", get(health::health))
         .route("/ready", get(health::ready::<S, C>))
         .merge(identity_routes)
         .merge(exec_routes)
+        .merge(extra_routes)
         .route_layer(from_fn(context::record_route))
         .with_state(core);
 

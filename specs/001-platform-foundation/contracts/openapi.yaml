@@ -5,8 +5,8 @@ info:
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
-    execution engine (feature 002). Every other operation is a design proposal that is not implemented
-    yet. The worker protocol is gRPC (`worker.proto`), not REST.
+    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas) by the governance routes
+    of feature 009. Every other operation is a design proposal that is not implemented yet. The worker protocol is gRPC (`worker.proto`), not REST.
     The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
 
@@ -30,6 +30,8 @@ tags:
   - name: Events
   - name: Scripts
   - name: Operations
+  - name: Governance
+    description: Quotas, and (as they are built) secrets, worker bindings and egress policy of a tenant or namespace (feature 009).
 paths:
   /health:
     get:
@@ -466,6 +468,120 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /quotas:
+    get:
+      operationId: listTenantQuotas
+      summary: The quotas of the tenant and how much of them is used
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:read`. A resource counted per namespace shows the tenant-wide setting (the default of its namespaces) and no usage.
+      responses:
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /quotas/{resource}:
+    put:
+      operationId: setTenantQuota
+      summary: Set a quota for the whole tenant
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:manage`. For a resource counted per namespace this is the default of every namespace that has no setting of its own. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetQuotaRequest'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: clearTenantQuota
+      summary: Remove the tenant-wide setting of a quota
+      tags: [Governance]
+      x-implemented: '009'
+      description: The platform default applies again. Needs `quota:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/quotas:
+    get:
+      operationId: listNamespaceQuotas
+      summary: The quotas that apply in a namespace and how much of them is used there
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:read`. A namespace of another tenant is a 404, like one that does not exist.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/quotas/{resource}:
+    put:
+      operationId: setNamespaceQuota
+      summary: Set a quota for one namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:manage`. Only resources counted per namespace can be set here. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetQuotaRequest'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: clearNamespaceQuota
+      summary: Remove the setting of a quota for one namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: The tenant-wide setting (or the default) applies again. Needs `quota:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /events:
     post:
       operationId: publishEvent
@@ -558,6 +674,16 @@ components:
       in: query
       description: Page size; values outside 1..200 are clamped.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    NamespaceId:
+      name: namespaceId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    QuotaResourceName:
+      name: resource
+      in: path
+      required: true
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions]}
     WorkflowId:
       name: workflowId
       in: path
@@ -823,6 +949,25 @@ components:
         accepted: {type: boolean}
         runStatus: {type: string}
         runVersion: {type: integer, format: int64}
+    Quota:
+      type: object
+      required: [resource, limit, source]
+      properties:
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions]}
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from.'}
+        used: {type: integer, format: int64, minimum: 0, description: 'Exact count now. Absent for a per-namespace resource in the tenant-wide view.'}
+    QuotaList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Quota'}}
+    SetQuotaRequest:
+      type: object
+      additionalProperties: false
+      required: [limit]
+      properties:
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
     SignalResult:
       type: object
       required: [deliveredTo]

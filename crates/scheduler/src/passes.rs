@@ -10,6 +10,7 @@ use sagat_application::execution::{
 use sagat_application::maintenance::{
     EndedChild, LeaseLoss, MaintenanceStore, PendingChild, RunRef, StepRef,
 };
+use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Lock, NewRun, RunStore};
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
@@ -647,7 +648,9 @@ where
             parent.info.trace_id.clone(),
             pending.as_of,
         );
+        let limits = RunLimits::of(&self.store, tenant, parent.info.namespace_id).await?;
         let new = NewRun {
+            limits,
             info,
             definition: std::sync::Arc::clone(&definition),
             input: pending.input.clone(),

@@ -20,12 +20,14 @@ use sagat_application::definitions::{
 };
 use sagat_application::error::{AppError, ConflictKind, StoreError};
 use sagat_application::identity::{PageRequest, RequestContext};
+use sagat_application::quotas::QuotaLookup;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{
     Environment, Namespace, NamespaceId, Permission, Principal, Role, Slug, Subject, TenantId,
     WorkspaceId,
 };
+use sagat_domain::quota::QuotaResource;
 use sagat_domain::workflow::{
     ActivityName, Digest, Node, NodeId, NodeKind, RetryPolicy, WorkflowDefinition,
 };
@@ -50,6 +52,8 @@ struct State {
     audits: Vec<AuditRecord>,
     denials: Vec<AuditRecord>,
     calls: Vec<String>,
+    /// The workflow quota the fake reports; `None` is the platform default.
+    workflow_limit: Option<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -58,6 +62,20 @@ struct FakeStore(Arc<Mutex<State>>);
 impl FakeStore {
     fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         f(&mut self.0.lock().expect("lock"))
+    }
+}
+
+impl QuotaLookup for FakeStore {
+    async fn effective_limit(
+        &self,
+        _tenant: TenantId,
+        _namespace: Option<NamespaceId>,
+        resource: QuotaResource,
+    ) -> Result<u64, StoreError> {
+        Ok(self.with(|s| match resource {
+            QuotaResource::Workflows => s.workflow_limit.unwrap_or(resource.default_limit()),
+            other => other.default_limit(),
+        }))
     }
 }
 
@@ -82,6 +100,7 @@ impl DefinitionStore for FakeStore {
         draft: &[u8],
         audit: &AuditRecord,
         idempotency: &Idempotency,
+        max_in_namespace: u64,
     ) -> Result<Applied<()>, StoreError> {
         self.with(|s| {
             s.calls.push("create_workflow".into());
@@ -99,6 +118,19 @@ impl DefinitionStore for FakeStore {
                     && w.name() == workflow.name()
             }) {
                 return Err(StoreError::Conflict(ConflictKind::WorkflowName));
+            }
+            let in_namespace = s
+                .workflows
+                .values()
+                .filter(|(w, _)| {
+                    w.tenant_id() == workflow.tenant_id()
+                        && w.namespace_id() == workflow.namespace_id()
+                })
+                .count() as u64;
+            if in_namespace >= max_in_namespace {
+                return Err(StoreError::QuotaExceeded {
+                    what: "workflows in the namespace",
+                });
             }
             s.idempotency.insert(
                 slot,
@@ -494,6 +526,28 @@ async fn creating_a_workflow_stores_the_draft_and_audits_it() {
         Some("0af7651916cd43dd8448eb211c80319c")
     );
     assert_eq!(audits[0].resource_id(), record.workflow.id().to_string());
+}
+
+#[tokio::test]
+async fn the_workflow_quota_in_force_is_passed_to_the_store_and_refuses_the_next_workflow() {
+    let f = fixture();
+    f.store.with(|s| s.workflow_limit = Some(1));
+    let p = principal(f.tenant, Role::Admin);
+    create(&f, Role::Admin, "key-0000001")
+        .await
+        .expect("the first fits");
+    let second = f
+        .service
+        .create_workflow(&p, "payments", "another-flow", DRAFT, "key-0000002", &ctx())
+        .await;
+    assert_eq!(
+        second.map(|_| ()),
+        Err(AppError::QuotaExceeded("workflows in the namespace"))
+    );
+    // Repeating the request that succeeded is a replay, not a second workflow: it is not refused.
+    create(&f, Role::Admin, "key-0000001")
+        .await
+        .expect("a replay does not count again");
 }
 
 #[tokio::test]
