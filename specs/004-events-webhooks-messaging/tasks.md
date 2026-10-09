@@ -56,7 +56,7 @@
 ## Final Phase: Hardening / rollout
 - [x] T004-032 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/004-events-webhooks-messaging/`. — `contract_rest_004`, `contract_asyncapi_004`; Redocly lint (valid, the 10 warnings of the baseline) and the AsyncAPI validation in CI.
 - [x] T004-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — clippy `-D warnings` clean, `scripts/check-architecture.py` (16 crates, no cycle, the domain imports no adapter), `cargo audit`.
-- [ ] T004-034 Run the benchmark defined in `specs/004-events-webhooks-messaging/plan.md` and publish the report in `tests/performance/reports/004-events-webhooks-messaging.md`.
+- [x] T004-034 Run the benchmark defined in `specs/004-events-webhooks-messaging/plan.md` and publish the report in `tests/performance/reports/004-events-webhooks-messaging.md`. — `tests/performance/004-events-webhooks-messaging/main.rs` and `tests/performance/reports/004-events-webhooks-messaging.md` (measured on a clean tree).
 - [x] T004-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/004-events-webhooks-messaging/quickstart.md`. — two independent reviews (D94), `docs/runbooks/events.md`, `README.md`; evidence in `quickstart.md`.
 - [x] T004-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — `docs/traceability.md`.
 
