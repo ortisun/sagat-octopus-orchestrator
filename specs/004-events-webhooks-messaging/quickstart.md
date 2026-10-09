@@ -85,7 +85,7 @@ Everything below was run against this repository. The pieces that are **not** bu
 
 ## The review (T004-035)
 
-Two reviewers who had no part in writing it read the uncommitted change, one for security and tenant isolation and one for correctness and crash safety. Together they reported 37 findings, 33 distinct (four were found by both). Each was checked against the code before anything was changed. The result and what was not changed, and why, is D94 in [`research.md`](./research.md); the gaps they added are G87–G94.
+Two reviewers who had no part in writing it read the uncommitted change, one for security and tenant isolation and one for correctness and crash safety. Together they reported 37 findings, 33 distinct (four were found by both). Each was checked against the code before anything was changed. The result and what was not changed, and why, is D94 in [`research.md`](./research.md); the gaps they added are G87–G94. The guards of the feature were then mutation-checked (78 mutations, 70 killed at once, 8 survivors answered with tests, an existing test or the removal of an equivalent expression); the second round of those checks was **not** run, because mutation testing is paused by the maintainer's decision until the most important features are done.
 
 ## What is not built
 
