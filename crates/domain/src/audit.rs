@@ -22,6 +22,16 @@ pub enum AuditAction {
     WorkspaceCreated,
     NamespaceCreated,
     MembershipGranted,
+    WorkflowCreated,
+    WorkflowDraftUpdated,
+    /// An immutable version was published (or an identical one was found to exist).
+    WorkflowPublished,
+    RunStarted,
+    RunCancelRequested,
+    RunPaused,
+    RunResumed,
+    /// A signal was delivered to a waiting run.
+    RunSignalled,
     /// The caller asked for a resource that exists only in another tenant. The record carries the
     /// identifier the caller supplied and nothing about the other tenant.
     CrossTenantAccessDenied,
@@ -35,6 +45,14 @@ impl AuditAction {
             Self::WorkspaceCreated => "workspace.created",
             Self::NamespaceCreated => "namespace.created",
             Self::MembershipGranted => "membership.granted",
+            Self::WorkflowCreated => "workflow.created",
+            Self::WorkflowDraftUpdated => "workflow.draft_updated",
+            Self::WorkflowPublished => "workflow.published",
+            Self::RunStarted => "run.started",
+            Self::RunCancelRequested => "run.cancel_requested",
+            Self::RunPaused => "run.paused",
+            Self::RunResumed => "run.resumed",
+            Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
         }
     }
@@ -53,6 +71,9 @@ pub enum ResourceType {
     Workspace,
     Namespace,
     Membership,
+    Workflow,
+    WorkflowVersion,
+    Run,
 }
 
 impl ResourceType {
@@ -63,6 +84,9 @@ impl ResourceType {
             Self::Workspace => "workspace",
             Self::Namespace => "namespace",
             Self::Membership => "membership",
+            Self::Workflow => "workflow",
+            Self::WorkflowVersion => "workflow_version",
+            Self::Run => "run",
         }
     }
 }
@@ -131,6 +155,31 @@ impl AuditRecord {
             resource_id: resource_id.into(),
             reason: Some(reason.into()),
             trace_id: None,
+            created_at: now,
+        }
+    }
+
+    /// Records something the execution engine did on its own initiative. The actor is
+    /// [`Subject::engine`].
+    #[must_use]
+    pub fn engine(
+        tenant_id: TenantId,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+        trace_id: Option<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id,
+            actor: Subject::engine(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id,
             created_at: now,
         }
     }

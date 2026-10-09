@@ -95,4 +95,19 @@ control_plane_healthy() {
 # The image's HEALTHCHECK has a 10 s start period, so give it time instead of sampling once.
 wait_for "control-plane container reports healthy" control_plane_healthy
 
+echo "--- the execution engine is healthy and listens for workers"
+engine_healthy() {
+  [ "$("${COMPOSE[@]}" ps execution-engine --format '{{.Health}}')" = "healthy" ]
+}
+wait_for "execution-engine container reports healthy" engine_healthy
+GRPC_PORT=$(env_value SAGAT_GRPC_PORT 19000)
+wait_for "worker gRPC port ($GRPC_PORT) accepts connections" bash -c "exec 3<>/dev/tcp/127.0.0.1/$GRPC_PORT"
+# Both processes connect as the runtime role (checked above for every connection of the database),
+# and a worker call without credentials is refused by the gRPC server, not by a proxy: the HTTP/2
+# preface is answered with a gRPC status in the response trailers.
+ENGINE_USERS=$("${COMPOSE[@]}" exec -T postgres psql -U "$DB_OWNER" -d "$DB_NAME" -tAc \
+  "SELECT string_agg(DISTINCT usename, ',') FROM pg_stat_activity WHERE datname = '$DB_NAME' AND usename <> '$DB_OWNER'")
+[ "$ENGINE_USERS" = "sagat_app" ] || { echo "unexpected database users: '$ENGINE_USERS'" >&2; exit 1; }
+echo "ok: every non-owner connection (API and engine) is the runtime role"
+
 echo "--- smoke test passed"

@@ -22,12 +22,22 @@ fn forward_migrations() -> i64 {
     i64::try_from(count).expect("count fits")
 }
 
-const TABLES: [&str; 5] = [
+const TABLES: [&str; 14] = [
     "tenants",
     "workspaces",
     "namespaces",
     "memberships",
     "audit_records",
+    // Added by feature 002; the rollback must remove them too.
+    "workflows",
+    "workflow_versions",
+    "command_dedupe",
+    "payloads",
+    "runs",
+    "run_events",
+    "steps",
+    "worker_sessions",
+    "event_outbox",
 ];
 
 #[tokio::test]
@@ -65,6 +75,26 @@ async fn rollback_removes_everything_and_forward_restores_it() {
     .await
     .expect("query");
     assert!(!leftover_fn, "rollback must also drop the trigger function");
+    let leftover_execution: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'execution_reject_mutation')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("query");
+    assert!(
+        !leftover_execution,
+        "rollback must also drop the journal's trigger function"
+    );
+    let leftover_outbox: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'outbox_reject_undelivered_delete')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("query");
+    assert!(
+        !leftover_outbox,
+        "rollback must also drop the outbox's trigger function"
+    );
 
     migrate(&db.pool).await.expect("forward again");
     for table in TABLES {

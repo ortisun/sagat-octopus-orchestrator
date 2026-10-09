@@ -11,10 +11,13 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+getrandom = "0.4"
 sagat-domain.workspace = true
+sha2 = "0.11"
 thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

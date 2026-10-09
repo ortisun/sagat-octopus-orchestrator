@@ -1,0 +1,23 @@
+[package]
+name = "sagat-infra-ir"
+description = "Adapter that turns the workflow IR (JSON) into the validated domain model, a canonical form and a digest."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sagat-application.workspace = true
+sagat-domain.workspace = true
+sagat-infra-expr.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+# No network or file resolution: the schema is embedded and has no external references.
+jsonschema = { version = "0.58", default-features = false }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }

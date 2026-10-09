@@ -18,11 +18,7 @@ x-owner-database-url: &owner-database-url
 x-app-database-url: &app-database-url
   DATABASE_URL: postgres://sagat_app:${SAGAT_APP_PASSWORD:?set SAGAT_APP_PASSWORD in infra/docker/.env}@postgres:5432/${POSTGRES_DB:-sagat}
 
-x-control-plane: &control-plane
-  image: sagat-octopus-orchestrator/control-plane:dev
-  build:
-    context: ../..
-    dockerfile: infra/docker/Dockerfile
+x-hardening: &hardening
   read_only: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
@@ -30,6 +26,14 @@ x-control-plane: &control-plane
   # A runaway or abused process must not take the host down with it.
   mem_limit: 512m
   pids_limit: 256
+
+x-control-plane: &control-plane
+  <<: *hardening
+  image: sagat-octopus-orchestrator/control-plane:dev
+  build:
+    context: ../..
+    dockerfile: infra/docker/Dockerfile
+    target: control-plane
 
 services:
   postgres:
@@ -51,8 +55,8 @@ services:
       timeout: 3s
       retries: 20
 
-  # Message broker. Not used by the control plane yet (feature 002 and later); it is part of the
-  # environment so the topology matches what the next features need.
+  # Message broker. The execution engine publishes its task hints and run events here (JetStream);
+  # PostgreSQL stays the source of truth, so the stack works (by polling) even if this is down.
   nats:
     image: nats:2.14.6-alpine
     command: ["-js", "-sd", "/data", "-m", "8222"]
@@ -92,6 +96,36 @@ services:
       SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
     ports:
       - "127.0.0.1:${SAGAT_API_PORT:-18080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The execution engine: the worker gRPC API, the scheduler loop and the NATS outbox dispatcher.
+  # Several replicas are safe. It authenticates workers with the same OIDC settings as the API.
+  execution-engine:
+    <<: *hardening
+    image: sagat-octopus-orchestrator/execution-engine:dev
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+      target: execution-engine
+    environment:
+      <<: *app-database-url
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_OIDC_ISSUER: ${SAGAT_OIDC_ISSUER:?set SAGAT_OIDC_ISSUER in infra/docker/.env}
+      SAGAT_OIDC_AUDIENCE: ${SAGAT_OIDC_AUDIENCE:?set SAGAT_OIDC_AUDIENCE in infra/docker/.env}
+      SAGAT_OIDC_JWKS_URI: ${SAGAT_OIDC_JWKS_URI:?set SAGAT_OIDC_JWKS_URI in infra/docker/.env}
+      SAGAT_OIDC_TENANT_CLAIM: ${SAGAT_OIDC_TENANT_CLAIM:-tenant}
+      SAGAT_ALLOW_INSECURE_JWKS_HTTP: ${SAGAT_ALLOW_INSECURE_JWKS_HTTP:-false}
+      SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      SAGAT_NATS_URL: nats://nats:4222
+      # The local broker has no TLS; outside SAGAT_ENV=dev the engine insists on it by default.
+      SAGAT_NATS_REQUIRE_TLS: ${SAGAT_NATS_REQUIRE_TLS:-false}
+    ports:
+      - "127.0.0.1:${SAGAT_GRPC_PORT:-19000}:9000"
     depends_on:
       migrate:
         condition: service_completed_successfully

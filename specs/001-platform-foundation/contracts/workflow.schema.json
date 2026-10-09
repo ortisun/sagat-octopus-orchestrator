@@ -331,14 +331,25 @@
               "const": "child"
             },
             "workflowId": {
-              "type": "string"
+              "type": "string",
+              "description": "Name of the workflow to start, resolved in the namespace of the parent run when the child starts."
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Pins a published version number; the workflow's active version when absent."
+            },
+            "input": {
+              "type": "string",
+              "description": "Expression over the parent's data that must evaluate to a JSON object (for example input.order or steps.charge.output); the parent's own input when absent."
             },
             "cancelPolicy": {
               "enum": [
                 "propagate",
                 "detach",
                 "request_cancel"
-              ]
+              ],
+              "description": "What happens to the child when the parent is stopped. propagate (default): the child is cancelled and the parent does not wait for it. request_cancel: the child is cancelled and the parent waits until it has settled. detach: the child keeps running."
             }
           }
         }

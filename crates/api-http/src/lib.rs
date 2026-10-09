@@ -19,8 +19,11 @@ use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutLayer};
 pub mod auth;
 mod concurrency;
 mod context;
+mod core;
 mod dto;
+mod dto_exec;
 pub mod error;
+pub mod exec;
 mod extract;
 mod limits;
 mod routes;
@@ -28,6 +31,9 @@ mod server;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
+pub use core::Core;
+pub use exec::{Exec, ExecState};
+pub use extract::{Authenticated, authenticate_bearer, parse_bearer};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
 };
@@ -209,6 +215,118 @@ where
         .route_layer(from_fn(context::record_route));
 
     protect(Router::new().nest("/v1", v1).with_state(state), limits)
+}
+
+/// Largest body of the definition and run routes: a workflow document (1 MiB) plus a little room
+/// for the envelope. Every other route keeps [`HttpLimits::max_body_bytes`].
+pub const EXEC_MAX_BODY_BYTES: usize = 1024 * 1024 + 4096;
+
+/// Builds the API router with the definition and run routes next to the identity ones.
+pub fn router_with_execution<S, C, P, X, E>(
+    mut state: ExecState<S, C, P, X, E>,
+    limits: HttpLimits,
+) -> Router
+where
+    S: IdentityStore + 'static,
+    C: Clock + 'static,
+    ExecState<S, C, P, X, E>: Exec,
+{
+    use routes::execution as ex;
+    use routes::{health, identity};
+
+    // One place configures every limit: the per-tenant cap comes from `limits`, like the global one.
+    state.core.tenant_concurrency =
+        Arc::new(TenantConcurrency::new(limits.max_in_flight_per_tenant));
+    let core = state.core.clone();
+    type B<S, C, P, X, E> = ExecState<S, C, P, X, E>;
+
+    let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_in_flight.max(1)));
+    let shed = || axum::middleware::from_fn_with_state(Arc::clone(&slots), limits::shed_excess);
+
+    let identity_routes = Router::new()
+        .route("/auth/context", get(identity::auth_context))
+        .route(
+            "/workspaces",
+            get(identity::list_workspaces::<S, C>).post(identity::create_workspace::<S, C>),
+        )
+        .route(
+            "/workspaces/{workspace_id}",
+            get(identity::get_workspace::<S, C>),
+        )
+        .route(
+            "/workspaces/{workspace_id}/namespaces",
+            axum::routing::post(identity::create_namespace::<S, C>),
+        )
+        .route("/namespaces", get(identity::list_namespaces::<S, C>))
+        .route(
+            "/namespaces/{namespace_id}",
+            get(identity::get_namespace::<S, C>),
+        )
+        .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
+        .route_layer(shed())
+        .with_state(core.clone());
+
+    let exec_routes = Router::new()
+        .route(
+            "/workflows",
+            get(ex::list_workflows::<B<S, C, P, X, E>>)
+                .post(ex::create_workflow::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/workflows/{workflow_id}",
+            get(ex::get_workflow::<B<S, C, P, X, E>>).put(ex::update_draft::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/workflows/{workflow_id}/publish",
+            axum::routing::post(ex::publish_workflow::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/workflows/{workflow_id}/versions",
+            get(ex::list_versions::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/workflows/{workflow_id}/versions/{number}",
+            get(ex::get_version::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs",
+            get(ex::list_runs::<B<S, C, P, X, E>>).post(ex::start_run::<B<S, C, P, X, E>>),
+        )
+        .route("/runs/{run_id}", get(ex::get_run::<B<S, C, P, X, E>>))
+        .route(
+            "/runs/{run_id}/events",
+            get(ex::run_journal::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/graph",
+            get(ex::run_graph::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/operations",
+            axum::routing::post(ex::operate_run::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/signals/{signal_name}",
+            axum::routing::post(ex::signal_run::<B<S, C, P, X, E>>),
+        )
+        .layer(RequestBodyLimitLayer::new(EXEC_MAX_BODY_BYTES))
+        .route_layer(shed())
+        .with_state(state);
+
+    let v1 = Router::new()
+        .route("/health", get(health::health))
+        .route("/ready", get(health::ready::<S, C>))
+        .merge(identity_routes)
+        .merge(exec_routes)
+        .route_layer(from_fn(context::record_route))
+        .with_state(core);
+
+    // The outer limit must admit the largest route; each route then enforces its own.
+    let outer = HttpLimits {
+        max_body_bytes: limits.max_body_bytes.max(EXEC_MAX_BODY_BYTES),
+        ..limits
+    };
+    protect(Router::new().nest("/v1", v1), outer)
 }
 
 /// Wraps a router with the protections every endpoint must have: panic containment, a request

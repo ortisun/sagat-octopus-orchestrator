@@ -1,11 +1,11 @@
 # Traceability of features, requirements and test evidence
 
-> Base record to update per PR. Feature 001 is being implemented (see the evidence table below); every other feature is still only specified.
+> Base record to update per PR. Features 001 and 002 are implemented (see the evidence tables below); every other feature is still only specified.
 
 | Feature | Requirements | User stories | Planned tests | Status |
 |---|---|---|---|---|
 | [001 platform-foundation](../specs/001-platform-foundation/spec.md) | FR-001-001..007 | 4 | `tests/e2e/001-platform-foundation/`, `tests/fault/001-platform-foundation/` | Implementing |
-| [002 durable-execution](../specs/002-durable-execution/spec.md) | FR-002-001..009 | 4 | `tests/e2e/002-durable-execution/`, `tests/fault/002-durable-execution/` | Planned |
+| [002 durable-execution](../specs/002-durable-execution/spec.md) | FR-002-001..009 | 4 | `tests/e2e/002-durable-execution/`, `tests/integration/002-durable-execution/`, `tests/contract/002-durable-execution/` | Implementing (see the evidence table) |
 | [003 sagas-compensations](../specs/003-sagas-compensations/spec.md) | FR-003-001..007 | 4 | `tests/e2e/003-sagas-compensations/`, `tests/fault/003-sagas-compensations/` | Planned |
 | [004 events-webhooks-messaging](../specs/004-events-webhooks-messaging/spec.md) | FR-004-001..008 | 4 | `tests/e2e/004-events-webhooks-messaging/`, `tests/fault/004-events-webhooks-messaging/` | Planned |
 | [005 inline-code-sandbox](../specs/005-inline-code-sandbox/spec.md) | FR-005-001..008 | 4 | `tests/e2e/005-inline-code-sandbox/`, `tests/fault/005-inline-code-sandbox/` | Planned |
@@ -47,3 +47,28 @@ Last updated with the control-plane branch. "Partial" and "Open" are stated expl
 | SC-001-002 100% of US01..US04 pass in an automated suite | Done | `tests/e2e/001-platform-foundation/us0{1,2,3,4}.rs` |
 | SC-001-003 no violation of the Constitution gates | Open | `.specify/memory/constitution.md` is not in the repository (G1); cannot be asserted |
 | SC-001-004 critical errors expose `code`, `trace_id` and remediation without leaking | Partial | `code` and `traceId` proven; there is no separate `remediation` field |
+
+## Evidence: 002 durable-execution
+
+"Partial" and "Open" are stated explicitly; see `specs/002-durable-execution/research.md` for the gaps (G19-G34) and the decisions (D25-D41) behind them.
+
+| Requirement | State | Evidence |
+|---|---|---|
+| FR-002-001 interpret versioned IR: Activity, Condition, Parallel/Join, Timer, WaitEvent, ChildWorkflow | Done for these kinds | Domain: `crates/domain/tests/{workflow,execution,execution_properties}.rs`; codec: `crates/infra-ir/tests/codec.rs`; every kind end to end: `tests/integration/002-durable-execution/{flows,routing,children}.rs`. `saga`, `script`, `foreach`, `humanApproval` are refused at publish with the reason (G20) |
+| FR-002-002 append-only journal sequenced per run, transitions verified by compare-and-swap | Done | `run_events` is append-only by trigger (`tests/integration/002-durable-execution/faults.rs`), the run row is guarded by `run_version`; replay equals the projections after every random action (`execution_properties.rs`) and for stored runs (`verify_run`, `assert_consistent`) |
+| FR-002-003 step result, journal, new state, ready tasks, timers/subscriptions and outbox in one transaction | Done | `PgRunTx::persist`; crash/connection-kill chaos in `tests/integration/002-durable-execution/faults.rs`; outbox in `outbox.rs` |
+| FR-002-004 leases, heartbeat, generation/fencing, expiry with safe requeue | Done | `tests/integration/002-durable-execution/{scheduler,concurrency}.rs`, `tests/contract/002-durable-execution/grpc/protocol.rs` (stale leases), `tests/e2e/002-durable-execution/stories.rs::us02_*` |
+| FR-002-005 backoff with jitter, max attempts, timeouts, deadline, explicit cancellation | Done | `crates/domain/tests/execution.rs`, `scheduler.rs`, `flows.rs`; operator actions in `tests/contract/002-durable-execution/rest/` |
+| FR-002-006 reconciler for the outbox, orphaned READY tasks and expired leases | Done | `crates/scheduler` (`hints`, `leases`, dispatcher); `scheduler.rs`, `outbox.rs`, `nats.rs`; the engine runs them: `tests/e2e/002-durable-execution/engine.rs` |
+| FR-002-007 Paused/Waiting without a dedicated process and without a NATS consumer per run | Done | A waiting run is a row (benchmark: 2.4 KiB, idle tick flat from 1k to 10k runs); `stories.rs::us03_*` |
+| FR-002-008 bind runs to the immutable version; control payload/result size via blob refs | Partial | Version pinning and size limits are enforced and tested; blob refs are not implemented (G19) |
+| FR-002-009 persist the child-run parent link and the cancellation propagation policy | Done | `tests/integration/002-durable-execution/children.rs` (17 tests: creation race, cancelled meanwhile, tenant isolation, recursion bound, tree budget, deadlines, every policy), `crates/domain/tests/execution.rs::children`, full stack in `tests/e2e/002-durable-execution/engine.rs`. The child's result is not passed to the parent (G21) |
+| NFR-002-SEC tenant isolation, RBAC, least privilege, no secrets in logs | Done for a single instance | `isolation.rs`, `tests/contract/002-durable-execution/grpc/protocol.rs` (authentication, role, cross-tenant, session binding, no echo of secrets), engine start-up refusal (`engine.rs`); the limits and isolation added by the security review in `tests/integration/002-durable-execution/hardening.rs` and `tests/contract/002-durable-execution/grpc/limits.rs` (finding-by-finding table in `quickstart.md`). Open: TLS/mTLS on the worker API (G27), a worker's authority is the whole tenant (G31, feature 009), fairness between tenants (G32, feature 010) |
+| NFR-002-DUR after commit, losing a worker or the broker cannot lose a transition | Done | `faults.rs`, `outbox.rs` (crash between publish and confirm), `nats.rs` (broker outage through a severed connection), `engine.rs` |
+| NFR-002-OBS structured logs, correlated traces, essential metrics, auditability per run/step | Done except span export | Journal with actor and trace id per event, audit records for operator actions and child starts, metrics in the runbook; OTLP spans belong to feature 008 |
+| NFR-002-COMP versioned protocol and schemas; do not break runs in progress | Partial | `worker.proto` changed additively (heartbeat identifies the step); protocol version `1` negotiated at registration; no `buf breaking` check yet |
+| NFR-002-PERF benchmark of at least 10k suspended runs and scheduling latency | Done as a baseline | `tests/performance/002-durable-execution/main.rs`, report `tests/performance/reports/002-durable-execution.md` (a noisy shared machine; known limits G22) |
+| SC-002-001 deterministic crash test at each point of claim, effect, commit, publish | Done for the points reachable from the application | `faults.rs` (kill before/after commit, between statements), `outbox.rs::a_crash_between_publishing_and_confirming_*`, `stories.rs::us02_*` |
+| SC-002-002 100% of US01..US04 pass in a reproducible automated suite | Done | `tests/e2e/002-durable-execution/stories.rs` |
+| SC-002-003 no violation of the Constitution gates and no silent loss of persisted state | Partial | No loss is provable by the tests above; the Constitution is still not in the repository (G1) |
+| SC-002-004 critical errors expose `code`, `trace_id` and remediation without leaking | Partial | `code` (and the gRPC `x-sagat-error`) and trace ids proven; no separate `remediation` field |

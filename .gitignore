@@ -10,3 +10,6 @@
 /.agents/solomon/state/
 .DS_Store
 *.swp
+
+# Isolated worktrees created by agents
+/.claude/worktrees/

@@ -1,6 +1,6 @@
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
-> **Status:** specification with implementation in progress: feature 001 is partly built (see [`docs/traceability.md`](docs/traceability.md)); features 002–012 are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
+> **Status:** specification with implementation in progress: features 001 (platform foundation) and 002 (durable execution) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); features 003–012 are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
 
 ## Mission
 
@@ -19,16 +19,22 @@ Inspired by **Temporal** (history and recovery), **Restate** (journal and durabl
 - **Security:** tenant/namespace isolation, RBAC, auditing and explicit egress/secrets policy.
 - **Observability:** OTel + auditable journal + execution timeline and DAG.
 
-## Build, test and run (feature 001)
+## Build, test and run (features 001 and 002)
 
 ```sh
 cargo test --workspace --locked          # needs Docker: integration tests start PostgreSQL 16
-scripts/smoke-compose.sh                 # builds the image, starts PostgreSQL + NATS + API, checks health
+scripts/smoke-compose.sh                 # builds the images, starts PostgreSQL + NATS + API + engine, checks health
+# baseline benchmark of feature 002 (10k suspended runs), on purpose:
+SAGAT_PERF_REPORT=tests/performance/reports/002-durable-execution.md \
+  cargo test -p sagat-tests --test perf_002 --release -- --ignored --nocapture
 ```
 
 The full procedure, the environment variables and what is not built yet are in
 [`specs/001-platform-foundation/quickstart.md`](specs/001-platform-foundation/quickstart.md);
-operating the control plane is in [`docs/runbooks/control-plane.md`](docs/runbooks/control-plane.md).
+operating the control plane is in [`docs/runbooks/control-plane.md`](docs/runbooks/control-plane.md) and the
+execution engine (worker gRPC API, scheduler, NATS outbox) in
+[`docs/runbooks/execution-engine.md`](docs/runbooks/execution-engine.md); the validation flow of feature 002 is
+in [`specs/002-durable-execution/quickstart.md`](specs/002-durable-execution/quickstart.md).
 Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
 
 ## Folders
@@ -44,7 +50,7 @@ docs/test-strategy.md           Failure, load, contract and security tests
 docs/runbooks/                  Operational procedures
 AGENTS.md                       Instructions for implementation agents
 crates/ apps/ tests/            Rust workspace: domain, application, adapters, control plane, test suites
-infra/docker/                   Local environment (Docker Compose) and the control-plane image
+infra/docker/                   Local environment (Docker Compose) and the control-plane and execution-engine images
 scripts/                        Architecture-rule checker and the compose smoke test
 ```
 

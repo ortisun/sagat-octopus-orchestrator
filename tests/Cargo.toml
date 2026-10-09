@@ -12,23 +12,32 @@ autotests = false
 workspace = true
 
 [dev-dependencies]
+async-nats.workspace = true
 axum.workspace = true
 base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 jsonwebtoken.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 reqwest = { workspace = true, features = ["json"] }
+sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
+sagat-execution-engine.workspace = true
+sagat-infra-ir.workspace = true
+sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
+sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
 serde_yaml_ng = "0.10"
 sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true
+uuid.workspace = true
+tonic.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -56,3 +65,23 @@ path = "contract/001-platform-foundation/rest/main.rs"
 [[test]]
 name = "perf_001"
 path = "performance/001-platform-foundation/main.rs"
+
+[[test]]
+name = "integration_002"
+path = "integration/002-durable-execution/main.rs"
+
+[[test]]
+name = "contract_rest_002"
+path = "contract/002-durable-execution/rest/main.rs"
+
+[[test]]
+name = "contract_grpc_002"
+path = "contract/002-durable-execution/grpc/main.rs"
+
+[[test]]
+name = "e2e_002"
+path = "e2e/002-durable-execution/main.rs"
+
+[[test]]
+name = "perf_002"
+path = "performance/002-durable-execution/main.rs"

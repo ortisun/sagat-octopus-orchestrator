@@ -1,0 +1,23 @@
+//! Durable execution model: the run state machine, its journal vocabulary and its commands.
+//!
+//! Everything here is pure: no clock, no randomness, no storage. Time and jitter are passed in, and
+//! the data-dependent decisions (conditions, correlation keys) are resolved by an adapter and
+//! returned as journal events (`FR-002-001`, `FR-002-002`; `docs/architecture/execution-semantics.md`).
+
+mod command;
+mod error;
+mod event;
+mod plan;
+mod state;
+
+pub use command::{
+    Expiry, Failure, Heartbeat, Progress, Resolution, complete_step, expire_attempt, fail_step,
+    finish_child, fire_timer, heartbeat, lease_step, pause_run, resolve, resume_run, retry_due,
+    satisfy_wait, start_run, stop_run, time_out_wait,
+};
+pub use error::ExecutionError;
+pub use event::{
+    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, RunEvent, StopReason,
+};
+pub use plan::{Evaluation, Plan, plan};
+pub use state::{RunId, RunState, RunStatus, StepState, StepStatus, WaitingOn};

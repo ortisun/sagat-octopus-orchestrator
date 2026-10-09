@@ -8,6 +8,7 @@
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use sagat_application::definitions::IrError;
 use sagat_application::error::{AppError, ConflictKind};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -25,6 +26,9 @@ pub enum ErrorCode {
     Conflict,
     ValidationFailed,
     RateLimited,
+    /// A limit of the tenant (or of the platform) was reached; unlike `RateLimited`, waiting does
+    /// not help until something is released.
+    QuotaExceeded,
     Unavailable,
     Internal,
 }
@@ -195,6 +199,19 @@ impl ApiError {
         self.parts.status = status;
         self
     }
+
+    /// The error as it will be reported, for transports other than HTTP (the gRPC adapter maps the
+    /// same classification onto its own status codes, so both agree on what an error means).
+    #[must_use]
+    pub fn parts(&self) -> &ErrorParts {
+        &self.parts
+    }
+
+    /// Whole seconds after which the caller may retry, when the error says so.
+    #[must_use]
+    pub fn retry_after_seconds(&self) -> Option<u32> {
+        self.retry_after
+    }
 }
 
 impl From<AuthError> for ApiError {
@@ -229,12 +246,66 @@ impl From<AppError> for ApiError {
                     ConflictKind::TenantSlug => "a tenant with this slug already exists",
                     ConflictKind::WorkspaceSlug => "a workspace with this slug already exists",
                     ConflictKind::NamespaceSlug => "a namespace with this slug already exists",
+                    ConflictKind::WorkflowName => "a workflow with this name already exists",
+                };
+                let field = if matches!(kind, ConflictKind::WorkflowName) {
+                    "name"
+                } else {
+                    "slug"
                 };
                 let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
-                e.parts.details = Some(json!({ "field": "slug" }));
+                e.parts.details = Some(json!({ "field": field }));
+                e
+            }
+            AppError::RevisionConflict { current } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the draft was changed since it was read; fetch it again and retry",
+                );
+                e.parts.details =
+                    Some(json!({ "reason": "REVISION_CONFLICT", "currentRevision": current }));
+                e
+            }
+            AppError::IdempotencyKeyReused => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "this Idempotency-Key was already used for a different request",
+                );
+                e.parts.details = Some(json!({ "reason": "IDEMPOTENCY_KEY_REUSED" }));
+                e
+            }
+            AppError::InvalidDefinition(error) => {
+                let mut e = Self::validation(error.to_string());
+                e.parts.details = Some(definition_details(&error));
+                e
+            }
+            AppError::NotAllowed(message) => Self::validation(message),
+            AppError::StaleAttempt => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the attempt is no longer current",
+                );
+                e.parts.details = Some(json!({ "reason": "STALE_ATTEMPT" }));
+                e
+            }
+            AppError::StateConflict(message) => {
+                let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
+                e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
                 e
             }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
+            AppError::QuotaExceeded(what) => {
+                let mut e = Self::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    ErrorCode::QuotaExceeded,
+                    "a limit was reached; release something and retry",
+                );
+                e.parts.details = Some(json!({ "limit": what }));
+                e
+            }
             AppError::Unavailable => Self::unavailable(),
             AppError::Internal => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -262,5 +333,29 @@ impl IntoResponse for ApiError {
         }
         response.extensions_mut().insert(self.parts);
         response
+    }
+}
+
+/// Structured detail for a rejected workflow document: paths and node ids, never document values
+/// beyond the clipped fragments the codec already limited.
+fn definition_details(error: &IrError) -> Value {
+    match error {
+        IrError::Schema(issues) => json!({
+            "reason": "SCHEMA",
+            "issues": issues
+                .iter()
+                .map(|i| json!({ "path": i.path, "message": i.message }))
+                .collect::<Vec<_>>(),
+        }),
+        IrError::Unsupported { node, kind, .. } => {
+            json!({ "reason": "UNSUPPORTED_NODE", "node": node, "kind": kind })
+        }
+        IrError::Expression { node, field, .. } => {
+            json!({ "reason": "EXPRESSION", "node": node, "field": field })
+        }
+        IrError::NameMismatch { .. } => json!({ "reason": "NAME_MISMATCH" }),
+        IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
+        IrError::Malformed => json!({ "reason": "MALFORMED" }),
+        IrError::Invalid(_) => json!({ "reason": "GRAPH" }),
     }
 }

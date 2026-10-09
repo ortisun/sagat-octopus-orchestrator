@@ -4,7 +4,21 @@ option csharp_namespace = "SagatOctopusOrchestrator.Protocol.V1";
 option go_package = "github.com/ortisun/sagat-octopus-orchestrator/proto/sagat_octopus_orchestrator/v1;sagatoctopusorchestratorv1";
 option java_package = "dev.sagatoctopusorchestrator.protocol.v1";
 
-// Design contract; not generated from runtime code yet.
+// The worker protocol (feature 002), implemented by the execution engine and generated into the Rust
+// server (`sagat-api-grpc`). Every call carries `authorization: Bearer <jwt>` metadata (the worker's
+// OIDC identity, role `worker`).
+//
+// Errors (gRPC status; the stable machine code is in the `x-sagat-error` trailing metadata):
+//   UNAUTHENTICATED     no or invalid credentials, unknown or expired session
+//   PERMISSION_DENIED   the identity is not a worker
+//   INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
+//   ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
+//                       cancelled or finished): stop, do not retry the report
+//                       x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
+//   RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
+//   UNAVAILABLE         storage unavailable; retry with the same idempotency key
+// Delivery is at-least-once: a lost response is retried with the same idempotency key and answered
+// with the original result and `already_applied = true`.
 service WorkerService {
   rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
   rpc PollTasks(PollTasksRequest) returns (PollTasksResponse);
@@ -39,7 +53,11 @@ message TaskLease {
   string idempotency_key = 13;
 }
 message PollTasksResponse { repeated TaskLease tasks = 1; int32 retry_after_ms = 2; }
-message HeartbeatRequest { string task_id = 1; string worker_id = 2; int64 generation = 3; string lease_token = 4; }
+message HeartbeatRequest {
+  string task_id = 1; string worker_id = 2; int64 generation = 3; string lease_token = 4;
+  // Added in 1.1 (additive): identify the step exactly, as CompleteStep and FailStep do.
+  string run_id = 5; string step_id = 6; int32 attempt = 7;
+}
 message HeartbeatResponse { int64 lease_expires_at_epoch_ms = 1; bool cancel_requested = 2; }
 message CompleteStepRequest {
   string task_id = 1; string run_id = 2; string step_id = 3;

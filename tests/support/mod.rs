@@ -11,8 +11,12 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 pub mod api;
+pub mod contract;
+pub mod engine;
 pub mod logs;
+pub mod nats;
 pub mod oidc;
+pub mod worker;
 
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 

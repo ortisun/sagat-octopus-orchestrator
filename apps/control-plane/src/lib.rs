@@ -7,14 +7,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_api_http::{
-    AppState, HttpJwksFetcher, HttpLimits, ServerConfig, TokenVerifier, protect, router,
+    AppState, ExecState, HttpJwksFetcher, HttpLimits, ServerConfig, TokenVerifier, protect,
+    router_with_execution,
 };
 use sagat_application::clock::SystemClock;
+use sagat_application::definitions::{DefinitionService, IrCodec};
 use sagat_application::error::{ConflictKind, StoreError};
+use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
+use sagat_application::runs::RunService;
 use sagat_domain::identity::{Membership, Slug, Subject, Tenant, TenantId};
+use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::{
-    LeastPrivilegeError, PgIdentityStore, PgPool, PoolConfig, connect, migrate, spawn_pool_metrics,
+    LeastPrivilegeError, PgIdentityStore, PgPool, PgRunStore, PoolConfig, connect, migrate,
+    spawn_pool_metrics,
 };
 use sagat_telemetry::Metrics;
 use time::OffsetDateTime;
@@ -23,6 +29,9 @@ use tokio::net::{TcpListener, TcpStream};
 
 pub mod cli;
 pub mod config;
+
+/// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
+const DEFINITION_CACHE_ENTRIES: usize = 256;
 
 use config::{
     Config, ConfigError, DatabaseConfig, Environment, ProvisionConfig, SeedConfig, ServeConfig,
@@ -77,7 +86,14 @@ fn pool_config(db: &DatabaseConfig, statement_timeout: Duration) -> PoolConfig {
     config
 }
 
-async fn open_pool(db: &DatabaseConfig, statement_timeout: Duration) -> Result<PgPool, RunError> {
+/// Connects a pool with the given per-statement cap.
+///
+/// # Errors
+/// [`RunError::Database`] (never containing the connection URL).
+pub async fn open_pool(
+    db: &DatabaseConfig,
+    statement_timeout: Duration,
+) -> Result<PgPool, RunError> {
     connect(&pool_config(db, statement_timeout))
         .await
         .map_err(|e| RunError::Database(e.to_string()))
@@ -239,7 +255,16 @@ pub async fn serve_with_admin(
         .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?
         .with_subject_rate_limit(serve.subject_rate_limit)
         .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?;
-    let app = router(state, serve.limits);
+    // Workflow documents are validated and parsed once per immutable version, then kept.
+    let codec: Arc<dyn IrCodec> = Arc::new(JsonIrCodec);
+    let cache = DefinitionCache::new(codec, DEFINITION_CACHE_ENTRIES);
+    let executions = PgRunStore::new(pool.clone(), cache.clone());
+    let exec = ExecState::new(
+        state,
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache),
+    );
+    let app = router_with_execution(exec, serve.limits);
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
 
     // One shutdown signal drives both listeners.
@@ -291,10 +316,10 @@ pub async fn serve_with_admin(
 }
 
 /// How often idle metric series are released when nobody scrapes `/metrics`.
-const METRICS_UPKEEP_INTERVAL: Duration = Duration::from_secs(60);
+pub const METRICS_UPKEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Runs [`Metrics::prune_idle`] every `interval` until aborted.
-fn spawn_metrics_upkeep(
+pub fn spawn_metrics_upkeep(
     metrics: &'static Metrics,
     interval: Duration,
 ) -> tokio::task::JoinHandle<()> {
@@ -308,7 +333,7 @@ fn spawn_metrics_upkeep(
 }
 
 /// Completes once the shared shutdown flag is set.
-async fn stopped(mut flag: tokio::sync::watch::Receiver<bool>) {
+pub async fn stopped(mut flag: tokio::sync::watch::Receiver<bool>) {
     while !*flag.borrow() {
         if flag.changed().await.is_err() {
             return;
@@ -317,7 +342,12 @@ async fn stopped(mut flag: tokio::sync::watch::Receiver<bool>) {
 }
 
 /// The administrative surface: Prometheus metrics, nothing else.
-fn admin_router() -> axum::Router {
+pub fn admin_router() -> axum::Router {
+    admin_router_with(axum::Router::new())
+}
+
+/// [`admin_router`] plus `extra` routes (a process's own probes), under the same protections.
+pub fn admin_router_with(extra: axum::Router) -> axum::Router {
     use axum::http::{HeaderValue, header};
     use axum::routing::get;
     let metrics = || async {
@@ -330,7 +360,9 @@ fn admin_router() -> axum::Router {
         )
     };
     protect(
-        axum::Router::new().route("/metrics", get(metrics)),
+        axum::Router::new()
+            .route("/metrics", get(metrics))
+            .merge(extra),
         HttpLimits::default(),
     )
 }
@@ -364,10 +396,19 @@ pub async fn shutdown_signal() {
 /// # Errors
 /// [`RunError::Unhealthy`] unless a `200` arrives within three seconds.
 pub async fn healthcheck(addr: &str) -> Result<(), RunError> {
+    probe(addr, "/v1/health").await
+}
+
+/// Probes `GET <path>` on `addr` the same way; used by every process's container health check.
+///
+/// # Errors
+/// [`RunError::Unhealthy`] unless a `200` arrives within three seconds.
+pub async fn probe(addr: &str, path: &str) -> Result<(), RunError> {
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     let probe = async {
         let mut stream = TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
         stream
-            .write_all(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .write_all(request.as_bytes())
             .await
             .map_err(|e| e.to_string())?;
         let mut head = Vec::new();
