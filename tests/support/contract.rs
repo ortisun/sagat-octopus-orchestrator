@@ -23,6 +23,16 @@ impl OpenApi {
         Self { doc }
     }
 
+    /// The run statuses the contract names (the enumeration of `Run.status`).
+    pub fn run_statuses(&self) -> Vec<String> {
+        self.doc["components"]["schemas"]["Run"]["properties"]["status"]["enum"]
+            .as_array()
+            .expect("Run.status is an enumeration")
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect()
+    }
+
     fn operation(&self, method: &str, template: &str) -> &Value {
         self.doc["paths"][template][method.to_ascii_lowercase()]
             .as_object()

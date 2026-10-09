@@ -47,6 +47,9 @@ async fn the_engine_fires_timers_announces_work_and_serves_workers_with_nobody_d
         ]
     });
     let wf = p.publish("reminder", &ir).await;
+    // The timer runs from the start of the run, so the clock starts there too: setup that follows
+    // (registering, polling) must not eat into what the assertion below measures.
+    let started = Instant::now();
     let run = p.start(&wf, &json!({})).await;
     assert_eq!(p.status(&run).await, "WAITING");
 
@@ -55,10 +58,9 @@ async fn the_engine_fires_timers_announces_work_and_serves_workers_with_nobody_d
     assert!(worker.poll(8).await.is_empty(), "the timer is not due");
 
     // Nobody calls the scheduler: the engine's own loop fires the timer and the task appears.
-    let started = Instant::now();
     let task = eventually_task(&mut worker, Duration::from_secs(10)).await;
     assert!(
-        started.elapsed() >= Duration::from_millis(500),
+        started.elapsed() >= Duration::from_millis(900),
         "not before the timer"
     );
     assert_eq!(task.activity_name, "act.a");

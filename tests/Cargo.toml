@@ -42,6 +42,7 @@ testcontainers-modules.workspace = true
 time.workspace = true
 uuid.workspace = true
 tonic.workspace = true
+prost.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -113,3 +114,27 @@ path = "fault/009-security-multitenancy/main.rs"
 [[test]]
 name = "perf_002"
 path = "performance/002-durable-execution/main.rs"
+
+[[test]]
+name = "integration_003"
+path = "integration/003-sagas-compensations/main.rs"
+
+[[test]]
+name = "e2e_003"
+path = "e2e/003-sagas-compensations/main.rs"
+
+[[test]]
+name = "fault_003"
+path = "fault/003-sagas-compensations/main.rs"
+
+[[test]]
+name = "contract_rest_003"
+path = "contract/003-sagas-compensations/rest/main.rs"
+
+[[test]]
+name = "contract_grpc_003"
+path = "contract/003-sagas-compensations/grpc/main.rs"
+
+[[test]]
+name = "perf_003"
+path = "performance/003-sagas-compensations/main.rs"

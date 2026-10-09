@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
-use sagat_domain::workflow::{DefinitionWarning, NodeId, NodeKind, RetryPolicy, WorkflowError};
+use sagat_domain::saga::{OnCompensationFailure, SagaCancelPolicy};
+use sagat_domain::workflow::{NodeId, NodeKind, RetryPolicy, WorkflowError};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
 
@@ -51,7 +52,11 @@ fn the_repository_example_is_a_valid_definition() {
     let def = &parsed.definition;
     assert_eq!(def.name().as_str(), "corporate-payment");
     assert_eq!(def.entrypoint().as_str(), "validate");
-    assert_eq!(def.len(), 6);
+    assert_eq!(
+        def.len(),
+        7,
+        "validate, the saga, its two steps, the wait and two more"
+    );
     let wait = def
         .node(&NodeId::parse("wait_confirmation").expect("id"))
         .expect("node");
@@ -63,17 +68,43 @@ fn the_repository_example_is_a_valid_definition() {
 }
 
 #[test]
-fn saga_fields_in_the_example_are_reported_not_silently_dropped() {
+fn the_example_saga_compensates_its_steps_and_has_nothing_to_warn_about() {
     let parsed = JsonIrCodec.parse(EXAMPLE.as_bytes()).expect("parses");
-    let nodes: Vec<&str> = parsed
-        .warnings
-        .iter()
-        .map(|w| match w {
-            DefinitionWarning::SagaFieldsNotExecuted { node } => node.as_str(),
-            other @ DefinitionWarning::RecursiveChild { .. } => panic!("unexpected: {other}"),
-        })
-        .collect();
-    assert_eq!(nodes, ["reserve", "submit"]);
+    assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    let def = &parsed.definition;
+    let settlement = def
+        .node(&NodeId::parse("settlement").expect("id"))
+        .expect("the saga");
+    assert!(matches!(
+        settlement.kind(),
+        NodeKind::Saga {
+            on_compensation_failure: OnCompensationFailure::ManualReview,
+            cancel_policy: SagaCancelPolicy::CompensateCompleted,
+            ..
+        }
+    ));
+    // Each compensable step has its compensation and the lost-response one its reconciliation.
+    for derived in ["reserve~c", "submit~c", "submit~r"] {
+        assert!(
+            def.node(&NodeId::parse_stored(derived).expect("id"))
+                .is_some(),
+            "{derived}"
+        );
+    }
+    let submit = def
+        .node(&NodeId::parse("submit").expect("id"))
+        .expect("submit");
+    assert!(submit.effect().high_risk);
+    let reserve = def
+        .node(&NodeId::parse("reserve").expect("id"))
+        .expect("reserve");
+    assert_eq!(
+        reserve
+            .effect()
+            .compensation_retry
+            .map(|r| r.max_attempts()),
+        Some(5)
+    );
 }
 
 #[test]
@@ -84,7 +115,7 @@ fn the_example_digest_is_pinned() {
     let parsed = JsonIrCodec.parse(EXAMPLE.as_bytes()).expect("parses");
     assert_eq!(
         parsed.digest.to_hex(),
-        "9c6523ce4998834d69cdd3c3ffc87eaa8283d14629cbf2238c685f16a81b04c5"
+        "e757aa04ac3fa293f29bb2aef04063f449974fef5dc3c710d0d99717213e0c35"
     );
 }
 
@@ -344,11 +375,6 @@ fn a_timer_beyond_a_year_is_rejected() {
 #[test]
 fn node_kinds_without_an_engine_are_refused_with_the_reason() {
     let cases = [
-        (
-            "saga",
-            json!({"id": "c", "type": "saga", "begin": "x"}),
-            "feature 003",
-        ),
         (
             "script",
             json!({"id": "c", "type": "script", "artifactDigest": "sha256:0123456789abcdef"}),
@@ -791,4 +817,165 @@ fn only_an_activity_can_declare_secrets() {
     );
     let parsed = parse(&doc).expect("parses");
     assert!(parsed.definition.declared_secrets().is_empty());
+}
+
+// ------------------------------------------------------------------ sagas (feature 003)
+
+fn saga_document(saga: Value, steps: Vec<Value>) -> Value {
+    let mut nodes = vec![saga];
+    nodes.extend(steps);
+    minimal(Value::Array(nodes), "s")
+}
+
+#[test]
+fn a_saga_node_defaults_to_waiting_for_an_operator_and_compensating_on_cancel() {
+    let doc = saga_document(
+        json!({"id": "s", "type": "saga", "begin": "a"}),
+        vec![activity("a")],
+    );
+    let parsed = parse(&doc).expect("parses");
+    let saga = parsed
+        .definition
+        .node(&NodeId::parse("s").expect("id"))
+        .expect("saga");
+    assert!(matches!(
+        saga.kind(),
+        NodeKind::Saga {
+            on_compensation_failure: OnCompensationFailure::ManualReview,
+            cancel_policy: SagaCancelPolicy::CompensateCompleted,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_saga_node_reads_its_policies() {
+    let doc = saga_document(
+        json!({
+            "id": "s", "type": "saga", "begin": "a",
+            "onCompensationFailure": "fail", "cancelPolicy": "wait_in_flight_then_compensate"
+        }),
+        vec![activity("a")],
+    );
+    let parsed = parse(&doc).expect("parses");
+    let saga = parsed
+        .definition
+        .node(&NodeId::parse("s").expect("id"))
+        .expect("saga");
+    assert!(matches!(
+        saga.kind(),
+        NodeKind::Saga {
+            on_compensation_failure: OnCompensationFailure::Fail,
+            cancel_policy: SagaCancelPolicy::WaitInFlightThenCompensate,
+            ..
+        }
+    ));
+    for (field, value) in [
+        ("onCompensationFailure", "ignore"),
+        ("cancelPolicy", "propagate"),
+    ] {
+        let mut bad = doc.clone();
+        bad["nodes"][0][field] = json!(value);
+        assert!(parse(&bad).is_err(), "{field}={value}");
+    }
+}
+
+#[test]
+fn the_effect_of_an_activity_is_read_with_its_defaults() {
+    let mut step = activity("a");
+    step["compensateWith"] = json!("undo.a");
+    step["compensationRetry"] = json!({"maxAttempts": 7, "initialDelayMs": 500});
+    step["compensationTimeoutMs"] = json!(45_000);
+    step["highRisk"] = json!(true);
+    let doc = saga_document(json!({"id": "s", "type": "saga", "begin": "a"}), vec![step]);
+    let parsed = parse(&doc).expect("parses");
+    let a = parsed
+        .definition
+        .node(&NodeId::parse("a").expect("id"))
+        .expect("a");
+    let effect = a.effect();
+    assert!(effect.high_risk && !effect.irreversible);
+    assert_eq!(
+        effect.compensation_timeout,
+        Some(Duration::from_millis(45_000))
+    );
+    let retry = effect.compensation_retry.expect("retry");
+    assert_eq!(retry.max_attempts(), 7);
+    assert_eq!(retry.initial_delay(), Duration::from_millis(500));
+    // What the author left out comes from the compensation's defaults, not the forward ones.
+    assert_eq!(retry.max_delay(), RetryPolicy::COMPENSATION.max_delay());
+    // The derived node carries the budget and the timeout.
+    let undo = parsed
+        .definition
+        .node(&NodeId::parse_stored("a~c").expect("id"))
+        .expect("compensation");
+    assert_eq!(undo.retry_policy().max_attempts(), 7);
+    assert_eq!(undo.timeout(), Some(Duration::from_millis(45_000)));
+}
+
+#[test]
+fn nonsense_in_a_saga_definition_is_refused_where_it_is() {
+    let mut irreversible = activity("a");
+    irreversible["irreversible"] = json!(true);
+    irreversible["compensateWith"] = json!("undo.a");
+    assert!(matches!(
+        parse(&saga_document(
+            json!({"id": "s", "type": "saga", "begin": "a"}),
+            vec![irreversible]
+        )),
+        Err(IrError::Invalid(
+            WorkflowError::IrreversibleWithCompensation(_)
+        ))
+    ));
+
+    let mut on_timer = json!({"id": "t", "type": "timer", "durationMs": 1000});
+    on_timer["highRisk"] = json!(true);
+    assert!(matches!(
+        parse(&minimal(json!([on_timer]), "t")),
+        Err(IrError::Invalid(WorkflowError::EffectOnNonActivity(_)))
+    ));
+
+    let mut not_a_flag = activity("a");
+    not_a_flag["highRisk"] = json!("yes");
+    assert!(
+        parse(&saga_document(
+            json!({"id": "s", "type": "saga", "begin": "a"}),
+            vec![not_a_flag]
+        ))
+        .is_err()
+    );
+
+    let with_end = saga_document(
+        json!({"id": "s", "type": "saga", "begin": "a"}),
+        vec![
+            json!({"id": "a", "type": "activity", "activity": "act.a", "next": "z"}),
+            json!({"id": "z", "type": "end"}),
+        ],
+    );
+    assert!(matches!(
+        parse(&with_end),
+        Err(IrError::Invalid(WorkflowError::EndInsideSaga { .. }))
+    ));
+
+    let leaking = minimal(
+        json!([
+            json!({"id": "pre", "type": "activity", "activity": "act.pre", "next": "a"}),
+            json!({"id": "s", "type": "saga", "begin": "a"}),
+            activity("a"),
+        ]),
+        "pre",
+    );
+    assert!(
+        parse(&leaking).is_err(),
+        "a saga body is entered only from its begin"
+    );
+}
+
+#[test]
+fn a_compensation_outside_a_saga_is_a_warning() {
+    let mut step = activity("a");
+    step["compensateWith"] = json!("undo.a");
+    let parsed = parse(&minimal(json!([step]), "a")).expect("parses");
+    assert_eq!(parsed.warnings.len(), 1);
+    assert!(parsed.warnings[0].to_string().contains("saga"));
 }

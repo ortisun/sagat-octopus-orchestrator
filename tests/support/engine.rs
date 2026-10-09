@@ -80,6 +80,18 @@ pub async fn world() -> World {
 }
 
 pub async fn world_with(settings: WorkerSettings) -> World {
+    world_with_breaker(
+        settings,
+        sagat_application::execution::BreakerPolicy::default(),
+    )
+    .await
+}
+
+/// A world whose compensation circuit breaker follows `breaker`.
+pub async fn world_with_breaker(
+    settings: WorkerSettings,
+    breaker: sagat_application::execution::BreakerPolicy,
+) -> World {
     // `RUST_LOG=debug cargo test ...` shows the causes the API deliberately hides from clients.
     static LOGGING: std::sync::Once = std::sync::Once::new();
     LOGGING.call_once(|| {
@@ -93,7 +105,7 @@ pub async fn world_with(settings: WorkerSettings) -> World {
     let other_namespace = namespace_in(&t.store, &t.admin_b, "payments").await;
     let codec = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, 64);
-    let store = PgRunStore::new(db.pool.clone(), cache.clone());
+    let store = PgRunStore::new(db.pool.clone(), cache.clone()).with_breaker(breaker);
     let engine = Engine::new(JsonEvaluator);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
@@ -260,6 +272,41 @@ pub fn parallel_node(id: &str, branches: &[&str], join: &str) -> Value {
 
 pub fn end_node(id: &str) -> Value {
     json!({ "id": id, "type": "end" })
+}
+
+/// A `saga` node whose body starts at `begin` and which continues at `next` when it completes.
+pub fn saga_node(id: &str, begin: &str, next: Option<&str>) -> Value {
+    let mut node = json!({ "id": id, "type": "saga", "begin": begin });
+    if let Some(next) = next {
+        node["next"] = json!(next);
+    }
+    node
+}
+
+/// An activity `act.<id>` with a compensation `undo.<id>` and, when asked, a reconciliation
+/// `lookup.<id>`.
+pub fn effect_node(id: &str, next: Option<&str>, reconcile: bool) -> Value {
+    let mut node = with(activity(id), "compensateWith", json!(format!("undo.{id}")));
+    if reconcile {
+        node["reconcileWith"] = json!(format!("lookup.{id}"));
+    }
+    if let Some(next) = next {
+        node["next"] = json!(next);
+    }
+    node
+}
+
+/// Every activity name `effect_node` can produce for `ids`: what a worker has to advertise.
+pub fn effect_activities(ids: &[&str]) -> Vec<String> {
+    ids.iter()
+        .flat_map(|id| {
+            [
+                format!("act.{id}"),
+                format!("undo.{id}"),
+                format!("lookup.{id}"),
+            ]
+        })
+        .collect()
 }
 
 /// `a -> b`.
@@ -596,6 +643,54 @@ impl World {
             .expect("poll")
     }
 
+    /// A reconciliation's answer: what the provider says about the effect.
+    pub async fn answer_reconciliation(
+        &self,
+        session: &Session,
+        task: &ClaimedTask,
+        effect: &str,
+        output: Option<Value>,
+    ) -> Result<StepAck, sagat_application::error::AppError> {
+        let mut answer = json!({ "effect": effect });
+        if let Some(output) = output {
+            answer["output"] = output;
+        }
+        self.complete(session, task, &answer).await
+    }
+
+    /// An operator acts on a step that waits for a decision, as the first tenant's administrator.
+    pub async fn review(
+        &self,
+        run: RunId,
+        node: &str,
+        action: sagat_application::runs::ReviewAction,
+        reason: &str,
+    ) -> Result<sagat_application::execution::RunRecord, sagat_application::error::AppError> {
+        self.review_as(&self.admin, run, node, action, reason).await
+    }
+
+    pub async fn review_as(
+        &self,
+        principal: &Principal,
+        run: RunId,
+        node: &str,
+        action: sagat_application::runs::ReviewAction,
+        reason: &str,
+    ) -> Result<sagat_application::execution::RunRecord, sagat_application::error::AppError> {
+        self.runs
+            .review(
+                principal,
+                run,
+                &sagat_domain::workflow::NodeId::parse_stored(node).expect("a node id"),
+                &action,
+                reason,
+                None,
+                &format!("review-{}", Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+    }
+
     /// Polls once and returns the single task (panics if there is not exactly one).
     pub async fn one_task(&self, session: &Session) -> ClaimedTask {
         let mut tasks = self.poll(session, 8).await;
@@ -606,6 +701,19 @@ impl World {
             tasks.len()
         );
         tasks.remove(0)
+    }
+
+    /// Polls and returns the task for `activity` among those leased (panics when there is none).
+    pub async fn one_task_of(&self, session: &Session, activity: &str) -> ClaimedTask {
+        let tasks = self.poll(session, 8).await;
+        let seen: Vec<String> = tasks
+            .iter()
+            .map(|t| t.activity.as_str().to_owned())
+            .collect();
+        tasks
+            .into_iter()
+            .find(|t| t.activity.as_str() == activity)
+            .unwrap_or_else(|| panic!("no task for {activity}, got {seen:?}"))
     }
 
     pub async fn complete(
@@ -635,6 +743,25 @@ impl World {
                 &session.principal,
                 &task_ref(task),
                 "PAYMENT_DECLINED",
+                retryable,
+                &format!("failed-{}", task.task_id()),
+            )
+            .await
+    }
+
+    /// A failure with a code of the worker's choosing (`OUTCOME_UNKNOWN` is the reserved one).
+    pub async fn fail_with(
+        &self,
+        session: &Session,
+        task: &ClaimedTask,
+        code: &str,
+        retryable: bool,
+    ) -> Result<StepAck, sagat_application::error::AppError> {
+        self.workers
+            .fail(
+                &session.principal,
+                &task_ref(task),
+                code,
                 retryable,
                 &format!("failed-{}", task.task_id()),
             )

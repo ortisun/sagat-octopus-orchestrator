@@ -10,6 +10,7 @@ use sagat_domain::execution::{
     Progress, Resolution, RunEvent, RunId, RunState, StepStatus, StopReason,
 };
 use sagat_domain::identity::Slug;
+use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, ReconcileVerdict, SagaCancelPolicy};
 use sagat_domain::workflow::{
     ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
     NodeKind, RetryPolicy, WorkflowDefinition,
@@ -20,6 +21,12 @@ pub const T0: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
 pub fn id(s: &str) -> NodeId {
     NodeId::parse(s).expect("valid node id")
+}
+
+/// An id as the journal stores it: a declared id, or a compensation (`x~c`) or reconciliation
+/// (`x~r`) derived from one.
+pub fn sid(s: &str) -> NodeId {
+    NodeId::parse_stored(s).expect("valid stored node id")
 }
 
 pub fn expr(s: &str) -> Expression {
@@ -111,6 +118,71 @@ pub fn child(node: &str, policy: CancelPolicy) -> Node {
     )
 }
 
+/// An activity with a compensation (`undo.<node>`) and, when asked, a reconciliation
+/// (`lookup.<node>`).
+pub fn effect(node: &str, reconcile: bool) -> Node {
+    effect_with(node, reconcile, RetryPolicy::DEFAULT)
+}
+
+pub fn effect_with(node: &str, reconcile: bool, retry: RetryPolicy) -> Node {
+    Node::new(
+        id(node),
+        NodeKind::Activity {
+            activity: ActivityName::parse(&format!("act.{node}")).expect("name"),
+            retry,
+            compensate_with: Some(ActivityName::parse(&format!("undo.{node}")).expect("name")),
+            reconcile_with: reconcile
+                .then(|| ActivityName::parse(&format!("lookup.{node}")).expect("name")),
+            idempotency_template: None,
+            secrets: Vec::new(),
+        },
+    )
+}
+
+/// An activity that is reconciled but has nothing to compensate it with.
+pub fn reconciled(node: &str) -> Node {
+    Node::new(
+        id(node),
+        NodeKind::Activity {
+            activity: ActivityName::parse(&format!("act.{node}")).expect("name"),
+            retry: RetryPolicy::DEFAULT,
+            compensate_with: None,
+            reconcile_with: Some(ActivityName::parse(&format!("lookup.{node}")).expect("name")),
+            idempotency_template: None,
+            secrets: Vec::new(),
+        },
+    )
+}
+
+pub fn saga(node: &str, begin: &str) -> Node {
+    saga_with(
+        node,
+        begin,
+        OnCompensationFailure::ManualReview,
+        SagaCancelPolicy::CompensateCompleted,
+    )
+}
+
+pub fn saga_with(
+    node: &str,
+    begin: &str,
+    on_compensation_failure: OnCompensationFailure,
+    cancel_policy: SagaCancelPolicy,
+) -> Node {
+    Node::new(
+        id(node),
+        NodeKind::Saga {
+            begin: id(begin),
+            on_compensation_failure,
+            cancel_policy,
+        },
+    )
+}
+
+pub fn with_effect(node: Node, effect: EffectPolicy) -> Node {
+    node.with_effect(effect)
+}
+
 pub fn end(node: &str) -> Node {
     Node::new(id(node), NodeKind::End { output: None })
 }
@@ -157,11 +229,11 @@ impl Harness {
     }
 
     pub fn status(&self, node: &str) -> StepStatus {
-        self.state.step(&id(node)).expect("step exists").status()
+        self.state.step(&sid(node)).expect("step exists").status()
     }
 
     pub fn has_step(&self, node: &str) -> bool {
-        self.state.step(&id(node)).is_some()
+        self.state.step(&sid(node)).is_some()
     }
 
     pub fn names(&self) -> Vec<&'static str> {
@@ -170,26 +242,26 @@ impl Harness {
 
     /// Leases a ready step; the event is journaled.
     pub fn lease(&mut self, node: &str) -> Fence {
-        let (fence, event) = execution::lease_step(&mut self.state, &id(node)).expect("lease");
+        let (fence, event) = execution::lease_step(&mut self.state, &sid(node)).expect("lease");
         self.journal.push(event);
         fence
     }
 
     pub fn try_lease(&mut self, node: &str) -> Result<Fence, ExecutionError> {
-        let (fence, event) = execution::lease_step(&mut self.state, &id(node))?;
+        let (fence, event) = execution::lease_step(&mut self.state, &sid(node))?;
         self.journal.push(event);
         Ok(fence)
     }
 
     pub fn heartbeat(&mut self, node: &str, fence: Fence) -> Result<Heartbeat, ExecutionError> {
-        let beat = execution::heartbeat(&mut self.state, &id(node), fence)?;
+        let beat = execution::heartbeat(&mut self.state, &sid(node), fence)?;
         self.journal.extend(beat.event.clone());
         Ok(beat)
     }
 
     pub fn complete(&mut self, node: &str, fence: Fence) -> Result<(), ExecutionError> {
         let progress =
-            execution::complete_step(&self.def, &mut self.state, &id(node), fence, self.now)?;
+            execution::complete_step(&self.def, &mut self.state, &sid(node), fence, self.now)?;
         self.absorb(progress);
         Ok(())
     }
@@ -207,7 +279,7 @@ impl Harness {
             jitter_sample: 0.0,
         };
         let progress =
-            execution::fail_step(&self.def, &mut self.state, &id(node), failure, self.now)?;
+            execution::fail_step(&self.def, &mut self.state, &sid(node), failure, self.now)?;
         self.absorb(progress);
         Ok(())
     }
@@ -221,7 +293,7 @@ impl Harness {
         let progress = execution::expire_attempt(
             &self.def,
             &mut self.state,
-            &id(node),
+            &sid(node),
             fence,
             cause,
             0.0,
@@ -232,25 +304,25 @@ impl Harness {
     }
 
     pub fn retry_due(&mut self, node: &str) -> Result<(), ExecutionError> {
-        let progress = execution::retry_due(&self.def, &mut self.state, &id(node), self.now)?;
+        let progress = execution::retry_due(&self.def, &mut self.state, &sid(node), self.now)?;
         self.absorb(progress);
         Ok(())
     }
 
     pub fn fire_timer(&mut self, node: &str) -> Result<(), ExecutionError> {
-        let progress = execution::fire_timer(&self.def, &mut self.state, &id(node), self.now)?;
+        let progress = execution::fire_timer(&self.def, &mut self.state, &sid(node), self.now)?;
         self.absorb(progress);
         Ok(())
     }
 
     pub fn satisfy_wait(&mut self, node: &str) -> Result<(), ExecutionError> {
-        let progress = execution::satisfy_wait(&self.def, &mut self.state, &id(node), self.now)?;
+        let progress = execution::satisfy_wait(&self.def, &mut self.state, &sid(node), self.now)?;
         self.absorb(progress);
         Ok(())
     }
 
     pub fn time_out_wait(&mut self, node: &str) -> Result<(), ExecutionError> {
-        let progress = execution::time_out_wait(&self.def, &mut self.state, &id(node), self.now)?;
+        let progress = execution::time_out_wait(&self.def, &mut self.state, &sid(node), self.now)?;
         self.absorb(progress);
         Ok(())
     }
@@ -269,6 +341,69 @@ impl Harness {
 
     pub fn resume(&mut self) -> Result<(), ExecutionError> {
         let progress = execution::resume_run(&self.def, &mut self.state, self.now)?;
+        self.absorb(progress);
+        Ok(())
+    }
+
+    /// The reconciliation `node` (`x~r`) answers.
+    pub fn reconcile(
+        &mut self,
+        node: &str,
+        fence: Fence,
+        verdict: ReconcileVerdict,
+    ) -> Result<(), ExecutionError> {
+        let progress = execution::complete_reconciliation(
+            &self.def,
+            &mut self.state,
+            &sid(node),
+            fence,
+            verdict,
+            0.0,
+            self.now,
+        )?;
+        self.absorb(progress);
+        Ok(())
+    }
+
+    pub fn operator_retry(&mut self, node: &str) -> Result<(), ExecutionError> {
+        let progress = execution::retry_review(&self.def, &mut self.state, &sid(node), self.now)?;
+        self.absorb(progress);
+        Ok(())
+    }
+
+    pub fn operator_skip(&mut self, node: &str) -> Result<(), ExecutionError> {
+        let progress = execution::skip_review(&self.def, &mut self.state, &sid(node), self.now)?;
+        self.absorb(progress);
+        Ok(())
+    }
+
+    pub fn operator_resolve(
+        &mut self,
+        node: &str,
+        outcome: execution::ReviewOutcome,
+    ) -> Result<(), ExecutionError> {
+        let progress =
+            execution::resolve_review(&self.def, &mut self.state, &sid(node), outcome, self.now)?;
+        self.absorb(progress);
+        Ok(())
+    }
+
+    /// Fails an attempt with a given code (the worker's report).
+    pub fn fail_with(
+        &mut self,
+        node: &str,
+        fence: Fence,
+        code: &str,
+        retryable: bool,
+    ) -> Result<(), ExecutionError> {
+        let failure = Failure {
+            fence,
+            code: FailureCode::parse(code).expect("code"),
+            retryable,
+            jitter_sample: 0.0,
+        };
+        let progress =
+            execution::fail_step(&self.def, &mut self.state, &sid(node), failure, self.now)?;
         self.absorb(progress);
         Ok(())
     }
@@ -296,7 +431,7 @@ impl Harness {
         let progress = execution::finish_child(
             &self.def,
             &mut self.state,
-            &id(node),
+            &sid(node),
             child,
             outcome,
             self.now,
@@ -307,7 +442,7 @@ impl Harness {
 
     /// The run reserved for `node`'s child.
     pub fn child_of(&self, node: &str) -> RunId {
-        *self.children.get(&id(node)).expect("a child was reserved")
+        *self.children.get(&sid(node)).expect("a child was reserved")
     }
 
     /// Resolves the pending evaluation with a fixed answer.
