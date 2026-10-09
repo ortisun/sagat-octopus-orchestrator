@@ -141,10 +141,15 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
     /// returns the id of the stored session (the replaced one keeps its id, so the steps it has
     /// leased stay counted against it). [`StoreError::QuotaExceeded`] when the identity already
     /// holds [`MAX_SESSIONS_PER_IDENTITY`] live sessions under other names.
+    ///
+    /// The binding is judged again inside the transaction that stores the session, under the lock
+    /// that changing a binding takes: `None` when it no longer covers every activity of the session
+    /// (it was narrowed after the caller looked). Without that, a revocation committing between the
+    /// caller's check and this insert would find no session to close, and the session would outlive it.
     fn create_session(
         &self,
         session: &NewSession,
-    ) -> impl Future<Output = Result<Uuid, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Option<Uuid>, StoreError>> + Send;
 
     /// The live session `id` of `tenant` whose token hashes to `token_hash`, renewing its expiry.
     fn use_session(
@@ -442,7 +447,7 @@ where
             .store
             .effective_limit(principal.tenant_id(), None, QuotaResource::WorkerSessions)
             .await?;
-        let id = self
+        let created = self
             .store
             .create_session(&NewSession {
                 id: proposed,
@@ -459,6 +464,23 @@ where
                 tenant_limit,
             })
             .await?;
+        let Some(id) = created else {
+            // Narrowed or removed between the check above and the store: the same answer, and the
+            // same trail, as if it had been narrowed before.
+            let record = AuditRecord::by(
+                principal,
+                AuditAction::WorkerDenied,
+                ResourceType::WorkerBinding,
+                namespace.id().to_string(),
+                None,
+                self.clock.now(),
+            )
+            .with_reason("the binding changed while the worker was registering");
+            if let Err(error) = self.store.record_unbound(&record).await {
+                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
+            }
+            return Err(AppError::NotBound);
+        };
         Ok(Registered {
             worker_id: id,
             session_token: token,
@@ -804,20 +826,9 @@ where
         // A secret the step was given must not come back in its output, where it would be stored in
         // the journal and handed to every later step: the step fails for good instead.
         if let Some(name) = self.secret_in_output(&mut tx, task, output).await? {
-            effects.audit = Some(
-                AuditRecord::by(
-                    principal,
-                    AuditAction::SecretDenied,
-                    ResourceType::Secret,
-                    format!("{}/{name}", tx.info().namespace_id),
-                    None,
-                    self.clock.now(),
-                )
-                .with_reason(format!(
-                    "output of {} on run {} contained the value of a secret",
-                    task.node, task.run_id
-                )),
-            );
+            // A detection, counted when found: should the commit below fail the retry finds it again.
+            metrics::counter!("secret_output_detected_total").increment(1);
+            effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
             let node = task.node.clone();
             let fence = task.fence;
             self.engine
@@ -880,7 +891,8 @@ where
         idempotency_key: &str,
     ) -> Result<StepAck, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
-        let code = FailureCode::parse(error_code).unwrap_or_else(|_| FailureCode::worker_error());
+        let mut code =
+            FailureCode::parse(error_code).unwrap_or_else(|_| FailureCode::worker_error());
         let idempotency = Idempotency {
             scope: report_scope(task),
             key: idempotency_key.to_owned(),
@@ -898,7 +910,20 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        let effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        // The code is stored in the journal and shown to everyone who reads the run, and a
+        // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
+        // worker that reports its own secret as the reason it failed fails for good instead.
+        let mut retryable = retryable;
+        if let Some(name) = self
+            .secret_in_output(&mut tx, task, error_code.as_bytes())
+            .await?
+        {
+            metrics::counter!("secret_output_detected_total").increment(1);
+            effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "failure code"));
+            code = FailureCode::secret_in_output();
+            retryable = false;
+        }
         let node = task.node.clone();
         let fence = task.fence;
         let jitter = self.entropy.unit();
@@ -921,6 +946,29 @@ where
             .await
             .map_err(engine_error)?;
         self.finish(tx, task, idempotency).await
+    }
+
+    /// The audit record of a step that reported the value of one of its secrets in `what`.
+    fn leak_audit(
+        &self,
+        principal: &Principal,
+        tx: &S::Tx,
+        task: &TaskRef<'_>,
+        name: &SecretName,
+        what: &str,
+    ) -> AuditRecord {
+        AuditRecord::by(
+            principal,
+            AuditAction::SecretDenied,
+            ResourceType::Secret,
+            format!("{}/{name}", tx.info().namespace_id),
+            None,
+            self.clock.now(),
+        )
+        .with_reason(format!(
+            "{what} of {} on run {} contained the value of a secret",
+            task.node, task.run_id
+        ))
     }
 
     async fn open(
@@ -1013,6 +1061,14 @@ where
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
+        // The capability ends when the lease does, not when the scheduler gets round to reclaiming
+        // the attempt: a worker that stopped renewing no longer gets to read secrets.
+        if !tx
+            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+            .await?
+        {
+            return Err(AppError::StaleAttempt);
+        }
         let names = Self::declared_secrets(&mut tx, task);
         if names.is_empty() {
             return Ok(Vec::new());
@@ -1062,6 +1118,7 @@ where
             );
             tx.persist(&[], effects).await?;
             tx.commit().await?;
+            metrics::counter!("secret_resolution_denied_total").increment(1);
             return Err(AppError::SecretUnavailable {
                 name: name.to_string(),
             });
@@ -1105,13 +1162,16 @@ where
         );
         tx.persist(&[], effects).await?;
         tx.commit().await?;
+        metrics::counter!("secrets_handed_out_total").increment(resolved.len() as u64);
         Ok(resolved)
     }
 
     /// The name of a secret the step declares whose value appears in `output`, if one does. Only
     /// steps that declare secrets pay for the check, and only values of at least eight bytes are
     /// looked for (a shorter one would match ordinary text); a value that is not UTF-8 is not
-    /// looked for either. Both the value and its JSON-escaped form are searched.
+    /// looked for either. Both the value and its JSON-escaped form are searched, for every version
+    /// of the secret that is still stored: a value handed out earlier in the attempt may have been
+    /// replaced since.
     async fn secret_in_output<Tx: RunTx>(
         &self,
         tx: &mut Tx,
@@ -1129,16 +1189,15 @@ where
             let info = tx.info();
             (info.tenant_id, info.namespace_id)
         };
-        let inputs = tx.secret_inputs(&names).await?;
+        let versions = tx.secret_versions(&names).await?;
         let Ok(text) = std::str::from_utf8(output) else {
             return Ok(None);
         };
-        for item in &inputs.items {
-            let Some(stored) = &item.stored else { continue };
+        for stored in &versions {
             let aad = associated_data(
                 tenant,
                 namespace,
-                &item.name,
+                &stored.meta.name,
                 stored.meta.id,
                 &stored.sealed.key_id,
             );
@@ -1155,7 +1214,7 @@ where
                 || text.contains(&json_escaped(plain, false))
                 || text.contains(&json_escaped(plain, true))
             {
-                return Ok(Some(item.name.clone()));
+                return Ok(Some(stored.meta.name.clone()));
             }
         }
         Ok(None)

@@ -10,11 +10,13 @@
 //! find new work (`RegisterWorker`, `PollTasks`) are shed first, so the calls that keep work already
 //! leased alive (`Heartbeat`, `CompleteStep`, `FailStep`) keep a reserve.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::io;
+use std::net::{IpAddr, Ipv6Addr};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -22,7 +24,7 @@ use sagat_api_http::error::ApiError;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::Sleep;
+use tokio::time::{Instant, Sleep};
 use tokio_stream::Stream;
 use tonic::codegen::{Service, http};
 use tonic::transport::server::{Connected, TcpConnectInfo};
@@ -37,10 +39,87 @@ const SHED_RETRY: Duration = Duration::from_secs(1);
 
 // ------------------------------------------------------------------------------ connections
 
+/// What the listener enforces on every connection before tonic sees it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConnectionLimits {
+    /// Connections open at once.
+    pub max: usize,
+    /// Connections open at once from one peer address (an IPv6 peer counts as its /64).
+    pub per_peer: usize,
+    /// How long a new connection may stay silent before it is closed.
+    pub first_byte: Duration,
+    /// How long an established connection may stay silent before it is closed.
+    pub idle: Duration,
+}
+
+/// How many connections each peer holds, so one address cannot fill the places of everybody.
+#[derive(Default)]
+struct Peers {
+    counts: Mutex<HashMap<IpAddr, usize>>,
+}
+
+impl Peers {
+    /// A place for one more connection of `ip`, unless it already holds `cap`.
+    fn admit(self: &Arc<Self>, ip: IpAddr, cap: usize) -> Option<PeerSlot> {
+        let ip = peer_key(ip);
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = counts.entry(ip).or_insert(0);
+        if *held >= cap {
+            return None;
+        }
+        *held += 1;
+        Some(PeerSlot {
+            peers: Arc::clone(self),
+            ip,
+        })
+    }
+}
+
+/// One connection's place in its peer's count; given back when the connection closes.
+struct PeerSlot {
+    peers: Arc<Peers>,
+    ip: IpAddr,
+}
+
+impl Drop for PeerSlot {
+    fn drop(&mut self) {
+        let mut counts = self
+            .peers
+            .counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(held) = counts.get_mut(&self.ip) {
+            *held = held.saturating_sub(1);
+            if *held == 0 {
+                counts.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// The address a connection is counted under: an IPv4-mapped IPv6 address is the IPv4 address, and
+/// any other IPv6 address stands for its /64 (one subscriber is routinely given a whole one).
+fn peer_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or_else(
+            || {
+                let [a, b, c, d, ..] = v6.segments();
+                IpAddr::V6(Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
+            },
+            IpAddr::V4,
+        ),
+    }
+}
+
 /// The connections of the listener, at most `max` open at a time. The next connection is not
 /// accepted until one closes, so the kernel's backlog, not the process's memory, absorbs a flood.
+/// A connection that says nothing is closed (see [`ConnectionLimits`]), so a client that opens
+/// sockets and never speaks cannot hold the places for good.
 pub(crate) struct Incoming {
     listener: TcpListener,
+    limits: ConnectionLimits,
+    peers: Arc<Peers>,
     permits: Arc<Semaphore>,
     acquiring: Option<Pin<Box<dyn Future<Output = Option<OwnedSemaphorePermit>> + Send>>>,
     permit: Option<OwnedSemaphorePermit>,
@@ -48,10 +127,12 @@ pub(crate) struct Incoming {
 }
 
 impl Incoming {
-    pub(crate) fn new(listener: TcpListener, max: usize) -> Self {
+    pub(crate) fn new(listener: TcpListener, limits: ConnectionLimits) -> Self {
         Self {
             listener,
-            permits: Arc::new(Semaphore::new(max.max(1))),
+            limits,
+            peers: Arc::new(Peers::default()),
+            permits: Arc::new(Semaphore::new(limits.max.max(1))),
             acquiring: None,
             permit: None,
             backoff: None,
@@ -86,18 +167,32 @@ impl Stream for Incoming {
         }
         match this.listener.poll_accept(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok((socket, _))) => match this.permit.take() {
-                Some(permit) => {
-                    let _ = socket.set_nodelay(true);
-                    metrics::counter!("grpc_connections_total").increment(1);
-                    Poll::Ready(Some(Ok(Capped {
-                        socket,
-                        _permit: permit,
-                    })))
+            Poll::Ready(Ok((socket, address))) => {
+                // A peer at its share is turned away without taking a place from anybody else.
+                let Some(slot) = this.peers.admit(address.ip(), this.limits.per_peer) else {
+                    metrics::counter!("grpc_connections_refused_total", "reason" => "per_peer")
+                        .increment(1);
+                    drop(socket);
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                };
+                match this.permit.take() {
+                    Some(permit) => {
+                        let _ = socket.set_nodelay(true);
+                        metrics::counter!("grpc_connections_total").increment(1);
+                        Poll::Ready(Some(Ok(Capped {
+                            socket,
+                            _permit: permit,
+                            _slot: slot,
+                            deadline: Box::pin(tokio::time::sleep(this.limits.first_byte)),
+                            idle: this.limits.idle,
+                            heard: false,
+                        })))
+                    }
+                    // Cannot happen (the permit was acquired above); an error is safer than a hang.
+                    None => Poll::Ready(Some(Err(io::Error::other("no connection slot")))),
                 }
-                // Cannot happen (the permit was acquired above); an error is safer than a hang.
-                None => Poll::Ready(Some(Err(io::Error::other("no connection slot")))),
-            },
+            }
             Poll::Ready(Err(error)) => {
                 tracing::warn!(%error, "accepting a connection failed; backing off");
                 this.backoff = Some(Box::pin(tokio::time::sleep(ACCEPT_BACKOFF)));
@@ -108,10 +203,16 @@ impl Stream for Incoming {
     }
 }
 
-/// A connection that gives its place back when it closes.
+/// A connection that gives its places back when it closes, and that closes itself when its peer
+/// stays silent for too long: first for [`ConnectionLimits::first_byte`], afterwards for
+/// [`ConnectionLimits::idle`] after the last byte it read.
 pub(crate) struct Capped {
     socket: TcpStream,
     _permit: OwnedSemaphorePermit,
+    _slot: PeerSlot,
+    deadline: Pin<Box<Sleep>>,
+    idle: Duration,
+    heard: bool,
 }
 
 impl Connected for Capped {
@@ -128,7 +229,22 @@ impl AsyncRead for Capped {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.socket).poll_read(cx, buf)
+        let this = &mut *self;
+        if this.deadline.as_mut().poll(cx).is_ready() {
+            let reason = if this.heard { "idle" } else { "silent" };
+            metrics::counter!("grpc_connections_closed_total", "reason" => reason).increment(1);
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the peer was silent for too long",
+            )));
+        }
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut this.socket).poll_read(cx, buf);
+        if matches!(polled, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            this.heard = true;
+            this.deadline.as_mut().reset(Instant::now() + this.idle);
+        }
+        polled
     }
 }
 
@@ -347,5 +463,53 @@ mod tests {
         drop(reserve);
         assert_eq!(shared.in_flight.load(Ordering::Acquire), 0, "nothing leaks");
         assert!(shared.admit(Class::Discovery).is_some());
+    }
+
+    fn ip(text: &str) -> IpAddr {
+        text.parse().expect("an address")
+    }
+
+    #[test]
+    fn a_peer_holds_at_most_its_share_and_gives_each_place_back() {
+        let peers = Arc::new(Peers::default());
+        let first = peers.admit(ip("203.0.113.7"), 2).expect("first");
+        let second = peers.admit(ip("203.0.113.7"), 2).expect("second");
+        assert!(
+            peers.admit(ip("203.0.113.7"), 2).is_none(),
+            "a third connection of the same address is turned away"
+        );
+        assert!(
+            peers.admit(ip("203.0.113.8"), 2).is_some(),
+            "another address is not affected"
+        );
+        drop(first);
+        let again = peers
+            .admit(ip("203.0.113.7"), 2)
+            .expect("a place was freed");
+        drop((second, again));
+        let held = peers.counts.lock().expect("lock").len();
+        assert_eq!(held, 0, "a peer with no connection left costs no memory");
+    }
+
+    #[test]
+    fn an_address_stands_for_the_range_a_subscriber_can_use() {
+        // IPv4 as itself, also when it arrives in IPv6 clothes.
+        assert_eq!(peer_key(ip("203.0.113.7")), ip("203.0.113.7"));
+        assert_eq!(peer_key(ip("::ffff:203.0.113.7")), ip("203.0.113.7"));
+        // Every address of one /64 is one peer; another /64 is another.
+        assert_eq!(
+            peer_key(ip("2001:db8:1:2:aaaa:bbbb:cccc:dddd")),
+            peer_key(ip("2001:db8:1:2::1"))
+        );
+        assert_ne!(
+            peer_key(ip("2001:db8:1:2::1")),
+            peer_key(ip("2001:db8:1:3::1"))
+        );
+        let peers = Arc::new(Peers::default());
+        let _held = peers.admit(ip("2001:db8:1:2::1"), 1).expect("first");
+        assert!(
+            peers.admit(ip("2001:db8:1:2:ffff::9"), 1).is_none(),
+            "the same /64 shares one count"
+        );
     }
 }

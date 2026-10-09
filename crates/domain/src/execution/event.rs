@@ -104,6 +104,14 @@ impl FailureCode {
         Self::system("CHILD_LIMIT_EXCEEDED")
     }
 
+    /// The namespace or the tenant is at its quota of active runs, so the child could not start
+    /// (feature 009). Distinct from [`Self::child_limit_exceeded`], which is about the size of one
+    /// tree: this one clears when other runs end, and a workflow may route on it.
+    #[must_use]
+    pub fn child_quota_exceeded() -> Self {
+        Self::system("CHILD_QUOTA_EXCEEDED")
+    }
+
     /// The step's output contained the value of a secret the step was given.
     #[must_use]
     pub fn secret_in_output() -> Self {

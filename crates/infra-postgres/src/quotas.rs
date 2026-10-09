@@ -153,9 +153,12 @@ async fn effective(
     namespace: Option<NamespaceId>,
     resource: QuotaResource,
 ) -> Result<u64, StoreError> {
-    let rows: Vec<(Option<uuid::Uuid>, i64)> = sqlx::query_as(
-        "SELECT namespace_id, max_value FROM quota_limits \
-         WHERE tenant_id = $1 AND resource = $2 AND (namespace_id IS NULL OR namespace_id = $3)",
+    // The settings and the ceiling in one round trip: the ceiling bounds whatever the settings say.
+    let rows: Vec<(Option<uuid::Uuid>, i64, bool)> = sqlx::query_as(
+        "SELECT namespace_id, max_value, false FROM quota_limits \
+         WHERE tenant_id = $1 AND resource = $2 AND (namespace_id IS NULL OR namespace_id = $3) \
+         UNION ALL \
+         SELECT NULL, max_value, true FROM quota_ceilings WHERE tenant_id = $1 AND resource = $2",
     )
     .bind(tenant.as_uuid())
     .bind(resource.as_str())
@@ -165,10 +168,15 @@ async fn effective(
     .map_err(store_error)?;
     let value = |scoped: bool| {
         rows.iter()
-            .find(|(ns, _)| ns.is_some() == scoped)
-            .map(|(_, v)| u64::try_from(*v).unwrap_or(0))
+            .find(|(ns, _, ceiling)| !ceiling && ns.is_some() == scoped)
+            .map(|(_, v, _)| u64::try_from(*v).unwrap_or(0))
     };
-    Ok(quota::resolve(resource, value(true), value(false)).0)
+    let granted = rows
+        .iter()
+        .find(|(_, _, ceiling)| *ceiling)
+        .map(|(_, v, _)| u64::try_from(*v).unwrap_or(0));
+    let ceiling = quota::ceiling(resource, granted);
+    Ok(quota::resolve(resource, value(true), value(false), ceiling).0)
 }
 
 impl QuotaLookup for PgRunStore {
@@ -230,6 +238,59 @@ impl NamespaceDirectory for PgRunStore {
 }
 
 impl QuotaStore for PgRunStore {
+    async fn ceilings(&self, tenant: TenantId) -> Result<Vec<StoredLimit>, StoreError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT resource, max_value FROM quota_ceilings WHERE tenant_id = $1 ORDER BY resource",
+        )
+        .bind(tenant.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        stored_limits(rows)
+    }
+
+    async fn put_ceiling(
+        &self,
+        tenant: TenantId,
+        resource: QuotaResource,
+        value: Option<u64>,
+        granted_by: &str,
+        audit: &AuditRecord,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        match value {
+            Some(value) => {
+                let value = i64::try_from(value).map_err(|_| StoreError::Internal {
+                    detail: "a quota ceiling does not fit".into(),
+                })?;
+                sqlx::query(
+                    "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) \
+                     VALUES ($1, $2, $3, $4) \
+                     ON CONFLICT (tenant_id, resource) DO UPDATE SET \
+                         max_value = EXCLUDED.max_value, granted_by = EXCLUDED.granted_by, \
+                         granted_at = clock_timestamp()",
+                )
+                .bind(tenant.as_uuid())
+                .bind(resource.as_str())
+                .bind(value)
+                .bind(granted_by)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
+            None => {
+                sqlx::query("DELETE FROM quota_ceilings WHERE tenant_id = $1 AND resource = $2")
+                    .bind(tenant.as_uuid())
+                    .bind(resource.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(store_error)?;
+            }
+        }
+        insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
+
     async fn settings(
         &self,
         tenant: TenantId,
@@ -244,18 +305,7 @@ impl QuotaStore for PgRunStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
-        rows.into_iter()
-            .map(|(resource, value)| {
-                Ok(StoredLimit {
-                    resource: resource.parse().map_err(|_| StoreError::Internal {
-                        detail: "a stored quota names an unknown resource".into(),
-                    })?,
-                    value: u64::try_from(value).map_err(|_| StoreError::Internal {
-                        detail: "a stored quota is negative".into(),
-                    })?,
-                })
-            })
-            .collect()
+        stored_limits(rows)
     }
 
     async fn put_setting(
@@ -378,4 +428,19 @@ impl QuotaStore for PgRunStore {
         .map_err(store_error)?;
         Ok(u64::try_from(count).unwrap_or(0))
     }
+}
+
+fn stored_limits(rows: Vec<(String, i64)>) -> Result<Vec<StoredLimit>, StoreError> {
+    rows.into_iter()
+        .map(|(resource, value)| {
+            Ok(StoredLimit {
+                resource: resource.parse().map_err(|_| StoreError::Internal {
+                    detail: "a stored quota names an unknown resource".into(),
+                })?,
+                value: u64::try_from(value).map_err(|_| StoreError::Internal {
+                    detail: "a stored quota is negative".into(),
+                })?,
+            })
+        })
+        .collect()
 }

@@ -68,6 +68,24 @@ async fn run(command: Command) -> Result<(), RunError> {
             }
             Ok(())
         }
+        Command::ResealSecrets => {
+            let secrets = sagat_control_plane::config::read_secrets(&env_lookup)?.ok_or(
+                sagat_control_plane::config::ConfigError::Missing("SAGAT_SECRETS_KEYS"),
+            )?;
+            let moved = sagat_control_plane::reseal_secrets(&config, &secrets).await?;
+            tracing::info!(moved, "secret versions re-sealed under the active key");
+            Ok(())
+        }
+        Command::QuotaCeiling => {
+            let request = sagat_control_plane::config::CeilingConfig::from_lookup(&env_lookup)?;
+            sagat_control_plane::grant_quota_ceiling(&config, &request).await?;
+            tracing::info!(
+                tenant = %request.tenant_id,
+                resource = %request.resource,
+                "quota ceiling changed"
+            );
+            Ok(())
+        }
         Command::ProvisionTenant => {
             let request = ProvisionConfig::from_lookup(&env_lookup)?;
             sagat_control_plane::provision_tenant(&config, &request).await?;

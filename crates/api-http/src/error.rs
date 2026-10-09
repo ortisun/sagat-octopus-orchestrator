@@ -316,6 +316,8 @@ impl From<AppError> for ApiError {
             }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
             AppError::QuotaExceeded(what) => {
+                // `what` is always a literal of this codebase, so the label set is closed.
+                metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
                 let mut e = Self::new(
                     StatusCode::TOO_MANY_REQUESTS,
                     ErrorCode::QuotaExceeded,

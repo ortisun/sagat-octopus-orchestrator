@@ -666,14 +666,24 @@ where
             Ok(Applied::Replayed(_)) => Ok(Outcome::Skipped),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
             Err(StoreError::MissingReference) => Ok(Outcome::Skipped),
-            // The tree is as large as a tree may get: the step fails instead of waiting forever.
-            Err(StoreError::QuotaExceeded { .. }) => Ok({
+            // Either way the step fails instead of waiting. Waiting for room would leave the
+            // blocked reservations at the head of the oldest-first queue, where a full namespace of
+            // one tenant would keep every other tenant's children from starting (G32, feature
+            // 010); the failure code lets the workflow tell the two apart and route on it.
+            Err(StoreError::QuotaExceeded { what }) => Ok({
+                let code = if what == sagat_application::execution::TREE_LIMIT {
+                    // The tree is as large as a tree may get.
+                    FailureCode::child_limit_exceeded()
+                } else {
+                    // The namespace or the tenant is at its quota of active runs.
+                    FailureCode::child_quota_exceeded()
+                };
                 self.finish_with(
                     tenant,
                     parent_id,
                     node.clone(),
                     pending.child,
-                    ChildOutcome::Failed(FailureCode::child_limit_exceeded()),
+                    ChildOutcome::Failed(code),
                 )
                 .await
             }),

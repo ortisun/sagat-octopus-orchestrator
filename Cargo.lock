@@ -3295,6 +3295,7 @@ name = "sagat-application"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "metrics",
  "sagat-domain",
  "sha2 0.11.0",
  "thiserror",
@@ -3459,6 +3460,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "futures-util",
+ "h2",
  "jsonschema",
  "jsonwebtoken",
  "p256",

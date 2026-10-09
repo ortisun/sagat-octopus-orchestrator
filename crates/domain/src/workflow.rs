@@ -18,7 +18,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::identity::{Slug, clip};
-use crate::secrets::SecretName;
+use crate::secrets::{MAX_DECLARED_SECRETS, SecretName};
 
 /// A workflow may have at most this many nodes (matches `nodes.maxItems` in the schema).
 pub const MAX_NODES: usize = 10_000;
@@ -56,6 +56,8 @@ pub enum WorkflowError {
     TooManyNodes(usize),
     #[error("a workflow may have at most {MAX_PARALLELS} parallel nodes, found {0}")]
     TooManyParallels(usize),
+    #[error("a workflow may declare at most {MAX_DECLARED_SECRETS} distinct secrets, found {0}")]
+    TooManySecrets(usize),
     #[error("node '{0}' is defined more than once")]
     DuplicateNode(NodeId),
     #[error("entrypoint '{0}' is not a node of the workflow")]
@@ -700,6 +702,14 @@ impl WorkflowDefinition {
             .count();
         if parallels > MAX_PARALLELS {
             return Err(WorkflowError::TooManyParallels(parallels));
+        }
+        let declared = map
+            .values()
+            .flat_map(|node| node.secrets())
+            .collect::<BTreeSet<_>>()
+            .len();
+        if declared > MAX_DECLARED_SECRETS {
+            return Err(WorkflowError::TooManySecrets(declared));
         }
         check_acyclic(&map)?;
         check_reachable(&map, &entrypoint)?;

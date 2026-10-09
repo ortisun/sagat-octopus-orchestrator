@@ -82,6 +82,23 @@ pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
         namespace: Option<NamespaceId>,
     ) -> impl Future<Output = Result<Vec<StoredLimit>, StoreError>> + Send;
 
+    /// The ceilings an operator granted the tenant; a resource without one has the platform default.
+    fn ceilings(
+        &self,
+        tenant: TenantId,
+    ) -> impl Future<Output = Result<Vec<StoredLimit>, StoreError>> + Send;
+
+    /// Grants (`Some`) or withdraws (`None`) a ceiling, with its audit record, in one transaction.
+    /// Reached only from the operator's command line, never from the API.
+    fn put_ceiling(
+        &self,
+        tenant: TenantId,
+        resource: QuotaResource,
+        value: Option<u64>,
+        granted_by: &str,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Stores (`Some`) or removes (`None`) a setting, with its audit record, in one transaction.
     fn put_setting(
         &self,
@@ -109,6 +126,8 @@ pub struct QuotaView {
     pub resource: QuotaResource,
     pub limit: u64,
     pub source: QuotaSource,
+    /// The most the tenant may set for this resource (and the most that can be in force).
+    pub ceiling: u64,
     /// `None` when the view is the tenant-wide default of a resource that is counted per namespace.
     pub used: Option<u64>,
 }
@@ -144,6 +163,7 @@ where
         let tenant = principal.tenant_id();
         self.check_namespace(principal, namespace, ctx).await?;
         let tenant_level = self.store.settings(tenant, None).await?;
+        let granted = self.store.ceilings(tenant).await?;
         let namespace_level = match namespace {
             Some(id) => self.store.settings(tenant, Some(id)).await?,
             None => Vec::new(),
@@ -160,10 +180,12 @@ where
             if namespace.is_some() && resource.scope() == QuotaScope::Tenant {
                 continue;
             }
+            let ceiling = quota::ceiling(resource, setting(&granted, resource));
             let (limit, source) = quota::resolve(
                 resource,
                 setting(&namespace_level, resource),
                 setting(&tenant_level, resource),
+                ceiling,
             );
             let used = match (resource.scope(), namespace) {
                 (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
@@ -175,6 +197,7 @@ where
                 resource,
                 limit,
                 source,
+                ceiling,
                 used,
             });
         }
@@ -196,7 +219,16 @@ where
     ) -> Result<QuotaView, AppError> {
         principal.authorize(Permission::QuotaManage)?;
         self.check_namespace(principal, namespace, ctx).await?;
-        let value = quota::validate(resource, namespace.is_some(), value).map_err(invalid)?;
+        let granted = self
+            .store
+            .ceilings(principal.tenant_id())
+            .await?
+            .into_iter()
+            .find(|c| c.resource == resource)
+            .map(|c| c.value);
+        let ceiling = quota::ceiling(resource, granted);
+        let value =
+            quota::validate(resource, namespace.is_some(), value, ceiling).map_err(invalid)?;
         self.write(principal, namespace, resource, Some(value), ctx)
             .await?;
         self.view(principal, namespace, resource).await
@@ -262,6 +294,15 @@ where
         resource: QuotaResource,
     ) -> Result<QuotaView, AppError> {
         let tenant = principal.tenant_id();
+        let ceiling = quota::ceiling(
+            resource,
+            self.store
+                .ceilings(tenant)
+                .await?
+                .into_iter()
+                .find(|c| c.resource == resource)
+                .map(|c| c.value),
+        );
         let (limit, source) = quota::resolve(
             resource,
             match namespace {
@@ -280,6 +321,7 @@ where
                 .into_iter()
                 .find(|r| r.resource == resource)
                 .map(|r| r.value),
+            ceiling,
         );
         let used = match (resource.scope(), namespace) {
             (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
@@ -291,8 +333,50 @@ where
             resource,
             limit,
             source,
+            ceiling,
             used,
         })
+    }
+
+    /// Grants the tenant a ceiling for `resource` (`Some`), or withdraws what was granted so the
+    /// platform default applies again (`None`). For the operator's command line: a ceiling is the
+    /// platform's decision about a tenant and no tenant principal can make it.
+    ///
+    /// # Errors
+    /// [`AppError::NotAllowed`] for a value out of range; [`AppError::NotFound`] for a tenant that
+    /// does not exist.
+    pub async fn grant_ceiling(
+        &self,
+        tenant: TenantId,
+        resource: QuotaResource,
+        value: Option<u64>,
+    ) -> Result<(), AppError> {
+        let value = value
+            .map(quota::validate_ceiling)
+            .transpose()
+            .map_err(invalid)?;
+        let reason = match value {
+            Some(v) => format!("ceiling of {resource} = {v}"),
+            None => format!("ceiling of {resource} withdrawn"),
+        };
+        let audit = AuditRecord::operator(
+            tenant,
+            AuditAction::QuotaChanged,
+            ResourceType::Quota,
+            "tenant",
+            reason,
+            self.clock.now(),
+        );
+        self.store
+            .put_ceiling(
+                tenant,
+                resource,
+                value,
+                sagat_domain::identity::Subject::operator().as_str(),
+                &audit,
+            )
+            .await?;
+        Ok(())
     }
 
     /// A namespace of another tenant looks exactly like one that does not exist, and is audited.
@@ -313,5 +397,8 @@ fn invalid(error: QuotaError) -> AppError {
     AppError::NotAllowed(match error {
         QuotaError::TooLarge => "a quota limit is at most 1000000000",
         QuotaError::NotPerNamespace => "this quota is counted for the whole tenant",
+        QuotaError::AboveCeiling => {
+            "the value is above the ceiling the platform grants this tenant (see `ceiling`)"
+        }
     })
 }

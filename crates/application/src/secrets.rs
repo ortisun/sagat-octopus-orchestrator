@@ -196,11 +196,21 @@ pub trait SecretStore: NamespaceDirectory + QuotaLookup {
         name: &SecretName,
     ) -> impl Future<Output = Result<Option<Vec<String>>, StoreError>> + Send;
 
-    /// Versions sealed under a key other than `active_key`, any tenant, oldest first. For the
-    /// operator's re-sealing job after a key rotation.
+    /// The names of the secrets of the namespace whose access list holds `subject`.
+    fn names_usable_by(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &str,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
+    /// Versions sealed under a key other than `active_key`, any tenant, in the order of their row
+    /// ids, starting after `after`. For the operator's re-sealing job after a key rotation: the
+    /// cursor lets the job step over a version it cannot open instead of meeting it again.
     fn versions_not_sealed_under(
         &self,
         active_key: &str,
+        after: Option<Uuid>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<StoredSecret>, StoreError>> + Send;
 
@@ -213,6 +223,17 @@ pub trait SecretStore: NamespaceDirectory + QuotaLookup {
         sealed: &SealedSecret,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+}
+
+/// What one batch of re-sealing did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResealBatch {
+    /// Versions now sealed under the active key.
+    pub moved: u32,
+    /// Versions that no key of the ring opens, left as they were.
+    pub failed: u32,
+    /// Where to continue; `None` when there is nothing after this batch.
+    pub next: Option<Uuid>,
 }
 
 /// Administers secrets: store, rotate, delete, and decide who may use them.
@@ -298,7 +319,11 @@ where
         Ok(SecretView::from(&meta))
     }
 
-    /// The secrets of a namespace, by name, without values.
+    /// The secrets of a namespace, by name, without values. An administrator sees all of them;
+    /// anybody else sees the ones whose access list names them, which is what they need to write a
+    /// workflow and no more: a developer who lists every name can ask "does `payments-key` exist?"
+    /// of the publish check, and the point of answering a missing secret and a forbidden one alike
+    /// is that they cannot.
     ///
     /// # Errors
     /// [`AppError::Forbidden`]; [`AppError::NotFound`].
@@ -310,11 +335,18 @@ where
     ) -> Result<Vec<SecretView>, AppError> {
         principal.authorize(Permission::SecretRead)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        Ok(self
+        let tenant = principal.tenant_id();
+        let all = self.store.list_secrets(tenant, namespace).await?;
+        if principal.authorize(Permission::SecretManage).is_ok() {
+            return Ok(all.iter().map(SecretView::from).collect());
+        }
+        let usable = self
             .store
-            .list_secrets(principal.tenant_id(), namespace)
-            .await?
+            .names_usable_by(tenant, namespace, principal.subject().as_str())
+            .await?;
+        Ok(all
             .iter()
+            .filter(|secret| usable.iter().any(|name| name == secret.name.as_str()))
             .map(SecretView::from)
             .collect())
     }
@@ -457,17 +489,29 @@ where
             .ok_or(AppError::NotFound)
     }
 
-    /// Re-seals up to `limit` versions that are sealed under a key other than the active one, so a
-    /// retired key can be removed from the ring. Returns how many were re-sealed. Run by the
-    /// operator after rotating the key ring; safe to repeat and to run from several instances.
+    /// Re-seals up to `limit` versions, after the cursor `after`, that are sealed under a key other
+    /// than the active one, so a retired key can be removed from the ring. Run by the operator after
+    /// rotating the key ring; safe to repeat and to run from several instances.
+    ///
+    /// A version that cannot be opened with any key of the ring (the ring no longer holds the key
+    /// it was sealed under) is left as it is and counted in [`ResealBatch::failed`]: one bad row
+    /// does not stop the rotation of everybody else's.
     ///
     /// # Errors
-    /// [`AppError::Internal`] when a version cannot be opened with any key in the ring (the ring
-    /// no longer holds the key it was sealed under); nothing is changed for that version.
-    pub async fn reseal(&self, limit: u32) -> Result<u32, AppError> {
+    /// [`AppError::Unavailable`] and [`AppError::Internal`] when the store fails; what was moved
+    /// before stays moved.
+    pub async fn reseal(&self, after: Option<Uuid>, limit: u32) -> Result<ResealBatch, AppError> {
         let active = self.cipher.active_key_id().to_owned();
-        let stale = self.store.versions_not_sealed_under(&active, limit).await?;
-        let mut done = 0;
+        let stale = self
+            .store
+            .versions_not_sealed_under(&active, after, limit)
+            .await?;
+        let next = if stale.len() >= usize::try_from(limit).unwrap_or(usize::MAX) {
+            stale.last().map(|last| last.meta.id)
+        } else {
+            None
+        };
+        let (mut moved, mut failed) = (0, 0);
         for old in stale {
             let meta = &old.meta;
             let aad = associated_data(
@@ -477,13 +521,15 @@ where
                 meta.id,
                 &old.sealed.key_id,
             );
-            let value = self.cipher.open(&old.sealed, &aad).map_err(|_| {
+            let Ok(value) = self.cipher.open(&old.sealed, &aad) else {
                 tracing::error!(
                     key = %old.sealed.key_id,
+                    version = %meta.id,
                     "a stored secret cannot be opened with the key ring; it is left as it is"
                 );
-                AppError::Internal
-            })?;
+                failed += 1;
+                continue;
+            };
             let new_aad = associated_data(
                 meta.tenant_id,
                 meta.namespace_id,
@@ -509,10 +555,14 @@ where
                 .replace_sealed(meta.id, &old.sealed.key_id, &sealed, &audit)
                 .await?
             {
-                done += 1;
+                moved += 1;
             }
         }
-        Ok(done)
+        Ok(ResealBatch {
+            moved,
+            failed,
+            next,
+        })
     }
 
     fn audit(

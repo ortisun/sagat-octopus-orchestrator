@@ -24,7 +24,7 @@ use sagat_domain::audit::AuditRecord;
 
 use crate::definitions::{Idempotency, IrCodec, IrError};
 use crate::error::StoreError;
-use crate::secrets::SecretInputs;
+use crate::secrets::{SecretInputs, StoredSecret};
 use sagat_domain::secrets::SecretName;
 
 /// Largest payload (run input, step output) kept inline; bigger ones need a blob store, which is not
@@ -34,6 +34,10 @@ pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 /// Most runs one tree may hold: a root run and all its descendants. Depth alone does not bound a
 /// tree (a parallel node can start hundreds of children per level), so the whole tree has a budget.
 pub const MAX_TREE_RUNS: usize = 1024;
+
+/// What the refusal names when a tree is full (`StoreError::QuotaExceeded::what`); the scheduler
+/// tells it apart from the quotas of a namespace or a tenant, which fail the child differently.
+pub const TREE_LIMIT: &str = "runs in one child-run tree";
 
 /// Estimated memory the parsed definitions of one process may occupy (the engine and the control
 /// plane each run in a few hundred megabytes).
@@ -317,6 +321,23 @@ pub trait RunTx: Send {
         &mut self,
         names: &[SecretName],
     ) -> impl Future<Output = Result<SecretInputs, StoreError>> + Send;
+
+    /// Every stored version of the declared `names` (a handful each), newest first, with the
+    /// secrets that no longer exist simply absent: what an output is searched for. A value handed
+    /// out earlier in the attempt may have been replaced since, so the current one is not enough.
+    fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> impl Future<Output = Result<Vec<StoredSecret>, StoreError>> + Send;
+
+    /// Whether `token_hash` is the hash of the lease currently held on `node` *and* that lease has
+    /// not run out by the database clock. A late report is accepted until the scheduler reclaims
+    /// the attempt, to save work; a capability to read secrets ends with the lease instead.
+    fn lease_unexpired(
+        &mut self,
+        node: &NodeId,
+        token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(

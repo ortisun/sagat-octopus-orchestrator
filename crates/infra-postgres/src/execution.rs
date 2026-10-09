@@ -582,7 +582,7 @@ async fn claim_reservation(
     if usize::try_from(members).unwrap_or(usize::MAX) >= sagat_application::execution::MAX_TREE_RUNS
     {
         return Err(StoreError::QuotaExceeded {
-            what: "runs in one child-run tree",
+            what: sagat_application::execution::TREE_LIMIT,
         });
     }
     let claimed = sqlx::query(
@@ -845,6 +845,19 @@ impl RunTx for PgRunTx {
         .transpose()
     }
 
+    async fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> Result<Vec<sagat_application::secrets::StoredSecret>, StoreError> {
+        crate::secrets::all_versions(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            names,
+        )
+        .await
+    }
+
     async fn secret_inputs(
         &mut self,
         names: &[SecretName],
@@ -868,6 +881,25 @@ impl RunTx for PgRunTx {
         .bind(self.info.namespace_id.as_uuid())
         .bind(subject)
         .fetch_all(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
+    async fn lease_unexpired(
+        &mut self,
+        node: &NodeId,
+        token_hash: &[u8],
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+                            AND status IN ('LEASED', 'RUNNING') AND lease_token_hash = $4 \
+                            AND lease_expires_at > clock_timestamp())",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(token_hash)
+        .fetch_one(&mut *self.tx)
         .await
         .map_err(store_error)
     }

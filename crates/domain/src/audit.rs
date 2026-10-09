@@ -59,6 +59,16 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
+    /// Whether doing the same thing again, to the same resource and for the same stated reason, adds
+    /// nothing to the trail. These events are driven by a caller who can repeat them as often as
+    /// they like (a worker asking again for the secrets of the attempt it holds), so the trail keeps
+    /// the first and not every repeat: its growth is then bounded by what actually happened (one
+    /// per run, node and attempt), not by how many times somebody asked.
+    #[must_use]
+    pub const fn collapses_repeats(self) -> bool {
+        matches!(self, Self::SecretResolved | Self::SecretDenied)
+    }
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -221,6 +231,30 @@ impl AuditRecord {
             resource_id: resource_id.into(),
             reason: Some(reason.into()),
             trace_id,
+            created_at: now,
+        }
+    }
+
+    /// Records something a platform operator did from the command line. The actor is
+    /// [`Subject::operator`]; the operator authenticated to the host, not to the API.
+    #[must_use]
+    pub fn operator(
+        tenant_id: TenantId,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id,
+            actor: Subject::operator(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id: None,
             created_at: now,
         }
     }

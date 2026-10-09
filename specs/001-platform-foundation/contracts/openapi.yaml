@@ -489,7 +489,7 @@ paths:
       summary: Set a quota for the whole tenant
       tags: [Governance]
       x-implemented: '009'
-      description: Needs `quota:manage`. For a resource counted per namespace this is the default of every namespace that has no setting of its own. Audited.
+      description: Needs `quota:manage`. For a resource counted per namespace this is the default of every namespace that has no setting of its own. A value above the `ceiling` of the quota is refused with 422, because a tenant cannot lift the limit that protects the other tenants. Audited.
       parameters:
         - {$ref: '#/components/parameters/QuotaResourceName'}
       requestBody:
@@ -546,7 +546,7 @@ paths:
       summary: Set a quota for one namespace
       tags: [Governance]
       x-implemented: '009'
-      description: Needs `quota:manage`. Only resources counted per namespace can be set here. Audited.
+      description: Needs `quota:manage`. Only resources counted per namespace can be set here. A value above the `ceiling` of the quota is refused with 422. Audited.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/QuotaResourceName'}
@@ -1260,11 +1260,12 @@ components:
         allowHttp: {type: boolean, default: false}
     Quota:
       type: object
-      required: [resource, limit, source]
+      required: [resource, limit, source, ceiling]
       properties:
         resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
-        source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from.'}
+        source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
+        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
         used: {type: integer, format: int64, minimum: 0, description: 'Exact count now. Absent for a per-namespace resource in the tenant-wide view.'}
     QuotaList:
       type: object

@@ -107,6 +107,17 @@ fn read_tls(get: Lookup<'_>) -> Result<Option<TlsConfig>, ConfigError> {
 }
 
 /// A positive count read from `name`, or `default`.
+fn seconds(
+    get: Lookup<'_>,
+    name: &'static str,
+    default: Duration,
+) -> Result<Duration, ConfigError> {
+    Ok(Duration::from_secs(positive(
+        name,
+        optional(get, name, default.as_secs())?,
+    )?))
+}
+
 fn capacity(get: Lookup<'_>, name: &'static str, default: usize) -> Result<usize, ConfigError> {
     let value = positive(name, optional(get, name, default as u64)?)?;
     usize::try_from(value).map_err(|_| ConfigError::Invalid {
@@ -173,6 +184,31 @@ impl EngineConfig {
                 get,
                 "SAGAT_GRPC_MAX_CONNECTIONS",
                 grpc_defaults.max_connections,
+            )?,
+            max_connections_per_peer: capacity(
+                get,
+                "SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER",
+                grpc_defaults.max_connections_per_peer,
+            )?,
+            first_byte_timeout: seconds(
+                get,
+                "SAGAT_GRPC_FIRST_BYTE_TIMEOUT_SECS",
+                grpc_defaults.first_byte_timeout,
+            )?,
+            idle_timeout: seconds(
+                get,
+                "SAGAT_GRPC_IDLE_TIMEOUT_SECS",
+                grpc_defaults.idle_timeout,
+            )?,
+            handshake_timeout: seconds(
+                get,
+                "SAGAT_GRPC_TLS_HANDSHAKE_TIMEOUT_SECS",
+                grpc_defaults.handshake_timeout,
+            )?,
+            max_connection_age: seconds(
+                get,
+                "SAGAT_GRPC_MAX_CONNECTION_AGE_SECS",
+                grpc_defaults.max_connection_age,
             )?,
             max_in_flight: capacity(get, "SAGAT_GRPC_MAX_IN_FLIGHT", grpc_defaults.max_in_flight)?,
             tls: read_tls(get)?,

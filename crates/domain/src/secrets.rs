@@ -19,6 +19,9 @@ pub const MAX_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_SECRET_NAME: usize = 64;
 /// Most secrets one activity may declare.
 pub const MAX_SECRETS_PER_ACTIVITY: usize = 16;
+/// Most distinct secrets one workflow definition may declare in all. Publishing looks each one up,
+/// so this bounds the cost of a document, which is otherwise bounded only by its size.
+pub const MAX_DECLARED_SECRETS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SecretError {

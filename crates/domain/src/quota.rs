@@ -7,7 +7,13 @@
 //! The defaults below are **provisional**: the specification leaves "capacity and quota values per
 //! tier" to be defined after benchmark and security testing (spec.md, open design questions). They
 //! are generous enough not to get in the way of a single tenant and small enough to bound what a
-//! hostile one can make the database hold. An operator replaces them per tenant or per namespace.
+//! hostile one can make the database hold.
+//!
+//! Who may change a limit matters as much as its value. A tenant's administrator chooses the limits
+//! of the tenant's own namespaces, **but only up to a ceiling the platform grants that tenant**: the
+//! default below, or what an operator has granted since (`control-plane quota-ceiling`). Without
+//! the ceiling the quota would be controlled by the party it constrains, and a noisy tenant could
+//! simply remove it. Nothing in the API can raise a ceiling.
 
 use std::fmt;
 use std::str::FromStr;
@@ -68,7 +74,8 @@ impl QuotaResource {
         }
     }
 
-    /// What applies when nobody has set anything. Provisional (see the module documentation).
+    /// What applies when nobody has set anything, and the ceiling of a tenant nobody has granted
+    /// more. Provisional (see the module documentation).
     #[must_use]
     pub const fn default_limit(self) -> u64 {
         match self {
@@ -115,10 +122,20 @@ impl FromStr for QuotaResource {
     }
 }
 
+/// The highest limit a tenant may set for `resource`: what an operator granted it, or the platform
+/// default.
+#[must_use]
+pub fn ceiling(resource: QuotaResource, granted: Option<u64>) -> u64 {
+    granted
+        .unwrap_or_else(|| resource.default_limit())
+        .min(MAX_LIMIT)
+}
+
 /// Where the limit in force comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuotaSource {
-    /// Nothing was set: the platform default.
+    /// The tenant set nothing: the ceiling applies (the platform default unless an operator
+    /// granted more).
     Default,
     /// Set for every namespace of the tenant (or, for a tenant-scoped resource, for the tenant).
     Tenant,
@@ -142,19 +159,24 @@ impl QuotaSource {
 pub enum QuotaError {
     #[error("a limit is at most {MAX_LIMIT}")]
     TooLarge,
+    /// More than the platform grants this tenant. The ceiling is shown in the quota view.
+    #[error("the value is above the ceiling the platform grants this tenant")]
+    AboveCeiling,
     #[error("this quota is counted for the whole tenant and cannot be set for one namespace")]
     NotPerNamespace,
 }
 
-/// Checks that `value` can be stored as the limit of `resource` at the given level.
+/// Checks that a tenant may store `value` as the limit of `resource` at the given level, given the
+/// `ceiling` the platform grants it.
 ///
 /// # Errors
-/// [`QuotaError`] when the value is out of range, or a namespace-level value is given for a
-/// resource that is counted across the tenant.
+/// [`QuotaError`] when the value is out of range or above the ceiling, or a namespace-level value is
+/// given for a resource that is counted across the tenant.
 pub fn validate(
     resource: QuotaResource,
     namespace_level: bool,
     value: u64,
+    ceiling: u64,
 ) -> Result<u64, QuotaError> {
     if value > MAX_LIMIT {
         return Err(QuotaError::TooLarge);
@@ -162,16 +184,33 @@ pub fn validate(
     if namespace_level && resource.scope() == QuotaScope::Tenant {
         return Err(QuotaError::NotPerNamespace);
     }
+    if value > ceiling {
+        return Err(QuotaError::AboveCeiling);
+    }
     Ok(value)
 }
 
+/// Checks a value an operator grants as a ceiling.
+///
+/// # Errors
+/// [`QuotaError::TooLarge`] above [`MAX_LIMIT`].
+pub const fn validate_ceiling(value: u64) -> Result<u64, QuotaError> {
+    if value > MAX_LIMIT {
+        Err(QuotaError::TooLarge)
+    } else {
+        Ok(value)
+    }
+}
+
 /// The limit in force, from what is stored: the namespace's own setting wins over the tenant-wide
-/// one, which wins over the default.
+/// one, which wins over the ceiling. Never more than the `ceiling`, even when an operator lowered it
+/// below what the tenant had set.
 #[must_use]
 pub fn resolve(
     resource: QuotaResource,
     namespace_setting: Option<u64>,
     tenant_setting: Option<u64>,
+    ceiling: u64,
 ) -> (u64, QuotaSource) {
     // A tenant-scoped resource has no namespace level, whatever is stored.
     let namespace_setting = match resource.scope() {
@@ -179,9 +218,9 @@ pub fn resolve(
         QuotaScope::Tenant => None,
     };
     match (namespace_setting, tenant_setting) {
-        (Some(value), _) => (value, QuotaSource::Namespace),
-        (None, Some(value)) => (value, QuotaSource::Tenant),
-        (None, None) => (resource.default_limit(), QuotaSource::Default),
+        (Some(value), _) => (value.min(ceiling), QuotaSource::Namespace),
+        (None, Some(value)) => (value.min(ceiling), QuotaSource::Tenant),
+        (None, None) => (ceiling, QuotaSource::Default),
     }
 }
 
@@ -189,46 +228,104 @@ pub fn resolve(
 mod tests {
     use super::*;
 
+    const CEILING: u64 = 1_000;
+
     #[test]
-    fn the_namespace_wins_over_the_tenant_which_wins_over_the_default() {
+    fn the_namespace_wins_over_the_tenant_which_wins_over_the_ceiling() {
         let r = QuotaResource::ActiveRuns;
         assert_eq!(
-            resolve(r, Some(5), Some(50)),
+            resolve(r, Some(5), Some(50), CEILING),
             (5, QuotaSource::Namespace),
             "the namespace's own setting wins, even over a larger tenant value"
         );
-        assert_eq!(resolve(r, None, Some(50)), (50, QuotaSource::Tenant));
         assert_eq!(
-            resolve(r, None, None),
-            (r.default_limit(), QuotaSource::Default)
+            resolve(r, None, Some(50), CEILING),
+            (50, QuotaSource::Tenant)
         );
         assert_eq!(
-            resolve(r, Some(0), None),
+            resolve(r, None, None, CEILING),
+            (CEILING, QuotaSource::Default),
+            "with nothing set the whole ceiling is available"
+        );
+        assert_eq!(
+            resolve(r, Some(0), None, CEILING),
             (0, QuotaSource::Namespace),
             "zero is a limit"
         );
     }
 
     #[test]
-    fn a_tenant_wide_resource_ignores_a_namespace_setting() {
-        let r = QuotaResource::WorkerSessions;
-        assert_eq!(resolve(r, Some(1), Some(7)), (7, QuotaSource::Tenant));
-        assert_eq!(resolve(r, Some(1), None).1, QuotaSource::Default);
+    fn a_setting_above_a_lowered_ceiling_is_clamped_to_it() {
+        let r = QuotaResource::ActiveRuns;
+        // The operator lowered the ceiling after the tenant had set larger values.
+        assert_eq!(
+            resolve(r, Some(900), None, 100),
+            (100, QuotaSource::Namespace)
+        );
+        assert_eq!(resolve(r, None, Some(900), 100), (100, QuotaSource::Tenant));
+        assert_eq!(
+            resolve(r, Some(100), None, 100).0,
+            100,
+            "at the ceiling is fine"
+        );
+        assert_eq!(resolve(r, Some(7), None, 100).0, 7, "below it is untouched");
     }
 
     #[test]
-    fn values_are_bounded_and_namespace_levels_are_checked() {
-        assert_eq!(validate(QuotaResource::Workflows, true, 10), Ok(10));
-        assert_eq!(validate(QuotaResource::Workflows, true, 0), Ok(0));
+    fn a_tenant_wide_resource_ignores_a_namespace_setting() {
+        let r = QuotaResource::WorkerSessions;
         assert_eq!(
-            validate(QuotaResource::Workflows, false, MAX_LIMIT + 1),
+            resolve(r, Some(1), Some(7), CEILING),
+            (7, QuotaSource::Tenant)
+        );
+        assert_eq!(resolve(r, Some(1), None, CEILING).1, QuotaSource::Default);
+    }
+
+    #[test]
+    fn the_ceiling_is_what_an_operator_granted_or_the_default() {
+        for resource in QuotaResource::ALL {
+            assert_eq!(ceiling(resource, None), resource.default_limit());
+            assert_eq!(ceiling(resource, Some(3)), 3);
+            assert_eq!(ceiling(resource, Some(0)), 0, "zero is a ceiling");
+            assert_eq!(
+                ceiling(resource, Some(u64::MAX)),
+                MAX_LIMIT,
+                "a stored value out of range cannot lift the limit"
+            );
+        }
+    }
+
+    #[test]
+    fn values_are_bounded_by_the_range_the_level_and_the_ceiling() {
+        let big = MAX_LIMIT;
+        assert_eq!(
+            validate(QuotaResource::Workflows, true, 10, CEILING),
+            Ok(10)
+        );
+        assert_eq!(validate(QuotaResource::Workflows, true, 0, CEILING), Ok(0));
+        assert_eq!(
+            validate(QuotaResource::Workflows, true, CEILING, CEILING),
+            Ok(CEILING),
+            "the ceiling itself is allowed"
+        );
+        assert_eq!(
+            validate(QuotaResource::Workflows, true, CEILING + 1, CEILING),
+            Err(QuotaError::AboveCeiling)
+        );
+        assert_eq!(
+            validate(QuotaResource::Workflows, false, big + 1, big),
             Err(QuotaError::TooLarge)
         );
         assert_eq!(
-            validate(QuotaResource::WorkerSessions, true, 10),
+            validate(QuotaResource::WorkerSessions, true, 10, CEILING),
             Err(QuotaError::NotPerNamespace)
         );
-        assert_eq!(validate(QuotaResource::WorkerSessions, false, 10), Ok(10));
+        assert_eq!(
+            validate(QuotaResource::WorkerSessions, false, 10, CEILING),
+            Ok(10)
+        );
+        assert_eq!(validate_ceiling(big), Ok(big));
+        assert_eq!(validate_ceiling(big + 1), Err(QuotaError::TooLarge));
     }
 
     #[test]

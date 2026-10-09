@@ -169,6 +169,13 @@ impl Subject {
         Self("system:provisioning".to_owned())
     }
 
+    /// The actor recorded for what a platform operator does from the command line, outside any
+    /// tenant (granting a quota ceiling). Reserved like the other platform actors.
+    #[must_use]
+    pub fn operator() -> Self {
+        Self("system:operator".to_owned())
+    }
+
     /// The actor recorded for what the execution engine does by itself (starting a child run).
     /// Like [`Subject::provisioning`] it lives in the reserved `system:` namespace.
     #[must_use]

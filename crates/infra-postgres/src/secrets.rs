@@ -128,6 +128,31 @@ impl SecretAccessLookup for PgDefinitionStore {
     }
 }
 
+/// Every stored version of `names`, newest first. For searching an output for values that were
+/// handed out, which may since have been replaced.
+pub(crate) async fn all_versions(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    names: &[SecretName],
+) -> Result<Vec<StoredSecret>, StoreError> {
+    let texts: Vec<&str> = names.iter().map(SecretName::as_str).collect();
+    let rows = sqlx::query(
+        "SELECT s.tenant_id, s.namespace_id, s.name, v.id AS version_id, v.version, v.key_id, \
+                v.nonce, v.ciphertext, v.created_by, v.created_at \
+         FROM secrets s JOIN secret_versions v ON v.secret_id = s.id \
+         WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.name = ANY($3) \
+         ORDER BY s.name, v.version DESC",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(&texts)
+    .fetch_all(conn)
+    .await
+    .map_err(store_error)?;
+    rows.iter().map(stored_from).collect()
+}
+
 /// What a step's declared secrets resolve to, read on the caller's transaction.
 pub(crate) async fn inputs(
     conn: &mut PgConnection,
@@ -397,6 +422,24 @@ impl SecretStore for PgRunStore {
         Ok(removed)
     }
 
+    async fn names_usable_by(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT s.name FROM secrets s JOIN secret_access a ON a.secret_id = s.id \
+             WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND a.subject = $3 ORDER BY s.name",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(subject)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+
     async fn access_list(
         &self,
         tenant: TenantId,
@@ -428,16 +471,19 @@ impl SecretStore for PgRunStore {
     async fn versions_not_sealed_under(
         &self,
         active_key: &str,
+        after: Option<Uuid>,
         limit: u32,
     ) -> Result<Vec<StoredSecret>, StoreError> {
         sqlx::query(
             "SELECT s.tenant_id, s.namespace_id, s.name, v.id AS version_id, v.version, v.key_id, \
                     v.nonce, v.ciphertext, v.created_by, v.created_at \
              FROM secret_versions v JOIN secrets s ON s.id = v.secret_id \
-             WHERE v.key_id <> $1 ORDER BY v.created_at LIMIT $2",
+             WHERE v.key_id <> $1 AND ($3::uuid IS NULL OR v.id > $3::uuid) \
+             ORDER BY v.id LIMIT $2",
         )
         .bind(active_key)
         .bind(i64::from(limit))
+        .bind(after)
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?

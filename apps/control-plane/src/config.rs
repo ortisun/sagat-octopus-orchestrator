@@ -272,6 +272,23 @@ impl ServeConfig {
     /// [`ConfigError`] naming the first missing or invalid variable.
     pub fn from_lookup(get: Lookup<'_>) -> Result<Self, ConfigError> {
         let auth = read_auth(get)?;
+        // The API takes secret values in request bodies and listens in plaintext: TLS is the
+        // ingress's job. Outside development the operator has to say that it is there, as the
+        // engine's operator does for the worker API.
+        let secrets = read_secrets(get)?;
+        let environment: Environment = optional(get, "SAGAT_ENV", Environment::Prod)?;
+        if secrets.is_some()
+            && environment != Environment::Dev
+            && !flag(get, "SAGAT_API_ALLOW_PLAINTEXT_SECRETS")?
+        {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_API_ALLOW_PLAINTEXT_SECRETS",
+                reason: "SAGAT_SECRETS_KEYS is set, so this API receives secret values, and it \
+                         listens in plaintext; set this to true to state that TLS is terminated \
+                         in front of it"
+                    .to_owned(),
+            });
+        }
         let defaults = HttpLimits::default();
         let max_body_bytes: usize = optional(get, "SAGAT_MAX_BODY_BYTES", defaults.max_body_bytes)?;
         if max_body_bytes == 0 {
@@ -386,7 +403,7 @@ impl ServeConfig {
                 shutdown_grace: Duration::from_secs(grace_secs),
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
-            secrets: read_secrets(get)?,
+            secrets,
         })
     }
 }
@@ -449,6 +466,38 @@ pub fn redact_url(url: &str) -> String {
         format!("{scheme}://{host}")
     } else {
         format!("{scheme}://{host}/{path}")
+    }
+}
+
+/// Settings for `quota-ceiling`: the most a tenant's administrators may set for one quota. As with
+/// provisioning there are no defaults; granting capacity is a deliberate act.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CeilingConfig {
+    pub tenant_id: String,
+    pub resource: String,
+    /// `None` withdraws the grant, so the platform default applies again.
+    pub value: Option<u64>,
+}
+
+impl CeilingConfig {
+    /// # Errors
+    /// [`ConfigError::Missing`] when a value is absent; [`ConfigError::Invalid`] when the value is
+    /// neither a number nor `default`.
+    pub fn from_lookup(get: Lookup<'_>) -> Result<Self, ConfigError> {
+        let raw = required(get, "SAGAT_CEILING_VALUE")?;
+        let value = if raw.eq_ignore_ascii_case("default") {
+            None
+        } else {
+            Some(raw.parse::<u64>().map_err(|_| ConfigError::Invalid {
+                name: "SAGAT_CEILING_VALUE",
+                reason: "expected a whole number or `default`".into(),
+            })?)
+        };
+        Ok(Self {
+            tenant_id: required(get, "SAGAT_CEILING_TENANT_ID")?,
+            resource: required(get, "SAGAT_CEILING_RESOURCE")?,
+            value,
+        })
     }
 }
 

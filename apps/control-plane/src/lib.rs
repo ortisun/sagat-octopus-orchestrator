@@ -38,7 +38,8 @@ pub mod config;
 const DEFINITION_CACHE_ENTRIES: usize = 256;
 
 use config::{
-    Config, ConfigError, DatabaseConfig, Environment, ProvisionConfig, SeedConfig, ServeConfig,
+    CeilingConfig, Config, ConfigError, DatabaseConfig, Environment, ProvisionConfig, SeedConfig,
+    ServeConfig,
 };
 
 /// A command failed. `exit_code` follows the convention: 2 for a problem the operator must fix in
@@ -188,6 +189,93 @@ pub async fn provision_tenant(config: &Config, request: &ProvisionConfig) -> Res
         Err(StoreError::Conflict(ConflictKind::TenantSlug)) => Err(RunError::AlreadyExists),
         Err(error) => Err(RunError::Database(error.to_string())),
     }
+}
+
+/// Grants a tenant a quota ceiling, or withdraws it (`request.value == None`), and audits it.
+///
+/// A tenant's administrators set their own limits only up to this ceiling; nothing in the API
+/// raises it, so this command (run by someone with access to the database) is how capacity is
+/// sold or granted.
+///
+/// # Errors
+/// [`RunError::Config`] for an identifier or resource that is not valid, or a value out of range;
+/// [`RunError::Refused`] when the tenant does not exist; [`RunError::Database`] otherwise.
+pub async fn grant_quota_ceiling(config: &Config, request: &CeilingConfig) -> Result<(), RunError> {
+    let invalid = |name: &'static str, reason: &str| ConfigError::Invalid {
+        name,
+        reason: reason.to_owned(),
+    };
+    let tenant = request
+        .tenant_id
+        .parse::<TenantId>()
+        .map_err(|_| invalid("SAGAT_CEILING_TENANT_ID", "expected a tenant id (a UUID)"))?;
+    let resource = request
+        .resource
+        .parse::<sagat_domain::quota::QuotaResource>()
+        .map_err(|_| invalid("SAGAT_CEILING_RESOURCE", "not a quota resource"))?;
+    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
+    let service = QuotaService::new(PgRunStore::new(pool.clone(), cache), SystemClock);
+    let result = service.grant_ceiling(tenant, resource, request.value).await;
+    pool.close().await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(sagat_application::error::AppError::NotFound) => {
+            Err(RunError::Refused("no tenant has that id"))
+        }
+        Err(sagat_application::error::AppError::NotAllowed(reason)) => {
+            Err(invalid("SAGAT_CEILING_VALUE", reason).into())
+        }
+        Err(error) => Err(RunError::Database(error.to_string())),
+    }
+}
+
+/// Re-seals every secret version that is not sealed under the active key of `secrets`, in batches,
+/// until none is left. Safe to repeat and to run next to a serving instance. Returns how many
+/// versions were moved.
+///
+/// A version that no key of the ring opens does not stop the others: all the rest are moved first,
+/// and then the command fails, saying how many could not be and how many were.
+///
+/// # Errors
+/// [`RunError::Database`] when the store fails, or when some versions could not be opened (the ring
+/// no longer holds the key they were sealed under); versions already moved stay moved.
+pub async fn reseal_secrets(
+    config: &Config,
+    secrets: &sagat_infra_secrets::SecretsConfig,
+) -> Result<u64, RunError> {
+    const BATCH: u32 = 500;
+    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
+    let service = SecretService::new(
+        PgRunStore::new(pool.clone(), cache),
+        SystemClock,
+        secrets.cipher(),
+    );
+    let (mut moved, mut failed) = (0u64, 0u64);
+    let mut after = None;
+    let result = loop {
+        match service.reseal(after, BATCH).await {
+            Ok(batch) => {
+                moved += u64::from(batch.moved);
+                failed += u64::from(batch.failed);
+                match batch.next {
+                    Some(next) => after = Some(next),
+                    None => break Ok(()),
+                }
+            }
+            Err(error) => break Err(RunError::Database(error.to_string())),
+        }
+    };
+    pool.close().await;
+    result?;
+    if failed > 0 {
+        return Err(RunError::Database(format!(
+            "{failed} secret versions could not be opened with any key of the ring and were left \
+             as they are ({moved} others were re-sealed); restore the key they were sealed under"
+        )));
+    }
+    Ok(moved)
 }
 
 /// Runs the HTTP API on `listener` until `shutdown` completes, then drains in-flight requests.
