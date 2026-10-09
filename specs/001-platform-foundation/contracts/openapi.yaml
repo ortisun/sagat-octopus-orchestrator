@@ -5,7 +5,7 @@ info:
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
-    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas, worker bindings, secrets) by the governance routes
+    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas, worker bindings, secrets, egress policy) by the governance routes
     of feature 009. Every other operation is a design proposal that is not implemented yet. The worker protocol is gRPC (`worker.proto`), not REST.
     The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
@@ -31,7 +31,7 @@ tags:
   - name: Scripts
   - name: Operations
   - name: Governance
-    description: Quotas, worker bindings and secrets, and (as it is built) egress policy of a tenant or namespace (feature 009).
+    description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
 paths:
   /health:
     get:
@@ -758,6 +758,64 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/egress-policy:
+    get:
+      operationId: getEgressPolicy
+      summary: Where outbound requests of a namespace may go
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `egress:manage`. Default-deny: a namespace without a policy may reach nothing (the answer is then an empty policy). Whatever the policy says, loopback, link-local and cloud-metadata addresses, multicast and reserved space are never reachable, and private space only through an explicit network rule.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: setEgressPolicy
+      summary: Replace the egress policy of a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `egress:manage`. A rule is an exact host name, `*.domain` (any host below it, not the domain itself) or a CIDR network (which also allows addressing it by IP literal). Audited: the trail records how many rules and ports changed, not what they are.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetEgressPolicyRequest'}
+      responses:
+        '200': {description: 'The policy now in force, in canonical text', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: resetEgressPolicy
+      summary: Remove the egress policy of a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: The namespace may reach nothing again. Needs `egress:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '204': {description: 'The policy is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /events:
     post:
       operationId: publishEvent
@@ -1185,6 +1243,21 @@ components:
       required: [value]
       properties:
         value: {type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 'The secret, UTF-8 text of 1 to 16384 bytes. Never returned.'}
+    EgressPolicy:
+      type: object
+      required: [rules, ports, allowHttp]
+      properties:
+        rules: {type: array, items: {type: string}, description: 'Exact hosts, `*.domain` rules and CIDR networks, lower-cased and masked.'}
+        ports: {type: array, items: {type: integer, minimum: 1, maximum: 65535}, description: 'Empty means 443 (and 80 when plain HTTP is allowed).'}
+        allowHttp: {type: boolean}
+    SetEgressPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [rules]
+      properties:
+        rules: {type: array, maxItems: 256, items: {type: string, minLength: 1, maxLength: 260}}
+        ports: {type: array, maxItems: 32, items: {type: integer, minimum: 1, maximum: 65535}}
+        allowHttp: {type: boolean, default: false}
     Quota:
       type: object
       required: [resource, limit, source]

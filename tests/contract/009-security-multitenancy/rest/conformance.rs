@@ -54,6 +54,8 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
     let bind_one_t = "/namespaces/{namespaceId}/worker-bindings/{subject}";
     let bind_path = format!("/namespaces/{ns}/worker-bindings");
     let bind_one = |subject: &str| format!("/namespaces/{ns}/worker-bindings/{subject}");
+    let egress_t = "/namespaces/{namespaceId}/egress-policy";
+    let egress_path = format!("/namespaces/{ns}/egress-policy");
     let sec_t = "/namespaces/{namespaceId}/secrets";
     let sec_one_t = "/namespaces/{namespaceId}/secrets/{secretName}";
     let sec_access_t = "/namespaces/{namespaceId}/secrets/{secretName}/access";
@@ -535,6 +537,81 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
             None,
             404,
         ),
+        // ---- egress policy
+        scenario("GET", egress_t, &egress_path, alice.clone(), None, 200),
+        scenario("GET", egress_t, &egress_path, dave.clone(), None, 403),
+        scenario("GET", egress_t, &egress_path, As::Anonymous, None, 401),
+        scenario("GET", egress_t, &egress_path, bob.clone(), None, 404),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            alice.clone(),
+            Some(
+                json!({"rules": ["API.example.com", "*.partner.example", "203.0.113.0/24"], "ports": [8443, 443], "allowHttp": false}),
+            ),
+            200,
+        ),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            alice.clone(),
+            Some(json!({"rules": []})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            dave.clone(),
+            Some(json!({"rules": ["a.example.com"]})),
+            403,
+        ),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            bob.clone(),
+            Some(json!({"rules": ["a.example.com"]})),
+            404,
+        ),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            alice.clone(),
+            Some(json!({"rules": ["not a host!"]})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            alice.clone(),
+            Some(json!({"rules": ["a.example.com"], "ports": [0]})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            alice.clone(),
+            Some(json!({"rules": ["a.example.com"], "ports": [-1]})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            egress_t,
+            &egress_path,
+            alice.clone(),
+            Some(json!({"rules": ["a.example.com"], "extra": true})),
+            422,
+        ),
+        scenario("DELETE", egress_t, &egress_path, dave.clone(), None, 403),
+        scenario("DELETE", egress_t, &egress_path, bob.clone(), None, 404),
+        scenario("DELETE", egress_t, &egress_path, alice.clone(), None, 204),
+        scenario("DELETE", egress_t, &egress_path, alice.clone(), None, 204),
     ];
 
     let mut covered = BTreeSet::new();

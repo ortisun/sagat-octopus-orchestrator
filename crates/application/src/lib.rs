@@ -7,6 +7,7 @@ pub mod authz;
 pub mod bindings;
 pub mod clock;
 pub mod definitions;
+pub mod egress;
 pub mod entropy;
 pub mod error;
 pub mod execution;

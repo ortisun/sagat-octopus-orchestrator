@@ -13,6 +13,7 @@ use sagat_api_http::{
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::{DefinitionService, IrCodec};
+use sagat_application::egress::EgressService;
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
@@ -266,6 +267,7 @@ pub async fn serve_with_admin(
         state.clone(),
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
+        EgressService::new(executions.clone(), SystemClock),
     );
     if let Some(secrets) = &serve.secrets {
         governance = governance.with_secrets(SecretService::new(

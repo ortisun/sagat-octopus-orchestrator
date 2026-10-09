@@ -250,6 +250,7 @@ where
     G: sagat_application::quotas::QuotaStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::egress::EgressStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
@@ -270,6 +271,7 @@ where
     G: sagat_application::quotas::QuotaStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
+        + sagat_application::egress::EgressStore
         + 'static,
 {
     use routes::governance as gov;
@@ -300,6 +302,12 @@ where
             "/namespaces/{namespace_id}/worker-bindings/{subject}",
             axum::routing::put(gov::bind_worker::<B<S, C, G>>)
                 .delete(gov::unbind_worker::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/egress-policy",
+            get(gov::get_egress_policy::<B<S, C, G>>)
+                .put(gov::set_egress_policy::<B<S, C, G>>)
+                .delete(gov::reset_egress_policy::<B<S, C, G>>),
         );
     // Without a key ring there is nothing to seal with: the secret routes do not exist.
     if serves_secrets {

@@ -1,6 +1,7 @@
 //! Wire types of the governance routes.
 
 use sagat_application::bindings::{BindingView, Revoked};
+use sagat_application::egress::StoredPolicy;
 use sagat_application::quotas::QuotaView;
 use sagat_application::secrets::SecretView;
 use serde::{Deserialize, Serialize};
@@ -145,4 +146,34 @@ impl std::fmt::Debug for SetSecretBody {
             .field("value", &"<redacted>")
             .finish()
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EgressPolicyBody {
+    /// Exact host names, `*.domain` rules and CIDR networks, in canonical text.
+    pub rules: Vec<String>,
+    /// The ports that may be reached; empty means 443 (and 80 when plain HTTP is allowed).
+    pub ports: Vec<u16>,
+    pub allow_http: bool,
+}
+
+impl From<&StoredPolicy> for EgressPolicyBody {
+    fn from(policy: &StoredPolicy) -> Self {
+        Self {
+            rules: policy.rules.clone(),
+            ports: policy.ports.clone(),
+            allow_http: policy.allow_http,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetEgressPolicyBody {
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub ports: Vec<u16>,
+    #[serde(default)]
+    pub allow_http: bool,
 }

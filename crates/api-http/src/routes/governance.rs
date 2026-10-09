@@ -8,8 +8,9 @@ use sagat_domain::identity::NamespaceId;
 use sagat_domain::quota::QuotaResource;
 
 use crate::dto_gov::{
-    BindingBody, BindingListBody, QuotaBody, QuotaListBody, RevokedBody, SecretAccessBody,
-    SecretBody, SecretListBody, SetBindingBody, SetQuotaBody, SetSecretBody,
+    BindingBody, BindingListBody, EgressPolicyBody, QuotaBody, QuotaListBody, RevokedBody,
+    SecretAccessBody, SecretBody, SecretListBody, SetBindingBody, SetEgressPolicyBody,
+    SetQuotaBody, SetSecretBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -289,6 +290,60 @@ pub async fn revoke_secret_access<B: Governance>(
             namespace_id(&namespace)?,
             &name,
             &subject,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ------------------------------------------------------------------------------ egress policy
+
+pub async fn get_egress_policy<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+) -> Result<Json<EgressPolicyBody>, ApiError> {
+    let policy = state
+        .egress()
+        .get(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(EgressPolicyBody::from(&policy)))
+}
+
+pub async fn set_egress_policy<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+    ApiJson(body): ApiJson<SetEgressPolicyBody>,
+) -> Result<Json<EgressPolicyBody>, ApiError> {
+    let policy = state
+        .egress()
+        .set(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &body.rules,
+            &body.ports,
+            body.allow_http,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(EgressPolicyBody::from(&policy)))
+}
+
+pub async fn reset_egress_policy<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .egress()
+        .reset(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
             &caller.ctx,
         )
         .await?;

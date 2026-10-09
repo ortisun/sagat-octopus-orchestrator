@@ -116,6 +116,17 @@ pub enum HostRule {
     Network(Cidr),
 }
 
+impl fmt::Display for HostRule {
+    /// The rule as it is written: what [`HostRule::parse`] accepts gives the same rule back.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Exact(host) => f.write_str(host),
+            Self::Below(domain) => write!(f, "*.{domain}"),
+            Self::Network(network) => write!(f, "{network}"),
+        }
+    }
+}
+
 impl HostRule {
     /// # Errors
     /// [`EgressError::InvalidRule`].
@@ -463,6 +474,35 @@ fn classify_v6(a: Ipv6Addr) -> Option<AddressClass> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rule_prints_the_way_it_is_written_and_parses_back_to_itself() {
+        for text in [
+            "api.example.com",
+            "*.example.org",
+            "203.0.113.0/24",
+            "10.0.0.0/8",
+            "2001:db8::/32",
+            "203.0.113.7/32",
+        ] {
+            let rule = HostRule::parse(text).expect("rule");
+            assert_eq!(rule.to_string(), text);
+            assert_eq!(HostRule::parse(&rule.to_string()), Ok(rule));
+        }
+        // Normalisation shows: a host is lower-cased and a network is masked.
+        assert_eq!(
+            HostRule::parse("API.Example.COM")
+                .expect("rule")
+                .to_string(),
+            "api.example.com"
+        );
+        assert_eq!(
+            HostRule::parse("203.0.113.77/24")
+                .expect("rule")
+                .to_string(),
+            "203.0.113.0/24"
+        );
+    }
 
     fn policy(rules: &[&str]) -> EgressPolicy {
         EgressPolicy::new(

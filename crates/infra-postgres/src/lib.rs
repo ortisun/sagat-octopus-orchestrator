@@ -8,6 +8,7 @@ use sqlx::migrate::Migrator;
 
 mod bindings;
 mod definitions;
+mod egress;
 mod event_codec;
 mod execution;
 mod identity;

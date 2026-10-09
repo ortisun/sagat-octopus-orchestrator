@@ -3470,6 +3470,7 @@ dependencies = [
  "sagat-control-plane",
  "sagat-domain",
  "sagat-execution-engine",
+ "sagat-infra-egress",
  "sagat-infra-ir",
  "sagat-infra-nats",
  "sagat-infra-postgres",

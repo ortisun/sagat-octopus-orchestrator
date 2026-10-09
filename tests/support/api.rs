@@ -15,6 +15,7 @@ use sagat_api_http::{
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::DefinitionService;
+use sagat_application::egress::EgressService;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, Engine};
@@ -252,6 +253,7 @@ pub async fn start_with(options: Options) -> TestApi {
         state.clone(),
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
+        EgressService::new(executions.clone(), SystemClock),
     )
     .with_secrets(SecretService::new(
         executions.clone(),

@@ -6,5 +6,6 @@
 mod support;
 
 mod bindings;
+mod egress;
 mod quotas;
 mod secrets;

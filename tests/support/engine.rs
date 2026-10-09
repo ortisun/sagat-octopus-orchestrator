@@ -9,6 +9,7 @@ use std::sync::Arc;
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::DefinitionService;
+use sagat_application::egress::EgressService;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityStore, RequestContext};
@@ -41,6 +42,7 @@ pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type Quotas = QuotaService<PgRunStore, SystemClock>;
 pub type Bindings = BindingService<PgRunStore, SystemClock>;
 pub type Secrets = SecretService<PgRunStore, SystemClock>;
+pub type Egress = EgressService<PgRunStore, SystemClock>;
 
 pub struct World {
     pub db: TestDb,
@@ -50,6 +52,7 @@ pub struct World {
     pub quotas: Quotas,
     pub bindings: Bindings,
     pub secrets: Secrets,
+    pub egress: Egress,
     /// The key ring behind [`Self::secrets`] and the workers (a fresh random key per world).
     pub keys: sagat_infra_secrets::SecretsConfig,
     /// The base64 material of key `k1`, for tests that build a rotated ring around it.
@@ -101,6 +104,7 @@ pub async fn world_with(settings: WorkerSettings) -> World {
         quotas: QuotaService::new(store.clone(), SystemClock),
         bindings: BindingService::new(store.clone(), SystemClock),
         secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),
+        egress: EgressService::new(store.clone(), SystemClock),
         keys: keys.clone(),
         key_k1,
         workers: WorkerService::new(
