@@ -45,7 +45,7 @@ Last updated with the control-plane branch. "Partial" and "Open" are stated expl
 | NFR-001-PERF p95 < 250 ms namespace read | Done | Baseline `tests/performance/001-platform-foundation/main.rs`, report `tests/performance/reports/001-platform-foundation.md`: p95 15.0 ms, 0 errors (Apple M3 Max, release build, single instance) |
 | SC-001-001 contract/API + tenant isolation suite and reproducible local environment | Done | The suites above plus `scripts/smoke-compose.sh` |
 | SC-001-002 100% of US01..US04 pass in an automated suite | Done | `tests/e2e/001-platform-foundation/us0{1,2,3,4}.rs` |
-| SC-001-003 no violation of the Constitution gates | Open | `.specify/memory/constitution.md` is not in the repository (G1); cannot be asserted |
+| SC-001-003 no violation of the Constitution gates | Partial | The constitution exists since 2026-10-09 (v1.0.0, G1 resolved). Only principle II has an automated gate (`scripts/check-architecture.py`, CI job `architecture`); the other principles are verified by the tests listed above and by review, and the ratification date is still to be confirmed |
 | SC-001-004 critical errors expose `code`, `trace_id` and remediation without leaking | Partial | `code` and `traceId` proven; there is no separate `remediation` field |
 
 ## Evidence: 002 durable-execution

@@ -50,7 +50,9 @@ Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
 ## Folders
 
 ```text
-.specify/memory/constitution.md   Architecture and product constitution
+.specify/memory/constitution.md   Architecture and product constitution (principles I–VIII)
+.specify/                       Spec Kit 1.1.2 (Claude integration): templates, scripts, workflow
+.claude/skills/speckit-*/       The /speckit-* commands
 specs/001..012/                 Spec Kit features: spec.md, plan.md, tasks.md, ...
 docs/architecture/              Cross-cutting architecture and semantic contracts
 docs/adr/                       Architectural Decision Records
@@ -66,13 +68,18 @@ scripts/                        Architecture-rule checker and the compose smoke 
 
 ## Usage with GitHub Spec Kit
 
-1. Install and initialize Spec Kit in the **real code repository** following https://github.com/github/spec-kit (do not overwrite `.specify/memory/constitution.md` from this package).
-2. Copy `.specify/memory`, `specs/`, `docs/` and `AGENTS.md` to the repository root. If `specify init` creates files that already exist, merge deliberately.
-3. Treat `specs/001-platform-foundation` as the starting point; evolve one feature per branch with `/speckit-clarify`, `/speckit-plan`, `/speckit-checklist`, `/speckit-tasks`, `/speckit-analyze`, `/speckit-implement` and `/speckit-converge` according to the agent integration.
-4. The plan and task files are already **initial proposals**, subject to review by the agent; they do not represent existing code.
+Spec Kit is initialized in this repository (`.specify/`, Claude integration). The constitution at
+`.specify/memory/constitution.md` was derived from `AGENTS.md`, the ADRs and the Constitution Check that
+every plan already carried; it is **version 1.0.0 with the ratification date still to be confirmed by the
+maintainers** (see the comment at the top of the file).
+
+1. Read `.specify/memory/constitution.md`, then the `spec.md`, `plan.md` and `tasks.md` of the feature you work on.
+2. Evolve one feature per branch (`feature/<spec-id>-<slug>`, see `AGENTS.md`) with `/speckit-clarify`, `/speckit-plan`, `/speckit-checklist`, `/speckit-tasks`, `/speckit-analyze`, `/speckit-implement` and `/speckit-converge`. A new feature starts with `/speckit-specify` and continues the numbering from 013.
+3. Spec Kit finds the active feature through `.specify/feature.json` (per checkout, git-ignored) or `SPECIFY_FEATURE_DIRECTORY`, not through the branch name, so the Gitflow branch names do not conflict with it.
+4. For features 001, 002, 003 and 009 the checked tasks in `tasks.md` record what is built and its evidence; the other features' plans and tasks are still **initial proposals** and do not represent existing code.
 5. Before implementing, validate the ADRs, test the protocol against a real worker and run the indicated quality gates.
 
-**Spec Kit note:** there are 12 independent features ordered by dependency, not a single monolithic spec. Cross-cutting architecture artifacts live in `docs/`; initial canonical contracts in `specs/001-platform-foundation/contracts/`.
+**Spec Kit note:** there are 12 independent features ordered by dependency, not a single monolithic spec. Spec Kit has no place for cross-cutting material, so it stays in `docs/` (architecture, ADRs, runbooks, glossary, roadmap, traceability, test strategy), and the constitution points to it; initial canonical contracts are in `specs/001-platform-foundation/contracts/`.
 
 ## Guarantees and limits
 
