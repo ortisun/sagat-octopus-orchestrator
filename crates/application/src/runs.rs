@@ -12,7 +12,8 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    self, ExecutionError, Progress, RunEvent, RunId, RunStatus, StepStatus, StopReason, WaitingOn,
+    self, ExecutionError, FailureCode, Progress, ReviewOutcome, RunEvent, RunId, RunStatus,
+    StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
@@ -84,12 +85,27 @@ pub struct StepView {
     pub child_run: Option<RunId>,
 }
 
+/// What a run knows about one of its sagas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SagaView {
+    pub node: NodeId,
+    /// `FORWARD`, `ABORTING`, `COMPENSATING` or `DONE`.
+    pub phase: String,
+    /// Why the saga compensates, or did.
+    pub cause: Option<String>,
+    /// `COMPENSATED`, `PARTIAL` or `COMPENSATION_FAILED`, once the saga is done.
+    pub outcome: Option<String>,
+    /// Completed steps whose effect could not be undone.
+    pub irreversible: Vec<NodeId>,
+}
+
 /// A run, its definition and its steps, read at one instant.
 #[derive(Debug, Clone)]
 pub struct GraphSnapshot {
     pub run: RunRecord,
     pub definition: Arc<WorkflowDefinition>,
     pub steps: Vec<StepView>,
+    pub sagas: Vec<SagaView>,
 }
 
 /// Filters of a run listing.
@@ -190,6 +206,47 @@ impl RunOperation {
             Self::Pause => "pause",
             Self::Resume => "resume",
         }
+    }
+}
+
+/// What an operator may do to a step that waits for a decision (`FR-003-005`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewAction {
+    /// Another attempt of the step; the old attempts stay in the journal.
+    Retry,
+    /// Give up on a compensation. Needs explicit permission; the saga then ends `PARTIAL`.
+    Skip,
+    /// Settle the step: it happened (with the output it would have had), or it did not.
+    Resolve(ReviewOutcome),
+}
+
+impl ReviewAction {
+    const fn audit(&self) -> AuditAction {
+        match self {
+            Self::Retry => AuditAction::SagaStepRetried,
+            Self::Skip => AuditAction::SagaStepSkipped,
+            Self::Resolve(_) => AuditAction::SagaStepResolved,
+        }
+    }
+
+    fn name(&self) -> String {
+        match self {
+            Self::Retry => "retry".to_owned(),
+            Self::Skip => "skip".to_owned(),
+            Self::Resolve(ReviewOutcome::Succeeded) => "resolve:succeeded".to_owned(),
+            Self::Resolve(ReviewOutcome::Failed(code)) => format!("resolve:failed:{code}"),
+        }
+    }
+}
+
+/// The shortest and longest justification of an operator's decision, in characters, after trimming.
+pub const MIN_JUSTIFICATION: usize = 8;
+pub const MAX_JUSTIFICATION: usize = 2000;
+
+fn outcome_label(outcome: &ReviewOutcome) -> String {
+    match outcome {
+        ReviewOutcome::Succeeded => "SUCCEEDED".to_owned(),
+        ReviewOutcome::Failed(code) => format!("FAILED({code})"),
     }
 }
 
@@ -558,6 +615,136 @@ where
                         pending: None,
                     },
                     RunOperation::Resume => execution::resume_run(def, state, now)?,
+                };
+                Ok(((), progress))
+            })
+            .await
+            .map_err(engine_error)?;
+        tx.commit().await?;
+        self.get(principal, id, ctx).await
+    }
+
+    /// An operator decides what happens to a step that waits for one: a compensation that failed
+    /// after its retries, or a step whose outcome nobody could establish.
+    ///
+    /// Retrying needs `run:operate`; skipping a compensation and settling a step by hand need
+    /// `saga:override`. All three need a justification, which is kept in the audit trail together
+    /// with who asked; the journal keeps what the step did before and after, and nothing is erased.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`]; [`AppError::NotAllowed`] without a justification, or to skip
+    /// something that is not a compensation; [`AppError::NotFound`] for a run or a step the caller
+    /// cannot see; [`AppError::StateConflict`] when the step does not wait for an operator (a second
+    /// command on the same step: the first one won); [`AppError::IdempotencyKeyReused`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn review(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        node: &NodeId,
+        action: &ReviewAction,
+        reason: &str,
+        expected_version: Option<u64>,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        principal.authorize(match action {
+            ReviewAction::Retry => Permission::RunOperate,
+            ReviewAction::Skip | ReviewAction::Resolve(_) => Permission::SagaOverride,
+        })?;
+        // What is audited is what the person wrote, bounded the same way whoever asks: the API
+        // counts characters after trimming, and so does this, so a justification of one letter and
+        // seven spaces is not one.
+        let reason = reason.trim();
+        let length = reason.chars().count();
+        if !(MIN_JUSTIFICATION..=MAX_JUSTIFICATION).contains(&length)
+            || reason.chars().any(char::is_control)
+        {
+            return Err(AppError::NotAllowed(
+                "a justification of 8 to 2000 characters, in plain text, is required",
+            ));
+        }
+        if *action == ReviewAction::Skip && !node.is_compensation() {
+            return Err(AppError::NotAllowed("only a compensation can be skipped"));
+        }
+        let idempotency = Idempotency {
+            scope: format!("run.review:{id}"),
+            key: key.to_owned(),
+            fingerprint: fingerprint(&[
+                node.as_str().as_bytes(),
+                action.name().as_bytes(),
+                reason.as_bytes(),
+                &expected_version.unwrap_or(u64::MAX).to_be_bytes(),
+            ]),
+        };
+        let Some(mut tx) = self
+            .store
+            .begin(principal.tenant_id(), id, Lock::Wait)
+            .await?
+        else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        if tx.replay(&idempotency).await?.is_some() {
+            drop(tx);
+            return self.get(principal, id, ctx).await;
+        }
+        if tx.parts().1.step(node).is_none() {
+            return Err(AppError::NotFound);
+        }
+        let version = tx.parts().1.version();
+        if expected_version.is_some_and(|expected| expected != version) {
+            return Err(AppError::RevisionConflict { current: version });
+        }
+        // Asking again for an effect that may already have happened is the decision the platform
+        // would not take by itself (a high risk step waits for a person for that reason), so it is
+        // an administrator's to take: an operator may retry a step that is known not to have
+        // happened, or a compensation (which is idempotent by contract).
+        if *action == ReviewAction::Retry
+            && !node.is_compensation()
+            && tx
+                .parts()
+                .1
+                .step(node)
+                .and_then(|step| step.failure())
+                .is_some_and(FailureCode::leaves_outcome_unknown)
+        {
+            principal.authorize(Permission::SagaOverride)?;
+        }
+        let now = self.clock.now();
+        let mut effects = Effects::by(
+            Actor::Principal(principal.subject().as_str().to_owned()),
+            ctx.trace_id.clone(),
+        );
+        // The audit record says what was decided, not only that something was: a step settled by
+        // hand is recorded with the outcome that was declared.
+        let audited = match action {
+            ReviewAction::Resolve(outcome) => {
+                format!("declared {}: {reason}", outcome_label(outcome))
+            }
+            ReviewAction::Retry | ReviewAction::Skip => reason.to_owned(),
+        };
+        effects.audit = Some(
+            AuditRecord::by(
+                principal,
+                action.audit(),
+                ResourceType::Run,
+                format!("{id}/{node}"),
+                ctx.trace_id.clone(),
+                now,
+            )
+            .with_reason(audited),
+        );
+        effects.idempotency = Some((idempotency, action.name()));
+        let step = node.clone();
+        let action = action.clone();
+        self.engine
+            .run(&mut tx, effects, move |def, state, now| {
+                let progress = match &action {
+                    ReviewAction::Retry => execution::retry_review(def, state, &step, now)?,
+                    ReviewAction::Skip => execution::skip_review(def, state, &step, now)?,
+                    ReviewAction::Resolve(outcome) => {
+                        execution::resolve_review(def, state, &step, outcome.clone(), now)?
+                    }
                 };
                 Ok(((), progress))
             })

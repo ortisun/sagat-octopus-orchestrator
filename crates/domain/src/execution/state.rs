@@ -12,8 +12,12 @@ use std::str::FromStr;
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, RunEvent, StopReason};
+use super::event::{
+    ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, ReconcileResult, ReviewOutcome,
+    RunEvent, StopReason,
+};
 use crate::identity::IdentityError;
+use crate::saga::{ReconcileVerdict, SagaOutcome};
 use crate::workflow::NodeId;
 
 uuid_id!(
@@ -31,13 +35,41 @@ pub enum RunStatus {
     Paused,
     /// Winding down: pending work is cancelled and in-flight attempts are being told to stop.
     Cancelling,
+    /// A saga is undoing the effects of the steps that completed (feature 003).
+    Compensating,
+    /// Nothing can move until an operator decides: a compensation or an unknown outcome is waiting.
+    ManualReview,
     Succeeded,
     Failed,
     Cancelled,
     TimedOut,
+    /// A failure was compensated completely.
+    Compensated,
+    /// A failure was compensated, but not everything could be undone (an irreversible effect, or a
+    /// compensation an operator skipped).
+    Partial,
+    /// A compensation failed for good.
+    CompensationFailed,
 }
 
 impl RunStatus {
+    /// Every status, in the order of the enumeration.
+    pub const ALL: [Self; 13] = [
+        Self::Running,
+        Self::Waiting,
+        Self::Paused,
+        Self::Cancelling,
+        Self::Compensating,
+        Self::ManualReview,
+        Self::Succeeded,
+        Self::Failed,
+        Self::Cancelled,
+        Self::TimedOut,
+        Self::Compensated,
+        Self::Partial,
+        Self::CompensationFailed,
+    ];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -45,10 +77,15 @@ impl RunStatus {
             Self::Waiting => "WAITING",
             Self::Paused => "PAUSED",
             Self::Cancelling => "CANCELLING",
+            Self::Compensating => "COMPENSATING",
+            Self::ManualReview => "MANUAL_REVIEW",
             Self::Succeeded => "SUCCEEDED",
             Self::Failed => "FAILED",
             Self::Cancelled => "CANCELLED",
             Self::TimedOut => "TIMED_OUT",
+            Self::Compensated => "COMPENSATED",
+            Self::Partial => "PARTIAL",
+            Self::CompensationFailed => "COMPENSATION_FAILED",
         }
     }
 
@@ -56,7 +93,13 @@ impl RunStatus {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Cancelled | Self::TimedOut
+            Self::Succeeded
+                | Self::Failed
+                | Self::Cancelled
+                | Self::TimedOut
+                | Self::Compensated
+                | Self::Partial
+                | Self::CompensationFailed
         )
     }
 }
@@ -76,10 +119,15 @@ impl FromStr for RunStatus {
             "WAITING" => Ok(Self::Waiting),
             "PAUSED" => Ok(Self::Paused),
             "CANCELLING" => Ok(Self::Cancelling),
+            "COMPENSATING" => Ok(Self::Compensating),
+            "MANUAL_REVIEW" => Ok(Self::ManualReview),
             "SUCCEEDED" => Ok(Self::Succeeded),
             "FAILED" => Ok(Self::Failed),
             "CANCELLED" => Ok(Self::Cancelled),
             "TIMED_OUT" => Ok(Self::TimedOut),
+            "COMPENSATED" => Ok(Self::Compensated),
+            "PARTIAL" => Ok(Self::Partial),
+            "COMPENSATION_FAILED" => Ok(Self::CompensationFailed),
             _ => Err(IdentityError::MalformedId),
         }
     }
@@ -101,6 +149,8 @@ pub enum StepStatus {
     Succeeded,
     Failed,
     Cancelled,
+    /// A compensation an operator gave up on.
+    Skipped,
 }
 
 impl StepStatus {
@@ -116,12 +166,16 @@ impl StepStatus {
             Self::Succeeded => "SUCCEEDED",
             Self::Failed => "FAILED",
             Self::Cancelled => "CANCELLED",
+            Self::Skipped => "SKIPPED",
         }
     }
 
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Skipped
+        )
     }
 
     /// A worker holds the lease.
@@ -151,6 +205,7 @@ impl FromStr for StepStatus {
             "SUCCEEDED" => Ok(Self::Succeeded),
             "FAILED" => Ok(Self::Failed),
             "CANCELLED" => Ok(Self::Cancelled),
+            "SKIPPED" => Ok(Self::Skipped),
             _ => Err(IdentityError::MalformedId),
         }
     }
@@ -171,6 +226,134 @@ pub enum WaitingOn {
     Child {
         run: RunId,
     },
+    /// The body of a `saga` node.
+    Saga,
+    /// The reconciliation of this step, which asks the provider what happened to an attempt whose
+    /// outcome is unknown.
+    Reconciliation,
+    /// An operator: the step cannot go on by itself, for the reason in `code`.
+    Operator {
+        code: FailureCode,
+    },
+}
+
+/// Where a saga is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SagaPhase {
+    /// The body runs.
+    Forward,
+    /// The body is being wound down so what completed can be compensated.
+    Aborting,
+    /// The compensations run.
+    Compensating,
+    /// Over; `outcome` says how it ended, unless the saga completed.
+    Done,
+}
+
+impl SagaPhase {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Forward => "FORWARD",
+            Self::Aborting => "ABORTING",
+            Self::Compensating => "COMPENSATING",
+            Self::Done => "DONE",
+        }
+    }
+}
+
+impl FromStr for SagaPhase {
+    type Err = IdentityError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "FORWARD" => Ok(Self::Forward),
+            "ABORTING" => Ok(Self::Aborting),
+            "COMPENSATING" => Ok(Self::Compensating),
+            "DONE" => Ok(Self::Done),
+            _ => Err(IdentityError::MalformedId),
+        }
+    }
+}
+
+/// What the run knows about one saga.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SagaState {
+    phase: SagaPhase,
+    cause: Option<FailureCode>,
+    /// The forward nodes being compensated and the forward nodes each waits for.
+    entries: BTreeMap<NodeId, Vec<NodeId>>,
+    /// Forward nodes that completed and cannot be undone.
+    irreversible: Vec<NodeId>,
+    outcome: Option<SagaOutcome>,
+    /// Whether the saga ended (or was aborted) while the run was being stopped: its outcome then
+    /// counts in how the run ends.
+    during_stop: bool,
+}
+
+impl SagaState {
+    const fn forward() -> Self {
+        Self {
+            phase: SagaPhase::Forward,
+            cause: None,
+            entries: BTreeMap::new(),
+            irreversible: Vec::new(),
+            outcome: None,
+            during_stop: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> SagaPhase {
+        self.phase
+    }
+
+    /// Why the saga is compensating (or was).
+    #[must_use]
+    pub const fn cause(&self) -> Option<&FailureCode> {
+        self.cause.as_ref()
+    }
+
+    /// The forward nodes being compensated, with the forward nodes each of them waits for.
+    #[must_use]
+    pub const fn entries(&self) -> &BTreeMap<NodeId, Vec<NodeId>> {
+        &self.entries
+    }
+
+    #[must_use]
+    pub fn irreversible(&self) -> &[NodeId] {
+        &self.irreversible
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> Option<SagaOutcome> {
+        self.outcome
+    }
+
+    #[must_use]
+    pub const fn during_stop(&self) -> bool {
+        self.during_stop
+    }
+
+    /// Rebuilds a saga from trusted storage.
+    #[must_use]
+    pub const fn restore(
+        phase: SagaPhase,
+        cause: Option<FailureCode>,
+        entries: BTreeMap<NodeId, Vec<NodeId>>,
+        irreversible: Vec<NodeId>,
+        outcome: Option<SagaOutcome>,
+        during_stop: bool,
+    ) -> Self {
+        Self {
+            phase,
+            cause,
+            entries,
+            irreversible,
+            outcome,
+            during_stop,
+        }
+    }
 }
 
 /// Everything the engine tracks about one step.
@@ -304,6 +487,7 @@ pub struct RunState {
     stop: Option<(StopReason, Option<FailureCode>)>,
     paused: bool,
     steps: BTreeMap<NodeId, StepState>,
+    sagas: BTreeMap<NodeId, SagaState>,
     applied: u64,
 }
 
@@ -317,6 +501,7 @@ impl RunState {
             stop: None,
             paused: false,
             steps: BTreeMap::new(),
+            sagas: BTreeMap::new(),
             applied: 0,
         }
     }
@@ -339,12 +524,14 @@ impl RunState {
     /// Rebuilds a run from trusted storage (the `runs` and `steps` rows). `version` is the number of
     /// journal events the rows reflect.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub const fn restore(
         run_id: RunId,
         status: RunStatus,
         stop: Option<(StopReason, Option<FailureCode>)>,
         paused: bool,
         steps: BTreeMap<NodeId, StepState>,
+        sagas: BTreeMap<NodeId, SagaState>,
         version: u64,
     ) -> Self {
         Self {
@@ -353,6 +540,7 @@ impl RunState {
             stop,
             paused,
             steps,
+            sagas,
             applied: version,
         }
     }
@@ -403,6 +591,61 @@ impl RunState {
     /// All steps, ordered by node id.
     pub fn steps(&self) -> impl Iterator<Item = (&NodeId, &StepState)> {
         self.steps.iter()
+    }
+
+    /// The sagas that have started, ordered by node id.
+    pub fn sagas(&self) -> impl Iterator<Item = (&NodeId, &SagaState)> {
+        self.sagas.iter()
+    }
+
+    #[must_use]
+    pub fn saga(&self, node: &NodeId) -> Option<&SagaState> {
+        self.sagas.get(node)
+    }
+
+    /// The status the run reaches when it finishes after being stopped for `reason`: the sagas that
+    /// ran *because* the run was stopping can make it worse than the reason alone says (a
+    /// cancellation whose compensation failed is not a clean cancellation, and a run that ended
+    /// because one saga was compensated is not `COMPENSATED` if a sibling saga could not be).
+    #[must_use]
+    pub fn final_status_for(&self, reason: StopReason) -> RunStatus {
+        let own = match reason {
+            StopReason::Compensated => Some(SagaOutcome::Compensated),
+            StopReason::Partial => Some(SagaOutcome::Partial),
+            StopReason::CompensationFailed => Some(SagaOutcome::CompensationFailed),
+            StopReason::Cancelled | StopReason::TimedOut | StopReason::Failed => None,
+        };
+        let worst = self
+            .sagas
+            .values()
+            .filter(|saga| saga.during_stop)
+            .filter_map(|saga| saga.outcome);
+        match own.into_iter().chain(worst).max() {
+            Some(SagaOutcome::CompensationFailed) => RunStatus::CompensationFailed,
+            Some(SagaOutcome::Partial) => RunStatus::Partial,
+            Some(SagaOutcome::Compensated) if own.is_some() => RunStatus::Compensated,
+            _ => reason.final_status(),
+        }
+    }
+
+    /// How `saga` ends, judged from its compensations: failed or cancelled ones make it
+    /// `COMPENSATION_FAILED`, skipped ones or an irreversible effect make it `PARTIAL`.
+    pub(super) fn expected_outcome(&self, saga: &SagaState) -> SagaOutcome {
+        let (mut failed, mut skipped) = (false, false);
+        for node in saga.entries.keys() {
+            match self.steps.get(&node.compensation()).map(|s| s.status) {
+                Some(StepStatus::Failed | StepStatus::Cancelled) => failed = true,
+                Some(StepStatus::Skipped) => skipped = true,
+                _ => {}
+            }
+        }
+        if failed {
+            SagaOutcome::CompensationFailed
+        } else if skipped || !saga.irreversible.is_empty() {
+            SagaOutcome::Partial
+        } else {
+            SagaOutcome::Compensated
+        }
     }
 
     #[must_use]
@@ -459,6 +702,24 @@ impl RunState {
         Ok(())
     }
 
+    fn require_saga(
+        &self,
+        node: &NodeId,
+        event: &'static str,
+        phase: SagaPhase,
+    ) -> Result<(), ExecutionError> {
+        match self.sagas.get(node) {
+            Some(saga) if saga.phase == phase => Ok(()),
+            Some(_) => Err(ExecutionError::Invariant(
+                "a saga event arrived in a phase that does not allow it",
+            )),
+            None => {
+                let _ = event;
+                Err(ExecutionError::UnknownStep(node.clone()))
+            }
+        }
+    }
+
     /// Applies one journal event.
     ///
     /// # Errors
@@ -467,7 +728,8 @@ impl RunState {
     #[allow(clippy::too_many_lines)] // one arm per journal event: splitting would hide the table
     pub fn apply(&mut self, event: &RunEvent) -> Result<(), ExecutionError> {
         use StepStatus::{
-            Cancelled, Failed, Leased, Pending, Ready, RetryWait, Running, Succeeded, Waiting,
+            Cancelled, Failed, Leased, Pending, Ready, RetryWait, Running, Skipped, Succeeded,
+            Waiting,
         };
         if self.status.is_terminal() {
             return Err(ExecutionError::RunFinished(self.status));
@@ -481,7 +743,7 @@ impl RunState {
                 self.activate(std::slice::from_ref(entrypoint))?;
             }
             RunEvent::StepRouted { node, activated } => {
-                let step = self.step_mut(node, name, &[Succeeded, Failed])?;
+                let step = self.step_mut(node, name, &[Succeeded, Failed, Skipped])?;
                 if step.routed {
                     return Err(ExecutionError::IllegalTransition {
                         node: node.clone(),
@@ -723,6 +985,255 @@ impl RunState {
                 step.next_attempt_at = None;
                 step.cancel_requested = false;
             }
+            RunEvent::SagaEntered { node, begin } => {
+                if self.sagas.contains_key(node) {
+                    return Err(ExecutionError::AlreadyScheduled(node.clone()));
+                }
+                self.step_mut(node, name, &[Pending])?;
+                self.activate(std::slice::from_ref(begin))?;
+                if let Some(step) = self.steps.get_mut(node) {
+                    step.status = Waiting;
+                    step.waiting = Some(WaitingOn::Saga);
+                }
+                self.sagas.insert(node.clone(), SagaState::forward());
+            }
+            RunEvent::SagaCompleted { node } => {
+                self.require_saga(node, name, SagaPhase::Forward)?;
+                let step = self.step_mut(node, name, &[Waiting])?;
+                step.status = Succeeded;
+                step.waiting = None;
+                if let Some(saga) = self.sagas.get_mut(node) {
+                    saga.phase = SagaPhase::Done;
+                }
+            }
+            RunEvent::SagaAborting { node, cause } => {
+                self.require_saga(node, name, SagaPhase::Forward)?;
+                let during_stop = self.stop.is_some();
+                if let Some(saga) = self.sagas.get_mut(node) {
+                    saga.phase = SagaPhase::Aborting;
+                    saga.cause = Some(cause.clone());
+                    saga.during_stop = during_stop;
+                }
+            }
+            RunEvent::CompensationPlanned {
+                node,
+                entries,
+                irreversible,
+            } => {
+                self.require_saga(node, name, SagaPhase::Aborting)?;
+                let named: std::collections::BTreeSet<&NodeId> =
+                    entries.iter().map(|e| &e.node).collect();
+                let coherent = named.len() == entries.len()
+                    && entries
+                        .iter()
+                        .all(|e| e.after.iter().all(|a| named.contains(a) && *a != e.node));
+                if !coherent {
+                    return Err(ExecutionError::Invariant(
+                        "a compensation plan names an entry twice or waits for one that is not in it",
+                    ));
+                }
+                let companions: Vec<NodeId> =
+                    entries.iter().map(|e| e.node.compensation()).collect();
+                self.activate(&companions)?;
+                if let Some(saga) = self.sagas.get_mut(node) {
+                    saga.phase = SagaPhase::Compensating;
+                    saga.entries = entries
+                        .iter()
+                        .map(|e| (e.node.clone(), e.after.clone()))
+                        .collect();
+                    saga.irreversible.clone_from(irreversible);
+                }
+            }
+            RunEvent::SagaCompensated { node, outcome } => {
+                self.require_saga(node, name, SagaPhase::Compensating)?;
+                if let Some(saga) = self.sagas.get(node) {
+                    let settled = saga.entries.keys().all(|forward| {
+                        self.steps
+                            .get(&forward.compensation())
+                            .is_some_and(|s| s.status.is_terminal())
+                    });
+                    if !settled {
+                        return Err(ExecutionError::Invariant(
+                            "a saga cannot end while one of its compensations is still active",
+                        ));
+                    }
+                    if self.expected_outcome(saga) != *outcome {
+                        return Err(ExecutionError::Invariant(
+                            "the outcome of a saga must follow from how its compensations ended",
+                        ));
+                    }
+                }
+                let cause = self.sagas.get(node).and_then(|s| s.cause.clone());
+                let stopping = self.stop.is_some();
+                let step = self.step_mut(node, name, &[Waiting])?;
+                step.status = Failed;
+                step.waiting = None;
+                step.failure = cause;
+                if let Some(saga) = self.sagas.get_mut(node) {
+                    saga.phase = SagaPhase::Done;
+                    saga.outcome = Some(*outcome);
+                    // A saga that ends while the run is being stopped is part of how the run ends,
+                    // whichever of the two started it.
+                    saga.during_stop |= stopping;
+                }
+            }
+            RunEvent::ReconciliationRequested { node, fence, cause } => {
+                let reconciliation = node.reconciliation();
+                let reusable = match self.steps.get(&reconciliation) {
+                    None => true,
+                    Some(step) => matches!(step.status, Succeeded | Failed),
+                };
+                if !reusable {
+                    return Err(ExecutionError::AlreadyScheduled(reconciliation));
+                }
+                let step = self.fenced_step(
+                    node,
+                    name,
+                    &[Leased, Running],
+                    fence.attempt,
+                    fence.generation,
+                )?;
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Reconciliation);
+                step.failure = Some(cause.clone());
+                step.cancel_requested = false;
+                // A step that is reconciled again (after an attempt that was retried, or after an
+                // operator asked for another one) reopens its reconciliation: the counters go on, so
+                // the retry budget of the reconciliation is shared by every round.
+                let companion = self
+                    .steps
+                    .entry(reconciliation)
+                    .or_insert_with(StepState::pending);
+                companion.status = Pending;
+                companion.routed = false;
+                companion.waiting = None;
+                companion.failure = None;
+                companion.cancel_requested = false;
+                companion.next_attempt_at = None;
+            }
+            RunEvent::ReconciliationConcluded {
+                node,
+                verdict,
+                result,
+            } => {
+                let step = self.step_mut(node, name, &[Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Reconciliation)) {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                let paired = matches!(
+                    (verdict, result),
+                    (ReconcileVerdict::Applied, ReconcileResult::Succeeded)
+                        | (
+                            ReconcileVerdict::NotApplied,
+                            ReconcileResult::RetryAt(_) | ReconcileResult::Failed(_)
+                        )
+                        | (ReconcileVerdict::Unknown, ReconcileResult::Review(_))
+                );
+                if !paired {
+                    return Err(ExecutionError::Invariant(
+                        "a reconciliation result does not follow from what it found",
+                    ));
+                }
+                step.waiting = None;
+                match result {
+                    ReconcileResult::Succeeded => {
+                        step.status = Succeeded;
+                        step.failure = None;
+                    }
+                    ReconcileResult::RetryAt(at) => {
+                        step.status = RetryWait;
+                        step.next_attempt_at = Some(*at);
+                        // The lookup said it did not happen: the step is no longer one whose outcome
+                        // is unknown, so a saga that stops while it backs off has nothing to undo.
+                        step.failure = Some(FailureCode::reconciled_not_applied());
+                    }
+                    ReconcileResult::Failed(code) => {
+                        step.status = Failed;
+                        step.failure = Some(code.clone());
+                    }
+                    ReconcileResult::Review(code) => {
+                        step.status = Waiting;
+                        step.waiting = Some(WaitingOn::Operator { code: code.clone() });
+                        step.failure = Some(code.clone());
+                    }
+                }
+            }
+            RunEvent::StepNeedsReview { node, code, fence } => {
+                let step = self.step_mut(node, name, &[Leased, Running, Waiting])?;
+                match (step.status.is_leased(), fence, &step.waiting) {
+                    (true, Some(f), _) if step.fenced_by(f.attempt, f.generation) => {}
+                    (true, _, _) => {
+                        return Err(ExecutionError::StaleAttempt { node: node.clone() });
+                    }
+                    (false, None, Some(WaitingOn::Reconciliation)) => {}
+                    _ => {
+                        return Err(ExecutionError::IllegalTransition {
+                            node: node.clone(),
+                            status: step.status,
+                            event: name,
+                        });
+                    }
+                }
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Operator { code: code.clone() });
+                step.failure = Some(code.clone());
+                step.cancel_requested = false;
+            }
+            RunEvent::StepRetryRequested { node } => {
+                let step = self.step_mut(node, name, &[Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.status = Ready;
+                step.waiting = None;
+                step.next_attempt_at = None;
+            }
+            RunEvent::StepSkipped { node } => {
+                if !node.is_compensation() {
+                    return Err(ExecutionError::Invariant(
+                        "only a compensation can be skipped",
+                    ));
+                }
+                let step = self.step_mut(node, name, &[Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.status = Skipped;
+                step.waiting = None;
+            }
+            RunEvent::StepResolved { node, outcome } => {
+                let step = self.step_mut(node, name, &[Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.waiting = None;
+                match outcome {
+                    ReviewOutcome::Succeeded => {
+                        step.status = Succeeded;
+                        step.failure = None;
+                    }
+                    ReviewOutcome::Failed(code) => {
+                        step.status = Failed;
+                        step.failure = Some(code.clone());
+                    }
+                }
+            }
             RunEvent::RunPaused => {
                 if self.paused {
                     return Err(ExecutionError::AlreadyPaused);
@@ -743,6 +1254,9 @@ impl RunState {
                     return Err(ExecutionError::AlreadyStopping);
                 }
                 self.stop = Some((*reason, code.clone()));
+                // Stopping supersedes a pause: what the run still has to do (undo what it did) needs
+                // its steps to be leased, and nobody is going to resume a run that is ending.
+                self.paused = false;
             }
             RunEvent::RunFinished { status } => self.check_finish(*status)?,
         }
@@ -758,7 +1272,7 @@ impl RunState {
             ));
         }
         match &self.stop {
-            Some((reason, _)) if reason.final_status() == status => Ok(()),
+            Some((reason, _)) if self.final_status_for(*reason) == status => Ok(()),
             Some(_) => Err(ExecutionError::Invariant(
                 "the final status must match the reason the run was stopped",
             )),
@@ -792,7 +1306,28 @@ impl RunState {
                     | StepStatus::RetryWait
             )
         };
-        self.status = if self.stop.is_some() {
+        // Something can still move by itself.
+        let live = |s: &StepState| {
+            matches!(
+                s.status,
+                StepStatus::Ready
+                    | StepStatus::Leased
+                    | StepStatus::Running
+                    | StepStatus::RetryWait
+            )
+        };
+        let reviewing = self.steps.values().any(|s| {
+            s.status == StepStatus::Waiting && matches!(s.waiting, Some(WaitingOn::Operator { .. }))
+        });
+        let compensating = self
+            .sagas
+            .values()
+            .any(|s| matches!(s.phase, SagaPhase::Aborting | SagaPhase::Compensating));
+        self.status = if reviewing && !self.steps.values().any(live) {
+            RunStatus::ManualReview
+        } else if compensating {
+            RunStatus::Compensating
+        } else if self.stop.is_some() {
             RunStatus::Cancelling
         } else if self.paused {
             RunStatus::Paused

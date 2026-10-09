@@ -78,7 +78,7 @@ pub async fn serve(
     }
 
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), DEFINITION_CACHE_ENTRIES);
-    let store = PgRunStore::new(pool.clone(), cache.clone());
+    let store = PgRunStore::new(pool.clone(), cache.clone()).with_breaker(engine.breaker);
     let state = AppState::with_rate_limit(
         IdentityService::new(identity, SystemClock),
         verifier,

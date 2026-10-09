@@ -45,7 +45,8 @@ impl Attempt {
         let task_run = task_run
             .parse::<RunId>()
             .map_err(|_| invalid("task_id has a malformed run id"))?;
-        let node = NodeId::parse(node).map_err(|_| invalid("task_id has a malformed node id"))?;
+        let node =
+            NodeId::parse_stored(node).map_err(|_| invalid("task_id has a malformed node id"))?;
         let task_generation: u64 = task_generation
             .parse()
             .map_err(|_| invalid("task_id has a malformed generation"))?;

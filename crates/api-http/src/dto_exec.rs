@@ -1,6 +1,6 @@
 //! Wire types of the definition and run routes (camelCase, RFC 3339 timestamps, no tenant).
 
-use sagat_application::definitions::{VersionRecord, WorkflowRecord};
+use sagat_application::definitions::{StoredPlan, VersionRecord, WorkflowRecord};
 use sagat_application::execution::RunRecord;
 use sagat_application::runs::{GraphSnapshot, JournalEntry};
 use sagat_domain::definition::WorkflowVersion;
@@ -149,6 +149,12 @@ pub struct OperationBody {
     pub step_id: Option<String>,
     #[serde(default)]
     pub expected_run_version: Option<u64>,
+    /// For `RESOLVE_STEP`: `SUCCEEDED` (the effect happened) or `FAILED` (it did not).
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// For `RESOLVE_STEP` with `FAILED`: the code the step is recorded as failed with.
+    #[serde(default)]
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -263,12 +269,31 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
         graph.steps.iter().map(|s| (s.node.as_str(), s)).collect();
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
-    for node in graph.definition.nodes() {
+    let sagas: std::collections::BTreeMap<_, _> =
+        graph.sagas.iter().map(|s| (s.node.as_str(), s)).collect();
+    // Every node the engine can run: the compensations and lookups derived from the author's
+    // nodes are steps of the run too, and the ones an operator is asked to decide on.
+    for node in graph.definition.all_nodes() {
         let id = node.id().as_str();
         let step = steps.get(id);
+        let origin = node.origin();
         nodes.push(json!({
             "id": id,
             "type": node.kind().label(),
+            "kind": if node.id().is_compensation() {
+                "COMPENSATION"
+            } else if node.id().is_reconciliation() {
+                "RECONCILIATION"
+            } else {
+                "FORWARD"
+            },
+            "forward": origin.forward().map(|f| f.as_str()),
+            "saga": sagas.get(id).map(|saga| json!({
+                "phase": saga.phase,
+                "cause": saga.cause,
+                "outcome": saga.outcome,
+                "irreversible": saga.irreversible.iter().map(|n| n.as_str()).collect::<Vec<_>>(),
+            })),
             "status": step.map_or("NOT_STARTED", |s| s.status.as_str()),
             "attempt": step.map_or(0, |s| s.attempt),
             "generation": step.map_or(0, |s| s.generation),
@@ -280,6 +305,30 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
             "childRunId": step.and_then(|s| s.child_run).map(|r| r.to_string()),
         }));
         edges_of(node, &mut edges);
+    }
+    // The order of the compensations, and which node each lookup is about: a compensation runs
+    // after the ones listed in its plan, and `x~r` answers for `x`.
+    for plan in sagat_domain::saga::compensation_plans(&graph.definition) {
+        for entry in &plan.entries {
+            for waited_for in &entry.after {
+                edges.push(json!({
+                    "from": waited_for.compensation().as_str(),
+                    "to": entry.compensation.as_str(),
+                    "kind": "compensation",
+                }));
+            }
+        }
+    }
+    for node in graph.definition.all_nodes() {
+        if node.id().is_reconciliation()
+            && let Some(forward) = node.origin().forward()
+        {
+            edges.push(json!({
+                "from": forward.as_str(),
+                "to": node.id().as_str(),
+                "kind": "reconcile",
+            }));
+        }
     }
     json!({
         "runId": graph.run.info.run_id.to_string(),
@@ -323,4 +372,25 @@ fn edges_of(node: &Node, out: &mut Vec<Value>) {
     if let Some(target) = node.on_error() {
         edge(target.as_str(), "error");
     }
+}
+
+// ------------------------------------------------------------------------------ saga plans
+
+/// The compensation plans a version was published with.
+pub fn compensation_plans_body(plans: &[StoredPlan]) -> Value {
+    json!({
+        "sagas": plans.iter().map(|plan| json!({
+            "saga": plan.saga.as_str(),
+            "onCompensationFailure": plan.on_compensation_failure.as_str(),
+            "cancelPolicy": plan.cancel_policy.as_str(),
+            "irreversible": plan.irreversible.iter().map(|n| n.as_str()).collect::<Vec<_>>(),
+            "compensations": plan.entries.iter().enumerate().map(|(position, entry)| json!({
+                "position": position,
+                "node": entry.node.as_str(),
+                "compensationId": entry.compensation_id.to_string(),
+                "activity": entry.activity.as_str(),
+                "after": entry.after.iter().map(|n| n.as_str()).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
 }

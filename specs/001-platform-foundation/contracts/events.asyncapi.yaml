@@ -86,7 +86,7 @@ components:
           tenantId: {type: string, format: uuid}
           namespaceId: {type: string, format: uuid}
           runId: {type: string, format: uuid}
-          status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]}
+          status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED], description: "How the run ended. COMPENSATED, PARTIAL and COMPENSATION_FAILED are the ends of a run whose saga undid its work (feature 003); a cancelled or timed-out run is reported as such once what it had done was undone."}
     ExternalEvent:
       name: ExternalEvent
       contentType: application/json

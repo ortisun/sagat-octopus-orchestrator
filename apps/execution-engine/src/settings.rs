@@ -7,6 +7,7 @@ use std::time::Duration;
 use sagat_api_grpc::GrpcConfig;
 use sagat_api_grpc::TlsConfig;
 use sagat_api_http::{AuthConfig, RateLimitConfig};
+use sagat_application::execution::BreakerPolicy;
 use sagat_application::worker::WorkerSettings;
 use sagat_control_plane::config::{
     ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, optional,
@@ -28,6 +29,8 @@ pub struct EngineConfig {
     pub subject_rate_limit: RateLimitConfig,
     pub grpc: GrpcConfig,
     pub worker: WorkerSettings,
+    /// When the compensations of a provider operation that keeps failing stop being leased.
+    pub breaker: BreakerPolicy,
     pub scheduler: SchedulerSettings,
     /// Pause between scheduler ticks when the last one found nothing to do.
     pub tick_interval: Duration,
@@ -243,6 +246,36 @@ impl EngineConfig {
             )?),
         };
 
+        let breaker_defaults = BreakerPolicy::default();
+        let breaker = BreakerPolicy {
+            // Zero turns the breaker off.
+            threshold: u32::try_from(optional(
+                get,
+                "SAGAT_COMPENSATION_BREAKER_THRESHOLD",
+                u64::from(breaker_defaults.threshold),
+            )?)
+            .map_err(|_| ConfigError::Invalid {
+                name: "SAGAT_COMPENSATION_BREAKER_THRESHOLD",
+                reason: "is too large".to_owned(),
+            })?,
+            open_for: seconds(
+                get,
+                "SAGAT_COMPENSATION_BREAKER_OPEN_SECS",
+                breaker_defaults.open_for,
+            )?,
+            max_open: seconds(
+                get,
+                "SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS",
+                breaker_defaults.max_open,
+            )?,
+        };
+        if breaker.max_open < breaker.open_for {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS",
+                reason: "must not be smaller than SAGAT_COMPENSATION_BREAKER_OPEN_SECS".to_owned(),
+            });
+        }
+
         let scheduler_defaults = SchedulerSettings::default();
         let scheduler = SchedulerSettings {
             batch: u32::try_from(positive(
@@ -342,6 +375,7 @@ impl EngineConfig {
             subject_rate_limit,
             grpc,
             worker,
+            breaker,
             scheduler,
             tick_interval,
             housekeeping_interval,

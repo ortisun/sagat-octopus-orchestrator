@@ -20,13 +20,31 @@ use crate::quotas::ensure_room_for_session;
 /// stops after `$4` qualifying rows, so its cost is bounded by the answer and not by the backlog (an
 /// aggregate over all ready steps cost 209 ms with 200 000 of them). Paused and stopping runs are
 /// skipped by a primary-key probe each.
+///
+/// Compensations have an index of their own (`steps_ready_compensation_idx`), and the branch that
+/// reads it is gated by the circuit breaker of the activity with a condition that does not depend on
+/// the rows: when the breaker is open the planner does not enter that branch at all. An outage can
+/// leave very many compensations READY behind an open breaker, and neither the claim of forward
+/// work nor the claim of the compensations of a healthy provider walks them.
 pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activity) \
      CROSS JOIN LATERAL ( \
-         SELECT st.run_id, st.ready_at FROM steps st \
-         JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
-         WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
-           AND st.status = 'READY' AND NOT r.paused AND r.stop_reason IS NULL \
-         ORDER BY st.ready_at LIMIT $4) s \
+         (SELECT st.run_id, st.ready_at FROM steps st \
+          JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
+          WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
+            AND st.status = 'READY' AND st.kind <> 'COMPENSATION' AND NOT r.paused \
+            AND (r.stop_reason IS NULL OR st.kind <> 'FORWARD') \
+          ORDER BY st.ready_at LIMIT $4) \
+         UNION ALL \
+         (SELECT st.run_id, st.ready_at FROM steps st \
+          JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
+          WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
+            AND st.status = 'READY' AND st.kind = 'COMPENSATION' \
+            AND NOT r.paused \
+            AND NOT EXISTS (SELECT 1 FROM compensation_breakers b \
+                WHERE b.tenant_id = $1 AND b.namespace_id = $2 AND b.activity = a.activity \
+                  AND b.opened_until > clock_timestamp()) \
+          ORDER BY st.ready_at LIMIT $4) \
+     ) s \
      ORDER BY s.ready_at, s.run_id LIMIT $4";
 
 fn micros(duration: Duration) -> i64 {

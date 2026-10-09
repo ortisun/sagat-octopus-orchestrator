@@ -7,6 +7,7 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::state::{RunId, RunStatus};
 use crate::identity::clip;
+use crate::saga::{ReconcileVerdict, SagaOutcome};
 use crate::workflow::NodeId;
 
 const MAX_CODE_LEN: usize = 64;
@@ -86,6 +87,40 @@ impl FailureCode {
         Self::system("CHILD_TIMED_OUT")
     }
 
+    /// Whether a step that ended with this code may have had its effect: the attempt was lost, timed
+    /// out, said it did not know, or its lookup could not say. (A worker that answered with an
+    /// ordinary failure knows the effect did not happen; a lookup that said so is
+    /// `RECONCILED_NOT_APPLIED`.)
+    #[must_use]
+    pub fn leaves_outcome_unknown(&self) -> bool {
+        [
+            Self::lease_expired(),
+            Self::attempt_timeout(),
+            Self::outcome_unknown(),
+            Self::reconciliation_failed(),
+            Self::reconciliation_unknown(),
+        ]
+        .contains(self)
+    }
+
+    /// The child run failed and its saga undid what it had done (feature 003).
+    #[must_use]
+    pub fn child_compensated() -> Self {
+        Self::system("CHILD_COMPENSATED")
+    }
+
+    /// The child run failed and its saga could not undo everything: something was left in place.
+    #[must_use]
+    pub fn child_partial() -> Self {
+        Self::system("CHILD_PARTIAL")
+    }
+
+    /// The child run failed and a compensation of its saga failed for good.
+    #[must_use]
+    pub fn child_compensation_failed() -> Self {
+        Self::system("CHILD_COMPENSATION_FAILED")
+    }
+
     /// The child workflow (or the pinned version) does not exist in the parent's namespace.
     #[must_use]
     pub fn child_not_found() -> Self {
@@ -110,6 +145,56 @@ impl FailureCode {
     #[must_use]
     pub fn child_quota_exceeded() -> Self {
         Self::system("CHILD_QUOTA_EXCEEDED")
+    }
+
+    /// The outcome of an attempt is not known: the worker says the effect may or may not have
+    /// happened (or lost its connection before it could tell). Never retried or compensated blindly.
+    #[must_use]
+    pub fn outcome_unknown() -> Self {
+        Self::system("OUTCOME_UNKNOWN")
+    }
+
+    /// The reconciliation could not be completed, so nobody knows whether the effect happened.
+    #[must_use]
+    pub fn reconciliation_failed() -> Self {
+        Self::system("RECONCILIATION_FAILED")
+    }
+
+    /// The provider cannot say whether the effect happened.
+    #[must_use]
+    pub fn reconciliation_unknown() -> Self {
+        Self::system("RECONCILIATION_UNKNOWN")
+    }
+
+    /// The reconciliation found that the effect did not happen, and the step has no attempt left.
+    /// Unlike the code of the lost attempt it is *not* an unknown outcome: nothing is compensated.
+    #[must_use]
+    pub fn reconciled_not_applied() -> Self {
+        Self::system("RECONCILED_NOT_APPLIED")
+    }
+
+    /// A reconciliation answered something that is not an answer.
+    #[must_use]
+    pub fn reconciliation_answer_invalid() -> Self {
+        Self::system("RECONCILIATION_ANSWER_INVALID")
+    }
+
+    /// The compensation failed after its retries.
+    #[must_use]
+    pub fn compensation_failed() -> Self {
+        Self::system("COMPENSATION_FAILED")
+    }
+
+    /// The run was cancelled while a saga was running: the cause of its compensation.
+    #[must_use]
+    pub fn run_cancelled() -> Self {
+        Self::system("RUN_CANCELLED")
+    }
+
+    /// The run ran past its deadline while a saga was running.
+    #[must_use]
+    pub fn run_timed_out() -> Self {
+        Self::system("RUN_TIMED_OUT")
     }
 
     /// The step's output contained the value of a secret the step was given.
@@ -163,18 +248,97 @@ pub enum StopReason {
     Cancelled,
     TimedOut,
     Failed,
+    /// A failure that a saga compensated completely: the run ends `COMPENSATED`.
+    Compensated,
+    /// A failure that a saga could only compensate in part: the run ends `PARTIAL`.
+    Partial,
+    /// A failure whose compensation failed for good: the run ends `COMPENSATION_FAILED`.
+    CompensationFailed,
 }
 
 impl StopReason {
-    /// The terminal status the run reaches once nothing is in flight any more.
+    /// The terminal status the run reaches once nothing is in flight any more, before the outcome of
+    /// the sagas that ran while it was stopping is taken into account
+    /// ([`RunState::final_status_for`](super::state::RunState::final_status_for)).
     #[must_use]
     pub const fn final_status(self) -> RunStatus {
         match self {
             Self::Cancelled => RunStatus::Cancelled,
             Self::TimedOut => RunStatus::TimedOut,
             Self::Failed => RunStatus::Failed,
+            Self::Compensated => RunStatus::Compensated,
+            Self::Partial => RunStatus::Partial,
+            Self::CompensationFailed => RunStatus::CompensationFailed,
         }
     }
+
+    /// The stop reason of a failure that a saga ended with `outcome`.
+    #[must_use]
+    pub const fn of_outcome(outcome: SagaOutcome) -> Self {
+        match outcome {
+            SagaOutcome::Compensated => Self::Compensated,
+            SagaOutcome::Partial => Self::Partial,
+            SagaOutcome::CompensationFailed => Self::CompensationFailed,
+        }
+    }
+
+    /// The name stored and shown.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cancelled => "CANCELLED",
+            Self::TimedOut => "TIMED_OUT",
+            Self::Failed => "FAILED",
+            Self::Compensated => "COMPENSATED",
+            Self::Partial => "PARTIAL",
+            Self::CompensationFailed => "COMPENSATION_FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for StopReason {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, ()> {
+        match value {
+            "CANCELLED" => Ok(Self::Cancelled),
+            "TIMED_OUT" => Ok(Self::TimedOut),
+            "FAILED" => Ok(Self::Failed),
+            "COMPENSATED" => Ok(Self::Compensated),
+            "PARTIAL" => Ok(Self::Partial),
+            "COMPENSATION_FAILED" => Ok(Self::CompensationFailed),
+            _ => Err(()),
+        }
+    }
+}
+
+/// One compensation of a saga's plan as the run records it when the saga starts to compensate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedEntry {
+    /// The forward node whose effect is being undone; its compensation is `node.compensation()`.
+    pub node: NodeId,
+    /// The forward nodes whose compensations must have finished first.
+    pub after: Vec<NodeId>,
+}
+
+/// What a reconciliation led to for the step it was about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconcileResult {
+    /// The effect happened: the step succeeded.
+    Succeeded,
+    /// The effect did not happen and the retry budget allows another attempt, not before the time.
+    RetryAt(OffsetDateTime),
+    /// The effect did not happen and the retry budget is spent: the step failed.
+    Failed(FailureCode),
+    /// Nobody can say: an operator decides.
+    Review(FailureCode),
+}
+
+/// How an operator resolved a step that waited for a decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewOutcome {
+    Succeeded,
+    Failed(FailureCode),
 }
 
 /// How a `parallel` node ended.
@@ -302,6 +466,66 @@ pub enum RunEvent {
     StepCancelled {
         node: NodeId,
     },
+    /// A `saga` node started: its body begins at `begin`.
+    SagaEntered {
+        node: NodeId,
+        begin: NodeId,
+    },
+    /// The body of the saga finished without an unhandled failure.
+    SagaCompleted {
+        node: NodeId,
+    },
+    /// Something inside the saga failed for good, or the run is being stopped: the saga's forward
+    /// work is wound down so its completed steps can be compensated.
+    SagaAborting {
+        node: NodeId,
+        cause: FailureCode,
+    },
+    /// The forward work is over: the compensations to run, in the dependencies they wait for, and
+    /// the completed steps whose effect cannot be undone.
+    CompensationPlanned {
+        node: NodeId,
+        entries: Vec<PlannedEntry>,
+        irreversible: Vec<NodeId>,
+    },
+    /// Every compensation of the saga has finished (or been given up on): how it ended.
+    SagaCompensated {
+        node: NodeId,
+        outcome: SagaOutcome,
+    },
+    /// An attempt ended without a known outcome and the step says how to find it out: its
+    /// reconciliation is scheduled and the step waits for the answer.
+    ReconciliationRequested {
+        node: NodeId,
+        fence: Fence,
+        cause: FailureCode,
+    },
+    /// The reconciliation answered, and what that means for the step.
+    ReconciliationConcluded {
+        node: NodeId,
+        verdict: ReconcileVerdict,
+        result: ReconcileResult,
+    },
+    /// The step cannot go on by itself and waits for an operator. `fence` is present when an
+    /// attempt held the lease.
+    StepNeedsReview {
+        node: NodeId,
+        code: FailureCode,
+        fence: Option<Fence>,
+    },
+    /// An operator asked for another attempt of a step that waited for a decision.
+    StepRetryRequested {
+        node: NodeId,
+    },
+    /// An operator gave up on a compensation, with a justification (kept in the audit trail).
+    StepSkipped {
+        node: NodeId,
+    },
+    /// An operator settled a step that waited for a decision.
+    StepResolved {
+        node: NodeId,
+        outcome: ReviewOutcome,
+    },
     RunPaused,
     RunResumed,
     RunStopRequested {
@@ -340,6 +564,17 @@ impl RunEvent {
             Self::EndReached { .. } => "end.reached",
             Self::StepCancelRequested { .. } => "step.cancel_requested",
             Self::StepCancelled { .. } => "step.cancelled",
+            Self::SagaEntered { .. } => "saga.entered",
+            Self::SagaCompleted { .. } => "saga.completed",
+            Self::SagaAborting { .. } => "saga.aborting",
+            Self::CompensationPlanned { .. } => "compensation.planned",
+            Self::SagaCompensated { .. } => "saga.compensated",
+            Self::ReconciliationRequested { .. } => "reconciliation.requested",
+            Self::ReconciliationConcluded { .. } => "reconciliation.concluded",
+            Self::StepNeedsReview { .. } => "step.needs_review",
+            Self::StepRetryRequested { .. } => "step.retry_requested",
+            Self::StepSkipped { .. } => "step.skipped",
+            Self::StepResolved { .. } => "step.resolved",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
             Self::RunStopRequested { .. } => "run.stop_requested",
@@ -371,7 +606,18 @@ impl RunEvent {
             | Self::ChildFinished { node, .. }
             | Self::EndReached { node }
             | Self::StepCancelRequested { node }
-            | Self::StepCancelled { node } => Some(node),
+            | Self::StepCancelled { node }
+            | Self::SagaEntered { node, .. }
+            | Self::SagaCompleted { node }
+            | Self::SagaAborting { node, .. }
+            | Self::CompensationPlanned { node, .. }
+            | Self::SagaCompensated { node, .. }
+            | Self::ReconciliationRequested { node, .. }
+            | Self::ReconciliationConcluded { node, .. }
+            | Self::StepNeedsReview { node, .. }
+            | Self::StepRetryRequested { node }
+            | Self::StepSkipped { node }
+            | Self::StepResolved { node, .. } => Some(node),
             Self::RunStarted { .. }
             | Self::RunPaused
             | Self::RunResumed
@@ -389,6 +635,10 @@ impl RunEvent {
             | Self::StepCompleted { attempt, .. }
             | Self::StepRetryScheduled { attempt, .. } => Some(*attempt),
             Self::StepFailed {
+                fence: Some(fence), ..
+            }
+            | Self::ReconciliationRequested { fence, .. }
+            | Self::StepNeedsReview {
                 fence: Some(fence), ..
             } => Some(fence.attempt),
             _ => None,

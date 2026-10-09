@@ -393,6 +393,17 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
         // does not need it.
         tenant_alias: String::new(),
         idempotency_key: task.idempotency_key.clone(),
+        task_kind: task.kind.as_str().to_owned(),
+        target_node: task
+            .target
+            .as_ref()
+            .map(|t| t.node.to_string())
+            .unwrap_or_default(),
+        target_idempotency_key: task
+            .target
+            .as_ref()
+            .map(|t| t.idempotency_key.clone())
+            .unwrap_or_default(),
     }
 }
 

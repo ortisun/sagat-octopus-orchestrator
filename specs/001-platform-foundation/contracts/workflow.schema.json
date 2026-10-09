@@ -175,10 +175,12 @@
               "$ref": "#/$defs/retry"
             },
             "compensateWith": {
-              "type": "string"
+              "type": "string",
+              "description": "The activity that undoes this one. It runs when a saga around this node compensates, and must be idempotent and tolerate an effect that never happened."
             },
             "reconcileWith": {
-              "type": "string"
+              "type": "string",
+              "description": "The activity that finds out whether this one happened, after an attempt with an unknown outcome. It answers {\"effect\": \"applied\"|\"not_applied\"|\"unknown\"} and, for applied, optionally {\"output\": ...}."
             },
             "idempotencyTemplate": {
               "type": "string"
@@ -192,6 +194,23 @@
                 "type": "string",
                 "pattern": "^[a-z][a-z0-9._-]{0,63}$"
               }
+            },
+            "compensationRetry": {
+              "$ref": "#/$defs/retry",
+              "description": "The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent."
+            },
+            "compensationTimeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Longest one attempt of the compensation may take."
+            },
+            "irreversible": {
+              "type": "boolean",
+              "description": "The effect cannot be undone once it has happened. A saga that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith."
+            },
+            "highRisk": {
+              "type": "boolean",
+              "description": "An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator."
             }
           }
         }
@@ -382,13 +401,23 @@
               "const": "saga"
             },
             "begin": {
-              "type": "string"
+              "type": "string",
+              "description": "The first node of the saga. Everything reachable from it is the body of the saga; the body is entered only from here and holds no end node. When it completes, control goes to next."
             },
             "onCompensationFailure": {
               "enum": [
                 "manual_review",
                 "fail"
-              ]
+              ],
+              "description": "manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED."
+            },
+            "cancelPolicy": {
+              "enum": [
+                "compensate_completed",
+                "abort_no_compensation",
+                "wait_in_flight_then_compensate"
+              ],
+              "description": "What a cancellation or a deadline does to the saga. compensate_completed (default): stop what is in flight and compensate what completed. wait_in_flight_then_compensate: let the attempts in flight finish, then compensate everything that completed. abort_no_compensation: stop and compensate nothing."
             }
           }
         }

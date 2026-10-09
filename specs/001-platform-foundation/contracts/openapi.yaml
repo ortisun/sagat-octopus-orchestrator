@@ -6,7 +6,8 @@ info:
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
     execution engine (feature 002), and those marked `x-implemented: '009'` (quotas, worker bindings, secrets, egress policy) by the governance routes
-    of feature 009. Every other operation is a design proposal that is not implemented yet. The worker protocol is gRPC (`worker.proto`), not REST.
+    of feature 009. Feature 003 (sagas) adds `getCompensationPlans` (`x-implemented: '003'`) and extends `operateRun`
+    (`x-extended: '003'`), the run statuses and the runtime graph. Every other operation is a design proposal that is not implemented yet. The worker protocol is gRPC (`worker.proto`), not REST.
     The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
 
@@ -319,6 +320,24 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/versions/{versionNumber}/compensation-plans:
+    get:
+      operationId: getCompensationPlans
+      summary: Get the compensation plans a version was published with
+      tags: [Workflows]
+      x-implemented: '003'
+      description: One plan per saga, recorded when the version was published and never changed afterwards. A workflow without a saga has none (an empty list).
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/VersionNumber'}
+      responses:
+        '200': {description: 'The plans', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CompensationPlans'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs:
     get:
       operationId: listRuns
@@ -330,7 +349,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
         - {name: workflowId, in: query, schema: {type: string}}
-        - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]}}
+        - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
       responses:
         '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
@@ -418,10 +437,12 @@ paths:
   /runs/{runId}/operations:
     post:
       operationId: operateRun
-      summary: Cancel, pause or resume a run
+      summary: Cancel, pause or resume a run, or decide on a step that waits for a person
       tags: [Operations]
       x-implemented: '002'
-      description: CANCEL, PAUSE and RESUME are supported. The other actions of the enumeration are declared for later features and are refused with 422.
+      x-extended: '003'
+      description: |
+        CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409. RERUN_AS_NEW and MARK_MANUAL_REVIEW are declared for later and refused with 422.
       parameters:
         - {$ref: '#/components/parameters/RunId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1101,7 +1122,7 @@ components:
         runId: {type: string, format: uuid}
         workflowId: {type: string, format: uuid}
         versionId: {type: string, format: uuid}
-        status: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]}
+        status: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}
         version: {type: integer, format: int64, minimum: 0, description: 'Number of journal events applied; usable as expectedRunVersion.'}
         paused: {type: boolean}
         startedBy: {type: string}
@@ -1160,15 +1181,26 @@ components:
             properties:
               id: {type: string}
               type: {type: string}
-              status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED]}
+              status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
               attempt: {type: integer}
               generation: {type: integer}
               cancelRequested: {type: boolean}
               failureCode: {type: [string, 'null']}
               nextAttemptAt: {type: [string, 'null'], format: date-time}
               dueAt: {type: [string, 'null'], format: date-time}
-              waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, null]}
+              waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).'}
               childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
+              kind: {type: string, enum: [FORWARD, COMPENSATION, RECONCILIATION], description: 'Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.'}
+              forward: {type: [string, 'null'], description: 'For a compensation or a reconciliation: the forward node it is about.'}
+              saga:
+                type: [object, 'null']
+                description: 'For a `saga` node: what the run knows about it.'
+                required: [phase, irreversible]
+                properties:
+                  phase: {type: string, enum: [FORWARD, ABORTING, COMPENSATING, DONE]}
+                  cause: {type: [string, 'null'], description: 'Why the saga compensates, or did.'}
+                  outcome: {type: [string, 'null'], enum: [COMPENSATED, PARTIAL, COMPENSATION_FAILED, null]}
+                  irreversible: {type: array, items: {type: string}, description: 'Completed steps whose effect could not be undone.'}
         edges:
           type: array
           items:
@@ -1177,14 +1209,42 @@ components:
             properties:
               from: {type: string}
               to: {type: string}
-              kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout]}
+              kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout, compensation, reconcile], description: '`compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
+    CompensationPlans:
+      type: object
+      required: [sagas]
+      properties:
+        sagas:
+          type: array
+          items:
+            type: object
+            required: [saga, onCompensationFailure, cancelPolicy, irreversible, compensations]
+            properties:
+              saga: {type: string}
+              onCompensationFailure: {type: string, enum: [manual_review, fail]}
+              cancelPolicy: {type: string, enum: [compensate_completed, abort_no_compensation, wait_in_flight_then_compensate]}
+              irreversible: {type: array, items: {type: string}, description: 'Nodes whose effect cannot be undone: a saga that compensates past one ends PARTIAL.'}
+              compensations:
+                type: array
+                description: In an order a worker could follow one by one; the last forward node comes first.
+                items:
+                  type: object
+                  required: [position, node, compensationId, activity, after]
+                  properties:
+                    position: {type: integer, minimum: 0}
+                    node: {type: string, description: 'The forward node the compensation undoes.'}
+                    compensationId: {type: string, format: uuid, description: 'Stable for this version and node; with the run id it makes the idempotency key a provider sees.'}
+                    activity: {type: string, description: 'The activity that undoes the node (`compensateWith`).'}
+                    after: {type: array, items: {type: string}, description: 'Forward nodes whose compensations must finish before this one starts.'}
     OperationRequest:
       type: object
       required: [action, reason]
       properties:
-        action: {type: string, enum: [PAUSE, RESUME, CANCEL, RETRY_STEP, RETRY_COMPENSATION, RERUN_AS_NEW, MARK_MANUAL_REVIEW]}
-        stepId: {type: string}
-        reason: {type: string, minLength: 8, maxLength: 2000}
+        action: {type: string, enum: [PAUSE, RESUME, CANCEL, RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION, RESOLVE_STEP, RERUN_AS_NEW, MARK_MANUAL_REVIEW]}
+        stepId: {type: string, description: 'The node id of the step the operation is about (`reserve~c` for the compensation of `reserve`). Required for RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION and RESOLVE_STEP; refused for the others.'}
+        outcome: {type: string, enum: [SUCCEEDED, FAILED], description: 'For RESOLVE_STEP: the step happened, or it did not.'}
+        errorCode: {type: string, description: 'For RESOLVE_STEP with outcome FAILED: the code the step is recorded as failed with.'}
+        reason: {type: string, minLength: 8, maxLength: 2000, description: 'Counted after trimming; for the decisions of a saga it is kept whole in the audit trail.'}
         expectedRunVersion: {type: integer, minimum: 0, description: 'Optimistic concurrency: refused with 409 if the run moved on.'}
     OperationResult:
       type: object

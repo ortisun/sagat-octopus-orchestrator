@@ -5,9 +5,10 @@
 //! Times are stored as microseconds since the epoch, the precision PostgreSQL keeps.
 
 use sagat_domain::execution::{
-    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, RunEvent, RunId, RunStatus,
-    StopReason,
+    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry, ReconcileResult,
+    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
 };
+use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
 use sagat_domain::workflow::NodeId;
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
@@ -97,13 +98,47 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             },
         }),
         RunEvent::RunStopRequested { reason, code } => json!({
-            "reason": match reason {
-                StopReason::Cancelled => "CANCELLED",
-                StopReason::TimedOut => "TIMED_OUT",
-                StopReason::Failed => "FAILED",
-            },
+            "reason": reason.as_str(),
             "code": code.as_ref().map(FailureCode::as_str),
         }),
+        RunEvent::SagaEntered { begin, .. } => json!({ "begin": begin.as_str() }),
+        RunEvent::SagaAborting { cause, .. } => json!({ "cause": cause.as_str() }),
+        RunEvent::CompensationPlanned {
+            entries,
+            irreversible,
+            ..
+        } => json!({
+            "entries": entries
+                .iter()
+                .map(|e| json!({ "node": e.node.as_str(), "after": names(&e.after) }))
+                .collect::<Vec<_>>(),
+            "irreversible": names(irreversible),
+        }),
+        RunEvent::SagaCompensated { outcome, .. } => json!({ "outcome": outcome.as_str() }),
+        RunEvent::ReconciliationRequested { fence, cause, .. } => json!({
+            "attempt": fence.attempt,
+            "generation": fence.generation,
+            "cause": cause.as_str(),
+        }),
+        RunEvent::ReconciliationConcluded {
+            verdict, result, ..
+        } => json!({
+            "verdict": verdict.as_str(),
+            "result": match result {
+                ReconcileResult::Succeeded => json!({ "kind": "succeeded" }),
+                ReconcileResult::RetryAt(at) => json!({ "kind": "retry_at", "at_us": micros(*at) }),
+                ReconcileResult::Failed(code) => json!({ "kind": "failed", "code": code.as_str() }),
+                ReconcileResult::Review(code) => json!({ "kind": "review", "code": code.as_str() }),
+            },
+        }),
+        RunEvent::StepNeedsReview { code, fence, .. } => json!({
+            "code": code.as_str(),
+            "fence": fence.map(|f| json!({ "attempt": f.attempt, "generation": f.generation })),
+        }),
+        RunEvent::StepResolved { outcome, .. } => match outcome {
+            ReviewOutcome::Succeeded => json!({ "outcome": "succeeded" }),
+            ReviewOutcome::Failed(code) => json!({ "outcome": "failed", "code": code.as_str() }),
+        },
         RunEvent::RunFinished { status } => json!({ "status": status.as_str() }),
         RunEvent::StepReleased { .. }
         | RunEvent::StepRetryDue { .. }
@@ -112,6 +147,9 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
         | RunEvent::EndReached { .. }
         | RunEvent::StepCancelRequested { .. }
         | RunEvent::StepCancelled { .. }
+        | RunEvent::SagaCompleted { .. }
+        | RunEvent::StepRetryRequested { .. }
+        | RunEvent::StepSkipped { .. }
         | RunEvent::RunPaused
         | RunEvent::RunResumed => json!({}),
     };
@@ -124,7 +162,7 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
 }
 
 fn node_of(node: Option<&str>) -> Option<NodeId> {
-    NodeId::parse(node?).ok()
+    NodeId::parse_stored(node?).ok()
 }
 
 fn nodes_of(detail: &Map<String, Value>, key: &str) -> Option<Vec<NodeId>> {
@@ -132,7 +170,7 @@ fn nodes_of(detail: &Map<String, Value>, key: &str) -> Option<Vec<NodeId>> {
         .get(key)?
         .as_array()?
         .iter()
-        .map(|v| NodeId::parse(v.as_str()?).ok())
+        .map(|v| NodeId::parse_stored(v.as_str()?).ok())
         .collect()
 }
 
@@ -266,13 +304,91 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
         "step.cancelled" => RunEvent::StepCancelled { node: node_id()? },
         "run.paused" => RunEvent::RunPaused,
         "run.resumed" => RunEvent::RunResumed,
-        "run.stop_requested" => RunEvent::RunStopRequested {
-            reason: match text(d, "reason")? {
-                "CANCELLED" => StopReason::Cancelled,
-                "TIMED_OUT" => StopReason::TimedOut,
-                "FAILED" => StopReason::Failed,
+        "saga.entered" => RunEvent::SagaEntered {
+            node: node_id()?,
+            begin: NodeId::parse_stored(text(d, "begin")?).ok()?,
+        },
+        "saga.completed" => RunEvent::SagaCompleted { node: node_id()? },
+        "saga.aborting" => RunEvent::SagaAborting {
+            node: node_id()?,
+            cause: FailureCode::parse(text(d, "cause")?).ok()?,
+        },
+        "compensation.planned" => RunEvent::CompensationPlanned {
+            node: node_id()?,
+            entries: d
+                .get("entries")?
+                .as_array()?
+                .iter()
+                .map(|entry| {
+                    let entry = entry.as_object()?;
+                    Some(PlannedEntry {
+                        node: NodeId::parse_stored(text(entry, "node")?).ok()?,
+                        after: nodes_of(entry, "after")?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+            irreversible: nodes_of(d, "irreversible")?,
+        },
+        "saga.compensated" => RunEvent::SagaCompensated {
+            node: node_id()?,
+            outcome: text(d, "outcome")?.parse::<SagaOutcome>().ok()?,
+        },
+        "reconciliation.requested" => {
+            let (attempt, generation) = fence(d)?;
+            RunEvent::ReconciliationRequested {
+                node: node_id()?,
+                fence: Fence {
+                    attempt,
+                    generation,
+                },
+                cause: FailureCode::parse(text(d, "cause")?).ok()?,
+            }
+        }
+        "reconciliation.concluded" => {
+            let result = d.get("result")?.as_object()?;
+            RunEvent::ReconciliationConcluded {
+                node: node_id()?,
+                verdict: text(d, "verdict")?.parse::<ReconcileVerdict>().ok()?,
+                result: match text(result, "kind")? {
+                    "succeeded" => ReconcileResult::Succeeded,
+                    "retry_at" => ReconcileResult::RetryAt(time_of(result, "at_us")?),
+                    "failed" => {
+                        ReconcileResult::Failed(FailureCode::parse(text(result, "code")?).ok()?)
+                    }
+                    "review" => {
+                        ReconcileResult::Review(FailureCode::parse(text(result, "code")?).ok()?)
+                    }
+                    _ => return None,
+                },
+            }
+        }
+        "step.needs_review" => RunEvent::StepNeedsReview {
+            node: node_id()?,
+            code: FailureCode::parse(text(d, "code")?).ok()?,
+            fence: match d.get("fence")? {
+                Value::Null => None,
+                Value::Object(f) => {
+                    let (attempt, generation) = fence(f)?;
+                    Some(Fence {
+                        attempt,
+                        generation,
+                    })
+                }
                 _ => return None,
             },
+        },
+        "step.retry_requested" => RunEvent::StepRetryRequested { node: node_id()? },
+        "step.skipped" => RunEvent::StepSkipped { node: node_id()? },
+        "step.resolved" => RunEvent::StepResolved {
+            node: node_id()?,
+            outcome: match text(d, "outcome")? {
+                "succeeded" => ReviewOutcome::Succeeded,
+                "failed" => ReviewOutcome::Failed(FailureCode::parse(text(d, "code")?).ok()?),
+                _ => return None,
+            },
+        },
+        "run.stop_requested" => RunEvent::RunStopRequested {
+            reason: text(d, "reason")?.parse::<StopReason>().ok()?,
             code: match d.get("code")? {
                 Value::Null => None,
                 Value::String(c) => Some(FailureCode::parse(c).ok()?),

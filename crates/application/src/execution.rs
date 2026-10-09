@@ -17,7 +17,7 @@ use sagat_domain::execution::{
     RunState, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sagat_domain::workflow::{CancelPolicy, Expression, NodeId, WorkflowDefinition};
+use sagat_domain::workflow::{ActivityName, CancelPolicy, Expression, NodeId, WorkflowDefinition};
 use time::OffsetDateTime;
 
 use sagat_domain::audit::AuditRecord;
@@ -79,6 +79,63 @@ pub fn step_id(version: WorkflowVersionId, run: RunId, node: &NodeId) -> uuid::U
     uuid::Uuid::from_bytes(bytes)
 }
 
+/// The stable identity of the compensation of `forward` in a workflow version: the same for every run
+/// of that version, so a provider that is asked to undo `reserve` can recognise the request, and the
+/// plan stored with the version names the same ids a run uses. With the run id it makes the
+/// idempotency key of one compensation (`compensation_key`).
+pub fn compensation_id(version: WorkflowVersionId, forward: &NodeId) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{version}//compensation//{forward}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // A version-8 (custom) UUID with the RFC 4122 variant, like `step_id`.
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// The idempotency key of the compensation of `forward` in one run: stable per run, step and action
+/// (`docs/architecture/sagas.md`, rule 3), so asking again, after a lost response or a restart, can
+/// never undo the effect twice.
+#[must_use]
+pub fn compensation_key(version: WorkflowVersionId, run: RunId, forward: &NodeId) -> String {
+    format!("compensation:{}:{run}", compensation_id(version, forward))
+}
+
+/// When the compensations of one provider operation stop being asked for (FR-003-003).
+///
+/// A provider that is down would otherwise be called again by every run that has something to
+/// undo, each on its own retry schedule. After `threshold` attempts in a row that ended without
+/// success, no compensation of that activity is leased for `open_for`; then one probe is, and its
+/// outcome closes the breaker or reopens it for twice as long, up to `max_open`. A step that waits
+/// is not failing: nothing is lost by waiting, only the retry budget of the step is untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BreakerPolicy {
+    /// Consecutive failures that open the breaker; zero turns it off.
+    pub threshold: u32,
+    pub open_for: std::time::Duration,
+    pub max_open: std::time::Duration,
+}
+
+impl Default for BreakerPolicy {
+    fn default() -> Self {
+        Self {
+            threshold: 5,
+            open_for: std::time::Duration::from_secs(30),
+            max_open: std::time::Duration::from_secs(300),
+        }
+    }
+}
+
+impl BreakerPolicy {
+    /// A breaker that never opens.
+    pub const OFF: Self = Self {
+        threshold: 0,
+        open_for: std::time::Duration::ZERO,
+        max_open: std::time::Duration::ZERO,
+    };
+}
+
 /// The data expressions can read.
 #[derive(Debug, Clone, Default)]
 pub struct RunData {
@@ -92,6 +149,15 @@ pub struct RunData {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("expression failed: {0}")]
 pub struct ExpressionFailure(pub String);
+
+/// What a reconciliation found out, as the activity reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconcileAnswer {
+    pub verdict: sagat_domain::saga::ReconcileVerdict,
+    /// For an effect that happened: the output the forward step would have had, if the activity
+    /// provides it.
+    pub output: Option<Vec<u8>>,
+}
 
 /// Evaluates the expressions of a workflow over a run's data (implemented by `sagat-infra-ir`).
 ///
@@ -134,6 +200,14 @@ pub trait ExpressionEvaluator: Send + Sync {
 
     /// The JSON document a worker receives as the input of `node`.
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8>;
+
+    /// Reads the answer of a reconciliation activity: a JSON object
+    /// `{"effect": "applied" | "not_applied" | "unknown", "output": <JSON>}` where `output` is
+    /// optional and only meaningful for `applied`.
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the output is not such an object.
+    fn reconcile_answer(&self, output: &[u8]) -> Result<ReconcileAnswer, ExpressionFailure>;
 
     /// Whether `bytes` is a well-formed JSON document of any kind.
     fn is_json(&self, bytes: &[u8]) -> bool;
@@ -337,6 +411,16 @@ pub trait RunTx: Send {
         &mut self,
         node: &NodeId,
         token_hash: &[u8],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Whether the circuit breaker of the compensations of `activity` lets one be leased now.
+    ///
+    /// Closed: yes. Open: no. Half open (the window is over): yes for exactly one caller, whose
+    /// lease is the probe, and no for the others until the probe reports. Asking is not free of
+    /// effect: the caller that is told yes is the probe, and must lease.
+    fn compensation_admitted(
+        &mut self,
+        activity: &ActivityName,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Whether `token_hash` is the hash of the lease currently held on `node`.

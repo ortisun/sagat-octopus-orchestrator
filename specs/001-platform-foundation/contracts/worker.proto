@@ -60,6 +60,17 @@ message TaskLease {
   string traceparent = 11;
   string tenant_alias = 12;
   string idempotency_key = 13;
+  // Added in 1.2 (additive; feature 003 sagas). A worker that ignores them keeps working: a
+  // compensation is an ordinary activity task whose `activity_name` is the one the workflow
+  // declared in `compensateWith`.
+  // FORWARD (empty is FORWARD), COMPENSATION or RECONCILIATION.
+  string task_kind = 14;
+  // For a COMPENSATION or a RECONCILIATION: the forward step it is about, and the idempotency key
+  // that step's own attempts carried, which is what identifies the effect at the provider.
+  // `idempotency_key` is then the key of this compensation (stable per run, step and action) or of
+  // this lookup, and must be sent to the provider so that asking again never repeats the effect.
+  string target_node = 15;
+  string target_idempotency_key = 16;
 }
 message PollTasksResponse { repeated TaskLease tasks = 1; int32 retry_after_ms = 2; }
 message HeartbeatRequest {

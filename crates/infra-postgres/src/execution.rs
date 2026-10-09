@@ -16,21 +16,22 @@ use sagat_application::definitions::{
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
-    DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo, RunRecord, RunTx,
-    step_id,
+    BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
+    RunRecord, RunTx, compensation_id, step_id,
 };
 use sagat_application::runs::{
-    GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, StepView,
+    GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, SagaView, StepView,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, FailureCode, RunEvent, RunId, RunState, RunStatus, StepState, StepStatus,
-    StopReason, WaitingOn,
+    CorrelationKey, FailureCode, RunEvent, RunId, RunState, RunStatus, SagaPhase, SagaState,
+    StepState, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
+use sagat_domain::saga::SagaOutcome;
 use sagat_domain::secrets::SecretName;
-use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{ActivityName, Digest, Node, NodeId, NodeKind, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
@@ -41,6 +42,7 @@ use crate::definitions::{PgDefinitionStore, hash, remember, replay};
 use crate::event_codec::{decode, encode};
 use crate::identity::{PgIdentityStore, col, corrupt, insert_audit, store_error};
 use crate::quotas::ensure_room_for_run;
+use crate::signals::{Signal, of_event};
 
 /// PostgreSQL-backed run store.
 #[derive(Debug, Clone)]
@@ -49,6 +51,7 @@ pub struct PgRunStore {
     pub(crate) cache: DefinitionCache,
     identity: PgIdentityStore,
     definitions: PgDefinitionStore,
+    breaker: BreakerPolicy,
 }
 
 impl PgRunStore {
@@ -59,7 +62,15 @@ impl PgRunStore {
             definitions: PgDefinitionStore::new(pool.clone()),
             pool,
             cache,
+            breaker: BreakerPolicy::default(),
         }
+    }
+
+    /// When the compensations of a provider operation stop being leased (FR-003-003).
+    #[must_use]
+    pub const fn with_breaker(mut self, policy: BreakerPolicy) -> Self {
+        self.breaker = policy;
+        self
     }
 
     /// Whether the execution plane can work: the server answers and every table it reads or writes
@@ -272,6 +283,8 @@ impl RunStore for PgRunStore {
                     }),
                     input_digest,
                     stored: BTreeSet::new(),
+                    breaker: self.breaker,
+                    signals: Vec::new(),
                 }));
             }
         }
@@ -321,10 +334,11 @@ impl RunStore for PgRunStore {
         let mut stored = BTreeSet::new();
         for row in &step_rows {
             let node: String = col(row, "node")?;
-            let node = NodeId::parse(&node).map_err(|_| corrupt("step node"))?;
+            let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
             stored.insert(node.clone());
             steps.insert(node, step_state(row)?);
         }
+        let sagas = load_sagas(&mut tx, tenant, run).await?;
         let stop = match record.stop_reason {
             None => None,
             Some(reason) => Some((
@@ -335,7 +349,15 @@ impl RunStore for PgRunStore {
                     .map_err(|_| corrupt("stop code"))?,
             )),
         };
-        let state = RunState::restore(run, record.status, stop, paused, steps, record.version);
+        let state = RunState::restore(
+            run,
+            record.status,
+            stop,
+            paused,
+            steps,
+            sagas,
+            record.version,
+        );
         let def = self
             .definition(&mut tx, tenant, record.info.version_id)
             .await?;
@@ -349,6 +371,8 @@ impl RunStore for PgRunStore {
             data: None,
             input_digest,
             stored,
+            breaker: self.breaker,
+            signals: Vec::new(),
         }))
     }
 
@@ -479,7 +503,33 @@ impl RunStore for PgRunStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(store_error)?;
+        let saga_rows = sqlx::query(
+            "SELECT node, phase, cause_code, outcome, irreversible FROM run_sagas \
+             WHERE tenant_id = $1 AND run_id = $2 ORDER BY node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
+        let sagas = saga_rows
+            .iter()
+            .map(|row| {
+                let node: String = col(row, "node")?;
+                let irreversible: Vec<String> = col(row, "irreversible")?;
+                Ok(SagaView {
+                    node: NodeId::parse_stored(&node).map_err(|_| corrupt("saga node"))?,
+                    phase: col(row, "phase")?,
+                    cause: col(row, "cause_code")?,
+                    outcome: col(row, "outcome")?,
+                    irreversible: irreversible
+                        .iter()
+                        .map(|n| NodeId::parse_stored(n).map_err(|_| corrupt("irreversible node")))
+                        .collect::<Result<_, _>>()?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
         let steps = step_rows
             .iter()
             .map(|row| {
@@ -489,7 +539,7 @@ impl RunStore for PgRunStore {
                 let generation: i64 = col(row, "generation")?;
                 let waiting: Option<String> = col(row, "waiting_kind")?;
                 Ok(StepView {
-                    node: NodeId::parse(&node).map_err(|_| corrupt("step node"))?,
+                    node: NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
                     status: status.parse().map_err(|_| corrupt("step status"))?,
                     attempt: u32::try_from(attempt).map_err(|_| corrupt("attempt"))?,
                     generation: u64::try_from(generation).map_err(|_| corrupt("generation"))?,
@@ -502,6 +552,9 @@ impl RunStore for PgRunStore {
                         Some("EVENT") => Some("event"),
                         Some("BRANCHES") => Some("branches"),
                         Some("CHILD") => Some("child"),
+                        Some("SAGA") => Some("saga"),
+                        Some("RECONCILIATION") => Some("reconciliation"),
+                        Some("OPERATOR") => Some("operator"),
                         _ => None,
                     },
                     child_run: col::<Option<Uuid>>(row, "child_run_id")?.map(RunId::new),
@@ -521,6 +574,7 @@ impl RunStore for PgRunStore {
             run: record,
             definition,
             steps,
+            sagas,
         }))
     }
 
@@ -662,10 +716,11 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         version: u64::try_from(version).map_err(|_| corrupt("run version"))?,
         stop_reason: match stop.as_deref() {
             None => None,
-            Some("CANCELLED") => Some(StopReason::Cancelled),
-            Some("TIMED_OUT") => Some(StopReason::TimedOut),
-            Some("FAILED") => Some(StopReason::Failed),
-            Some(_) => return Err(corrupt("stop reason")),
+            Some(reason) => Some(
+                reason
+                    .parse::<StopReason>()
+                    .map_err(|()| corrupt("stop reason"))?,
+            ),
         },
         paused: col(row, "paused")?,
         updated_at: col(row, "updated_at")?,
@@ -683,6 +738,15 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
     let waiting = match (waiting_kind.as_deref(), due_at) {
         (None, _) => None,
         (Some("BRANCHES"), _) => Some(WaitingOn::Branches),
+        (Some("SAGA"), _) => Some(WaitingOn::Saga),
+        (Some("RECONCILIATION"), _) => Some(WaitingOn::Reconciliation),
+        (Some("OPERATOR"), _) => Some(WaitingOn::Operator {
+            code: FailureCode::parse(
+                &col::<Option<String>>(row, "failure_code")?
+                    .ok_or_else(|| corrupt("operator wait"))?,
+            )
+            .map_err(|_| corrupt("operator wait"))?,
+        }),
         (Some("CHILD"), _) => Some(WaitingOn::Child {
             run: RunId::new(
                 col::<Option<Uuid>>(row, "child_run_id")?.ok_or_else(|| corrupt("child run"))?,
@@ -714,6 +778,83 @@ fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
     ))
 }
 
+/// The sagas of a run, rebuilt from their rows.
+async fn load_sagas(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+) -> Result<BTreeMap<NodeId, SagaState>, StoreError> {
+    let rows = sqlx::query(
+        "SELECT node, phase, cause_code, outcome, during_stop, irreversible \
+         FROM run_sagas WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if rows.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let entry_rows = sqlx::query(
+        "SELECT saga_node, node, after FROM run_saga_entries WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    let mut entries: BTreeMap<NodeId, BTreeMap<NodeId, Vec<NodeId>>> = BTreeMap::new();
+    for row in &entry_rows {
+        let saga: String = col(row, "saga_node")?;
+        let node: String = col(row, "node")?;
+        let after: Vec<String> = col(row, "after")?;
+        let after = after
+            .iter()
+            .map(|n| NodeId::parse_stored(n))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| corrupt("saga entry"))?;
+        entries
+            .entry(NodeId::parse_stored(&saga).map_err(|_| corrupt("saga node"))?)
+            .or_default()
+            .insert(
+                NodeId::parse_stored(&node).map_err(|_| corrupt("saga entry"))?,
+                after,
+            );
+    }
+    let mut sagas = BTreeMap::new();
+    for row in &rows {
+        let node: String = col(row, "node")?;
+        let node = NodeId::parse_stored(&node).map_err(|_| corrupt("saga node"))?;
+        let phase: String = col(row, "phase")?;
+        let cause: Option<String> = col(row, "cause_code")?;
+        let outcome: Option<String> = col(row, "outcome")?;
+        let irreversible: Vec<String> = col(row, "irreversible")?;
+        let state = SagaState::restore(
+            phase
+                .parse::<SagaPhase>()
+                .map_err(|_| corrupt("saga phase"))?,
+            cause
+                .map(|c| FailureCode::parse(&c))
+                .transpose()
+                .map_err(|_| corrupt("saga cause"))?,
+            entries.remove(&node).unwrap_or_default(),
+            irreversible
+                .iter()
+                .map(|n| NodeId::parse_stored(n))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| corrupt("saga irreversible"))?,
+            outcome
+                .map(|o| o.parse::<SagaOutcome>())
+                .transpose()
+                .map_err(|()| corrupt("saga outcome"))?,
+            col(row, "during_stop")?,
+        );
+        sagas.insert(node, state);
+    }
+    Ok(sagas)
+}
+
 // ------------------------------------------------------------------------------ the transaction
 
 /// One locked run inside an open database transaction.
@@ -731,6 +872,9 @@ pub struct PgRunTx {
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
     stored: BTreeSet<NodeId>,
+    breaker: BreakerPolicy,
+    /// Counted when (and only when) the transaction commits.
+    signals: Vec<Signal>,
 }
 
 impl std::fmt::Debug for PgRunTx {
@@ -783,7 +927,7 @@ impl RunTx for PgRunTx {
             for row in &rows {
                 let node: String = col(row, "node")?;
                 outputs.insert(
-                    NodeId::parse(&node).map_err(|_| corrupt("step node"))?,
+                    NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
                     col::<Vec<u8>>(row, "content")?,
                 );
             }
@@ -904,6 +1048,17 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn compensation_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
+        crate::breaker::admit(
+            &mut self.tx,
+            self.breaker,
+            self.info.tenant_id.as_uuid(),
+            self.info.namespace_id.as_uuid(),
+            activity.as_str(),
+        )
+        .await
+    }
+
     async fn lease_matches(
         &mut self,
         node: &NodeId,
@@ -965,6 +1120,8 @@ impl RunTx for PgRunTx {
 
         // 2. The journal, and the nodes the events touched.
         let mut touched: BTreeSet<NodeId> = BTreeSet::new();
+        // Sagas whose state changed, to be written after the steps.
+        let mut sagas: BTreeSet<NodeId> = BTreeSet::new();
         let mut hinted: BTreeSet<NodeId> = BTreeSet::new();
         // Hints written again because the first one may have been lost (they are counted: a step
         // nobody claims is announced a bounded number of times, not forever).
@@ -978,7 +1135,9 @@ impl RunTx for PgRunTx {
                 .filter(|_| {
                     matches!(
                         event,
-                        RunEvent::StepCompleted { .. } | RunEvent::WaitSatisfied { .. }
+                        RunEvent::StepCompleted { .. }
+                            | RunEvent::WaitSatisfied { .. }
+                            | RunEvent::ReconciliationConcluded { .. }
                     )
                 })
                 .and_then(|n| output_digest.get(n));
@@ -1006,18 +1165,54 @@ impl RunTx for PgRunTx {
             if let Some(node) = event.node() {
                 touched.insert(node.clone());
             }
+            self.signals.extend(of_event(event));
             match event {
                 RunEvent::RunStarted { entrypoint } => {
                     touched.insert(entrypoint.clone());
+                }
+                RunEvent::SagaEntered { node, begin } => {
+                    touched.insert(begin.clone());
+                    sagas.insert(node.clone());
+                }
+                RunEvent::SagaCompleted { node }
+                | RunEvent::SagaAborting { node, .. }
+                | RunEvent::SagaCompensated { node, .. } => {
+                    sagas.insert(node.clone());
+                }
+                RunEvent::CompensationPlanned { node, entries, .. } => {
+                    sagas.insert(node.clone());
+                    touched.extend(entries.iter().map(|e| e.node.compensation()));
+                }
+                RunEvent::ReconciliationRequested { node, .. } => {
+                    touched.insert(node.reconciliation());
                 }
                 RunEvent::StepRouted { activated, .. } => touched.extend(activated.iter().cloned()),
                 RunEvent::ParallelForked { branches, .. } => {
                     touched.extend(branches.iter().cloned())
                 }
-                RunEvent::StepReleased { node } | RunEvent::StepRetryDue { node } => {
+                RunEvent::StepReleased { node }
+                | RunEvent::StepRetryDue { node }
+                | RunEvent::StepRetryRequested { node } => {
                     hinted.insert(node.clone());
                     self.outbox_task_ready(node).await?;
                 }
+                RunEvent::StepCompleted { node, .. } if node.is_compensation() => {
+                    self.breaker_outcome(node, true).await?;
+                }
+                // An attempt of a compensation that ended without success (its lease ran out and
+                // a timeout count too: the event does not say why, and a provider that does not
+                // answer is exactly what the breaker is for).
+                RunEvent::StepRetryScheduled { node, .. }
+                | RunEvent::StepFailed {
+                    node,
+                    fence: Some(_),
+                    ..
+                }
+                | RunEvent::StepNeedsReview {
+                    node,
+                    fence: Some(_),
+                    ..
+                } if node.is_compensation() => self.breaker_outcome(node, false).await?,
                 RunEvent::ChildFinished { child, .. } => self.settle_child(*child, false).await?,
                 RunEvent::StepCancelled { node } => self.release_child(node, true).await?,
                 RunEvent::StepCancelRequested { node } => self.release_child(node, false).await?,
@@ -1053,16 +1248,14 @@ impl RunTx for PgRunTx {
             .await?;
         }
 
+        // 3b. The sagas the events touched, and the compensations a saga planned.
+        for node in &sagas {
+            self.upsert_saga(node, events).await?;
+        }
+
         // 4. The run row, guarded by the version it was loaded at.
         let (reason, code) = match (self.state.stop_reason(), self.state.stop_code()) {
-            (Some(reason), code) => (
-                Some(match reason {
-                    StopReason::Cancelled => "CANCELLED",
-                    StopReason::TimedOut => "TIMED_OUT",
-                    StopReason::Failed => "FAILED",
-                }),
-                code.map(FailureCode::as_str),
-            ),
+            (Some(reason), code) => (Some(reason.as_str()), code.map(FailureCode::as_str)),
             (None, _) => (None, None),
         };
         if written > 0 {
@@ -1116,11 +1309,48 @@ impl RunTx for PgRunTx {
     }
 
     async fn commit(self) -> Result<(), StoreError> {
-        self.tx.commit().await.map_err(store_error)
+        self.tx.commit().await.map_err(store_error)?;
+        for signal in self.signals {
+            signal.emit();
+        }
+        Ok(())
     }
 }
 
 impl PgRunTx {
+    /// An attempt of the compensation `node` ended: tells the breaker of its activity.
+    async fn breaker_outcome(&mut self, node: &NodeId, succeeded: bool) -> Result<(), StoreError> {
+        let Some(NodeKind::Activity { activity, .. }) = self.def.node(node).map(Node::kind) else {
+            return Ok(());
+        };
+        let activity = activity.as_str().to_owned();
+        let (tenant, namespace) = (
+            self.info.tenant_id.as_uuid(),
+            self.info.namespace_id.as_uuid(),
+        );
+        if succeeded {
+            crate::breaker::record_success(
+                &mut self.tx,
+                self.breaker,
+                tenant,
+                namespace,
+                &activity,
+            )
+            .await?;
+        } else if crate::breaker::record_failure(
+            &mut self.tx,
+            self.breaker,
+            tenant,
+            namespace,
+            &activity,
+        )
+        .await?
+        {
+            self.signals.push(Signal::BreakerOpened);
+        }
+        Ok(())
+    }
+
     /// The parent is told the outcome (or no longer cares): the child need not notify it again.
     async fn settle_child(&mut self, child: RunId, cancel: bool) -> Result<(), StoreError> {
         sqlx::query(
@@ -1228,6 +1458,71 @@ impl PgRunTx {
     }
 
     /// Writes the step row for `node` from the current in-memory state.
+    /// Writes the state of one saga, and the compensations it planned in `events`.
+    async fn upsert_saga(&mut self, node: &NodeId, events: &[RunEvent]) -> Result<(), StoreError> {
+        let Some(saga) = self.state.saga(node) else {
+            return Ok(());
+        };
+        let irreversible: Vec<String> = saga
+            .irreversible()
+            .iter()
+            .map(|n| n.as_str().to_owned())
+            .collect();
+        sqlx::query(
+            "INSERT INTO run_sagas \
+             (tenant_id, run_id, node, phase, cause_code, outcome, during_stop, irreversible, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             ON CONFLICT (tenant_id, run_id, node) DO UPDATE SET \
+                 phase = EXCLUDED.phase, cause_code = EXCLUDED.cause_code, \
+                 outcome = EXCLUDED.outcome, during_stop = EXCLUDED.during_stop, \
+                 irreversible = EXCLUDED.irreversible, updated_at = EXCLUDED.updated_at",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(saga.phase().as_str())
+        .bind(saga.cause().map(FailureCode::as_str))
+        .bind(saga.outcome().map(SagaOutcome::as_str))
+        .bind(saga.during_stop())
+        .bind(&irreversible)
+        .bind(self.now)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        for event in events {
+            let RunEvent::CompensationPlanned {
+                node: planned,
+                entries,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if planned != node {
+                continue;
+            }
+            for entry in entries {
+                let after: Vec<String> =
+                    entry.after.iter().map(|n| n.as_str().to_owned()).collect();
+                sqlx::query(
+                    "INSERT INTO run_saga_entries \
+                     (tenant_id, run_id, saga_node, node, compensation_id, after) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .bind(node.as_str())
+                .bind(entry.node.as_str())
+                .bind(compensation_id(self.info.version_id, &entry.node))
+                .bind(&after)
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+            }
+        }
+        Ok(())
+    }
+
     async fn upsert_step(
         &mut self,
         node: &NodeId,
@@ -1261,7 +1556,11 @@ impl PgRunTx {
             ),
             Some(WaitingOn::Branches) => (Some("BRANCHES"), None, None),
             Some(WaitingOn::Child { .. }) => (Some("CHILD"), None, None),
+            Some(WaitingOn::Saga) => (Some("SAGA"), None, None),
+            Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None, None),
+            Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None, None),
         };
+        let kind = def_node.map_or("FORWARD", |n| n.origin().label());
         // A `child` step reserved in this transaction: the run id, and the input it starts with.
         let spawn = effects.children.iter().find(|c| &c.node == node);
         let child_run = match step.waiting_on() {
@@ -1289,10 +1588,10 @@ impl PgRunTx {
                  (tenant_id, run_id, node, step_id, namespace_id, status, attempt, generation, \
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
-                  last_hinted_at, output_digest, child_run_id, child_input, updated_at) \
+                  last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
-                         $22, $23, $24, $20)",
+                         $22, $23, $24, $20, $25)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -1318,6 +1617,7 @@ impl PgRunTx {
             .bind(output.cloned())
             .bind(child_run)
             .bind(child_input)
+            .bind(kind)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -1473,6 +1773,7 @@ impl DefinitionStore for PgRunStore {
         digest: Digest,
         document: &[u8],
         release_notes: Option<&str>,
+        plans: &[sagat_domain::saga::SagaPlan],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -1486,6 +1787,7 @@ impl DefinitionStore for PgRunStore {
                 digest,
                 document,
                 release_notes,
+                plans,
                 audit,
                 idempotency,
                 now,
@@ -1508,6 +1810,14 @@ impl DefinitionStore for PgRunStore {
         id: WorkflowVersionId,
     ) -> Result<Option<VersionRecord>, StoreError> {
         self.definitions.get_version_by_id(tenant, id).await
+    }
+
+    async fn compensation_plans(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+    ) -> Result<Vec<sagat_application::definitions::StoredPlan>, StoreError> {
+        self.definitions.compensation_plans(tenant, version).await
     }
 
     async fn list_versions(

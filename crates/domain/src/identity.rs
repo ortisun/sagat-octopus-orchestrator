@@ -295,11 +295,15 @@ pub enum Permission {
     EgressManage,
     /// Decide which namespaces and activities a worker identity may serve.
     WorkerBind,
+    /// Settle a step that waits for a decision in a way that skips or replaces its work: give up on
+    /// a compensation, or say that a step with an unknown outcome did or did not happen. Retrying
+    /// is `run:operate`; this one is explicit permission with a justification (`FR-003-005`).
+    SagaOverride,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -321,6 +325,7 @@ impl Permission {
         Self::SecretUse,
         Self::EgressManage,
         Self::WorkerBind,
+        Self::SagaOverride,
     ];
 
     #[must_use]
@@ -347,6 +352,7 @@ impl Permission {
             Self::SecretUse => "secret:use",
             Self::EgressManage => "egress:manage",
             Self::WorkerBind => "worker:bind",
+            Self::SagaOverride => "saga:override",
         }
     }
 }

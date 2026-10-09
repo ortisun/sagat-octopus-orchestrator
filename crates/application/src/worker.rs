@@ -27,7 +27,7 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, compensation_key, step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -197,8 +197,42 @@ pub struct ClaimedTask {
     pub expires_at: OffsetDateTime,
     pub activity: ActivityName,
     pub input: Vec<u8>,
+    /// Stable for the step: the same on every attempt, so the provider can recognise a repeat. For a
+    /// compensation it is stable per run, step and action (`compensation_key`).
     pub idempotency_key: String,
     pub trace_id: Option<String>,
+    /// What the task is for: forward work, undoing a step, or finding out whether it happened.
+    pub kind: TaskKind,
+    /// For a compensation or a reconciliation: the forward step it is about, and the idempotency
+    /// key that step's own attempts carried, which is what identifies the effect at the provider.
+    pub target: Option<TaskTarget>,
+}
+
+/// What a task is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    Forward,
+    Compensation,
+    Reconciliation,
+}
+
+impl TaskKind {
+    /// The name carried by the worker protocol.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Forward => "FORWARD",
+            Self::Compensation => "COMPENSATION",
+            Self::Reconciliation => "RECONCILIATION",
+        }
+    }
+}
+
+/// The forward step a compensation or a reconciliation is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTarget {
+    pub node: NodeId,
+    pub idempotency_key: String,
 }
 
 impl ClaimedTask {
@@ -634,14 +668,20 @@ where
                         _ => None,
                     }
                 })
-                .take(remaining)
                 .collect()
         };
         let mut leased = Vec::new();
         for (node, activity, timeout) in ready {
             // Every task carries the run's data; the response is bounded by what it carries.
-            if *bytes >= MAX_POLL_BYTES {
+            // `remaining` bounds what is *leased*, not what is looked at: a step the circuit
+            // breaker holds back must not use up the place of one that can run.
+            if *bytes >= MAX_POLL_BYTES || leased.len() >= remaining {
                 break;
+            }
+            // A provider whose compensations keep failing is left alone until its breaker allows
+            // one probe; the step stays ready and loses nothing by waiting.
+            if node.is_compensation() && !tx.compensation_admitted(&activity).await? {
+                continue;
             }
             match self
                 .lease_one(&mut tx, session, &node, activity, timeout, trace_id)
@@ -703,28 +743,57 @@ where
             .unwrap_or_else(|| tx.now() + self.settings.lease_ttl);
         let run_id = info.run_id;
         let version = info.version_id;
-        let template = {
+        // The forward step a compensation or a reconciliation belongs to, and that step's template.
+        let (forward, kind, template) = {
             let (def, _) = tx.parts();
-            match def.node(node).map(sagat_domain::workflow::Node::kind) {
+            let origin = def.node(node).map(|n| n.origin().clone());
+            let forward = origin.as_ref().and_then(|o| o.forward().cloned());
+            let kind = match origin {
+                Some(sagat_domain::saga::NodeOrigin::Compensation(_)) => TaskKind::Compensation,
+                Some(sagat_domain::saga::NodeOrigin::Reconciliation(_)) => TaskKind::Reconciliation,
+                _ => TaskKind::Forward,
+            };
+            let templated = forward.as_ref().unwrap_or(node);
+            let template = match def.node(templated).map(sagat_domain::workflow::Node::kind) {
                 Some(NodeKind::Activity {
                     idempotency_template,
                     ..
                 }) => idempotency_template.clone(),
                 _ => None,
-            }
+            };
+            (forward, kind, template)
         };
         // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
         let data = tx.data().await?;
-        let idempotency_key = match template {
+        // The key of the forward step: what identifies the effect at the provider.
+        let forward_node = forward.as_ref().unwrap_or(node);
+        let forward_key = match template {
             Some(template) => self
                 .engine
                 .evaluator()
-                .idempotency_key(&template, data, node)
+                .idempotency_key(&template, data, forward_node)
                 .unwrap_or_else(|failure| {
-                    tracing::warn!(error = %failure, node = %node, "idempotency template failed; using the default key");
-                    format!("{run_id}:{node}")
+                    tracing::warn!(error = %failure, node = %forward_node, "idempotency template failed; using the default key");
+                    format!("{run_id}:{forward_node}")
                 }),
-            None => format!("{run_id}:{node}"),
+            None => format!("{run_id}:{forward_node}"),
+        };
+        let (idempotency_key, target) = match (kind, forward) {
+            (TaskKind::Compensation, Some(forward)) => (
+                compensation_key(version, run_id, &forward),
+                Some(TaskTarget {
+                    node: forward,
+                    idempotency_key: forward_key,
+                }),
+            ),
+            (TaskKind::Reconciliation, Some(forward)) => (
+                format!("reconciliation:{run_id}:{forward}"),
+                Some(TaskTarget {
+                    node: forward,
+                    idempotency_key: forward_key,
+                }),
+            ),
+            _ => (forward_key, None),
         };
         let input = self.engine.evaluator().task_input(data, node);
         Ok(ClaimedTask {
@@ -738,6 +807,8 @@ where
             input,
             idempotency_key,
             trace_id: info.trace_id,
+            kind,
+            target,
         })
     }
 
@@ -845,6 +916,28 @@ where
                 .map_err(engine_error)?;
             return self.finish(tx, task, idempotency).await;
         }
+        // A reconciliation does not produce the output of a step, it says whether the step happened.
+        if task.node.is_reconciliation() {
+            return self
+                .complete_reconciliation(tx, task, output, effects, idempotency)
+                .await;
+        }
+        // What a compensation answers is not kept: nothing reads it (a later step reads the output
+        // of the step it follows, not of the one that undid it), so it must not count against the
+        // run's budget either, or an undo that worked would be recorded as a failure because the
+        // forward steps had filled it.
+        if task.node.is_compensation() {
+            let node = task.node.clone();
+            let fence = task.fence;
+            self.engine
+                .run(&mut tx, effects, move |def, state, now| {
+                    let progress = execution::complete_step(def, state, &node, fence, now)?;
+                    Ok(((), progress))
+                })
+                .await
+                .map_err(engine_error)?;
+            return self.finish(tx, task, idempotency).await;
+        }
         // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
         // a completion that would exceed it fails the step (a retry would only exceed it again).
         let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
@@ -872,6 +965,70 @@ where
             .run(&mut tx, effects, move |def, state, now| {
                 let progress = execution::complete_step(def, state, &node, fence, now)?;
                 Ok(((), progress))
+            })
+            .await
+            .map_err(engine_error)?;
+        self.finish(tx, task, idempotency).await
+    }
+
+    /// The answer of a reconciliation (`x~r`) to the question whether step `x` happened. An answer
+    /// that is not one, or that would make the run retain too much, fails the reconciliation for
+    /// good: asking the same lookup again would get the same answer.
+    async fn complete_reconciliation(
+        &self,
+        mut tx: S::Tx,
+        task: &TaskRef<'_>,
+        output: &[u8],
+        mut effects: Effects,
+        idempotency: Idempotency,
+    ) -> Result<StepAck, AppError> {
+        let forward = task.node.forward().ok_or(AppError::Internal)?;
+        let rejected = match self.engine.evaluator().reconcile_answer(output) {
+            Err(failure) => {
+                tracing::warn!(error = %failure, node = %task.node, "a reconciliation answered nonsense");
+                Some(FailureCode::reconciliation_answer_invalid())
+            }
+            Ok(answer) => {
+                let substitute = (answer.verdict == sagat_domain::saga::ReconcileVerdict::Applied)
+                    .then(|| answer.output.clone().unwrap_or_else(|| b"{}".to_vec()));
+                let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
+                if substitute
+                    .as_ref()
+                    .is_some_and(|bytes| retained + bytes.len() > MAX_RUN_OUTPUT_BYTES)
+                {
+                    Some(FailureCode::run_data_limit())
+                } else {
+                    // The forward step succeeded after all: later steps read the output it would
+                    // have had.
+                    if let Some(bytes) = substitute {
+                        effects.outputs = vec![(forward.clone(), bytes)];
+                    }
+                    let (node, fence, verdict) = (task.node.clone(), task.fence, answer.verdict);
+                    let jitter = self.entropy.unit();
+                    self.engine
+                        .run(&mut tx, effects, move |def, state, now| {
+                            let progress = execution::complete_reconciliation(
+                                def, state, &node, fence, verdict, jitter, now,
+                            )?;
+                            Ok(((), progress))
+                        })
+                        .await
+                        .map_err(engine_error)?;
+                    return self.finish(tx, task, idempotency).await;
+                }
+            }
+        };
+        let code = rejected.ok_or(AppError::Internal)?;
+        let (node, fence) = (task.node.clone(), task.fence);
+        self.engine
+            .run(&mut tx, effects, move |def, state, now| {
+                let failure = execution::Failure {
+                    fence,
+                    code,
+                    retryable: false,
+                    jitter_sample: 0.0,
+                };
+                Ok(((), execution::fail_step(def, state, &node, failure, now)?))
             })
             .await
             .map_err(engine_error)?;
