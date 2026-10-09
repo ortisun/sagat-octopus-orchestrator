@@ -1,6 +1,6 @@
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
-> **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution) and 009 (security and multi-tenant governance, apart from the sandbox, inbound webhooks and a Helm chart, which belong to other features) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
+> **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution), 003 (sagas and compensations, apart from the SDK DSL, Studio screens and dashboards, which belong to other features) and 009 (security and multi-tenant governance, apart from the sandbox, inbound webhooks and a Helm chart, which belong to other features) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
 
 ## Mission
 
@@ -19,7 +19,7 @@ Inspired by **Temporal** (history and recovery), **Restate** (journal and durabl
 - **Security:** tenant/namespace isolation, RBAC, auditing and explicit egress/secrets policy.
 - **Observability:** OTel + auditable journal + execution timeline and DAG.
 
-## Build, test and run (features 001, 002 and 009)
+## Build, test and run (features 001, 002, 003 and 009)
 
 ```sh
 cargo test --workspace --locked          # needs Docker: integration tests start PostgreSQL 16
@@ -29,6 +29,8 @@ SAGAT_PERF_REPORT=tests/performance/reports/002-durable-execution.md \
   cargo test -p sagat-tests --test perf_002 --release -- --ignored --nocapture
 # the security battery of feature 009 (cross-tenant, secret leak, quota racing, SSRF on the egress guard):
 cargo test -p sagat-tests --test contract_rest_009 --test e2e_009 --test integration_009 --test fault_009
+# sagas, compensations and reconciliation (feature 003): stories, PostgreSQL, contracts, failure injection:
+cargo test -p sagat-tests --test e2e_003 --test integration_003 --test contract_rest_003 --test contract_grpc_003 --test fault_003
 ```
 
 The full procedure, the environment variables and what is not built yet are in
@@ -40,7 +42,9 @@ in [`specs/002-durable-execution/quickstart.md`](specs/002-durable-execution/qui
 security controls (quotas and their ceilings, worker bindings, the secret store, the egress policy, TLS
 on the worker API) is in [`docs/runbooks/security-governance.md`](docs/runbooks/security-governance.md);
 the validation flow and the security review of feature 009 are in
-[`specs/009-security-multitenancy/quickstart.md`](specs/009-security-multitenancy/quickstart.md).
+[`specs/009-security-multitenancy/quickstart.md`](specs/009-security-multitenancy/quickstart.md). Operating sagas (what happens when a step fails, the runs that wait for a person, the circuit breaker) is in
+[`docs/runbooks/sagas.md`](docs/runbooks/sagas.md); the validation flow and review of feature 003 are in
+[`specs/003-sagas-compensations/quickstart.md`](specs/003-sagas-compensations/quickstart.md); `examples/payment-saga.workflow.json` is a saga you can publish.
 Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
 
 ## Folders
@@ -77,6 +81,7 @@ scripts/                        Architecture-rule checker and the compose smoke 
 - There is no arbitrary automatic migration of running workflows to a new version.
 - The graphical editor is a faithful representation of the **declarative** DSL/IR. Arbitrary imperative code is not always convertible to a static graph; Studio merges the planned graph and the actual execution.
 - Throughput and latency targets are **benchmark criteria to verify**, not commercial promises.
+- A saga undoes what it did by asking the provider to (a compensation), which is not a rollback: an effect that cannot be undone ends the run `PARTIAL`, and a compensation that keeps failing waits for a person instead of being assumed done. An attempt whose outcome is unknown is looked up before it is repeated. The platform asks at least once with stable keys; a provider that does not deduplicate by them can still do an effect twice. What is not built (the SDK DSL, Studio screens, dashboards) is in [`specs/003-sagas-compensations/research.md`](specs/003-sagas-compensations/research.md).
 - Tenant isolation, quotas, worker bindings, the secret store and the egress policy are enforced and tested (feature 009). **Not yet built:** running untrusted code in a sandbox, inbound webhook signature and replay controls, quotas for builds/storage/logs, a KMS behind the secret key ring, and a Helm chart with network policies. The list, with the reason for each, is in [`specs/009-security-multitenancy/research.md`](specs/009-security-multitenancy/research.md).
 
 ## Reading order

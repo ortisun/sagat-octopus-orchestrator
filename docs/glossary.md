@@ -12,6 +12,12 @@
 - **Inbox:** deduplication/durability of received external messages.
 - **Saga:** coordination of actions with semantically defined compensations.
 - **Reconciliation:** querying external state to resolve an ambiguous outcome.
+- **Compensation:** the activity that asks a provider to undo a completed step (`compensateWith`); a step of its own, `<id>~c`, planned in reverse order. Not a rollback.
+- **Lookup:** the reconciliation step `<id>~r`; its answer is `applied`, `not_applied` or `unknown`.
+- **Derived node:** a compensation or lookup the engine adds to the definition for an activity that declares one; nothing routes to it.
+- **Manual review:** the state of a run (`MANUAL_REVIEW`) while a step waits for a person to retry it, skip a compensation or declare what happened.
+- **Partial:** how a saga ends when something could not be undone (`irreversible`, or a compensation an operator skipped).
+- **Circuit breaker (compensations):** the rule that stops handing out the compensations of an activity that keeps failing, then lets one probe through.
 - **Signal:** message addressed to a specific Run.
 - **Wait subscription:** durable event→Run/step binding, with deadline.
 - **Lease/fencing:** temporary versioned authorization that prevents a stale attempt from committing.

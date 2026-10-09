@@ -39,6 +39,7 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
   for a timer, an event or a child during the roll continues with the new binary: its state is rows.
 - **Upgrading from a build before feature 009:** after `migrate`, bind your worker identities (`PUT /namespaces/{id}/worker-bindings/{subject}`, see `security-governance.md`) before rolling the engines, or the workers are refused at registration.
 - **Rolling back a migration** drops data (`.down.sql`): back up first.
+- **Sagas (feature 003).** `SAGAT_COMPENSATION_BREAKER_THRESHOLD` (5; `0` turns it off), `SAGAT_COMPENSATION_BREAKER_OPEN_SECS` (30) and `SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS` (300) set when the compensations of an activity that keeps failing stop being handed out; see [`sagas.md`](sagas.md). Runs in flight when the migration is applied are unaffected.
 
 ## 3. Health and diagnosis
 
@@ -97,6 +98,7 @@ SELECT count(*) FILTER (WHERE delivered_at IS NULL) AS pending, max(attempt_coun
 | `grpc_connections_closed_total` | `reason` | Connections closed because the peer was silent (`silent`: never sent a byte; `idle`: silent for `SAGAT_GRPC_IDLE_TIMEOUT_SECS`) |
 | `scheduler_actions_total` | `kind`, `outcome` | What the loop did: `timer`, `wait_timeout`, `retry`, `lease`, `deadline`, `rehint`, `child_start`, `child_finish`, `child_cancel`; `done`, `skipped` (someone else got there first), `failed` |
 | `child_runs_started_total` | | Child runs created |
+| `saga_transitions_total`, `saga_outcomes_total`, `compensation_attempts_total`, `reconciliations_total`, `operator_decisions_total`, `compensation_breaker_opened_total` | closed sets | Sagas (feature 003); meaning in [`sagas.md`](sagas.md) |
 | `outbox_published_total` | `event` | Messages sent to NATS (`task.ready`, `run.finished`, `other`) |
 | `outbox_publish_failed_total` | `code` | `BROKER_UNAVAILABLE`, `REJECTED` |
 | `outbox_backlog` | | Messages owed |

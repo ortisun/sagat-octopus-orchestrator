@@ -1,12 +1,12 @@
 # Traceability of features, requirements and test evidence
 
-> Base record to update per PR. Features 001, 002 and 009 are implemented (see the evidence tables below; 009 without the sandbox, inbound webhooks and a Helm chart, which belong to other features); every other feature is still only specified.
+> Base record to update per PR. Features 001, 002, 003 and 009 are implemented (see the evidence tables below; 003 without the SDK DSL, Studio screens and dashboards, and 009 without the sandbox, inbound webhooks and a Helm chart, which belong to other features); every other feature is still only specified.
 
 | Feature | Requirements | User stories | Planned tests | Status |
 |---|---|---|---|---|
 | [001 platform-foundation](../specs/001-platform-foundation/spec.md) | FR-001-001..007 | 4 | `tests/e2e/001-platform-foundation/`, `tests/fault/001-platform-foundation/` | Implementing |
 | [002 durable-execution](../specs/002-durable-execution/spec.md) | FR-002-001..009 | 4 | `tests/e2e/002-durable-execution/`, `tests/integration/002-durable-execution/`, `tests/contract/002-durable-execution/` | Implementing (see the evidence table) |
-| [003 sagas-compensations](../specs/003-sagas-compensations/spec.md) | FR-003-001..007 | 4 | `tests/e2e/003-sagas-compensations/`, `tests/fault/003-sagas-compensations/` | Planned |
+| [003 sagas-compensations](../specs/003-sagas-compensations/spec.md) | FR-003-001..007 | 4 | `tests/e2e/003-sagas-compensations/`, `tests/integration/003-sagas-compensations/`, `tests/contract/003-sagas-compensations/`, `tests/fault/003-sagas-compensations/` | Implementing (see the evidence table; the SDK DSL, Studio and dashboards are other features) |
 | [004 events-webhooks-messaging](../specs/004-events-webhooks-messaging/spec.md) | FR-004-001..008 | 4 | `tests/e2e/004-events-webhooks-messaging/`, `tests/fault/004-events-webhooks-messaging/` | Planned |
 | [005 inline-code-sandbox](../specs/005-inline-code-sandbox/spec.md) | FR-005-001..008 | 4 | `tests/e2e/005-inline-code-sandbox/`, `tests/fault/005-inline-code-sandbox/` | Planned |
 | [006 sdk-multilanguage](../specs/006-sdk-multilanguage/spec.md) | FR-006-001..008 | 4 | `tests/e2e/006-sdk-multilanguage/`, `tests/fault/006-sdk-multilanguage/` | Planned |
@@ -72,6 +72,29 @@ Last updated with the control-plane branch. "Partial" and "Open" are stated expl
 | SC-002-002 100% of US01..US04 pass in a reproducible automated suite | Done | `tests/e2e/002-durable-execution/stories.rs` |
 | SC-002-003 no violation of the Constitution gates and no silent loss of persisted state | Partial | No loss is provable by the tests above; the Constitution is still not in the repository (G1) |
 | SC-002-004 critical errors expose `code`, `trace_id` and remediation without leaking | Partial | `code` (and the gRPC `x-sagat-error`) and trace ids proven; no separate `remediation` field |
+
+## Evidence: 003 sagas-compensations
+
+Gaps and decisions: `specs/003-sagas-compensations/research.md` (G51–G65, D59–D71). Validation flow and the review: `specs/003-sagas-compensations/quickstart.md`. Operating it: `docs/runbooks/sagas.md`.
+
+| Requirement | State | Evidence |
+|---|---|---|
+| FR-003-001 saga boundary, forward action, compensation, reconciliation and cancellation policy in the IR | Done | `saga`, `compensateWith`, `reconcileWith`, `compensationRetry`, `compensationTimeoutMs`, `irreversible`, `highRisk` in the workflow schema; derived nodes `<id>~c` / `<id>~r` (ADR-0010); `crates/domain/tests/{workflow,sagas}.rs`, `crates/infra-ir/tests/codec.rs`, `examples/payment-saga.workflow.json`. The DSL of `docs/architecture/sagas.md` is SDK sugar and waits for 006 (G59) |
+| FR-003-002 the compensation plan persisted as a reverse DAG, respecting branch independence | Done | `saga_plans` / `saga_plan_entries` (immutable, tenant-bound) written at publish, read at `GET …/compensation-plans`; `plan::*`, `us01`, `the_plan_is_the_same_as_the_one_worked_out_the_long_way`, `what_ran_after_a_join_is_undone_before_the_branches_that_fed_it`; the plan a run follows (`run_saga_entries`) is decided from what completed |
+| FR-003-003 compensation with its own retries, idempotency, limits, timeout and provider circuit breaker | Done | default five attempts / `compensationRetry` / `compensationTimeoutMs`; `compensation:{id}:{run}` keys (`us02`, `crashes`, `provider`); the breaker per tenant, namespace and activity (`breaker::*`, mutation-checked); limits are the quotas and bindings of 009 applied to the derived steps. Lookups are not behind the breaker (G56); the breaker is per activity name (G55) |
+| FR-003-004 distinguish COMPENSATED, PARTIAL, COMPENSATION_FAILED, MANUAL_REVIEW and irreversible | Done | the five statuses in the OpenAPI (and a test that none is missing), `run.finished` with all terminal ones (AsyncAPI, tested), `saga` state in the graph; `an_irreversible_effect_makes_the_outcome_partial...`, `a_sibling_saga_whose_compensation_failed_is_not_hidden...`, `us04` |
+| FR-003-005 pause, retry compensation and skip, skip only with explicit permission and an audited justification | Done | `RETRY_STEP` / `RETRY_COMPENSATION` (`run:operate`), `SKIP_COMPENSATION` / `RESOLVE_STEP` (`saga:override`, administrators), justification after trimming, audit with the reason; `review::*`, `us04`, `contract_rest_003`. Pause is feature 002's. `MARK_MANUAL_REVIEW` and `RERUN_AS_NEW` stay declared and refused (G58) |
+| FR-003-006 propagate cancellation / deadline to sub-workflows under a configured policy | Done | `cancelPolicy` of the `child` node (002) carries a cancellation into a child whose saga then undoes its work, and the parent waits (`request_cancel`) or not (`propagate`, `detach`); a child that ends in a saga status fails its parent's step with its own code. `children::*` (8 tests) |
+| FR-003-007 reconcile or mark manual for an ambiguous high-risk result | Done | `LEASE_EXPIRED` / `ATTEMPT_TIMEOUT` / `OUTCOME_UNKNOWN` look the step up (`reconcileWith`) or, if `highRisk` without a lookup, wait for a person; retrying such a step needs an administrator; `reconcile::*`, `us03`, `provider::*` |
+| NFR-003-SEC tenant isolation, RBAC, least privilege, no secret in logs or in the journal | Done | tenant in every key, foreign key and statement of the new tables; breaker per namespace; `saga:override` only for administrators; no label, audit record or error carries a payload; the lookup's output goes through the secret scan; two independent reviews (D71) |
+| NFR-003-DUR a transition is not lost after commit; lease and fencing | Done | `fault_003` (13 tests: crash before commit, restart, effect before checkpoint, duplicates, three races, a real HTTP provider, connections killed under load), the domain property tests extended with sagas, `verify_run` after every scenario |
+| NFR-003-OBS logs, correlated traces, essential metrics, auditability per Run/Step | Done, dashboards open | six counters taken after commit with closed labels (D69), journal events, audit records, the graph; dashboards and alerts are feature 008 (G60) |
+| NFR-003-COMP versioned protocol and schemas; do not break in-flight runs | Done | protocol 1.2 additive (baseline +15 lines, none removed; a protocol-1.0 message decodes every lease), additive reversible migration, a run without a saga has no derived nodes |
+| NFR-003-PERF compensating does not block threads; throughput is the provider's | Done as a baseline | `tests/performance/reports/003-sagas-compensations.md`: planning 49 compensations p95 below 250 ms, 4 workers 2.8x one, a run that waits for a person costs the scheduler and the pool nothing, the breaker's predicate leaves the claim path within 2x; 16 workers over a pool of 8 do worse than 4 (G57) |
+| SC-003-001 E2E reserve→submit fails→release; ambiguous provider requires reconciliation; release failure triggers manual review | Done | `e2e_003` us02, us03 (engine restart), us04 |
+| SC-003-002 100% of US01..US04 pass in a reproducible automated suite | Done | `e2e_003` (20 tests) and the suites above |
+| SC-003-003 no violation of the Constitution gates and no silent loss of persisted state | Partial | No loss is provable by the tests above; the Constitution is still not in the repository (G1) |
+| SC-003-004 critical errors expose `code`, `trace_id` and remediation without leaking | Partial | `code`, `traceId` and a stable message are proven; no separate `remediation` field |
 
 ## Evidence: 009 security-multitenancy
 
