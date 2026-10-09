@@ -597,7 +597,7 @@ mod tests {
             if line.contains("/to-metadata") {
                 "HTTP/1.1 302 Found\r\nlocation: http://meta.test/latest\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
             } else if line.contains("/to-good") {
-                format!("HTTP/1.1 302 Found\r\nlocation: /landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                "HTTP/1.1 302 Found\r\nlocation: /landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
             } else if line.contains("/loop") {
                 "HTTP/1.1 302 Found\r\nlocation: /loop\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
             } else {
