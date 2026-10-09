@@ -152,6 +152,27 @@ impl OpenApi {
         found
     }
 
+    /// Every operation of the document: `(method, template, operationId, implemented)`, where
+    /// "implemented" means a feature built it (`x-implemented`, or the identity operations).
+    pub fn all_operations(&self) -> Vec<(String, String, String, bool)> {
+        let mut found = Vec::new();
+        for (path, item) in self.doc["paths"].as_object().expect("paths") {
+            for (method, op) in item.as_object().expect("path item") {
+                if !["get", "put", "post", "delete", "patch"].contains(&method.as_str()) {
+                    continue;
+                }
+                let id = op["operationId"].as_str().expect("operationId").to_owned();
+                let identity = op["tags"]
+                    .as_array()
+                    .is_some_and(|t| t.iter().any(|v| v == "Identity"));
+                let implemented = op.get("x-implemented").is_some() || identity;
+                found.push((method.to_ascii_uppercase(), path.clone(), id, implemented));
+            }
+        }
+        found.sort();
+        found
+    }
+
     pub fn error_codes(&self) -> Vec<String> {
         self.doc["components"]["schemas"]["Error"]["properties"]["code"]["enum"]
             .as_array()

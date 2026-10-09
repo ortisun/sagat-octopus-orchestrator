@@ -226,6 +226,67 @@
         "type": "String"
       }
     },
+    "sagat_octopus_orchestrator.v1.ResolveSecretsRequest": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "step_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "5": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "6": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "traceparent",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ResolveSecretsResponse": {
+      "1": {
+        "name": "secrets",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ResolvedSecret"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ResolvedSecret": {
+      "1": {
+        "name": "name",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "value",
+        "repeated": false,
+        "type": "Bytes"
+      },
+      "3": {
+        "name": "version",
+        "repeated": false,
+        "type": "Uint32"
+      }
+    },
     "sagat_octopus_orchestrator.v1.StepCommandResponse": {
       "1": {
         "name": "command_id",
@@ -373,6 +434,12 @@
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.RegisterWorkerRequest",
         "output": ".sagat_octopus_orchestrator.v1.RegisterWorkerResponse",
+        "serverStreaming": false
+      },
+      "ResolveSecrets": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.ResolveSecretsRequest",
+        "output": ".sagat_octopus_orchestrator.v1.ResolveSecretsResponse",
         "serverStreaming": false
       }
     }

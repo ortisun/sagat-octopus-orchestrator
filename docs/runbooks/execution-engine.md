@@ -10,7 +10,7 @@ OIDC settings and the backup procedure are the same.
 
 | Piece | Where | Notes |
 |---|---|---|
-| Worker API | `execution-engine serve`, `SAGAT_GRPC_ADDR`, default `127.0.0.1:9000` | gRPC over plaintext HTTP/2; TLS is the ingress' or the mesh's job (gap G27). Authenticated like the REST API: bearer JWT, member of a tenant, role `worker` (or `admin`) |
+| Worker API | `execution-engine serve`, `SAGAT_GRPC_ADDR`, default `127.0.0.1:9000` | gRPC over HTTP/2. TLS (and mTLS) can be terminated by the engine itself with `SAGAT_GRPC_TLS_*`, or by the ingress or mesh in front (then say so with `SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS=true` if secrets are configured). Authenticated like the REST API: bearer JWT, member of a tenant, role `worker` (or `admin`), **and bound** to the namespace and activities it serves (`docs/runbooks/security-governance.md`) |
 | Scheduler loop | same process | Fires timers, wait deadlines and retries, reclaims lost leases, enforces run deadlines, renews lost wake-up hints, creates child runs, reports ended children to their parents, cancels children of stopped parents. Safe to run in several replicas |
 | Housekeeping | same process, every `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300) | Purges idempotency records (7 d), expired worker sessions (1 h after expiry) and delivered outbox messages (24 h, 5000 per round) |
 | Outbox dispatcher | same process, only when `SAGAT_NATS_URL` is set | Publishes `task.ready` hints (`sagat.v1.task.ready.<tenant>.<activity>`) and `run.finished` events (`sagat.v1.run.finished.<tenant>`) to JetStream, at-least-once |
@@ -37,6 +37,7 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
   timers fire (every replica reads the same oldest candidates; see G22 and the benchmark report).
 - **Upgrade:** `migrate` first (additive migrations), then roll the engines. A run that is waiting
   for a timer, an event or a child during the roll continues with the new binary: its state is rows.
+- **Upgrading from a build before feature 009:** after `migrate`, bind your worker identities (`PUT /namespaces/{id}/worker-bindings/{subject}`, see `security-governance.md`) before rolling the engines, or the workers are refused at registration.
 - **Rolling back a migration** drops data (`.down.sql`): back up first.
 
 ## 3. Health and diagnosis
@@ -54,8 +55,9 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 | Exit code 2: `SAGAT_ALLOW_INSECURE_JWKS_HTTP is only allowed when SAGAT_ENV=dev` | Plain-http key URL outside dev | Use an `https://` JWKS URL |
 | Workers get `UNAUTHENTICATED` | Token invalid/expired, tenant claim unknown, subject not a member of the tenant, or the worker session expired (idle `SAGAT_SESSION_TTL_SECS`) | Check the token; re-register after a session expiry (`PollTasks` answers `UNAUTHENTICATED`) |
 | Workers get `PERMISSION_DENIED` (`x-sagat-error: FORBIDDEN`) | The identity's role in the tenant is not `worker`/`admin` | Grant the `worker` role to the worker identity |
+| Workers get `PERMISSION_DENIED` with `x-sagat-error: NOT_BOUND` | The identity holds the role but is not bound to the namespace and activities it asked to serve (or its binding was removed) | Bind it: `docs/runbooks/security-governance.md`. The audit action `worker.denied` names the activity |
 | Workers get `RESOURCE_EXHAUSTED` with `retry-after-ms` | Per-identity or per-tenant budget (`SAGAT_SUBJECT_RATE_LIMIT_*`, `SAGAT_RATE_LIMIT_*`), or the engine is full (`grpc_shed_total`; `grpc_in_flight` close to `SAGAT_GRPC_MAX_IN_FLIGHT`) | Poll less often (use the `retry_after_ms` the server returns when idle); when the engine is full add replicas or raise `SAGAT_GRPC_MAX_IN_FLIGHT` after checking the database pool can serve it. Heartbeats and reports are shed last, so leases are not lost while polls are refused |
-| New worker connections hang | `SAGAT_GRPC_MAX_CONNECTIONS` connections are open: the next one is accepted when one closes | Find the clients holding connections (one per process is enough: a gRPC channel multiplexes), then raise the limit or add replicas |
+| New worker connections hang | `SAGAT_GRPC_MAX_CONNECTIONS` connections are open: the next one is accepted when one closes. Connections that send nothing are closed after `SAGAT_GRPC_FIRST_BYTE_TIMEOUT_SECS` (10), silent ones after `SAGAT_GRPC_IDLE_TIMEOUT_SECS` (300), and one address holds at most `SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER` (256; workers behind one NAT or load balancer share an address) | Find the clients holding connections (one per process is enough: a gRPC channel multiplexes), then raise the limit or add replicas. `grpc_connections_refused_total` and `grpc_connections_closed_total` say which rule acted |
 | Workers get `ABORTED` with `x-sagat-error: STALE_ATTEMPT` | The lease was reclaimed, the run was cancelled or finished, or the report is a duplicate with a new key | Stop working on that task; this is not an error to retry |
 | Tasks sit `READY` and nobody claims them | No worker advertises that activity in that namespace, or workers are at `max_inflight` | `SELECT activity, count(*) FROM steps WHERE status = 'READY' GROUP BY 1`; check `grpc_requests_total{method="PollTasks"}` |
 | Runs stay `WAITING` past their timer | The scheduler is not running, is stuck, or the database clock is wrong | `/livez`; `scheduler_actions_total`; compare `steps.due_at` with `clock_timestamp()` |
@@ -91,6 +93,8 @@ SELECT count(*) FILTER (WHERE delivered_at IS NULL) AS pending, max(attempt_coun
 | `grpc_in_flight` | | Calls running now, all connections (limit `SAGAT_GRPC_MAX_IN_FLIGHT`) |
 | `grpc_shed_total` | `class` | Calls refused because the engine was full: `discovery` (`RegisterWorker`, `PollTasks`, shed above 3/4 of the limit) or `lease` (`Heartbeat`, `CompleteStep`, `FailStep`, shed only when it is completely full) |
 | `grpc_connections_total` | | Connections accepted (at most `SAGAT_GRPC_MAX_CONNECTIONS` are open at once) |
+| `grpc_connections_refused_total` | `reason` | Connections turned away because the address already holds `SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER` |
+| `grpc_connections_closed_total` | `reason` | Connections closed because the peer was silent (`silent`: never sent a byte; `idle`: silent for `SAGAT_GRPC_IDLE_TIMEOUT_SECS`) |
 | `scheduler_actions_total` | `kind`, `outcome` | What the loop did: `timer`, `wait_timeout`, `retry`, `lease`, `deadline`, `rehint`, `child_start`, `child_finish`, `child_cancel`; `done`, `skipped` (someone else got there first), `failed` |
 | `child_runs_started_total` | | Child runs created |
 | `outbox_published_total` | `event` | Messages sent to NATS (`task.ready`, `run.finished`, `other`) |
@@ -119,14 +123,10 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
 
 ## 7. Not covered (read before relying on this)
 
-- **A worker may serve the whole tenant (G31).** Any identity with the `worker` role can register for
-  any activity of any namespace of its tenant and receives those tasks with their run data. Give the
-  role only to identities whose workers may see every run of the tenant; per-namespace and
-  per-activity bindings are feature 009.
 - **Fairness between tenants is partial (G32).** Each tenant has its own call budget and the engine
   caps connections and calls as a whole, but the database pool and the scheduler batches are shared:
   weighted claims are feature 010.
-- TLS and mutual TLS on the worker API (G27) and a dev token issuer (G10).
+- A dev token issuer (G10). Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
 - A blob store for payloads over 256 KiB (G19), run results (G21), `foreach` and `humanApproval` nodes (G20).
 - Scaling the scheduler beyond about 100 timers per second per loop and disjoint candidates across
   replicas (G22), partitioning/retention of `run_events` (G28): feature 010.

@@ -6,13 +6,17 @@
 
 use std::sync::Arc;
 
+use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::DefinitionService;
+use sagat_application::egress::EgressService;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityStore, RequestContext};
 use sagat_application::maintenance::OutboxStore;
+use sagat_application::quotas::QuotaService;
 use sagat_application::runs::{RunFilter, RunOperation, RunService, RunStore, StartRun};
+use sagat_application::secrets::SecretService;
 use sagat_application::worker::{
     Capabilities, ClaimedTask, StepAck, TaskRef, WorkerService, WorkerSettings,
 };
@@ -23,7 +27,7 @@ use sagat_domain::identity::{
     Environment, Namespace, NamespaceId, Principal, Role, Subject, TenantId, Workspace, WorkspaceId,
 };
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
-use sagat_infra_postgres::PgRunStore;
+use sagat_infra_postgres::{PgRunStore, PoolConfig, connect};
 use sagat_scheduler::{Scheduler, SchedulerSettings};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -35,12 +39,24 @@ pub type Runs = RunService<PgRunStore, SystemClock, JsonEvaluator>;
 pub type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 pub type Defs = DefinitionService<PgRunStore, SystemClock, JsonIrCodec>;
 pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
+pub type Quotas = QuotaService<PgRunStore, SystemClock>;
+pub type Bindings = BindingService<PgRunStore, SystemClock>;
+pub type Secrets = SecretService<PgRunStore, SystemClock>;
+pub type Egress = EgressService<PgRunStore, SystemClock>;
 
 pub struct World {
     pub db: TestDb,
     pub store: PgRunStore,
     pub defs: Defs,
     pub runs: Runs,
+    pub quotas: Quotas,
+    pub bindings: Bindings,
+    pub secrets: Secrets,
+    pub egress: Egress,
+    /// The key ring behind [`Self::secrets`] and the workers (a fresh random key per world).
+    pub keys: sagat_infra_secrets::SecretsConfig,
+    /// The base64 material of key `k1`, for tests that build a rotated ring around it.
+    pub key_k1: String,
     pub workers: Workers,
     pub scheduler: Sched,
     /// Administrator of the first tenant (can do everything a human can).
@@ -79,16 +95,26 @@ pub async fn world_with(settings: WorkerSettings) -> World {
     let cache = DefinitionCache::new(codec, 64);
     let store = PgRunStore::new(db.pool.clone(), cache.clone());
     let engine = Engine::new(JsonEvaluator);
-    World {
+    let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
+    let keys =
+        sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
+    let world = World {
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
+        quotas: QuotaService::new(store.clone(), SystemClock),
+        bindings: BindingService::new(store.clone(), SystemClock),
+        secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),
+        egress: EgressService::new(store.clone(), SystemClock),
+        keys: keys.clone(),
+        key_k1,
         workers: WorkerService::new(
             store.clone(),
             SystemClock,
             engine.clone(),
             SystemEntropy,
             settings,
-        ),
+        )
+        .with_vault(keys.cipher()),
         scheduler: Scheduler::new(
             store.clone(),
             engine,
@@ -103,7 +129,10 @@ pub async fn world_with(settings: WorkerSettings) -> World {
         other_namespace,
         store,
         db,
-    }
+    };
+    // The worker identity of the first tenant is bound to its namespace, as an operator would.
+    world.bind_everything(&world.worker).await;
+    world
 }
 
 async fn namespace_in(
@@ -246,6 +275,17 @@ pub fn chain(name: &str) -> Value {
 
 impl World {
     pub async fn publish(&self, doc: Value) -> (WorkflowId, WorkflowVersionId) {
+        self.try_publish_as(&self.admin, doc)
+            .await
+            .expect("publish")
+    }
+
+    /// Creates the workflow and tries to publish it as `who`; the creation must succeed.
+    pub async fn try_publish_as(
+        &self,
+        who: &Principal,
+        doc: Value,
+    ) -> Result<(WorkflowId, WorkflowVersionId), sagat_application::error::AppError> {
         let name = doc["metadata"]["name"].as_str().expect("name").to_owned();
         let bytes = serde_json::to_vec(&doc).expect("json");
         let key = format!("create-{}", Uuid::now_v7());
@@ -258,16 +298,44 @@ impl World {
         let published = self
             .defs
             .publish(
-                &self.admin,
+                who,
                 id,
                 workflow.workflow.draft_revision(),
                 None,
                 &format!("publish-{}", Uuid::now_v7()),
                 &ctx(),
             )
+            .await?;
+        Ok((id, published.version.id()))
+    }
+
+    /// A member of the first tenant with `role`, added the way an operator adds one.
+    pub async fn member(&self, name: &str, role: Role) -> Principal {
+        let tenant = self.admin.tenant_id();
+        sagat_infra_postgres::PgIdentityStore::new(self.db.pool.clone())
+            .insert_membership(&sagat_domain::identity::Membership::restore(
+                tenant,
+                subject(name),
+                role,
+                now(),
+            ))
             .await
-            .expect("publish");
-        (id, published.version.id())
+            .expect("add the member");
+        Principal::new(tenant, subject(name), role)
+    }
+
+    /// Stores `value` as the next version of the secret `name` of the first tenant's namespace.
+    pub async fn put_secret(&self, name: &str, value: &str) {
+        self.secrets
+            .put(
+                &self.admin,
+                self.namespace.id(),
+                name,
+                value.as_bytes().to_vec(),
+                &ctx(),
+            )
+            .await
+            .expect("store the secret");
     }
 
     /// Publishes `doc` as the next version of an existing workflow.
@@ -394,6 +462,94 @@ impl World {
             .map(|r| r.info.run_id)
     }
 
+    /// A run of the *second* tenant (the workflow must have been published there).
+    pub async fn start_as_other_tenant(
+        &self,
+        workflow: WorkflowId,
+        input: &Value,
+    ) -> Result<RunId, sagat_application::error::AppError> {
+        let bytes = serde_json::to_vec(input).expect("json");
+        self.runs
+            .start(
+                &self.other_admin,
+                &StartRun {
+                    namespace: "payments",
+                    workflow,
+                    version: None,
+                    input: &bytes,
+                    correlation_id: None,
+                    deadline: None,
+                    key: &format!("start-{}", Uuid::now_v7()),
+                },
+                &ctx(),
+            )
+            .await
+            .map(|r| r.info.run_id)
+    }
+
+    /// Another replica of the control plane: its own connection pool and its own services over the
+    /// same database, as a second process would have.
+    pub async fn replica(&self) -> Replica {
+        self.replica_with_pool(10).await
+    }
+
+    /// A replica whose pool holds at most `max_connections`, to show that no call needs a second
+    /// connection while it holds one.
+    pub async fn replica_with_pool(&self, max_connections: u32) -> Replica {
+        let mut config = PoolConfig::new(self.db.url.clone());
+        config.max_connections = max_connections;
+        config.acquire_timeout = std::time::Duration::from_secs(2);
+        let pool = connect(&config).await.expect("a second pool");
+        let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
+        let store = PgRunStore::new(pool, cache.clone());
+        Replica {
+            runs: RunService::new(
+                store.clone(),
+                SystemClock,
+                Engine::new(JsonEvaluator),
+                cache,
+            ),
+            workers: WorkerService::new(
+                store.clone(),
+                SystemClock,
+                Engine::new(JsonEvaluator),
+                SystemEntropy,
+                WorkerSettings::default(),
+            ),
+            store,
+        }
+    }
+
+    /// Another namespace of the first tenant (and its workspace).
+    pub async fn add_namespace(&self, name: &str) -> Namespace {
+        namespace_in(
+            &sagat_infra_postgres::PgIdentityStore::new(self.db.pool.clone()),
+            &self.admin,
+            name,
+        )
+        .await
+    }
+
+    /// Binds a worker identity to every activity of its tenant's namespace `payments` (a worker
+    /// without a binding is refused at registration). Idempotent, and never narrows.
+    pub async fn bind_everything(&self, principal: &Principal) {
+        let (admin, namespace) = if principal.tenant_id() == self.admin.tenant_id() {
+            (&self.admin, &self.namespace)
+        } else {
+            (&self.other_admin, &self.other_namespace)
+        };
+        self.bindings
+            .bind(
+                admin,
+                namespace.id(),
+                principal.subject().as_str(),
+                &["*".to_owned()],
+                &ctx(),
+            )
+            .await
+            .expect("bind the worker");
+    }
+
     /// Registers a worker for `activities` and returns its session.
     pub async fn session(&self, activities: &[&str]) -> Session {
         self.session_as(&self.worker, activities, 100).await
@@ -405,6 +561,7 @@ impl World {
         activities: &[&str],
         max_inflight: u32,
     ) -> Session {
+        self.bind_everything(principal).await;
         let caps = Capabilities {
             activities: activities.iter().map(|a| (*a).to_owned()).collect(),
             languages: vec!["rust".into()],
@@ -615,6 +772,13 @@ async fn exec(pool: &PgPool, sql: &'static str, run: RunId, node: &str) {
         .await
         .expect("age");
     assert_eq!(done.rows_affected(), 1, "no such step to age");
+}
+
+/// A second process over the same database (see [`World::replica`]).
+pub struct Replica {
+    pub store: PgRunStore,
+    pub runs: Runs,
+    pub workers: Workers,
 }
 
 pub struct Session {

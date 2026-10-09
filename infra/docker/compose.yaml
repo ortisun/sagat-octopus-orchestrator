@@ -94,6 +94,11 @@ services:
       SAGAT_OIDC_TENANT_CLAIM: ${SAGAT_OIDC_TENANT_CLAIM:-tenant}
       SAGAT_ALLOW_INSECURE_JWKS_HTTP: ${SAGAT_ALLOW_INSECURE_JWKS_HTTP:-false}
       SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      # The key ring of the secret store (empty: the secret routes do not exist). The same ring
+      # must be given to the engine. Outside SAGAT_ENV=dev the API insists on being told that TLS
+      # is terminated in front of it, because it receives secret values.
+      SAGAT_SECRETS_KEYS: ${SAGAT_SECRETS_KEYS:-}
+      SAGAT_API_ALLOW_PLAINTEXT_SECRETS: ${SAGAT_API_ALLOW_PLAINTEXT_SECRETS:-false}
     ports:
       - "127.0.0.1:${SAGAT_API_PORT:-18080}:8080"
     depends_on:
@@ -124,6 +129,10 @@ services:
       SAGAT_NATS_URL: nats://nats:4222
       # The local broker has no TLS; outside SAGAT_ENV=dev the engine insists on it by default.
       SAGAT_NATS_REQUIRE_TLS: ${SAGAT_NATS_REQUIRE_TLS:-false}
+      # The same key ring as the control plane, so workers can receive the secrets of their steps.
+      # The worker API here is plaintext HTTP/2; outside SAGAT_ENV=dev say that TLS is in front.
+      SAGAT_SECRETS_KEYS: ${SAGAT_SECRETS_KEYS:-}
+      SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS: ${SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS:-false}
     ports:
       - "127.0.0.1:${SAGAT_GRPC_PORT:-19000}:9000"
     depends_on:

@@ -4,12 +4,15 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::worker::{NewSession, SessionRecord, WorkerStore};
+use sagat_domain::audit::AuditRecord;
+use sagat_domain::binding::{ActivityPattern, first_uncovered};
 use sagat_domain::execution::RunId;
 use sagat_domain::identity::{NamespaceId, TenantId};
 use uuid::Uuid;
 
 use crate::execution::PgRunStore;
 use crate::identity::{col, corrupt, store_error};
+use crate::quotas::ensure_room_for_session;
 
 /// The runs with the oldest ready steps for some activity of the session.
 ///
@@ -31,10 +34,80 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl WorkerStore for PgRunStore {
-    async fn create_session(&self, session: &NewSession) -> Result<Uuid, StoreError> {
+    async fn bound_patterns(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT pattern FROM worker_bindings \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(subject)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)
+    }
+
+    async fn record_unbound(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        sagat_application::runs::RunStore::record_denial(self, audit).await
+    }
+
+    async fn create_session(&self, session: &NewSession) -> Result<Option<Uuid>, StoreError> {
         // One session per (identity, worker name): registering again replaces the token (and keeps
         // the id). A new name is refused once the identity holds the maximum of live sessions; the
         // count is not serialised, so racing registrations can overshoot it by their own number.
+        let mut tx = self.pool().begin().await.map_err(store_error)?;
+        // The lock that replacing a binding takes, then the binding itself: either this session is
+        // stored before the replacement (which then finds it and closes it if it is no longer
+        // covered) or it is judged against the new binding. Taken before the quota lock below, like
+        // everywhere else (binding, then quota).
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!(
+                "binding:{}:{}:{}",
+                session.tenant_id, session.namespace_id, session.subject
+            ))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let bound: Vec<String> = sqlx::query_scalar(
+            "SELECT pattern FROM worker_bindings \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(session.tenant_id.as_uuid())
+        .bind(session.namespace_id.as_uuid())
+        .bind(&session.subject)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let patterns = bound
+            .iter()
+            .map(|text| ActivityPattern::parse(text))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StoreError::Internal {
+                detail: "a stored binding pattern does not parse".into(),
+            })?;
+        if first_uncovered(&patterns, &session.activities).is_some() {
+            return Ok(None);
+        }
+        // A worker that reconnects replaces its own session and is never "one more"; a new name has
+        // to fit in the tenant's quota, counted under a lock (a security limit is not an estimate).
+        let replacing: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM worker_sessions \
+             WHERE tenant_id = $1 AND subject = $2 AND worker_name = $3)",
+        )
+        .bind(session.tenant_id.as_uuid())
+        .bind(&session.subject)
+        .bind(&session.worker_name)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if !replacing {
+            ensure_room_for_session(&mut tx, session.tenant_id, session.tenant_limit).await?;
+        }
         let stored: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO worker_sessions \
              (id, tenant_id, namespace_id, subject, worker_name, token_hash, activities, languages, \
@@ -64,12 +137,14 @@ impl WorkerStore for PgRunStore {
         .bind(i32::try_from(session.max_inflight).map_err(|_| corrupt("max inflight"))?)
         .bind(micros(session.ttl))
         .bind(i64::from(sagat_application::worker::MAX_SESSIONS_PER_IDENTITY))
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
-        stored.ok_or(StoreError::QuotaExceeded {
+        let id = stored.ok_or(StoreError::QuotaExceeded {
             what: "worker sessions of one identity",
-        })
+        })?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(Some(id))
     }
 
     async fn use_session(

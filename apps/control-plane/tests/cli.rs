@@ -253,3 +253,82 @@ fn the_development_seed_refuses_a_reserved_administrator_too() {
     );
     assert!(!err.contains("database error"), "{err}");
 }
+
+#[test]
+fn re_sealing_secrets_needs_the_key_ring_and_says_so_before_touching_the_database() {
+    let output = control_plane(&["reseal-secrets"], &[("DATABASE_URL", SECRET_URL)]);
+    assert_eq!(output.status.code(), Some(2));
+    let err = text(&output.stderr);
+    assert!(err.contains("SAGAT_SECRETS_KEYS"), "{err}");
+    assert!(
+        !err.contains("hunter2-password"),
+        "never the credentials: {err}"
+    );
+
+    // A malformed ring is refused by name and never echoed.
+    let output = control_plane(
+        &["reseal-secrets"],
+        &[
+            ("DATABASE_URL", SECRET_URL),
+            ("SAGAT_SECRETS_KEYS", "k1:not-base64-material"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let err = text(&output.stderr);
+    assert!(err.contains("SAGAT_SECRETS_KEYS"), "{err}");
+    assert!(!err.contains("not-base64-material"), "{err}");
+}
+
+#[test]
+fn the_usage_lists_the_re_sealing_command() {
+    let output = control_plane(&["help"], &[]);
+    assert!(text(&output.stdout).contains("reseal-secrets"));
+}
+
+#[test]
+fn granting_a_quota_ceiling_needs_explicit_values_and_says_which_one_is_wrong() {
+    let tenant = "0192a1f0-7c11-7c11-8c11-0123456789ab";
+    // Nothing given: the first missing value is named, before the database is touched.
+    let output = control_plane(&["quota-ceiling"], &[("DATABASE_URL", SECRET_URL)]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        text(&output.stderr).contains("SAGAT_CEILING_"),
+        "{}",
+        text(&output.stderr)
+    );
+
+    let with = |value: &'static str, resource: &'static str, id: &'static str| {
+        control_plane(
+            &["quota-ceiling"],
+            &[
+                ("DATABASE_URL", SECRET_URL),
+                ("SAGAT_CEILING_TENANT_ID", id),
+                ("SAGAT_CEILING_RESOURCE", resource),
+                ("SAGAT_CEILING_VALUE", value),
+            ],
+        )
+    };
+    for (output, culprit) in [
+        (with("lots", "active_runs", tenant), "SAGAT_CEILING_VALUE"),
+        (with("5", "builds", tenant), "SAGAT_CEILING_RESOURCE"),
+        (with("5", "active_runs", "acme"), "SAGAT_CEILING_TENANT_ID"),
+    ] {
+        assert_eq!(output.status.code(), Some(2), "{culprit}");
+        let err = text(&output.stderr);
+        assert!(err.contains(culprit), "{err}");
+        assert!(
+            !err.contains("hunter2-password"),
+            "never the credentials: {err}"
+        );
+        assert!(
+            !err.contains("database error"),
+            "refused before connecting: {err}"
+        );
+    }
+}
+
+#[test]
+fn the_usage_lists_the_quota_ceiling_command() {
+    let output = control_plane(&["help"], &[]);
+    assert!(text(&output.stdout).contains("quota-ceiling"));
+}

@@ -61,7 +61,16 @@ ENVIRONMENT (serve):
     SAGAT_GRPC_ADDR                   worker API listen address       [127.0.0.1:9000]
     SAGAT_GRPC_REQUEST_TIMEOUT_SECS   upper bound for one call        [30]
     SAGAT_GRPC_MAX_CONNECTIONS        open connections, all clients   [2048]
+    SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER   open connections, one address (IPv6: its /64) [256]
+    SAGAT_GRPC_FIRST_BYTE_TIMEOUT_SECS    close a new connection that sends nothing [10]
+    SAGAT_GRPC_IDLE_TIMEOUT_SECS      close a connection silent this long [300]
+    SAGAT_GRPC_TLS_HANDSHAKE_TIMEOUT_SECS   give up on a TLS handshake after [10]
+    SAGAT_GRPC_MAX_CONNECTION_AGE_SECS    ask a connection to reconnect after [1800]
     SAGAT_GRPC_MAX_IN_FLIGHT          calls running at once; polls shed at 3/4 [1024]
+    SAGAT_GRPC_TLS_CERT_FILE / _KEY_FILE   serve the worker API over TLS (PEM files)
+    SAGAT_GRPC_TLS_CLIENT_CA_FILE     also require client certificates signed by this CA (mTLS)
+    SAGAT_SECRETS_KEYS                key ring that opens secrets for workers: id:base64,id2:base64
+    SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS  allow secrets without TLS here (TLS terminated in front)
     SAGAT_RATE_LIMIT_RPS / _BURST     per-tenant worker budget        [2000 / 4000]
     SAGAT_SUBJECT_RATE_LIMIT_RPS / _BURST   per-identity budget       [200 / 400]
     SAGAT_LEASE_TTL_SECS              lease without a heartbeat       [30]

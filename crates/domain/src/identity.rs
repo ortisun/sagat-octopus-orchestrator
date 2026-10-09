@@ -169,6 +169,13 @@ impl Subject {
         Self("system:provisioning".to_owned())
     }
 
+    /// The actor recorded for what a platform operator does from the command line, outside any
+    /// tenant (granting a quota ceiling). Reserved like the other platform actors.
+    #[must_use]
+    pub fn operator() -> Self {
+        Self("system:operator".to_owned())
+    }
+
     /// The actor recorded for what the execution engine does by itself (starting a child run).
     /// Like [`Subject::provisioning`] it lives in the reserved `system:` namespace.
     #[must_use]
@@ -274,11 +281,25 @@ pub enum Permission {
     RunSignal,
     /// Act as a worker: register, claim tasks, heartbeat, complete and fail steps.
     WorkerExecute,
+    /// See the quotas of a namespace and how much of them is used.
+    QuotaRead,
+    /// Change the quotas of a namespace.
+    QuotaManage,
+    /// List the secrets of a namespace (names and metadata, never values).
+    SecretRead,
+    /// Create, rotate and delete secrets and decide who may use them.
+    SecretManage,
+    /// Reference secrets from a workflow, when the secret's own access list allows it.
+    SecretUse,
+    /// Change the egress policy of a namespace.
+    EgressManage,
+    /// Decide which namespaces and activities a worker identity may serve.
+    WorkerBind,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 21] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -293,6 +314,13 @@ impl Permission {
         Self::RunOperate,
         Self::RunSignal,
         Self::WorkerExecute,
+        Self::QuotaRead,
+        Self::QuotaManage,
+        Self::SecretRead,
+        Self::SecretManage,
+        Self::SecretUse,
+        Self::EgressManage,
+        Self::WorkerBind,
     ];
 
     #[must_use]
@@ -312,6 +340,13 @@ impl Permission {
             Self::RunOperate => "run:operate",
             Self::RunSignal => "run:signal",
             Self::WorkerExecute => "worker:execute",
+            Self::QuotaRead => "quota:read",
+            Self::QuotaManage => "quota:manage",
+            Self::SecretRead => "secret:read",
+            Self::SecretManage => "secret:manage",
+            Self::SecretUse => "secret:use",
+            Self::EgressManage => "egress:manage",
+            Self::WorkerBind => "worker:bind",
         }
     }
 }
@@ -322,7 +357,7 @@ impl fmt::Display for Permission {
     }
 }
 
-/// Built-in role. Custom roles are out of scope for feature 001 (advanced RBAC is feature 009).
+/// Built-in role. Custom roles are not built: feature 009 added resource-level control (secret access lists, worker bindings) on top of these roles instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
     Admin,
@@ -349,8 +384,9 @@ impl Role {
     #[must_use]
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, RunOperate, RunRead,
-            RunSignal, RunStart, WorkerExecute, WorkspaceRead,
+            DefinitionPublish, DefinitionRead, DefinitionWrite, NamespaceRead, QuotaRead,
+            RunOperate, RunRead, RunSignal, RunStart, SecretRead, SecretUse, WorkerExecute,
+            WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
@@ -362,6 +398,9 @@ impl Role {
                 DefinitionPublish,
                 RunStart,
                 RunRead,
+                SecretRead,
+                SecretUse,
+                QuotaRead,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -371,8 +410,15 @@ impl Role {
                 RunRead,
                 RunOperate,
                 RunSignal,
+                QuotaRead,
             ],
-            Self::Viewer => &[WorkspaceRead, NamespaceRead, DefinitionRead, RunRead],
+            Self::Viewer => &[
+                WorkspaceRead,
+                NamespaceRead,
+                DefinitionRead,
+                RunRead,
+                QuotaRead,
+            ],
             Self::Worker => &[WorkerExecute],
         }
     }

@@ -1,4 +1,4 @@
-//! Command-line parsing. Deliberately tiny: four subcommands and no flags.
+//! Command-line parsing. Deliberately tiny: a handful of subcommands and no flags.
 
 /// What the process was asked to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +11,10 @@ pub enum Command {
     SeedDev,
     /// Create a tenant and its first administrator in any environment. Both values are explicit.
     ProvisionTenant,
+    /// Re-seal every stored secret version under the active key of `SAGAT_SECRETS_KEYS`, then exit.
+    ResealSecrets,
+    /// Grant a tenant a quota ceiling, or withdraw it, then exit. Values are explicit.
+    QuotaCeiling,
     /// Probe the local API's liveness endpoint; for container health checks.
     Healthcheck,
     Help,
@@ -32,6 +36,8 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
         Some("migrate") => Command::Migrate,
         Some("seed-dev") => Command::SeedDev,
         Some("provision-tenant") => Command::ProvisionTenant,
+        Some("reseal-secrets") => Command::ResealSecrets,
+        Some("quota-ceiling") => Command::QuotaCeiling,
         Some("healthcheck") => Command::Healthcheck,
         Some("help" | "--help" | "-h") => Command::Help,
         Some("version" | "--version" | "-V") => Command::Version,
@@ -54,6 +60,8 @@ COMMANDS:
     migrate       Apply pending schema migrations and exit
     seed-dev      Create a development tenant and admin (only when SAGAT_ENV=dev)
     provision-tenant  Create a tenant and its first admin (any environment; values are explicit)
+    reseal-secrets  Re-seal stored secrets under the active key of SAGAT_SECRETS_KEYS (after a key rotation)
+    quota-ceiling  Grant a tenant a quota ceiling (SAGAT_CEILING_TENANT_ID, _RESOURCE, _VALUE; a number or default)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
     help          Print this message

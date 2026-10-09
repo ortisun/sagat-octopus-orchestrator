@@ -29,16 +29,18 @@ use sagat_domain::execution::{
     StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
+use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::definitions::{PgDefinitionStore, hash, remember, replay};
 use crate::event_codec::{decode, encode};
 use crate::identity::{PgIdentityStore, col, corrupt, insert_audit, store_error};
+use crate::quotas::ensure_room_for_run;
 
 /// PostgreSQL-backed run store.
 #[derive(Debug, Clone)]
@@ -91,8 +93,13 @@ impl PgRunStore {
     }
 
     /// The definition of `version`, from the cache or parsed from the stored document.
+    ///
+    /// The document is read on `conn`, never on a connection of its own: a caller that holds a
+    /// transaction and waits for a second connection from the same pool starves the pool when enough
+    /// callers do it at once (a burst of first requests for a version nobody has cached yet).
     async fn definition(
         &self,
+        conn: &mut PgConnection,
         tenant: TenantId,
         version: WorkflowVersionId,
     ) -> Result<Arc<WorkflowDefinition>, StoreError> {
@@ -104,7 +111,7 @@ impl PgRunStore {
         )
         .bind(tenant.as_uuid())
         .bind(version.as_uuid())
-        .fetch_optional(&self.pool)
+        .fetch_optional(conn)
         .await
         .map_err(store_error)?
         .ok_or_else(|| corrupt("workflow version reference"))?;
@@ -191,8 +198,26 @@ impl RunStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
             let info = &new.info;
-            if let Some(parent) = &info.parent {
-                claim_reservation(&mut tx, tenant, parent, info.root, info.run_id).await?;
+            // On a refusal the transaction is rolled back at once: its locks (the parent's row, the
+            // tree's, the quota scopes') must not wait for the connection to be reused.
+            if let Some(parent) = &info.parent
+                && let Err(error) =
+                    claim_reservation(&mut tx, tenant, parent, info.root, info.run_id).await
+            {
+                let _ = tx.rollback().await;
+                return Err(error);
+            }
+            if let Err(error) = ensure_room_for_run(
+                &mut tx,
+                tenant,
+                info.namespace_id,
+                new.limits.namespace,
+                new.limits.tenant,
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
             sqlx::query(
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
@@ -311,7 +336,9 @@ impl RunStore for PgRunStore {
             )),
         };
         let state = RunState::restore(run, record.status, stop, paused, steps, record.version);
-        let def = self.definition(tenant, record.info.version_id).await?;
+        let def = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
         Ok(Some(PgRunTx {
             tx,
             info: record.info,
@@ -481,7 +508,15 @@ impl RunStore for PgRunStore {
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
-        let definition = self.definition(tenant, record.info.version_id).await?;
+        let definition = match self.cache.get(record.info.version_id) {
+            Some(cached) => cached,
+            None => {
+                // No transaction is open here, so a connection of its own is fine.
+                let mut conn = self.pool.acquire().await.map_err(store_error)?;
+                self.definition(&mut conn, tenant, record.info.version_id)
+                    .await?
+            }
+        };
         Ok(Some(GraphSnapshot {
             run: record,
             definition,
@@ -547,7 +582,7 @@ async fn claim_reservation(
     if usize::try_from(members).unwrap_or(usize::MAX) >= sagat_application::execution::MAX_TREE_RUNS
     {
         return Err(StoreError::QuotaExceeded {
-            what: "runs in one child-run tree",
+            what: sagat_application::execution::TREE_LIMIT,
         });
     }
     let claimed = sqlx::query(
@@ -808,6 +843,65 @@ impl RunTx for PgRunTx {
             })
         })
         .transpose()
+    }
+
+    async fn secret_versions(
+        &mut self,
+        names: &[SecretName],
+    ) -> Result<Vec<sagat_application::secrets::StoredSecret>, StoreError> {
+        crate::secrets::all_versions(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            names,
+        )
+        .await
+    }
+
+    async fn secret_inputs(
+        &mut self,
+        names: &[SecretName],
+    ) -> Result<sagat_application::secrets::SecretInputs, StoreError> {
+        crate::secrets::inputs(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            self.info.version_id.as_uuid(),
+            names,
+        )
+        .await
+    }
+
+    async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT pattern FROM worker_bindings \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(subject)
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
+    async fn lease_unexpired(
+        &mut self,
+        node: &NodeId,
+        token_hash: &[u8],
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+                            AND status IN ('LEASED', 'RUNNING') AND lease_token_hash = $4 \
+                            AND lease_expires_at > clock_timestamp())",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(token_hash)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
     }
 
     async fn lease_matches(
@@ -1317,9 +1411,10 @@ impl DefinitionStore for PgRunStore {
         draft: &[u8],
         audit: &AuditRecord,
         idempotency: &Idempotency,
+        max_in_namespace: u64,
     ) -> Result<Applied<()>, StoreError> {
         self.definitions
-            .create_workflow(workflow, draft, audit, idempotency)
+            .create_workflow(workflow, draft, audit, idempotency, max_in_namespace)
             .await
     }
 

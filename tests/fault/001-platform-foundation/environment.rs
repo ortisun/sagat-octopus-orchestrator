@@ -35,6 +35,7 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             subject_rate_limit: sagat_api_http::RateLimitConfig::subject_default(),
             admin_addr: None,
             migrate_on_start: false,
+            secrets: None,
         },
     )
 }

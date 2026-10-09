@@ -23,6 +23,17 @@ pub mod pb {
     tonic::include_proto!("sagat_octopus_orchestrator.v1");
 }
 
-pub use server::{GrpcConfig, serve, worker_service};
+impl std::fmt::Debug for pb::ResolvedSecret {
+    /// The value of a secret never prints.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedSecret")
+            .field("name", &self.name)
+            .field("version", &self.version)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+pub use server::{GrpcConfig, TlsConfig, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};

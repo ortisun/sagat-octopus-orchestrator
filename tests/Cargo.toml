@@ -19,6 +19,8 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 jsonwebtoken.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+h2 = "0.4"
+rcgen = "0.13"
 reqwest = { workspace = true, features = ["json"] }
 sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
@@ -26,9 +28,11 @@ sagat-application.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
 sagat-execution-engine.workspace = true
+sagat-infra-egress.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
+sagat-infra-secrets.workspace = true
 sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
@@ -81,6 +85,30 @@ path = "contract/002-durable-execution/grpc/main.rs"
 [[test]]
 name = "e2e_002"
 path = "e2e/002-durable-execution/main.rs"
+
+[[test]]
+name = "integration_009"
+path = "integration/009-security-multitenancy/main.rs"
+
+[[test]]
+name = "contract_rest_009"
+path = "contract/009-security-multitenancy/rest/main.rs"
+
+[[test]]
+name = "e2e_009"
+path = "e2e/009-security-multitenancy/main.rs"
+
+[[test]]
+name = "contract_grpc_009"
+path = "contract/009-security-multitenancy/grpc/main.rs"
+
+[[test]]
+name = "perf_009"
+path = "performance/009-security-multitenancy/main.rs"
+
+[[test]]
+name = "fault_009"
+path = "fault/009-security-multitenancy/main.rs"
 
 [[test]]
 name = "perf_002"

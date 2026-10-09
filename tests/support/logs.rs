@@ -48,11 +48,16 @@ impl MakeWriter<'_> for Captured {
 /// makes that race practically impossible; it cannot be excluded in a test binary that runs many
 /// tests at once, which is why the assertions that use this fail loudly instead of passing quietly.
 pub fn capture() -> (DefaultGuard, Captured) {
+    capture_at(tracing::Level::WARN)
+}
+
+/// Like [`capture`], for everything at `level` and above (`TRACE` captures every line).
+pub fn capture_at(level: tracing::Level) -> (DefaultGuard, Captured) {
     let captured = Captured::default();
     let subscriber = tracing_subscriber::fmt()
         .with_writer(captured.clone())
         .with_ansi(false)
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(level)
         .finish();
     let guard = tracing::subscriber::set_default(subscriber);
     tracing::callsite::rebuild_interest_cache();

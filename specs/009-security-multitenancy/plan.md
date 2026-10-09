@@ -36,17 +36,24 @@ These checks indicate conformance **of the design**, not approval of the impleme
 ## Project Structure
 
 ```text
-crates/domain/src/permissions.rs
-crates/application/src/authz.rs
-crates/infra-postgres/src/tenant_scopes.rs
-crates/sandbox/src/policy.rs
-crates/api-http/src/middleware/auth.rs
-infra/helm/templates/networkpolicy.yaml
-tests/contract/
-tests/integration/
-tests/fault/
-tests/e2e/009-security-multitenancy/
+crates/domain/src/identity.rs            new permissions and the role matrix (the plan's permissions.rs)
+crates/domain/src/{quota,binding,secrets,egress}.rs   pure rules: limits, activity patterns, secret types and cipher port, egress policy
+crates/application/src/{authz,quotas,bindings,secrets,egress}.rs   use cases and storage ports (authz.rs: the cross-tenant guard)
+crates/infra-postgres/src/{quotas,bindings,secrets,egress}.rs      adapters (the plan's tenant_scopes.rs); migrations 20261010000000..300
+crates/infra-secrets/                    AES-256-GCM key ring (SecretCipher), SecretsConfig
+crates/infra-egress/                     guarded outbound client
+crates/api-http/src/{governance,dto_gov}.rs, routes/governance.rs   REST routes for quotas, bindings, secrets, egress
+crates/api-grpc/src/{limits,server}.rs   connection and call caps, TLS / mTLS; ResolveSecrets in service.rs
+apps/control-plane, apps/execution-engine  SAGAT_SECRETS_KEYS, SAGAT_GRPC_TLS_*; `control-plane reseal-secrets`
+docs/runbooks/security-governance.md     operations
+tests/integration/009-security-multitenancy/   quotas, bindings, secrets, egress against PostgreSQL
+tests/contract/009-security-multitenancy/      rest/ (conformance, cross-tenant battery), grpc/ (TLS, mTLS)
+tests/e2e/009-security-multitenancy/           us01, us02, us04 through REST and gRPC
+tests/fault/009-security-multitenancy/         connection kills around quota and secret transactions
+tests/performance/009-security-multitenancy/   benchmark, report in tests/performance/reports/
 ```
+
+Not built, and why: `crates/sandbox/src/policy.rs` and the sandbox itself (feature 005; G35), `infra/helm/templates/networkpolicy.yaml` (no Helm chart exists; G45).
 
 ## Implementation phases
 

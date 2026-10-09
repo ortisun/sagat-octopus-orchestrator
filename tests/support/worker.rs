@@ -92,6 +92,43 @@ impl Platform {
         (response.status().as_u16(), json_of(response).await)
     }
 
+    /// A REST call as `sub` of acme (any role), in the `payments` namespace, with a fresh
+    /// idempotency key.
+    pub async fn rest_as(
+        &self,
+        sub: &str,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> (u16, Value) {
+        let mut request = self
+            .api
+            .as_user(method, path, sub, TENANT)
+            .header("x-octopus-namespace", NAMESPACE)
+            .header("idempotency-key", format!("key-{}", Uuid::now_v7()));
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.expect("send");
+        let status = response.status().as_u16();
+        let text = response.text().await.expect("body");
+        (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+
+    /// The id of acme's `payments` namespace.
+    pub async fn namespace_id(&self) -> String {
+        let (status, listed) = self.rest(Method::GET, "/namespaces", None).await;
+        assert_eq!(status, 200, "{listed}");
+        listed["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|n| n["slug"] == NAMESPACE)
+            .and_then(|n| n["id"].as_str())
+            .expect("the namespace")
+            .to_owned()
+    }
+
     /// Creates and publishes a workflow; returns its id.
     pub async fn publish(&self, name: &str, ir: &Value) -> String {
         let (status, created) = self
@@ -211,9 +248,26 @@ impl Platform {
         assert_eq!(done.rows_affected(), 1, "no such step");
     }
 
+    /// Binds `sub` to every activity of acme's namespace, as an administrator would before starting
+    /// a fleet (a worker without a binding is refused at registration).
+    pub async fn bind_everything(&self, sub: &str) {
+        sqlx::query(
+            "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by) \
+             SELECT n.tenant_id, n.id, $2, '*', 'test' FROM namespaces n \
+             WHERE n.tenant_id = $1 AND n.slug = $3 ON CONFLICT DO NOTHING",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(sub)
+        .bind(NAMESPACE)
+        .execute(&self.api.db.pool)
+        .await
+        .expect("bind the worker");
+    }
+
     /// A worker identity of acme that has connected but not registered yet.
     pub async fn worker(&self, sub: &str) -> Worker<'_> {
         self.grant(self.tenant, sub, Role::Worker).await;
+        self.bind_everything(sub).await;
         self.connect(sub, TENANT).await
     }
 
@@ -226,6 +280,7 @@ impl Platform {
     /// A worker identity of acme speaking to the worker service at `url` (an engine process).
     pub async fn worker_at(&self, url: &str, sub: &str) -> Worker<'_> {
         self.grant(self.tenant, sub, Role::Worker).await;
+        self.bind_everything(sub).await;
         self.connect_at(url.to_owned(), sub, TENANT).await
     }
 
@@ -328,6 +383,30 @@ impl Worker<'_> {
         let mut tasks = self.poll(8).await;
         assert_eq!(tasks.len(), 1, "expected exactly one task");
         tasks.remove(0)
+    }
+
+    pub fn resolve_secrets_message(lease: &TaskLease) -> sagat_api_grpc::pb::ResolveSecretsRequest {
+        sagat_api_grpc::pb::ResolveSecretsRequest {
+            task_id: lease.task_id.clone(),
+            run_id: lease.run_id.clone(),
+            step_id: lease.step_id.clone(),
+            attempt: lease.attempt,
+            generation: lease.generation,
+            lease_token: lease.lease_token.clone(),
+            traceparent: String::new(),
+        }
+    }
+
+    /// Asks for the secrets the leased step declares.
+    pub async fn resolve_secrets(
+        &mut self,
+        lease: &TaskLease,
+    ) -> Result<Vec<sagat_api_grpc::pb::ResolvedSecret>, Status> {
+        let request = self.req(Self::resolve_secrets_message(lease));
+        self.client
+            .resolve_secrets(request)
+            .await
+            .map(|r| r.into_inner().secrets)
     }
 
     pub fn heartbeat_message(&self, lease: &TaskLease) -> HeartbeatRequest {

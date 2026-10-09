@@ -12,7 +12,8 @@ use sagat_api_grpc::pb::worker_service_client::WorkerServiceClient;
 use sagat_api_grpc::pb::worker_service_server::WorkerService;
 use sagat_api_grpc::pb::{
     CompleteStepRequest, FailStepRequest, HeartbeatRequest, HeartbeatResponse, PollTasksRequest,
-    PollTasksResponse, RegisterWorkerRequest, RegisterWorkerResponse, StepCommandResponse,
+    PollTasksResponse, RegisterWorkerRequest, RegisterWorkerResponse, ResolveSecretsRequest,
+    ResolveSecretsResponse, StepCommandResponse,
 };
 use sagat_api_grpc::{ERROR_METADATA, GrpcConfig, RETRY_AFTER_METADATA, serve, worker_service};
 use tokio::net::TcpListener;
@@ -64,6 +65,13 @@ impl WorkerService for Stub {
     ) -> Result<Response<StepCommandResponse>, Status> {
         self.park().await;
         Ok(Response::new(StepCommandResponse::default()))
+    }
+    async fn resolve_secrets(
+        &self,
+        _: Request<ResolveSecretsRequest>,
+    ) -> Result<Response<ResolveSecretsResponse>, Status> {
+        self.park().await;
+        Ok(Response::new(ResolveSecretsResponse::default()))
     }
     async fn fail_step(
         &self,

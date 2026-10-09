@@ -9,16 +9,20 @@ use std::time::Duration;
 use reqwest::{Client, Method, RequestBuilder, Response};
 use sagat_api_grpc::{GrpcConfig, WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{
-    AppState, AuthConfig, ExecState, HttpJwksFetcher, HttpLimits, RateLimitConfig, ServerConfig,
-    TokenVerifier, auth::install_crypto_provider, router_with_execution,
+    AppState, AuthConfig, ExecState, GovState, HttpJwksFetcher, HttpLimits, RateLimitConfig,
+    ServerConfig, TokenVerifier, auth::install_crypto_provider, router_with_governance,
 };
+use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::DefinitionService;
+use sagat_application::egress::EgressService;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityService, IdentityStore};
+use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
+use sagat_application::secrets::SecretService;
 use sagat_application::worker::{WorkerService, WorkerSettings};
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{
@@ -45,6 +49,8 @@ pub struct TestApi {
     pub executions: PgRunStore,
     /// `http://host:port` of the gRPC worker service.
     pub grpc_url: String,
+    /// The key ring the API seals secrets with and the worker service opens them with.
+    pub keys: sagat_infra_secrets::SecretsConfig,
     lookups: Arc<AtomicUsize>,
     pings: Arc<AtomicUsize>,
 }
@@ -238,6 +244,22 @@ pub async fn start_with(options: Options) -> TestApi {
         .expect("valid subject budget");
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
     let executions = PgRunStore::new(api_pool.clone(), cache.clone());
+    let keys = sagat_infra_secrets::SecretsConfig::parse(&format!(
+        "k1:{}",
+        sagat_infra_secrets::generate_key().expect("a key")
+    ))
+    .expect("a key ring");
+    let governance = GovState::new(
+        state.clone(),
+        QuotaService::new(executions.clone(), SystemClock),
+        BindingService::new(executions.clone(), SystemClock),
+        EgressService::new(executions.clone(), SystemClock),
+    )
+    .with_secrets(SecretService::new(
+        executions.clone(),
+        SystemClock,
+        keys.cipher(),
+    ));
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
@@ -257,7 +279,8 @@ pub async fn start_with(options: Options) -> TestApi {
             Engine::new(JsonEvaluator),
             SystemEntropy,
             options.worker,
-        ),
+        )
+        .with_vault(keys.cipher()),
     );
     let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -272,7 +295,7 @@ pub async fn start_with(options: Options) -> TestApi {
         )
         .await;
     });
-    let app = router_with_execution(exec, options.limits);
+    let app = router_with_governance(exec, governance, options.limits);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -298,6 +321,7 @@ pub async fn start_with(options: Options) -> TestApi {
         api_pool,
         executions,
         grpc_url: format!("http://{grpc_addr}"),
+        keys,
         lookups,
         pings,
     }

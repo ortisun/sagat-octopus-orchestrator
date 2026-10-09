@@ -17,6 +17,9 @@ use time::OffsetDateTime;
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
 use crate::identity::{Page, PageRequest, RequestContext};
+use crate::quotas::QuotaLookup;
+use crate::secrets::{SecretAccessLookup, SecretProblem, check_usable};
+use sagat_domain::quota::QuotaResource;
 
 /// Largest accepted workflow document.
 pub const MAX_IR_BYTES: usize = 1024 * 1024;
@@ -130,7 +133,7 @@ pub struct Published {
 /// Storage port for definitions. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait DefinitionStore: Send + Sync {
+pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + Send + Sync {
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -145,6 +148,7 @@ pub trait DefinitionStore: Send + Sync {
         draft: &[u8],
         audit: &AuditRecord,
         idempotency: &Idempotency,
+        max_in_namespace: u64,
     ) -> impl Future<Output = Result<Applied<()>, StoreError>> + Send;
 
     fn get_workflow(
@@ -306,9 +310,17 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             key: key.to_owned(),
             fingerprint: fingerprint(&[workflow.name().as_str().as_bytes(), draft]),
         };
+        let max_in_namespace = self
+            .store
+            .effective_limit(
+                principal.tenant_id(),
+                Some(namespace.id()),
+                QuotaResource::Workflows,
+            )
+            .await?;
         match self
             .store
-            .create_workflow(&workflow, draft, &audit, &idempotency)
+            .create_workflow(&workflow, draft, &audit, &idempotency, max_in_namespace)
             .await?
         {
             Applied::Done(()) => Ok(WorkflowRecord {
@@ -444,6 +456,8 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 },
             )));
         }
+        self.check_secrets(principal, &record, &parsed.definition, ctx)
+            .await?;
         let now = self.clock.now();
         let version_id = WorkflowVersionId::generate();
         let audit = AuditRecord::by(
@@ -546,6 +560,50 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             .list_versions(principal.tenant_id(), id, after, limit + 1)
             .await?;
         Ok(paginate(rows, limit, |r| r.version.number().to_string()))
+    }
+
+    /// A workflow that declares secrets can be published only by someone who may use every one of
+    /// them (FR-009-002, US02). The answer for a secret that does not exist is the same as for one
+    /// the publisher may not use.
+    async fn check_secrets(
+        &self,
+        principal: &Principal,
+        record: &WorkflowRecord,
+        definition: &sagat_domain::workflow::WorkflowDefinition,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        let declared: Vec<_> = definition.declared_secrets().into_iter().cloned().collect();
+        if declared.is_empty() {
+            return Ok(());
+        }
+        let states = self
+            .store
+            .secret_states(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                &declared,
+                principal.subject().as_str(),
+            )
+            .await?;
+        if let Err(SecretProblem(name)) = check_usable(Some(principal.role()), &states) {
+            let denial = AuditRecord::by(
+                principal,
+                AuditAction::SecretDenied,
+                ResourceType::Secret,
+                format!("{}/{name}", record.workflow.namespace_id()),
+                ctx.trace_id.clone(),
+                self.clock.now(),
+            )
+            .with_reason(format!("publishing {}", record.workflow.name()));
+            // Recorded off the response path and collapsed when repeated.
+            if let Err(error) = self.store.record_denial(&denial).await {
+                tracing::error!(%error, action = %denial.action(), "failed to record audit entry");
+            }
+            return Err(AppError::SecretUnavailable {
+                name: name.to_string(),
+            });
+        }
+        Ok(())
     }
 
     async fn missing(

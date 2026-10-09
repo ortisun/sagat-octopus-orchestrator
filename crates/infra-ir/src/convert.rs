@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use sagat_application::definitions::{IrError, IrIssue};
 use sagat_domain::identity::Slug;
+use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
 use sagat_domain::workflow::{
     ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
     NodeKind, RetryPolicy, WorkflowDefinition,
@@ -118,6 +119,42 @@ fn retry(node: &Map<String, Value>, at: &str) -> Result<RetryPolicy, IrError> {
     RetryPolicy::new(max_attempts, initial, max, strategy, jitter).map_err(IrError::Invalid)
 }
 
+/// The secret names an activity declares: strings of the secret-name grammar, at most
+/// [`MAX_SECRETS_PER_ACTIVITY`], each once. A value can never be written here, only a name.
+fn secrets(node: &Map<String, Value>, at: &str) -> Result<Vec<SecretName>, IrError> {
+    let Some(value) = node.get("secrets") else {
+        return Ok(Vec::new());
+    };
+    let path = format!("{at}/secrets");
+    let items = value
+        .as_array()
+        .ok_or_else(|| issue(path.clone(), "expected an array of secret names"))?;
+    if items.len() > MAX_SECRETS_PER_ACTIVITY {
+        return Err(issue(
+            path,
+            format!("an activity declares at most {MAX_SECRETS_PER_ACTIVITY} secrets"),
+        ));
+    }
+    let mut names = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let path = format!("{at}/secrets/{i}");
+        let name = item
+            .as_str()
+            .and_then(|text| SecretName::parse(text).ok())
+            .ok_or_else(|| {
+                issue(
+                    path.clone(),
+                    "expected a secret name: lower-case letters, digits, '.', '_' or '-', starting with a letter",
+                )
+            })?;
+        if names.contains(&name) {
+            return Err(issue(path, "a secret is declared twice"));
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
 fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, IrError> {
     Ok(match kind {
         "activity" => NodeKind::Activity {
@@ -134,6 +171,7 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
             idempotency_template: optional_text(node, "idempotencyTemplate", at)?
                 .map(|t| expression(t, &format!("{at}/idempotencyTemplate")))
                 .transpose()?,
+            secrets: secrets(node, at)?,
         },
         "timer" => NodeKind::Timer {
             delay: millis(node, "durationMs", at)?,

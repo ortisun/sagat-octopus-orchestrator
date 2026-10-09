@@ -241,6 +241,24 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::NotFound => Self::not_found(),
+            AppError::SecretUnavailable { name } => {
+                let mut e = Self::new(
+                    StatusCode::FORBIDDEN,
+                    ErrorCode::Forbidden,
+                    "a secret does not exist or may not be used",
+                );
+                e.parts.details = Some(json!({ "reason": "SECRET_NOT_USABLE", "secret": name }));
+                e
+            }
+            AppError::NotBound => {
+                let mut e = Self::new(
+                    StatusCode::FORBIDDEN,
+                    ErrorCode::Forbidden,
+                    "this identity is not bound to that namespace and activity",
+                );
+                e.parts.details = Some(json!({ "reason": "NOT_BOUND" }));
+                e
+            }
             AppError::Conflict(kind) => {
                 let message = match kind {
                     ConflictKind::TenantSlug => "a tenant with this slug already exists",
@@ -298,6 +316,8 @@ impl From<AppError> for ApiError {
             }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
             AppError::QuotaExceeded(what) => {
+                // `what` is always a literal of this codebase, so the label set is closed.
+                metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
                 let mut e = Self::new(
                     StatusCode::TOO_MANY_REQUESTS,
                     ErrorCode::QuotaExceeded,

@@ -153,23 +153,36 @@ pub(crate) async fn insert_audit(
     conn: &mut PgConnection,
     audit: &AuditRecord,
 ) -> Result<(), StoreError> {
-    sqlx::query(
+    // An event the caller can repeat at will is written once per identical event. The lookup is
+    // served by `audit_records_denial_dedupe_idx` (tenant, actor, action, resource), and the
+    // callers hold the lock of the run the event is about, so repeats cannot race each other.
+    let statement = if audit.action().collapses_repeats() {
         "INSERT INTO audit_records \
          (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(audit.id().as_uuid())
-    .bind(audit.tenant_id().as_uuid())
-    .bind(audit.actor().as_str())
-    .bind(audit.action().as_str())
-    .bind(audit.resource_type().as_str())
-    .bind(audit.resource_id())
-    .bind(audit.reason())
-    .bind(audit.trace_id())
-    .bind(audit.created_at())
-    .execute(conn)
-    .await
-    .map_err(store_error)?;
+         SELECT $1::uuid, $2::uuid, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, \
+                $9::timestamptz \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM audit_records \
+             WHERE tenant_id = $2::uuid AND actor = $3::text AND action = $4::text \
+               AND resource_id = $6::text AND reason IS NOT DISTINCT FROM $7::text)"
+    } else {
+        "INSERT INTO audit_records \
+         (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+    };
+    sqlx::query(statement)
+        .bind(audit.id().as_uuid())
+        .bind(audit.tenant_id().as_uuid())
+        .bind(audit.actor().as_str())
+        .bind(audit.action().as_str())
+        .bind(audit.resource_type().as_str())
+        .bind(audit.resource_id())
+        .bind(audit.reason())
+        .bind(audit.trace_id())
+        .bind(audit.created_at())
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
     Ok(())
 }
 
@@ -401,6 +414,10 @@ impl IdentityStore for PgIdentityStore {
     }
 
     async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        // Counted by what was denied (a closed set of audit actions), before the record is written:
+        // a flood that makes the write drop events must still be visible.
+        metrics::counter!("security_denials_total", "action" => audit.action().as_str())
+            .increment(1);
         // Off the response path and bounded: a flood of denials must neither slow the caller (which
         // would reveal that the identifier exists elsewhere) nor pile up work in the database.
         let Ok(slot) = Arc::clone(&self.denial_slots).try_acquire_owned() else {

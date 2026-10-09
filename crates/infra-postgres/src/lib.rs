@@ -6,13 +6,17 @@
 
 use sqlx::migrate::Migrator;
 
+mod bindings;
 mod definitions;
+mod egress;
 mod event_codec;
 mod execution;
 mod identity;
 mod maintenance;
 mod pool;
 mod privilege;
+mod quotas;
+mod secrets;
 mod workers;
 
 pub use definitions::PgDefinitionStore;

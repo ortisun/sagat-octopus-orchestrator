@@ -5,8 +5,8 @@ info:
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
-    execution engine (feature 002). Every other operation is a design proposal that is not implemented
-    yet. The worker protocol is gRPC (`worker.proto`), not REST.
+    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas, worker bindings, secrets, egress policy) by the governance routes
+    of feature 009. Every other operation is a design proposal that is not implemented yet. The worker protocol is gRPC (`worker.proto`), not REST.
     The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
 
@@ -30,6 +30,8 @@ tags:
   - name: Events
   - name: Scripts
   - name: Operations
+  - name: Governance
+    description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
 paths:
   /health:
     get:
@@ -466,6 +468,354 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /quotas:
+    get:
+      operationId: listTenantQuotas
+      summary: The quotas of the tenant and how much of them is used
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:read`. A resource counted per namespace shows the tenant-wide setting (the default of its namespaces) and no usage.
+      responses:
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /quotas/{resource}:
+    put:
+      operationId: setTenantQuota
+      summary: Set a quota for the whole tenant
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:manage`. For a resource counted per namespace this is the default of every namespace that has no setting of its own. A value above the `ceiling` of the quota is refused with 422, because a tenant cannot lift the limit that protects the other tenants. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetQuotaRequest'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: clearTenantQuota
+      summary: Remove the tenant-wide setting of a quota
+      tags: [Governance]
+      x-implemented: '009'
+      description: The platform default applies again. Needs `quota:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/quotas:
+    get:
+      operationId: listNamespaceQuotas
+      summary: The quotas that apply in a namespace and how much of them is used there
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:read`. A namespace of another tenant is a 404, like one that does not exist.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/quotas/{resource}:
+    put:
+      operationId: setNamespaceQuota
+      summary: Set a quota for one namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `quota:manage`. Only resources counted per namespace can be set here. A value above the `ceiling` of the quota is refused with 422. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetQuotaRequest'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: clearNamespaceQuota
+      summary: Remove the setting of a quota for one namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: The tenant-wide setting (or the default) applies again. Needs `quota:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/QuotaResourceName'}
+      responses:
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/worker-bindings:
+    get:
+      operationId: listWorkerBindings
+      summary: The worker identities bound to a namespace and the activities they may serve
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `worker:bind`. A worker identity serves only the activities its binding names; without one it is refused at registration.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The bindings', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBindingList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/worker-bindings/{subject}:
+    put:
+      operationId: bindWorker
+      summary: Bind a worker identity to activities of a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Replaces what the identity was bound to in this namespace. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetWorkerBindingRequest'}
+      responses:
+        '200': {description: 'The binding now in force and what the change released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBinding'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: unbindWorker
+      summary: Remove the binding of a worker identity in a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: The identity can no longer register in this namespace; its sessions are closed and the attempts they hold are released. 404 when it has no binding there. Needs `worker:bind`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      responses:
+        '200': {description: 'What the removal released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RevokedWorkers'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets:
+    get:
+      operationId: listSecrets
+      summary: The secrets of a namespace, by name, without values
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `secret:read`. These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The secrets', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}:
+    put:
+      operationId: putSecret
+      summary: Store a secret, or a new version of it
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `secret:manage`. Stores the value sealed under the active key and keeps the last five versions. Counts against the namespace's `secrets` quota when the secret is new. Audited (the name and the actor, never the value). These operations exist only on instances configured with a key ring (`SAGAT_SECRETS_KEYS`); elsewhere they answer 404. A value is accepted here and nowhere else, and is never returned by any operation: workers receive it through `ResolveSecrets` of the worker protocol while they hold the lease of a step whose definition declares it.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetSecretRequest'}
+      responses:
+        '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteSecret
+      summary: Delete a secret with all its versions and its access list
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. Workflows that declare it stop resolving it at once. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      responses:
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}/access:
+    get:
+      operationId: listSecretAccess
+      summary: Who may reference the secret from workflows they publish
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. Administrators may always use a secret and are not listed.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+      responses:
+        '200': {description: 'The identities on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretAccess'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/secrets/{secretName}/access/{subject}:
+    put:
+      operationId: grantSecretAccess
+      summary: Let an identity reference the secret from workflows it publishes
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. Idempotent. The identity also needs a role that holds `secret:use`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      responses:
+        '204': {description: 'The identity is on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: revokeSecretAccess
+      summary: Take an identity off the secret's list
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `secret:manage`. The next time a worker asks for the value of a step that identity published, it is refused. 404 when the identity was not on the list. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SecretName'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      responses:
+        '204': {description: 'The identity is off the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/egress-policy:
+    get:
+      operationId: getEgressPolicy
+      summary: Where outbound requests of a namespace may go
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `egress:manage`. Default-deny: a namespace without a policy may reach nothing (the answer is then an empty policy). Whatever the policy says, loopback, link-local and cloud-metadata addresses, multicast and reserved space are never reachable, and private space only through an explicit network rule.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: setEgressPolicy
+      summary: Replace the egress policy of a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Needs `egress:manage`. A rule is an exact host name, `*.domain` (any host below it, not the domain itself) or a CIDR network (which also allows addressing it by IP literal). Audited: the trail records how many rules and ports changed, not what they are.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetEgressPolicyRequest'}
+      responses:
+        '200': {description: 'The policy now in force, in canonical text', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: resetEgressPolicy
+      summary: Remove the egress policy of a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: The namespace may reach nothing again. Needs `egress:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '204': {description: 'The policy is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /events:
     post:
       operationId: publishEvent
@@ -558,6 +908,27 @@ components:
       in: query
       description: Page size; values outside 1..200 are clamped.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    WorkerSubject:
+      name: subject
+      in: path
+      required: true
+      description: The identity (the `sub` of its token), URL-encoded.
+      schema: {type: string, minLength: 1, maxLength: 255}
+    SecretName:
+      name: secretName
+      in: path
+      required: true
+      schema: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+    NamespaceId:
+      name: namespaceId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    QuotaResourceName:
+      name: resource
+      in: path
+      required: true
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets]}
     WorkflowId:
       name: workflowId
       in: path
@@ -823,6 +1194,90 @@ components:
         accepted: {type: boolean}
         runStatus: {type: string}
         runVersion: {type: integer, format: int64}
+    RevokedWorkers:
+      type: object
+      required: [sessionsClosed, leasesReleased]
+      properties:
+        sessionsClosed: {type: integer, minimum: 0}
+        leasesReleased: {type: integer, minimum: 0}
+    WorkerBinding:
+      type: object
+      required: [subject, activities]
+      properties:
+        subject: {type: string}
+        activities: {type: array, items: {type: string}, description: 'Activity names, `<prefix>.*` or `*`.'}
+        revoked: {$ref: '#/components/schemas/RevokedWorkers'}
+    WorkerBindingList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/WorkerBinding'}}
+    SetWorkerBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [activities]
+      properties:
+        activities: {type: array, minItems: 1, maxItems: 64, items: {type: string, minLength: 1, maxLength: 130}}
+    Secret:
+      type: object
+      required: [name, version, keyId, createdBy, updatedAt]
+      properties:
+        name: {type: string}
+        version: {type: integer, minimum: 1}
+        keyId: {type: string, description: 'The key of the ring the current version is sealed under.'}
+        createdBy: {type: string}
+        updatedAt: {type: string, format: date-time}
+    SecretList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Secret'}}
+    SecretAccess:
+      type: object
+      required: [subjects]
+      properties:
+        subjects: {type: array, items: {type: string}}
+    SetSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value: {type: string, minLength: 1, maxLength: 16384, writeOnly: true, description: 'The secret, UTF-8 text of 1 to 16384 bytes. Never returned.'}
+    EgressPolicy:
+      type: object
+      required: [rules, ports, allowHttp]
+      properties:
+        rules: {type: array, items: {type: string}, description: 'Exact hosts, `*.domain` rules and CIDR networks, lower-cased and masked.'}
+        ports: {type: array, items: {type: integer, minimum: 1, maximum: 65535}, description: 'Empty means 443 (and 80 when plain HTTP is allowed).'}
+        allowHttp: {type: boolean}
+    SetEgressPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [rules]
+      properties:
+        rules: {type: array, maxItems: 256, items: {type: string, minLength: 1, maxLength: 260}}
+        ports: {type: array, maxItems: 32, items: {type: integer, minimum: 1, maximum: 65535}}
+        allowHttp: {type: boolean, default: false}
+    Quota:
+      type: object
+      required: [resource, limit, source, ceiling]
+      properties:
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets]}
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
+        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
+        used: {type: integer, format: int64, minimum: 0, description: 'Exact count now. Absent for a per-namespace resource in the tenant-wide view.'}
+    QuotaList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Quota'}}
+    SetQuotaRequest:
+      type: object
+      additionalProperties: false
+      required: [limit]
+      properties:
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
     SignalResult:
       type: object
       required: [deliveredTo]

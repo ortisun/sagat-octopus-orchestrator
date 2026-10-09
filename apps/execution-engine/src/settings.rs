@@ -5,11 +5,12 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use sagat_api_grpc::GrpcConfig;
+use sagat_api_grpc::TlsConfig;
 use sagat_api_http::{AuthConfig, RateLimitConfig};
 use sagat_application::worker::WorkerSettings;
 use sagat_control_plane::config::{
     ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, optional,
-    rate_limit_error, read_auth, read_rate_limit,
+    rate_limit_error, read_auth, read_rate_limit, read_secrets,
 };
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{DispatchSettings, SchedulerSettings};
@@ -39,6 +40,9 @@ pub struct EngineConfig {
     pub outbox_poll: Duration,
     /// `None`: hints are not published (workers poll; the outbox accumulates).
     pub nats: Option<NatsConfig>,
+    /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
+    /// `ResolveSecrets` call off.
+    pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
 }
 
 fn positive(name: &'static str, value: u64) -> Result<u64, ConfigError> {
@@ -51,7 +55,69 @@ fn positive(name: &'static str, value: u64) -> Result<u64, ConfigError> {
     Ok(value)
 }
 
+/// A PEM file named by `name`, if the variable is set.
+fn pem_file(get: Lookup<'_>, name: &'static str) -> Result<Option<Vec<u8>>, ConfigError> {
+    let Some(path) = get(name)
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(&path).map_err(|e| ConfigError::Invalid {
+        name,
+        reason: format!("cannot be read ({})", e.kind()),
+    })?;
+    if !bytes.windows(10).any(|w| w == b"-----BEGIN") {
+        return Err(ConfigError::Invalid {
+            name,
+            reason: "is not a PEM file".to_owned(),
+        });
+    }
+    Ok(Some(bytes))
+}
+
+/// TLS for the worker API, from `SAGAT_GRPC_TLS_CERT_FILE` and `SAGAT_GRPC_TLS_KEY_FILE` (both or
+/// neither) and, for mutual TLS, `SAGAT_GRPC_TLS_CLIENT_CA_FILE`.
+fn read_tls(get: Lookup<'_>) -> Result<Option<TlsConfig>, ConfigError> {
+    let certificate = pem_file(get, "SAGAT_GRPC_TLS_CERT_FILE")?;
+    let key = pem_file(get, "SAGAT_GRPC_TLS_KEY_FILE")?;
+    let client_ca = pem_file(get, "SAGAT_GRPC_TLS_CLIENT_CA_FILE")?;
+    match (certificate, key, client_ca) {
+        (None, None, None) => Ok(None),
+        (Some(certificate_pem), Some(private_key_pem), client_ca_pem) => Ok(Some(TlsConfig {
+            certificate_pem,
+            private_key_pem,
+            client_ca_pem,
+        })),
+        (Some(_), None, _) => Err(ConfigError::Invalid {
+            name: "SAGAT_GRPC_TLS_KEY_FILE",
+            reason: "is required together with SAGAT_GRPC_TLS_CERT_FILE".to_owned(),
+        }),
+        (None, Some(_), _) => Err(ConfigError::Invalid {
+            name: "SAGAT_GRPC_TLS_CERT_FILE",
+            reason: "is required together with SAGAT_GRPC_TLS_KEY_FILE".to_owned(),
+        }),
+        (None, None, Some(_)) => Err(ConfigError::Invalid {
+            name: "SAGAT_GRPC_TLS_CLIENT_CA_FILE",
+            reason:
+                "needs a server certificate: set SAGAT_GRPC_TLS_CERT_FILE and SAGAT_GRPC_TLS_KEY_FILE"
+                    .to_owned(),
+        }),
+    }
+}
+
 /// A positive count read from `name`, or `default`.
+fn seconds(
+    get: Lookup<'_>,
+    name: &'static str,
+    default: Duration,
+) -> Result<Duration, ConfigError> {
+    Ok(Duration::from_secs(positive(
+        name,
+        optional(get, name, default.as_secs())?,
+    )?))
+}
+
 fn capacity(get: Lookup<'_>, name: &'static str, default: usize) -> Result<usize, ConfigError> {
     let value = positive(name, optional(get, name, default as u64)?)?;
     usize::try_from(value).map_err(|_| ConfigError::Invalid {
@@ -119,7 +185,33 @@ impl EngineConfig {
                 "SAGAT_GRPC_MAX_CONNECTIONS",
                 grpc_defaults.max_connections,
             )?,
+            max_connections_per_peer: capacity(
+                get,
+                "SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER",
+                grpc_defaults.max_connections_per_peer,
+            )?,
+            first_byte_timeout: seconds(
+                get,
+                "SAGAT_GRPC_FIRST_BYTE_TIMEOUT_SECS",
+                grpc_defaults.first_byte_timeout,
+            )?,
+            idle_timeout: seconds(
+                get,
+                "SAGAT_GRPC_IDLE_TIMEOUT_SECS",
+                grpc_defaults.idle_timeout,
+            )?,
+            handshake_timeout: seconds(
+                get,
+                "SAGAT_GRPC_TLS_HANDSHAKE_TIMEOUT_SECS",
+                grpc_defaults.handshake_timeout,
+            )?,
+            max_connection_age: seconds(
+                get,
+                "SAGAT_GRPC_MAX_CONNECTION_AGE_SECS",
+                grpc_defaults.max_connection_age,
+            )?,
             max_in_flight: capacity(get, "SAGAT_GRPC_MAX_IN_FLIGHT", grpc_defaults.max_in_flight)?,
+            tls: read_tls(get)?,
             ..grpc_defaults
         };
 
@@ -222,6 +314,22 @@ impl EngineConfig {
             }
         };
 
+        let secrets = read_secrets(get)?;
+        // Secret values travel over the worker API: plaintext is acceptable only in development, or
+        // when the operator states that TLS is terminated in front of the engine.
+        if secrets.is_some()
+            && grpc.tls.is_none()
+            && environment != Environment::Dev
+            && !flag(get, "SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS")?
+        {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_SECRETS_KEYS",
+                reason: "secrets are handed to workers over the worker API, which would be plaintext: \
+                         set SAGAT_GRPC_TLS_CERT_FILE and SAGAT_GRPC_TLS_KEY_FILE, or set \
+                         SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS=true if TLS is terminated in front of the engine"
+                    .to_owned(),
+            });
+        }
         Ok(Self {
             grpc_addr: optional(
                 get,
@@ -241,6 +349,7 @@ impl EngineConfig {
             dispatch,
             outbox_poll,
             nats,
+            secrets,
         })
     }
 }

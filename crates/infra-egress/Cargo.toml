@@ -1,0 +1,22 @@
+[package]
+name = "sagat-infra-egress"
+description = "Guarded outbound HTTP: every connection a tenant's integration makes passes the egress policy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reqwest = { workspace = true, features = ["stream"] }
+rustls.workspace = true
+sagat-domain.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "time", "rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net"] }

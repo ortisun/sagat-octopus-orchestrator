@@ -35,9 +35,40 @@ pub enum AuditAction {
     /// The caller asked for a resource that exists only in another tenant. The record carries the
     /// identifier the caller supplied and nothing about the other tenant.
     CrossTenantAccessDenied,
+    /// A secret was created, or a new version of it was stored (rotation). Never carries a value.
+    SecretStored,
+    SecretDeleted,
+    /// Someone was allowed to reference a secret from workflows, or no longer is.
+    SecretAccessGranted,
+    SecretAccessRevoked,
+    /// A worker received the value of a secret for one leased attempt.
+    SecretResolved,
+    /// A workflow referenced a secret its publisher may not use, or a lease asked for one it was
+    /// not given.
+    SecretDenied,
+    QuotaChanged,
+    /// The egress policy of a namespace was replaced.
+    EgressPolicyChanged,
+    /// An outbound request was refused by the egress policy.
+    EgressDenied,
+    /// A worker identity was bound to a namespace and activities, or unbound.
+    WorkerBound,
+    WorkerUnbound,
+    /// A worker asked to serve an activity its identity is not bound to.
+    WorkerDenied,
 }
 
 impl AuditAction {
+    /// Whether doing the same thing again, to the same resource and for the same stated reason, adds
+    /// nothing to the trail. These events are driven by a caller who can repeat them as often as
+    /// they like (a worker asking again for the secrets of the attempt it holds), so the trail keeps
+    /// the first and not every repeat: its growth is then bounded by what actually happened (one
+    /// per run, node and attempt), not by how many times somebody asked.
+    #[must_use]
+    pub const fn collapses_repeats(self) -> bool {
+        matches!(self, Self::SecretResolved | Self::SecretDenied)
+    }
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -54,6 +85,18 @@ impl AuditAction {
             Self::RunResumed => "run.resumed",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
+            Self::SecretStored => "secret.stored",
+            Self::SecretDeleted => "secret.deleted",
+            Self::SecretAccessGranted => "secret.access_granted",
+            Self::SecretAccessRevoked => "secret.access_revoked",
+            Self::SecretResolved => "secret.resolved",
+            Self::SecretDenied => "secret.denied",
+            Self::QuotaChanged => "quota.changed",
+            Self::EgressPolicyChanged => "egress.policy_changed",
+            Self::EgressDenied => "egress.denied",
+            Self::WorkerBound => "worker.bound",
+            Self::WorkerUnbound => "worker.unbound",
+            Self::WorkerDenied => "worker.denied",
         }
     }
 }
@@ -74,6 +117,10 @@ pub enum ResourceType {
     Workflow,
     WorkflowVersion,
     Run,
+    Secret,
+    Quota,
+    EgressPolicy,
+    WorkerBinding,
 }
 
 impl ResourceType {
@@ -87,6 +134,10 @@ impl ResourceType {
             Self::Workflow => "workflow",
             Self::WorkflowVersion => "workflow_version",
             Self::Run => "run",
+            Self::Secret => "secret",
+            Self::Quota => "quota",
+            Self::EgressPolicy => "egress_policy",
+            Self::WorkerBinding => "worker_binding",
         }
     }
 }
@@ -180,6 +231,30 @@ impl AuditRecord {
             resource_id: resource_id.into(),
             reason: Some(reason.into()),
             trace_id,
+            created_at: now,
+        }
+    }
+
+    /// Records something a platform operator did from the command line. The actor is
+    /// [`Subject::operator`]; the operator authenticated to the host, not to the API.
+    #[must_use]
+    pub fn operator(
+        tenant_id: TenantId,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id,
+            actor: Subject::operator(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id: None,
             created_at: now,
         }
     }
