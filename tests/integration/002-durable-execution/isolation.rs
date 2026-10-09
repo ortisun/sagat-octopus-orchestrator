@@ -265,8 +265,9 @@ async fn the_database_refuses_cross_tenant_references_in_the_execution_tables() 
         .await
         .expect("digest");
     let result = sqlx::query(
-        "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, input_digest, started_by, created_at, updated_at) \
-         SELECT gen_random_uuid(), $1, $2, workflow_id, workflow_version_id, 'RUNNING', $3, 'x', now(), now() FROM runs WHERE id = $4",
+        "WITH fresh AS (SELECT gen_random_uuid() AS id) \
+         INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, input_digest, started_by, created_at, updated_at, root_run_id) \
+         SELECT fresh.id, $1, $2, workflow_id, workflow_version_id, 'RUNNING', $3, 'x', now(), now(), fresh.id FROM runs, fresh WHERE runs.id = $4",
     )
     .bind(theirs)
     .bind(w.other_namespace.id().as_uuid())

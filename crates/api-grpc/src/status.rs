@@ -53,6 +53,7 @@ fn machine_code(code: ErrorCode) -> String {
         ErrorCode::Conflict => "CONFLICT",
         ErrorCode::ValidationFailed => "VALIDATION_FAILED",
         ErrorCode::RateLimited => "RATE_LIMITED",
+        ErrorCode::QuotaExceeded => "QUOTA_EXCEEDED",
         ErrorCode::Unavailable => "UNAVAILABLE",
         ErrorCode::Internal => "INTERNAL",
     }

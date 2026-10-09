@@ -8,7 +8,9 @@ use sagat_domain::execution::{RunId, RunStatus, StepStatus};
 use sagat_domain::workflow::CancelPolicy;
 use serde_json::{Value, json};
 
-use crate::support::engine::{World, activity, chain, child_node, document, with, world};
+use crate::support::engine::{
+    World, activity, chain, child_node, document, parallel_node, with, world,
+};
 
 /// A workflow with one activity, `act.kid`, to be used as a child.
 fn kid(name: &str) -> Value {
@@ -620,6 +622,7 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
                 cancel_policy: CancelPolicy::Propagate,
             }),
             depth: 1,
+            root: run,
         },
         definition,
         input: candidate.input.clone(),
@@ -650,5 +653,56 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
     assert!(
         w.run_record(child).await.is_none(),
         "no orphan child exists"
+    );
+}
+
+#[tokio::test]
+async fn a_fan_out_bomb_stops_at_the_tree_budget_and_fails_instead_of_exhausting_the_platform() {
+    use sagat_application::execution::MAX_TREE_RUNS;
+
+    let w = world().await;
+    // `bomb-flow` starts itself eight times in parallel: depth 8 alone would allow 8^8 runs.
+    let branches: Vec<String> = (0..8).map(|i| format!("c{i}")).collect();
+    let names: Vec<&str> = branches.iter().map(String::as_str).collect();
+    let mut nodes = vec![parallel_node("p", &names, "all")];
+    nodes.extend(names.iter().map(|b| child_node(b, "bomb-flow", None)));
+    let (wf, _) = w.publish(document("bomb-flow", "p", nodes)).await;
+    let root = w.start(wf, &json!({})).await;
+
+    // Ticks until the tree has settled. A failed action is swallowed (and logged) by the scheduler,
+    // so the test counts them: refusing at the budget must be a clean outcome, never an error.
+    let mut failed = 0;
+    for _ in 0..400 {
+        let report = w.scheduler.tick().await;
+        failed += report.failed;
+        if !report.did_work() {
+            break;
+        }
+    }
+    assert_eq!(failed, 0, "no scheduler action failed on the way");
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM runs")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(
+        total,
+        i64::try_from(MAX_TREE_RUNS).expect("fits"),
+        "the tree grew to its budget and not one run further"
+    );
+    let unfinished: i64 = sqlx::query_scalar("SELECT count(*) FROM runs WHERE finished_at IS NULL")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(unfinished, 0, "and every run ended: nothing waits forever");
+    assert_eq!(w.run_status(root).await, RunStatus::Failed);
+    let refused: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE failure_code = 'CHILD_LIMIT_EXCEEDED'",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert!(
+        refused > 0,
+        "the budget, not only the depth limit, ended the tree"
     );
 }

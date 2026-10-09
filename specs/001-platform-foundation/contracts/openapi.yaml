@@ -582,7 +582,7 @@ components:
         code:
           type: string
           description: Stable machine-readable code.
-          enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, RATE_LIMITED, UNAVAILABLE, INTERNAL]
+          enum: [BAD_REQUEST, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, RATE_LIMITED, QUOTA_EXCEEDED, UNAVAILABLE, INTERNAL]
         message: {type: string, description: "Safe, human-readable summary. Never contains secrets, payloads or other tenants' data."}
         retryable: {type: boolean}
         traceId: {type: string, pattern: '^[0-9a-f]{32}$'}

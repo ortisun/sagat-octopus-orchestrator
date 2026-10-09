@@ -284,8 +284,8 @@ async fn killing_database_connections_while_workers_run_loses_nothing_and_duplic
 
     // Four workers retry every operation until it goes through, as a real SDK would.
     let mut sessions: Vec<Session> = Vec::new();
-    for _ in 0..4 {
-        sessions.push(register_with_retry(&w).await);
+    for i in 0..4 {
+        sessions.push(register_with_retry(&w, i).await);
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(90);
     let done = futures_util::future::join_all(
@@ -386,7 +386,7 @@ async fn worker_loop(
     }
 }
 
-async fn register_with_retry(w: &World) -> Session {
+async fn register_with_retry(w: &World, index: u32) -> Session {
     for _ in 0..100 {
         let caps = sagat_application::worker::Capabilities {
             activities: vec!["act.a".into(), "act.b".into(), "act.c".into()],
@@ -397,7 +397,12 @@ async fn register_with_retry(w: &World) -> Session {
         };
         if let Ok(registered) = w
             .workers
-            .register(&w.worker, "payments", "chaos-worker", &caps)
+            .register(
+                &w.worker,
+                "payments",
+                &format!("chaos-worker-{index}"),
+                &caps,
+            )
             .await
         {
             return Session {

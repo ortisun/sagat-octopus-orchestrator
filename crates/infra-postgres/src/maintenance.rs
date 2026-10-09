@@ -151,7 +151,7 @@ impl MaintenanceStore for PgRunStore {
     ) -> Result<Vec<StepRef>, StoreError> {
         sqlx::query(
             "SELECT tenant_id, run_id, node FROM steps \
-             WHERE status = 'READY' \
+             WHERE status = 'READY' AND hint_count < 5 \
                AND last_hinted_at <= clock_timestamp() - $1 * interval '1 microsecond' \
              ORDER BY last_hinted_at LIMIT $2",
         )

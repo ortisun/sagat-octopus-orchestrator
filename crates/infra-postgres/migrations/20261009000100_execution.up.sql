@@ -41,6 +41,9 @@ CREATE TABLE runs (
     -- stops, and how deeply it is nested. The link never changes; the two flags are set by the parent
     -- (under the parent's lock) so the scheduler finds exactly the children it still has to act on.
     parent_run_id       uuid,
+    -- The top of the tree this run belongs to (itself for a run started through the API); the whole
+    -- tree shares one size budget.
+    root_run_id         uuid        NOT NULL,
     parent_node         text,
     cancel_policy       text,
     depth               smallint    NOT NULL DEFAULT 0,
@@ -64,8 +67,12 @@ CREATE TABLE runs (
     CONSTRAINT runs_workflow_same_tenant_fk FOREIGN KEY (tenant_id, workflow_id) REFERENCES workflows (tenant_id, id),
     CONSTRAINT runs_version_same_tenant_fk FOREIGN KEY (tenant_id, workflow_version_id) REFERENCES workflow_versions (tenant_id, id),
     CONSTRAINT runs_input_same_tenant_fk FOREIGN KEY (tenant_id, input_digest) REFERENCES payloads (tenant_id, digest),
-    CONSTRAINT runs_parent_same_tenant_fk FOREIGN KEY (tenant_id, parent_run_id) REFERENCES runs (tenant_id, id)
+    CONSTRAINT runs_parent_same_tenant_fk FOREIGN KEY (tenant_id, parent_run_id) REFERENCES runs (tenant_id, id),
+    CONSTRAINT runs_root_same_tenant_fk FOREIGN KEY (tenant_id, root_run_id) REFERENCES runs (tenant_id, id),
+    CONSTRAINT runs_root_of_a_root CHECK (parent_run_id IS NOT NULL OR root_run_id = id)
 );
+
+CREATE INDEX runs_tree_idx ON runs (tenant_id, root_run_id);
 
 CREATE INDEX runs_listing_idx ON runs (tenant_id, namespace_id, id DESC);
 CREATE INDEX runs_by_workflow_idx ON runs (tenant_id, workflow_id, id DESC);
@@ -127,6 +134,8 @@ CREATE TABLE steps (
     activity           text,
     ready_at           timestamptz,
     last_hinted_at     timestamptz,
+    -- How many times the hint was written again because it may have been lost; capped.
+    hint_count         integer     NOT NULL DEFAULT 0,
     -- The lease. Only a hash of the token is stored; renewals push the expiry out, never past the
     -- attempt deadline.
     lease_token_hash   bytea,
@@ -166,7 +175,7 @@ CREATE INDEX steps_timer_idx ON steps (due_at) WHERE status = 'WAITING' AND wait
 CREATE INDEX steps_wait_deadline_idx ON steps (due_at) WHERE status = 'WAITING' AND waiting_kind = 'EVENT';
 CREATE INDEX steps_event_match_idx ON steps (tenant_id, namespace_id, event_type, correlation_key)
     WHERE status = 'WAITING' AND waiting_kind = 'EVENT';
-CREATE INDEX steps_rehint_idx ON steps (last_hinted_at) WHERE status = 'READY';
+CREATE INDEX steps_rehint_idx ON steps (last_hinted_at) WHERE status = 'READY' AND hint_count < 5;
 -- Child runs reserved by a step and not created yet.
 CREATE INDEX steps_child_pending_idx ON steps (updated_at)
     WHERE status = 'WAITING' AND waiting_kind = 'CHILD' AND child_started = false;
@@ -192,6 +201,8 @@ CREATE TABLE worker_sessions (
 );
 
 CREATE INDEX worker_sessions_expiry_idx ON worker_sessions (expires_at);
+-- One session per identity and worker name: registering again replaces it.
+CREATE UNIQUE INDEX worker_sessions_identity_uniq ON worker_sessions (tenant_id, subject, worker_name);
 
 -- Transactional outbox: written in the same transaction as the state change, published to the broker
 -- by a dispatcher. Delivery is at-least-once; the broker is a hint and never the source of truth.
@@ -233,6 +244,23 @@ CREATE TRIGGER payloads_append_only BEFORE UPDATE OR DELETE ON payloads
 CREATE TRIGGER payloads_no_truncate BEFORE TRUNCATE ON payloads
     FOR EACH STATEMENT EXECUTE FUNCTION execution_reject_mutation();
 
+-- The runtime role may delete delivered outbox messages (retention) but never one that is still owed:
+-- that would be a lost event, whoever asks.
+CREATE FUNCTION outbox_reject_undelivered_delete() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.delivered_at IS NULL THEN
+        RAISE EXCEPTION 'an undelivered outbox message cannot be deleted'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER event_outbox_keep_undelivered BEFORE DELETE ON event_outbox
+    FOR EACH ROW EXECUTE FUNCTION outbox_reject_undelivered_delete();
+
+ALTER TABLE event_outbox ENABLE ALWAYS TRIGGER event_outbox_keep_undelivered;
 ALTER TABLE run_events ENABLE ALWAYS TRIGGER run_events_append_only;
 ALTER TABLE run_events ENABLE ALWAYS TRIGGER run_events_no_truncate;
 ALTER TABLE payloads ENABLE ALWAYS TRIGGER payloads_append_only;

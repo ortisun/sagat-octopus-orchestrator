@@ -207,3 +207,111 @@ async fn the_refusal_names_the_problem_and_never_a_credential() {
         );
     }
 }
+
+#[tokio::test]
+async fn each_append_only_table_of_the_execution_plane_is_guarded_too() {
+    for table in ["run_events", "payloads", "workflow_versions"] {
+        for (privilege, finding) in [
+            ("UPDATE", PrivilegeFinding::CanRewriteAppendOnly(table)),
+            ("DELETE", PrivilegeFinding::CanRewriteAppendOnly(table)),
+            ("TRUNCATE", PrivilegeFinding::CanRewriteAppendOnly(table)),
+        ] {
+            let db = migrated_db().await;
+            let role = new_role(&db).await;
+            grant(
+                &db,
+                format!("GRANT SELECT, INSERT ON audit_records TO {role}"),
+            )
+            .await;
+            grant(
+                &db,
+                format!("GRANT SELECT, INSERT, {privilege} ON {table} TO {role}"),
+            )
+            .await;
+            let store = as_role(&db, &role, PASSWORD).await;
+
+            let found = findings(
+                store
+                    .verify_least_privilege()
+                    .await
+                    .expect_err(&format!("{privilege} on {table}")),
+            );
+            assert_eq!(found, vec![finding], "{privilege} on {table}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_role_that_owns_a_journal_table_is_refused() {
+    let db = migrated_db().await;
+    let role = new_role(&db).await;
+    grant(
+        &db,
+        format!("GRANT SELECT, INSERT ON audit_records TO {role}"),
+    )
+    .await;
+    grant(&db, format!("ALTER TABLE run_events OWNER TO {role}")).await;
+    let store = as_role(&db, &role, PASSWORD).await;
+
+    let found = findings(store.verify_least_privilege().await.expect_err("owner"));
+    assert!(
+        found.contains(&PrivilegeFinding::OwnsAppendOnly("run_events")),
+        "{found:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_runtime_role_cannot_delete_an_outbox_message_that_is_still_owed() {
+    let db = migrated_db().await;
+    let tenant = sagat_domain::identity::TenantId::generate();
+    sqlx::query("INSERT INTO tenants (id, slug, created_at) VALUES ($1, 'acme', now())")
+        .bind(tenant.as_uuid())
+        .execute(&db.pool)
+        .await
+        .expect("tenant");
+    for event in ["owed", "delivered"] {
+        sqlx::query(
+            "INSERT INTO event_outbox (id, tenant_id, aggregate_id, event_type, payload, delivered_at) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid(), $2, '{}', \
+                     CASE WHEN $2 = 'delivered' THEN now() END)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(event)
+        .execute(&db.pool)
+        .await
+        .expect("message");
+    }
+    let runtime: PgPool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD))
+        .await
+        .expect("connect as the runtime role");
+
+    let refused = sqlx::query("DELETE FROM event_outbox WHERE event_type = 'owed'")
+        .execute(&runtime)
+        .await
+        .expect_err("an undelivered message must survive");
+    assert!(
+        refused.to_string().contains("cannot be deleted"),
+        "{refused}"
+    );
+    // Even a statement that matches both kinds of row stops at the owed one.
+    assert!(
+        sqlx::query("DELETE FROM event_outbox")
+            .execute(&runtime)
+            .await
+            .is_err()
+    );
+
+    let deleted = sqlx::query("DELETE FROM event_outbox WHERE event_type = 'delivered'")
+        .execute(&runtime)
+        .await
+        .expect("a delivered one may go")
+        .rows_affected();
+    assert_eq!(deleted, 1);
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM event_outbox")
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+    assert_eq!(left, 1);
+}

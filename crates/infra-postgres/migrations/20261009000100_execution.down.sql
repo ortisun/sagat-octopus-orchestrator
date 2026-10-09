@@ -7,6 +7,7 @@ END
 $revoke$;
 
 DROP TABLE event_outbox;
+DROP FUNCTION outbox_reject_undelivered_delete();
 DROP TABLE worker_sessions;
 DROP TABLE steps;
 DROP TRIGGER run_events_no_truncate ON run_events;

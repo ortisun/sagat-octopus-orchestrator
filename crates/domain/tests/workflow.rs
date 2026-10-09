@@ -722,3 +722,117 @@ fn an_error_edge_inside_a_branch_must_stay_inside_it() {
     );
     assert!(contained.is_ok(), "{contained:?}");
 }
+
+// ------------------------------------------------------------------ the cost of validating
+
+mod cost {
+    use std::time::{Duration, Instant};
+
+    use sagat_domain::identity::Slug;
+    use sagat_domain::workflow::{
+        ActivityName, JoinPolicy, MAX_PARALLELS, Node, NodeId, NodeKind, RetryPolicy,
+        WorkflowDefinition, WorkflowError,
+    };
+
+    fn id(s: &str) -> NodeId {
+        NodeId::parse(s).expect("id")
+    }
+
+    fn activity(n: &str) -> Node {
+        Node::new(
+            id(n),
+            NodeKind::Activity {
+                activity: ActivityName::parse("act.x").expect("name"),
+                retry: RetryPolicy::DEFAULT,
+                compensate_with: None,
+                reconcile_with: None,
+                idempotency_template: None,
+            },
+        )
+    }
+
+    /// `parallels` parallel nodes nested one inside the next, with `chain` activities in a line
+    /// inside the innermost branch — so every enclosing parallel's region contains the whole chain,
+    /// the worst shape for the work of finding regions.
+    fn nested(parallels: usize, chain: usize) -> Vec<Node> {
+        let mut nodes = Vec::new();
+        for k in 0..parallels {
+            let first = if k + 1 < parallels {
+                format!("p{}", k + 1)
+            } else {
+                "l0".to_owned()
+            };
+            nodes.push(
+                Node::new(
+                    id(&format!("p{k}")),
+                    NodeKind::Parallel {
+                        branches: vec![id(&first), id(&format!("side{k}"))],
+                        join: JoinPolicy::All,
+                    },
+                )
+                .with_next(id(&format!("x{k}"))),
+            );
+            nodes.push(activity(&format!("side{k}")));
+            nodes.push(activity(&format!("x{k}")));
+        }
+        for i in 0..chain {
+            let node = activity(&format!("l{i}"));
+            nodes.push(if i + 1 < chain {
+                node.with_next(id(&format!("l{}", i + 1)))
+            } else {
+                node
+            });
+        }
+        nodes
+    }
+
+    fn define(nodes: Vec<Node>) -> Result<WorkflowDefinition, WorkflowError> {
+        WorkflowDefinition::new(Slug::parse("deep-flow").expect("slug"), id("p0"), nodes)
+    }
+
+    #[test]
+    fn a_workflow_may_not_hold_more_parallel_nodes_than_the_limit() {
+        assert_eq!(
+            define(nested(MAX_PARALLELS + 1, 3)),
+            Err(WorkflowError::TooManyParallels(MAX_PARALLELS + 1))
+        );
+        assert!(
+            define(nested(MAX_PARALLELS, 3)).is_ok(),
+            "the limit itself is allowed"
+        );
+    }
+
+    #[test]
+    fn the_largest_allowed_shape_validates_in_bounded_time_and_reports_its_weight() {
+        let started = Instant::now();
+        let definition = define(nested(MAX_PARALLELS, 9_000)).expect("valid");
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_secs(20),
+            "32 nested parallels over 9000 nodes took {took:?}: validation is no longer bounded"
+        );
+        // 32 regions each holding the chain: the weight reflects it.
+        let weight = definition.footprint();
+        assert!(weight > 25_000_000, "{weight}");
+        assert!(weight < 256 * 1024 * 1024, "{weight}");
+    }
+
+    #[test]
+    fn a_plain_chain_of_ten_thousand_nodes_is_valid_and_weighs_what_it_should() {
+        let nodes: Vec<Node> = (0..10_000)
+            .map(|i| {
+                let node = activity(&format!("n{i}"));
+                if i + 1 < 10_000 {
+                    node.with_next(id(&format!("n{}", i + 1)))
+                } else {
+                    node
+                }
+            })
+            .collect();
+        let definition =
+            WorkflowDefinition::new(Slug::parse("long-flow").expect("slug"), id("n0"), nodes)
+                .expect("valid");
+        let weight = definition.footprint();
+        assert!((6_000_000..40_000_000).contains(&weight), "{weight}");
+    }
+}

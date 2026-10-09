@@ -98,6 +98,18 @@ impl FailureCode {
         Self::system("CHILD_DEPTH_EXCEEDED")
     }
 
+    /// The tree of runs this child would join has reached its size limit.
+    #[must_use]
+    pub fn child_limit_exceeded() -> Self {
+        Self::system("CHILD_LIMIT_EXCEEDED")
+    }
+
+    /// Completing the step would make the run retain more output than allowed.
+    #[must_use]
+    pub fn run_data_limit() -> Self {
+        Self::system("RUN_DATA_LIMIT")
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0

@@ -29,6 +29,18 @@ use crate::error::StoreError;
 /// built yet (research.md, gap G19).
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 
+/// Most runs one tree may hold: a root run and all its descendants. Depth alone does not bound a
+/// tree (a parallel node can start hundreds of children per level), so the whole tree has a budget.
+pub const MAX_TREE_RUNS: usize = 1024;
+
+/// Estimated memory the parsed definitions of one process may occupy (the engine and the control
+/// plane each run in a few hundred megabytes).
+pub const DEFAULT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Most output bytes a run may keep. Every lease receives the outputs of the steps before it, so
+/// without a limit the sum of many individually allowed outputs would be copied into every task.
+pub const MAX_RUN_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
 /// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
 pub const MAX_CHILD_DEPTH: u8 = 8;
@@ -157,6 +169,8 @@ pub struct RunInfo {
     pub parent: Option<ParentLink>,
     /// How deeply nested this run is: 0 for a run started through the API.
     pub depth: u8,
+    /// The run at the top of the tree this run belongs to (itself for a run started through the API).
+    pub root: RunId,
 }
 
 /// A run as read by the API.
@@ -233,6 +247,15 @@ impl Effects {
     }
 }
 
+/// When a lease ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseDeadlines {
+    /// The renewable expiry: a heartbeat pushes it out.
+    pub expires_at: OffsetDateTime,
+    /// The attempt's own deadline (the node's `timeout`), which no renewal extends.
+    pub attempt_deadline_at: Option<OffsetDateTime>,
+}
+
 /// The lease handed to a worker. Only the hash of the token is stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseGrant {
@@ -269,6 +292,13 @@ pub trait RunTx: Send {
         &mut self,
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
+
+    /// The two times at which the lease held on `node` ends (`None` when no lease is held): the
+    /// renewable expiry and the attempt's own deadline, if it has one.
+    fn lease_deadlines(
+        &mut self,
+        node: &NodeId,
+    ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
 
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(
@@ -478,12 +508,15 @@ pub struct DefinitionCache {
     codec: Arc<dyn IrCodec>,
     entries: Arc<std::sync::Mutex<CacheEntries>>,
     capacity: usize,
+    /// Upper bound on the estimated memory of all cached definitions.
+    max_bytes: usize,
 }
 
 #[derive(Default)]
 struct CacheEntries {
     map: BTreeMap<WorkflowVersionId, (u64, Arc<WorkflowDefinition>)>,
     tick: u64,
+    bytes: usize,
 }
 
 impl std::fmt::Debug for DefinitionCache {
@@ -495,12 +528,22 @@ impl std::fmt::Debug for DefinitionCache {
 }
 
 impl DefinitionCache {
+    /// A cache of at most `capacity` definitions and [`DEFAULT_CACHE_BYTES`] of estimated memory.
     #[must_use]
     pub fn new(codec: Arc<dyn IrCodec>, capacity: usize) -> Self {
+        Self::with_budget(codec, capacity, DEFAULT_CACHE_BYTES)
+    }
+
+    /// A cache bounded both by count and by the estimated memory of what it holds, so a few huge
+    /// definitions cannot crowd out memory the process needs. The entry just parsed is always kept,
+    /// however large, so a definition bigger than the budget still works (it is simply not shared).
+    #[must_use]
+    pub fn with_budget(codec: Arc<dyn IrCodec>, capacity: usize, max_bytes: usize) -> Self {
         Self {
             codec,
             entries: Arc::default(),
             capacity: capacity.max(1),
+            max_bytes,
         }
     }
 
@@ -548,18 +591,25 @@ impl DefinitionCache {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.tick += 1;
         let tick = guard.tick;
+        // Two callers can parse the same version at once; the later one replaces the earlier.
+        if let Some((_, previous)) = guard.map.remove(&version) {
+            guard.bytes = guard.bytes.saturating_sub(previous.footprint());
+        }
+        guard.bytes += parsed.footprint();
         guard.map.insert(version, (tick, Arc::clone(&parsed)));
-        while guard.map.len() > self.capacity {
+        // Evict the least recently used until both bounds hold; never the entry just inserted.
+        while guard.map.len() > 1
+            && (guard.map.len() > self.capacity || guard.bytes > self.max_bytes)
+        {
             let oldest = guard
                 .map
                 .iter()
+                .filter(|(k, _)| **k != version)
                 .min_by_key(|(_, (used, _))| *used)
                 .map(|(k, _)| *k);
-            match oldest {
-                Some(key) => {
-                    guard.map.remove(&key);
-                }
-                None => break,
+            let Some(key) = oldest else { break };
+            if let Some((_, gone)) = guard.map.remove(&key) {
+                guard.bytes = guard.bytes.saturating_sub(gone.footprint());
             }
         }
         Ok(parsed)

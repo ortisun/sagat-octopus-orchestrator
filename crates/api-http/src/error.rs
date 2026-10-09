@@ -26,6 +26,9 @@ pub enum ErrorCode {
     Conflict,
     ValidationFailed,
     RateLimited,
+    /// A limit of the tenant (or of the platform) was reached; unlike `RateLimited`, waiting does
+    /// not help until something is released.
+    QuotaExceeded,
     Unavailable,
     Internal,
 }
@@ -294,6 +297,15 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
+            AppError::QuotaExceeded(what) => {
+                let mut e = Self::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    ErrorCode::QuotaExceeded,
+                    "a limit was reached; release something and retry",
+                );
+                e.parts.details = Some(json!({ "limit": what }));
+                e
+            }
             AppError::Unavailable => Self::unavailable(),
             AppError::Internal => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,

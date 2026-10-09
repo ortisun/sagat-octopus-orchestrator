@@ -11,18 +11,46 @@ use uuid::Uuid;
 use crate::execution::PgRunStore;
 use crate::identity::{col, corrupt, store_error};
 
+/// The runs with the oldest ready steps for some activity of the session.
+///
+/// Per activity it walks `steps_ready_idx` (tenant, namespace, activity, ready_at) in order and
+/// stops after `$4` qualifying rows, so its cost is bounded by the answer and not by the backlog (an
+/// aggregate over all ready steps cost 209 ms with 200 000 of them). Paused and stopping runs are
+/// skipped by a primary-key probe each.
+pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activity) \
+     CROSS JOIN LATERAL ( \
+         SELECT st.run_id, st.ready_at FROM steps st \
+         JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
+         WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
+           AND st.status = 'READY' AND NOT r.paused AND r.stop_reason IS NULL \
+         ORDER BY st.ready_at LIMIT $4) s \
+     ORDER BY s.ready_at, s.run_id LIMIT $4";
+
 fn micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
 }
 
 impl WorkerStore for PgRunStore {
-    async fn create_session(&self, session: &NewSession) -> Result<(), StoreError> {
-        sqlx::query(
+    async fn create_session(&self, session: &NewSession) -> Result<Uuid, StoreError> {
+        // One session per (identity, worker name): registering again replaces the token (and keeps
+        // the id). A new name is refused once the identity holds the maximum of live sessions; the
+        // count is not serialised, so racing registrations can overshoot it by their own number.
+        let stored: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO worker_sessions \
              (id, tenant_id, namespace_id, subject, worker_name, token_hash, activities, languages, \
               pools, max_inflight, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
-                     clock_timestamp() + $11 * interval '1 microsecond')",
+             SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+                    clock_timestamp() + $11 * interval '1 microsecond' \
+             WHERE EXISTS (SELECT 1 FROM worker_sessions \
+                           WHERE tenant_id = $2 AND subject = $4 AND worker_name = $5) \
+                OR (SELECT count(*) FROM worker_sessions \
+                    WHERE tenant_id = $2 AND subject = $4 AND expires_at > clock_timestamp()) < $12 \
+             ON CONFLICT (tenant_id, subject, worker_name) DO UPDATE SET \
+                    namespace_id = EXCLUDED.namespace_id, token_hash = EXCLUDED.token_hash, \
+                    activities = EXCLUDED.activities, languages = EXCLUDED.languages, \
+                    pools = EXCLUDED.pools, max_inflight = EXCLUDED.max_inflight, \
+                    expires_at = EXCLUDED.expires_at \
+             RETURNING id",
         )
         .bind(session.id)
         .bind(session.tenant_id.as_uuid())
@@ -35,10 +63,13 @@ impl WorkerStore for PgRunStore {
         .bind(&session.pools)
         .bind(i32::try_from(session.max_inflight).map_err(|_| corrupt("max inflight"))?)
         .bind(micros(session.ttl))
-        .execute(self.pool())
+        .bind(i64::from(sagat_application::worker::MAX_SESSIONS_PER_IDENTITY))
+        .fetch_optional(self.pool())
         .await
         .map_err(store_error)?;
-        Ok(())
+        stored.ok_or(StoreError::QuotaExceeded {
+            what: "worker sessions of one identity",
+        })
     }
 
     async fn use_session(
@@ -83,21 +114,21 @@ impl WorkerStore for PgRunStore {
         activities: &[String],
         limit: u32,
     ) -> Result<Vec<RunId>, StoreError> {
-        let rows: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT s.run_id FROM steps s \
-             JOIN runs r ON r.tenant_id = s.tenant_id AND r.id = s.run_id \
-             WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.status = 'READY' \
-               AND s.activity = ANY($3) AND NOT r.paused AND r.stop_reason IS NULL \
-             GROUP BY s.run_id ORDER BY min(s.ready_at), s.run_id LIMIT $4",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(activities)
-        .bind(i64::from(limit))
-        .fetch_all(self.pool())
-        .await
-        .map_err(store_error)?;
-        Ok(rows.into_iter().map(RunId::new).collect())
+        let rows: Vec<Uuid> = sqlx::query_scalar(CLAIMABLE)
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(activities)
+            .bind(i64::from(limit))
+            .fetch_all(self.pool())
+            .await
+            .map_err(store_error)?;
+        // A run may have several ready steps: keep each run once, oldest first.
+        let mut seen = std::collections::BTreeSet::new();
+        Ok(rows
+            .into_iter()
+            .filter(|run| seen.insert(*run))
+            .map(RunId::new)
+            .collect())
     }
 
     async fn inflight(&self, tenant: TenantId, id: Uuid) -> Result<u32, StoreError> {
