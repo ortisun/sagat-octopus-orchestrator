@@ -51,7 +51,7 @@ Substates: `WAITING_TIMER`, `WAITING_EVENT`, `WAITING_CHILD`, `WAITING_APPROVAL`
 ## Timers, cron and timezone
 
 - Scheduler uses the database clock and the local monotonic clock only for internal scheduling; TTLs persisted in UTC.
-- Cron with IANA timezone, explicit DST policy (`skip`, `once`, `twice`), jitter and misfire (`skip`, `catch_up_one`, `catch_up_all_bounded`).
+- Cron with IANA timezone, explicit DST policy (`skip`, `once`, `twice`), jitter and misfire (`skip`, `catch_up_one`, `catch_up_all_bounded`). **Built (feature 004):** a trigger's cron expression has five fields and an IANA time zone (UTC by default); the DST policy is that of the `croner` library; a platform that was down fires a missed schedule once, late (`catch_up_one`), and continues from the first time after now; a tick starts its run under a key derived from the tick, so it cannot start twice, and a tick that cannot start is tried again about 30 seconds later under the same key (G84).
 - A wait does not keep a process active; a signal performs atomic `subscription WAITING → FIRED` and creates a READY task.
 
 ## Payload, semantics and limits
