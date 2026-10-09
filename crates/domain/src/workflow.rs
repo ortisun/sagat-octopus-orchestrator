@@ -8,7 +8,13 @@
 //!   version) and every node is reachable from the entrypoint;
 //! * the branches of a `parallel` node are single-entry regions that do not overlap, do not leave
 //!   the region and do not contain a workflow `end`, so a join is well defined;
+//! * a `saga` node owns a closed region like a `parallel` node does, so the steps that a failure
+//!   inside it must undo are well defined;
 //! * delays, timeouts, retry budgets and fan-out are bounded.
+//!
+//! The compensation and the reconciliation of an activity are *derived nodes* of the definition
+//! (`<id>~c`, `<id>~r`): nothing routes to them, but the engine runs them like any other activity,
+//! so leases, retries, fencing and idempotency need no second mechanism (feature 003).
 //!
 //! Wire formats (JSON) are an adapter concern: this module holds no serialization, and expressions
 //! are opaque text evaluated by an adapter (`FR-002-001`, ADR-0003).
@@ -18,6 +24,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::identity::{Slug, clip};
+use crate::saga::{EffectPolicy, NodeOrigin, OnCompensationFailure, SagaCancelPolicy};
 use crate::secrets::{MAX_DECLARED_SECRETS, SecretName};
 
 /// A workflow may have at most this many nodes (matches `nodes.maxItems` in the schema).
@@ -28,6 +35,9 @@ pub const MAX_BRANCHES: usize = 256;
 /// proportional to its size, so this bounds the cost of a definition to this many times the size of
 /// the graph (a document of 650 KB with 5000 nested parallels once cost 17 s and 1.1 GB).
 pub const MAX_PARALLELS: usize = 32;
+/// A workflow may contain at most this many `saga` nodes. Their regions are computed like those of
+/// the `parallel` nodes, so they are bounded the same way.
+pub const MAX_SAGAS: usize = 32;
 /// Longest timer or wait: a run waiting for months is viable, one waiting for decades is a mistake.
 pub const MAX_WAIT: Duration = Duration::from_secs(366 * 24 * 60 * 60);
 /// Longest single retry delay.
@@ -92,6 +102,20 @@ pub enum WorkflowError {
     BranchBoundary { parallel: NodeId, node: NodeId },
     #[error("parallel node '{parallel}': a workflow end ('{node}') cannot sit inside a branch")]
     EndInsideBranch { parallel: NodeId, node: NodeId },
+    #[error(
+        "saga node '{saga}': node '{node}' is reachable both from inside the saga and from outside it"
+    )]
+    SagaBoundary { saga: NodeId, node: NodeId },
+    #[error("saga node '{saga}': a workflow end ('{node}') cannot sit inside a saga")]
+    EndInsideSaga { saga: NodeId, node: NodeId },
+    #[error("a workflow may have at most {MAX_SAGAS} saga nodes, found {0}")]
+    TooManySagas(usize),
+    #[error("node '{0}' is marked irreversible and also has a compensation")]
+    IrreversibleWithCompensation(NodeId),
+    #[error(
+        "node '{0}': effect settings (irreversible, highRisk, compensation retry or timeout) only apply to an activity"
+    )]
+    EffectOnNonActivity(NodeId),
 }
 
 /// Why an expression was rejected.
@@ -170,6 +194,66 @@ name_type!(
     &['_', '.', '-'],
     InvalidNodeId
 );
+impl NodeId {
+    /// The character that makes an id a derived one. It is outside the alphabet of declared ids, so
+    /// no author can write an id that collides with a derived node.
+    const DERIVED: char = '~';
+
+    /// The compensation of this forward node: `<id>~c`.
+    #[must_use]
+    pub fn compensation(&self) -> Self {
+        Self(format!("{}{}c", self.0, Self::DERIVED))
+    }
+
+    /// The reconciliation of this forward node: `<id>~r`.
+    #[must_use]
+    pub fn reconciliation(&self) -> Self {
+        Self(format!("{}{}r", self.0, Self::DERIVED))
+    }
+
+    /// Whether this is the compensation of a forward node.
+    #[must_use]
+    pub fn is_compensation(&self) -> bool {
+        self.0.ends_with("~c")
+    }
+
+    /// Whether this is the reconciliation of a forward node.
+    #[must_use]
+    pub fn is_reconciliation(&self) -> bool {
+        self.0.ends_with("~r")
+    }
+
+    /// The forward node this derived id belongs to; `None` for a declared id.
+    #[must_use]
+    pub fn forward(&self) -> Option<Self> {
+        self.0
+            .rsplit_once(Self::DERIVED)
+            .map(|(base, _)| Self(base.to_owned()))
+    }
+
+    /// Whether this id belongs to a derived node (a compensation or a reconciliation).
+    #[must_use]
+    pub fn is_derived(&self) -> bool {
+        self.0.contains(Self::DERIVED)
+    }
+
+    /// Reads an id back from a journal or a row: a declared id, or a declared id followed by `~c`
+    /// or `~r`. Everything else is rejected, so the derived form cannot be forged from outside.
+    ///
+    /// # Errors
+    /// [`WorkflowError::InvalidNodeId`] unless `value` is one of those forms.
+    pub fn parse_stored(value: &str) -> Result<Self, WorkflowError> {
+        match value.rsplit_once(Self::DERIVED) {
+            None => Self::parse(value),
+            Some((base, "c" | "r")) => {
+                Self::parse(base)?;
+                Ok(Self(value.to_owned()))
+            }
+            Some(_) => Err(WorkflowError::InvalidNodeId(clip(value))),
+        }
+    }
+}
+
 name_type!(
     /// Name of an activity a worker advertises, e.g. `payment.validate`.
     ActivityName,
@@ -286,6 +370,28 @@ impl RetryPolicy {
         max_attempts: 3,
         initial_delay: Duration::from_secs(1),
         max_delay: Duration::from_secs(60),
+        strategy: BackoffStrategy::Exponential,
+        jitter: true,
+    };
+
+    /// What a compensation gets when the author says nothing: five attempts, exponential from two
+    /// seconds up to five minutes, with jitter. A compensation that keeps failing is a decision for
+    /// an operator, so it is given longer than a forward step to recover (feature 003, D63).
+    pub const COMPENSATION: Self = Self {
+        max_attempts: 5,
+        initial_delay: Duration::from_secs(2),
+        max_delay: Duration::from_secs(300),
+        strategy: BackoffStrategy::Exponential,
+        jitter: true,
+    };
+
+    /// What a reconciliation gets: ten attempts in all, shared by every round of reconciling one
+    /// step, exponential from one second up to thirty. A lookup is cheap and must not give up
+    /// early, because the alternative to an answer is an operator.
+    pub const RECONCILIATION: Self = Self {
+        max_attempts: 10,
+        initial_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(30),
         strategy: BackoffStrategy::Exponential,
         jitter: true,
     };
@@ -498,6 +604,15 @@ pub enum NodeKind {
         input: Option<Expression>,
         cancel_policy: CancelPolicy,
     },
+    /// A transactional scope: everything reachable from `begin` is the saga. If a step inside it
+    /// fails for good, the steps that completed are compensated in reverse dependency order
+    /// (feature 003). When the scope completes, control goes to `next`.
+    Saga {
+        begin: NodeId,
+        on_compensation_failure: OnCompensationFailure,
+        /// What a cancellation or a deadline does to the saga.
+        cancel_policy: SagaCancelPolicy,
+    },
     /// Closes the workflow successfully.
     End { output: Option<Expression> },
 }
@@ -513,6 +628,7 @@ impl NodeKind {
             Self::Condition { .. } => "condition",
             Self::Parallel { .. } => "parallel",
             Self::Child { .. } => "child",
+            Self::Saga { .. } => "saga",
             Self::End { .. } => "end",
         }
     }
@@ -526,6 +642,8 @@ pub struct Node {
     next: Option<NodeId>,
     on_error: Option<NodeId>,
     timeout: Option<Duration>,
+    effect: EffectPolicy,
+    origin: NodeOrigin,
 }
 
 impl Node {
@@ -537,7 +655,17 @@ impl Node {
             next: None,
             on_error: None,
             timeout: None,
+            effect: EffectPolicy::NONE,
+            origin: NodeOrigin::Declared,
         }
+    }
+
+    /// What the author says about the effect of this activity (irreversible, high risk, how its
+    /// compensation retries).
+    #[must_use]
+    pub const fn with_effect(mut self, effect: EffectPolicy) -> Self {
+        self.effect = effect;
+        self
     }
 
     /// Successor after a success.
@@ -586,6 +714,18 @@ impl Node {
         self.timeout
     }
 
+    #[must_use]
+    pub const fn effect(&self) -> &EffectPolicy {
+        &self.effect
+    }
+
+    /// Whether the author wrote this node or the definition derived it from `compensateWith` or
+    /// `reconcileWith`.
+    #[must_use]
+    pub const fn origin(&self) -> &NodeOrigin {
+        &self.origin
+    }
+
     /// The retry policy that governs this node (only activities retry).
     #[must_use]
     pub const fn retry_policy(&self) -> RetryPolicy {
@@ -616,6 +756,7 @@ impl Node {
                 out.push(if_false);
             }
             NodeKind::Parallel { branches, .. } => out.extend(branches.iter()),
+            NodeKind::Saga { begin, .. } => out.push(begin),
             NodeKind::WaitEvent { on_timeout, .. } => out.extend(on_timeout.iter()),
             _ => {}
         }
@@ -628,8 +769,9 @@ impl Node {
 /// A non-fatal observation made while validating a definition, reported to the author.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefinitionWarning {
-    /// `compensateWith` / `reconcileWith` are stored but not executed until the saga engine exists.
-    SagaFieldsNotExecuted { node: NodeId },
+    /// `compensateWith` on a node that is not inside a `saga`: nothing starts a compensation there,
+    /// so it will never run.
+    CompensationOutsideSaga { node: NodeId },
     /// A child node starts the workflow it belongs to. Legal (a condition can stop the recursion),
     /// but the depth limit ends it at the latest.
     RecursiveChild { node: NodeId },
@@ -638,9 +780,9 @@ pub enum DefinitionWarning {
 impl fmt::Display for DefinitionWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SagaFieldsNotExecuted { node } => write!(
+            Self::CompensationOutsideSaga { node } => write!(
                 f,
-                "node '{node}': compensateWith/reconcileWith are recorded but compensation is not executed yet (feature 003)"
+                "node '{node}': compensateWith only runs when the node is inside a saga; here it never will"
             ),
             Self::RecursiveChild { node } => write!(
                 f,
@@ -656,10 +798,33 @@ pub struct WorkflowDefinition {
     name: Slug,
     entrypoint: NodeId,
     nodes: BTreeMap<NodeId, Node>,
+    /// How many of `nodes` the author wrote (the rest are derived).
+    declared: usize,
     /// For every `parallel` node, the node set of each branch (index-aligned with `branches`).
     regions: BTreeMap<NodeId, Vec<BTreeSet<NodeId>>>,
-    /// The innermost `parallel` node whose branches contain a node.
-    enclosing: BTreeMap<NodeId, NodeId>,
+    /// For every `saga` node, the node set of its scope.
+    saga_regions: BTreeMap<NodeId, BTreeSet<NodeId>>,
+    /// The innermost region (of a `parallel` or a `saga` node) that contains a node.
+    scopes: BTreeMap<NodeId, Scope>,
+}
+
+/// A region of the graph that decides what a failure inside it means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// A branch of this `parallel` node: its join decides.
+    Parallel(NodeId),
+    /// The body of this `saga` node: the saga compensates.
+    Saga(NodeId),
+}
+
+impl Scope {
+    /// The node that owns the region.
+    #[must_use]
+    pub const fn owner(&self) -> &NodeId {
+        match self {
+            Self::Parallel(node) | Self::Saga(node) => node,
+        }
+    }
 }
 
 impl WorkflowDefinition {
@@ -703,6 +868,13 @@ impl WorkflowDefinition {
         if parallels > MAX_PARALLELS {
             return Err(WorkflowError::TooManyParallels(parallels));
         }
+        let sagas = map
+            .values()
+            .filter(|n| matches!(n.kind(), NodeKind::Saga { .. }))
+            .count();
+        if sagas > MAX_SAGAS {
+            return Err(WorkflowError::TooManySagas(sagas));
+        }
         let declared = map
             .values()
             .flat_map(|node| node.secrets())
@@ -714,13 +886,22 @@ impl WorkflowDefinition {
         check_acyclic(&map)?;
         check_reachable(&map, &entrypoint)?;
         let regions = parallel_regions(&map)?;
-        let enclosing = innermost_parallels(&regions);
+        let saga_regions = saga_regions(&map)?;
+        let scopes = innermost_scopes(&regions, &saga_regions);
+        let declared = map.len();
+        // Only now, so that nothing above had to know about them: the nodes that run compensations
+        // and reconciliations.
+        for derived in derive_companions(&map) {
+            map.insert(derived.id.clone(), derived);
+        }
         Ok(Self {
             name,
             entrypoint,
             nodes: map,
+            declared,
             regions,
-            enclosing,
+            saga_regions,
+            scopes,
         })
     }
 
@@ -739,8 +920,16 @@ impl WorkflowDefinition {
         self.nodes.get(id)
     }
 
-    /// All nodes, ordered by id.
+    /// The nodes the author wrote, ordered by id.
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes
+            .values()
+            .filter(|node| node.origin == NodeOrigin::Declared)
+    }
+
+    /// Every node the engine can run: the declared ones and the compensations and reconciliations
+    /// derived from them, ordered by id.
+    pub fn all_nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
     }
 
@@ -750,8 +939,16 @@ impl WorkflowDefinition {
         self.nodes().flat_map(|node| node.secrets()).collect()
     }
 
+    /// How many nodes the author wrote.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
+        self.declared
+    }
+
+    /// How many nodes the engine can run: those, and the compensations and reconciliations derived
+    /// from them.
+    #[must_use]
+    pub fn total_len(&self) -> usize {
         self.nodes.len()
     }
 
@@ -768,8 +965,9 @@ impl WorkflowDefinition {
             .values()
             .map(|branches| branches.iter().map(BTreeSet::len).sum::<usize>())
             .sum();
+        let saga_entries: usize = self.saga_regions.values().map(BTreeSet::len).sum();
         4096 + self.nodes.len() * PER_NODE
-            + (region_entries + self.enclosing.len()) * PER_REGION_ENTRY
+            + (region_entries + saga_entries + self.scopes.len()) * PER_REGION_ENTRY
     }
 
     #[must_use]
@@ -783,10 +981,42 @@ impl WorkflowDefinition {
         self.regions.get(parallel).map(Vec::as_slice)
     }
 
-    /// The innermost `parallel` node whose branches contain `node`, if any.
+    /// The `parallel` node whose branch directly contains `node`: the one whose join decides what
+    /// a failure of `node` means. `None` when the innermost region around `node` is a saga, or when
+    /// there is none.
     #[must_use]
     pub fn enclosing_parallel(&self, node: &NodeId) -> Option<&NodeId> {
-        self.enclosing.get(node)
+        match self.scopes.get(node) {
+            Some(Scope::Parallel(parallel)) => Some(parallel),
+            _ => None,
+        }
+    }
+
+    /// The innermost region (branch of a `parallel` node, or body of a `saga` node) around `node`.
+    #[must_use]
+    pub fn enclosing_scope(&self, node: &NodeId) -> Option<&Scope> {
+        self.scopes.get(node)
+    }
+
+    /// Every region around `node`, innermost first.
+    pub fn scope_chain<'a>(&'a self, node: &NodeId) -> impl Iterator<Item = &'a Scope> + use<'a> {
+        let mut current = self.scopes.get(node);
+        std::iter::from_fn(move || {
+            let scope = current?;
+            current = self.scopes.get(scope.owner());
+            Some(scope)
+        })
+    }
+
+    /// The node set of the body of a `saga` node.
+    #[must_use]
+    pub fn saga_region(&self, saga: &NodeId) -> Option<&BTreeSet<NodeId>> {
+        self.saga_regions.get(saga)
+    }
+
+    /// The `saga` nodes, ordered by id.
+    pub fn sagas(&self) -> impl Iterator<Item = &NodeId> {
+        self.saga_regions.keys()
     }
 
     /// Observations for the author; none of them makes the definition invalid.
@@ -798,13 +1028,14 @@ impl WorkflowDefinition {
                 NodeKind::Activity {
                     compensate_with: Some(_),
                     ..
+                } if !self
+                    .scope_chain(node.id())
+                    .any(|scope| matches!(scope, Scope::Saga(_))) =>
+                {
+                    out.push(DefinitionWarning::CompensationOutsideSaga {
+                        node: node.id().clone(),
+                    });
                 }
-                | NodeKind::Activity {
-                    reconcile_with: Some(_),
-                    ..
-                } => out.push(DefinitionWarning::SagaFieldsNotExecuted {
-                    node: node.id().clone(),
-                }),
                 NodeKind::Child { workflow, .. } if *workflow == self.name => {
                     out.push(DefinitionWarning::RecursiveChild {
                         node: node.id().clone(),
@@ -836,6 +1067,21 @@ fn duration_in_range(
 fn check_node(node: &Node) -> Result<(), WorkflowError> {
     if let Some(timeout) = node.timeout {
         duration_in_range(&node.id, "timeout", timeout)?;
+    }
+    if node.effect != EffectPolicy::NONE {
+        match &node.kind {
+            NodeKind::Activity {
+                compensate_with, ..
+            } => {
+                if node.effect.irreversible && compensate_with.is_some() {
+                    return Err(WorkflowError::IrreversibleWithCompensation(node.id.clone()));
+                }
+                if let Some(timeout) = node.effect.compensation_timeout {
+                    duration_in_range(&node.id, "compensation timeout", timeout)?;
+                }
+            }
+            _ => return Err(WorkflowError::EffectOnNonActivity(node.id.clone())),
+        }
     }
     match &node.kind {
         NodeKind::Timer { delay } => duration_in_range(&node.id, "delay", *delay)?,
@@ -972,19 +1218,132 @@ fn parallel_regions(map: &BTreeMap<NodeId, Node>) -> Result<Regions, WorkflowErr
     Ok(out)
 }
 
-/// Maps every node inside some branch to the parallel node with the smallest region around it.
-fn innermost_parallels(regions: &Regions) -> BTreeMap<NodeId, NodeId> {
-    let mut best: BTreeMap<&NodeId, (usize, &NodeId)> = BTreeMap::new();
+/// The node set of the body of every `saga` node, checked like the branches of a `parallel` node:
+/// the body is entered only from inside, and holds no workflow `end`.
+fn saga_regions(
+    map: &BTreeMap<NodeId, Node>,
+) -> Result<BTreeMap<NodeId, BTreeSet<NodeId>>, WorkflowError> {
+    let mut preds: BTreeMap<&NodeId, BTreeSet<&NodeId>> = BTreeMap::new();
+    for node in map.values() {
+        for target in node.successors() {
+            preds.entry(target).or_default().insert(node.id());
+        }
+    }
+    let mut out = BTreeMap::new();
+    for node in map.values() {
+        let NodeKind::Saga { begin, .. } = node.kind() else {
+            continue;
+        };
+        let region = reach(map, begin);
+        for &member in &region {
+            if matches!(map[member].kind(), NodeKind::End { .. }) {
+                return Err(WorkflowError::EndInsideSaga {
+                    saga: node.id().clone(),
+                    node: member.clone(),
+                });
+            }
+            let entered_only_from_inside = preds.get(member).is_none_or(|p| {
+                p.iter()
+                    .all(|&q| region.contains(q) || (q == node.id() && member == begin))
+            });
+            if !entered_only_from_inside {
+                return Err(WorkflowError::SagaBoundary {
+                    saga: node.id().clone(),
+                    node: member.clone(),
+                });
+            }
+        }
+        out.insert(
+            node.id().clone(),
+            region.into_iter().cloned().collect::<BTreeSet<_>>(),
+        );
+    }
+    Ok(out)
+}
+
+/// Maps every node inside some region to the owner of the smallest region around it. Regions nest
+/// strictly (each is entered only from inside, and excludes its owner), so the smallest is unique.
+fn innermost_scopes(
+    regions: &Regions,
+    sagas: &BTreeMap<NodeId, BTreeSet<NodeId>>,
+) -> BTreeMap<NodeId, Scope> {
+    let mut found: BTreeMap<NodeId, (usize, Scope)> = BTreeMap::new();
     for (parallel, branches) in regions {
         let size: usize = branches.iter().map(BTreeSet::len).sum();
         for node in branches.iter().flatten() {
-            let better = best.get(node).is_none_or(|(current, _)| size < *current);
+            let better = found.get(node).is_none_or(|(current, _)| size < *current);
             if better {
-                best.insert(node, (size, parallel));
+                found.insert(node.clone(), (size, Scope::Parallel(parallel.clone())));
             }
         }
     }
-    best.into_iter()
-        .map(|(node, (_, parallel))| (node.clone(), parallel.clone()))
+    for (saga, region) in sagas {
+        let size = region.len();
+        for node in region {
+            let better = found.get(node).is_none_or(|(current, _)| size < *current);
+            if better {
+                found.insert(node.clone(), (size, Scope::Saga(saga.clone())));
+            }
+        }
+    }
+    found
+        .into_iter()
+        .map(|(node, (_, scope))| (node, scope))
         .collect()
+}
+
+/// The compensation and the reconciliation nodes that `compensateWith` and `reconcileWith` stand for.
+fn derive_companions(map: &BTreeMap<NodeId, Node>) -> Vec<Node> {
+    let mut out = Vec::new();
+    for node in map.values() {
+        let NodeKind::Activity {
+            compensate_with,
+            reconcile_with,
+            secrets,
+            ..
+        } = node.kind()
+        else {
+            continue;
+        };
+        // The same capabilities as the forward action: undoing a payment needs the credentials that
+        // made it.
+        let derive = |id: NodeId, activity: &ActivityName, retry: RetryPolicy, origin| {
+            let mut derived = Node::new(
+                id,
+                NodeKind::Activity {
+                    activity: activity.clone(),
+                    retry,
+                    compensate_with: None,
+                    reconcile_with: None,
+                    idempotency_template: None,
+                    secrets: secrets.clone(),
+                },
+            );
+            derived.origin = origin;
+            derived
+        };
+        if let Some(activity) = compensate_with {
+            let retry = node
+                .effect
+                .compensation_retry
+                .unwrap_or(RetryPolicy::COMPENSATION);
+            let mut derived = derive(
+                node.id.compensation(),
+                activity,
+                retry,
+                NodeOrigin::Compensation(node.id.clone()),
+            );
+            derived.timeout = node.effect.compensation_timeout;
+            out.push(derived);
+        }
+        if let Some(activity) = reconcile_with {
+            out.push(derive(
+                node.id.reconciliation(),
+                activity,
+                RetryPolicy::RECONCILIATION,
+                NodeOrigin::Reconciliation(node.id.clone()),
+            ));
+        }
+    }
+    out
 }

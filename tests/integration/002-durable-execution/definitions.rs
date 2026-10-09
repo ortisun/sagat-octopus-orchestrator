@@ -159,6 +159,7 @@ async fn publish(
             digest(byte),
             format!("{{\"v\":{byte}}}").as_bytes(),
             Some("notes"),
+            &[],
             &audit(
                 p,
                 AuditAction::WorkflowPublished,
@@ -678,6 +679,7 @@ async fn ten_simultaneous_publishers_get_gapless_distinct_numbers() {
                     digest(i + 1),
                     b"{}",
                     None,
+                    &[],
                     &audit(
                         &p,
                         AuditAction::WorkflowPublished,

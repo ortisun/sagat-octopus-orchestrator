@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use sagat_application::clock::Clock;
 use sagat_application::definitions::{
     Applied, DefinitionService, DefinitionStore, Idempotency, IrCodec, IrError, ParsedDefinition,
-    VersionRecord, WorkflowRecord,
+    StoredPlan, StoredPlanEntry, VersionRecord, WorkflowRecord,
 };
 use sagat_application::error::{AppError, ConflictKind, StoreError};
 use sagat_application::identity::{PageRequest, RequestContext};
@@ -58,6 +58,8 @@ struct State {
     workflow_limit: Option<u64>,
     /// The secrets of the namespace and whether the publisher is on each one's access list.
     secrets: BTreeMap<String, bool>,
+    /// The plans handed to `publish`, by version.
+    plans: BTreeMap<WorkflowVersionId, Vec<sagat_domain::saga::SagaPlan>>,
 }
 
 #[derive(Clone, Default)]
@@ -291,6 +293,7 @@ impl DefinitionStore for FakeStore {
         digest: Digest,
         document: &[u8],
         _release_notes: Option<&str>,
+        plans: &[sagat_domain::saga::SagaPlan],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -337,6 +340,7 @@ impl DefinitionStore for FakeStore {
             s.idempotency
                 .insert(slot, (idempotency.fingerprint.clone(), number.to_string()));
             s.versions.push((version.clone(), document.to_vec()));
+            s.plans.insert(version_id, plans.to_vec());
             s.audits.push(audit.clone());
             Ok(Some(Applied::Done((version, true))))
         })
@@ -359,6 +363,41 @@ impl DefinitionStore for FakeStore {
                     document: d.clone(),
                     release_notes: None,
                 })
+        }))
+    }
+
+    async fn compensation_plans(
+        &self,
+        _tenant: TenantId,
+        version: WorkflowVersionId,
+    ) -> Result<Vec<StoredPlan>, StoreError> {
+        Ok(self.with(|s| {
+            s.plans
+                .get(&version)
+                .map(|plans| {
+                    plans
+                        .iter()
+                        .map(|plan| StoredPlan {
+                            saga: plan.saga.clone(),
+                            on_compensation_failure: plan.on_compensation_failure,
+                            cancel_policy: plan.cancel_policy,
+                            irreversible: plan.irreversible.clone(),
+                            entries: plan
+                                .entries
+                                .iter()
+                                .map(|e| StoredPlanEntry {
+                                    node: e.node.clone(),
+                                    compensation_id: sagat_application::execution::compensation_id(
+                                        version, &e.node,
+                                    ),
+                                    activity: e.activity.clone(),
+                                    after: e.after.clone(),
+                                })
+                                .collect(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
         }))
     }
 
@@ -426,6 +465,8 @@ struct FakeCodec {
     outcome: Result<(), IrError>,
     /// Secrets the parsed definition declares on its activity.
     secrets: &'static [&'static str],
+    /// The activity sits in a saga and has a compensation (`undo.a`).
+    saga: bool,
 }
 
 impl IrCodec for FakeCodec {
@@ -446,7 +487,9 @@ impl IrCodec for FakeCodec {
             NodeKind::Activity {
                 activity: ActivityName::parse("act.a").expect("name"),
                 retry: RetryPolicy::DEFAULT,
-                compensate_with: None,
+                compensate_with: self
+                    .saga
+                    .then(|| ActivityName::parse("undo.a").expect("name")),
                 reconcile_with: None,
                 idempotency_template: None,
                 secrets: self
@@ -456,10 +499,24 @@ impl IrCodec for FakeCodec {
                     .collect(),
             },
         );
+        let (entry, nodes) = if self.saga {
+            let saga = Node::new(
+                NodeId::parse("s").expect("id"),
+                NodeKind::Saga {
+                    begin: NodeId::parse("a").expect("id"),
+                    on_compensation_failure:
+                        sagat_domain::saga::OnCompensationFailure::ManualReview,
+                    cancel_policy: sagat_domain::saga::SagaCancelPolicy::CompensateCompleted,
+                },
+            );
+            ("s", vec![saga, node])
+        } else {
+            ("a", vec![node])
+        };
         let definition = WorkflowDefinition::new(
             Slug::parse(self.name).expect("slug"),
-            NodeId::parse("a").expect("id"),
-            vec![node],
+            NodeId::parse(entry).expect("id"),
+            nodes,
         )
         .expect("valid");
         let mut digest = [0u8; 32];
@@ -509,6 +566,7 @@ fn fixture() -> Fixture {
         name: "invoice-flow",
         outcome: Ok(()),
         secrets: &[],
+        saga: false,
     })
 }
 
@@ -882,6 +940,7 @@ async fn publishing_a_workflow_that_declares_a_secret_needs_a_publisher_who_may_
         name: "invoice-flow",
         outcome: Ok(()),
         secrets: &["stripe-key"],
+        saga: false,
     });
     let created = create(&f, Role::Admin, "key-0000001")
         .await
@@ -1128,6 +1187,7 @@ async fn an_unpublishable_document_is_reported_and_nothing_is_stored() {
         name: "invoice-flow",
         outcome: Err(invalid.clone()),
         secrets: &[],
+        saga: false,
     });
     let p = principal(f.tenant, Role::Admin);
     let w = create(&f, Role::Admin, "key-0000001")
@@ -1150,6 +1210,7 @@ async fn the_document_must_name_the_workflow_it_belongs_to() {
         name: "other-flow",
         outcome: Ok(()),
         secrets: &[],
+        saga: false,
     });
     let p = principal(f.tenant, Role::Admin);
     let w = create(&f, Role::Admin, "key-0000001")
@@ -1228,6 +1289,7 @@ async fn a_stale_revision_is_reported_before_the_document_is_validated() {
         name: "invoice-flow",
         outcome: Err(invalid),
         secrets: &[],
+        saga: false,
     });
     let p = principal(f.tenant, Role::Admin);
     let w = create(&f, Role::Admin, "key-0000001")
@@ -1245,4 +1307,137 @@ async fn a_stale_revision_is_reported_before_the_document_is_validated() {
         result.map(|_| ()),
         Err(AppError::RevisionConflict { current: 2 })
     );
+}
+
+// ------------------------------------------------------------------ sagas (feature 003)
+
+fn saga_fixture() -> Fixture {
+    fixture_with(FakeCodec {
+        name: "invoice-flow",
+        outcome: Ok(()),
+        secrets: &[],
+        saga: true,
+    })
+}
+
+#[tokio::test]
+async fn publishing_a_saga_hands_its_compensation_plan_to_the_store_with_the_version() {
+    let f = saga_fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let published = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+
+    let stored = f
+        .store
+        .with(|s| s.plans.get(&published.version.id()).cloned());
+    let expected = sagat_domain::saga::compensation_plans(&saga_fixture_definition());
+    assert_eq!(
+        stored,
+        Some(expected),
+        "the store gets exactly what the definition derives"
+    );
+    assert_eq!(stored.as_ref().map(Vec::len), Some(1));
+
+    // And a reader gets them back, with the durable id of each compensation.
+    let plans = f
+        .service
+        .compensation_plans(&p, w.workflow.id(), 1, &ctx())
+        .await
+        .expect("plans");
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].saga.as_str(), "s");
+    assert_eq!(plans[0].entries.len(), 1);
+    assert_eq!(plans[0].entries[0].activity.as_str(), "undo.a");
+    assert_eq!(
+        plans[0].entries[0].compensation_id,
+        sagat_application::execution::compensation_id(
+            published.version.id(),
+            &NodeId::parse("a").expect("id")
+        )
+    );
+}
+
+fn saga_fixture_definition() -> WorkflowDefinition {
+    FakeCodec {
+        name: "invoice-flow",
+        outcome: Ok(()),
+        secrets: &[],
+        saga: true,
+    }
+    .parse(DRAFT)
+    .expect("parses")
+    .definition
+}
+
+#[tokio::test]
+async fn a_workflow_without_a_saga_is_published_with_no_plan() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let published = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+    assert_eq!(
+        f.store
+            .with(|s| s.plans.get(&published.version.id()).cloned()),
+        Some(Vec::new())
+    );
+    let plans = f
+        .service
+        .compensation_plans(&p, w.workflow.id(), 1, &ctx())
+        .await
+        .expect("plans");
+    assert!(plans.is_empty());
+}
+
+#[tokio::test]
+async fn reading_plans_needs_definition_read_and_a_version_that_exists() {
+    let f = saga_fixture();
+    let developer = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    f.service
+        .publish(&developer, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+
+    // A worker identity has no business reading definitions.
+    let worker = principal(f.tenant, Role::Worker);
+    let refused = f
+        .service
+        .compensation_plans(&worker, w.workflow.id(), 1, &ctx())
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(AppError::Forbidden {
+                permission: Permission::DefinitionRead
+            })
+        ),
+        "{refused:?}"
+    );
+    let missing = f
+        .service
+        .compensation_plans(&developer, w.workflow.id(), 9, &ctx())
+        .await;
+    assert!(matches!(missing, Err(AppError::NotFound)), "{missing:?}");
+
+    // Another tenant cannot read them by guessing the ids.
+    let stranger = principal(TenantId::generate(), Role::Admin);
+    let hidden = f
+        .service
+        .compensation_plans(&stranger, w.workflow.id(), 1, &ctx())
+        .await;
+    assert!(matches!(hidden, Err(AppError::NotFound)), "{hidden:?}");
 }

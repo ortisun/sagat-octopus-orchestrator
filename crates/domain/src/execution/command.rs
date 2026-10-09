@@ -11,10 +11,15 @@
 use time::OffsetDateTime;
 
 use super::error::ExecutionError;
-use super::event::{ChildOutcome, CorrelationKey, FailureCode, Fence, RunEvent, StopReason};
+use super::event::{
+    ChildOutcome, CorrelationKey, FailureCode, Fence, ReconcileResult, ReviewOutcome, RunEvent,
+    StopReason,
+};
 use super::plan::{Evaluation, Plan, after, plan};
-use super::state::{RunId, RunState, StepState, StepStatus, WaitingOn};
-use crate::workflow::{NodeId, NodeKind, WorkflowDefinition};
+use super::sagas::policies;
+use super::state::{RunId, RunState, SagaPhase, StepState, StepStatus, WaitingOn};
+use crate::saga::{NodeOrigin, OnCompensationFailure, ReconcileVerdict};
+use crate::workflow::{NodeId, NodeKind, Scope, WorkflowDefinition};
 
 /// The events a command produced and, if the planner got stuck on one, the evaluation it needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +76,7 @@ fn settle(
 ) -> Result<Progress, ExecutionError> {
     // Every iteration applies one event and the run has a bounded number of steps, so this is a
     // safety net against a planner bug, not a limit that real workflows approach.
-    let budget = 64 + 16 * def.len();
+    let budget = 64 + 16 * def.total_len();
     for _ in 0..budget {
         match plan(def, state, now)? {
             Plan::Emit(event) => {
@@ -163,7 +168,12 @@ pub fn lease_step(
     state: &mut RunState,
     node: &NodeId,
 ) -> Result<(Fence, RunEvent), ExecutionError> {
-    if state.is_finished() || state.is_paused() || state.stop_reason().is_some() {
+    // A run that is being stopped starts nothing new, except the compensations and reconciliations
+    // that its sagas are running to the end.
+    if state.is_finished()
+        || state.is_paused()
+        || (state.stop_reason().is_some() && !node.is_derived())
+    {
         return Err(ExecutionError::RunNotRunnable(state.status()));
     }
     let step = require_step(state, node)?;
@@ -221,6 +231,9 @@ pub fn complete_step(
     fence: Fence,
     now: OffsetDateTime,
 ) -> Result<Progress, ExecutionError> {
+    if node.is_reconciliation() {
+        return Err(ExecutionError::NeedsVerdict(node.clone()));
+    }
     require_lease(state, node, fence)?;
     apply_then_settle(
         def,
@@ -246,6 +259,27 @@ pub struct Failure {
     pub jitter_sample: f64,
 }
 
+/// Whether the outcome of an attempt that ended with this code is unknown: the effect may or may
+/// not have happened.
+fn is_ambiguous(code: &FailureCode) -> bool {
+    *code == FailureCode::lease_expired()
+        || *code == FailureCode::attempt_timeout()
+        || *code == FailureCode::outcome_unknown()
+}
+
+/// What a compensation does when its retries are spent, by the policy of the saga it belongs to.
+fn compensation_failure_policy(
+    def: &WorkflowDefinition,
+    forward: &NodeId,
+) -> OnCompensationFailure {
+    def.scope_chain(forward)
+        .find_map(|scope| match scope {
+            Scope::Saga(saga) => Some(policies(def, saga).0),
+            Scope::Parallel(_) => None,
+        })
+        .unwrap_or_default()
+}
+
 fn end_attempt(
     def: &WorkflowDefinition,
     state: &mut RunState,
@@ -260,31 +294,117 @@ fn end_attempt(
         jitter_sample,
     } = failure;
     let step = require_lease(state, node, fence)?;
-    let event = if step.cancel_requested() {
+    let def_node = def
+        .node(node)
+        .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
+    // An attempt whose outcome is unknown must not be retried or compensated blindly: it is
+    // reconciled when the activity says how, and otherwise waits for an operator if it is high risk.
+    if *def_node.origin() == NodeOrigin::Declared
+        && matches!(def_node.kind(), NodeKind::Activity { .. })
+        && is_ambiguous(&code)
+    {
+        if def.node(&node.reconciliation()).is_some() {
+            return apply_then_settle(
+                def,
+                state,
+                now,
+                RunEvent::ReconciliationRequested {
+                    node: node.clone(),
+                    fence,
+                    cause: code,
+                },
+            );
+        }
+        if def_node.effect().high_risk {
+            return apply_then_settle(
+                def,
+                state,
+                now,
+                RunEvent::StepNeedsReview {
+                    node: node.clone(),
+                    code,
+                    fence: Some(fence),
+                },
+            );
+        }
+    }
+    if step.cancel_requested() {
         // The run asked this attempt to stop; the retry budget is irrelevant.
-        RunEvent::StepCancelled { node: node.clone() }
-    } else {
-        let policy = def
-            .node(node)
-            .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?
-            .retry_policy();
-        if retryable && policy.has_attempts_left(step.attempt()) {
-            RunEvent::StepRetryScheduled {
+        let cancelled = RunEvent::StepCancelled { node: node.clone() };
+        // If the attempt ended without anyone knowing whether the effect happened, the step keeps
+        // saying so: it is recorded as the attempt that was lost, which is what it was, and then
+        // cancelled. A saga that compensates later still undoes an effect that may have happened,
+        // whichever came first, the cancellation or the lost lease.
+        if *def_node.origin() == NodeOrigin::Declared
+            && matches!(def_node.kind(), NodeKind::Activity { .. })
+            && is_ambiguous(&code)
+        {
+            let lost = RunEvent::StepRetryScheduled {
                 node: node.clone(),
                 attempt: fence.attempt,
                 generation: fence.generation,
                 code,
-                not_before: after(now, policy.delay_after(step.attempt(), jitter_sample))?,
-            }
-        } else {
-            RunEvent::StepFailed {
-                node: node.clone(),
-                code,
-                fence: Some(fence),
-            }
+                not_before: now,
+            };
+            state.apply(&lost)?;
+            state.apply(&cancelled)?;
+            return settle(def, state, now, vec![lost, cancelled]);
         }
+        return apply_then_settle(def, state, now, cancelled);
+    }
+    let policy = def_node.retry_policy();
+    if retryable && policy.has_attempts_left(step.attempt()) {
+        let event = RunEvent::StepRetryScheduled {
+            node: node.clone(),
+            attempt: fence.attempt,
+            generation: fence.generation,
+            code,
+            not_before: after(now, policy.delay_after(step.attempt(), jitter_sample))?,
+        };
+        return apply_then_settle(def, state, now, event);
+    }
+    // The retries are spent (or the error is final).
+    let failed = RunEvent::StepFailed {
+        node: node.clone(),
+        code: code.clone(),
+        fence: Some(fence),
     };
-    apply_then_settle(def, state, now, event)
+    match def_node.origin() {
+        NodeOrigin::Compensation(forward)
+            if compensation_failure_policy(def, forward) == OnCompensationFailure::ManualReview =>
+        {
+            apply_then_settle(
+                def,
+                state,
+                now,
+                RunEvent::StepNeedsReview {
+                    node: node.clone(),
+                    code,
+                    fence: Some(fence),
+                },
+            )
+        }
+        NodeOrigin::Reconciliation(forward) => {
+            // Nobody could find out what happened to the step the reconciliation was about.
+            state.apply(&failed)?;
+            let mut events = vec![failed];
+            let waiting = state.step(forward).is_some_and(|s| {
+                s.status() == StepStatus::Waiting
+                    && matches!(s.waiting_on(), Some(WaitingOn::Reconciliation))
+            });
+            if waiting {
+                let review = RunEvent::StepNeedsReview {
+                    node: forward.clone(),
+                    code: FailureCode::reconciliation_failed(),
+                    fence: None,
+                };
+                state.apply(&review)?;
+                events.push(review);
+            }
+            settle(def, state, now, events)
+        }
+        _ => apply_then_settle(def, state, now, failed),
+    }
 }
 
 /// A worker reports a failed attempt.
@@ -532,6 +652,158 @@ pub fn finish_child(
         RunEvent::ChildFinished {
             node: node.clone(),
             child,
+            outcome,
+        },
+    )
+}
+
+/// Whether the step may be tried again after a reconciliation found that its effect did not happen:
+/// not when the run is being stopped, and not when a saga around it has stopped its forward work.
+fn may_retry_forward(def: &WorkflowDefinition, state: &RunState, forward: &NodeId) -> bool {
+    state.stop_reason().is_none()
+        && def.scope_chain(forward).all(|scope| match scope {
+            Scope::Saga(saga) => state
+                .saga(saga)
+                .is_none_or(|s| s.phase() == SagaPhase::Forward),
+            Scope::Parallel(_) => true,
+        })
+}
+
+/// The reconciliation of a step answered. `node` is the reconciliation (`<id>~r`) and holds the lease
+/// that `fence` names; the step it is about is concluded in the same commit.
+///
+/// # Errors
+/// As [`complete_step`]; [`ExecutionError::Invariant`] when `node` is not a reconciliation.
+pub fn complete_reconciliation(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    fence: Fence,
+    verdict: ReconcileVerdict,
+    jitter_sample: f64,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    let Some(forward) = node.forward().filter(|_| node.is_reconciliation()) else {
+        return Err(ExecutionError::Invariant(
+            "a verdict was given for a node that is not a reconciliation",
+        ));
+    };
+    require_lease(state, node, fence)?;
+    let completed = RunEvent::StepCompleted {
+        node: node.clone(),
+        attempt: fence.attempt,
+        generation: fence.generation,
+    };
+    state.apply(&completed)?;
+    let mut events = vec![completed];
+    let waiting = state.step(&forward).cloned().filter(|s| {
+        s.status() == StepStatus::Waiting
+            && matches!(s.waiting_on(), Some(WaitingOn::Reconciliation))
+    });
+    if let Some(step) = waiting {
+        let policy = def
+            .node(&forward)
+            .ok_or_else(|| ExecutionError::UnknownStep(forward.clone()))?
+            .retry_policy();
+        let result = match verdict {
+            ReconcileVerdict::Applied => ReconcileResult::Succeeded,
+            ReconcileVerdict::NotApplied
+                if may_retry_forward(def, state, &forward)
+                    && policy.has_attempts_left(step.attempt()) =>
+            {
+                ReconcileResult::RetryAt(after(
+                    now,
+                    policy.delay_after(step.attempt(), jitter_sample),
+                )?)
+            }
+            ReconcileVerdict::NotApplied => {
+                ReconcileResult::Failed(FailureCode::reconciled_not_applied())
+            }
+            ReconcileVerdict::Unknown => {
+                ReconcileResult::Review(FailureCode::reconciliation_unknown())
+            }
+        };
+        let concluded = RunEvent::ReconciliationConcluded {
+            node: forward,
+            verdict,
+            result,
+        };
+        state.apply(&concluded)?;
+        events.push(concluded);
+    }
+    settle(def, state, now, events)
+}
+
+/// An operator asks for another attempt of a step that waits for a decision.
+///
+/// # Errors
+/// [`ExecutionError::IllegalTransition`] when the step does not wait for an operator (a double
+/// command: the first one won).
+pub fn retry_review(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    let step = require_step(state, node)?;
+    // The body of a saga that stopped going forward will not run it again: it would be cancelled the
+    // moment it was granted, and the decision that matters there is whether the step happened.
+    if def
+        .node(node)
+        .is_some_and(|n| *n.origin() == NodeOrigin::Declared)
+        && super::plan::in_abandoned_region(def, state, node)
+    {
+        return Err(ExecutionError::IllegalTransition {
+            node: node.clone(),
+            status: step.status(),
+            event: "step.retry_requested",
+        });
+    }
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::StepRetryRequested { node: node.clone() },
+    )
+}
+
+/// An operator gives up on a compensation.
+///
+/// # Errors
+/// As [`retry_review`]; [`ExecutionError::Invariant`] for a node that is not a compensation.
+pub fn skip_review(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    require_step(state, node)?;
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::StepSkipped { node: node.clone() },
+    )
+}
+
+/// An operator settles a step that waits for a decision: it did happen, or it did not.
+///
+/// # Errors
+/// As [`retry_review`].
+pub fn resolve_review(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    outcome: ReviewOutcome,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    require_step(state, node)?;
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::StepResolved {
+            node: node.clone(),
             outcome,
         },
     )

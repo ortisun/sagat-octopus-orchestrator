@@ -105,6 +105,8 @@ fn intervals_and_sizes_must_be_positive_numbers() {
         "SAGAT_GRPC_MAX_IN_FLIGHT",
         "SAGAT_LEASE_TTL_SECS",
         "SAGAT_SESSION_TTL_SECS",
+        "SAGAT_COMPENSATION_BREAKER_OPEN_SECS",
+        "SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS",
         "SAGAT_POLL_IDLE_RETRY_MS",
         "SAGAT_SCHEDULER_INTERVAL_MS",
         "SAGAT_SCHEDULER_BATCH",
@@ -123,6 +125,9 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     }
     let config = parse(&[
         ("SAGAT_LEASE_TTL_SECS", "5"),
+        ("SAGAT_COMPENSATION_BREAKER_THRESHOLD", "3"),
+        ("SAGAT_COMPENSATION_BREAKER_OPEN_SECS", "10"),
+        ("SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS", "90"),
         ("SAGAT_SCHEDULER_INTERVAL_MS", "50"),
         ("SAGAT_SCHEDULER_BATCH", "7"),
         ("SAGAT_OUTBOX_BATCH", "9"),
@@ -136,6 +141,9 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     ])
     .expect("config");
     assert_eq!(config.worker.lease_ttl, Duration::from_secs(5));
+    assert_eq!(config.breaker.threshold, 3);
+    assert_eq!(config.breaker.open_for, Duration::from_secs(10));
+    assert_eq!(config.breaker.max_open, Duration::from_secs(90));
     assert_eq!(config.tick_interval, Duration::from_millis(50));
     assert_eq!(config.scheduler.batch, 7);
     assert_eq!(config.dispatch.batch, 9);
@@ -454,4 +462,39 @@ fn a_bad_key_ring_is_refused_without_echoing_it() {
         !printed.contains("AAECAwQF"),
         "the key ring never prints: {printed}"
     );
+}
+
+#[test]
+fn the_compensation_breaker_can_be_turned_off_and_its_window_must_be_consistent() {
+    let off = parse(&[("SAGAT_COMPENSATION_BREAKER_THRESHOLD", "0")]).expect("off is valid");
+    assert_eq!(off.breaker.threshold, 0);
+    assert_eq!(
+        parse(&[]).expect("defaults").breaker,
+        sagat_application::execution::BreakerPolicy::default()
+    );
+    for bad in ["-1", "often"] {
+        let error = parse(&[("SAGAT_COMPENSATION_BREAKER_THRESHOLD", bad)]).expect_err(bad);
+        assert!(
+            matches!(
+                error,
+                ConfigError::Invalid {
+                    name: "SAGAT_COMPENSATION_BREAKER_THRESHOLD",
+                    ..
+                }
+            ),
+            "{bad}: {error:?}"
+        );
+    }
+    let error = parse(&[
+        ("SAGAT_COMPENSATION_BREAKER_OPEN_SECS", "60"),
+        ("SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS", "10"),
+    ])
+    .expect_err("the cap is below the window");
+    assert!(matches!(
+        error,
+        ConfigError::Invalid {
+            name: "SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS",
+            ..
+        }
+    ));
 }

@@ -335,15 +335,15 @@ fn the_documented_payment_flow_is_valid_and_chains_may_end_without_an_end_node()
 }
 
 #[test]
-fn saga_fields_are_accepted_but_reported_as_not_executed() {
+fn a_compensation_outside_a_saga_is_reported_because_it_will_never_run() {
     let warnings = payment_flow().warnings();
     assert_eq!(
         warnings,
-        [DefinitionWarning::SagaFieldsNotExecuted {
+        [DefinitionWarning::CompensationOutsideSaga {
             node: id("reserve")
         }]
     );
-    assert!(warnings[0].to_string().contains("feature 003"));
+    assert!(warnings[0].to_string().contains("saga"));
 }
 
 #[test]

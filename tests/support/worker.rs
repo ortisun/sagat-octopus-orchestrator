@@ -470,7 +470,17 @@ impl Worker<'_> {
         lease: &TaskLease,
         retryable: bool,
     ) -> Result<sagat_api_grpc::pb::StepCommandResponse, Status> {
-        let request = self.req(Self::fail_message(lease, "PAYMENT_DECLINED", retryable));
+        self.fail_with(lease, "PAYMENT_DECLINED", retryable).await
+    }
+
+    /// A failure with a code of the worker's choosing (`OUTCOME_UNKNOWN` is the reserved one).
+    pub async fn fail_with(
+        &mut self,
+        lease: &TaskLease,
+        code: &str,
+        retryable: bool,
+    ) -> Result<sagat_api_grpc::pb::StepCommandResponse, Status> {
+        let request = self.req(Self::fail_message(lease, code, retryable));
         self.client
             .fail_step(request)
             .await

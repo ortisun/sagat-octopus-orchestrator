@@ -11,6 +11,7 @@ use std::future::Future;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
+use sagat_domain::saga::{SagaPlan, compensation_plans};
 use sagat_domain::workflow::{DefinitionWarning, Digest, WorkflowDefinition, WorkflowError};
 use time::OffsetDateTime;
 
@@ -121,6 +122,29 @@ pub struct VersionRecord {
     pub release_notes: Option<String>,
 }
 
+/// The compensation plan of one saga as stored with a version (`FR-003-002`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlan {
+    pub saga: sagat_domain::workflow::NodeId,
+    pub on_compensation_failure: sagat_domain::saga::OnCompensationFailure,
+    pub cancel_policy: sagat_domain::saga::SagaCancelPolicy,
+    /// Forward nodes whose effect cannot be undone.
+    pub irreversible: Vec<sagat_domain::workflow::NodeId>,
+    /// In an order a worker could follow one by one.
+    pub entries: Vec<StoredPlanEntry>,
+}
+
+/// One compensation of a stored plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlanEntry {
+    pub node: sagat_domain::workflow::NodeId,
+    /// Stable for the version and the node: the handle a provider can recognise across runs.
+    pub compensation_id: uuid::Uuid,
+    pub activity: sagat_domain::workflow::ActivityName,
+    /// The forward nodes whose compensations must finish before this one starts.
+    pub after: Vec<sagat_domain::workflow::NodeId>,
+}
+
 /// What publishing returned.
 #[derive(Debug, Clone)]
 pub struct Published {
@@ -187,8 +211,9 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + Send + Sync {
     ) -> impl Future<Output = Result<Option<WorkflowRecord>, StoreError>> + Send;
 
     /// Publishes `parsed` as the next version if the draft is still at `draft_revision`, or
-    /// re-activates the existing version with the same digest. Also audits and records
-    /// `idempotency`, all in one transaction. `None` when the workflow does not exist.
+    /// re-activates the existing version with the same digest. Also stores the compensation `plans`
+    /// of a new version with it, audits and records `idempotency`, all in one transaction. `None`
+    /// when the workflow does not exist.
     #[allow(clippy::too_many_arguments)]
     fn publish(
         &self,
@@ -199,6 +224,7 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + Send + Sync {
         digest: Digest,
         document: &[u8],
         release_notes: Option<&str>,
+        plans: &[SagaPlan],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -210,6 +236,13 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + Send + Sync {
         id: WorkflowId,
         number: u32,
     ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
+
+    /// The compensation plans stored with a version, one per saga, in the order of the sagas.
+    fn compensation_plans(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+    ) -> impl Future<Output = Result<Vec<StoredPlan>, StoreError>> + Send;
 
     /// A version by its identifier (runs pin the version they use by id).
     fn get_version_by_id(
@@ -488,6 +521,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 parsed.digest,
                 &parsed.canonical,
                 release_notes,
+                &compensation_plans(&parsed.definition),
                 &audit,
                 &idempotency,
                 now,
@@ -534,6 +568,25 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             Some(record) => Ok(record),
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// The compensation plans a version was published with: what each saga undoes, in which
+    /// order, and the durable id of every compensation.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `definition:read`; [`AppError::NotFound`].
+    pub async fn compensation_plans(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        number: u32,
+        ctx: &RequestContext,
+    ) -> Result<Vec<StoredPlan>, AppError> {
+        let record = self.get_version(principal, id, number, ctx).await?;
+        Ok(self
+            .store
+            .compensation_plans(principal.tenant_id(), record.version.id())
+            .await?)
     }
 
     /// # Errors

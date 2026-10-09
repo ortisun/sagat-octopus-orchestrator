@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use sagat_application::definitions::{IrError, IrIssue};
 use sagat_domain::identity::Slug;
+use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, SagaCancelPolicy};
 use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
 use sagat_domain::workflow::{
     ActivityName, BackoffStrategy, CancelPolicy, EventType, Expression, JoinPolicy, Node, NodeId,
@@ -69,7 +70,6 @@ fn reference(node: &Map<String, Value>, field: &str, at: &str) -> Result<Option<
 /// Why a node kind that exists in the schema is not executed yet.
 fn unsupported(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "saga" => "the saga engine arrives with feature 003",
         "script" => "inline scripts arrive with feature 005",
         "foreach" => "bounded loops are not part of any planned feature yet",
         "humanApproval" => "human approval is not part of any planned feature yet",
@@ -78,11 +78,20 @@ fn unsupported(kind: &str) -> Option<&'static str> {
 }
 
 fn retry(node: &Map<String, Value>, at: &str) -> Result<RetryPolicy, IrError> {
-    let Some(Value::Object(spec)) = node.get("retry") else {
-        return Ok(RetryPolicy::DEFAULT);
+    retry_at(node, "retry", RetryPolicy::DEFAULT, at)
+}
+
+/// The retry policy under `key`, with `defaults` for whatever it leaves out.
+fn retry_at(
+    node: &Map<String, Value>,
+    key: &str,
+    defaults: RetryPolicy,
+    at: &str,
+) -> Result<RetryPolicy, IrError> {
+    let Some(Value::Object(spec)) = node.get(key) else {
+        return Ok(defaults);
     };
-    let at = format!("{at}/retry");
-    let defaults = RetryPolicy::DEFAULT;
+    let at = format!("{at}/{key}");
     let max_attempts = match spec.get("maxAttempts") {
         None => defaults.max_attempts(),
         Some(v) => v
@@ -117,6 +126,35 @@ fn retry(node: &Map<String, Value>, at: &str) -> Result<RetryPolicy, IrError> {
         Some(_) => return Err(issue(format!("{at}/jitter"), "expected a boolean")),
     };
     RetryPolicy::new(max_attempts, initial, max, strategy, jitter).map_err(IrError::Invalid)
+}
+
+/// What the author says about the effect of an activity: how its compensation retries, whether it
+/// can be undone, whether an unknown outcome may ever be retried blindly.
+fn effect(node: &Map<String, Value>, at: &str) -> Result<EffectPolicy, IrError> {
+    let flag = |field: &str| match node.get(field) {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(issue(format!("{at}/{field}"), "expected a boolean")),
+    };
+    Ok(EffectPolicy {
+        compensation_retry: if node.contains_key("compensationRetry") {
+            Some(retry_at(
+                node,
+                "compensationRetry",
+                RetryPolicy::COMPENSATION,
+                at,
+            )?)
+        } else {
+            None
+        },
+        compensation_timeout: if node.contains_key("compensationTimeoutMs") {
+            Some(millis(node, "compensationTimeoutMs", at)?)
+        } else {
+            None
+        },
+        irreversible: flag("irreversible")?,
+        high_risk: flag("highRisk")?,
+    })
 }
 
 /// The secret names an activity declares: strings of the secret-name grammar, at most
@@ -240,6 +278,27 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
                 }
             },
         },
+        "saga" => NodeKind::Saga {
+            begin: node_id(text(node, "begin", at)?, &format!("{at}/begin"))?,
+            on_compensation_failure: match optional_text(node, "onCompensationFailure", at)? {
+                None => OnCompensationFailure::default(),
+                Some(value) => value.parse().map_err(|()| {
+                    issue(
+                        format!("{at}/onCompensationFailure"),
+                        "expected 'manual_review' or 'fail'",
+                    )
+                })?,
+            },
+            cancel_policy: match optional_text(node, "cancelPolicy", at)? {
+                None => SagaCancelPolicy::default(),
+                Some(value) => value.parse().map_err(|()| {
+                    issue(
+                        format!("{at}/cancelPolicy"),
+                        "expected 'compensate_completed', 'abort_no_compensation' or 'wait_in_flight_then_compensate'",
+                    )
+                })?,
+            },
+        },
         "end" => NodeKind::End {
             output: optional_text(node, "outputExpr", at)?
                 .map(|e| expression(e, &format!("{at}/outputExpr")))
@@ -297,6 +356,10 @@ pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError
         }
         if node.contains_key("timeoutMs") {
             built = built.with_timeout(millis(node, "timeoutMs", &at)?);
+        }
+        let effect = effect(node, &at)?;
+        if effect != EffectPolicy::NONE {
+            built = built.with_effect(effect);
         }
         nodes.push(built);
     }

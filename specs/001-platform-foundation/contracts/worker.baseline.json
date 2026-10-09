@@ -335,6 +335,21 @@
         "repeated": false,
         "type": "String"
       },
+      "14": {
+        "name": "task_kind",
+        "repeated": false,
+        "type": "String"
+      },
+      "15": {
+        "name": "target_node",
+        "repeated": false,
+        "type": "String"
+      },
+      "16": {
+        "name": "target_idempotency_key",
+        "repeated": false,
+        "type": "String"
+      },
       "2": {
         "name": "run_id",
         "repeated": false,

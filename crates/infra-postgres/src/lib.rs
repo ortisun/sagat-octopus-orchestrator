@@ -7,6 +7,7 @@
 use sqlx::migrate::Migrator;
 
 mod bindings;
+mod breaker;
 mod definitions;
 mod egress;
 mod event_codec;
@@ -17,6 +18,7 @@ mod pool;
 mod privilege;
 mod quotas;
 mod secrets;
+mod signals;
 mod workers;
 
 pub use definitions::PgDefinitionStore;

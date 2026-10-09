@@ -6,7 +6,9 @@
 
 use std::collections::BTreeSet;
 
-use sagat_application::execution::{ExpressionEvaluator, ExpressionFailure, RunData};
+use sagat_application::execution::{
+    ExpressionEvaluator, ExpressionFailure, ReconcileAnswer, RunData,
+};
 use sagat_domain::execution::CorrelationKey;
 use sagat_domain::workflow::{Expression, NodeId};
 use sagat_infra_expr::{Compiled, Env, Template};
@@ -115,6 +117,27 @@ impl ExpressionEvaluator for JsonEvaluator {
             "steps": steps,
         });
         serde_json::to_vec(&document).unwrap_or_default()
+    }
+
+    fn reconcile_answer(&self, output: &[u8]) -> Result<ReconcileAnswer, ExpressionFailure> {
+        let invalid = || {
+            ExpressionFailure(
+                "a reconciliation answers {\"effect\": \"applied\" | \"not_applied\" | \"unknown\"}"
+                    .to_owned(),
+            )
+        };
+        let value: Value = serde_json::from_slice(output).map_err(|_| invalid())?;
+        let object = value.as_object().ok_or_else(invalid)?;
+        let verdict = object
+            .get("effect")
+            .and_then(Value::as_str)
+            .and_then(|effect| effect.parse().ok())
+            .ok_or_else(invalid)?;
+        let output = object
+            .get("output")
+            .map(|value| serde_json::to_vec(value).map_err(|_| invalid()))
+            .transpose()?;
+        Ok(ReconcileAnswer { verdict, output })
     }
 
     fn is_json(&self, bytes: &[u8]) -> bool {

@@ -38,6 +38,9 @@ pub enum ExecutionError {
     NotPaused,
     #[error("the run is already being stopped")]
     AlreadyStopping,
+    /// A reconciliation is completed with its verdict, not like an ordinary step.
+    #[error("step '{0}' is a reconciliation: complete it with its verdict")]
+    NeedsVerdict(NodeId),
     /// A rule the reducer proves was broken; indicates a bug, never bad input.
     #[error("internal invariant violated: {0}")]
     Invariant(&'static str),

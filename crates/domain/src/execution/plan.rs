@@ -10,8 +10,12 @@ use time::OffsetDateTime;
 
 use super::error::ExecutionError;
 use super::event::{JoinOutcome, RunEvent, StopReason};
-use super::state::{RunState, StepState, StepStatus, WaitingOn};
-use crate::workflow::{CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, WorkflowDefinition};
+use super::sagas;
+use super::state::{RunState, SagaPhase, StepState, StepStatus, WaitingOn};
+use crate::saga::{NodeOrigin, SagaOutcome};
+use crate::workflow::{
+    CancelPolicy, Expression, JoinPolicy, NodeId, NodeKind, Scope, WorkflowDefinition,
+};
 
 /// What the engine needs to know before it can continue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +73,7 @@ pub fn plan(
         return Ok(Plan::Idle);
     }
     if let Some(reason) = state.stop_reason() {
-        return Ok(drain(def, state, reason));
+        return drain(def, state, reason);
     }
     if state.is_paused() {
         return Ok(Plan::Idle);
@@ -78,6 +82,9 @@ pub fn plan(
         return Ok(action);
     }
     if let Some(action) = settle_joins(def, state)? {
+        return Ok(action);
+    }
+    if let Some(action) = sagas::advance(def, state, None)? {
         return Ok(action);
     }
     if let Some(event) = cancel_joined_leftovers(def, state) {
@@ -107,41 +114,64 @@ fn node_of<'a>(
         .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))
 }
 
-/// The run is being stopped: cancel what is not in flight, ask what is to stop, then finish.
-fn drain(def: &WorkflowDefinition, state: &RunState, reason: StopReason) -> Plan {
+/// The run is being stopped: the sagas compensate what they are to, then what is not in flight is
+/// cancelled, what is gets asked to stop, and the run finishes.
+fn drain(
+    def: &WorkflowDefinition,
+    state: &RunState,
+    reason: StopReason,
+) -> Result<Plan, ExecutionError> {
+    if let Some(action) = sagas::advance(def, state, Some(reason))? {
+        return Ok(action);
+    }
     for (node, step) in state.steps() {
+        // A saga that is compensating winds down its own body, and its compensations must run to
+        // the end whatever stopped the run.
+        if sagas::owned(def, state, node, true) {
+            continue;
+        }
         match step.status() {
             // A step parked on a child that the policy asks to be cancelled *and awaited* is asked
             // to stop like an attempt in flight, then left alone until the child has settled.
             StepStatus::Waiting if waits_for_cancelled_child(def, node, step) => {
                 if !step.cancel_requested() {
-                    return Plan::Emit(RunEvent::StepCancelRequested { node: node.clone() });
+                    return Ok(Plan::Emit(RunEvent::StepCancelRequested {
+                        node: node.clone(),
+                    }));
                 }
             }
             StepStatus::Pending
             | StepStatus::Ready
             | StepStatus::RetryWait
             | StepStatus::Waiting => {
-                return Plan::Emit(RunEvent::StepCancelled { node: node.clone() });
+                return Ok(Plan::Emit(RunEvent::StepCancelled { node: node.clone() }));
             }
             StepStatus::Leased | StepStatus::Running if !step.cancel_requested() => {
-                return Plan::Emit(RunEvent::StepCancelRequested { node: node.clone() });
+                return Ok(Plan::Emit(RunEvent::StepCancelRequested {
+                    node: node.clone(),
+                }));
             }
             _ => {}
         }
     }
-    if state.steps().all(|(_, step)| step.status().is_terminal()) {
-        Plan::Emit(RunEvent::RunFinished {
-            status: reason.final_status(),
-        })
-    } else {
-        Plan::Idle
-    }
+    Ok(
+        if state.steps().all(|(_, step)| step.status().is_terminal()) {
+            Plan::Emit(RunEvent::RunFinished {
+                status: state.final_status_for(reason),
+            })
+        } else {
+            Plan::Idle
+        },
+    )
 }
 
 /// Whether `step` is parked on a child run whose node says the parent must wait for the child to
 /// settle after asking it to stop.
-fn waits_for_cancelled_child(def: &WorkflowDefinition, node: &NodeId, step: &StepState) -> bool {
+pub(super) fn waits_for_cancelled_child(
+    def: &WorkflowDefinition,
+    node: &NodeId,
+    step: &StepState,
+) -> bool {
     matches!(step.waiting_on(), Some(WaitingOn::Child { .. }))
         && matches!(
             def.node(node).map(crate::workflow::Node::kind),
@@ -162,8 +192,17 @@ fn start_pending(
         if step.status() != StepStatus::Pending {
             continue;
         }
-        let action = match node_of(def, node)?.kind() {
+        let declared = node_of(def, node)?;
+        // A compensation is released by its saga, when everything it waits for has finished.
+        if matches!(declared.origin(), NodeOrigin::Compensation(_)) {
+            continue;
+        }
+        let action = match declared.kind() {
             NodeKind::Activity { .. } => Plan::Emit(RunEvent::StepReleased { node: node.clone() }),
+            NodeKind::Saga { begin, .. } => Plan::Emit(RunEvent::SagaEntered {
+                node: node.clone(),
+                begin: begin.clone(),
+            }),
             NodeKind::Timer { delay } => Plan::Emit(RunEvent::TimerStarted {
                 node: node.clone(),
                 due_at: after(now, *delay)?,
@@ -281,6 +320,10 @@ fn cancel_joined_leftovers(def: &WorkflowDefinition, state: &RunState) -> Option
             let Some(step) = state.step(member) else {
                 continue;
             };
+            // A saga in a branch that lost compensates what it did; it winds its own body down.
+            if sagas::owned(def, state, member, false) {
+                continue;
+            }
             match step.status() {
                 StepStatus::Pending
                 | StepStatus::Ready
@@ -304,12 +347,24 @@ fn cancel_joined_leftovers(def: &WorkflowDefinition, state: &RunState) -> Option
 
 fn successors_after(
     def: &WorkflowDefinition,
+    state: &RunState,
     node: &NodeId,
     step: &StepState,
 ) -> Result<Vec<NodeId>, ExecutionError> {
     let def_node = node_of(def, node)?;
     if step.status() == StepStatus::Failed {
-        return Ok(def_node.on_error().cloned().into_iter().collect());
+        // The error route of a saga is for a failure that was undone. If something was left in
+        // place, or a compensation failed for good, the run says so instead of carrying on as if
+        // nothing had happened.
+        let undone = state
+            .saga(node)
+            .and_then(super::state::SagaState::outcome)
+            .is_none_or(|outcome| outcome == SagaOutcome::Compensated);
+        return Ok(if undone {
+            def_node.on_error().cloned().into_iter().collect()
+        } else {
+            Vec::new()
+        });
     }
     Ok(match def_node.kind() {
         NodeKind::Condition {
@@ -327,21 +382,22 @@ fn successors_after(
     })
 }
 
-/// Whether `node` sits in a branch of a parallel node that has already been joined (it won, it
-/// failed, or a sibling decided it). Whatever such a step reports late is recorded, but it must not
-/// start anything new.
-fn in_abandoned_region(def: &WorkflowDefinition, state: &RunState, node: &NodeId) -> bool {
-    let mut current = def.enclosing_parallel(node);
-    while let Some(parallel) = current {
-        let joined = state
+/// Whether `node` sits in a region that is over: a branch of a parallel node that has already been
+/// joined (it won, it failed, or a sibling decided it), or the body of a saga that has stopped its
+/// forward work. Whatever such a step reports late is recorded, but it must not start anything new.
+pub(super) fn in_abandoned_region(
+    def: &WorkflowDefinition,
+    state: &RunState,
+    node: &NodeId,
+) -> bool {
+    def.scope_chain(node).any(|scope| match scope {
+        Scope::Parallel(parallel) => state
             .step(parallel)
-            .is_some_and(|s| matches!(s.status(), StepStatus::Succeeded | StepStatus::Failed));
-        if joined {
-            return true;
-        }
-        current = def.enclosing_parallel(parallel);
-    }
-    false
+            .is_some_and(|s| matches!(s.status(), StepStatus::Succeeded | StepStatus::Failed)),
+        Scope::Saga(saga) => state
+            .saga(saga)
+            .is_some_and(|s| s.phase() != SagaPhase::Forward),
+    })
 }
 
 fn route_finished(
@@ -349,8 +405,20 @@ fn route_finished(
     state: &RunState,
 ) -> Result<Option<Plan>, ExecutionError> {
     for (node, step) in state.steps() {
-        if !matches!(step.status(), StepStatus::Succeeded | StepStatus::Failed) || step.routed() {
+        if !matches!(
+            step.status(),
+            StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+        ) || step.routed()
+        {
             continue;
+        }
+        // Nothing follows a compensation or a reconciliation: a saga or the step it belongs to
+        // decides what its end means.
+        if node_of(def, node)?.origin() != &NodeOrigin::Declared {
+            return Ok(Some(Plan::Emit(RunEvent::StepRouted {
+                node: node.clone(),
+                activated: Vec::new(),
+            })));
         }
         if in_abandoned_region(def, state, node) {
             return Ok(Some(Plan::Emit(RunEvent::StepRouted {
@@ -358,17 +426,20 @@ fn route_finished(
                 activated: Vec::new(),
             })));
         }
-        let activated = successors_after(def, node, step)?;
+        let activated = successors_after(def, state, node, step)?;
         if step.status() == StepStatus::Failed && activated.is_empty() {
-            return Ok(Some(if def.enclosing_parallel(node).is_some() {
-                // The enclosing join decides what a failed branch means.
+            return Ok(Some(if def.enclosing_scope(node).is_some() {
+                // The enclosing join or saga decides what a failed step means.
                 Plan::Emit(RunEvent::StepRouted {
                     node: node.clone(),
                     activated,
                 })
             } else {
+                // A failure that a saga compensated ends the run as what the saga made of it.
+                let reason = sagas::origin_outcome(def, state, node)
+                    .map_or(StopReason::Failed, StopReason::of_outcome);
                 Plan::Emit(RunEvent::RunStopRequested {
-                    reason: StopReason::Failed,
+                    reason,
                     code: step.failure().cloned(),
                 })
             }));

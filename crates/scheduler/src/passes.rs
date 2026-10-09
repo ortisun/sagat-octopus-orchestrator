@@ -744,12 +744,25 @@ where
             status,
         } in ended
         {
+            // Every way a run can end, and nothing else: a status added later must be mapped here
+            // (a run that ended in a way nobody reports would keep its parent waiting for ever, and
+            // sit at the head of the list of ended children).
             let outcome = match status {
                 RunStatus::Succeeded => ChildOutcome::Succeeded,
                 RunStatus::Failed => ChildOutcome::Failed(FailureCode::child_failed()),
                 RunStatus::Cancelled => ChildOutcome::Failed(FailureCode::child_cancelled()),
                 RunStatus::TimedOut => ChildOutcome::Failed(FailureCode::child_timed_out()),
-                _ => continue,
+                RunStatus::Compensated => ChildOutcome::Failed(FailureCode::child_compensated()),
+                RunStatus::Partial => ChildOutcome::Failed(FailureCode::child_partial()),
+                RunStatus::CompensationFailed => {
+                    ChildOutcome::Failed(FailureCode::child_compensation_failed())
+                }
+                RunStatus::Running
+                | RunStatus::Waiting
+                | RunStatus::Paused
+                | RunStatus::Cancelling
+                | RunStatus::Compensating
+                | RunStatus::ManualReview => continue,
             };
             let result = self
                 .finish_with(tenant_id, parent, node.clone(), child, outcome)

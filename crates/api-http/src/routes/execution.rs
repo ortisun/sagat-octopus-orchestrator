@@ -11,9 +11,10 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use sagat_application::identity::{Page, PageRequest};
-use sagat_application::runs::{RunFilter, RunOperation, StartRun};
+use sagat_application::runs::{ReviewAction, RunFilter, RunOperation, StartRun};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
-use sagat_domain::execution::{RunId, RunStatus};
+use sagat_domain::execution::{FailureCode, ReviewOutcome, RunId, RunStatus};
+use sagat_domain::workflow::NodeId;
 use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
@@ -22,7 +23,7 @@ use crate::dto::PageBody;
 use crate::dto_exec::{
     CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody, PublishBody,
     PublishedBody, RunBody, SignalResultBody, StartRunBody, UpdateDraftBody, VersionBody,
-    VersionSummary, WorkflowBody, runtime_graph,
+    VersionSummary, WorkflowBody, compensation_plans_body, runtime_graph,
 };
 use crate::error::ApiError;
 use crate::exec::Exec;
@@ -346,17 +347,27 @@ pub async fn operate_run<B: Exec>(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<OperationBody>,
 ) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
-    if !(8..=2000).contains(&body.reason.chars().count()) {
+    if !(8..=2000).contains(&body.reason.trim().chars().count()) {
         return Err(ApiError::validation(
             "the reason must be 8 to 2000 characters",
         ));
+    }
+    let review = match body.action.as_str() {
+        "RETRY_STEP" => Some(ReviewAction::Retry),
+        "RETRY_COMPENSATION" => Some(ReviewAction::Retry),
+        "SKIP_COMPENSATION" => Some(ReviewAction::Skip),
+        "RESOLVE_STEP" => Some(ReviewAction::Resolve(resolution(&body)?)),
+        _ => None,
+    };
+    if let Some(action) = review {
+        return review_step(&caller, &state, &headers, &id, &body, &action).await;
     }
     let operation = match body.action.as_str() {
         "CANCEL" => RunOperation::Cancel,
         "PAUSE" => RunOperation::Pause,
         "RESUME" => RunOperation::Resume,
         // Declared in the contract, built in later features: said plainly instead of ignored.
-        "RETRY_STEP" | "RETRY_COMPENSATION" | "RERUN_AS_NEW" | "MARK_MANUAL_REVIEW" => {
+        "RERUN_AS_NEW" | "MARK_MANUAL_REVIEW" => {
             return Err(ApiError::validation(
                 "this operation is declared in the contract but not supported yet",
             ));
@@ -389,6 +400,98 @@ pub async fn operate_run<B: Exec>(
             run_version: run.version,
         }),
     ))
+}
+
+/// What `RESOLVE_STEP` declares: the step's effect happened, or it did not and why.
+fn resolution(body: &OperationBody) -> Result<ReviewOutcome, ApiError> {
+    match body.outcome.as_deref() {
+        Some("SUCCEEDED") if body.error_code.is_none() => Ok(ReviewOutcome::Succeeded),
+        Some("FAILED") => {
+            let code = body
+                .error_code
+                .as_deref()
+                .unwrap_or("DECLARED_FAILED_BY_OPERATOR");
+            FailureCode::parse(code)
+                .map(ReviewOutcome::Failed)
+                .map_err(|_| ApiError::validation("errorCode is not a valid failure code"))
+        }
+        Some("SUCCEEDED") => Err(ApiError::validation(
+            "errorCode only goes with outcome FAILED",
+        )),
+        _ => Err(ApiError::validation(
+            "RESOLVE_STEP needs outcome SUCCEEDED or FAILED",
+        )),
+    }
+}
+
+/// An operator decides on a step that waits for a decision (a compensation that ran out of
+/// attempts, or an effect whose outcome nobody could establish).
+async fn review_step<B: Exec>(
+    caller: &Caller,
+    state: &B,
+    headers: &HeaderMap,
+    id: &str,
+    body: &OperationBody,
+    action: &ReviewAction,
+) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
+    let Some(step) = body.step_id.as_deref() else {
+        return Err(ApiError::validation(
+            "stepId is required for this operation",
+        ));
+    };
+    let node = NodeId::parse_stored(step)
+        .map_err(|_| ApiError::validation("stepId is not a step of a run"))?;
+    if body.action == "RETRY_COMPENSATION" && !node.is_compensation() {
+        return Err(ApiError::validation(
+            "RETRY_COMPENSATION needs the id of a compensation (ending in ~c)",
+        ));
+    }
+    if body.action != "RESOLVE_STEP" && (body.outcome.is_some() || body.error_code.is_some()) {
+        return Err(ApiError::validation(
+            "outcome and errorCode only go with RESOLVE_STEP",
+        ));
+    }
+    let run = state
+        .runs()
+        .review(
+            &caller.session.principal,
+            parse_id::<RunId>(id)?,
+            &node,
+            action,
+            &body.reason,
+            body.expected_run_version,
+            idempotency_key(headers)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(OperationResultBody {
+            operation_id: Uuid::now_v7().to_string(),
+            accepted: true,
+            run_status: run.status.as_str().to_owned(),
+            run_version: run.version,
+        }),
+    ))
+}
+
+/// The compensation plans a version was published with (`FR-003-002`).
+pub async fn get_compensation_plans<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((id, number)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let number = number.parse::<u32>().map_err(|_| ApiError::not_found())?;
+    let plans = state
+        .definitions()
+        .compensation_plans(
+            &caller.session.principal,
+            parse_id::<WorkflowId>(&id)?,
+            number,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(compensation_plans_body(&plans)))
 }
 
 pub async fn signal_run<B: Exec>(

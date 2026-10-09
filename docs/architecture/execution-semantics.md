@@ -89,3 +89,14 @@ COMMIT;
 | Event arrives before the wait | May be lost without correlated inbox | Subscription-first or specific buffer/reconciliation |
 | Timeout races with signal | First commit wins | Auditable events |
 | S3 storage unavailable | Step does not complete with lost payload | retry upload, hash and referenced metadata |
+
+## As implemented (feature 003): sagas, compensations and reconciliation
+
+Run statuses are `RUNNING`, `WAITING`, `PAUSED`, `CANCELLING`, `COMPENSATING`, `MANUAL_REVIEW` (live) and `SUCCEEDED`, `FAILED`, `CANCELLED`, `TIMED_OUT`, `COMPENSATED`, `PARTIAL`, `COMPENSATION_FAILED` (terminal). The substates `COMPENSATING → COMPENSATED | COMPENSATION_FAILED` of the diagram above are statuses of their own; `PARTIAL` is the third way a saga can end. A step is additionally `SKIPPED` when an operator gave up on a compensation, and can wait on `saga`, `reconciliation` or `operator`.
+
+- **Where decisions are made.** One function, `advance(definition, state, stop)`, says what a saga needs next; the reducer applies the events it returns in the same transaction as the report, timer or command that made them necessary. A worker's permanent failure, a lease that ran out, a cancellation and a restart therefore take the same path, and a run replayed from its journal arrives at the same place.
+- **Order.** A saga that stops going forward first winds the body down (steps not yet started are cancelled; attempts in flight are asked to stop or left to finish, by policy; a step waiting for its lookup is left alone, because whether it happened decides what is undone), then records the plan (`compensation.planned`), then compensates, then ends (`saga.compensated`), and only then does the run finish.
+- **Crash points.** Each arrow above is a committed transaction. A process that dies before the commit has written nothing (`tests/fault/003-sagas-compensations/crashes.rs`), one that dies after leaves a state from which `advance` says the next thing, and a duplicate report, a second scheduler or a lease that runs out while the answer arrives is decided once by the run's row lock and the fence (`races.rs`).
+- **Timeouts racing signals.** A `waitEvent` inside a saga whose deadline and signal arrive together is decided by the first commit; if the timeout wins and nothing handles it, the saga compensates; if the signal wins it goes on (12 rounds in `races::a_signal_and_a_timeout_arriving_together...`).
+- **Not promised.** Exactly-once effects (ADR-0004): the platform asks at least once, with stable keys. A compensation that fails for good is a person's decision, not an automatic one.
+

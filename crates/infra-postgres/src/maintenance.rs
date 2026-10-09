@@ -36,7 +36,7 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
     Ok(StepRef {
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
         run_id: RunId::new(col::<Uuid>(row, "run_id")?),
-        node: NodeId::parse(&node).map_err(|_| corrupt("step node"))?,
+        node: NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
     })
 }
 

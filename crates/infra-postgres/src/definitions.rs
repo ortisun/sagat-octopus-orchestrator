@@ -6,13 +6,16 @@
 //! across round trips.
 
 use sagat_application::definitions::{
-    Applied, DefinitionStore, Idempotency, VersionRecord, WorkflowRecord,
+    Applied, DefinitionStore, Idempotency, StoredPlan, StoredPlanEntry, VersionRecord,
+    WorkflowRecord,
 };
 use sagat_application::error::StoreError;
+use sagat_application::execution::compensation_id;
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, Subject, TenantId};
-use sagat_domain::workflow::Digest;
+use sagat_domain::saga::SagaPlan;
+use sagat_domain::workflow::{ActivityName, Digest, NodeId};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool};
@@ -251,6 +254,7 @@ impl DefinitionStore for PgDefinitionStore {
         digest: Digest,
         document: &[u8],
         release_notes: Option<&str>,
+        plans: &[SagaPlan],
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -326,6 +330,10 @@ impl DefinitionStore for PgDefinitionStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(store_error)?;
+                // The compensation plan of every saga of the version, stored once with it.
+                for plan in plans {
+                    insert_saga_plan(&mut tx, tenant, version.id(), plan).await?;
+                }
                 (version, true)
             };
             sqlx::query(
@@ -373,6 +381,69 @@ impl DefinitionStore for PgDefinitionStore {
             .map_err(store_error)?
             .map(|row| version_record(&row))
             .transpose()
+    }
+
+    async fn compensation_plans(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+    ) -> Result<Vec<StoredPlan>, StoreError> {
+        let plans = sqlx::query(
+            "SELECT saga_node, on_compensation_failure, cancel_policy, irreversible \
+             FROM saga_plans WHERE tenant_id = $1 AND workflow_version_id = $2 ORDER BY saga_node",
+        )
+        .bind(tenant.as_uuid())
+        .bind(version.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let entries = sqlx::query(
+            "SELECT saga_node, position, node, compensation_id, compensation_activity, after \
+             FROM saga_plan_entries WHERE tenant_id = $1 AND workflow_version_id = $2 \
+             ORDER BY saga_node, position",
+        )
+        .bind(tenant.as_uuid())
+        .bind(version.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let node = |text: &str| NodeId::parse(text).map_err(|_| corrupt("plan node"));
+        plans
+            .iter()
+            .map(|row| {
+                let saga: String = col(row, "saga_node")?;
+                let failure: String = col(row, "on_compensation_failure")?;
+                let cancel: String = col(row, "cancel_policy")?;
+                let irreversible: Vec<String> = col(row, "irreversible")?;
+                let mine = entries
+                    .iter()
+                    .filter(|e| col::<String>(e, "saga_node").is_ok_and(|s| s == saga))
+                    .map(|e| {
+                        let after: Vec<String> = col(e, "after")?;
+                        let activity: String = col(e, "compensation_activity")?;
+                        Ok(StoredPlanEntry {
+                            node: node(&col::<String>(e, "node")?)?,
+                            compensation_id: col(e, "compensation_id")?,
+                            activity: ActivityName::parse(&activity)
+                                .map_err(|_| corrupt("plan activity"))?,
+                            after: after.iter().map(|n| node(n)).collect::<Result<_, _>>()?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, StoreError>>()?;
+                Ok(StoredPlan {
+                    saga: node(&saga)?,
+                    on_compensation_failure: failure
+                        .parse()
+                        .map_err(|_| corrupt("compensation failure policy"))?,
+                    cancel_policy: cancel.parse().map_err(|_| corrupt("cancel policy"))?,
+                    irreversible: irreversible
+                        .iter()
+                        .map(|n| node(n))
+                        .collect::<Result<_, _>>()?,
+                    entries: mine,
+                })
+            })
+            .collect()
     }
 
     async fn get_version_by_id(
@@ -613,4 +684,55 @@ fn version_record(row: &PgRow) -> Result<VersionRecord, StoreError> {
         document: col(row, "document")?,
         release_notes: col(row, "release_notes")?,
     })
+}
+
+/// Stores one saga's compensation plan next to the version it belongs to. A plan is a pure function
+/// of the definition, so this is a record for those who read it (the API, Studio, an audit), not the
+/// source the engine plans from; a test compares the two.
+async fn insert_saga_plan(
+    tx: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    version: WorkflowVersionId,
+    plan: &SagaPlan,
+) -> Result<(), StoreError> {
+    let irreversible: Vec<String> = plan
+        .irreversible
+        .iter()
+        .map(|n| n.as_str().to_owned())
+        .collect();
+    sqlx::query(
+        "INSERT INTO saga_plans \
+         (tenant_id, workflow_version_id, saga_node, on_compensation_failure, cancel_policy, irreversible) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(version.as_uuid())
+    .bind(plan.saga.as_str())
+    .bind(plan.on_compensation_failure.as_str())
+    .bind(plan.cancel_policy.as_str())
+    .bind(&irreversible)
+    .execute(&mut *tx)
+    .await
+    .map_err(store_error)?;
+    for (position, entry) in plan.entries.iter().enumerate() {
+        let after: Vec<String> = entry.after.iter().map(|n| n.as_str().to_owned()).collect();
+        sqlx::query(
+            "INSERT INTO saga_plan_entries \
+             (tenant_id, workflow_version_id, saga_node, position, node, compensation_id, \
+              compensation_activity, after) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(version.as_uuid())
+        .bind(plan.saga.as_str())
+        .bind(i32::try_from(position).map_err(|_| corrupt("plan position"))?)
+        .bind(entry.node.as_str())
+        .bind(compensation_id(version, &entry.node))
+        .bind(entry.activity.as_str())
+        .bind(&after)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    }
+    Ok(())
 }

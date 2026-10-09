@@ -75,6 +75,10 @@ ENVIRONMENT (serve):
     SAGAT_SUBJECT_RATE_LIMIT_RPS / _BURST   per-identity budget       [200 / 400]
     SAGAT_LEASE_TTL_SECS              lease without a heartbeat       [30]
     SAGAT_SESSION_TTL_SECS            idle worker session lifetime    [3600]
+    SAGAT_COMPENSATION_BREAKER_THRESHOLD  consecutive failed compensations of an activity that
+                                      stop it being leased; 0 turns the breaker off [5]
+    SAGAT_COMPENSATION_BREAKER_OPEN_SECS      how long it stays open, then one probe [30]
+    SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS  longest it stays open (doubles per failure) [300]
     SAGAT_POLL_IDLE_RETRY_MS          retry hint when nothing is ready [500]
     SAGAT_SCHEDULER_INTERVAL_MS       pause between idle scheduler ticks [500]
     SAGAT_SCHEDULER_BATCH             candidates per pass per tick    [200]

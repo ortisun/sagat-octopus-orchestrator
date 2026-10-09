@@ -56,6 +56,12 @@ pub enum AuditAction {
     WorkerUnbound,
     /// A worker asked to serve an activity its identity is not bound to.
     WorkerDenied,
+    /// An operator asked for another attempt of a step that waited for a decision.
+    SagaStepRetried,
+    /// An operator gave up on a compensation, with a justification.
+    SagaStepSkipped,
+    /// An operator settled a step with an unknown outcome (or a compensation done elsewhere).
+    SagaStepResolved,
 }
 
 impl AuditAction {
@@ -97,6 +103,9 @@ impl AuditAction {
             Self::WorkerBound => "worker.bound",
             Self::WorkerUnbound => "worker.unbound",
             Self::WorkerDenied => "worker.denied",
+            Self::SagaStepRetried => "saga.step_retried",
+            Self::SagaStepSkipped => "saga.step_skipped",
+            Self::SagaStepResolved => "saga.step_resolved",
         }
     }
 }

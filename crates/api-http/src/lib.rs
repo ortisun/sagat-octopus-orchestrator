@@ -408,6 +408,10 @@ where
             get(ex::get_version::<B<S, C, P, X, E>>),
         )
         .route(
+            "/workflows/{workflow_id}/versions/{number}/compensation-plans",
+            get(ex::get_compensation_plans::<B<S, C, P, X, E>>),
+        )
+        .route(
             "/runs",
             get(ex::list_runs::<B<S, C, P, X, E>>).post(ex::start_run::<B<S, C, P, X, E>>),
         )
