@@ -135,6 +135,40 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
             Some(json!({"limit": -1})),
             422,
         ),
+        // The ceiling the platform grants the tenant (the default of `workflows` is 1000): the
+        // value at it is accepted, one above it is not, and neither is the largest a limit can be.
+        scenario(
+            "PUT",
+            tenant_one_t,
+            "/quotas/workflows",
+            alice.clone(),
+            Some(json!({"limit": 1000})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            tenant_one_t,
+            "/quotas/workflows",
+            alice.clone(),
+            Some(json!({"limit": 1001})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            tenant_one_t,
+            "/quotas/workflows",
+            alice.clone(),
+            Some(json!({"limit": 1_000_000_000})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            ns_one_t,
+            &ns_one("active_runs"),
+            alice.clone(),
+            Some(json!({"limit": 10_001})),
+            422,
+        ),
         scenario(
             "PUT",
             tenant_one_t,
@@ -657,6 +691,34 @@ async fn the_quota_endpoints_show_what_the_engine_enforces() {
     assert_eq!(body["limit"], 1);
     assert_eq!(body["source"], "namespace");
     assert_eq!(body["used"], 0);
+    assert_eq!(
+        body["ceiling"], 1000,
+        "the view says how far the tenant may go"
+    );
+
+    // Beyond that the tenant's own administrator cannot go, and nothing is stored when refused.
+    let over = put(format!("/namespaces/{ns}/quotas/workflows"), 1001).await;
+    assert_eq!(over.status(), 422);
+    let refused: serde_json::Value = over.json().await.expect("json");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("ceiling")),
+        "{refused}"
+    );
+    let unchanged: serde_json::Value = api
+        .get_as(&format!("/namespaces/{ns}/quotas"), "alice", "acme")
+        .await
+        .json()
+        .await
+        .expect("json");
+    let workflows = unchanged["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|q| q["resource"] == "workflows")
+        .expect("workflows");
+    assert_eq!(workflows["limit"], 1, "the refused value was not stored");
 
     // The quota is real: the second workflow of the namespace is refused with the documented code.
     let create = |name: &str| {

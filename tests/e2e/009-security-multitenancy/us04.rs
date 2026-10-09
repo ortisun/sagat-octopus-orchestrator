@@ -103,7 +103,37 @@ async fn a_full_namespace_answers_quota_exceeded_and_other_tenants_carry_on() {
         assert_eq!(started.status(), 202, "globex run {n}");
     }
 
-    // Raising the limit takes effect at once.
+    // The administrator of the full namespace cannot lift the cap that protects the others by
+    // setting it out of reach: the platform grants the tenant a ceiling, and nothing here raises it.
+    for (path, limit) in [
+        (
+            format!("/namespaces/{ns}/quotas/active_runs"),
+            1_000_000_000_u64,
+        ),
+        ("/quotas/tenant_active_runs".to_owned(), 1_000_000_000),
+        ("/quotas/active_runs".to_owned(), 10_001),
+    ] {
+        let (status, refused) = p
+            .rest(Method::PUT, &path, Some(&json!({"limit": limit})))
+            .await;
+        assert_eq!(status, 422, "{path}: {refused}");
+    }
+    let (_, still) = p
+        .rest(Method::GET, &format!("/namespaces/{ns}/quotas"), None)
+        .await;
+    let active = still["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|q| q["resource"] == "active_runs")
+        .expect("active runs");
+    assert_eq!(
+        (active["limit"].as_u64(), active["ceiling"].as_u64()),
+        (Some(2), Some(10_000)),
+        "the refused values changed nothing"
+    );
+
+    // Raising the limit, within the ceiling, takes effect at once.
     let (status, _) = p
         .rest(
             Method::PUT,

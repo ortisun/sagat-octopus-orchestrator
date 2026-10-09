@@ -570,3 +570,123 @@ async fn a_call_that_holds_a_transaction_never_waits_for_a_second_connection() {
             .expect("every heartbeat is served");
     }
 }
+
+// ------------------------------------------------------------- the race with a revocation
+
+#[tokio::test]
+async fn the_store_refuses_a_session_that_the_binding_no_longer_covers() {
+    use sagat_application::worker::{NewSession, WorkerStore};
+
+    let w = world().await;
+    bind(&w, "racer", w.namespace.id(), &["pay.*"]).await;
+    let session = |name: &str, activities: &[&str]| NewSession {
+        id: uuid::Uuid::now_v7(),
+        tenant_id: w.admin.tenant_id(),
+        namespace_id: w.namespace.id(),
+        subject: subject_of("racer").as_str().to_owned(),
+        worker_name: name.to_owned(),
+        token_hash: vec![7; 32],
+        activities: activities.iter().map(|a| (*a).to_owned()).collect(),
+        languages: vec![],
+        pools: vec![],
+        max_inflight: 10,
+        ttl: std::time::Duration::from_secs(60),
+        tenant_limit: 1000,
+    };
+    let sessions = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM worker_sessions WHERE tenant_id = $1")
+            .bind(w.admin.tenant_id().as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("count")
+    };
+
+    // The application looked at an older, wider binding; the store judges the current one.
+    let refused = w
+        .store
+        .create_session(&session("late", &["pay.charge", "other.thing"]))
+        .await
+        .expect("store");
+    assert_eq!(refused, None);
+    assert_eq!(sessions().await, 0, "a refused session leaves nothing");
+
+    let accepted = w
+        .store
+        .create_session(&session("ok", &["pay.charge"]))
+        .await
+        .expect("store");
+    assert!(accepted.is_some());
+    assert_eq!(sessions().await, 1);
+
+    // No binding at all is the narrowest binding there is.
+    w.bindings
+        .unbind(&w.admin, w.namespace.id(), "racer", &ctx())
+        .await
+        .expect("unbind");
+    let refused = w
+        .store
+        .create_session(&session("after", &["pay.charge"]))
+        .await
+        .expect("store");
+    assert_eq!(refused, None);
+    assert_eq!(sessions().await, 0);
+}
+
+#[tokio::test]
+async fn registering_while_a_binding_is_narrowed_never_leaves_a_session_it_does_not_cover() {
+    let w = world().await;
+    for round in 0..12 {
+        let name = format!("racer{round}");
+        let who = worker(&w, &name);
+        bind(&w, &name, w.namespace.id(), &["pay.*", "other.*"]).await;
+        let registrations = (0..6).map(|i| {
+            let who = &who;
+            let w = &w;
+            async move {
+                // Both outcomes are fine; what matters is what is left behind.
+                let _ = register(w, who, "payments", &format!("w{i}"), &["other.thing"]).await;
+            }
+        });
+        let narrowing = bind(&w, &name, w.namespace.id(), &["pay.*"]);
+        let ((), _) = tokio::join!(
+            async {
+                futures_util::future::join_all(registrations).await;
+            },
+            narrowing
+        );
+        let leftover: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM worker_sessions \
+             WHERE tenant_id = $1 AND subject = $2 AND 'other.thing' = ANY(activities)",
+        )
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(subject_of(&name).as_str())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("count");
+        assert_eq!(leftover, 0, "round {round}: a session outlived its binding");
+    }
+}
+
+#[tokio::test]
+async fn releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_scan_of_every_lease()
+{
+    let w = world().await;
+    // The statement `replace_binding` runs while it holds the binding lock and the session rows. The
+    // tables are tiny here, so the scan is switched off to see which index the planner would take.
+    let mut tx = w.db.pool.begin().await.expect("begin");
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .expect("set");
+    let plan: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN UPDATE steps SET lease_expires_at = clock_timestamp() \
+         WHERE tenant_id = $1 AND status IN ('LEASED', 'RUNNING') AND leased_by = ANY($2)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(vec!["a-session".to_owned()])
+    .fetch_all(&mut *tx)
+    .await
+    .expect("explain");
+    let plan = plan.join("\n");
+    assert!(plan.contains("steps_leased_by_idx"), "{plan}");
+}

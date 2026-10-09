@@ -19,6 +19,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 jsonwebtoken.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+h2 = "0.4"
 rcgen = "0.13"
 reqwest = { workspace = true, features = ["json"] }
 sagat-api-grpc.workspace = true
@@ -100,6 +101,14 @@ path = "e2e/009-security-multitenancy/main.rs"
 [[test]]
 name = "contract_grpc_009"
 path = "contract/009-security-multitenancy/grpc/main.rs"
+
+[[test]]
+name = "perf_009"
+path = "performance/009-security-multitenancy/main.rs"
+
+[[test]]
+name = "fault_009"
+path = "fault/009-security-multitenancy/main.rs"
 
 [[test]]
 name = "perf_002"

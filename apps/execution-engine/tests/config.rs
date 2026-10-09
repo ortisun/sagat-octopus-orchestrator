@@ -97,6 +97,11 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     for name in [
         "SAGAT_GRPC_REQUEST_TIMEOUT_SECS",
         "SAGAT_GRPC_MAX_CONNECTIONS",
+        "SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER",
+        "SAGAT_GRPC_FIRST_BYTE_TIMEOUT_SECS",
+        "SAGAT_GRPC_IDLE_TIMEOUT_SECS",
+        "SAGAT_GRPC_TLS_HANDSHAKE_TIMEOUT_SECS",
+        "SAGAT_GRPC_MAX_CONNECTION_AGE_SECS",
         "SAGAT_GRPC_MAX_IN_FLIGHT",
         "SAGAT_LEASE_TTL_SECS",
         "SAGAT_SESSION_TTL_SECS",
@@ -122,6 +127,11 @@ fn intervals_and_sizes_must_be_positive_numbers() {
         ("SAGAT_SCHEDULER_BATCH", "7"),
         ("SAGAT_OUTBOX_BATCH", "9"),
         ("SAGAT_GRPC_MAX_CONNECTIONS", "11"),
+        ("SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER", "3"),
+        ("SAGAT_GRPC_FIRST_BYTE_TIMEOUT_SECS", "4"),
+        ("SAGAT_GRPC_IDLE_TIMEOUT_SECS", "21"),
+        ("SAGAT_GRPC_TLS_HANDSHAKE_TIMEOUT_SECS", "6"),
+        ("SAGAT_GRPC_MAX_CONNECTION_AGE_SECS", "900"),
         ("SAGAT_GRPC_MAX_IN_FLIGHT", "13"),
     ])
     .expect("config");
@@ -130,7 +140,24 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     assert_eq!(config.scheduler.batch, 7);
     assert_eq!(config.dispatch.batch, 9);
     assert_eq!(config.grpc.max_connections, 11);
+    assert_eq!(config.grpc.max_connections_per_peer, 3);
+    assert_eq!(config.grpc.first_byte_timeout, Duration::from_secs(4));
+    assert_eq!(config.grpc.idle_timeout, Duration::from_secs(21));
+    assert_eq!(config.grpc.handshake_timeout, Duration::from_secs(6));
+    assert_eq!(config.grpc.max_connection_age, Duration::from_secs(900));
     assert_eq!(config.grpc.max_in_flight, 13);
+}
+
+#[test]
+fn the_connection_limits_default_to_values_that_close_a_silent_socket_in_seconds() {
+    let grpc = parse(&[]).expect("config").grpc;
+    // A socket that never speaks must not hold a place for long, a connection that is merely
+    // between calls must not be cut off, and no address may hold more than a share of the places.
+    assert!(grpc.first_byte_timeout <= Duration::from_secs(30));
+    assert!(grpc.handshake_timeout <= Duration::from_secs(30));
+    assert!(grpc.idle_timeout >= Duration::from_secs(60));
+    assert!(grpc.max_connections_per_peer * 4 <= grpc.max_connections);
+    assert!(grpc.max_connection_age >= grpc.idle_timeout);
 }
 
 #[test]

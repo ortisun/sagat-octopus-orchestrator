@@ -2,4 +2,6 @@
 //! with real handshakes against a real listener.
 #![allow(clippy::expect_used, clippy::panic)]
 
+mod connections;
+mod stub;
 mod tls;

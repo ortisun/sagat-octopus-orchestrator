@@ -566,3 +566,47 @@ fn tenant_provisioning_has_no_defaults() {
         Ok(("acme".into(), "alice".into()))
     );
 }
+
+#[test]
+fn an_api_that_receives_secret_values_in_plaintext_outside_development_must_say_tls_is_in_front() {
+    let key = sagat_infra_secrets::generate_key().expect("key");
+    let ring = format!("k1:{key}");
+    let with = |extra: &[(&'static str, &str)]| {
+        let mut pairs: Vec<(&str, &str)> = OIDC.to_vec();
+        pairs.push(("SAGAT_SECRETS_KEYS", ring.as_str()));
+        pairs.extend_from_slice(extra);
+        ServeConfig::from_lookup(&env(&pairs))
+    };
+
+    // Production by default: refused, naming the variable that states the fact, and never the ring.
+    let refused = with(&[]).expect_err("plaintext secrets");
+    match &refused {
+        ConfigError::Invalid { name, reason } => {
+            assert_eq!(*name, "SAGAT_API_ALLOW_PLAINTEXT_SECRETS");
+            assert!(!reason.contains(&key), "never the ring: {reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!refused.to_string().contains(&key));
+    assert!(
+        with(&[("SAGAT_ENV", "staging")]).is_err(),
+        "staging is not development"
+    );
+
+    // Stated, or in development, it is accepted and the ring is kept.
+    assert!(
+        with(&[("SAGAT_API_ALLOW_PLAINTEXT_SECRETS", "true")])
+            .expect("stated")
+            .secrets
+            .is_some()
+    );
+    assert!(
+        with(&[("SAGAT_ENV", "dev")])
+            .expect("development")
+            .secrets
+            .is_some()
+    );
+
+    // No ring, nothing to state.
+    assert!(ServeConfig::from_lookup(&env(&OIDC)).is_ok());
+}

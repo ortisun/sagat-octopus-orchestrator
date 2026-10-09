@@ -315,6 +315,8 @@ async fn the_policy_that_is_stored_is_the_policy_the_client_enforces() {
 #[tokio::test]
 async fn a_refused_request_is_audited_with_its_category_and_no_path_or_query() {
     let w = world().await;
+    let metrics = sagat_telemetry::Metrics::global();
+    let denied_before = denials_counted(&metrics.render());
     set(&w, &["api.example.com"], &[], false).await;
     assert!(verdict(&w, "https", "api.example.com", 443).await.is_ok());
     assert!(verdict(&w, "https", "169.254.169.254", 443).await.is_err());
@@ -352,6 +354,21 @@ async fn a_refused_request_is_audited_with_its_category_and_no_path_or_query() {
     );
     // An allowed request leaves nothing behind.
     assert!(rows.iter().all(|(_, reason)| reason != "OK"));
+    // The counter sees every refusal, the repeated one included, where the trail keeps one row.
+    // (Other tests of this binary count too, so "at least".)
+    assert!(
+        denials_counted(&metrics.render()) >= denied_before + 3.0,
+        "{}",
+        metrics.render()
+    );
+}
+
+/// What `security_denials_total{action="egress.denied"}` has counted so far in this process.
+fn denials_counted(page: &str) -> f64 {
+    page.lines()
+        .filter(|line| line.starts_with("security_denials_total{action=\"egress.denied\"}"))
+        .filter_map(|line| line.rsplit(' ').next()?.parse::<f64>().ok())
+        .sum()
 }
 
 #[tokio::test]

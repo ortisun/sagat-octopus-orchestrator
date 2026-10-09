@@ -8,60 +8,14 @@ use std::time::Duration;
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
 };
+use sagat_api_grpc::pb::PollTasksRequest;
 use sagat_api_grpc::pb::worker_service_client::WorkerServiceClient;
-use sagat_api_grpc::pb::worker_service_server::WorkerService;
-use sagat_api_grpc::pb::{
-    CompleteStepRequest, FailStepRequest, HeartbeatRequest, HeartbeatResponse, PollTasksRequest,
-    PollTasksResponse, RegisterWorkerRequest, RegisterWorkerResponse, ResolveSecretsRequest,
-    ResolveSecretsResponse, StepCommandResponse,
-};
 use sagat_api_grpc::{GrpcConfig, TlsConfig, serve, worker_service};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
-use tonic::{Request, Response, Status};
 
-struct Stub;
-
-#[tonic::async_trait]
-impl WorkerService for Stub {
-    async fn register_worker(
-        &self,
-        _: Request<RegisterWorkerRequest>,
-    ) -> Result<Response<RegisterWorkerResponse>, Status> {
-        Ok(Response::new(RegisterWorkerResponse::default()))
-    }
-    async fn poll_tasks(
-        &self,
-        _: Request<PollTasksRequest>,
-    ) -> Result<Response<PollTasksResponse>, Status> {
-        Ok(Response::new(PollTasksResponse::default()))
-    }
-    async fn heartbeat(
-        &self,
-        _: Request<HeartbeatRequest>,
-    ) -> Result<Response<HeartbeatResponse>, Status> {
-        Ok(Response::new(HeartbeatResponse::default()))
-    }
-    async fn complete_step(
-        &self,
-        _: Request<CompleteStepRequest>,
-    ) -> Result<Response<StepCommandResponse>, Status> {
-        Ok(Response::new(StepCommandResponse::default()))
-    }
-    async fn fail_step(
-        &self,
-        _: Request<FailStepRequest>,
-    ) -> Result<Response<StepCommandResponse>, Status> {
-        Ok(Response::new(StepCommandResponse::default()))
-    }
-    async fn resolve_secrets(
-        &self,
-        _: Request<ResolveSecretsRequest>,
-    ) -> Result<Response<ResolveSecretsResponse>, Status> {
-        Ok(Response::new(ResolveSecretsResponse::default()))
-    }
-}
+use crate::stub::Stub;
 
 /// A certificate authority and what it signed.
 struct Authority {
@@ -100,13 +54,17 @@ struct Server {
 }
 
 async fn serve_stub(tls: TlsConfig) -> Server {
+    serve_stub_with(GrpcConfig {
+        tls: Some(tls),
+        ..GrpcConfig::default()
+    })
+    .await
+}
+
+async fn serve_stub_with(config: GrpcConfig) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let (stop, stopped) = oneshot::channel::<()>();
-    let config = GrpcConfig {
-        tls: Some(tls),
-        ..GrpcConfig::default()
-    };
     tokio::spawn(async move {
         let _ = serve(listener, worker_service(Stub), config, async {
             let _ = stopped.await;
@@ -241,4 +199,46 @@ async fn the_tls_configuration_never_prints_the_private_key() {
     let secret_line = key_body.lines().nth(1).expect("a line of key material");
     assert!(!printed.contains(secret_line), "{printed}");
     assert!(printed.contains("<redacted>"));
+}
+
+#[tokio::test]
+async fn a_handshake_that_starts_and_stalls_is_cut_off_and_gives_its_place_back() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let ca = Authority::new("sagat test server ca");
+    // One place only, and nothing else that could close the stalled connection in time: the
+    // silence limits are far away, so what ends it is the handshake timeout.
+    let server = serve_stub_with(GrpcConfig {
+        tls: Some(server_tls(&ca, None)),
+        max_connections: 1,
+        first_byte_timeout: Duration::from_secs(60),
+        idle_timeout: Duration::from_secs(60),
+        handshake_timeout: Duration::from_millis(300),
+        ..GrpcConfig::default()
+    })
+    .await;
+    let port = server
+        .url
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .expect("port");
+
+    // A handshake record type, and then nothing: the shape of a client that began and stopped.
+    let mut stalled = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    stalled.write_all(&[0x16]).await.expect("one byte");
+    let mut buffer = [0_u8; 16];
+    let closed = tokio::time::timeout(Duration::from_secs(3), stalled.read(&mut buffer)).await;
+    assert!(
+        matches!(closed, Ok(Ok(0) | Err(_))),
+        "the stalled handshake was still open after 3 s: {closed:?}"
+    );
+
+    // Its place is free again: a real client is served although the cap is one connection.
+    assert_eq!(
+        call(tls_client(&server.url, &ca.pem(), None).await).await,
+        Ok(())
+    );
 }

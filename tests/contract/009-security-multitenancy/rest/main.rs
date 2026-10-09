@@ -6,4 +6,5 @@
 #[path = "../../../support/mod.rs"]
 mod support;
 
+mod battery;
 mod conformance;

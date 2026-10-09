@@ -4,10 +4,10 @@
 
 use sagat_application::error::AppError;
 use sagat_application::identity::RequestContext;
-use sagat_application::quotas::StoredLimit;
+use sagat_application::quotas::{QuotaLookup, StoredLimit};
 use sagat_application::runs::RunOperation;
-use sagat_domain::identity::{Principal, Role};
-use sagat_domain::quota::{MAX_LIMIT, QuotaResource, QuotaSource};
+use sagat_domain::identity::{NamespaceId, Principal, Role};
+use sagat_domain::quota::{MAX_LIMIT, QuotaResource, QuotaScope, QuotaSource};
 use serde_json::json;
 
 use crate::support::engine::{World, activity, child_node, ctx, document, subject_of, world};
@@ -250,7 +250,11 @@ async fn child_runs_count_against_the_quota_and_the_step_that_wanted_one_fails()
             .fetch_one(&w.db.pool)
             .await
             .expect("code");
-    assert_eq!(code.as_deref(), Some("CHILD_LIMIT_EXCEEDED"));
+    assert_eq!(
+        code.as_deref(),
+        Some("CHILD_QUOTA_EXCEEDED"),
+        "a full namespace is not the size limit of a tree"
+    );
     assert_eq!(
         w.run_status(parent).await,
         sagat_domain::execution::RunStatus::Failed
@@ -556,5 +560,394 @@ async fn out_of_range_and_misplaced_values_are_refused_and_stored_nothing() {
     assert!(
         direct.is_err(),
         "the table refuses a namespace level for a tenant-wide resource"
+    );
+}
+
+// ------------------------------------------------------------- who may raise a limit
+
+/// The namespace a limit of `resource` is set for: none for a resource counted across the tenant.
+fn level_of(w: &World, resource: QuotaResource) -> Option<NamespaceId> {
+    (resource.scope() == QuotaScope::Namespace).then(|| w.namespace.id())
+}
+
+/// The limit the stores enforce for `tenant` in `namespace`.
+async fn enforced(
+    w: &World,
+    tenant: sagat_domain::identity::TenantId,
+    namespace: NamespaceId,
+    resource: QuotaResource,
+) -> u64 {
+    w.store
+        .effective_limit(tenant, Some(namespace), resource)
+        .await
+        .expect("limit")
+}
+
+async fn grant(w: &World, resource: QuotaResource, value: Option<u64>) {
+    w.quotas
+        .grant_ceiling(w.admin.tenant_id(), resource, value)
+        .await
+        .expect("grant a ceiling");
+}
+
+#[tokio::test]
+async fn a_tenant_administrator_cannot_raise_any_limit_above_the_ceiling_the_platform_grants() {
+    let w = world().await;
+    for resource in QuotaResource::ALL {
+        let level = level_of(&w, resource);
+        let ceiling = resource.default_limit();
+
+        let refused = w
+            .quotas
+            .set(&w.admin, level, resource, ceiling + 1, &ctx())
+            .await;
+        assert!(
+            matches!(refused, Err(AppError::NotAllowed(reason)) if reason.contains("ceiling")),
+            "{resource}: {refused:?}"
+        );
+        // Not even the largest value a limit can take: that is the attack the ceiling exists for.
+        let refused = w
+            .quotas
+            .set(&w.admin, level, resource, MAX_LIMIT, &ctx())
+            .await;
+        assert!(
+            matches!(refused, Err(AppError::NotAllowed(_))),
+            "{resource}: {refused:?}"
+        );
+
+        // The ceiling itself is allowed, and the view says where the room ends.
+        let view = w
+            .quotas
+            .set(&w.admin, level, resource, ceiling, &ctx())
+            .await
+            .expect("at the ceiling");
+        assert_eq!((view.limit, view.ceiling), (ceiling, ceiling), "{resource}");
+    }
+    // Only the values at the ceiling were stored: one row per resource.
+    let stored: Vec<(String, i64)> =
+        sqlx::query_as("SELECT resource, max_value FROM quota_limits ORDER BY resource")
+            .fetch_all(&w.db.pool)
+            .await
+            .expect("rows");
+    let expected: Vec<(String, i64)> = {
+        let mut rows: Vec<_> = QuotaResource::ALL
+            .iter()
+            .map(|r| {
+                (
+                    r.as_str().to_owned(),
+                    i64::try_from(r.default_limit()).expect("small"),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(stored, expected);
+}
+
+#[tokio::test]
+async fn an_operator_grants_a_ceiling_to_one_tenant_and_the_administrator_can_then_use_it() {
+    let w = world().await;
+    let resource = QuotaResource::ActiveRuns;
+    let beyond = resource.default_limit() + 5_000;
+    let refused = w
+        .quotas
+        .set(&w.admin, Some(w.namespace.id()), resource, beyond, &ctx())
+        .await;
+    assert!(
+        matches!(refused, Err(AppError::NotAllowed(_))),
+        "{refused:?}"
+    );
+
+    grant(&w, resource, Some(beyond + 5_000)).await;
+    let view = w
+        .quotas
+        .set(&w.admin, Some(w.namespace.id()), resource, beyond, &ctx())
+        .await
+        .expect("within the granted ceiling");
+    assert_eq!(
+        (view.limit, view.ceiling, view.source),
+        (beyond, beyond + 5_000, QuotaSource::Namespace)
+    );
+    // The grant does not reach past what it says.
+    let refused = w
+        .quotas
+        .set(
+            &w.admin,
+            Some(w.namespace.id()),
+            resource,
+            beyond + 5_001,
+            &ctx(),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(AppError::NotAllowed(_))),
+        "{refused:?}"
+    );
+
+    // It belongs to the tenant it was granted to.
+    let other = w
+        .quotas
+        .set(
+            &w.other_admin,
+            Some(w.other_namespace.id()),
+            resource,
+            beyond,
+            &ctx(),
+        )
+        .await;
+    assert!(matches!(other, Err(AppError::NotAllowed(_))), "{other:?}");
+    let other_view = w
+        .quotas
+        .list(&w.other_admin, Some(w.other_namespace.id()), &ctx())
+        .await
+        .expect("list");
+    let other_active = other_view
+        .iter()
+        .find(|q| q.resource == resource)
+        .expect("active runs");
+    assert_eq!(other_active.ceiling, resource.default_limit());
+    // What is enforced follows the same rule as what is shown: the grant reaches only its tenant.
+    assert_eq!(
+        enforced(&w, w.admin.tenant_id(), w.namespace.id(), resource).await,
+        beyond,
+        "the granted tenant is judged by the limit it set"
+    );
+    assert_eq!(
+        enforced(
+            &w,
+            w.other_admin.tenant_id(),
+            w.other_namespace.id(),
+            resource
+        )
+        .await,
+        resource.default_limit(),
+        "another tenant is judged by the default"
+    );
+
+    // The grant is on record, as the operator's.
+    let (actor, reason): (String, String) = sqlx::query_as(
+        "SELECT actor, reason FROM audit_records \
+         WHERE tenant_id = $1 AND action = 'quota.changed' AND reason LIKE 'ceiling%'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(actor, "system:operator");
+    assert_eq!(
+        reason,
+        format!("ceiling of active_runs = {}", beyond + 5_000)
+    );
+}
+
+#[tokio::test]
+async fn withdrawing_or_lowering_a_ceiling_clamps_what_is_enforced_at_once() {
+    let w = world().await;
+    let (wf, _) = w.publish(waiting_flow("clamped")).await;
+    let resource = QuotaResource::ActiveRuns;
+
+    // The administrator is comfortable under a generous grant...
+    grant(&w, resource, Some(500)).await;
+    set_in_namespace(&w, resource, 400).await;
+
+    // ...which the operator then lowers below what was set: the stored 400 no longer rules.
+    grant(&w, resource, Some(2)).await;
+    let view = w
+        .quotas
+        .list(&w.admin, Some(w.namespace.id()), &ctx())
+        .await
+        .expect("list");
+    let active = view.iter().find(|q| q.resource == resource).expect("row");
+    assert_eq!(
+        (active.limit, active.ceiling, active.source),
+        (2, 2, QuotaSource::Namespace),
+        "the view tells the truth about what is in force"
+    );
+    w.start(wf, &json!({})).await;
+    w.start(wf, &json!({})).await;
+    assert_eq!(
+        w.start_with(wf, &json!({}), "start-over-ceiling", None)
+            .await,
+        Err(AppError::QuotaExceeded("active runs in the namespace")),
+        "the third run is refused although the tenant set 400"
+    );
+
+    // The same holds for the setting of the whole tenant.
+    let tenant_resource = QuotaResource::Workflows;
+    grant(&w, tenant_resource, Some(500)).await;
+    set(&w, tenant_resource, 400).await;
+    grant(&w, tenant_resource, Some(7)).await;
+    let tenant_view = w.quotas.list(&w.admin, None, &ctx()).await.expect("list");
+    let workflows = tenant_view
+        .iter()
+        .find(|q| q.resource == tenant_resource)
+        .expect("row");
+    assert_eq!(
+        (workflows.limit, workflows.source),
+        (7, QuotaSource::Tenant),
+        "a lowered ceiling also bounds what was set for the whole tenant"
+    );
+    assert_eq!(
+        w.store
+            .effective_limit(w.admin.tenant_id(), Some(w.namespace.id()), tenant_resource)
+            .await
+            .expect("limit"),
+        7,
+        "and it is what the stores enforce"
+    );
+
+    // With nothing set, the granted ceiling is the room the tenant has.
+    w.quotas
+        .clear(&w.admin, Some(w.namespace.id()), resource, &ctx())
+        .await
+        .expect("clear");
+    assert_eq!(
+        w.start_with(wf, &json!({}), "start-at-ceiling", None).await,
+        Err(AppError::QuotaExceeded("active runs in the namespace"))
+    );
+    grant(&w, resource, Some(3)).await;
+    w.start_with(wf, &json!({}), "start-after-grant", None)
+        .await
+        .expect("one more place was granted");
+
+    // Withdrawn, the platform default applies again.
+    grant(&w, resource, None).await;
+    let view = w
+        .quotas
+        .list(&w.admin, Some(w.namespace.id()), &ctx())
+        .await
+        .expect("list");
+    let active = view.iter().find(|q| q.resource == resource).expect("row");
+    assert_eq!(
+        (active.limit, active.ceiling, active.source),
+        (
+            resource.default_limit(),
+            resource.default_limit(),
+            QuotaSource::Default
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_ceiling_that_is_out_of_range_or_for_a_tenant_that_does_not_exist_changes_nothing() {
+    let w = world().await;
+    let too_large = w
+        .quotas
+        .grant_ceiling(
+            w.admin.tenant_id(),
+            QuotaResource::Workflows,
+            Some(MAX_LIMIT + 1),
+        )
+        .await;
+    assert!(
+        matches!(too_large, Err(AppError::NotAllowed(_))),
+        "{too_large:?}"
+    );
+    let nobody = w
+        .quotas
+        .grant_ceiling(
+            sagat_domain::identity::TenantId::generate(),
+            QuotaResource::Workflows,
+            Some(10),
+        )
+        .await;
+    assert_eq!(nobody, Err(AppError::NotFound));
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM quota_ceilings")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("count");
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'quota.changed' AND reason LIKE 'ceiling%'",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!((rows, audits), (0, 0));
+}
+
+#[tokio::test]
+async fn the_ceiling_command_grants_withdraws_and_refuses_the_nonsense() {
+    use sagat_control_plane::config::{CeilingConfig, Config};
+
+    let w = world().await;
+    let env = |name: &str| match name {
+        "DATABASE_URL" => Some(w.db.url.clone()),
+        "SAGAT_ENV" => Some("dev".to_owned()),
+        _ => None,
+    };
+    let config = Config::from_lookup(&env).expect("config");
+    let request = |tenant: String, resource: &str, value: Option<u64>| CeilingConfig {
+        tenant_id: tenant,
+        resource: resource.to_owned(),
+        value,
+    };
+    let tenant = w.admin.tenant_id();
+
+    sagat_control_plane::grant_quota_ceiling(
+        &config,
+        &request(tenant.to_string(), "worker_sessions", Some(5_000)),
+    )
+    .await
+    .expect("grant");
+    let granted: i64 = sqlx::query_scalar(
+        "SELECT max_value FROM quota_ceilings WHERE tenant_id = $1 AND resource = 'worker_sessions'",
+    )
+    .bind(tenant.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("row");
+    assert_eq!(granted, 5_000);
+    let view = w.quotas.list(&w.admin, None, &ctx()).await.expect("list");
+    let sessions = view
+        .iter()
+        .find(|q| q.resource == QuotaResource::WorkerSessions)
+        .expect("row");
+    assert_eq!(
+        sessions.ceiling, 5_000,
+        "the API shows what the command granted"
+    );
+
+    sagat_control_plane::grant_quota_ceiling(
+        &config,
+        &request(tenant.to_string(), "worker_sessions", None),
+    )
+    .await
+    .expect("withdraw");
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM quota_ceilings")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("count");
+    assert_eq!(left, 0);
+
+    for (bad, what) in [
+        (
+            request("not-a-tenant".into(), "workflows", Some(1)),
+            "tenant id",
+        ),
+        (request(tenant.to_string(), "builds", Some(1)), "resource"),
+        (
+            request(tenant.to_string(), "workflows", Some(MAX_LIMIT + 1)),
+            "range",
+        ),
+    ] {
+        let refused = sagat_control_plane::grant_quota_ceiling(&config, &bad).await;
+        assert!(
+            matches!(refused, Err(sagat_control_plane::RunError::Config(_))),
+            "{what}: {refused:?}"
+        );
+    }
+    let missing = sagat_control_plane::grant_quota_ceiling(
+        &config,
+        &request(
+            sagat_domain::identity::TenantId::generate().to_string(),
+            "workflows",
+            Some(1),
+        ),
+    )
+    .await;
+    assert!(
+        matches!(missing, Err(sagat_control_plane::RunError::Refused(_))),
+        "{missing:?}"
     );
 }

@@ -839,3 +839,73 @@ mod cost {
         assert!((6_000_000..40_000_000).contains(&weight), "{weight}");
     }
 }
+
+mod declared_secrets {
+    use sagat_domain::identity::Slug;
+    use sagat_domain::secrets::{MAX_DECLARED_SECRETS, SecretName};
+    use sagat_domain::workflow::{
+        ActivityName, Node, NodeId, NodeKind, RetryPolicy, WorkflowDefinition, WorkflowError,
+    };
+
+    /// A chain of activities; activity `i` declares the secrets `names(i)`.
+    fn chain(count: usize, names: impl Fn(usize) -> Vec<String>) -> Vec<Node> {
+        (0..count)
+            .map(|i| {
+                let node = Node::new(
+                    NodeId::parse(&format!("n{i}")).expect("id"),
+                    NodeKind::Activity {
+                        activity: ActivityName::parse("act.x").expect("name"),
+                        retry: RetryPolicy::DEFAULT,
+                        compensate_with: None,
+                        reconcile_with: None,
+                        idempotency_template: None,
+                        secrets: names(i)
+                            .iter()
+                            .map(|n| SecretName::parse(n).expect("secret"))
+                            .collect(),
+                    },
+                );
+                if i + 1 < count {
+                    node.with_next(NodeId::parse(&format!("n{}", i + 1)).expect("id"))
+                } else {
+                    node
+                }
+            })
+            .collect()
+    }
+
+    fn define(nodes: Vec<Node>) -> Result<WorkflowDefinition, WorkflowError> {
+        WorkflowDefinition::new(
+            Slug::parse("secret-flow").expect("slug"),
+            NodeId::parse("n0").expect("id"),
+            nodes,
+        )
+    }
+
+    #[test]
+    fn a_workflow_may_not_declare_more_distinct_secrets_than_the_limit() {
+        // One distinct secret per activity, spread over many activities.
+        assert_eq!(
+            define(chain(MAX_DECLARED_SECRETS + 1, |i| vec![format!(
+                "key-{i}"
+            )])),
+            Err(WorkflowError::TooManySecrets(MAX_DECLARED_SECRETS + 1))
+        );
+        assert!(
+            define(chain(MAX_DECLARED_SECRETS, |i| vec![format!("key-{i}")])).is_ok(),
+            "the limit itself is allowed"
+        );
+    }
+
+    #[test]
+    fn the_limit_counts_distinct_names_and_not_how_often_they_are_used() {
+        // A thousand activities that all use the same two secrets declare two.
+        assert!(
+            define(chain(1_000, |_| vec![
+                "stripe-key".to_owned(),
+                "db-password".to_owned()
+            ]))
+            .is_ok()
+        );
+    }
+}

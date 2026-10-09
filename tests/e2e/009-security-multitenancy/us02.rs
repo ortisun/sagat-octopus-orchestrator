@@ -118,6 +118,9 @@ async fn an_author_with_access_publishes_and_the_worker_receives_only_the_author
 #[tokio::test]
 async fn the_secret_reaches_no_response_log_row_or_error_on_the_way() {
     let p = platform().await;
+    // Every log line of the whole flow, at every level, from the API and the worker service alike
+    // (they run in this test's runtime).
+    let (_logging, logs) = crate::support::logs::capture_at(tracing::Level::TRACE);
     let ns = p.namespace_id().await;
     let (status, _) = p
         .rest(
@@ -144,6 +147,23 @@ async fn the_secret_reaches_no_response_log_row_or_error_on_the_way() {
         .expect("accepted as a failure");
     assert_eq!(done.step_status, "FAILED");
     assert_eq!(p.status(&run).await, "FAILED");
+
+    // Everything the platform logged: first prove that the capture sees this flow at all.
+    tracing::warn!("capture check");
+    let logged = logs.text();
+    assert!(
+        logged.contains("capture check"),
+        "the capture is not working"
+    );
+    assert!(
+        !logged.contains(CANARY),
+        "a log line carried the value: {}",
+        logged
+            .lines()
+            .filter(|l| l.contains(CANARY))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 
     // Everything the platform keeps about the run, and everything it said about it.
     let journal = p

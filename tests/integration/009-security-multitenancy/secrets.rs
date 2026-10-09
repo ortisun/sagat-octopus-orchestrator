@@ -433,6 +433,74 @@ async fn every_resolution_is_audited_with_names_and_versions_and_never_values() 
 }
 
 #[tokio::test]
+async fn asking_again_within_an_attempt_is_answered_but_written_down_once_and_a_new_attempt_is_a_new_event()
+ {
+    // A worker can repeat the call as often as it likes (up to its rate budget); the trail must not
+    // grow with that, only with what happened: one record per run, node and attempt.
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    let developer = w.member("dora", Role::Developer).await;
+    w.secrets
+        .grant(&w.admin, ns(&w), "stripe-key", "dora", &ctx())
+        .await
+        .expect("grant");
+    let (wf, _) = w
+        .try_publish_as(
+            &developer,
+            document(
+                "retrying",
+                "a",
+                vec![with(
+                    crate::support::engine::flaky("a", 3),
+                    "secrets",
+                    json!(["stripe-key"]),
+                )],
+            ),
+        )
+        .await
+        .expect("publish");
+    let run = w.start(wf, &json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    let first = w.one_task(&session).await;
+    for _ in 0..25 {
+        let handed = w
+            .workers
+            .resolve_secrets(&session.principal, &task_ref(&first), None)
+            .await
+            .expect("every call is answered");
+        assert_eq!(handed.len(), 1);
+    }
+    let rows = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT reason FROM audit_records WHERE action = 'secret.resolved' ORDER BY reason",
+        )
+        .fetch_all(&w.db.pool)
+        .await
+        .expect("audit")
+    };
+    assert_eq!(rows().await, vec!["node a attempt 1: stripe-key v1"]);
+
+    // The attempt fails and is retried: the second attempt asks for its own capability.
+    w.fail(&session, &first, true).await.expect("fail");
+    w.age_retry(run, "a").await;
+    w.scheduler.tick().await;
+    let second = w.one_task(&session).await;
+    for _ in 0..3 {
+        w.workers
+            .resolve_secrets(&session.principal, &task_ref(&second), None)
+            .await
+            .expect("resolve");
+    }
+    assert_eq!(
+        rows().await,
+        vec![
+            "node a attempt 1: stripe-key v1",
+            "node a attempt 2: stripe-key v1"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn losing_access_after_publishing_stops_the_next_resolution_and_regaining_it_restores_it() {
     // "ACL race when renewing a token": the check is made when the value is asked for, not only
     // when the workflow was published.
@@ -589,6 +657,163 @@ async fn a_secret_in_a_steps_output_fails_the_step_and_is_stored_nowhere() {
 }
 
 #[tokio::test]
+async fn the_capability_ends_with_the_lease_and_not_when_the_scheduler_reclaims_it() {
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    let l = leased_step(&w, &["stripe-key"]).await;
+    assert_eq!(resolved_count(&w, &l).await, Ok(1));
+
+    // The lease runs out (the worker stopped renewing) but nobody has reclaimed the attempt yet.
+    sqlx::query(
+        "UPDATE steps SET lease_expires_at = clock_timestamp() - interval '1 second' \
+         WHERE run_id = $1 AND node = 'a'",
+    )
+    .bind(l.run.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("expire");
+    assert_eq!(
+        resolved_count(&w, &l).await,
+        Err(AppError::StaleAttempt),
+        "an expired lease reads nothing"
+    );
+    let denied: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE action = 'secret.resolved'")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("count");
+    assert_eq!(denied, 1, "nothing was handed out the second time");
+
+    // A heartbeat renews the attempt it still holds, and with it the capability.
+    w.workers
+        .heartbeat(&l.session.principal, &task_ref(&l.task))
+        .await
+        .expect("heartbeat");
+    assert_eq!(resolved_count(&w, &l).await, Ok(1));
+}
+
+#[tokio::test]
+async fn a_value_handed_out_before_a_rotation_is_still_recognised_in_the_output() {
+    // The worker received the first version; the secret is rotated while it works; its output
+    // still carries what it was given, not what is current.
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    let l = leased_step(&w, &["stripe-key"]).await;
+    let handed = w
+        .workers
+        .resolve_secrets(&l.session.principal, &task_ref(&l.task), None)
+        .await
+        .expect("resolve");
+    assert_eq!(handed[0].version, 1);
+    w.put_secret("stripe-key", "rotated-value-after-the-lease")
+        .await;
+
+    let ack = w
+        .complete(&l.session, &l.task, &json!({"echo": CANARY}))
+        .await
+        .expect("the report is accepted as a failure");
+    assert_eq!(ack.step_status, StepStatus::Failed);
+    let code: Option<String> =
+        sqlx::query_scalar("SELECT failure_code FROM steps WHERE run_id = $1 AND node = 'a'")
+            .bind(l.run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("code");
+    assert_eq!(code.as_deref(), Some("SECRET_IN_OUTPUT"));
+    assert_eq!(tables_mentioning(&w, CANARY).await, Vec::new());
+}
+
+#[tokio::test]
+async fn a_secret_reported_as_the_reason_for_failing_fails_the_step_for_good_and_is_stored_nowhere()
+{
+    // A credential fits the characters and the length of a failure code, and the code is kept in
+    // the journal and shown to everybody who reads the run.
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    let developer = w.member("dora", Role::Developer).await;
+    w.secrets
+        .grant(&w.admin, ns(&w), "stripe-key", "dora", &ctx())
+        .await
+        .expect("grant");
+    let (wf, _) = w
+        .try_publish_as(
+            &developer,
+            document(
+                "retrying",
+                "a",
+                vec![with(
+                    crate::support::engine::flaky("a", 5),
+                    "secrets",
+                    json!(["stripe-key"]),
+                )],
+            ),
+        )
+        .await
+        .expect("publish");
+    let run = w.start(wf, &json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    let task = w.one_task(&session).await;
+    assert!(
+        sagat_domain::execution::FailureCode::parse(CANARY).is_ok(),
+        "the premise: this value is a well-formed failure code"
+    );
+
+    // Reported as retryable, with four attempts left: it is neither retried nor stored.
+    let ack = w
+        .workers
+        .fail(
+            &session.principal,
+            &task_ref(&task),
+            CANARY,
+            true,
+            "fail-with-secret-key",
+        )
+        .await
+        .expect("accepted as a failure");
+    assert_eq!(ack.step_status, StepStatus::Failed);
+    assert_eq!(w.run_status(run).await, RunStatus::Failed);
+    let code: Option<String> =
+        sqlx::query_scalar("SELECT failure_code FROM steps WHERE run_id = $1 AND node = 'a'")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("code");
+    assert_eq!(code.as_deref(), Some("SECRET_IN_OUTPUT"));
+    assert_eq!(tables_mentioning(&w, CANARY).await, Vec::new());
+    let reason: String = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE action = 'secret.denied' AND actor = 'worker-1'",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audit");
+    assert!(reason.starts_with("failure code of a on run "), "{reason}");
+
+    // An ordinary code from the same kind of step is untouched.
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    let l = leased_step(&w, &["stripe-key"]).await;
+    let ack = w
+        .workers
+        .fail(
+            &l.session.principal,
+            &task_ref(&l.task),
+            "PAYMENT_DECLINED",
+            false,
+            "fail-plain-key",
+        )
+        .await
+        .expect("fail");
+    assert_eq!(ack.step_status, StepStatus::Failed);
+    let code: Option<String> =
+        sqlx::query_scalar("SELECT failure_code FROM steps WHERE run_id = $1 AND node = 'a'")
+            .bind(l.run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("code");
+    assert_eq!(code.as_deref(), Some("PAYMENT_DECLINED"));
+}
+
+#[tokio::test]
 async fn the_escaped_forms_of_a_secret_are_recognised_too() {
     let w = world().await;
     let value = "pa\"ss\\word\nwith-\u{e9}-and-more";
@@ -700,6 +925,82 @@ async fn a_ciphertext_moved_to_another_secret_does_not_open() {
 
 // ------------------------------------------------------------- keys
 
+/// Three versions under `k1`, one of which is now sealed under a key (`k0`) that no ring holds, and
+/// a ring that has `k2` in front of `k1`.
+async fn world_with_an_orphaned_version() -> (World, sagat_infra_secrets::SecretsConfig) {
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    w.put_secret("db-password", "database-password-1").await;
+    w.put_secret("api-token", "api-token-value-0001").await;
+    sqlx::query(
+        "UPDATE secret_versions SET key_id = 'k0' WHERE id = ( \
+             SELECT v.id FROM secret_versions v JOIN secrets s ON s.id = v.secret_id \
+             WHERE s.name = 'db-password')",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("orphan one version");
+    let k2 = sagat_infra_secrets::generate_key().expect("key");
+    let rotated = sagat_infra_secrets::SecretsConfig::parse(&format!("k2:{k2},k1:{}", w.key_k1))
+        .expect("ring");
+    (w, rotated)
+}
+
+#[tokio::test]
+async fn one_version_that_no_key_opens_does_not_stop_the_command_from_moving_the_others() {
+    let (w, rotated) = world_with_an_orphaned_version().await;
+    let env = |name: &str| match name {
+        "DATABASE_URL" => Some(w.db.url.clone()),
+        "SAGAT_ENV" => Some("dev".to_owned()),
+        _ => None,
+    };
+    let config = sagat_control_plane::config::Config::from_lookup(&env).expect("config");
+
+    // The command moves what it can and then fails, saying how much of each.
+    let refused = sagat_control_plane::reseal_secrets(&config, &rotated).await;
+    let message = match refused {
+        Err(sagat_control_plane::RunError::Database(message)) => message,
+        other => panic!("expected a failure after moving the rest: {other:?}"),
+    };
+    assert!(
+        message.contains("1 secret versions could not be opened")
+            && message.contains("2 others were re-sealed"),
+        "{message}"
+    );
+    let keys: Vec<(String, i64)> =
+        sqlx::query_as("SELECT key_id, count(*) FROM secret_versions GROUP BY 1 ORDER BY 1")
+            .fetch_all(&w.db.pool)
+            .await
+            .expect("keys");
+    assert_eq!(keys, vec![("k0".to_owned(), 1), ("k2".to_owned(), 2)]);
+}
+
+#[tokio::test]
+async fn the_cursor_steps_over_a_version_that_cannot_be_opened_and_goes_on_to_the_next() {
+    let (w, rotated) = world_with_an_orphaned_version().await;
+    let admin = SecretService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+        rotated.cipher(),
+    );
+    // One version a page: whatever order the pages come in, the bad one is met once and the
+    // others behind it are still reached.
+    let (mut after, mut moved, mut failed, mut pages) = (None, 0, 0, 0);
+    loop {
+        let batch = admin.reseal(after, 1).await.expect("page");
+        moved += batch.moved;
+        failed += batch.failed;
+        pages += 1;
+        assert!(pages < 10, "the cursor did not advance");
+        match batch.next {
+            Some(next) => after = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!((moved, failed), (2, 1));
+    assert!(pages >= 3, "one version a page: {pages} pages");
+}
+
 #[tokio::test]
 async fn re_sealing_moves_every_version_to_the_active_key_so_the_old_one_can_be_retired() {
     let w = world().await;
@@ -717,15 +1018,23 @@ async fn re_sealing_moves_every_version_to_the_active_key_so_the_old_one_can_be_
         sagat_application::clock::SystemClock,
         rotated.cipher(),
     );
-    let moved = admin.reseal(100).await.expect("reseal");
-    assert_eq!(moved, 3, "every version, not only the current ones");
+    let batch = admin.reseal(None, 100).await.expect("reseal");
+    assert_eq!(
+        (batch.moved, batch.failed, batch.next),
+        (3, 0, None),
+        "every version, not only the current ones, and nothing left after"
+    );
     let still: i64 =
         sqlx::query_scalar("SELECT count(*) FROM secret_versions WHERE key_id <> 'k2'")
             .fetch_one(&w.db.pool)
             .await
             .expect("count");
     assert_eq!(still, 0);
-    assert_eq!(admin.reseal(100).await.expect("again"), 0, "idempotent");
+    assert_eq!(
+        admin.reseal(None, 100).await.expect("again").moved,
+        0,
+        "idempotent"
+    );
 
     // The old key can now be retired: a ring with k2 alone resolves everything.
     let retired = sagat_infra_secrets::SecretsConfig::parse(&format!("k2:{k2}")).expect("ring");
@@ -770,6 +1079,54 @@ async fn re_sealing_moves_every_version_to_the_active_key_so_the_old_one_can_be_
             .await
             .map(|_| ()),
         Err(AppError::Internal)
+    );
+}
+
+#[tokio::test]
+async fn the_re_sealing_command_moves_everything_and_reports_how_many() {
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    w.put_secret("stripe-key", "second-version-0001").await;
+    w.put_secret("db-password", "database-password-1").await;
+
+    let k2 = sagat_infra_secrets::generate_key().expect("key");
+    let rotated = sagat_infra_secrets::SecretsConfig::parse(&format!("k2:{k2},k1:{}", w.key_k1))
+        .expect("ring");
+    let env = |name: &str| match name {
+        "DATABASE_URL" => Some(w.db.url.clone()),
+        "SAGAT_ENV" => Some("dev".to_owned()),
+        _ => None,
+    };
+    let config = sagat_control_plane::config::Config::from_lookup(&env).expect("config");
+
+    let moved = sagat_control_plane::reseal_secrets(&config, &rotated)
+        .await
+        .expect("reseal");
+    assert_eq!(moved, 3, "every version");
+    let keys: Vec<(String, i64)> =
+        sqlx::query_as("SELECT key_id, count(*) FROM secret_versions GROUP BY 1")
+            .fetch_all(&w.db.pool)
+            .await
+            .expect("keys");
+    assert_eq!(keys, vec![("k2".to_owned(), 3)]);
+    assert_eq!(
+        sagat_control_plane::reseal_secrets(&config, &rotated)
+            .await
+            .expect("again"),
+        0,
+        "nothing left to move"
+    );
+
+    // A ring that no longer holds the key some version is sealed under cannot move it: loud failure.
+    let wrong = sagat_infra_secrets::SecretsConfig::parse(&format!(
+        "k3:{}",
+        sagat_infra_secrets::generate_key().expect("key")
+    ))
+    .expect("ring");
+    assert!(
+        sagat_control_plane::reseal_secrets(&config, &wrong)
+            .await
+            .is_err()
     );
 }
 
@@ -885,11 +1242,71 @@ async fn managing_secrets_is_for_administrators_and_reading_their_names_for_deve
         assert!(matches!(access, Err(AppError::Forbidden { .. })), "{role}");
         let list = w.secrets.list(&who, ns(&w), &ctx()).await;
         if role == Role::Developer {
-            assert_eq!(list.expect("a developer sees the names").len(), 1);
+            assert_eq!(
+                list.expect("a developer may list").len(),
+                0,
+                "but sees only the secrets whose access list names them, and none names this one"
+            );
         } else {
             assert!(matches!(list, Err(AppError::Forbidden { .. })), "{role}");
         }
     }
+}
+
+#[tokio::test]
+async fn a_developer_lists_only_the_secrets_they_may_use_so_the_names_cannot_be_probed() {
+    let w = world().await;
+    w.put_secret("stripe-key", CANARY).await;
+    w.put_secret("hr-database", "hr-database-password").await;
+    w.put_secret("other-key", "other-key-value-0001").await;
+    let dora = w.member("dora", Role::Developer).await;
+    let erin = w.member("erin", Role::Developer).await;
+    for (name, who) in [
+        ("stripe-key", "dora"),
+        ("other-key", "dora"),
+        ("hr-database", "erin"),
+    ] {
+        w.secrets
+            .grant(&w.admin, ns(&w), name, who, &ctx())
+            .await
+            .expect("grant");
+    }
+    let names = |views: Vec<sagat_application::secrets::SecretView>| {
+        views
+            .into_iter()
+            .map(|v| v.name.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        names(w.secrets.list(&dora, ns(&w), &ctx()).await.expect("dora")),
+        vec!["other-key", "stripe-key"],
+        "what the access list names, in order, and nothing else"
+    );
+    assert_eq!(
+        names(w.secrets.list(&erin, ns(&w), &ctx()).await.expect("erin")),
+        vec!["hr-database"]
+    );
+    assert_eq!(
+        names(
+            w.secrets
+                .list(&w.admin, ns(&w), &ctx())
+                .await
+                .expect("admin")
+        ),
+        vec!["hr-database", "other-key", "stripe-key"],
+        "an administrator manages all of them"
+    );
+
+    // Access taken away is gone from the list at once.
+    w.secrets
+        .revoke(&w.admin, ns(&w), "other-key", "dora", &ctx())
+        .await
+        .expect("revoke");
+    assert_eq!(
+        names(w.secrets.list(&dora, ns(&w), &ctx()).await.expect("dora")),
+        vec!["stripe-key"]
+    );
 }
 
 #[tokio::test]
