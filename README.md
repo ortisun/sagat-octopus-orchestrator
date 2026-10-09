@@ -1,6 +1,6 @@
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
-> **Status:** specification with implementation in progress: features 001 (platform foundation) and 002 (durable execution) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); features 003–012 are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
+> **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution) and 009 (security and multi-tenant governance, apart from the sandbox, inbound webhooks and a Helm chart, which belong to other features) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
 
 ## Mission
 
@@ -19,7 +19,7 @@ Inspired by **Temporal** (history and recovery), **Restate** (journal and durabl
 - **Security:** tenant/namespace isolation, RBAC, auditing and explicit egress/secrets policy.
 - **Observability:** OTel + auditable journal + execution timeline and DAG.
 
-## Build, test and run (features 001 and 002)
+## Build, test and run (features 001, 002 and 009)
 
 ```sh
 cargo test --workspace --locked          # needs Docker: integration tests start PostgreSQL 16
@@ -27,6 +27,8 @@ scripts/smoke-compose.sh                 # builds the images, starts PostgreSQL 
 # baseline benchmark of feature 002 (10k suspended runs), on purpose:
 SAGAT_PERF_REPORT=tests/performance/reports/002-durable-execution.md \
   cargo test -p sagat-tests --test perf_002 --release -- --ignored --nocapture
+# the security battery of feature 009 (cross-tenant, secret leak, quota racing, SSRF on the egress guard):
+cargo test -p sagat-tests --test contract_rest_009 --test e2e_009 --test integration_009 --test fault_009
 ```
 
 The full procedure, the environment variables and what is not built yet are in
@@ -34,7 +36,11 @@ The full procedure, the environment variables and what is not built yet are in
 operating the control plane is in [`docs/runbooks/control-plane.md`](docs/runbooks/control-plane.md) and the
 execution engine (worker gRPC API, scheduler, NATS outbox) in
 [`docs/runbooks/execution-engine.md`](docs/runbooks/execution-engine.md); the validation flow of feature 002 is
-in [`specs/002-durable-execution/quickstart.md`](specs/002-durable-execution/quickstart.md).
+in [`specs/002-durable-execution/quickstart.md`](specs/002-durable-execution/quickstart.md). Operating the
+security controls (quotas and their ceilings, worker bindings, the secret store, the egress policy, TLS
+on the worker API) is in [`docs/runbooks/security-governance.md`](docs/runbooks/security-governance.md);
+the validation flow and the security review of feature 009 are in
+[`specs/009-security-multitenancy/quickstart.md`](specs/009-security-multitenancy/quickstart.md).
 Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
 
 ## Folders
@@ -71,6 +77,7 @@ scripts/                        Architecture-rule checker and the compose smoke 
 - There is no arbitrary automatic migration of running workflows to a new version.
 - The graphical editor is a faithful representation of the **declarative** DSL/IR. Arbitrary imperative code is not always convertible to a static graph; Studio merges the planned graph and the actual execution.
 - Throughput and latency targets are **benchmark criteria to verify**, not commercial promises.
+- Tenant isolation, quotas, worker bindings, the secret store and the egress policy are enforced and tested (feature 009). **Not yet built:** running untrusted code in a sandbox, inbound webhook signature and replay controls, quotas for builds/storage/logs, a KMS behind the secret key ring, and a Helm chart with network policies. The list, with the reason for each, is in [`specs/009-security-multitenancy/research.md`](specs/009-security-multitenancy/research.md).
 
 ## Reading order
 

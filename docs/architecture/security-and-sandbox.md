@@ -33,3 +33,23 @@ HMAC SHA-256 per endpoint secret (when available), `timestamp` with window, nonc
 ## Release-blocking criteria
 
 Cross-tenant read/write, sandbox escape, unauthorized script execution, secret exposure, quota bypass, incorrect webhook signature, replay of financial requests → critical severity.
+
+## What exists today (feature 009)
+
+The sections above are the target. What is built, and tested, is the part of it that does not need
+untrusted code to run yet:
+
+| Target | State |
+|---|---|
+| Tenant is a mandatory dimension in credentials, SQL, messages, metrics and audit | Built (features 001, 002). Every table carries `tenant_id` and every foreign key is composite; another tenant's resource is a `404` indistinguishable from a missing one, and the probe is audited. The cross-tenant battery attacks every implemented REST operation, driven by the OpenAPI document |
+| OIDC/JWT, machine auth, optional mTLS | OIDC built (001). The worker API serves TLS and mutual TLS itself (009, D49); tying a client certificate to a token subject is open (G44) |
+| Minimum RBAC, extra permissions to reveal payload | Five built-in roles plus resource-level control: worker bindings, a secret's access list (009). Custom roles and `reveal payload` are not built (G39) |
+| Secrets: references, rotated in a store, resolved only at execution, authorized by capability, never in the journal | Built with an application-level store sealed by a rotatable key ring (009, D45-D47); the lease is the capability; no value reaches the journal, a log, an audit record or an API response. A KMS/Vault envelope is open (G43) |
+| Immutable audit of publish, trigger, webhook config, secrets access, rerun, cancel, manual override | Publish, start, cancel, pause, resume, signal (001, 002) and secret, quota, binding and egress changes and refusals (009) are audited; webhooks and rerun do not exist yet |
+| Quotas: CPU, memory, time, processes, concurrent builds, network and egress allowlist | Concurrent runs, workflows, worker sessions and secrets are exact hard limits (009, D42), and a tenant's administrators can set them only up to a ceiling that the platform grants and only an operator raises (D52); the worker API also bounds how long a peer may stay silent, how long a connection lives and how many one address may hold (D55); the egress allowlist is stored and enforced by a guarded client that nothing consumes yet (G35, G36); CPU, memory, processes and builds belong to the sandbox (005) |
+| Sandbox isolation, build isolation, pools by trust level, short-lived capability tokens per activity | Not built (feature 005, G35). The platform side that the runner will rely on exists: the runner would hold no scheduler credentials, receive only the secrets its lease allows, and reach only what the egress policy names |
+| Webhook HMAC, timestamp window, nonce, TLS, rate limit | Not built (feature 004, G36) |
+
+The release-blocking criteria below are tested for what exists: cross-tenant read/write, secret exposure
+and quota bypass are in the battery and fail the build; sandbox escape, unauthorized script execution,
+incorrect webhook signature and replay of financial requests join it with the features that create them.
