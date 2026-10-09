@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use sagat_application::bindings::{BindingService, BindingStore};
 use sagat_application::clock::Clock;
 use sagat_application::identity::IdentityStore;
 use sagat_application::quotas::{QuotaService, QuotaStore};
@@ -14,24 +15,31 @@ use crate::{AppState, TokenVerifier};
 
 /// Everything the governance handlers need, behind one type so handlers have one generic parameter.
 pub trait Governance: Core {
-    type Store: QuotaStore + 'static;
+    type Store: QuotaStore + BindingStore + 'static;
     type Clock: Clock + 'static;
 
     fn quotas(&self) -> &QuotaService<Self::Store, Self::Clock>;
+    fn bindings(&self) -> &BindingService<Self::Store, Self::Clock>;
 }
 
 /// The identity state plus the governance services, which share one store `G`.
 pub struct GovState<S, C, G> {
     pub core: AppState<S, C>,
     quotas: Arc<QuotaService<G, C>>,
+    bindings: Arc<BindingService<G, C>>,
 }
 
 impl<S, C, G> GovState<S, C, G> {
     #[must_use]
-    pub fn new(core: AppState<S, C>, quotas: QuotaService<G, C>) -> Self {
+    pub fn new(
+        core: AppState<S, C>,
+        quotas: QuotaService<G, C>,
+        bindings: BindingService<G, C>,
+    ) -> Self {
         Self {
             core,
             quotas: Arc::new(quotas),
+            bindings: Arc::new(bindings),
         }
     }
 }
@@ -41,6 +49,7 @@ impl<S, C, G> Clone for GovState<S, C, G> {
         Self {
             core: self.core.clone(),
             quotas: Arc::clone(&self.quotas),
+            bindings: Arc::clone(&self.bindings),
         }
     }
 }
@@ -80,12 +89,16 @@ impl<S, C, G> Governance for GovState<S, C, G>
 where
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: QuotaStore + 'static,
+    G: QuotaStore + BindingStore + 'static,
 {
     type Store = G;
     type Clock = C;
 
     fn quotas(&self) -> &QuotaService<G, C> {
         &self.quotas
+    }
+
+    fn bindings(&self) -> &BindingService<G, C> {
+        &self.bindings
     }
 }

@@ -8,6 +8,7 @@
 mod macros;
 
 pub mod audit;
+pub mod binding;
 pub mod definition;
 pub mod egress;
 pub mod execution;

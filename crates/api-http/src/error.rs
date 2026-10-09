@@ -241,6 +241,15 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::NotFound => Self::not_found(),
+            AppError::NotBound => {
+                let mut e = Self::new(
+                    StatusCode::FORBIDDEN,
+                    ErrorCode::Forbidden,
+                    "this identity is not bound to that namespace and activity",
+                );
+                e.parts.details = Some(json!({ "reason": "NOT_BOUND" }));
+                e
+            }
             AppError::Conflict(kind) => {
                 let message = match kind {
                     ConflictKind::TenantSlug => "a tenant with this slug already exists",

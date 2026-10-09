@@ -6,6 +6,7 @@
 
 use sqlx::migrate::Migrator;
 
+mod bindings;
 mod definitions;
 mod event_codec;
 mod execution;

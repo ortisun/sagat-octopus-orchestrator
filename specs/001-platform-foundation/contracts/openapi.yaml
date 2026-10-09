@@ -5,7 +5,7 @@ info:
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
-    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas) by the governance routes
+    execution engine (feature 002), and those marked `x-implemented: '009'` (quotas, worker bindings) by the governance routes
     of feature 009. Every other operation is a design proposal that is not implemented yet. The worker protocol is gRPC (`worker.proto`), not REST.
     The database is the source of truth; commands may be redelivered.
     Tenant resolved by authentication, never from a free-form tenant_id supplied by the client.
@@ -31,7 +31,7 @@ tags:
   - name: Scripts
   - name: Operations
   - name: Governance
-    description: Quotas, and (as they are built) secrets, worker bindings and egress policy of a tenant or namespace (feature 009).
+    description: Quotas and worker bindings, and (as they are built) secrets and egress policy of a tenant or namespace (feature 009).
 paths:
   /health:
     get:
@@ -582,6 +582,66 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/worker-bindings:
+    get:
+      operationId: listWorkerBindings
+      summary: The worker identities bound to a namespace and the activities they may serve
+      tags: [Governance]
+      x-implemented: '009'
+      description: Needs `worker:bind`. A worker identity serves only the activities its binding names; without one it is refused at registration.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The bindings', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBindingList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/worker-bindings/{subject}:
+    put:
+      operationId: bindWorker
+      summary: Bind a worker identity to activities of a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: |
+        Replaces what the identity was bound to in this namespace. Each entry is an activity name (`payments.charge`), a prefix ending in `.*` (`payments.*`, which does not cover `payments` itself) or `*`. Sessions the new binding no longer covers are closed and the attempts they hold are released. Needs `worker:bind`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetWorkerBindingRequest'}
+      responses:
+        '200': {description: 'The binding now in force and what the change released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBinding'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: unbindWorker
+      summary: Remove the binding of a worker identity in a namespace
+      tags: [Governance]
+      x-implemented: '009'
+      description: The identity can no longer register in this namespace; its sessions are closed and the attempts they hold are released. 404 when it has no binding there. Needs `worker:bind`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      responses:
+        '200': {description: 'What the removal released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RevokedWorkers'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /events:
     post:
       operationId: publishEvent
@@ -674,6 +734,12 @@ components:
       in: query
       description: Page size; values outside 1..200 are clamped.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    WorkerSubject:
+      name: subject
+      in: path
+      required: true
+      description: The identity (the `sub` of its token), URL-encoded.
+      schema: {type: string, minLength: 1, maxLength: 255}
     NamespaceId:
       name: namespaceId
       in: path
@@ -949,6 +1015,30 @@ components:
         accepted: {type: boolean}
         runStatus: {type: string}
         runVersion: {type: integer, format: int64}
+    RevokedWorkers:
+      type: object
+      required: [sessionsClosed, leasesReleased]
+      properties:
+        sessionsClosed: {type: integer, minimum: 0}
+        leasesReleased: {type: integer, minimum: 0}
+    WorkerBinding:
+      type: object
+      required: [subject, activities]
+      properties:
+        subject: {type: string}
+        activities: {type: array, items: {type: string}, description: 'Activity names, `<prefix>.*` or `*`.'}
+        revoked: {$ref: '#/components/schemas/RevokedWorkers'}
+    WorkerBindingList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/WorkerBinding'}}
+    SetWorkerBindingRequest:
+      type: object
+      additionalProperties: false
+      required: [activities]
+      properties:
+        activities: {type: array, minItems: 1, maxItems: 64, items: {type: string, minLength: 1, maxLength: 130}}
     Quota:
       type: object
       required: [resource, limit, source]

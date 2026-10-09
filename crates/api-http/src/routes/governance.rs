@@ -6,7 +6,10 @@ use axum::extract::{Path, State};
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::quota::QuotaResource;
 
-use crate::dto_gov::{QuotaBody, QuotaListBody, SetQuotaBody};
+use crate::dto_gov::{
+    BindingBody, BindingListBody, QuotaBody, QuotaListBody, RevokedBody, SetBindingBody,
+    SetQuotaBody,
+};
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
 use crate::governance::Governance;
@@ -124,4 +127,60 @@ pub async fn clear_namespace_quota<B: Governance>(
         )
         .await?;
     Ok(Json(QuotaBody::from(&view)))
+}
+
+// ------------------------------------------------------------------------------ worker bindings
+
+pub async fn list_bindings<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+) -> Result<Json<BindingListBody>, ApiError> {
+    let views = state
+        .bindings()
+        .list(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(BindingListBody {
+        items: views.iter().map(BindingBody::listed).collect(),
+    }))
+}
+
+pub async fn bind_worker<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, subject)): Path<(String, String)>,
+    ApiJson(body): ApiJson<SetBindingBody>,
+) -> Result<Json<BindingBody>, ApiError> {
+    let view = state
+        .bindings()
+        .bind(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &subject,
+            &body.activities,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(BindingBody::changed(&view)))
+}
+
+pub async fn unbind_worker<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, subject)): Path<(String, String)>,
+) -> Result<Json<RevokedBody>, ApiError> {
+    let revoked = state
+        .bindings()
+        .unbind(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &subject,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(RevokedBody::from(revoked)))
 }

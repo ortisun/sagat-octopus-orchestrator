@@ -50,6 +50,10 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
     let ns_one_t = "/namespaces/{namespaceId}/quotas/{resource}";
     let ns_path = format!("/namespaces/{ns}/quotas");
     let ns_one = |r: &str| format!("/namespaces/{ns}/quotas/{r}");
+    let bind_t = "/namespaces/{namespaceId}/worker-bindings";
+    let bind_one_t = "/namespaces/{namespaceId}/worker-bindings/{subject}";
+    let bind_path = format!("/namespaces/{ns}/worker-bindings");
+    let bind_one = |subject: &str| format!("/namespaces/{ns}/worker-bindings/{subject}");
 
     let scenarios = vec![
         // ---- the tenant level
@@ -238,6 +242,100 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
             dave.clone(),
             None,
             403,
+        ),
+        // ---- worker bindings
+        scenario("GET", bind_t, &bind_path, alice.clone(), None, 200),
+        scenario("GET", bind_t, &bind_path, dave.clone(), None, 403),
+        scenario("GET", bind_t, &bind_path, As::Anonymous, None, 401),
+        scenario("GET", bind_t, &bind_path, bob.clone(), None, 404),
+        scenario(
+            "GET",
+            bind_t,
+            &format!("/namespaces/{missing}/worker-bindings"),
+            alice.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": ["payments.*", "audit.log"]})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            dave.clone(),
+            Some(json!({"activities": ["*"]})),
+            403,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            bob.clone(),
+            Some(json!({"activities": ["*"]})),
+            404,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": []})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": ["has space"]})),
+            422,
+        ),
+        scenario(
+            "PUT",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            Some(json!({"activities": ["*"], "extra": 1})),
+            422,
+        ),
+        scenario("GET", bind_t, &bind_path, vera.clone(), None, 403),
+        scenario(
+            "DELETE",
+            bind_one_t,
+            &bind_one("worker-7"),
+            dave.clone(),
+            None,
+            403,
+        ),
+        scenario(
+            "DELETE",
+            bind_one_t,
+            &bind_one("worker-7"),
+            bob.clone(),
+            None,
+            404,
+        ),
+        scenario(
+            "DELETE",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            None,
+            200,
+        ),
+        scenario(
+            "DELETE",
+            bind_one_t,
+            &bind_one("worker-7"),
+            alice.clone(),
+            None,
+            404,
         ),
     ];
 

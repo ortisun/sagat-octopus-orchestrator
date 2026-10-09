@@ -63,6 +63,10 @@ pub enum AppError {
     /// A well-formed request that is not acceptable as asked (a limit, a feature not built yet).
     #[error("operation not allowed: {0}")]
     NotAllowed(&'static str),
+    /// The worker identity is not bound to the namespace or to an activity it asked to serve
+    /// (FR-009-002): it holds `worker:execute`, which is not the same as being allowed this work.
+    #[error("the identity is not bound to that namespace and activity")]
+    NotBound,
     /// The caller holds a lease that is no longer current (the attempt was reclaimed, cancelled or
     /// already finished): its result is refused. Idempotent replays are answered before this.
     #[error("the attempt is stale")]

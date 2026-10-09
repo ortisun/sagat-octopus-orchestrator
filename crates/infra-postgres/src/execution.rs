@@ -32,7 +32,7 @@ use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::workflow::{Digest, NodeId, NodeKind, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -92,8 +92,13 @@ impl PgRunStore {
     }
 
     /// The definition of `version`, from the cache or parsed from the stored document.
+    ///
+    /// The document is read on `conn`, never on a connection of its own: a caller that holds a
+    /// transaction and waits for a second connection from the same pool starves the pool when enough
+    /// callers do it at once (a burst of first requests for a version nobody has cached yet).
     async fn definition(
         &self,
+        conn: &mut PgConnection,
         tenant: TenantId,
         version: WorkflowVersionId,
     ) -> Result<Arc<WorkflowDefinition>, StoreError> {
@@ -105,7 +110,7 @@ impl PgRunStore {
         )
         .bind(tenant.as_uuid())
         .bind(version.as_uuid())
-        .fetch_optional(&self.pool)
+        .fetch_optional(conn)
         .await
         .map_err(store_error)?
         .ok_or_else(|| corrupt("workflow version reference"))?;
@@ -330,7 +335,9 @@ impl RunStore for PgRunStore {
             )),
         };
         let state = RunState::restore(run, record.status, stop, paused, steps, record.version);
-        let def = self.definition(tenant, record.info.version_id).await?;
+        let def = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
         Ok(Some(PgRunTx {
             tx,
             info: record.info,
@@ -500,7 +507,15 @@ impl RunStore for PgRunStore {
                 })
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
-        let definition = self.definition(tenant, record.info.version_id).await?;
+        let definition = match self.cache.get(record.info.version_id) {
+            Some(cached) => cached,
+            None => {
+                // No transaction is open here, so a connection of its own is fine.
+                let mut conn = self.pool.acquire().await.map_err(store_error)?;
+                self.definition(&mut conn, tenant, record.info.version_id)
+                    .await?
+            }
+        };
         Ok(Some(GraphSnapshot {
             run: record,
             definition,
@@ -827,6 +842,19 @@ impl RunTx for PgRunTx {
             })
         })
         .transpose()
+    }
+
+    async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT pattern FROM worker_bindings \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(subject)
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(store_error)
     }
 
     async fn lease_matches(

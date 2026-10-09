@@ -247,7 +247,7 @@ pub fn router_with_governance<S, C, P, X, E, G>(
 where
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore + 'static,
+    G: sagat_application::quotas::QuotaStore + sagat_application::bindings::BindingStore + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
     compose(state, limits, move |slots, limits| {
@@ -264,7 +264,7 @@ where
     T: Clone + Send + Sync + 'static,
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    G: sagat_application::quotas::QuotaStore + 'static,
+    G: sagat_application::quotas::QuotaStore + sagat_application::bindings::BindingStore + 'static,
 {
     use routes::governance as gov;
     type B<S, C, G> = GovState<S, C, G>;
@@ -284,6 +284,15 @@ where
             "/namespaces/{namespace_id}/quotas/{resource}",
             axum::routing::put(gov::set_namespace_quota::<B<S, C, G>>)
                 .delete(gov::clear_namespace_quota::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/worker-bindings",
+            get(gov::list_bindings::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/worker-bindings/{subject}",
+            axum::routing::put(gov::bind_worker::<B<S, C, G>>)
+                .delete(gov::unbind_worker::<B<S, C, G>>),
         )
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .route_layer(axum::middleware::from_fn_with_state(

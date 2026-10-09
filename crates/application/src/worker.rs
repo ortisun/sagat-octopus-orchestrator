@@ -30,6 +30,7 @@ use crate::execution::{
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
+use sagat_domain::binding::ActivityPattern;
 use sagat_domain::quota::QuotaResource;
 
 /// The only protocol version this server speaks.
@@ -117,6 +118,22 @@ pub struct NewSession {
 
 /// Storage port for workers. Implemented by `sagat-infra-postgres`.
 pub trait WorkerStore: QuotaLookup + Send + Sync {
+    /// The activity patterns `subject` is bound to in `namespace` (canonical text, see
+    /// `sagat_domain::binding`). Empty when the identity has no binding there.
+    fn bound_patterns(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &str,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
+    /// Records that a worker asked for work it is not bound to (best effort, off the response
+    /// path, collapsed when repeated).
+    fn record_unbound(
+        &self,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Stores the session, replacing the one the same identity opened under the same worker name, and
     /// returns the id of the stored session (the replaced one keeps its id, so the steps it has
     /// leased stay counted against it). [`StoreError::QuotaExceeded`] when the identity already
@@ -337,6 +354,35 @@ where
             .find_namespace_by_slug(principal.tenant_id(), &slug)
             .await?
             .ok_or(AppError::NotFound)?;
+        // Fail closed: an identity serves only what a binding names (FR-009-002, G31).
+        let activities = dedup(&capabilities.activities);
+        let bound = self
+            .store
+            .bound_patterns(
+                principal.tenant_id(),
+                namespace.id(),
+                principal.subject().as_str(),
+            )
+            .await?
+            .iter()
+            .map(|text| ActivityPattern::parse(text))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::Internal)?;
+        if let Some(uncovered) = sagat_domain::binding::first_uncovered(&bound, &activities) {
+            let record = AuditRecord::by(
+                principal,
+                AuditAction::WorkerDenied,
+                ResourceType::WorkerBinding,
+                namespace.id().to_string(),
+                None,
+                self.clock.now(),
+            )
+            .with_reason(format!("not bound to activity {uncovered}"));
+            if let Err(error) = self.store.record_unbound(&record).await {
+                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
+            }
+            return Err(AppError::NotBound);
+        }
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
         let proposed = Uuid::now_v7();
         let ttl = self.settings.session_ttl;
@@ -353,7 +399,7 @@ where
                 subject: principal.subject().as_str().to_owned(),
                 worker_name: worker_name.to_owned(),
                 token_hash: token.hash(),
-                activities: dedup(&capabilities.activities),
+                activities,
                 languages: dedup(&capabilities.languages),
                 pools: dedup(&capabilities.pools),
                 max_inflight: capabilities.max_inflight,
@@ -633,6 +679,7 @@ where
         principal.authorize(Permission::WorkerExecute)?;
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.renewal = Some(LeaseRenewal {
             node: task.node.clone(),
@@ -700,6 +747,7 @@ where
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
         // a completion that would exceed it fails the step (a retry would only exceed it again).
@@ -764,6 +812,7 @@ where
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
         let effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         let node = task.node.clone();
         let fence = task.fence;
@@ -840,6 +889,35 @@ where
             .replay(idempotency)
             .await?
             .map(|stored| parse_ack(&stored, true, task.run_id)))
+    }
+
+    /// The caller must still be bound to the activity of the step it reports on. Evaluated at use,
+    /// not only at registration: a binding that is removed stops a worker that already holds a
+    /// lease from renewing it or reporting on it, with no session to wait for to expire.
+    async fn ensure_bound<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Result<(), AppError> {
+        let activity = {
+            let (def, _) = tx.parts();
+            match def.node(task.node).map(sagat_domain::workflow::Node::kind) {
+                Some(NodeKind::Activity { activity, .. }) => activity.to_string(),
+                _ => return Ok(()),
+            }
+        };
+        let bound = tx
+            .bound_patterns(principal.subject().as_str())
+            .await?
+            .iter()
+            .map(|text| ActivityPattern::parse(text))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| AppError::Internal)?;
+        if sagat_domain::binding::first_uncovered(&bound, &[activity]).is_some() {
+            return Err(AppError::NotBound);
+        }
+        Ok(())
     }
 
     /// The presented token must be the one hashed into the step's current lease.

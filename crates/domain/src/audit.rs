@@ -54,6 +54,8 @@ pub enum AuditAction {
     /// A worker identity was bound to a namespace and activities, or unbound.
     WorkerBound,
     WorkerUnbound,
+    /// A worker asked to serve an activity its identity is not bound to.
+    WorkerDenied,
 }
 
 impl AuditAction {
@@ -84,6 +86,7 @@ impl AuditAction {
             Self::EgressDenied => "egress.denied",
             Self::WorkerBound => "worker.bound",
             Self::WorkerUnbound => "worker.unbound",
+            Self::WorkerDenied => "worker.denied",
         }
     }
 }

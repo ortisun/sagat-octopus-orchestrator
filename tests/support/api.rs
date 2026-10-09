@@ -12,6 +12,7 @@ use sagat_api_http::{
     AppState, AuthConfig, ExecState, GovState, HttpJwksFetcher, HttpLimits, RateLimitConfig,
     ServerConfig, TokenVerifier, auth::install_crypto_provider, router_with_governance,
 };
+use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::DefinitionService;
 use sagat_application::entropy::SystemEntropy;
@@ -242,6 +243,7 @@ pub async fn start_with(options: Options) -> TestApi {
     let governance = GovState::new(
         state.clone(),
         QuotaService::new(executions.clone(), SystemClock),
+        BindingService::new(executions.clone(), SystemClock),
     );
     let exec = ExecState::new(
         state,

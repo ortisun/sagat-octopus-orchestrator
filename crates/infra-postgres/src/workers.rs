@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::worker::{NewSession, SessionRecord, WorkerStore};
+use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::RunId;
 use sagat_domain::identity::{NamespaceId, TenantId};
 use uuid::Uuid;
@@ -32,6 +33,28 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl WorkerStore for PgRunStore {
+    async fn bound_patterns(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT pattern FROM worker_bindings \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(subject)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)
+    }
+
+    async fn record_unbound(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        sagat_application::runs::RunStore::record_denial(self, audit).await
+    }
+
     async fn create_session(&self, session: &NewSession) -> Result<Uuid, StoreError> {
         // One session per (identity, worker name): registering again replaces the token (and keeps
         // the id). A new name is refused once the identity holds the maximum of live sessions; the

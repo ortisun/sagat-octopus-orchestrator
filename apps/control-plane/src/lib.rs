@@ -10,6 +10,7 @@ use sagat_api_http::{
     AppState, ExecState, GovState, HttpJwksFetcher, HttpLimits, ServerConfig, TokenVerifier,
     protect, router_with_governance,
 };
+use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::{DefinitionService, IrCodec};
 use sagat_application::error::{ConflictKind, StoreError};
@@ -263,6 +264,7 @@ pub async fn serve_with_admin(
     let governance = GovState::new(
         state.clone(),
         QuotaService::new(executions.clone(), SystemClock),
+        BindingService::new(executions.clone(), SystemClock),
     );
     let exec = ExecState::new(
         state,

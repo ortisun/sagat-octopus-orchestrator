@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::DefinitionService;
 use sagat_application::entropy::SystemEntropy;
@@ -37,6 +38,7 @@ pub type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemE
 pub type Defs = DefinitionService<PgRunStore, SystemClock, JsonIrCodec>;
 pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type Quotas = QuotaService<PgRunStore, SystemClock>;
+pub type Bindings = BindingService<PgRunStore, SystemClock>;
 
 pub struct World {
     pub db: TestDb,
@@ -44,6 +46,7 @@ pub struct World {
     pub defs: Defs,
     pub runs: Runs,
     pub quotas: Quotas,
+    pub bindings: Bindings,
     pub workers: Workers,
     pub scheduler: Sched,
     /// Administrator of the first tenant (can do everything a human can).
@@ -82,10 +85,11 @@ pub async fn world_with(settings: WorkerSettings) -> World {
     let cache = DefinitionCache::new(codec, 64);
     let store = PgRunStore::new(db.pool.clone(), cache.clone());
     let engine = Engine::new(JsonEvaluator);
-    World {
+    let world = World {
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
         quotas: QuotaService::new(store.clone(), SystemClock),
+        bindings: BindingService::new(store.clone(), SystemClock),
         workers: WorkerService::new(
             store.clone(),
             SystemClock,
@@ -107,7 +111,10 @@ pub async fn world_with(settings: WorkerSettings) -> World {
         other_namespace,
         store,
         db,
-    }
+    };
+    // The worker identity of the first tenant is bound to its namespace, as an operator would.
+    world.bind_everything(&world.worker).await;
+    world
 }
 
 async fn namespace_in(
@@ -426,9 +433,16 @@ impl World {
     /// Another replica of the control plane: its own connection pool and its own services over the
     /// same database, as a second process would have.
     pub async fn replica(&self) -> Replica {
-        let pool = connect(&PoolConfig::new(self.db.url.clone()))
-            .await
-            .expect("a second pool");
+        self.replica_with_pool(10).await
+    }
+
+    /// A replica whose pool holds at most `max_connections`, to show that no call needs a second
+    /// connection while it holds one.
+    pub async fn replica_with_pool(&self, max_connections: u32) -> Replica {
+        let mut config = PoolConfig::new(self.db.url.clone());
+        config.max_connections = max_connections;
+        config.acquire_timeout = std::time::Duration::from_secs(2);
+        let pool = connect(&config).await.expect("a second pool");
         let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
         let store = PgRunStore::new(pool, cache.clone());
         Replica {
@@ -449,6 +463,36 @@ impl World {
         }
     }
 
+    /// Another namespace of the first tenant (and its workspace).
+    pub async fn add_namespace(&self, name: &str) -> Namespace {
+        namespace_in(
+            &sagat_infra_postgres::PgIdentityStore::new(self.db.pool.clone()),
+            &self.admin,
+            name,
+        )
+        .await
+    }
+
+    /// Binds a worker identity to every activity of its tenant's namespace `payments` (a worker
+    /// without a binding is refused at registration). Idempotent, and never narrows.
+    pub async fn bind_everything(&self, principal: &Principal) {
+        let (admin, namespace) = if principal.tenant_id() == self.admin.tenant_id() {
+            (&self.admin, &self.namespace)
+        } else {
+            (&self.other_admin, &self.other_namespace)
+        };
+        self.bindings
+            .bind(
+                admin,
+                namespace.id(),
+                principal.subject().as_str(),
+                &["*".to_owned()],
+                &ctx(),
+            )
+            .await
+            .expect("bind the worker");
+    }
+
     /// Registers a worker for `activities` and returns its session.
     pub async fn session(&self, activities: &[&str]) -> Session {
         self.session_as(&self.worker, activities, 100).await
@@ -460,6 +504,7 @@ impl World {
         activities: &[&str],
         max_inflight: u32,
     ) -> Session {
+        self.bind_everything(principal).await;
         let caps = Capabilities {
             activities: activities.iter().map(|a| (*a).to_owned()).collect(),
             languages: vec!["rust".into()],

@@ -211,9 +211,26 @@ impl Platform {
         assert_eq!(done.rows_affected(), 1, "no such step");
     }
 
+    /// Binds `sub` to every activity of acme's namespace, as an administrator would before starting
+    /// a fleet (a worker without a binding is refused at registration).
+    pub async fn bind_everything(&self, sub: &str) {
+        sqlx::query(
+            "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by) \
+             SELECT n.tenant_id, n.id, $2, '*', 'test' FROM namespaces n \
+             WHERE n.tenant_id = $1 AND n.slug = $3 ON CONFLICT DO NOTHING",
+        )
+        .bind(self.tenant.as_uuid())
+        .bind(sub)
+        .bind(NAMESPACE)
+        .execute(&self.api.db.pool)
+        .await
+        .expect("bind the worker");
+    }
+
     /// A worker identity of acme that has connected but not registered yet.
     pub async fn worker(&self, sub: &str) -> Worker<'_> {
         self.grant(self.tenant, sub, Role::Worker).await;
+        self.bind_everything(sub).await;
         self.connect(sub, TENANT).await
     }
 
@@ -226,6 +243,7 @@ impl Platform {
     /// A worker identity of acme speaking to the worker service at `url` (an engine process).
     pub async fn worker_at(&self, url: &str, sub: &str) -> Worker<'_> {
         self.grant(self.tenant, sub, Role::Worker).await;
+        self.bind_everything(sub).await;
         self.connect_at(url.to_owned(), sub, TENANT).await
     }
 

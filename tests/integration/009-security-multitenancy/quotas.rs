@@ -297,6 +297,7 @@ async fn a_tenant_holds_a_bounded_number_of_worker_sessions_and_a_reconnect_is_n
         protocol_version: "1".into(),
     };
     let other_identity = Principal::new(w.admin.tenant_id(), subject_of("worker-2"), Role::Worker);
+    w.bind_everything(&other_identity).await;
     w.workers
         .register(&w.worker, "payments", "first", &caps)
         .await

@@ -300,6 +300,14 @@ pub trait RunTx: Send {
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
 
+    /// The activity patterns `subject` is bound to in this run's namespace. Read on the
+    /// transaction's own connection: a caller that holds one connection and waits for a second
+    /// from the same pool can starve it under load.
+    fn bound_patterns(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(
         &mut self,

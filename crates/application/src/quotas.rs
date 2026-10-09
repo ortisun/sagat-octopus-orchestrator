@@ -12,6 +12,7 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::quota::{self, QuotaError, QuotaResource, QuotaScope, QuotaSource};
 
+use crate::authz::{NamespaceDirectory, require_namespace};
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
 use crate::identity::RequestContext;
@@ -73,28 +74,7 @@ pub struct StoredLimit {
 }
 
 /// Storage port of the quota administration. Implemented by `sagat-infra-postgres`.
-pub trait QuotaStore: QuotaLookup {
-    /// Whether the namespace exists in `tenant`.
-    fn namespace_exists(
-        &self,
-        tenant: TenantId,
-        namespace: NamespaceId,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
-
-    /// Whether the namespace exists in a tenant *other than* `tenant` (only to decide whether a
-    /// miss deserves a cross-tenant audit record; never shown to clients).
-    fn namespace_exists_outside(
-        &self,
-        tenant: TenantId,
-        namespace: NamespaceId,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
-
-    /// Records an access to a resource of another tenant (best effort, off the response path).
-    fn record_denial(
-        &self,
-        audit: &AuditRecord,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
-
+pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
     /// What was set at one level: `namespace == None` is the tenant-wide level.
     fn settings(
         &self,
@@ -322,35 +302,10 @@ where
         namespace: Option<NamespaceId>,
         ctx: &RequestContext,
     ) -> Result<(), AppError> {
-        let Some(id) = namespace else {
-            return Ok(());
-        };
-        if self
-            .store
-            .namespace_exists(principal.tenant_id(), id)
-            .await?
-        {
-            return Ok(());
+        match namespace {
+            Some(id) => require_namespace(&self.store, &self.clock, principal, id, ctx).await,
+            None => Ok(()),
         }
-        if let Ok(true) = self
-            .store
-            .namespace_exists_outside(principal.tenant_id(), id)
-            .await
-        {
-            let record = AuditRecord::by(
-                principal,
-                AuditAction::CrossTenantAccessDenied,
-                ResourceType::Namespace,
-                id.to_string(),
-                ctx.trace_id.clone(),
-                self.clock.now(),
-            )
-            .with_reason("resource not accessible from this tenant");
-            if let Err(error) = self.store.record_denial(&record).await {
-                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
-            }
-        }
-        Err(AppError::NotFound)
     }
 }
 

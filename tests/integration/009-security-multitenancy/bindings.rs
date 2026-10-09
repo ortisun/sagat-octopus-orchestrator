@@ -1,0 +1,572 @@
+//! Worker bindings (FR-009-002, gap G31): a worker identity serves only what its binding names,
+//! in the namespace it names; removing or narrowing a binding takes effect at once.
+
+use sagat_application::error::AppError;
+use sagat_application::worker::Capabilities;
+use sagat_domain::execution::StepStatus;
+use sagat_domain::identity::{NamespaceId, Principal, Role};
+use serde_json::json;
+
+use crate::support::engine::{World, activity, ctx, document, subject_of, task_ref, world};
+
+fn worker(w: &World, name: &str) -> Principal {
+    Principal::new(w.admin.tenant_id(), subject_of(name), Role::Worker)
+}
+
+fn caps(activities: &[&str]) -> Capabilities {
+    Capabilities {
+        activities: activities.iter().map(|a| (*a).to_owned()).collect(),
+        languages: vec![],
+        pools: vec![],
+        max_inflight: 10,
+        protocol_version: "1".into(),
+    }
+}
+
+async fn bind(w: &World, who: &str, namespace: NamespaceId, patterns: &[&str]) {
+    let patterns: Vec<String> = patterns.iter().map(|p| (*p).to_owned()).collect();
+    w.bindings
+        .bind(&w.admin, namespace, who, &patterns, &ctx())
+        .await
+        .expect("bind");
+}
+
+async fn register(
+    w: &World,
+    who: &Principal,
+    namespace: &str,
+    name: &str,
+    activities: &[&str],
+) -> Result<sagat_application::worker::Registered, AppError> {
+    w.workers
+        .register(who, namespace, name, &caps(activities))
+        .await
+}
+
+// ------------------------------------------------------------- fail closed
+
+#[tokio::test]
+async fn a_worker_without_a_binding_is_refused_and_the_attempt_is_audited() {
+    let w = world().await;
+    let stranger = worker(&w, "stranger");
+    let refused = register(&w, &stranger, "payments", "first", &["act.a"]).await;
+    assert_eq!(refused.map(|_| ()), Err(AppError::NotBound));
+
+    let (action, reason, kind): (String, String, String) = {
+        let tenant = w.admin.tenant_id();
+        crate::support::eventually("the refusal is audited", || async {
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT action, reason, resource_type FROM audit_records \
+                 WHERE tenant_id = $1 AND action = 'worker.denied'",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_optional(&w.db.pool)
+            .await
+            .expect("audit")
+        })
+        .await
+    };
+    assert_eq!(
+        (action.as_str(), reason.as_str(), kind.as_str()),
+        (
+            "worker.denied",
+            "not bound to activity act.a",
+            "worker_binding"
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_binding_covers_exactly_the_activities_it_names() {
+    let w = world().await;
+    let who = worker(&w, "scoped");
+    bind(&w, "scoped", w.namespace.id(), &["payments.*", "audit.log"]).await;
+
+    register(
+        &w,
+        &who,
+        "payments",
+        "ok",
+        &["payments.charge", "audit.log"],
+    )
+    .await
+    .expect("covered");
+    for (what, activities) in [
+        (
+            "another activity of a bound prefix's sibling",
+            vec!["audit.purge"],
+        ),
+        ("the bare prefix", vec!["payments"]),
+        ("a look-alike prefix", vec!["paymentsx.charge"]),
+        (
+            "one covered and one not",
+            vec!["payments.charge", "other.thing"],
+        ),
+    ] {
+        let refused = register(&w, &who, "payments", "bad", &activities).await;
+        assert_eq!(refused.map(|_| ()), Err(AppError::NotBound), "{what}");
+    }
+}
+
+#[tokio::test]
+async fn a_binding_belongs_to_one_namespace() {
+    let w = world().await;
+    let billing = w.add_namespace("billing").await;
+    let who = worker(&w, "narrow");
+    bind(&w, "narrow", w.namespace.id(), &["*"]).await;
+
+    register(&w, &who, "payments", "here", &["act.a"])
+        .await
+        .expect("bound in payments");
+    let elsewhere = register(&w, &who, "billing", "there", &["act.a"]).await;
+    assert_eq!(
+        elsewhere.map(|_| ()),
+        Err(AppError::NotBound),
+        "the same identity and activity in another namespace is another decision"
+    );
+    bind(&w, "narrow", billing.id(), &["act.a"]).await;
+    register(&w, &who, "billing", "there", &["act.a"])
+        .await
+        .expect("now bound in billing too");
+}
+
+#[tokio::test]
+async fn bindings_of_one_tenant_are_invisible_and_unchangeable_by_another() {
+    let w = world().await;
+    bind(&w, "someone", w.namespace.id(), &["*"]).await;
+
+    // The other tenant's administrator names this tenant's namespace.
+    let listed = w
+        .bindings
+        .list(&w.other_admin, w.namespace.id(), &ctx())
+        .await;
+    assert_eq!(listed.map(|_| ()), Err(AppError::NotFound));
+    let changed = w
+        .bindings
+        .bind(
+            &w.other_admin,
+            w.namespace.id(),
+            "someone",
+            &["*".to_owned()],
+            &ctx(),
+        )
+        .await;
+    assert_eq!(changed.map(|_| ()), Err(AppError::NotFound));
+    let removed = w
+        .bindings
+        .unbind(&w.other_admin, w.namespace.id(), "someone", &ctx())
+        .await;
+    assert_eq!(removed.map(|_| ()), Err(AppError::NotFound));
+
+    // The probes are recorded against the tenant that made them, naming the namespace asked for.
+    let probes = crate::support::eventually("the probes are audited", || async {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT resource_id FROM audit_records WHERE tenant_id = $1 \
+             AND action = 'access.denied.cross_tenant' AND resource_type = 'namespace'",
+        )
+        .bind(w.other_admin.tenant_id().as_uuid())
+        .fetch_all(&w.db.pool)
+        .await
+        .expect("audit");
+        (!rows.is_empty()).then_some(rows)
+    })
+    .await;
+    assert_eq!(probes, vec![w.namespace.id().to_string()]);
+
+    // And a worker with the same name in the other tenant has no binding of its own.
+    let namesake = Principal::new(
+        w.other_admin.tenant_id(),
+        subject_of("someone"),
+        Role::Worker,
+    );
+    let refused = w
+        .workers
+        .register(&namesake, "payments", "x", &caps(&["act.a"]))
+        .await;
+    assert_eq!(refused.map(|_| ()), Err(AppError::NotBound));
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM worker_bindings WHERE tenant_id = $1 AND subject = 'someone'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(rows, 1, "the foreign attempts changed nothing");
+}
+
+#[tokio::test]
+async fn each_binding_operation_audits_a_probe_of_a_foreign_namespace_on_its_own() {
+    // Identical probes are collapsed into one audit row, so each operation gets a world of its own
+    // to prove that it records the probe itself and does not rely on another one having done it.
+    for operation in ["list", "bind", "unbind"] {
+        let w = world().await;
+        let ns = w.namespace.id();
+        let result = match operation {
+            "list" => w
+                .bindings
+                .list(&w.other_admin, ns, &ctx())
+                .await
+                .map(|_| ()),
+            "bind" => w
+                .bindings
+                .bind(&w.other_admin, ns, "someone", &["*".to_owned()], &ctx())
+                .await
+                .map(|_| ()),
+            _ => w
+                .bindings
+                .unbind(&w.other_admin, ns, "someone", &ctx())
+                .await
+                .map(|_| ()),
+        };
+        assert_eq!(result, Err(AppError::NotFound), "{operation}");
+        let tenant = w.other_admin.tenant_id();
+        let audited = crate::support::eventually(operation, || async {
+            let rows: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM audit_records WHERE tenant_id = $1 \
+                 AND action = 'access.denied.cross_tenant' AND resource_type = 'namespace'",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("count");
+            (rows > 0).then_some(rows)
+        })
+        .await;
+        assert_eq!(audited, 1, "{operation}");
+    }
+}
+
+// ------------------------------------------------------------- revocation
+
+#[tokio::test]
+async fn removing_a_binding_closes_the_session_releases_the_lease_and_stops_the_worker() {
+    let w = world().await;
+    let (wf, _) = w
+        .publish(document(
+            "charge",
+            "c",
+            vec![json!({"id": "c", "type": "activity", "activity": "payments.charge"})],
+        ))
+        .await;
+    let run = w.start(wf, &json!({})).await;
+    let who = worker(&w, "revoked");
+    bind(&w, "revoked", w.namespace.id(), &["payments.*"]).await;
+    let registered = register(&w, &who, "payments", "r1", &["payments.charge"])
+        .await
+        .expect("register");
+    let tasks = w
+        .workers
+        .poll(
+            &who,
+            registered.worker_id,
+            registered.session_token.expose(),
+            4,
+            None,
+        )
+        .await
+        .expect("poll");
+    assert_eq!(tasks.len(), 1);
+    let task = &tasks[0];
+    w.workers
+        .heartbeat(&who, &task_ref(task))
+        .await
+        .expect("a bound worker heartbeats");
+
+    let revoked = w
+        .bindings
+        .unbind(&w.admin, w.namespace.id(), "revoked", &ctx())
+        .await
+        .expect("unbind");
+    assert_eq!((revoked.sessions, revoked.leases), (1, 1));
+
+    // At once: the session is gone, and the lease it held can neither be renewed nor reported on.
+    let polled = w
+        .workers
+        .poll(
+            &who,
+            registered.worker_id,
+            registered.session_token.expose(),
+            4,
+            None,
+        )
+        .await;
+    assert_eq!(polled.map(|_| ()), Err(AppError::Unauthenticated));
+    let beat = w.workers.heartbeat(&who, &task_ref(task)).await;
+    assert_eq!(beat.map(|_| ()), Err(AppError::NotBound));
+    let done = w
+        .workers
+        .complete(&who, &task_ref(task), b"{}", "revoked-complete-key")
+        .await;
+    assert_eq!(done.map(|_| ()), Err(AppError::NotBound));
+
+    // The scheduler reclaims the released attempt and a bound worker takes it over.
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.leases_expired, 1, "{report:?}");
+    w.age_retry(run, "c").await;
+    w.scheduler.tick().await;
+    let session = w.session(&["payments.charge"]).await;
+    let again = w.one_task(&session).await;
+    assert_eq!(again.run_id, run);
+    assert!(
+        again.fence.generation > task.fence.generation,
+        "a new grant"
+    );
+    w.complete(&session, &again, &json!({"ok": true}))
+        .await
+        .expect("the work is finished by a bound worker");
+    assert_eq!(w.step_status(run, "c").await, Some(StepStatus::Succeeded));
+    w.assert_consistent(run).await;
+}
+
+#[tokio::test]
+async fn narrowing_a_binding_closes_only_the_sessions_it_no_longer_covers() {
+    let w = world().await;
+    let who = worker(&w, "narrowed");
+    bind(&w, "narrowed", w.namespace.id(), &["*"]).await;
+    let keeps = register(&w, &who, "payments", "keeps", &["payments.charge"])
+        .await
+        .expect("keeps");
+    let loses = register(&w, &who, "payments", "loses", &["audit.log"])
+        .await
+        .expect("loses");
+
+    let view = w
+        .bindings
+        .bind(
+            &w.admin,
+            w.namespace.id(),
+            "narrowed",
+            &["payments.*".to_owned()],
+            &ctx(),
+        )
+        .await
+        .expect("narrow");
+    assert_eq!(view.revoked.sessions, 1);
+    assert!(
+        w.workers
+            .poll(&who, keeps.worker_id, keeps.session_token.expose(), 1, None)
+            .await
+            .is_ok(),
+        "still covered"
+    );
+    assert_eq!(
+        w.workers
+            .poll(&who, loses.worker_id, loses.session_token.expose(), 1, None)
+            .await
+            .map(|_| ()),
+        Err(AppError::Unauthenticated)
+    );
+
+    // Widening closes nothing.
+    let view = w
+        .bindings
+        .bind(
+            &w.admin,
+            w.namespace.id(),
+            "narrowed",
+            &["*".to_owned()],
+            &ctx(),
+        )
+        .await
+        .expect("widen");
+    assert_eq!(view.revoked.sessions, 0);
+}
+
+#[tokio::test]
+async fn a_binding_that_disappears_stops_a_lease_holder_even_without_a_session_event() {
+    let w = world().await;
+    let (wf, _) = w.publish(document("beat", "a", vec![activity("a")])).await;
+    w.start(wf, &json!({})).await;
+    let who = worker(&w, "stale-acl");
+    bind(&w, "stale-acl", w.namespace.id(), &["*"]).await;
+    let registered = register(&w, &who, "payments", "s", &["act.a"])
+        .await
+        .expect("register");
+    let tasks = w
+        .workers
+        .poll(
+            &who,
+            registered.worker_id,
+            registered.session_token.expose(),
+            1,
+            None,
+        )
+        .await
+        .expect("poll");
+    let task = &tasks[0];
+
+    // The row goes away behind the service's back (a restore, an operator with SQL): the decision
+    // is taken at use, so the next report is refused all the same.
+    sqlx::query("DELETE FROM worker_bindings WHERE subject = 'stale-acl'")
+        .execute(&w.db.pool)
+        .await
+        .expect("delete");
+    let beat = w.workers.heartbeat(&who, &task_ref(task)).await;
+    assert_eq!(beat.map(|_| ()), Err(AppError::NotBound));
+    let failed = w
+        .workers
+        .fail(
+            &who,
+            &task_ref(task),
+            "SOME_ERROR",
+            true,
+            "stale-acl-fail-key",
+        )
+        .await;
+    assert_eq!(failed.map(|_| ()), Err(AppError::NotBound));
+}
+
+#[tokio::test]
+async fn unbinding_an_identity_that_has_no_binding_is_not_found_and_leaves_no_audit() {
+    let w = world().await;
+    let removed = w
+        .bindings
+        .unbind(&w.admin, w.namespace.id(), "nobody", &ctx())
+        .await;
+    assert_eq!(removed.map(|_| ()), Err(AppError::NotFound));
+    let audits: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE action = 'worker.unbound'")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("count");
+    assert_eq!(audits, 0);
+}
+
+// ------------------------------------------------------------- administration
+
+#[tokio::test]
+async fn only_an_administrator_manages_bindings() {
+    let w = world().await;
+    let tenant = w.admin.tenant_id();
+    for role in [Role::Developer, Role::Operator, Role::Viewer, Role::Worker] {
+        let who = Principal::new(tenant, subject_of("someone"), role);
+        let ns = w.namespace.id();
+        let listed = w.bindings.list(&who, ns, &ctx()).await;
+        let bound = w
+            .bindings
+            .bind(&who, ns, "x", &["*".to_owned()], &ctx())
+            .await;
+        let unbound = w.bindings.unbind(&who, ns, "x", &ctx()).await;
+        assert!(matches!(listed, Err(AppError::Forbidden { .. })), "{role}");
+        assert!(matches!(bound, Err(AppError::Forbidden { .. })), "{role}");
+        assert!(matches!(unbound, Err(AppError::Forbidden { .. })), "{role}");
+    }
+}
+
+#[tokio::test]
+async fn patterns_and_subjects_are_validated_and_nothing_is_stored_on_refusal() {
+    let w = world().await;
+    let ns = w.namespace.id();
+    let try_bind = |subject: &'static str, patterns: Vec<String>| {
+        let w = &w;
+        async move {
+            w.bindings
+                .bind(&w.admin, ns, subject, &patterns, &ctx())
+                .await
+        }
+    };
+    for (what, subject, patterns) in [
+        ("no patterns", "ok", vec![]),
+        (
+            "too many",
+            "ok",
+            (0..65).map(|i| format!("a.n{i}")).collect(),
+        ),
+        ("a bad pattern", "ok", vec!["has space".to_owned()]),
+        ("a double wildcard", "ok", vec!["a.**".to_owned()]),
+        ("an empty subject", "", vec!["*".to_owned()]),
+        ("a reserved subject", "system:engine", vec!["*".to_owned()]),
+    ] {
+        let result = try_bind(subject, patterns).await;
+        assert!(
+            matches!(result, Err(AppError::NotAllowed(_))),
+            "{what}: {result:?}"
+        );
+    }
+    // (The world binds its own worker at the start; nothing else may have been stored.)
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM worker_bindings WHERE subject <> 'worker-1'")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("count");
+    assert_eq!(rows, 0);
+}
+
+#[tokio::test]
+async fn a_binding_change_is_audited_with_what_it_grants() {
+    let w = world().await;
+    bind(
+        &w,
+        "audited",
+        w.namespace.id(),
+        &["payments.*", "audit.log"],
+    )
+    .await;
+    w.bindings
+        .unbind(&w.admin, w.namespace.id(), "audited", &ctx())
+        .await
+        .expect("unbind");
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT action, reason FROM audit_records \
+         WHERE tenant_id = $1 AND action IN ('worker.bound', 'worker.unbound') \
+           AND reason LIKE 'audited%' ORDER BY created_at",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "worker.bound".to_owned(),
+                "audited: payments.*, audit.log".to_owned()
+            ),
+            ("worker.unbound".to_owned(), "audited".to_owned()),
+        ]
+    );
+    let listed = w
+        .bindings
+        .list(&w.admin, w.namespace.id(), &ctx())
+        .await
+        .expect("list");
+    assert!(listed.iter().all(|b| b.subject != "audited"), "removed");
+}
+
+// ------------------------------------------------------------- resources
+
+#[tokio::test]
+async fn a_call_that_holds_a_transaction_never_waits_for_a_second_connection() {
+    let w = world().await;
+    let (wf, _) = w
+        .publish(document("starve", "a", vec![activity("a")]))
+        .await;
+    w.start(wf, &json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    let task = w.one_task(&session).await;
+
+    // A replica with a pool of three (and nothing cached yet) and twelve reports on the same lease at
+    // once: every call holds a connection for its transaction, so a call that asked the pool for
+    // another one (to read a definition nobody has cached, or a binding) would leave the pool
+    // waiting on itself until the acquire timeout.
+    let replica = std::sync::Arc::new(w.replica_with_pool(3).await);
+    let who = w.worker.clone();
+    let mut calls = Vec::new();
+    for _ in 0..12 {
+        let replica = replica.clone();
+        let who = who.clone();
+        let task = task.clone();
+        calls.push(tokio::spawn(async move {
+            replica
+                .workers
+                .heartbeat(&who, &task_ref(&task))
+                .await
+                .map(|_| ())
+        }));
+    }
+    for call in calls {
+        call.await
+            .expect("task")
+            .expect("every heartbeat is served");
+    }
+}

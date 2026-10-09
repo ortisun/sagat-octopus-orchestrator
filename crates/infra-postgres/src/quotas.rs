@@ -11,6 +11,7 @@
 //! The scopes lock in a fixed order (namespace before tenant), and nothing that holds one waits for
 //! anything but the next in that order, so the locks cannot deadlock with each other.
 
+use sagat_application::authz::NamespaceDirectory;
 use sagat_application::error::StoreError;
 use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredLimit};
 use sagat_domain::audit::AuditRecord;
@@ -164,7 +165,7 @@ impl QuotaLookup for crate::definitions::PgDefinitionStore {
     }
 }
 
-impl QuotaStore for PgRunStore {
+impl NamespaceDirectory for PgRunStore {
     async fn namespace_exists(
         &self,
         tenant: TenantId,
@@ -198,7 +199,9 @@ impl QuotaStore for PgRunStore {
     async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
         sagat_application::runs::RunStore::record_denial(self, audit).await
     }
+}
 
+impl QuotaStore for PgRunStore {
     async fn settings(
         &self,
         tenant: TenantId,
