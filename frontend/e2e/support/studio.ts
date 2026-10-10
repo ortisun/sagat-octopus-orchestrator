@@ -18,3 +18,14 @@ export function failOnBrowserErrors(page: Page): string[] {
   });
   return problems;
 }
+
+/**
+ * Goes to a page of the Studio the way a link does: through the router, so the token held in the page's memory
+ * survives (a page load would ask for it again: it is never stored).
+ */
+export async function goTo(page: Page, path: string): Promise<void> {
+  await page.evaluate((to) => {
+    window.history.pushState({}, '', `/studio${to}`);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, path);
+}
