@@ -280,7 +280,11 @@ async fn probes_need_no_credentials_and_unknown_routes_use_the_envelope() {
         .expect("send");
     assert_eq!(unknown.status(), 404);
     trace_id(&unknown);
-    assert_eq!(json_of(unknown).await["code"], "NOT_FOUND");
+    let unknown = json_of(unknown).await;
+    assert_eq!(unknown["code"], "NOT_FOUND");
+    // A route the server does not have says so, so that an SDK newer than the server can tell "this call
+    // does not exist here" from "this run does not exist" (feature 006, SPEC §9).
+    assert_eq!(unknown["details"]["reason"], "ROUTE_NOT_FOUND", "{unknown}");
 
     let wrong_method = api
         .request(Method::DELETE, "/auth/context")
@@ -288,7 +292,9 @@ async fn probes_need_no_credentials_and_unknown_routes_use_the_envelope() {
         .await
         .expect("send");
     assert_eq!(wrong_method.status(), 405);
-    assert_eq!(json_of(wrong_method).await["code"], "BAD_REQUEST");
+    let wrong_method = json_of(wrong_method).await;
+    assert_eq!(wrong_method["code"], "BAD_REQUEST");
+    assert_eq!(wrong_method["details"]["reason"], "METHOD_NOT_ALLOWED", "{wrong_method}");
 }
 
 #[tokio::test]

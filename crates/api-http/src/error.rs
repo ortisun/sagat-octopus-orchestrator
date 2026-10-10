@@ -65,12 +65,19 @@ impl ErrorParts {
             400..=499 => (ErrorCode::BadRequest, "bad request", false),
             _ => (ErrorCode::Internal, "internal error", false),
         };
+        // A call the server does not have says so, so that an SDK newer than the server can tell "this call
+        // does not exist here" from "this run does not exist" (SDK SPEC §9).
+        let details = match status.as_u16() {
+            404 => Some(serde_json::json!({"reason": "ROUTE_NOT_FOUND"})),
+            405 => Some(serde_json::json!({"reason": "METHOD_NOT_ALLOWED"})),
+            _ => None,
+        };
         Self {
             status,
             code,
             message: message.to_owned(),
             retryable,
-            details: None,
+            details,
         }
     }
 }
