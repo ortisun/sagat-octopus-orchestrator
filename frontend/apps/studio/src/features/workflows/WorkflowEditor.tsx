@@ -79,7 +79,7 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
   }, [draft, wire, wireKey]);
 
   // ------------------------------------------------------------------ what the checks say
-  const validation = useValidation(ep, workflow.id, wire, wireKey, timings.validateMs);
+  const validation = useValidation(ep, workflow.id, wire, wireKey, timings.validateMs, canWrite);
   const deferred = useDeferredValue(doc);
   const advice = useMemo(() => advise(deferred), [deferred]);
   const problemCounts = useMemo(() => countsByNode(validation.view?.problems ?? []), [validation.view]);
@@ -105,6 +105,12 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
   // ------------------------------------------------------------------ small state
   const [notice, setNotice] = useState<Notice>({ text: '', n: 0 });
   const say = useCallback((text: string) => setNotice((previous) => ({ text, n: previous.n + 1 })), []);
+  // What was said about the last change is about that change: it goes away, so it is never read as news later.
+  useEffect(() => {
+    if (notice.text === '') return;
+    const timer = setTimeout(() => setNotice((current) => (current.n === notice.n ? { text: '', n: current.n } : current)), timings.noticeMs ?? 10_000);
+    return () => clearTimeout(timer);
+  }, [notice, timings.noticeMs]);
   const [addOpen, setAddOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
@@ -629,7 +635,8 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
           )}
         </div>
 
-        <aside className="wf-inspector" aria-label="Inspector">
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the inspector scrolls, and for a reader who cannot edit it has nothing else to focus (WCAG 2.1.1) */}
+        <aside className="wf-inspector" aria-label="Inspector" tabIndex={0}>
           {selectedNode ? (
             <NodeInspector
               ref={inspectorHeading}
@@ -677,7 +684,7 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
                       advice={advice}
                       exists={nodeExists}
                       onSelectNode={(id) => store.select(id)}
-                      checkedSummary={validation.view ? summary : 'Waiting for the first answer of the platform.'}
+                      checkedSummary={validation.phase === 'off' ? 'The platform checks a workflow for the people who can change it (definition:write). You can read it, so it is not checked for you.' : validation.view ? summary : 'Waiting for the first answer of the platform.'}
                     />
                   ),
                 },

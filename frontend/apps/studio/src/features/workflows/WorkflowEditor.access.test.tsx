@@ -56,9 +56,11 @@ describe('a viewer (definition:read only)', () => {
     expect(putsOf(platform)).toHaveLength(0);
   });
 
-  it('still checks the document, so the viewer sees the problems', async () => {
-    await opened({ ...viewer, behaviour: { validate: () => ({ valid: false, problems: [{ severity: 'error', code: 'SCHEMA', message: 'a problem' }], warnings: [] }) } });
-    await waitFor(() => expect(screen.getByTestId('validation-summary')).toHaveTextContent('1 problem'));
+  it('does not ask the platform to check the document (it would refuse), and says why', async () => {
+    const { platform } = await opened(viewer);
+    await settle(200);
+    expect(platform.calls.filter((c) => c.url.endsWith('/validate'))).toHaveLength(0);
+    expect(await screen.findByText(/checks a workflow for the people who can change it/)).toBeInTheDocument();
   });
 
   it('can still publish when it is allowed to and has not changed anything', async () => {

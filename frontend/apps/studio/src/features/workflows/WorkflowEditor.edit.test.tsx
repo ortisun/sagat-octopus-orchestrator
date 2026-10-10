@@ -81,6 +81,15 @@ describe('adding nodes', () => {
     expect(screen.getByTestId('edit-notice')).toHaveTextContent('Added Timer "timer_1"');
   });
 
+  it('clears what it said about a change once that is no longer news, and not before', async () => {
+    const { user } = await opened({ timings: { validateMs: 15, autosaveMs: 60_000, noticeMs: 250 } });
+    await user.keyboard('{Alt>}n{/Alt}');
+    await user.click(within(await screen.findByRole('dialog', { name: 'Add a node' })).getByRole('button', { name: 'Timer' }));
+    const notice = screen.getByTestId('edit-notice');
+    await waitFor(() => expect(notice).toHaveTextContent('Added Timer "timer_1"'));
+    await waitFor(() => expect(notice).toHaveTextContent(/^$/), { timeout: 2000 });
+  });
+
   it('adds a node after the selected one, in its first free way out', async () => {
     const { user } = await opened();
     await user.click(screen.getByRole('button', { name: 'Edit pay' }));

@@ -4,8 +4,11 @@ import { nodeIdsOf, viewOf } from './validationModel';
 import type { ValidationView } from './validationModel';
 
 export interface ValidationState {
-  /** `checking`: the document has changed since the answer shown, and a newer answer is on its way. */
-  phase: 'checking' | 'done' | 'failed';
+  /**
+   * `checking`: the document has changed since the answer shown, and a newer answer is on its way.
+   * `off`: nobody asked, because the platform answers this only to people who can change the workflow.
+   */
+  phase: 'checking' | 'done' | 'failed' | 'off';
   /** The last answer the platform gave, even if the document has moved on since. */
   view: ValidationView | undefined;
   /** The answer is about the document in the editor right now. */
@@ -27,7 +30,7 @@ interface Answer {
  * that arrives for a document that is no longer the current one is ignored, so a slow old answer can
  * never replace a newer one.
  */
-export function useValidation(ep: Pick<Endpoints, 'validate'>, workflowId: string, wire: Record<string, unknown>, key: string, delayMs: number): ValidationState {
+export function useValidation(ep: Pick<Endpoints, 'validate'>, workflowId: string, wire: Record<string, unknown>, key: string, delayMs: number, enabled = true): ValidationState {
   const [answer, setAnswer] = useState<Answer>({ view: undefined, forKey: undefined, failedKey: undefined, error: undefined });
   const latest = useRef({ wire, ep });
   const asked = useRef(false);
@@ -38,6 +41,8 @@ export function useValidation(ep: Pick<Endpoints, 'validate'>, workflowId: strin
   });
 
   useEffect(() => {
+    // Not for someone the platform would refuse (it would answer 403 to every change they cannot make anyway).
+    if (!enabled) return;
     // The document is back to the one the last answer is about (a change that was undone): that answer stands.
     if (answeredKey.current === key) return;
     const controller = new AbortController();
@@ -65,8 +70,9 @@ export function useValidation(ep: Pick<Endpoints, 'validate'>, workflowId: strin
       clearTimeout(timer);
       controller.abort();
     };
-  }, [key, workflowId, delayMs]);
+  }, [key, workflowId, delayMs, enabled]);
 
+  if (!enabled) return { phase: 'off', view: undefined, current: false, error: undefined };
   if (answer.failedKey === key) return { phase: 'failed', view: answer.view, current: false, error: answer.error };
   if (answer.forKey === key) return { phase: 'done', view: answer.view, current: true, error: undefined };
   return { phase: 'checking', view: answer.view, current: false, error: undefined };

@@ -4,3 +4,4 @@ coverage/
 test-results/
 playwright-report/
 *.tsbuildinfo
+perf-results/

@@ -471,7 +471,8 @@ dialog::backdrop {
 }
 
 /* The selected tab is told by its look as well as by aria-selected. */
-[role='tab'][aria-selected='true'] {
+[role='tab'][aria-selected='true'],
+.btn[role='tab'][aria-selected='true']:hover:not(:disabled) {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: var(--accent);

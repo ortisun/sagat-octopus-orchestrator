@@ -127,7 +127,7 @@
 .wf-body {
   flex: 1;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns: auto minmax(0, 1fr) minmax(260px, 320px);
   gap: 12px;
   align-items: start;
 }
@@ -173,7 +173,7 @@
 
 /* ------------------------------------------------------------------ palette */
 .wf-palette {
-  width: 220px;
+  width: 190px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   padding: 10px;
@@ -844,4 +844,20 @@ table.data tbody th[scope="row"] {
 
 .wf-toolbar .wf-summary {
   font-size: 0.95em;
+}
+
+/* On a laptop the canvas needs the room more than the palette needs its sentences: the description of a kind
+   stays for assistive technology and for the title of the button, and the palette is a column of names. */
+@media (min-width: 1101px) and (max-width: 1599px) {
+  .wf-palette {
+    width: 150px;
+  }
+  .wf-kind-desc {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
 }

@@ -313,12 +313,12 @@
 .rn-runs th:nth-child(6) { width: 160px; }
 
 .rn-steps {
-  min-width: 1100px;
+  min-width: 1220px;
 }
 .rn-steps th:nth-child(1) { width: 180px; }
 .rn-steps th:nth-child(2) { width: 130px; }
 .rn-steps th:nth-child(3) { width: 140px; }
-.rn-steps th:nth-child(4) { width: 70px; }
+.rn-steps th:nth-child(4) { width: 90px; }
 .rn-steps th:nth-child(5) { width: 190px; }
 .rn-steps th:nth-child(6) { width: 160px; }
 .rn-steps th:nth-child(7) { width: 120px; }
