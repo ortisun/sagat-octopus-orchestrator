@@ -161,7 +161,10 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp"]
-    group_add: ["${SAGAT_DOCKER_GID:?set SAGAT_DOCKER_GID (stat -c %g /var/run/docker.sock) in infra/docker/.env}"]
+    # Compose reads the variables of every service, started or not, so this cannot be required: the
+    # default is a group that has no access to the socket, and a runner started without the real one
+    # stops with "the container engine could not be reached" instead of being given root's group.
+    group_add: ["${SAGAT_DOCKER_GID:-65534}"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./runner.token:/run/secrets/runner.token:ro
