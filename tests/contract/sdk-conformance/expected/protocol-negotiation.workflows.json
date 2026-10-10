@@ -1,0 +1,19 @@
+{
+  "workflows": {
+    "slow": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "slow",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "protocol-flow"
+      },
+      "nodes": [
+        {
+          "activity": "protocol.slow",
+          "id": "slow",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

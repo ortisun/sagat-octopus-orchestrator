@@ -1,0 +1,43 @@
+{
+  "name": "run-lifecycle",
+  "description": "US01/US02: start a run (idempotency key, correlation id, trace context, deadline), read it back, see a duplicate start answered with the same run and a changed one refused, then let a worker run it to the end. Also: authentication and tenant isolation are canonical errors.",
+  "workflows": {
+    "linear": {
+      "name": "lifecycle-flow",
+      "program": [
+        {"op": "step", "id": "first", "activity": "lifecycle.first"},
+        {"op": "step", "id": "second", "activity": "lifecycle.second"}
+      ]
+    },
+    "idle": {"name": "lifecycle-idle-flow", "program": [{"op": "step", "id": "wait", "activity": "lifecycle.nobody"}]}
+  },
+  "workers": {
+    "w1": {
+      "workerName": "lifecycle-worker", "maxInflight": 4, "autostart": false, "heartbeatIntervalMs": 200,
+      "activities": {
+        "lifecycle.first": {"behavior": {"returns": {"first": true, "amount": "19.99", "ratio": 0.5, "nothing": null, "list": [1, "two", null]}}},
+        "lifecycle.second": {"behavior": {"echo": true}}
+      }
+    }
+  },
+  "steps": [
+    {"id": "start", "op": "start", "workflow": "linear", "input": {"orderId": "o-{{unique}}", "amount": "19.99", "nested": {"tags": ["a", "b"], "note": null}},
+     "idempotencyKey": "life-{{unique}}-1", "correlationId": "corr-{{unique}}", "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"},
+    {"id": "duplicate", "op": "start", "workflow": "linear", "input": {"orderId": "o-{{unique}}", "amount": "19.99", "nested": {"tags": ["a", "b"], "note": null}},
+     "idempotencyKey": "life-{{unique}}-1", "correlationId": "corr-{{unique}}", "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"},
+    {"id": "with-deadline", "op": "start", "workflow": "idle", "input": {"orderId": "deadline"}, "deadlineInMs": 3600000},
+    {"id": "changed", "op": "start", "workflow": "linear", "input": {"orderId": "another"}, "idempotencyKey": "life-{{unique}}-1"},
+    {"id": "get", "op": "get", "run": "start"},
+    {"id": "waiting", "op": "list", "status": "RUNNING", "all": true},
+    {"id": "worker", "op": "startWorker", "worker": "w1"},
+    {"id": "done", "op": "waitForCompletion", "run": "start", "timeoutMs": 30000},
+    {"id": "after", "op": "get", "run": "start"},
+    {"id": "journal", "op": "events", "run": "start"},
+    {"id": "finished", "op": "list", "status": "SUCCEEDED", "all": true},
+    {"id": "by-name", "op": "workflowByName", "workflow": "linear", "input": {"orderId": "by-name"}},
+    {"id": "by-name-done", "op": "waitForCompletion", "run": "by-name", "timeoutMs": 30000},
+    {"id": "no-token", "op": "get", "run": "start", "token": "bad"},
+    {"id": "other-tenant", "op": "get", "run": "start", "token": "other"},
+    {"id": "other-tenant-start", "op": "start", "workflow": "linear", "input": {}, "token": "other"}
+  ]
+}

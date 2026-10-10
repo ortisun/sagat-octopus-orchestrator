@@ -1,0 +1,142 @@
+{
+  "name": "lost-responses",
+  "description": "FR-006-005: retries only when safe. A start whose first attempt never leaves is repeated (the SDK gave it a key) and there is one run. The answer to a keyed start is lost: the SDK repeats it with the same key and there is one run. A refused start (422) is answered once and not repeated. A GET that meets two 503 is repeated until it is served. The answer to a CompleteStep is lost: the worker repeats it with the same key and the step is completed once. `faultsApplied` says how many calls each fault answered, so a fault the SDK did not reach, or an SDK that repeated what it must not, is visible.",
+  "workflows": {
+    "one": {
+      "name": "lost-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "lost.work"
+        }
+      ]
+    },
+    "idle": {
+      "name": "lost-idle-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "wait",
+          "activity": "lost.nobody"
+        }
+      ]
+    }
+  },
+  "faults": [
+    {
+      "channel": "http",
+      "match": "POST /runs",
+      "action": "failBefore",
+      "times": 1
+    },
+    {
+      "channel": "http",
+      "match": "POST /runs",
+      "action": "dropResponse",
+      "after": 2,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "CompleteStep",
+      "action": "dropResponse",
+      "times": 1
+    },
+    {
+      "channel": "http",
+      "match": "GET /runs",
+      "action": "status",
+      "status": 503,
+      "after": 1,
+      "times": 2
+    },
+    {
+      "channel": "http",
+      "match": "POST /runs",
+      "action": "status",
+      "status": 422,
+      "after": 4,
+      "times": 5,
+      "body": {
+        "code": "VALIDATION_FAILED",
+        "message": "scripted refusal",
+        "retryable": false,
+        "traceId": "",
+        "details": {
+          "reason": "SCRIPTED"
+        }
+      }
+    }
+  ],
+  "workers": {
+    "w1": {
+      "workerName": "lost-worker",
+      "maxInflight": 1,
+      "autostart": false,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "lost.work": {
+          "behavior": {
+            "returns": {
+              "done": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "keyless",
+      "op": "start",
+      "workflow": "idle",
+      "input": {
+        "n": 0
+      }
+    },
+    {
+      "id": "keyed",
+      "op": "start",
+      "workflow": "one",
+      "input": {
+        "n": 1
+      },
+      "idempotencyKey": "lost-{{unique}}-1"
+    },
+    {
+      "id": "refused",
+      "op": "start",
+      "workflow": "one",
+      "input": {
+        "n": 2
+      }
+    },
+    {
+      "id": "runs",
+      "op": "list",
+      "all": true
+    },
+    {
+      "id": "served-after-503",
+      "op": "get",
+      "run": "keyed"
+    },
+    {
+      "id": "worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "keyed",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "journal",
+      "op": "events",
+      "run": "keyed"
+    }
+  ]
+}

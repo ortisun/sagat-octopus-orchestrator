@@ -1,0 +1,632 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "saga",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "saga-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "COMPENSATED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "saga-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "tx",
+            "type": "saga.entered"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "ship",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "ship",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "ship",
+            "type": "step.failed"
+          },
+          {
+            "attempt": null,
+            "stepId": "tx",
+            "type": "saga.aborting"
+          },
+          {
+            "attempt": null,
+            "stepId": "tx",
+            "type": "compensation.planned"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": null,
+            "stepId": "ship",
+            "type": "step.routed"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "charge~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.released"
+          },
+          {
+            "attempt": null,
+            "stepId": "charge~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "reserve~c",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "tx",
+            "type": "saga.compensated"
+          },
+          {
+            "attempt": null,
+            "stepId": "reserve~c",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "reconcile",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "reconcile-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "reconcile-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay",
+            "type": "reconciliation.requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay~r",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay~r",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay~r",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay",
+            "type": "reconciliation.concluded"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "receipt",
+            "type": "step.released"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay~r",
+            "type": "step.routed"
+          },
+          {
+            "attempt": 1,
+            "stepId": "receipt",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "receipt",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "receipt",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "pay",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "pay",
+          "id": "pay~r",
+          "kind": "RECONCILIATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "receipt",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "charge",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "charge",
+          "id": "charge~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "notify",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "reserve",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "reserve",
+          "id": "reserve~c",
+          "kind": "COMPENSATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "NO_STOCK",
+          "forward": null,
+          "id": "ship",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": "NO_STOCK",
+          "forward": null,
+          "id": "tx",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "saga",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "COMPENSATED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "saga.reserve",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:reserve",
+        "input": {
+          "order": "o-1"
+        },
+        "kind": "activity",
+        "node": "reserve",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.charge",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:charge",
+        "input": {
+          "order": "o-1"
+        },
+        "kind": "activity",
+        "node": "charge",
+        "outcome": "returned",
+        "steps": {
+          "reserve": {
+            "reservation": "r-1"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.ship",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:ship",
+        "input": {
+          "order": "o-1"
+        },
+        "kind": "activity",
+        "node": "ship",
+        "outcome": "failed",
+        "steps": {
+          "charge": {
+            "charge": "c-1"
+          },
+          "reserve": {
+            "reservation": "r-1"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.refund",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:7>:<uuid:1>",
+        "input": {
+          "order": "o-1"
+        },
+        "kind": "compensation",
+        "node": "charge~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": {
+            "charge": "c-1"
+          },
+          "reserve": {
+            "reservation": "r-1"
+          }
+        },
+        "targetIdempotencyKey": "<uuid:1>:charge",
+        "targetNode": "charge",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.release",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "compensation:<uuid:8>:<uuid:1>",
+        "input": {
+          "order": "o-1"
+        },
+        "kind": "compensation",
+        "node": "reserve~c",
+        "outcome": "returned",
+        "steps": {
+          "charge": {
+            "charge": "c-1"
+          },
+          "reserve": {
+            "reservation": "r-1"
+          }
+        },
+        "targetIdempotencyKey": "<uuid:1>:reserve",
+        "targetNode": "reserve",
+        "taskKind": "COMPENSATION",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.pay",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:pay",
+        "input": {
+          "order": "o-2"
+        },
+        "kind": "activity",
+        "node": "pay",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.lookup",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "reconciliation:<uuid:4>:pay",
+        "input": {
+          "order": "o-2"
+        },
+        "kind": "reconciler",
+        "node": "pay~r",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "<uuid:4>:pay",
+        "targetNode": "pay",
+        "taskKind": "RECONCILIATION",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.receipt",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:receipt",
+        "input": {
+          "order": "o-2"
+        },
+        "kind": "activity",
+        "node": "receipt",
+        "outcome": "returned",
+        "steps": {
+          "pay": {
+            "paymentId": "p-9"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

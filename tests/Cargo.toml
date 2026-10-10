@@ -24,6 +24,7 @@ jsonwebtoken.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 h2 = "0.4"
 rcgen = "0.13"
+regex = "1"
 reqwest = { workspace = true, features = ["json", "form"] }
 sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
@@ -90,6 +91,10 @@ path = "contract/002-durable-execution/rest/main.rs"
 [[test]]
 name = "contract_grpc_002"
 path = "contract/002-durable-execution/grpc/main.rs"
+
+[[test]]
+name = "sdk_conformance"
+path = "contract/sdk-conformance/main.rs"
 
 [[test]]
 name = "contract_grpc_006"

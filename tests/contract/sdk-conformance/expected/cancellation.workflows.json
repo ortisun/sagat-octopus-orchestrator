@@ -1,0 +1,34 @@
+{
+  "workflows": {
+    "long": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "slow",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "long-flow"
+      },
+      "nodes": [
+        {
+          "activity": "cancel.slow",
+          "id": "slow",
+          "type": "activity"
+        }
+      ]
+    },
+    "quick": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "quick",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "quick-flow"
+      },
+      "nodes": [
+        {
+          "activity": "cancel.quick",
+          "id": "quick",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

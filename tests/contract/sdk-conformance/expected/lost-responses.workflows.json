@@ -1,0 +1,34 @@
+{
+  "workflows": {
+    "idle": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "wait",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lost-idle-flow"
+      },
+      "nodes": [
+        {
+          "activity": "lost.nobody",
+          "id": "wait",
+          "type": "activity"
+        }
+      ]
+    },
+    "one": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lost-flow"
+      },
+      "nodes": [
+        {
+          "activity": "lost.work",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

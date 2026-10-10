@@ -1,0 +1,56 @@
+{
+  "name": "saga-compensation",
+  "description": "US03: a saga whose last step fails for good is compensated in reverse order; every SDK receives the compensation as a COMPENSATION task that names the step it undoes and the key of the effect at the provider. A step whose outcome is unknown is reconciled, and the reconciler answers exactly a verdict.",
+  "workflows": {
+    "saga": {
+      "name": "saga-flow",
+      "program": [
+        {"op": "saga", "id": "tx", "options": {"cancelPolicy": "compensate_completed"}, "body": [
+          {"op": "step", "id": "reserve", "activity": "saga.reserve", "options": {"compensateWith": "saga.release"}},
+          {"op": "step", "id": "charge", "activity": "saga.charge", "options": {"compensateWith": "saga.refund"}},
+          {"op": "step", "id": "ship", "activity": "saga.ship", "options": {"retry": {"maxAttempts": 1}}}
+        ]},
+        {"op": "step", "id": "notify", "activity": "saga.notify"}
+      ]
+    },
+    "reconcile": {
+      "name": "reconcile-flow",
+      "program": [
+        {"op": "step", "id": "pay", "activity": "saga.pay", "options": {"reconcileWith": "saga.lookup", "retry": {"maxAttempts": 1}}},
+        {"op": "step", "id": "receipt", "activity": "saga.receipt"}
+      ]
+    },
+    "not-applied": {
+      "name": "not-applied-flow",
+      "program": [
+        {"op": "step", "id": "pay2", "activity": "saga.pay2", "options": {"reconcileWith": "saga.lookup-none", "retry": {"maxAttempts": 3, "initialDelayMs": 50, "maxDelayMs": 50, "strategy": "fixed", "jitter": false}}}
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "saga-worker", "maxInflight": 4, "heartbeatIntervalMs": 200,
+      "activities": {
+        "saga.reserve": {"behavior": {"returns": {"reservation": "r-1"}}},
+        "saga.release": {"as": "compensation", "behavior": {"returns": {"released": true}}},
+        "saga.charge": {"behavior": {"returns": {"charge": "c-1"}}},
+        "saga.refund": {"as": "compensation", "behavior": {"returns": {"refunded": true}}},
+        "saga.ship": {"behavior": {"fails": {"code": "NO_STOCK", "message": "nothing to ship", "retryable": false}}},
+        "saga.notify": {"behavior": {"returns": {"notified": true}}},
+        "saga.pay": {"behavior": {"outcomeUnknown": "the provider did not answer"}},
+        "saga.lookup": {"as": "reconciler", "behavior": {"verdict": "applied", "output": {"paymentId": "p-9"}}},
+        "saga.receipt": {"behavior": {"echo": true}},
+        "saga.pay2": {"behavior": {"failsUntilAttempt": 2, "fails": {"code": "OUTCOME_UNKNOWN", "message": "unknown", "retryable": false}, "returns": {"paid": true}}},
+        "saga.lookup-none": {"as": "reconciler", "behavior": {"verdict": "not_applied"}}
+      }
+    }
+  },
+  "steps": [
+    {"id": "saga", "op": "start", "workflow": "saga", "input": {"order": "o-1"}},
+    {"id": "saga-done", "op": "waitForCompletion", "run": "saga", "timeoutMs": 30000},
+    {"id": "saga-journal", "op": "events", "run": "saga"},
+    {"id": "reconcile", "op": "start", "workflow": "reconcile", "input": {"order": "o-2"}},
+    {"id": "reconcile-done", "op": "waitForCompletion", "run": "reconcile", "timeoutMs": 30000},
+    {"id": "reconcile-journal", "op": "events", "run": "reconcile"}
+  ]
+}

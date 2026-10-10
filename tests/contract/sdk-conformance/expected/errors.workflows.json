@@ -1,0 +1,19 @@
+{
+  "workflows": {
+    "one": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "errors-flow"
+      },
+      "nodes": [
+        {
+          "activity": "errors.work",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

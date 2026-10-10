@@ -1,0 +1,110 @@
+{
+  "name": "cancellation",
+  "description": "US02: cancelling a run reaches the activity that is running through its cancellation signal (at the next heartbeat), the activity ends as it likes, and the run is CANCELLED. A cancel of a finished run is a canonical conflict.",
+  "workflows": {
+    "long": {
+      "name": "long-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "slow",
+          "activity": "cancel.slow"
+        }
+      ]
+    },
+    "quick": {
+      "name": "quick-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "quick",
+          "activity": "cancel.quick"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "cancel-worker",
+      "maxInflight": 4,
+      "heartbeatIntervalMs": 100,
+      "activities": {
+        "cancel.slow": {
+          "behavior": {
+            "sleepMs": 60000,
+            "returns": {
+              "finished": true
+            },
+            "onCancel": {
+              "returns": {
+                "stopped": true
+              }
+            }
+          }
+        },
+        "cancel.quick": {
+          "behavior": {
+            "returns": {
+              "quick": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "long",
+      "op": "start",
+      "workflow": "long",
+      "input": {
+        "n": 1
+      }
+    },
+    {
+      "id": "running",
+      "op": "awaitJournal",
+      "run": "long",
+      "eventType": "step.started",
+      "stepId": "slow",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "cancel",
+      "op": "cancel",
+      "run": "long",
+      "reason": "no longer needed by the customer"
+    },
+    {
+      "id": "cancelled",
+      "op": "waitForCompletion",
+      "run": "long",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "journal",
+      "op": "events",
+      "run": "long"
+    },
+    {
+      "id": "quick",
+      "op": "start",
+      "workflow": "quick",
+      "input": {
+        "n": 2
+      }
+    },
+    {
+      "id": "quick-done",
+      "op": "waitForCompletion",
+      "run": "quick",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "cancel-finished",
+      "op": "cancel",
+      "run": "quick",
+      "reason": "too late to cancel this one"
+    }
+  ]
+}
