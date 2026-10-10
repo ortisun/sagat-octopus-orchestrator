@@ -868,6 +868,18 @@ where
         let cancel_requested = self
             .engine
             .run(&mut tx, effects, move |_, state, _| {
+                // A worker of protocol 1.0 does not say which attempt it is (`attempt` 0). The lease token,
+                // verified above, and the generation name the lease it holds; the attempt is the step's own.
+                let fence = if fence.attempt == 0 {
+                    Fence {
+                        attempt: state
+                            .step(&node)
+                            .map_or(0, sagat_domain::execution::StepState::attempt),
+                        ..fence
+                    }
+                } else {
+                    fence
+                };
                 let beat = execution::heartbeat(state, &node, fence)?;
                 Ok((
                     beat.cancel_requested,

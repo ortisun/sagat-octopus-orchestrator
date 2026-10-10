@@ -36,6 +36,48 @@ impl Attempt {
         generation: i64,
         lease_token: &str,
     ) -> Result<Self, Status> {
+        Self::parse_with(
+            task_id,
+            run_id,
+            step_id,
+            attempt,
+            generation,
+            lease_token,
+            false,
+        )
+    }
+
+    /// As [`Self::parse`] for a heartbeat. Protocol 1.0 had no step identity in it: a worker of that
+    /// version sends neither the run, the step nor the attempt, and `attempt` 0 means "not said" (the
+    /// use case takes the step's own). The generation and the lease token still name the lease.
+    pub fn parse_heartbeat(
+        task_id: &str,
+        run_id: &str,
+        step_id: &str,
+        attempt: i32,
+        generation: i64,
+        lease_token: &str,
+    ) -> Result<Self, Status> {
+        Self::parse_with(
+            task_id,
+            run_id,
+            step_id,
+            attempt,
+            generation,
+            lease_token,
+            true,
+        )
+    }
+
+    fn parse_with(
+        task_id: &str,
+        run_id: &str,
+        step_id: &str,
+        attempt: i32,
+        generation: i64,
+        lease_token: &str,
+        attempt_may_be_absent: bool,
+    ) -> Result<Self, Status> {
         let mut parts = task_id.splitn(3, '/');
         let (Some(task_run), Some(node), Some(task_generation), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
@@ -67,7 +109,7 @@ impl Attempt {
         }
         let attempt = u32::try_from(attempt)
             .ok()
-            .filter(|a| *a >= 1)
+            .filter(|a| *a >= 1 || (attempt_may_be_absent && *a == 0))
             .ok_or_else(|| invalid("attempt must be positive"))?;
         let step_id = if step_id.is_empty() {
             None
@@ -159,6 +201,20 @@ mod tests {
         assert!(parse(&format!("{RUN}/charge/1"), "", 1, -5).is_err());
         assert!(Attempt::parse(&format!("{RUN}/charge/1"), "", "", 1, 1, "").is_err());
         assert!(Attempt::parse(&format!("{RUN}/charge/1"), "", "nope", 1, 1, "t").is_err());
+    }
+
+    #[test]
+    fn a_heartbeat_of_protocol_1_0_may_leave_the_attempt_out_and_nothing_else_may() {
+        let task = format!("{RUN}/charge/3");
+        // 0 is "not said", for a heartbeat only; the other reports name their attempt.
+        let beat = Attempt::parse_heartbeat(&task, "", "", 0, 3, "token").expect("1.0 heartbeat");
+        assert_eq!(beat.fence.attempt, 0);
+        assert_eq!(beat.fence.generation, 3);
+        assert!(Attempt::parse(&task, "", "", 0, 3, "token").is_err());
+        // What is said is still checked, and a negative attempt is not an absent one.
+        assert!(Attempt::parse_heartbeat(&task, "", "", -1, 3, "token").is_err());
+        assert!(Attempt::parse_heartbeat(&task, "", "", 0, 4, "token").is_err());
+        assert!(Attempt::parse_heartbeat(&task, "", "", 0, 3, "").is_err());
     }
 
     #[test]

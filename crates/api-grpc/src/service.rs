@@ -250,7 +250,7 @@ where
             if !message.worker_id.is_empty() {
                 worker_id(&message.worker_id)?;
             }
-            let attempt = Attempt::parse(
+            let attempt = Attempt::parse_heartbeat(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,

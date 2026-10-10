@@ -130,7 +130,7 @@
         "paused": false,
         "runId": "<uuid:1>",
         "startedBy": "alice",
-        "status": "FAILED",
+        "status": "SUCCEEDED",
         "traceId": "<trace:1>",
         "updatedAt": "<time>",
         "version": "<n>",
@@ -218,20 +218,20 @@
     {
       "nodes": [
         {
-          "attempt": 3,
+          "attempt": 1,
           "cancelRequested": false,
-          "failureCode": "LEASE_EXPIRED",
+          "failureCode": null,
           "forward": null,
           "id": "slow",
           "kind": "FORWARD",
-          "status": "FAILED",
+          "status": "SUCCEEDED",
           "type": "activity",
           "waitingOn": null
         }
       ],
       "paused": false,
       "runId": "<uuid:1>",
-      "status": "FAILED"
+      "status": "SUCCEEDED"
     }
   ],
   "workerLog": {
@@ -261,45 +261,7 @@
         "abortedReason": null,
         "activity": "protocol.slow",
         "attempt": 1,
-        "deadlineAhead": false,
-        "idempotencyKey": "<uuid:1>:slow",
-        "input": {
-          "for": "old"
-        },
-        "kind": "activity",
-        "node": "slow",
-        "outcome": "returned",
-        "steps": {},
-        "targetIdempotencyKey": "",
-        "targetNode": "",
-        "taskKind": "FORWARD",
-        "traceId": "<trace:1>",
-        "traceparentPresent": true
-      },
-      {
-        "abortedReason": null,
-        "activity": "protocol.slow",
-        "attempt": 2,
-        "deadlineAhead": false,
-        "idempotencyKey": "<uuid:1>:slow",
-        "input": {
-          "for": "old"
-        },
-        "kind": "activity",
-        "node": "slow",
-        "outcome": "returned",
-        "steps": {},
-        "targetIdempotencyKey": "",
-        "targetNode": "",
-        "taskKind": "FORWARD",
-        "traceId": "<trace:1>",
-        "traceparentPresent": true
-      },
-      {
-        "abortedReason": null,
-        "activity": "protocol.slow",
-        "attempt": 3,
-        "deadlineAhead": false,
+        "deadlineAhead": true,
         "idempotencyKey": "<uuid:1>:slow",
         "input": {
           "for": "old"
