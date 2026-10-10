@@ -152,7 +152,7 @@ an error, a log or an event.
 | trace context | `client.WithTraceContext(func(ctx) string)` returns a W3C `traceparent` (an OpenTelemetry bridge is four lines, see its doc), or pass `client.WithTraceparent` per call. No OpenTelemetry dependency |
 | interceptors, proxies, fault injection | `worker.WithDialOptions(grpc.WithChainUnaryInterceptor(...))`, `client.WithHTTPClient` |
 
-Plain `http://` outside loopback is accepted and logs one warning at start.
+Plain `http://` outside loopback is accepted and logs one warning at start. A redirect is never followed (the request carries a bearer token, the namespace and an idempotency key): a `3xx` is a `PROTOCOL` error, "the server redirected the call", whatever its target; a client you pass to `WithHTTPClient` is copied and its `CheckRedirect` replaced, and its `Transport` must not follow redirects either.
 
 ## TLS
 

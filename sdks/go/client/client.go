@@ -70,7 +70,9 @@ func WithUserAgent(suffix string) Option { return func(c *config) { c.userAgent 
 
 // WithHTTPClient sets the HTTP client, and so its transport: the hook for proxies, custom roots and
 // the fault injection of tests. The SDK sets the deadline of each attempt itself; a Timeout on the
-// client applies as well. WithTLSConfig is ignored when this is used.
+// client applies as well. WithTLSConfig is ignored when this is used. The client is copied and the
+// copy never follows a redirect (its CheckRedirect is replaced); a Transport of your own must not
+// follow redirects either.
 func WithHTTPClient(c *http.Client) Option { return func(cfg *config) { cfg.httpClient = c } }
 
 // WithTLSConfig sets the TLS configuration of the default HTTP client: trust roots, and the client
@@ -130,10 +132,16 @@ func New(apiURL, namespace string, token sagat.TokenSource, opts ...Option) (*Cl
 	if c.logger == nil {
 		c.logger = slog.New(slog.DiscardHandler)
 	}
-	c.http = cfg.httpClient
-	if c.http == nil {
+	// A redirect is never followed (sdks/SPEC.md, section 1): a Location can point anywhere, and the request
+	// carries a bearer token, the namespace and an idempotency key. A client the caller supplied is
+	// copied, so that theirs is not changed.
+	if cfg.httpClient != nil {
+		copied := *cfg.httpClient
+		c.http = &copied
+	} else {
 		c.http = &http.Client{Transport: defaultTransport(cfg.tlsConfig)}
 	}
+	c.http.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if parsed.Scheme == "http" && !isLoopback(parsed.Hostname()) {
 		c.logger.Warn("the API is reached without TLS outside loopback", "host", parsed.Hostname())
 	}

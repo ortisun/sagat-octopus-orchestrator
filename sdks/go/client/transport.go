@@ -133,6 +133,12 @@ func (c *Client) once(ctx context.Context, req request, payload []byte) (*respon
 		}
 		return nil, e
 	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// Never followed, whatever the target: the message does not say where it pointed.
+		e := sagat.NewError(sagat.CodeProtocol, "the server redirected the call")
+		e.HTTPStatus, e.TraceID = resp.StatusCode, traceID
+		return nil, e
+	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if len(bytes.TrimSpace(data)) == 0 {
 			return &response{status: resp.StatusCode, traceID: traceID}, nil
