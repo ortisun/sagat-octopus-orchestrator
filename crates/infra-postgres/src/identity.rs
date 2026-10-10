@@ -1,5 +1,6 @@
 //! `IdentityStore` implementation over PostgreSQL (T001-010, T001-019).
 
+use crate::pool::BeginSafely;
 use crate::privilege::{self, LeastPrivilegeError};
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityStore;
@@ -60,7 +61,7 @@ impl PgIdentityStore {
         tenant: &Tenant,
         first_admin: &Membership,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         sqlx::query("INSERT INTO tenants (id, slug, created_at) VALUES ($1, $2, $3)")
             .bind(tenant.id().as_uuid())
             .bind(tenant.slug().as_str())
@@ -109,7 +110,7 @@ impl PgIdentityStore {
     /// # Errors
     /// [`StoreError::Internal`] on a duplicate `(tenant, subject)`; callers reconcile explicitly.
     pub async fn insert_membership(&self, membership: &Membership) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         insert_membership(&mut tx, membership).await?;
         insert_audit(
             &mut tx,
@@ -226,7 +227,7 @@ async fn insert_denial_once(
         audit.resource_type(),
         audit.resource_id()
     );
-    let mut tx = pool.begin().await.map_err(store_error)?;
+    let mut tx = pool.begin_safely().await.map_err(store_error)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
         .bind(&key)
         .execute(&mut *tx)
@@ -290,7 +291,7 @@ impl IdentityStore for PgIdentityStore {
         workspace: &Workspace,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         sqlx::query(
             "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES ($1, $2, $3, $4)",
         )
@@ -347,7 +348,7 @@ impl IdentityStore for PgIdentityStore {
         namespace: &Namespace,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         sqlx::query(
             "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
              VALUES ($1, $2, $3, $4, $5, $6)",

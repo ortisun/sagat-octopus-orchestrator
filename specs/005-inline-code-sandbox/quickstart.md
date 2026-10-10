@@ -42,7 +42,7 @@ SAGAT_PERF_REPORT=tests/performance/reports/005-inline-code-sandbox.md \
 | `e2e_005` | 27 passed (three consecutive runs; one earlier run failed `us04::a_script_that_floods_its_output_is_cut_off` with `logTruncated` false and was not reproduced in the next five — the assertion now prints the stored record if it comes back) |
 | `fault_005` | 12 passed (twice in a row) |
 | `contract_rest_005` | 1 passed (25 operations) |
-| `cargo test --workspace` | 95 test binaries, 1328 passed, 0 failed, 6 ignored (the benchmarks) — **with `a_dispatcher_cut_off_at_any_await…` of feature 004 skipped**: it hangs in a large share of runs on `develop` as well (6 of 8 there), which is not this feature's (`research.md`, memory of the session) |
+| `cargo test --workspace` | 95 test binaries, 1328 passed, 0 failed, 6 ignored (the benchmarks) with `a_dispatcher_cut_off_at_any_await…` of feature 004 skipped, because it hung in most runs on `develop` too (6 of 8). Its cause was an sqlx 0.9.0 bug that leaves a connection in a transaction when a `begin` is cut off (ADR-0014); after the fix (`bugfix/dispatcher-cancel-hang`) the run with nothing skipped is 95 binaries, 1331 passed, 0 failed, 6 ignored |
 
 ### The reviews (T005-035)
 

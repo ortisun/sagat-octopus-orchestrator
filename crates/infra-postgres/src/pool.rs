@@ -77,3 +77,39 @@ pub fn spawn_pool_metrics(pool: PgPool, interval: Duration) -> tokio::task::Join
         }
     })
 }
+
+/// Starts a transaction in a way nothing can cut off halfway.
+///
+/// `sqlx` 0.9.0 sends `BEGIN` and only afterwards records that the connection is in a transaction.
+/// A future dropped between the two (a timeout, a client that went away, a task that was
+/// cancelled) leaves the server in a transaction that `sqlx` does not know about: the guard that
+/// rolls back on drop does nothing at depth zero, the connection goes back to the pool, and the next
+/// statements on it run inside a transaction that is never committed: their writes are lost and the
+/// locks they take are held. Measured: 205 of 3000 cut-off `begin`s did it. Here the beginning runs
+/// in a task of its own, which finishes whatever the caller does; if the caller is gone, the
+/// transaction it returns is dropped there and rolled back as it should be.
+///
+/// Remove this when `sqlx` begins cancel-safely (`tests/fault/004-events-webhooks-messaging/
+/// cancellation.rs` has a test that will say so).
+pub trait BeginSafely {
+    /// # Errors
+    /// The connection could not be taken or the transaction not begun.
+    fn begin_safely(
+        &self,
+    ) -> impl std::future::Future<
+        Output = Result<sqlx::Transaction<'static, sqlx::Postgres>, sqlx::Error>,
+    > + Send;
+}
+
+impl BeginSafely for sqlx::PgPool {
+    async fn begin_safely(
+        &self,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, sqlx::Error> {
+        let pool = self.clone();
+        tokio::spawn(async move { pool.begin().await })
+            .await
+            .map_err(|_| {
+                sqlx::Error::Protocol("the task that begins a transaction failed".into())
+            })?
+    }
+}

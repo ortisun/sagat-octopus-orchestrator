@@ -7,6 +7,7 @@
 //! Nothing outside the transaction ever sees a half-applied command, and a crash before `COMMIT`
 //! leaves the previous state intact (`FR-002-003`).
 
+use crate::pool::BeginSafely;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -190,7 +191,7 @@ impl RunStore for PgRunStore {
         let hash = hash(&new.idempotency.fingerprint);
         let input_digest = Sha256::digest(&new.input).to_vec();
         for _ in 0..2 {
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
+            let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             if let Some(existing) = replay(&mut tx, tenant, &new.idempotency, &hash).await? {
                 return Ok(Applied::Replayed(existing));
             }
@@ -299,7 +300,7 @@ impl RunStore for PgRunStore {
         run: RunId,
         lock: Lock,
     ) -> Result<Option<PgRunTx>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let row = match lock {
             Lock::Wait => sqlx::query(RUN_FOR_UPDATE)
                 .bind(tenant.as_uuid())
@@ -478,7 +479,7 @@ impl RunStore for PgRunStore {
         run: RunId,
     ) -> Result<Option<GraphSnapshot>, StoreError> {
         // One snapshot for the run row and its steps, so the graph is self-consistent.
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await

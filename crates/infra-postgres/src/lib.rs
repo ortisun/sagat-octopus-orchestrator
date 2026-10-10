@@ -29,7 +29,7 @@ mod workers;
 pub use definitions::PgDefinitionStore;
 pub use execution::{PgRunStore, PgRunTx};
 pub use identity::PgIdentityStore;
-pub use pool::{PoolConfig, connect, spawn_pool_metrics};
+pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use sqlx::PgPool;
 /// The query that finds the runs a worker may claim, exposed so a test can check its plan.

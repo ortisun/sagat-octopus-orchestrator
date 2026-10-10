@@ -11,6 +11,7 @@
 //! The scopes lock in a fixed order (namespace before tenant), and nothing that holds one waits for
 //! anything but the next in that order, so the locks cannot deadlock with each other.
 
+use crate::pool::BeginSafely;
 use sagat_application::authz::NamespaceDirectory;
 use sagat_application::error::StoreError;
 use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredLimit};
@@ -426,7 +427,7 @@ impl QuotaStore for PgRunStore {
         granted_by: &str,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         match value {
             Some(value) => {
                 let value = i64::try_from(value).map_err(|_| StoreError::Internal {
@@ -486,7 +487,7 @@ impl QuotaStore for PgRunStore {
         changed_by: &str,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         match value {
             Some(value) => {
                 let value = i64::try_from(value).map_err(|_| StoreError::Internal {

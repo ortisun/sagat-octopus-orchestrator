@@ -4,6 +4,7 @@
 //! of the consumer moves (Kafka), or a message is set aside and the position moves. A consumer that
 //! crashes between the two cannot have done one without the other.
 
+use crate::pool::BeginSafely;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -179,7 +180,7 @@ impl ConnectorStore for PgRunStore {
         limit: u64,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         lock_connectors(&mut tx, connector.tenant_id, connector.namespace_id).await?;
         lock_event_sources(&mut tx, connector.tenant_id, connector.namespace_id).await?;
         // A slug names one source of events in a namespace: an endpoint or a connector.
@@ -228,7 +229,7 @@ impl ConnectorStore for PgRunStore {
         connector: &ConnectorRecord,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let changed = sqlx::query(
             "UPDATE event_connectors SET settings = $3, secret_name = $4, default_event_type = $5, \
                  rate_per_second = $6, status = $7, updated_at = $8 \
@@ -260,7 +261,7 @@ impl ConnectorStore for PgRunStore {
         id: ConnectorId,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let removed = sqlx::query("DELETE FROM event_connectors WHERE tenant_id = $1 AND id = $2")
             .bind(tenant.as_uuid())
             .bind(id.as_uuid())
@@ -361,7 +362,7 @@ impl ConnectorStore for PgRunStore {
         id: Uuid,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let removed = sqlx::query(
             "DELETE FROM connector_dead_letters \
              WHERE tenant_id = $1 AND connector_id = $2 AND id = $3",
@@ -389,7 +390,7 @@ impl ConnectorStore for PgRunStore {
         backlog_limit: u64,
         audit: &AuditRecord,
     ) -> Result<Admission, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let admission = admit_within(&mut tx, event, backlog_limit).await?;
         if matches!(admission, Admission::Accepted | Admission::Duplicate) {
             sqlx::query("DELETE FROM connector_dead_letters WHERE connector_id = $1 AND id = $2")
@@ -473,7 +474,7 @@ impl ConnectorRuntime for PgRunStore {
         backlog_limit: u64,
         checkpoint: Option<(&Checkpoint, i64)>,
     ) -> Result<Admission, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let admission = admit_within(&mut tx, event, backlog_limit).await?;
         // The position moves with the event, and only when the event is in (or was in before).
         if matches!(admission, Admission::Accepted | Admission::Duplicate) {
@@ -492,7 +493,7 @@ impl ConnectorRuntime for PgRunStore {
         reason: DeadLetter,
         checkpoint: Option<(&Checkpoint, i64)>,
     ) -> Result<SetAside, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let truncated = message.body.len() > MAX_DEAD_BODY;
         let body: &[u8] = &message.body[..message.body.len().min(MAX_DEAD_BODY)];
         let headers: BTreeMap<String, String> = keep_headers(&message.headers);

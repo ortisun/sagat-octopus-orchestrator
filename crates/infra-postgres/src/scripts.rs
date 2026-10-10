@@ -7,6 +7,7 @@
 //! another runner is taking, and everything its holder reports is checked against the hash of the
 //! token only that holder knows.
 
+use crate::pool::BeginSafely;
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
@@ -502,7 +503,7 @@ impl ScriptStore for PgRunStore {
         limit: u64,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         lock_scripts(&mut tx, script.tenant_id, script.namespace_id).await?;
         ensure_room_for_script(&mut tx, script.tenant_id, script.namespace_id, limit).await?;
         let draft = &script.draft;
@@ -593,7 +594,7 @@ impl ScriptStore for PgRunStore {
             expected_revision,
             now,
         } = update;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let updated = sqlx::query(
             "UPDATE scripts SET source = $5, lockfile = $6, input_schema = $7, output_schema = $8, \
                  policy = $9, retention_days = $10, revision = revision + 1, updated_at = $11 \
@@ -646,7 +647,7 @@ impl ScriptStore for PgRunStore {
         id: ScriptId,
         audit: &AuditRecord,
     ) -> Result<Deleted, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // The lock a publication takes, so a version cannot appear between the check and the delete.
         let exists: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM scripts WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 FOR UPDATE",
@@ -688,7 +689,7 @@ impl ScriptStore for PgRunStore {
         jobs_limit: u64,
         audit: &AuditRecord,
     ) -> Result<Option<(VersionRecord, bool)>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // The script row is the lock of its versions: numbers are assigned one at a time.
         let row = sqlx::query(
             "SELECT latest_version, revision FROM scripts \
@@ -852,7 +853,7 @@ impl ScriptStore for PgRunStore {
         jobs_limit: u64,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // The script row first, then the namespace's lock: publishing a version holds the row
         // while it waits for the lock, and the insert below needs the row (its foreign key). Taken
         // the other way round the two would wait for each other.
@@ -1086,7 +1087,7 @@ impl RunnerStore for PgRunStore {
         now: OffsetDateTime,
     ) -> Result<Option<ClaimedBuild>, StoreError> {
         let names: Vec<&str> = languages.iter().map(|l| l.as_str()).collect();
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // A build whose runner vanished and whose attempts are used up is over.
         let lost: Vec<Uuid> = sqlx::query_scalar(
             "UPDATE script_build_jobs SET status = 'FAILED', finished_at = $3, lease_token_hash = NULL \
@@ -1237,7 +1238,7 @@ impl RunnerStore for PgRunStore {
             token_hash,
             now,
         } = hold;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let Some((claimed, status)) = held_build_in(&mut tx, tenant, job, token_hash, true).await?
         else {
             return Ok(Finished::Stale);
@@ -1292,7 +1293,7 @@ impl RunnerStore for PgRunStore {
             token_hash,
             now,
         } = hold;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let Some((claimed, status)) = held_build_in(&mut tx, tenant, job, token_hash, true).await?
         else {
             return Ok(Finished::Stale);
@@ -1367,7 +1368,7 @@ impl RunnerStore for PgRunStore {
             token_hash,
             now,
         } = hold;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let Some((claimed, status)) = held_build_in(&mut tx, tenant, job, token_hash, true).await?
         else {
             return Ok(Finished::Stale);
@@ -1430,7 +1431,7 @@ impl RunnerStore for PgRunStore {
         now: OffsetDateTime,
     ) -> Result<Option<ClaimedTest>, StoreError> {
         let names: Vec<&str> = languages.iter().map(|l| l.as_str()).collect();
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // Runs nobody took in time, and runs whose runner vanished too many times, are over.
         sqlx::query(
             "UPDATE script_test_runs SET status = 'FAILED', failure = 'SCRIPT_SANDBOX_UNAVAILABLE', \
@@ -1534,7 +1535,7 @@ impl RunnerStore for PgRunStore {
         now: OffsetDateTime,
         audits: &[AuditRecord],
     ) -> Result<Finished, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let held = sqlx::query(
             "SELECT status FROM script_test_runs \
              WHERE tenant_id = $1 AND id = $2 AND lease_token_hash = $3 FOR UPDATE",
@@ -1657,7 +1658,7 @@ impl RunnerStore for PgRunStore {
         audits: &[AuditRecord],
     ) -> Result<bool, StoreError> {
         let e = &record.execution;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let inserted = sqlx::query(
             "INSERT INTO script_executions \
              (id, tenant_id, namespace_id, digest, run_id, node, attempt, status, failure, \
