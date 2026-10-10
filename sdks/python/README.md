@@ -193,7 +193,8 @@ What a hostile or broken server, or a careless caller, cannot make the SDK do (`
   of a config, a client or a host show `<redacted>`, and pickling one raises `TypeError`. `config.token.reveal()`
   returns the token; the SDK calls `reveal()` only where it sends the credential.
 * **A body is bounded:** a REST body is read up to 32 MiB (decoded, streamed) and then fails as `PROTOCOL`; a wait the
-  server asks for (`Retry-After` in seconds, `retry-after-ms`) is capped at 60 s; a server `message` is cut to 512
+  server asks for (`Retry-After` in seconds, `retry-after-ms`) is capped at 60 s, and so is the `retry_after_ms` field of
+  the error; a server `message` is cut to 512
   characters; a `traceId` that is not 32 lowercase hex characters is not repeated.
 * **Names:** a run id is a UUID and a name of `''`, `'.'` or `'..'` is refused before anything is sent.
 * **A token provider that raises** is repeated before anything is sent, in every call the SDK repeats and in the
@@ -218,8 +219,10 @@ What a hostile or broken server, or a careless caller, cannot make the SDK do (`
   Instants it reads are aware `datetime`s in UTC.
 * Integers beyond 64 bits, `NaN`, infinities, non-string keys and types JSON has no form for (`Decimal`,
   `datetime`, `bytes`...) are refused before anything is sent, never guessed.
-  The canonical text of a workflow (`to_json()`) also refuses an integer beyond 2^53 - 1 (it must be the same bytes
-  in every SDK): send it as a string.
+  The canonical text of a workflow (`to_json()`) refuses, by **value**, a whole number beyond 2^53 - 1 that
+  ECMAScript would print in digits (below 1e21: `9007199254740993`, `9007199254740992.0`, `1e20`) however it was written
+  (it must be the same bytes in every SDK): send it as a string. `1e21` and above, and every number with a fraction,
+  are numbers and are written as RFC 8785 writes them.
 * Logging uses the standard `logging` module (`sagat_octopus_orchestrator` logger, a `NullHandler` by default);
   a log line holds identifiers and codes only. For tracing pass `trace_context=lambda: traceparent_or_None`.
 
@@ -234,7 +237,7 @@ server ignores the fields it does not know.
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (195) | `mypy --strict` and `ruff` | Conformance suite (14 scenarios) |
+| Runtime | Unit tests (226) | `mypy --strict` and `ruff` | Conformance suite (14 scenarios) |
 |---|---|---|---|
 | CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
 | CPython 3.10.21 (uv build) | 194 passed and 1 skipped (the codegen check needs `grpcio-tools`, not installed there) | not run (type-checked against the 3.10 language level from 3.14) | passed, one run |

@@ -131,7 +131,9 @@ def build(scenario: Obj) -> Obj:
     for key, invalid in (scenario.get("invalidWorkflows") or {}).items():
         contains = str(invalid.get("contains") or "")
         try:
-            builder_of(invalid["workflow"]).build()
+            candidate = builder_of(invalid["workflow"])
+            candidate.build()
+            candidate.to_json()  # the canonical text refuses what build() lets through (an unsafe integer)
             errors[key] = {"raised": False}
         except SagatError as error:
             errors[key] = {"raised": True, "code": error.code, "mentions": contains == "" or contains in error.message}

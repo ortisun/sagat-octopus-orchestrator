@@ -184,7 +184,7 @@ async def test_a_handler_that_raises_its_own_cancellation_after_the_token_is_can
 
 def test_the_canonical_text_refuses_an_integer_beyond_2_to_the_53_minus_1() -> None:
     assert canonical_json({"n": 2**53 - 1, "m": -(2**53 - 1)}) == '{"m":-9007199254740991,"n":9007199254740991}'
-    for big in (2**53, 2**53 + 1, 9007199254740993, -(2**53), 10**30):
+    for big in (2**53, 2**53 + 1, 9007199254740993, -(2**53), 10**20):
         with pytest.raises(SagatError) as caught:
             canonical_json({"n": big})
         assert caught.value.code == "VALIDATION_FAILED", big

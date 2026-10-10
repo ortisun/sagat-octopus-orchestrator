@@ -37,6 +37,11 @@ def parse_ms(text: str | None) -> int | None:
     return int(text) if len(text) <= 12 else 10**12
 
 
+def capped_ms(milliseconds: int | None) -> int | None:
+    """What a server asked for, as the field of an error: never more than ``MAX_SERVER_WAIT``."""
+    return None if milliseconds is None else min(milliseconds, int(MAX_SERVER_WAIT * 1000))
+
+
 def server_wait(milliseconds: int | None) -> float:
     """Seconds to wait for what a server asked, capped at ``MAX_SERVER_WAIT``."""
     return min(MAX_SERVER_WAIT, max(0, milliseconds or 0) / 1000)

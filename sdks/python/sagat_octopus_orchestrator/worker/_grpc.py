@@ -14,7 +14,7 @@ from .._proto import worker_pb2 as pb
 from .._proto import worker_pb2_grpc as pb_grpc
 from ..config import Secret, TlsOptions, TokenSource, resolve_token
 from ..errors import ErrorCode, SagatError
-from ..retry import parse_ms
+from ..retry import capped_ms, parse_ms
 from ..traceparent import is_traceparent
 
 METHODS = ("RegisterWorker", "PollTasks", "Heartbeat", "CompleteStep", "FailStep", "ResolveSecrets")
@@ -47,7 +47,7 @@ def error_of_status(method: str, error: grpc.aio.AioRpcError) -> SagatError:
     """
     reason = _metadata_value(error, "x-sagat-error")
     retry_after = _metadata_value(error, "retry-after-ms")
-    retry_after_ms = parse_ms(retry_after)
+    retry_after_ms = capped_ms(parse_ms(retry_after))
     status = error.code()
     name = status.name
 

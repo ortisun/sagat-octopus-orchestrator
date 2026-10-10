@@ -20,6 +20,7 @@ _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 _MAX_DEPTH = 200
 _MAX_SAFE = 2**53 - 1
+_ES_DIGITS_LIMIT = 1e21  # ECMAScript prints a number in digits below this, with an exponent from it
 
 
 def utf16_key(text: str) -> bytes:
@@ -32,7 +33,7 @@ def _refuse(message: str) -> SagatError:
     return SagatError("VALIDATION_FAILED", message)
 
 
-def _check(value: Any, path: str, depth: int) -> None:
+def _check(value: Any, path: str, depth: int, *, wire: bool = True) -> None:
     if depth > _MAX_DEPTH:
         raise _refuse(f"{path} is nested too deeply, or refers to itself")
     if value is None or isinstance(value, bool):
@@ -43,7 +44,8 @@ def _check(value: Any, path: str, depth: int) -> None:
         except UnicodeEncodeError:
             raise _refuse(f"{path} is a string that is not valid Unicode") from None
     elif isinstance(value, int):
-        if not _INT64_MIN <= value <= _INT64_MAX:
+        # On the wire an integer is at most 64 bits; the canonical text has its own rule, by value (see below).
+        if wire and not _INT64_MIN <= value <= _INT64_MAX:
             raise _refuse(f"{path} is an integer beyond 64 bits: send it as a string")
     elif isinstance(value, float):
         if value != value or value in (float("inf"), float("-inf")):
@@ -56,10 +58,10 @@ def _check(value: Any, path: str, depth: int) -> None:
                 key.encode("utf-8")
             except UnicodeEncodeError:
                 raise _refuse(f"{path} has a key that is not valid Unicode") from None
-            _check(item, f"{path}.{key}", depth + 1)
+            _check(item, f"{path}.{key}", depth + 1, wire=wire)
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
-            _check(item, f"{path}[{index}]", depth + 1)
+            _check(item, f"{path}[{index}]", depth + 1, wire=wire)
     else:
         raise _refuse(f"{path} is a {type(value).__name__}, which is not JSON")
 
@@ -106,6 +108,27 @@ def _es_number(value: float) -> str:
     return f"{sign}{mantissa}e{'+' if e >= 0 else '-'}{abs(e)}"
 
 
+def _as_double(value: int) -> float:
+    try:
+        return float(value)
+    except OverflowError:
+        raise _refuse("a number too large for a double has no canonical text") from None
+
+
+def _unsafe_number(value: float) -> str:
+    """A number beyond 2^53 - 1 in magnitude, by VALUE (not by how it was written): a whole number that ECMAScript
+    prints in digits (below 1e21: ``9007199254740993``, ``9007199254740992.0``, ``1e20``) would be a different number in
+    another SDK, so it is refused; one it prints with an exponent (1e21 and above) is a number, written as RFC 8785
+    writes it. A double that large is always whole."""
+    if value != value or value in (float("inf"), float("-inf")):
+        raise _refuse("a number that is not finite has no canonical text")
+    if abs(value) < _ES_DIGITS_LIMIT:
+        raise _refuse(
+            "a whole number beyond 2^53 - 1 has no canonical text, however it is written: send it as a string"
+        )
+    return _es_number(value)
+
+
 def _canonical(value: Any, out: list[str]) -> None:
     if value is None:
         out.append("null")
@@ -116,12 +139,12 @@ def _canonical(value: Any, out: list[str]) -> None:
     elif isinstance(value, str):
         out.append(json.dumps(value, ensure_ascii=False))
     elif isinstance(value, int):
-        if not -_MAX_SAFE <= value <= _MAX_SAFE:
-            # The text must be the same bytes in every SDK, and TypeScript's cannot hold this integer exactly.
-            raise _refuse("an integer beyond 2^53 - 1 has no canonical text: send it as a string")
-        out.append(str(int(value)))
+        if -_MAX_SAFE <= value <= _MAX_SAFE:
+            out.append(str(int(value)))
+        else:
+            out.append(_unsafe_number(_as_double(value)))
     elif isinstance(value, float):
-        out.append(_es_number(value))
+        out.append(_unsafe_number(value) if abs(value) > _MAX_SAFE else _es_number(value))
     elif isinstance(value, dict):
         out.append("{")
         for index, key in enumerate(sorted(value, key=utf16_key)):
@@ -143,7 +166,7 @@ def _canonical(value: Any, out: list[str]) -> None:
 def canonical_json(value: Any) -> str:
     """Canonical JSON text: keys sorted at every depth, no insignificant whitespace, numbers written as
     ``JSON.stringify`` of the TypeScript SDK writes them, so that the five SDKs agree byte for byte."""
-    _check(value, "$", 0)
+    _check(value, "$", 0, wire=False)
     out: list[str] = []
     _canonical(value, out)
     return "".join(out)

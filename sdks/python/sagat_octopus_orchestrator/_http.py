@@ -14,7 +14,7 @@ import httpx
 from ._json import decode_json, encode_json
 from .config import SDK_VERSION, ClientConfig, ProviderFailure, log, resolve_token, warn_if_plaintext
 from .errors import SagatError, code_of_http_status
-from .retry import delay_after, parse_ms
+from .retry import capped_ms, delay_after, parse_ms
 
 # The codes the REST envelope may carry.
 _ENVELOPE_CODES = frozenset(
@@ -68,7 +68,7 @@ def retry_after_ms(value: str | None) -> int | None:
     if value is None:
         return None
     seconds = parse_ms(value.strip(" \t"))
-    return None if seconds is None else seconds * 1000
+    return capped_ms(None if seconds is None else seconds * 1000)
 
 
 class HttpTransport:
