@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::harness::{self, Selection, journal, node, observation, worker_log};
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_saga_that_fails_is_compensated_in_reverse_order_and_an_unknown_outcome_is_reconciled_in_every_sdk()
  {
     harness::block_on(async {
@@ -118,6 +119,7 @@ fn a_saga_that_fails_is_compensated_in_reverse_order_and_an_unknown_outcome_is_r
 }
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn the_failures_of_an_activity_reach_the_run_as_the_same_canonical_codes_in_every_sdk() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["failures-and-retries"])).await;

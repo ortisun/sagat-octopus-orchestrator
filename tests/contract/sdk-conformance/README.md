@@ -7,12 +7,14 @@ identical across the five **and** equal to the golden files in `expected/`. A sc
 an SDK does, not how it is written. `sdks/SPEC.md` is the behaviour; this file is the test contract.
 
 ```text
-cargo test -p sagat-tests --test sdk_conformance -- --nocapture
-SAGAT_SDK_LANGS=go,python cargo test -p sagat-tests --test sdk_conformance        # some languages
-SAGAT_SDK_SCENARIO=run-lifecycle cargo test -p sagat-tests --test sdk_conformance # one scenario
+cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture
+SAGAT_SDK_LANGS=go,python cargo test -p sagat-tests --test sdk_conformance -- --ignored        # some languages
+SAGAT_SDK_SCENARIO=run-lifecycle cargo test -p sagat-tests --test sdk_conformance -- --ignored # one scenario
 SAGAT_SDK_BLESS=1 …                                                              # write expected/ (review the diff!)
 SAGAT_SDK_REUSE=1 …                                                              # do not rebuild the SDKs
 ```
+
+`--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
 ## What each SDK ships
 

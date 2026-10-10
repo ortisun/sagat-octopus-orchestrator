@@ -10,6 +10,7 @@ mod support;
 mod harness;
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn every_sdk_conforms_to_every_scenario() {
     harness::block_on(async {
         harness::conform(&harness::Selection::from_env())

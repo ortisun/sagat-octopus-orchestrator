@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::harness::{self, Selection, journal, observation};
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_start_whose_answer_is_lost_or_that_never_left_is_one_run_and_a_refusal_is_not_repeated() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["lost-responses"])).await;
@@ -42,6 +43,7 @@ fn a_start_whose_answer_is_lost_or_that_never_left_is_one_run_and_a_refusal_is_n
 }
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_transport_that_is_down_is_retried_as_far_as_the_policy_goes_and_ends_as_the_canonical_error() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["errors"])).await;

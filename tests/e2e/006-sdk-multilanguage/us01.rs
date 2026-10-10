@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::harness::{self, Selection, observation, worker_log};
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn every_sdk_creates_the_run_with_its_idempotency_key_and_the_trace_context_it_was_given() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["run-lifecycle"])).await;
@@ -58,6 +59,7 @@ fn every_sdk_creates_the_run_with_its_idempotency_key_and_the_trace_context_it_w
 /// StartAsync; Then Run is created with idempotencyKey and trace context propagated." The service is the C# SDK
 /// runner's `aspnet` mode (see the conformance README); the platform is the real one.
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn an_aspnet_core_service_registers_the_client_through_di_and_starts_a_run_with_its_key_and_the_trace()
  {
     if std::env::var("SAGAT_SDK_LANGS")

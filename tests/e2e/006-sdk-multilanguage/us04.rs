@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::harness::{self, Selection, observation, worker_log};
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn workers_of_an_older_and_of_a_newer_minor_version_are_both_served_and_another_major_is_refused() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["protocol-negotiation"])).await;

@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::harness::{self, Selection, journal, node, observation, worker_log};
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_worker_that_goes_silent_loses_its_lease_and_its_result_is_never_reported() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["lease-lost"])).await;
@@ -38,6 +39,7 @@ fn a_worker_that_goes_silent_loses_its_lease_and_its_result_is_never_reported() 
 }
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_network_that_refuses_every_call_of_the_protocol_once_or_twice_costs_the_worker_nothing() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["worker-transport-faults"])).await;
@@ -59,6 +61,7 @@ fn a_network_that_refuses_every_call_of_the_protocol_once_or_twice_costs_the_wor
 }
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_cancelled_run_reaches_the_activity_and_a_wait_that_times_out_takes_its_branch() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&[
@@ -110,6 +113,7 @@ fn a_cancelled_run_reaches_the_activity_and_a_wait_that_times_out_takes_its_bran
 }
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_worker_that_is_stopped_while_it_works_does_not_fail_the_step_for_good() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["worker-shutdown"])).await;
@@ -143,6 +147,7 @@ fn a_worker_that_is_stopped_while_it_works_does_not_fail_the_step_for_good() {
 }
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_handler_that_ignores_its_cancellation_is_left_to_finish_and_what_it_returned_is_reported() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["cancellation"])).await;

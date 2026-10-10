@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::harness::{self, Selection, node, observation, worker_log};
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_worker_of_every_sdk_registers_receives_the_task_and_completes_the_step() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["worker-registration"])).await;

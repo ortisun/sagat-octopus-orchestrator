@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::harness::{self, Selection, observation};
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn another_tenants_run_does_not_exist_and_a_bad_token_is_refused_with_the_canonical_errors() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["run-lifecycle", "errors"])).await;
@@ -37,6 +38,7 @@ fn another_tenants_run_does_not_exist_and_a_bad_token_is_refused_with_the_canoni
 }
 
 #[test]
+#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
 fn a_worker_identity_with_no_binding_cannot_register_its_activities() {
     harness::block_on(async {
         let suite = harness::conform(&Selection::scenarios(&["worker-registration"])).await;
