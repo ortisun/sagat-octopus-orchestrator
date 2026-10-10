@@ -1,0 +1,559 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"iter"
+	"math/rand/v2"
+	"net/url"
+	"strconv"
+	"time"
+
+	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/ids"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx"
+)
+
+// CallOption adjusts one call. An option that a call has no use for is ignored; the doc of each
+// option says which calls read it.
+type CallOption func(*callOptions)
+
+type callOptions struct {
+	idempotencyKey     string
+	traceparent        string
+	versionID          string
+	correlationID      string
+	deadline           time.Time
+	deadlineIn         time.Duration
+	hasDeadlineIn      bool
+	stepID             string
+	outcome            string
+	errorCode          string
+	expectedRunVersion *int64
+}
+
+func callOptionsOf(opts []CallOption) callOptions {
+	var o callOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// WithIdempotencyKey sets the Idempotency-Key of a Start, Operate, Cancel or Signal: 8 to 160
+// visible ASCII characters (0x21 to 0x7e: no space, no control character). Without it the SDK generates a random one per call and reuses it for
+// every retry of that call, so two separate calls with no key are two runs.
+func WithIdempotencyKey(key string) CallOption {
+	return func(o *callOptions) { o.idempotencyKey = key }
+}
+
+// WithTraceparent sets the W3C traceparent of the call. It wins over the ambient trace context. A
+// malformed one is a BAD_REQUEST raised by the SDK and nothing is sent.
+func WithTraceparent(traceparent string) CallOption {
+	return func(o *callOptions) { o.traceparent = traceparent }
+}
+
+// WithVersionID starts a specific version of the workflow (Start).
+func WithVersionID(id string) CallOption { return func(o *callOptions) { o.versionID = id } }
+
+// WithCorrelationID sets the correlation id of the run (Start).
+func WithCorrelationID(id string) CallOption { return func(o *callOptions) { o.correlationID = id } }
+
+// WithDeadline sets the instant at which the run times out (Start); it must be in the future and
+// within a year. It is sent as an RFC 3339 instant in UTC.
+func WithDeadline(t time.Time) CallOption { return func(o *callOptions) { o.deadline = t } }
+
+// WithDeadlineIn is WithDeadline as a duration from now, computed once, before the first attempt
+// (Start).
+func WithDeadlineIn(d time.Duration) CallOption {
+	return func(o *callOptions) { o.deadlineIn, o.hasDeadlineIn = d, true }
+}
+
+// WithExpectedRunVersion makes the operation conditional on the version of the run (Cancel,
+// Operate).
+func WithExpectedRunVersion(version int64) CallOption {
+	return func(o *callOptions) { o.expectedRunVersion = &version }
+}
+
+// WithStepID names the step an operation is about (Operate).
+func WithStepID(id string) CallOption { return func(o *callOptions) { o.stepID = id } }
+
+// WithOutcome is the outcome a step is resolved with, SUCCEEDED or FAILED (Operate).
+func WithOutcome(outcome string) CallOption { return func(o *callOptions) { o.outcome = outcome } }
+
+// WithErrorCode is the error code a step is resolved as failed with (Operate).
+func WithErrorCode(code string) CallOption { return func(o *callOptions) { o.errorCode = code } }
+
+// trace returns the traceparent of a call: the explicit one, else the ambient one, validated.
+func (c *Client) trace(ctx context.Context, explicit string) (string, error) {
+	value := explicit
+	if value == "" && c.traceContext != nil {
+		value = c.traceContext(ctx)
+	}
+	if value == "" {
+		return "", nil
+	}
+	if err := sagat.CheckTraceparent(value); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func key(given string) (string, error) {
+	if given == "" {
+		return ids.UUID(), nil
+	}
+	if !keyPattern.MatchString(given) {
+		return "", sagat.Invalid("an idempotency key is 8 to 160 visible ASCII characters (no space)")
+	}
+	return given, nil
+}
+
+// ResolveWorkflow returns the id of a workflow given by id or by name (the workflow of that name in
+// the namespace). A name is remembered for a minute.
+func (c *Client) ResolveWorkflow(ctx context.Context, workflow string) (string, error) {
+	if uuidPattern.MatchString(workflow) {
+		return lower(workflow), nil
+	}
+	c.mu.Lock()
+	cached, ok := c.names[workflow]
+	c.mu.Unlock()
+	if ok && time.Since(cached.at) < time.Minute {
+		return cached.id, nil
+	}
+	traceparent, err := c.trace(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	cursor := ""
+	for {
+		query := url.Values{"limit": {"200"}}
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+		resp, err := c.do(ctx, request{method: "GET", path: "/workflows", query: query, repeatable: true, traceparent: traceparent})
+		if err != nil {
+			return "", err
+		}
+		page, err := object(resp.body, "a page")
+		if err != nil {
+			return "", err
+		}
+		var items []json.RawMessage
+		_ = json.Unmarshal(page["items"], &items)
+		for _, item := range items {
+			draft, err := object(item, "a workflow")
+			if err != nil {
+				return "", err
+			}
+			if name, _ := jsonx.String(draft, "name"); name == workflow {
+				id, err := requiredString(draft, "id")
+				if err != nil {
+					return "", err
+				}
+				c.mu.Lock()
+				c.names[workflow] = nameEntry{id: id, at: time.Now()}
+				c.mu.Unlock()
+				return id, nil
+			}
+		}
+		cursor, _ = jsonx.String(page, "nextCursor")
+		if cursor == "" {
+			break
+		}
+	}
+	e := sagat.Errorf(sagat.CodeNotFound, "no workflow is named %q in this namespace", workflow)
+	e.HTTPStatus, e.Reason = 404, "WORKFLOW_NOT_FOUND"
+	return "", e
+}
+
+func lower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'F' {
+			b[i] = c + 32
+		}
+	}
+	return string(b)
+}
+
+// Start starts a run of a published workflow, given by id or by name. input is encoded as JSON (a
+// json.RawMessage is sent as it is, so numbers keep their text); nil is an empty object.
+func (c *Client) Start(ctx context.Context, workflow string, input any, opts ...CallOption) (*Run, error) {
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	deadline := o.deadline
+	if o.hasDeadlineIn {
+		deadline = time.Now().Add(o.deadlineIn)
+	}
+	workflowID, err := c.ResolveWorkflow(ctx, workflow)
+	if err != nil {
+		return nil, err
+	}
+	if input == nil {
+		input = map[string]any{}
+	}
+	body := map[string]any{"workflowId": workflowID, "input": input}
+	if o.versionID != "" {
+		body["versionId"] = o.versionID
+	}
+	if o.correlationID != "" {
+		body["correlationId"] = o.correlationID
+	}
+	if !deadline.IsZero() {
+		body["deadline"] = jsonx.Instant(deadline)
+	}
+	resp, err := c.do(ctx, request{
+		method: "POST", path: "/runs", body: body, hasBody: true,
+		idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseRun(resp.body)
+}
+
+// Get reads a run.
+func (c *Client) Get(ctx context.Context, runID string) (*Run, error) {
+	traceparent, err := c.trace(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: "/runs/" + url.PathEscape(runID), repeatable: true, traceparent: traceparent})
+	if err != nil {
+		return nil, err
+	}
+	return parseRun(resp.body)
+}
+
+// ListOptions filters and pages the runs of List and ListAll.
+type ListOptions struct {
+	WorkflowID string
+	Status     RunStatus
+	// Limit is the page size; the server's default when zero.
+	Limit int
+	// Cursor continues a previous page.
+	Cursor string
+}
+
+// List reads one page of runs, newest first.
+func (c *Client) List(ctx context.Context, options ListOptions) (*RunPage, error) {
+	traceparent, err := c.trace(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if options.WorkflowID != "" {
+		query.Set("workflowId", options.WorkflowID)
+	}
+	if options.Status != "" {
+		query.Set("status", string(options.Status))
+	}
+	if options.Limit > 0 {
+		query.Set("limit", strconv.Itoa(options.Limit))
+	}
+	if options.Cursor != "" {
+		query.Set("cursor", options.Cursor)
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: "/runs", query: query, repeatable: true, traceparent: traceparent})
+	if err != nil {
+		return nil, err
+	}
+	return parseRunPage(resp.body)
+}
+
+// ListAll yields every run that matches, page after page, in the order the server gave (from
+// options.Cursor when one is given). The iteration ends with the first error, which is yielded last.
+//
+//	for run, err := range c.ListAll(ctx, client.ListOptions{Status: client.StatusRunning}) { ... }
+func (c *Client) ListAll(ctx context.Context, options ListOptions) iter.Seq2[*Run, error] {
+	return func(yield func(*Run, error) bool) {
+		for {
+			page, err := c.List(ctx, options)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			for _, run := range page.Items {
+				if !yield(run, nil) {
+					return
+				}
+			}
+			if page.NextCursor == "" {
+				return
+			}
+			options.Cursor = page.NextCursor
+		}
+	}
+}
+
+// Action is an operation on a run.
+type Action string
+
+// The actions of Operate.
+const (
+	ActionPause             Action = "PAUSE"
+	ActionResume            Action = "RESUME"
+	ActionCancel            Action = "CANCEL"
+	ActionRetryStep         Action = "RETRY_STEP"
+	ActionRetryCompensation Action = "RETRY_COMPENSATION"
+	ActionSkipCompensation  Action = "SKIP_COMPENSATION"
+	ActionResolveStep       Action = "RESOLVE_STEP"
+)
+
+// Operate applies an action to a run. reason has 8 to 2000 characters. Reads WithStepID,
+// WithOutcome, WithErrorCode, WithExpectedRunVersion, WithIdempotencyKey and WithTraceparent.
+func (c *Client) Operate(ctx context.Context, runID string, action Action, reason string, opts ...CallOption) (*OperationResult, error) {
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"action": string(action), "reason": reason}
+	if o.stepID != "" {
+		body["stepId"] = o.stepID
+	}
+	if o.outcome != "" {
+		body["outcome"] = o.outcome
+	}
+	if o.errorCode != "" {
+		body["errorCode"] = o.errorCode
+	}
+	if o.expectedRunVersion != nil {
+		body["expectedRunVersion"] = *o.expectedRunVersion
+	}
+	resp, err := c.do(ctx, request{
+		method: "POST", path: "/runs/" + url.PathEscape(runID) + "/operations", body: body, hasBody: true,
+		idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an operation result")
+	if err != nil {
+		return nil, err
+	}
+	result := &OperationResult{Raw: raw}
+	result.OperationID, _ = jsonx.String(raw, "operationId")
+	if result.OperationID == "" {
+		return nil, protocolError("operationId is missing from the answer")
+	}
+	result.Accepted, _ = jsonx.Bool(raw, "accepted")
+	status, _ := jsonx.String(raw, "runStatus")
+	result.RunStatus = RunStatus(status)
+	result.RunVersion, _ = jsonx.Int(raw, "runVersion")
+	return result, nil
+}
+
+// Cancel cancels a run. reason has 8 to 2000 characters. It is Operate with ActionCancel.
+func (c *Client) Cancel(ctx context.Context, runID, reason string, opts ...CallOption) (*OperationResult, error) {
+	return c.Operate(ctx, runID, ActionCancel, reason, opts...)
+}
+
+// Signal sends a signal to the steps of a run that wait for it; a signal nobody waits for is a
+// CONFLICT. payload is encoded as a JSON object; nil is an empty object.
+func (c *Client) Signal(ctx context.Context, runID, name string, payload any, opts ...CallOption) (*SignalResult, error) {
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	resp, err := c.do(ctx, request{
+		method: "POST", path: "/runs/" + url.PathEscape(runID) + "/signals/" + url.PathEscape(name), body: payload, hasBody: true,
+		idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a signal result")
+	if err != nil {
+		return nil, err
+	}
+	result := &SignalResult{DeliveredTo: []string{}, Raw: raw}
+	if delivered, ok := raw["deliveredTo"]; ok {
+		var names []string
+		if err := json.Unmarshal(delivered, &names); err == nil {
+			result.DeliveredTo = names
+		}
+	}
+	return result, nil
+}
+
+// Event is an event published to the inbox of the namespace.
+type Event struct {
+	// ID is unique within the source for the deduplication window; a random one is generated per call
+	// when empty and kept across its retries, so a retry is answered DUPLICATE and never admitted
+	// twice.
+	ID   string
+	Type string
+	// Data is encoded as a JSON object; nil is an empty object.
+	Data           any
+	Subject        string
+	OccurredAt     time.Time
+	CorrelationKey string
+	// DedupeTTLSeconds overrides the deduplication window when positive.
+	DedupeTTLSeconds int
+}
+
+// PublishEvent publishes an event, once per event id for the deduplication window. Reads
+// WithTraceparent.
+func (c *Client) PublishEvent(ctx context.Context, event Event, opts ...CallOption) (*EventReceipt, error) {
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	id := event.ID
+	if id == "" {
+		id = ids.UUID()
+	}
+	data := event.Data
+	if data == nil {
+		data = map[string]any{}
+	}
+	body := map[string]any{"eventId": id, "type": event.Type, "data": data}
+	if event.Subject != "" {
+		body["subject"] = event.Subject
+	}
+	if !event.OccurredAt.IsZero() {
+		body["occurredAt"] = jsonx.Instant(event.OccurredAt)
+	}
+	if event.CorrelationKey != "" {
+		body["correlationKey"] = event.CorrelationKey
+	}
+	if event.DedupeTTLSeconds > 0 {
+		body["dedupeTtlSeconds"] = event.DedupeTTLSeconds
+	}
+	// The event id is the key: the server answers a repetition DUPLICATE.
+	resp, err := c.do(ctx, request{method: "POST", path: "/events", body: body, hasBody: true, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an event answer")
+	if err != nil {
+		return nil, err
+	}
+	receipt := &EventReceipt{Raw: raw}
+	if receipt.EventID, err = requiredString(raw, "eventId"); err != nil {
+		return nil, err
+	}
+	if receipt.Source, err = requiredString(raw, "source"); err != nil {
+		return nil, err
+	}
+	status, err := requiredString(raw, "status")
+	if err != nil {
+		return nil, err
+	}
+	receipt.Status = EventStatus(status)
+	return receipt, nil
+}
+
+// EventsOptions pages the journal of a run.
+type EventsOptions struct {
+	Cursor string
+	Limit  int
+}
+
+// Events reads a page of the journal of a run.
+func (c *Client) Events(ctx context.Context, runID string, options EventsOptions) (*JournalPage, error) {
+	traceparent, err := c.trace(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if options.Cursor != "" {
+		query.Set("cursor", options.Cursor)
+	}
+	if options.Limit > 0 {
+		query.Set("limit", strconv.Itoa(options.Limit))
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: "/runs/" + url.PathEscape(runID) + "/events", query: query, repeatable: true, traceparent: traceparent})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a page")
+	if err != nil {
+		return nil, err
+	}
+	page := &JournalPage{Items: []JournalEvent{}, Raw: raw}
+	var items []json.RawMessage
+	_ = json.Unmarshal(raw["items"], &items)
+	for _, item := range items {
+		m, err := object(item, "an event")
+		if err != nil {
+			return nil, err
+		}
+		event := JournalEvent{Raw: m}
+		event.Type, _ = jsonx.String(m, "eventType")
+		event.StepID, _ = jsonx.String(m, "stepId")
+		if attempt, ok := jsonx.Int(m, "attempt"); ok {
+			a := int(attempt)
+			event.Attempt = &a
+		}
+		page.Items = append(page.Items, event)
+	}
+	page.NextCursor, _ = jsonx.String(raw, "nextCursor")
+	return page, nil
+}
+
+// WaitOption adjusts WaitForCompletion.
+type WaitOption func(*waitOptions)
+
+type waitOptions struct {
+	timeout      time.Duration
+	pollInterval time.Duration
+}
+
+// WaitTimeout bounds the wait; 60 s by default.
+func WaitTimeout(d time.Duration) WaitOption { return func(o *waitOptions) { o.timeout = d } }
+
+// PollInterval sets the time between two reads of the run, with 20 % jitter; 500 ms by default.
+func PollInterval(d time.Duration) WaitOption { return func(o *waitOptions) { o.pollInterval = d } }
+
+// WaitForCompletion reads the run until its status is terminal and returns it. When the wait
+// timeout passes first it returns a TRANSPORT error with the reason WAIT_TIMEOUT; the run is
+// untouched and may be waited for again.
+func (c *Client) WaitForCompletion(ctx context.Context, runID string, opts ...WaitOption) (*Run, error) {
+	o := waitOptions{timeout: 60 * time.Second, pollInterval: 500 * time.Millisecond}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	end := time.Now().Add(o.timeout)
+	for {
+		run, err := c.Get(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		if run.Status.Terminal() {
+			return run, nil
+		}
+		if !time.Now().Before(end) {
+			e := sagat.Errorf(sagat.CodeTransport, "the run did not finish within %d ms", o.timeout.Milliseconds())
+			e.Reason = "WAIT_TIMEOUT"
+			return nil, e
+		}
+		wait := time.Duration(float64(o.pollInterval) * (0.8 + rand.Float64()*0.4))
+		if err := backoff.Sleep(ctx, wait); err != nil {
+			return nil, sagat.NewError(sagat.CodeCancelled, "cancelled while waiting").WithCause(err)
+		}
+	}
+}
