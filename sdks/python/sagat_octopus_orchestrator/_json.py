@@ -148,7 +148,8 @@ def canonical_json(value: Any) -> str:
 # ------------------------------------------------------------------------------------------- instants
 
 _INSTANT = re.compile(
-    r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([Zz])|([+-])(\d{2}):?(\d{2}))$"
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt ]([0-9]{2}):([0-9]{2}):([0-9]{2})"
+    r"(?:\.([0-9]+))?(?:([Zz])|([+-])([0-9]{2}):?([0-9]{2}))"
 )
 
 
@@ -168,7 +169,7 @@ def parse_instant(text: Any) -> datetime | None:
     """An RFC 3339 instant with any offset, as an aware ``datetime`` in UTC; ``None`` if it is not one."""
     if not isinstance(text, str):
         return None
-    match = _INSTANT.match(text)
+    match = _INSTANT.fullmatch(text)
     if not match:
         return None
     year, month, day, hour, minute, second, fraction, zulu, sign, off_h, off_m = match.groups()

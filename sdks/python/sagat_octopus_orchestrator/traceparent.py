@@ -7,12 +7,12 @@ import secrets
 
 from .errors import SagatError
 
-_PATTERN = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
+_PATTERN = re.compile(r"00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}")
 
 
 def is_traceparent(value: str) -> bool:
     """True for a W3C ``traceparent`` of version 00 with a non-zero trace and parent id."""
-    match = _PATTERN.match(value) if isinstance(value, str) else None
+    match = _PATTERN.fullmatch(value) if isinstance(value, str) else None
     return bool(match) and match is not None and match[1] != "0" * 32 and match[2] != "0" * 16
 
 
@@ -27,7 +27,7 @@ def trace_id_of(value: str | None) -> str | None:
     """The trace id of a valid ``traceparent``; ``None`` otherwise."""
     if not value or not is_traceparent(value):
         return None
-    match = _PATTERN.match(value)
+    match = _PATTERN.fullmatch(value)
     return match[1] if match else None
 
 

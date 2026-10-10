@@ -165,9 +165,20 @@ prints them; no whitespace) is byte-identical across the five SDKs.
 Every failure is one `SagatError` with `code`, `message` (safe to log: never a payload, a token or a secret),
 `status` (HTTP status, or the gRPC status name), `retryable`, `trace_id`, `reason`, `retry_after_ms` and
 `remediation`. The catalog (`sdks/error-catalog.json`) is embedded and a test proves the copy is current. The SDK
-retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); never a 4xx other than 429. An HTTP redirect is never followed (it could carry the
-token to another host): a 3xx is a `PROTOCOL` error with the status kept. Certificate verification is never switched
-off (a test reads the source for it).
+retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); never a 4xx other than 429. An HTTP
+redirect is never followed (it could carry the token to another host): a 3xx is a `PROTOCOL` error with the status
+kept. Certificate verification is never switched off (a test reads the source for it).
+
+What a hostile or broken server, or a careless caller, cannot make the SDK do (`sdks/SPEC.md` section 10): a config,
+a client or a host never prints a credential (`repr`, `str` and f-strings show no token, session token, lease token or
+TLS key); a REST body is read up to 32 MiB and then fails as `PROTOCOL`; a wait the server asks for
+(`Retry-After`, `retry-after-ms`) is capped at 60 s; a server `message` is cut to 512 characters and a `traceId` that is
+not 32 lowercase hex characters is not repeated; a run id is a UUID and a name of `''`, `'.'` or `'..'` is refused
+before anything is sent; a token provider that raises is one `SagatError` (`UNAUTHENTICATED`, reason
+`TOKEN_PROVIDER_FAILED`, the exception's class only) and never stops the heartbeat; the host runs no more tasks than
+it asked for and registers again with a backoff when its session keeps being refused. `ctx.secrets()` hands out
+copies, overwrites its own buffers when the handler returns, and raises afterwards. Python cannot wipe an immutable
+`bytes` or `str` you made from a secret: that copy is yours to drop.
 
 ## Units and conventions
 
@@ -192,7 +203,7 @@ server ignores the fields it does not know.
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (98) | `mypy --strict` and `ruff` | Conformance suite (13 scenarios) |
+| Runtime | Unit tests (123) | `mypy --strict` and `ruff` | Conformance suite (13 scenarios) |
 |---|---|---|---|
 | CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
 | CPython 3.10.21 (uv build) | 93 passed and 1 skipped then (the codegen check needs `grpcio-tools`, not installed there) — **measured before the last change (UTF-16 key order); not re-run** | not run (type-checked against the 3.10 language level from 3.14) | passed — **before the same change; not re-run** |
@@ -201,7 +212,8 @@ server ignores the fields it does not know.
 | Free-threaded builds, PyPy | not run | not run | not run |
 
 The dependencies are the exact versions of `requirements.lock.txt` (`httpx` 0.28.1, `grpcio` 1.84.0, `protobuf`
-7.36.2). The ranges in `pyproject.toml` (`httpx>=0.28.1`, `grpcio>=1.84.0` because the generated stubs refuse an
+7.36.2 and what they need), each file with its hashes (`pip install --require-hashes`; every pin is at least two weeks
+old; `pip-audit` found no known vulnerability in either lock on the day they were made). The ranges in `pyproject.toml` (`httpx>=0.28.1`, `grpcio>=1.84.0` because the generated stubs refuse an
 older runtime, `protobuf>=7.35.1` because the generated messages do) were not tried with other versions.
 
 ### Not covered
@@ -216,13 +228,15 @@ older runtime, `protobuf>=7.35.1` because the generated messages do) were not tr
 ## Development
 
 ```console
-$ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.lock.txt
+$ python3 -m venv .venv && .venv/bin/pip install --require-hashes -r requirements-dev.lock.txt
 $ .venv/bin/python -m pytest                     # unit tests: offline, a fake HTTP server and a fake gRPC server
 $ .venv/bin/mypy && .venv/bin/ruff check .       # strict types and lint
 $ .venv/bin/python scripts/sync_shared.py        # copy worker.proto and the error catalog, regenerate *_pb2*.py
 $ conformance/prepare.sh && conformance/run.sh   # the conformance runner (the harness calls these)
 ```
 
+The locks are made from `requirements.in` and `requirements-dev.in` with
+`uv pip compile <file>.in --generate-hashes --universal --python-version 3.10 --exclude-newer <two weeks ago> -o <file>.lock.txt`.
 `scripts/sync_shared.py` copies `worker.proto` and `sdks/error-catalog.json` from the repository and regenerates
 the committed protobuf code; the unit tests fail when any of them is behind. The conformance suite
 (`tests/contract/sdk-conformance/`) runs from the repository root:

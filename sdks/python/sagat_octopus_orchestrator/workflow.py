@@ -15,8 +15,8 @@ from typing import Any, Literal, TypeVar
 from ._json import canonical_json
 from .errors import invalid
 
-_NAME = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
-_SECRET = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+_NAME = re.compile(r"[a-z][a-z0-9-]{2,63}")
+_SECRET = re.compile(r"[a-z][a-z0-9._-]{0,63}")
 
 Node = dict[str, Any]
 _F = TypeVar("_F", bound="Flow")
@@ -102,7 +102,7 @@ class Flow:
         if irreversible and compensate_with:
             raise invalid(f"step {node_id} cannot be irreversible and have a compensation")
         for secret in secrets or ():
-            if not _SECRET.match(secret):
+            if not _SECRET.fullmatch(secret):
                 raise invalid(f"step {node_id} names a secret that is not a name: {secret!r}")
         node: Node = {"id": node_id, "type": "activity", "activity": activity}
         _add(
@@ -240,7 +240,7 @@ class WorkflowBuilder(Flow):
 
     def __init__(self, name: str) -> None:
         super().__init__()
-        if not _NAME.match(name):
+        if not _NAME.fullmatch(name):
             raise invalid(f"a workflow name is lower case letters, digits and dashes, 3 to 64: {name!r}")
         self._name = name
         self._description: str | None = None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -14,6 +14,7 @@ from .._proto import worker_pb2 as pb
 from .._proto import worker_pb2_grpc as pb_grpc
 from ..config import TlsOptions, TokenSource, resolve_token
 from ..errors import ErrorCode, SagatError
+from ..retry import parse_ms
 from ..traceparent import is_traceparent
 
 METHODS = ("RegisterWorker", "PollTasks", "Heartbeat", "CompleteStep", "FailStep", "ResolveSecrets")
@@ -22,7 +23,7 @@ METHODS = ("RegisterWorker", "PollTasks", "Heartbeat", "CompleteStep", "FailStep
 @dataclass(frozen=True)
 class GrpcConfig:
     grpc_url: str
-    token: TokenSource
+    token: TokenSource = field(repr=False)
     tls: TlsOptions | None = None
     timeout: float = 30.0
     interceptors: Sequence[grpc.aio.ClientInterceptor] = ()
@@ -46,7 +47,7 @@ def error_of_status(method: str, error: grpc.aio.AioRpcError) -> SagatError:
     """
     reason = _metadata_value(error, "x-sagat-error")
     retry_after = _metadata_value(error, "retry-after-ms")
-    retry_after_ms = int(retry_after) if retry_after is not None and retry_after.isdigit() else None
+    retry_after_ms = parse_ms(retry_after)
     status = error.code()
     name = status.name
 

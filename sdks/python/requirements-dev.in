@@ -1,0 +1,10 @@
+# The runtime dependencies plus the tools of the unit tests, the type check, the lint and the protobuf codegen.
+# `requirements-dev.lock.txt` is made from this file.
+-r requirements.in
+grpcio-tools==1.84.0
+mypy==2.3.1
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.9
+types-grpcio==1.83.0.20260730
+types-protobuf==7.35.1.20260906

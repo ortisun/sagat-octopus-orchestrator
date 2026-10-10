@@ -38,14 +38,17 @@ def test_a_blocking_client_makes_the_same_calls_with_the_same_rules(http: FakeHt
             client.start(WORKFLOW, {}, idempotency_key="short")
         assert caught.value.code == "VALIDATION_FAILED"
     with pytest.raises(SagatError):
-        client.get("r")
+        client.get("0190aaaa-0000-7000-8000-000000000001")
 
 
 def test_the_blocking_client_can_be_shared_between_threads_and_stops_its_thread(http: FakeHttpServer) -> None:
     http.serve(lambda _seen: reply(200, run_body()))
     client = SyncSagatClient(ClientConfig(api_url=http.base, namespace="p", token="t", retry=FAST))
     found: list[str] = []
-    workers = [threading.Thread(target=lambda: found.append(client.get("r").run_id)) for _ in range(8)]
+    workers = [
+        threading.Thread(target=lambda: found.append(client.get("0190aaaa-0000-7000-8000-000000000001").run_id))
+        for _ in range(8)
+    ]
     for worker in workers:
         worker.start()
     for worker in workers:

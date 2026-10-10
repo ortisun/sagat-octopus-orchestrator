@@ -102,12 +102,12 @@ async def test_the_rest_client_trusts_the_roots_it_is_given_and_refuses_a_server
     trusting = SagatClient(
         ClientConfig(api_url=secure_rest, namespace="p", token="t", tls=TlsOptions(ca=server_pair.cert))
     )
-    assert (await trusting.get("r")).status == "RUNNING"
+    assert (await trusting.get("0190aaaa-0000-7000-8000-000000000001")).status == "RUNNING"
     await trusting.aclose()
 
     strict = SagatClient(ClientConfig(api_url=secure_rest, namespace="p", token="t", retry=RetryPolicy(max_attempts=1)))
     with pytest.raises(SagatError) as caught:
-        await strict.get("r")  # the system roots do not know this certificate
+        await strict.get("0190aaaa-0000-7000-8000-000000000001")  # the system roots do not know this certificate
     assert caught.value.code == "TRANSPORT"
     await strict.aclose()
 
@@ -138,7 +138,7 @@ async def test_the_rest_client_presents_its_certificate_for_mtls(
     http.serve(lambda _seen: reply(200, run_body()))
     tls = TlsOptions(ca=server_pair.cert, cert=client_pair.cert, key=client_pair.key)
     client = SagatClient(ClientConfig(api_url=base, namespace="p", token="t", tls=tls))
-    assert (await client.get("r")).run_id
+    assert (await client.get("0190aaaa-0000-7000-8000-000000000001")).run_id
     await client.aclose()
     without = SagatClient(
         ClientConfig(
@@ -150,7 +150,7 @@ async def test_the_rest_client_presents_its_certificate_for_mtls(
         )
     )
     with pytest.raises(SagatError):
-        await without.get("r")
+        await without.get("0190aaaa-0000-7000-8000-000000000001")
     await without.aclose()
 
 

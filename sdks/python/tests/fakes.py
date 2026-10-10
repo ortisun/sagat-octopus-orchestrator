@@ -6,7 +6,7 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -34,6 +34,8 @@ class Reply:
     status: int
     body: Any = None
     headers: dict[str, str] = field(default_factory=dict)
+    stream: Iterator[bytes] | None = None
+    """Chunks written as they come, with no length and the connection closed at the end."""
 
 
 def reply(status: int, body: Any = None, **headers: str) -> Reply:
@@ -62,6 +64,20 @@ class FakeHttpServer:
                 )
                 server.seen.append(entry)
                 answer = server.handler(entry)
+                if answer.stream is not None:
+                    self.send_response(answer.status)
+                    for name, value in {"content-type": "application/json", **answer.headers}.items():
+                        self.send_header(name, value)
+                    self.send_header("connection", "close")
+                    self.end_headers()
+                    self.close_connection = True
+                    try:
+                        for chunk in answer.stream:
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                    except OSError:
+                        pass  # the client has read what it wants
+                    return
                 if answer.body is None:
                     payload = b""
                 elif isinstance(answer.body, str):
@@ -104,6 +120,7 @@ class Call:
     method: str
     request: Any
     metadata: dict[str, str]
+    at: float = 0.0
 
 
 @dataclass
@@ -120,6 +137,8 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         self.calls: list[Call] = []
         self.leases: list[pb.TaskLease] = []
         self.failures: dict[str, list[Scripted]] = {}
+        self.always: dict[str, Scripted] = {}
+        self.ignore_max_tasks = False
         self.accepted_version = "1.2"
         self.cancel_requested = False
         self.heartbeat_expires_ms = int(time.time() * 1000) + 60_000
@@ -147,12 +166,11 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         return [call for call in self.calls if call.method == method]
 
     async def _enter(self, method: str, request: Any, context: grpc.aio.ServicerContext[Any, Any]) -> None:
-        self.calls.append(
-            Call(method, request, {key: str(value) for key, value in context.invocation_metadata() or ()})
-        )
+        metadata = {key: str(value) for key, value in context.invocation_metadata() or ()}
+        self.calls.append(Call(method, request, metadata, time.monotonic()))
         queue = self.failures.get(method)
-        if queue:
-            scripted = queue.pop(0)
+        scripted = queue.pop(0) if queue else self.always.get(method)
+        if scripted is not None:
             trailers = []
             if scripted.reason:
                 trailers.append(("x-sagat-error", scripted.reason))
@@ -172,7 +190,8 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         if self.poll_delay > 0:
             await asyncio.sleep(self.poll_delay)
         # Like the real service: no more than were asked for.
-        tasks, self.leases = self.leases[: request.max_tasks], self.leases[request.max_tasks :]
+        take = len(self.leases) if self.ignore_max_tasks else request.max_tasks
+        tasks, self.leases = self.leases[:take], self.leases[take:]
         return pb.PollTasksResponse(tasks=tasks, retry_after_ms=self.poll_retry_after_ms)
 
     async def Heartbeat(self, request: Any, context: Any) -> Any:

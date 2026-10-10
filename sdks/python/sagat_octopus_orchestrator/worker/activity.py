@@ -149,22 +149,23 @@ class CancellationToken:
 class Secrets:
     """The secrets the step declares, read-only. The values are credentials: never log them.
 
-    Dropped when the handler returns.
+    Every read hands out a copy. The SDK's own buffers are overwritten with zeros and dropped when the handler
+    returns; a read after that raises.
     """
 
     def __init__(self, values: Mapping[str, bytes]) -> None:
-        self._values: dict[str, bytes] | None = dict(values)
+        self._values: dict[str, bytearray] | None = {name: bytearray(value) for name, value in values.items()}
 
     def _get(self, name: str) -> bytes:
         if self._values is None:
-            raise SagatError("NOT_FOUND", "the secrets of this attempt were dropped when the handler returned")
+            raise SagatError("VALIDATION_FAILED", "the secrets of this attempt were dropped when the handler returned")
         try:
-            return self._values[name]
+            return bytes(self._values[name])
         except KeyError:
             raise SagatError("NOT_FOUND", f"the step declares no secret named {name}") from None
 
     def get(self, name: str) -> bytes:
-        """The bytes of a secret the step declares."""
+        """A copy of the bytes of a secret the step declares."""
         return self._get(name)
 
     def text(self, name: str) -> str:
@@ -181,7 +182,9 @@ class Secrets:
         return len(self._values or ())
 
     def _drop(self) -> None:
-        self._values = None
+        values, self._values = self._values, None
+        for buffer in (values or {}).values():
+            buffer[:] = bytes(len(buffer))  # overwritten in place before it is let go
 
     def __repr__(self) -> str:  # never the values
         return f"Secrets(names={self.names()!r})"

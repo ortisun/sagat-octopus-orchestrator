@@ -44,8 +44,8 @@ OperateAction = Literal[
     "PAUSE", "RESUME", "CANCEL", "RETRY_STEP", "RETRY_COMPENSATION", "SKIP_COMPENSATION", "RESOLVE_STEP"
 ]
 
-_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-_KEY = re.compile(r"^[\x21-\x7e]{8,160}$")
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+_KEY = re.compile(r"[\x21-\x7e]{8,160}")
 _NAME_TTL = 60.0
 
 
@@ -204,6 +204,20 @@ def _to_page(body: Any) -> RunPage:
     return RunPage(tuple(to_run(item) for item in items), _opt_str(raw, "nextCursor"))
 
 
+def _run_id(value: str) -> str:
+    """A run id is a UUID: nothing else is ever put in the path of a call about a run."""
+    if not isinstance(value, str) or not _UUID.fullmatch(value):
+        raise invalid("a run id is a UUID")
+    return value
+
+
+def _name(value: str, what: str) -> str:
+    """A name (a signal, an event type, a workflow) is not empty and is not the path segment ``.`` or ``..``."""
+    if not isinstance(value, str) or value in ("", ".", ".."):
+        raise invalid(f"{what} is a name: not empty, not '.' and not '..'")
+    return value
+
+
 def _seconds(value: float | timedelta) -> float:
     return value.total_seconds() if isinstance(value, timedelta) else float(value)
 
@@ -247,7 +261,7 @@ class SagatClient:
     @staticmethod
     def _key(given: str | None) -> str:
         key = given if given is not None else str(uuid.uuid4())
-        if not _KEY.match(key):
+        if not _KEY.fullmatch(key):
             raise invalid("an idempotency key is 8 to 160 printable ASCII characters")
         return key
 
@@ -255,7 +269,8 @@ class SagatClient:
 
     async def resolve_workflow(self, workflow: str) -> str:
         """The id of a workflow given by id or by name (the workflow of that name in the namespace)."""
-        if _UUID.match(workflow):
+        _name(workflow, "a workflow")
+        if _UUID.fullmatch(workflow):
             return workflow.lower()
         cached = self._names.get(workflow)
         if cached and time.monotonic() - cached[1] < _NAME_TTL:
@@ -321,7 +336,7 @@ class SagatClient:
 
     async def get(self, run_id: str) -> Run:
         response = await self._http.request(
-            HttpRequest("GET", f"/runs/{quote(run_id, safe='')}", traceparent=self._trace())
+            HttpRequest("GET", f"/runs/{quote(_run_id(run_id), safe='')}", traceparent=self._trace())
         )
         return to_run(response.body)
 
@@ -371,6 +386,7 @@ class SagatClient:
         traceparent: str | None = None,
     ) -> OperationResult:
         """An operation on a run: ``PAUSE``, ``RESUME``, ``CANCEL`` and the saga decisions."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/operations"
         body: dict[str, Any] = {"action": action, "reason": reason}
         if step_id is not None:
             body["stepId"] = step_id
@@ -383,7 +399,7 @@ class SagatClient:
         response = await self._http.request(
             HttpRequest(
                 "POST",
-                f"/runs/{quote(run_id, safe='')}/operations",
+                path,
                 body=body,
                 idempotency_key=self._key(idempotency_key),
                 traceparent=self._trace(traceparent),
@@ -428,10 +444,11 @@ class SagatClient:
         traceparent: str | None = None,
     ) -> SignalResult:
         """Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a ``CONFLICT``."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/signals/{quote(_name(name, 'a signal name'), safe='')}"
         response = await self._http.request(
             HttpRequest(
                 "POST",
-                f"/runs/{quote(run_id, safe='')}/signals/{quote(name, safe='')}",
+                path,
                 body=payload if payload is not None else {},
                 idempotency_key=self._key(idempotency_key),
                 traceparent=self._trace(traceparent),
@@ -460,7 +477,7 @@ class SagatClient:
         """
         body: dict[str, Any] = {
             "eventId": event_id if event_id is not None else str(uuid.uuid4()),
-            "type": event_type,
+            "type": _name(event_type, "an event type"),
             "data": data if data is not None else {},
         }
         if subject is not None:
@@ -479,10 +496,11 @@ class SagatClient:
 
     async def events(self, run_id: str, *, cursor: str | None = None, limit: int | None = None) -> JournalPage:
         """The journal of a run, a page at a time."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/events"
         response = await self._http.request(
             HttpRequest(
                 "GET",
-                f"/runs/{quote(run_id, safe='')}/events",
+                path,
                 query={"cursor": cursor, "limit": limit},
                 traceparent=self._trace(),
             )

@@ -16,6 +16,7 @@ from sagat_octopus_orchestrator import ClientConfig, RetryPolicy, Run, SagatClie
 from .fakes import FakeHttpServer, Seen, reply
 
 WORKFLOW = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+RUN = "0190aaaa-0000-7000-8000-000000000001"
 TRACE = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 MakeClient = Callable[..., SagatClient]
 
@@ -138,13 +139,13 @@ async def test_get_is_retried_on_unavailability_and_on_rate_limiting_honouring_r
         return reply(200, run_body())
 
     http.serve(serve)
-    got = await make_client().get("r-1")
+    got = await make_client().get(RUN)
     assert got.run_id == "0190aaaa-0000-7000-8000-000000000001"
     assert len(http.seen) == 2
 
     http.serve(lambda _seen: reply(503, "<html>bad gateway</html>"))
     with pytest.raises(SagatError) as caught:
-        await make_client().get("r-1")
+        await make_client().get(RUN)
     assert (caught.value.code, caught.value.status) == ("UNAVAILABLE", 503)
     assert len(http.seen) == 4, "four attempts in all"
 
@@ -153,7 +154,7 @@ async def test_retry_after_longer_than_the_backoff_is_waited_for(http: FakeHttpS
     answers = [reply(429, refusal("RATE_LIMITED", "slow", True), retry_after="1"), reply(200, run_body())]
     http.serve(lambda _seen: answers.pop(0))
     began = asyncio_time()
-    await make_client().get("r-1")
+    await make_client().get(RUN)
     assert asyncio_time() - began >= 0.9
 
 
@@ -186,7 +187,7 @@ async def test_a_4xx_other_than_429_is_never_retried_and_keeps_what_the_server_s
     # Even an envelope that says "retryable" does not make a 400 repeatable.
     http.serve(lambda _seen: reply(400, refusal("BAD_REQUEST", "bad", True)))
     with pytest.raises(SagatError):
-        await make_client().get("x")
+        await make_client().get(RUN)
     assert len(http.seen) == 1
 
 
@@ -198,7 +199,7 @@ async def test_a_redirect_is_never_followed_and_is_a_protocol_error(
         elsewhere.serve(lambda _seen: reply(200, run_body()))
         http.serve(lambda _seen: reply(302, "", location=elsewhere.base + "/runs/r"))
         client = make_client()
-        for call in (client.get("r"), client.start(WORKFLOW, {}), client.cancel("r", "no longer needed")):
+        for call in (client.get(RUN), client.start(WORKFLOW, {}), client.cancel(RUN, "no longer needed")):
             with pytest.raises(SagatError) as caught:
                 await call
             assert (caught.value.code, caught.value.status, caught.value.retryable) == ("PROTOCOL", 302, False)
@@ -215,7 +216,7 @@ async def test_a_call_the_server_does_not_have_is_told_from_a_resource_that_is_m
     for status, body in ((501, ""), (404, "<html>no route</html>"), (404, {"unrelated": True})):
         http.serve(lambda _seen, status=status, body=body: reply(status, body))  # type: ignore[misc]
         with pytest.raises(SagatError) as caught:
-            await make_client().get("x")
+            await make_client().get(RUN)
         assert (caught.value.code, caught.value.reason, caught.value.status) == (
             "NOT_FOUND",
             "UNSUPPORTED_BY_SERVER",
@@ -223,7 +224,7 @@ async def test_a_call_the_server_does_not_have_is_told_from_a_resource_that_is_m
         )
     http.serve(lambda _seen: reply(404, refusal("NOT_FOUND", "no such run")))
     with pytest.raises(SagatError) as missing:
-        await make_client().get("x")
+        await make_client().get(RUN)
     assert (missing.value.code, missing.value.reason, missing.value.message) == ("NOT_FOUND", None, "no such run")
 
 
@@ -233,7 +234,7 @@ async def test_a_refused_token_a_missing_resource_and_a_validation_error_are_tol
     for status, code in ((401, "UNAUTHENTICATED"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (422, "VALIDATION_FAILED")):
         http.serve(lambda _seen, status=status, code=code: reply(status, refusal(code)))  # type: ignore[misc]
         with pytest.raises(SagatError) as caught:
-            await make_client().get("x")
+            await make_client().get(RUN)
         assert (caught.value.code, caught.value.status) == (code, status)
         assert len(http.seen) == 1, str(status)
 
@@ -253,9 +254,9 @@ async def test_the_token_is_asked_for_before_every_request_so_a_rotated_one_is_u
         return "tok-async"
 
     client = make_client(token=provider)
-    await client.get("a")
-    await client.get("b")
-    await make_client(token=async_provider).get("c")
+    await client.get(RUN)
+    await client.get(RUN)
+    await make_client(token=async_provider).get(RUN)
     assert [seen.headers["authorization"] for seen in http.seen] == ["Bearer tok-1", "Bearer tok-2", "Bearer tok-async"]
 
 
@@ -309,9 +310,9 @@ async def test_the_ambient_trace_context_is_used_when_the_call_has_none(
     http: FakeHttpServer, make_client: MakeClient
 ) -> None:
     http.serve(lambda _seen: reply(200, run_body()))
-    await make_client(trace_context=lambda: TRACE).get("r")
+    await make_client(trace_context=lambda: TRACE).get(RUN)
     assert http.seen[0].headers["traceparent"] == TRACE
-    await make_client(trace_context=lambda: None).get("r")
+    await make_client(trace_context=lambda: None).get(RUN)
     assert "traceparent" not in http.seen[1].headers
 
 
@@ -379,7 +380,7 @@ async def test_no_answer_at_all_is_a_retryable_transport_error_and_a_lost_answer
         )
     )
     with pytest.raises(SagatError) as caught:
-        await dead.get("x")
+        await dead.get(RUN)
     await dead.aclose()
     assert (caught.value.code, caught.value.retryable, caught.value.status) == ("TRANSPORT", True, None)
 
@@ -395,7 +396,7 @@ async def test_a_call_that_takes_longer_than_the_timeout_is_a_transport_error(
 
     http.serve(slow)
     with pytest.raises(SagatError) as caught:
-        await make_client(timeout=0.05, retry=RetryPolicy(max_attempts=1)).get("x")
+        await make_client(timeout=0.05, retry=RetryPolicy(max_attempts=1)).get(RUN)
     assert (caught.value.code, caught.value.retryable) == ("TRANSPORT", True)
 
 
@@ -410,7 +411,7 @@ async def test_cancel_and_signal_are_operations_with_a_reason_and_a_payload_and_
         )
     )
     client = make_client()
-    cancelled = await client.cancel("r-1", "no longer needed", expected_run_version=3)
+    cancelled = await client.cancel(RUN, "no longer needed", expected_run_version=3)
     assert (cancelled.operation_id, cancelled.accepted, cancelled.run_status, cancelled.run_version) == (
         "op-1",
         True,
@@ -419,12 +420,14 @@ async def test_cancel_and_signal_are_operations_with_a_reason_and_a_payload_and_
     )
     assert http.seen[0].body == {"action": "CANCEL", "reason": "no longer needed", "expectedRunVersion": 3}
     assert "idempotency-key" in http.seen[0].headers
-    signalled = await client.signal("r-1", "payment-confirmed", {"paymentId": "p-1"})
+    signalled = await client.signal(RUN, "payment-confirmed", {"paymentId": "p-1"})
     assert signalled.delivered_to == ("wait",)
-    assert http.seen[1].url == "/v1/runs/r-1/signals/payment-confirmed"
+    assert http.seen[1].url == f"/v1/runs/{RUN}/signals/payment-confirmed"
     assert http.seen[1].body == {"paymentId": "p-1"}
-    await client.operate("r/1", "PAUSE", "maintenance window")
-    assert http.seen[2].url == "/v1/runs/r%2F1/operations", "an id is a path segment, whatever it holds"
+    await client.operate(RUN, "PAUSE", "maintenance window")
+    assert http.seen[2].url == f"/v1/runs/{RUN}/operations"
+    await client.signal(RUN, "a/b c", {})
+    assert http.seen[3].url == f"/v1/runs/{RUN}/signals/a%2Fb%20c", "a name is a path segment, whatever it holds"
 
 
 async def test_the_journal_of_a_run_is_read_a_page_at_a_time(http: FakeHttpServer, make_client: MakeClient) -> None:
@@ -440,7 +443,7 @@ async def test_the_journal_of_a_run_is_read_a_page_at_a_time(http: FakeHttpServe
             },
         )
     )
-    page = await make_client().events("r-1", limit=2)
+    page = await make_client().events(RUN, limit=2)
     assert [(e.event_type, e.step_id, e.attempt) for e in page.items] == [
         ("run.started", None, None),
         ("step.leased", "a", 1),
@@ -460,12 +463,12 @@ async def test_waiting_for_completion_polls_until_the_run_is_terminal(
         return reply(200, run_body(status="RUNNING" if polls < 3 else "SUCCEEDED"))
 
     http.serve(serve)
-    done = await make_client().wait_for_completion("r", poll_interval=0.005, timeout=5)
+    done = await make_client().wait_for_completion(RUN, poll_interval=0.005, timeout=5)
     assert done.status == "SUCCEEDED" and done.is_terminal
     assert polls == 3
     http.serve(lambda _seen: reply(200, run_body()))
     with pytest.raises(SagatError) as caught:
-        await make_client().wait_for_completion("r", poll_interval=0.005, timeout=0.03)
+        await make_client().wait_for_completion(RUN, poll_interval=0.005, timeout=0.03)
     assert caught.value.reason == "WAIT_TIMEOUT"
 
 
@@ -482,7 +485,7 @@ async def test_a_run_with_a_status_a_newer_server_adds_and_unknown_fields_is_sti
             ),
         )
     )
-    run: Run = await make_client().get("r")
+    run: Run = await make_client().get(RUN)
     assert run.status == "QUARANTINED" and not run.is_terminal
     assert run.parent is not None and run.parent.cancel_policy == "DETACH"
     assert run.deadline == datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -494,7 +497,7 @@ async def test_an_answer_that_is_not_what_the_contract_says_is_a_protocol_error(
     for body in ("not json", "[1, 2]", {"runId": "r"}):
         http.serve(lambda _seen, body=body: reply(200, body))  # type: ignore[misc]
         with pytest.raises(SagatError) as caught:
-            await make_client().get("r")
+            await make_client().get(RUN)
         assert caught.value.code == "PROTOCOL"
 
 

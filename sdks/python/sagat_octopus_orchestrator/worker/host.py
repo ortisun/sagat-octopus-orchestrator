@@ -29,7 +29,7 @@ from ..config import (
     warn_if_plaintext,
 )
 from ..errors import SagatError
-from ..retry import DEFAULT_RETRY, RetryPolicy, backoff_delay
+from ..retry import DEFAULT_RETRY, MAX_SERVER_WAIT, RetryPolicy, backoff_delay, server_wait
 from ._grpc import GrpcConfig, WorkerRpc
 from .activity import (
     ActivityContext,
@@ -50,7 +50,7 @@ MAX_OUTPUT_BYTES = 256 * 1024
 MAX_POLL = 64
 REPORT_ATTEMPTS = 5
 _CODE = re.compile(r"[A-Z0-9_]{1,64}")
-_VERSION = re.compile(r"^1(?:\.(\d+))?$")
+_VERSION = re.compile(r"1(?:\.([0-9]+))?")
 _REPEATABLE = frozenset({"TRANSPORT", "UNAVAILABLE", "RATE_LIMITED"})
 _TASK_KINDS: dict[str, TaskKind] = {"COMPENSATION": "COMPENSATION", "RECONCILIATION": "RECONCILIATION"}
 
@@ -89,7 +89,7 @@ class WorkerConfig:
     grpc_url: str
     """``http://host:port`` or ``https://host:port`` of the worker service."""
     namespace: str
-    token: TokenSource
+    token: TokenSource = field(repr=False)
     worker_name: str
     """One live session per name and identity: registering again under the same name replaces it."""
     max_inflight: int = 10
@@ -122,7 +122,7 @@ class _Registered:
 class _Task:
     """One lease being worked on."""
 
-    lease: pb.TaskLease
+    lease: pb.TaskLease = field(repr=False)
     token: CancellationToken = field(default_factory=CancellationToken)
     deadline_ms: int = 0
     lost: bool = False
@@ -131,6 +131,8 @@ class _Task:
     in_thread: bool = False
     """True while a blocking handler runs in its thread: it can only be asked to stop, through the token."""
     secrets: Secrets | None = None
+    finished: bool = False
+    """True once the handler has returned: its secrets are gone and ``ctx.secrets()`` raises."""
     secrets_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -150,7 +152,7 @@ class _TaskLog(_AdapterBase):
 
 
 def _minor_of(version: str) -> int:
-    match = _VERSION.match(version)
+    match = _VERSION.fullmatch(version)
     return int(match[1] or 0) if match else 0
 
 
@@ -350,7 +352,7 @@ class WorkerHost:
                     continue
                 if error.code not in _REPEATABLE or not error.retryable or n + 1 >= self._config.retry.max_attempts:
                     raise
-                await asyncio.sleep(max(backoff_delay(self._config.retry, n), (error.retry_after_ms or 0) / 1000))
+                await asyncio.sleep(max(backoff_delay(self._config.retry, n), server_wait(error.retry_after_ms)))
                 n += 1
                 continue
             self._worker_id = response.worker_id
@@ -375,6 +377,7 @@ class WorkerHost:
     async def _run(self) -> None:
         assert self._rpc is not None
         failures = 0
+        refusals = 0  # polls refused as UNAUTHENTICATED in a row
         max_inflight = self._config.max_inflight
         while not self._stopping:
             try:
@@ -382,35 +385,53 @@ class WorkerHost:
                 if free <= 0:
                     await self._idle(0.05)
                     continue
+                asked = min(free, MAX_POLL)
                 response = await self._rpc.poll_tasks(
-                    pb.PollTasksRequest(
-                        worker_id=self._worker_id, session_token=self._session, max_tasks=min(free, MAX_POLL)
-                    )
+                    pb.PollTasksRequest(worker_id=self._worker_id, session_token=self._session, max_tasks=asked)
                 )
-                failures = 0
-                self._emit(WorkerEvent("poll", tasks=len(response.tasks)))
-                for lease in response.tasks:
+                failures = refusals = 0
+                leases = list(response.tasks)
+                if len(leases) > asked:
+                    # The host runs as many tasks as it asked for; the rest are left to lapse (SPEC section 6.2).
+                    log(
+                        self._log,
+                        logging.WARNING,
+                        "the poll answered more tasks than were asked for: the extra leases are left to lapse",
+                        asked=asked,
+                        got=len(leases),
+                        left_to_lapse=len(leases) - asked,
+                    )
+                    leases = leases[:asked]
+                self._emit(WorkerEvent("poll", tasks=len(leases)))
+                for lease in leases:
                     self._dispatch(lease)
-                if not response.tasks:
+                if not leases:
                     wait_ms = max(50, response.retry_after_ms if response.retry_after_ms > 0 else 1000)
-                    await self._idle(wait_ms / 1000 * (0.8 + random.random() * 0.4))
+                    await self._idle(min(MAX_SERVER_WAIT, wait_ms / 1000 * (0.8 + random.random() * 0.4)))
             except SagatError as error:
                 if self._stopping:
                     return
                 if error.code == "UNAUTHENTICATED":
                     log(self._log, logging.WARNING, "the session is gone: registering again")
                     self._emit(WorkerEvent("reconnect"))
+                    if refusals:
+                        # The poll after the last registration was refused again: a server that registers a worker
+                        # and refuses it at once is not hammered (SPEC section 6.2).
+                        await self._idle(backoff_delay(self._config.retry, refusals - 1))
+                        if self._stopping:
+                            return
+                    refusals += 1
                     try:
                         await self._register()
                         continue
                     except SagatError as again:
                         log(self._log, logging.ERROR, "registering again failed", code=again.code)
                 if error.code == "RATE_LIMITED":
-                    await self._idle(max((error.retry_after_ms or 0) / 1000, 0.1))
+                    await self._idle(max(server_wait(error.retry_after_ms), 0.1))
                     continue
                 self._emit(WorkerEvent("reconnect"))
                 policy = RetryPolicy(self._config.retry.max_attempts, self._config.retry.initial_delay, 30.0)
-                pause = min(30.0, max(backoff_delay(policy, failures), (error.retry_after_ms or 0) / 1000))
+                pause = min(30.0, max(backoff_delay(policy, failures), server_wait(error.retry_after_ms)))
                 failures += 1
                 await self._idle(pause)
             except Exception as error:  # a bug of ours must not stop the host
@@ -518,6 +539,7 @@ class WorkerHost:
             except asyncio.CancelledError:  # the runner itself is cancelled (a forced stop)
                 handler_task.cancel()
                 raise
+            task.finished = True
             if task.secrets is not None:  # the values are dropped when the handler returns
                 task.secrets._drop()
             await self._conclude(task, registered, handler_task, started)
@@ -642,6 +664,18 @@ class WorkerHost:
                 # Anything else: the next beat tries again; the lease is ours until it runs out.
                 log(self._log, logging.WARNING, "a heartbeat failed", task=lease.task_id, code=error.code)
                 continue
+            except (
+                Exception
+            ) as error:  # a hook of the caller (a token provider...) or a bug of ours: the next beat tries again
+                # The class only: the text of an exception may carry the credential it was handling.
+                log(
+                    self._log,
+                    logging.ERROR,
+                    "a heartbeat failed unexpectedly",
+                    task=lease.task_id,
+                    error=type(error).__name__,
+                )
+                continue
             self._emit(WorkerEvent("heartbeat", task_id=lease.task_id))
             if answer.lease_expires_at_epoch_ms > 0:
                 task.deadline_ms = answer.lease_expires_at_epoch_ms
@@ -660,7 +694,7 @@ class WorkerHost:
                 if error.code == "STALE_ATTEMPT":
                     return "stale"
                 if error.code in _REPEATABLE and error.retryable and n + 1 < REPORT_ATTEMPTS:
-                    await asyncio.sleep(max(backoff_delay(self._config.retry, n), (error.retry_after_ms or 0) / 1000))
+                    await asyncio.sleep(max(backoff_delay(self._config.retry, n), server_wait(error.retry_after_ms)))
                     n += 1
                     continue
                 raise
@@ -733,6 +767,10 @@ class WorkerHost:
     async def _secrets_of(self, task: _Task, minor: int) -> Secrets:
         """``ctx.secrets()``: one ``ResolveSecrets`` per attempt, on first use."""
         async with task.secrets_lock:
+            if task.finished:
+                raise SagatError(
+                    "VALIDATION_FAILED", "the secrets of this attempt were dropped when the handler returned"
+                )
             if task.secrets is None:
                 task.secrets = await self._resolve_secrets(task.lease, minor)
             return task.secrets
@@ -755,4 +793,4 @@ class WorkerHost:
             ),
             lease.traceparent or None,
         )
-        return Secrets({secret.name: bytes(secret.value) for secret in answer.secrets})
+        return Secrets({secret.name: secret.value for secret in answer.secrets})

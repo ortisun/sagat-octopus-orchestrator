@@ -52,11 +52,17 @@ async def resolve_token(token: TokenSource) -> str:
     """The token to use right now: the static one, or what the provider returns."""
     if isinstance(token, str):
         return token
-    value = token()
-    if inspect.isawaitable(value):
-        value = await value
+    try:
+        value = token()
+        if inspect.isawaitable(value):
+            value = await value
+    except Exception as error:
+        # Its own words may carry the credential it was fetching: say what failed, not what it said.
+        raise SagatError(
+            "UNAUTHENTICATED", f"the token provider failed ({type(error).__name__})", reason="TOKEN_PROVIDER_FAILED"
+        ) from None
     if not isinstance(value, str) or value == "":
-        raise SagatError("UNAUTHENTICATED", "the token provider returned no token")
+        raise SagatError("UNAUTHENTICATED", "the token provider returned no token", reason="TOKEN_PROVIDER_FAILED")
     return value
 
 
@@ -64,9 +70,9 @@ async def resolve_token(token: TokenSource) -> str:
 class TlsOptions:
     """Trust roots and a client certificate (mTLS): PEM text or bytes; the system roots when ``ca`` is absent."""
 
-    ca: str | bytes | None = None
-    cert: str | bytes | None = None
-    key: str | bytes | None = None
+    ca: str | bytes | None = field(default=None, repr=False)
+    cert: str | bytes | None = field(default=None, repr=False)
+    key: str | bytes | None = field(default=None, repr=False)
 
     @staticmethod
     def from_files(
@@ -109,7 +115,7 @@ class ClientConfig:
     """Base URL of the REST API including ``/v1``."""
     namespace: str
     """Slug of the namespace every call is made in."""
-    token: TokenSource
+    token: TokenSource = field(repr=False)
     timeout: float = 30.0
     """Deadline of one call (one attempt)."""
     retry: RetryPolicy = field(default_factory=lambda: DEFAULT_RETRY)

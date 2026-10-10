@@ -78,7 +78,7 @@ async def test_http_faults_fail_before_answer_with_a_status_or_lose_the_answer_a
         )
     )
     with pytest.raises(SagatError) as caught:
-        await one_shot.get("r")
+        await one_shot.get("0190aaaa-0000-7000-8000-000000000001")
     assert (caught.value.code, caught.value.retry_after_ms, caught.value.status) == ("RATE_LIMITED", 1000, 429)
     assert plan.applied() == [1, 1, 1]
     await client.aclose()
