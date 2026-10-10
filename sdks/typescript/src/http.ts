@@ -1,6 +1,6 @@
 import type { ClientConfig, TokenSource } from './config.js';
 import { SDK_VERSION, safeLogger, silentLogger } from './config.js';
-import { SagatError, codeOfHttpStatus, isRetriable, type ErrorCode } from './errors.js';
+import { SagatError, codeOfHttpStatus, isRetriable, providerFailure, type ErrorCode } from './errors.js';
 import { encodeJson, parseJson } from './json.js';
 import { tlsFetch } from './tlsfetch.js';
 import { DEFAULT_RETRY, delayAfter, sleep, type RetryPolicy } from './retry.js';
@@ -35,7 +35,7 @@ export async function resolveToken(token: TokenSource): Promise<string> {
     return await token();
   } catch {
     // The provider's own error may carry what it was talking to (a client secret, a URL): only its class of failure is ours.
-    throw new SagatError({ code: 'UNAUTHENTICATED', message: 'the token provider failed', reason: 'TOKEN_PROVIDER_FAILED' });
+    throw providerFailure();
   }
 }
 

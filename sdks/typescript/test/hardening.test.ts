@@ -372,3 +372,54 @@ test('the 32 MiB cap holds with a tls option too: the body is streamed, not buff
     server.close();
   }
 });
+
+test('a token provider that fails once is repeated: a computed result is not lost to a hiccup of the identity provider', async () => {
+  service.tasks = [lease(9)];
+  let failNext = false;
+  let failures = 0;
+  const host = worker({
+    workerName: 'hardening-provider',
+    token: () => {
+      if (failNext) {
+        failNext = false;
+        failures++;
+        throw new Error('the identity provider said: client_secret=hunter2');
+      }
+      return CANARY;
+    },
+  });
+  host.registerActivity('charge', () => {
+    failNext = true; // the next call of the provider, which is the report, fails once
+    return { ok: true };
+  });
+  const before = service.counts['completeStep'] ?? 0;
+  await host.start();
+  await until(() => (service.counts['completeStep'] ?? 0) > before, 'the report after the provider failed once');
+  assert.equal(failures, 1);
+  await host.stop(300);
+
+  // A REST call: the same, and a SERVER that sends the reason in an answer does not make a 401 repeatable.
+  let calls = 0;
+  const server = createServer((_req, res) => {
+    calls++;
+    res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ code: 'UNAUTHENTICATED', message: 'no', retryable: true, traceId: 'a'.repeat(32), details: { reason: 'TOKEN_PROVIDER_FAILED' } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = new SagatClient({ apiUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, namespace: 'payments', token: 't', retry: { initialDelayMs: 1, maxDelayMs: 2 } });
+    await assert.rejects(client.get(RUN_ID), (error: unknown) => error instanceof SagatError && error.code === 'UNAUTHENTICATED');
+    assert.equal(calls, 1, 'a 401 whose body claims the reason is not repeated');
+  } finally {
+    server.close();
+  }
+  let provided = 0;
+  const flaky = createServer((_req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ runId: RUN_ID, workflowId: RUN_ID, versionId: RUN_ID, status: 'RUNNING', version: 1, paused: false, startedBy: 'a', createdAt: '2026-10-10T10:00:00Z', updatedAt: '2026-10-10T10:00:00Z', finishedAt: null, deadline: null, traceId: 'a'.repeat(32), correlationId: null, depth: 0, parent: null })));
+  await new Promise<void>((resolve) => flaky.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = new SagatClient({ apiUrl: `http://127.0.0.1:${(flaky.address() as AddressInfo).port}/v1`, namespace: 'payments', retry: { initialDelayMs: 1, maxDelayMs: 2 }, token: () => { if (provided++ === 0) throw new Error('blip'); return 't'; } });
+    assert.equal((await client.get(RUN_ID)).runId, RUN_ID);
+    assert.equal(provided, 2);
+  } finally {
+    flaky.close();
+  }
+});

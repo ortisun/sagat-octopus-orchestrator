@@ -50,9 +50,22 @@ export function retryableByDefault(code: ErrorCode): boolean {
 /** The errors a call may be repeated after (SPEC §5): never a 4xx other than 429, whatever its body claims. */
 const RETRIABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>(['TRANSPORT', 'UNAVAILABLE', 'RATE_LIMITED', 'INTERNAL']);
 
-/** Whether repeating the call that raised `error` is allowed: its code is retriable and it says it may be. */
+/** Errors the SDK itself made because the token provider failed, which a server's answer can never be (SPEC §5). */
+const PROVIDER_FAILURES = new WeakSet<object>();
+
+/** The token provider threw: nothing was sent, so repeating is harmless; only the SDK can make this error. */
+export function providerFailure(): SagatError {
+  const error = new SagatError({ code: 'UNAUTHENTICATED', message: 'the token provider failed', reason: 'TOKEN_PROVIDER_FAILED', retryable: true });
+  PROVIDER_FAILURES.add(error);
+  return error;
+}
+
+/**
+ * Whether repeating the call that raised `error` is allowed: its code is retriable and it says it may be, or the token
+ * provider failed before anything was sent (a result already computed is not lost to a hiccup of the identity provider).
+ */
 export function isRetriable(error: { code: ErrorCode; retryable: boolean }): boolean {
-  return error.retryable && RETRIABLE.has(error.code);
+  return error.retryable && (RETRIABLE.has(error.code) || PROVIDER_FAILURES.has(error));
 }
 
 /** The code the catalog gives an HTTP status when the body carried no envelope. */

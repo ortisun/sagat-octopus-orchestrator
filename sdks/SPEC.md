@@ -155,6 +155,12 @@ The rule is by **code**, the same in every SDK: a call is repeated when the erro
 its `429` is `RATE_LIMITED` or, when a quota is exhausted, `QUOTA_EXCEEDED` (never repeated). A body that claims
 `retryable: true` on any other `4xx` is not believed.
 
+**A token provider that fails is repeated too** — before anything is sent, so repeating cannot do harm — in every call
+the SDK repeats and in the report of a result (a result that was computed is not lost to a hiccup of the identity
+provider): the error is `UNAUTHENTICATED` with the reason `TOKEN_PROVIDER_FAILED` once the attempts are used up. That
+it is the provider that failed is something the SDK knows and keeps privately; a `reason` in a server's answer never
+makes a call repeatable.
+
 **Never** retried: any `4xx` other than `408` and `429`; `STALE_ATTEMPT` (stop: the lease is gone, do not retry
 the report); `IDEMPOTENCY_KEY_REUSED`; `VALIDATION_FAILED`; a call with no key and a non-idempotent
 effect. The SDK never retries a failure of *the user's activity code*; that is the server's retry
@@ -334,6 +340,10 @@ workflow(name).description(text).label(key, value)
   .trigger(kind, {...}) .inputSchema(schema) .outputSchema(schema)
   .build()
 ```
+
+A `Flow` (the body of a saga, a branch of a parallel) is **read when `build()` is called**, not when it is joined: a
+step added to it after it was joined is part of the document. Ids are checked when a node is added to its flow and again
+by `build()` over the whole document.
 
 Linking (the whole algorithm — it is why the output is the same everywhere):
 
