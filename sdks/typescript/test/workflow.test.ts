@@ -75,6 +75,7 @@ test('wait for an event, invoke a child, decide and end', () => {
     .end('done', { outputExpr: 'steps.ship.output' })
     .build();
   const nodes = doc['nodes'] as Array<Record<string, unknown>>;
+  assert.equal(nodes[2]?.['next'], undefined, 'a condition names both branches and has no next');
   assert.deepEqual(nodes[0], { id: 'paid', type: 'waitEvent', eventType: 'payment.confirmed', correlationExpr: 'input.orderId', timeoutMs: 60000, onTimeout: 'cancel', lookbackMs: 1000, next: 'ship' });
   assert.deepEqual(nodes[1], { id: 'ship', type: 'child', workflowId: 'shipping-flow', version: 2, cancelPolicy: 'detach', input: 'input.order', next: 'big' });
   assert.deepEqual(nodes[5], { id: 'done', type: 'end', outputExpr: 'steps.ship.output' });

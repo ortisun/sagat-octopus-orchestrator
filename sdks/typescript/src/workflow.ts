@@ -163,7 +163,9 @@ export class Flow {
     this.nodes.forEach((node, i) => {
       const linked: Node = { ...node };
       const next = this.nodes[i + 1];
-      if (next && linked['next'] === undefined) linked['next'] = next['id'] as string;
+      // A decision names both of its branches and an end ends: neither has a next node.
+      const branches = linked['type'] === 'condition' || linked['type'] === 'end';
+      if (next && !branches && linked['next'] === undefined) linked['next'] = next['id'] as string;
       out.push(linked);
     });
     for (const inner of this.embedded) out.push(...inner.flatten());

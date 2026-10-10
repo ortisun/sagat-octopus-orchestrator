@@ -193,7 +193,8 @@ For a `TaskLease` the host:
    (the server would not have leased it to a worker that did not advertise it, so this is a bug report);
 2. parses `input_json` — the **step document** `{run: {id}, node, input, steps: {<node>: {output}}}` —
    and hands the handler `input` (the run's input) typed by the handler's declared type, plus the context
-   (`ctx`): `activityName`, `taskId`, `runId`, `node` (the `step_id`), `attempt`, `generation`,
+   (`ctx`): `activityName`, `taskId`, `runId`, `node` (the node id of the workflow definition, `node` of the step document;
+   the lease's `step_id` when the document has none), `stepId` (the lease's `step_id`, a UUID, which the reports carry), `attempt`, `generation`,
    `idempotencyKey`, `traceparent`, `deadline`, `taskKind` (`FORWARD` when empty, `COMPENSATION`,
    `RECONCILIATION`), `targetNode`, `targetIdempotencyKey`, `steps` (the outputs of earlier steps,
    by node), a cancellation token, a logger and `secrets()`;
@@ -295,9 +296,8 @@ workflow(name).description(text).label(key, value)
 
 Linking (the whole algorithm — it is why the output is the same everywhere):
 
-- A flow is an ordered list of nodes. Node *i* gets `next = id of node i+1`; the last node of a flow has no
-  `next` unless it already has one set by an option (`next` may be given explicitly for a `condition`'s
-  branches via ids).
+- A flow is an ordered list of nodes. Node *i* gets `next = id of node i+1`, except a `condition` (it names
+  its two branches) and an `end` (it ends), which never get one; the last node of a flow has no `next`.
 - `entrypoint` is the id of the first node of the top flow.
 - `parallel(id, join, branches)`: `branches` lists the id of the first node of each branch flow (at least
   two, in the order given); the last node of every branch has no `next`; the `parallel` node's own `next`

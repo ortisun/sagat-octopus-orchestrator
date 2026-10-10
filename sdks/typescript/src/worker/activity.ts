@@ -78,8 +78,10 @@ export interface ActivityContext {
   readonly activityName: string;
   readonly taskId: string;
   readonly runId: string;
-  /** The node id of the step in the workflow. */
+  /** The node id of the step in the workflow definition (`charge`), from the step document. */
   readonly node: string;
+  /** The platform's id of the step (`step_id` of the lease), which the reports carry. */
+  readonly stepId: string;
   readonly attempt: number;
   readonly generation: number;
   /** Stable across the attempts of the step: send it to the provider of an external effect. */
