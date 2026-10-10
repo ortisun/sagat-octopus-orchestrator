@@ -433,28 +433,46 @@ async fn script_sandbox_benchmark() {
         .expect("limits"),
         ..Policy::default()
     };
+    // The flood is about the log and not about memory: a Node process does not fit its own start in
+    // 64 MiB with room to write, so it runs with twice as much (the first version of this benchmark
+    // gave it 64 MiB and the kernel ended it before the supervisor did: `SCRIPT_OUT_OF_MEMORY`).
+    let roomy = Policy {
+        limits: Limits::new(
+            128 * 1024 * 1024,
+            1000,
+            Duration::from_secs(3),
+            64,
+            64 * 1024,
+            16 * 1024 * 1024,
+        )
+        .expect("limits"),
+        ..Policy::default()
+    };
     let mut overshoots = Vec::new();
     let mut bomb_times = Vec::new();
     let mut flood_times = Vec::new();
     for _ in 0..ENFORCEMENT_SAMPLES {
-        for (language, source, sink, expect) in [
+        for (language, source, sink, expect, policy) in [
             (
                 Language::TypeScript,
                 "export default function () { for (;;) {} }\n",
                 &mut overshoots,
                 "SCRIPT_TIMEOUT",
+                tight,
             ),
             (
                 Language::Python,
                 "def run(input, octopus):\n    hog = []\n    while True:\n        hog.append(bytearray(8 * 1024 * 1024))\n",
                 &mut bomb_times,
                 "SCRIPT_OUT_OF_MEMORY",
+                tight,
             ),
             (
                 Language::TypeScript,
                 "export default function () { const l = 'x'.repeat(1000); for (let i = 0; i < 5_000_000; i++) console.log(l); }\n",
                 &mut flood_times,
                 "SCRIPT_OUTPUT_LIMIT",
+                roomy,
             ),
         ] {
             let built = sandbox
@@ -462,7 +480,7 @@ async fn script_sandbox_benchmark() {
                     language,
                     source: Source::parse(source).expect("source"),
                     lockfile: None,
-                    policy: tight,
+                    policy,
                     input_schema: None,
                     output_schema: None,
                 })
@@ -477,7 +495,7 @@ async fn script_sandbox_benchmark() {
                         input: b"{}".to_vec(),
                         input_schema: None,
                         output_schema: None,
-                        policy: tight,
+                        policy,
                         secrets_to_hide: Vec::new(),
                         idempotency_key: None,
                     },
@@ -502,7 +520,7 @@ async fn script_sandbox_benchmark() {
         "CPU burner: time past its 3 s limit until it is gone",
         overshoots,
     );
-    report.push_str("\n## Holding a script to its limits\n\nA hostile script run on the sandbox with a 3 second limit and 64 MiB of memory: how long until it is gone.\n\n| What | Samples | p50 | p95 | p99 | max |\n|---|---|---|---|---|---|\n");
+    report.push_str("\n## Holding a script to its limits\n\nA hostile script run on the sandbox with a 3 second limit and 64 MiB of memory (128 MiB for the log flood): how long until it is gone. *The first run of this benchmark gave the flood 64 MiB too and stopped there: the kernel ended the Node process (`SCRIPT_OUT_OF_MEMORY`) before the supervisor had read enough of its log to cut it off. The flood is about the log, not about memory, so it got more room; the memory bomb keeps 64 MiB.*\n\n| What | Samples | p50 | p95 | p99 | max |\n|---|---|---|---|---|---|\n");
     report.push_str(&kill_line);
     report.push_str(
         &row(
@@ -511,7 +529,7 @@ async fn script_sandbox_benchmark() {
         )
         .0,
     );
-    report.push_str(&row("log flood: until it was cut off", flood_times).0);
+    report.push_str(&row("log flood: until it was cut off (128 MiB)", flood_times).0);
     assert_eq!(sandbox.leftovers().await, 0, "no container was left behind");
 
     // -------------------------------------------------------------------------------------- verdicts
