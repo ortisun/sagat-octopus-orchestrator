@@ -221,5 +221,9 @@ name = "fault_006"
 path = "fault/006-sdk-multilanguage/main.rs"
 
 [[test]]
+name = "fault_007"
+path = "fault/007-workflow-studio/main.rs"
+
+[[test]]
 name = "perf_006"
 path = "performance/006-sdk-multilanguage/main.rs"

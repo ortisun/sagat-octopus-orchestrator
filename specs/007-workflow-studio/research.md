@@ -164,4 +164,8 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   the CI job (`npm audit --audit-level=moderate`) lets lows through until Monaco ships a fixed bundle. The tooling advisories
   that were open when the frontend was built (vitest's `tinypool`, `source-map-js`) are fixed by vitest 4.1.11 and a
   lockfile update.
+- **G153 — The `operationId` of an operation is derived, not stored.** It is a version-8 UUID made from the run and the
+  `Idempotency-Key`, so an operation sent again because its answer was lost is answered with the same id (before, every answer
+  carried a new random one, which made a replay look like a second operation). It names the request: there is no table of
+  operations to look it up in, and the record of what was decided is the journal event (`step.retry_requested`, `saga.step_skipped`…).
 
