@@ -1,0 +1,48 @@
+{
+ "name": "perf-baseline",
+ "description": "The cold path of a runner: start, one run, one worker, one completion. Its wall time is the process start-up and the first connections, which the other scenarios contain too.",
+ "workflows": {
+  "one": {
+   "name": "perf-one",
+   "program": [
+    {
+     "op": "step",
+     "id": "work",
+     "activity": "perf.work"
+    }
+   ]
+  }
+ },
+ "workers": {
+  "w1": {
+   "workerName": "perf-w1",
+   "maxInflight": 4,
+   "autostart": true,
+   "activities": {
+    "perf.work": {
+     "behavior": {
+      "returns": {
+       "ok": true
+      }
+     }
+    }
+   }
+  }
+ },
+ "steps": [
+  {
+   "id": "r",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 0
+   }
+  },
+  {
+   "id": "done",
+   "op": "waitForCompletion",
+   "run": "r",
+   "timeoutMs": 60000
+  }
+ ]
+}

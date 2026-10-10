@@ -380,6 +380,48 @@ fn given_traces(scenario: &Value) -> Vec<String> {
     found
 }
 
+/// A platform of its own for one scenario and one language, the workflows the scenario's builders wrote
+/// published in it, and the `config.json` the runner is given.
+async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, String) {
+    let run = boot(scenario).await;
+    // The secrets a scenario's workflows declare must exist before they can be published.
+    if let Some(secrets) = scenario["secrets"].as_object() {
+        let namespace = run.platform.namespace_id().await;
+        for (secret, value) in secrets {
+            let (status, stored) = run
+                .platform
+                .rest(
+                    Method::PUT,
+                    &format!("/namespaces/{namespace}/secrets/{secret}"),
+                    Some(&json!({"value": value})),
+                )
+                .await;
+            assert_eq!(status, 200, "storing the secret {secret}: {stored}");
+        }
+    }
+    let mut workflows = Map::new();
+    if let Some(docs) = built["workflows"].as_object() {
+        for (key, ir) in docs {
+            let workflow_name = ir["metadata"]["name"]
+                .as_str()
+                .expect("workflow name")
+                .to_owned();
+            workflows.insert(key.clone(), publish(&run, &workflow_name, ir).await);
+        }
+    }
+    let unique = format!(
+        "{lang}-{}",
+        &uuid::Uuid::now_v7().simple().to_string()[20..]
+    );
+    let config = json!({
+        "apiUrl": run.platform.api.base, "grpcUrl": run.engine.grpc_url, "namespace": NAMESPACE,
+        "clientToken": run.client_token, "workerToken": run.worker_token, "otherTenantToken": run.other_token,
+        "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt", "controlUrl": run.control, "unique": unique, "workflows": workflows,
+        "leaseTtlSeconds": scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30),
+    });
+    (run, config, unique)
+}
+
 /// One language's normalized result of one scenario.
 pub struct Played {
     pub scenario: String,
@@ -488,42 +530,7 @@ async fn play(
     let expected_path = suite().join("expected").join(format!("{name}.json"));
     let mut results: Vec<(&str, Value)> = Vec::new();
     for (lang, root) in langs {
-        let run = boot(&scenario).await;
-        // The secrets a scenario's workflows declare must exist before they can be published.
-        if let Some(secrets) = scenario["secrets"].as_object() {
-            let namespace = run.platform.namespace_id().await;
-            for (secret, value) in secrets {
-                let (status, stored) = run
-                    .platform
-                    .rest(
-                        Method::PUT,
-                        &format!("/namespaces/{namespace}/secrets/{secret}"),
-                        Some(&json!({"value": value})),
-                    )
-                    .await;
-                assert_eq!(status, 200, "storing the secret {secret}: {stored}");
-            }
-        }
-        let mut workflows = Map::new();
-        if let Some(docs) = first["workflows"].as_object() {
-            for (key, ir) in docs {
-                let workflow_name = ir["metadata"]["name"]
-                    .as_str()
-                    .expect("workflow name")
-                    .to_owned();
-                workflows.insert(key.clone(), publish(&run, &workflow_name, ir).await);
-            }
-        }
-        let unique = format!(
-            "{lang}-{}",
-            &uuid::Uuid::now_v7().simple().to_string()[20..]
-        );
-        let config = json!({
-            "apiUrl": run.platform.api.base, "grpcUrl": run.engine.grpc_url, "namespace": NAMESPACE,
-            "clientToken": run.client_token, "workerToken": run.worker_token, "otherTenantToken": run.other_token,
-            "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt", "controlUrl": run.control, "unique": unique, "workflows": workflows,
-            "leaseTtlSeconds": scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30),
-        });
+        let (run, config, unique) = stage(&scenario, &first, lang).await;
         let config_path = dir.join(format!("{lang}.config.json"));
         let out_path = dir.join(format!("{lang}.out.json"));
         std::fs::write(
@@ -860,4 +867,158 @@ pub async fn conform(selection: &Selection) -> Suite {
         failures.push("no scenario was played".to_owned());
     }
     Suite { failures, played }
+}
+
+/// The languages that have a runner (and that `SAGAT_SDK_LANGS` allows).
+pub fn available_languages() -> Vec<&'static str> {
+    languages(None)
+        .into_iter()
+        .filter(|(_, root)| root.join("run.sh").exists())
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// Runs `prepare.sh` of these languages, once per process (unless `SAGAT_SDK_REUSE` is set); returns
+/// what failed.
+pub async fn ensure_prepared(names: &[&'static str]) -> Vec<String> {
+    let mut failures = Vec::new();
+    if std::env::var("SAGAT_SDK_REUSE").is_ok() {
+        return failures;
+    }
+    let mut prepared = PREPARED.lock().await;
+    for (lang, root) in languages(Some(names)) {
+        if prepared.contains(lang) {
+            continue;
+        }
+        match script(&root, "prepare.sh", &[], Duration::from_secs(1800)).await {
+            Ok(_) => {
+                prepared.insert(lang);
+            }
+            Err(e) => failures.push(format!("{lang}: prepare failed: {e}")),
+        }
+    }
+    failures
+}
+
+/// What a runner did to the platform and how long it took, for the benchmark.
+pub struct Measured {
+    pub language: &'static str,
+    /// The wall time of `run.sh run`: the runner's start, its steps and its end.
+    pub wall: Duration,
+    /// Calls the worker service answered while the runner ran, by method (all codes).
+    pub calls: std::collections::BTreeMap<String, u64>,
+    /// The same, by method and code, for the ones that did not end in OK.
+    pub refused: std::collections::BTreeMap<String, u64>,
+    /// The raw output of the runner.
+    pub out: Value,
+}
+
+/// The `grpc_requests_total` counters of the engine, by (method, code).
+async fn grpc_counters(run: &Run) -> std::collections::BTreeMap<(String, String), u64> {
+    let text = run.engine.body("/metrics").await;
+    let mut counters = std::collections::BTreeMap::new();
+    for line in text
+        .lines()
+        .filter(|l| l.starts_with("grpc_requests_total{"))
+    {
+        let label = |name: &str| {
+            line.split(&format!("{name}=\""))
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let value = line
+            .rsplit(' ')
+            .next()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        counters.insert((label("method"), label("code")), value as u64);
+    }
+    counters
+}
+
+/// Plays a scenario file (any path, not only the suite's) in one language on a platform of its own and
+/// measures it. Nothing is compared: this is for the benchmark.
+pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, String> {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    let (_, root) = languages(Some(&[language]))
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{language} is not a language of the suite"))?;
+    if !root.join("run.sh").exists() {
+        return Err(format!("{language} has no conformance runner"));
+    }
+    let scenario: Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let name = scenario["name"]
+        .as_str()
+        .ok_or("a scenario without a name")?
+        .to_owned();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("target")
+        .join("sdk-measure")
+        .join(&name);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path_arg = path.to_str().ok_or("path")?;
+    let (text, _) = script(
+        &root,
+        "run.sh",
+        &["build", path_arg],
+        Duration::from_secs(300),
+    )
+    .await?;
+    let built: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("build printed something that is not JSON: {e}"))?;
+    let (run, config, _) = stage(&scenario, &built, language).await;
+    let config_path = dir.join(format!("{language}.config.json"));
+    let out_path = dir.join(format!("{language}.out.json"));
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out_path);
+    let before = grpc_counters(&run).await;
+    let started = std::time::Instant::now();
+    let result = script(
+        &root,
+        "run.sh",
+        &[
+            "run",
+            path_arg,
+            config_path.to_str().ok_or("path")?,
+            out_path.to_str().ok_or("path")?,
+        ],
+        Duration::from_secs(900),
+    )
+    .await;
+    let wall = started.elapsed();
+    let after = grpc_counters(&run).await;
+    run.stop().await;
+    result?;
+    let out: Value = std::fs::read(&out_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| format!("{language} wrote no readable {}", out_path.display()))?;
+    let mut calls = std::collections::BTreeMap::new();
+    let mut refused = std::collections::BTreeMap::new();
+    for ((method, code), n) in &after {
+        let delta = n - before
+            .get(&(method.clone(), code.clone()))
+            .copied()
+            .unwrap_or(0);
+        *calls.entry(method.clone()).or_insert(0) += delta;
+        if !code.eq_ignore_ascii_case("ok") && delta > 0 {
+            refused.insert(format!("{method}:{code}"), delta);
+        }
+    }
+    Ok(Measured {
+        language,
+        wall,
+        calls,
+        refused,
+        out,
+    })
 }
