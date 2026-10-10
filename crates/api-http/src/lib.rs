@@ -33,6 +33,7 @@ mod limits;
 mod routes;
 mod server;
 pub mod streams;
+pub mod studio;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};

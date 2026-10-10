@@ -610,3 +610,131 @@ fn an_api_that_receives_secret_values_in_plaintext_outside_development_must_say_
     // No ring, nothing to state.
     assert!(ServeConfig::from_lookup(&env(&OIDC)).is_ok());
 }
+
+// ------------------------------------------------------------------ the Studio (D143, D144)
+
+fn with_oidc(extra: &[(&str, &str)]) -> Vec<(&'static str, String)> {
+    let mut pairs: Vec<(&'static str, String)> =
+        OIDC.iter().map(|(k, v)| (*k, (*v).to_owned())).collect();
+    pairs.extend(extra.iter().map(|(k, v)| (leak(k), (*v).to_owned())));
+    pairs
+}
+
+fn leak(name: &str) -> &'static str {
+    Box::leak(name.to_owned().into_boxed_str())
+}
+
+fn serve_with(extra: &[(&str, &str)]) -> Result<ServeConfig, ConfigError> {
+    let owned = with_oidc(extra);
+    let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    ServeConfig::from_lookup(&env(&pairs))
+}
+
+#[test]
+fn the_studio_is_off_unless_a_directory_is_named() {
+    assert!(serve_with(&[]).expect("config").studio.is_none());
+    assert!(
+        serve_with(&[("SAGAT_STUDIO_DIR", "  ")])
+            .expect("config")
+            .studio
+            .is_none(),
+        "a blank value is no value"
+    );
+}
+
+#[test]
+fn a_directory_alone_serves_the_studio_with_a_pasted_token_sign_in() {
+    let studio = serve_with(&[("SAGAT_STUDIO_DIR", "/srv/studio")])
+        .expect("config")
+        .studio
+        .expect("on");
+    assert_eq!(studio.dir, std::path::PathBuf::from("/srv/studio"));
+    assert!(studio.oidc.is_none());
+}
+
+#[test]
+fn an_issuer_and_a_client_id_configure_the_browser_sign_in() {
+    let studio = serve_with(&[
+        ("SAGAT_STUDIO_DIR", "/srv/studio"),
+        (
+            "SAGAT_STUDIO_OIDC_ISSUER",
+            "https://login.example/realms/acme",
+        ),
+        ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+    ])
+    .expect("config")
+    .studio
+    .expect("on");
+    let oidc = studio.oidc.expect("sign-in");
+    assert_eq!(oidc.issuer, "https://login.example/realms/acme");
+    assert_eq!(oidc.client_id, "studio");
+    assert_eq!(oidc.scope, "openid profile", "the default scope");
+
+    let scoped = serve_with(&[
+        ("SAGAT_STUDIO_DIR", "/srv/studio"),
+        (
+            "SAGAT_STUDIO_OIDC_ISSUER",
+            "https://login.example/realms/acme",
+        ),
+        ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+        ("SAGAT_STUDIO_OIDC_SCOPE", "openid email"),
+    ])
+    .expect("config")
+    .studio
+    .expect("on")
+    .oidc
+    .expect("sign-in");
+    assert_eq!(scoped.scope, "openid email");
+}
+
+#[test]
+fn a_half_configured_sign_in_or_one_that_would_leak_a_token_is_refused() {
+    for (extra, name) in [
+        (
+            vec![("SAGAT_STUDIO_OIDC_ISSUER", "https://login.example/")],
+            "SAGAT_STUDIO_OIDC_CLIENT_ID",
+        ),
+        (
+            vec![("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio")],
+            "SAGAT_STUDIO_OIDC_ISSUER",
+        ),
+        (
+            vec![
+                ("SAGAT_STUDIO_OIDC_ISSUER", "http://login.example/"),
+                ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+            ],
+            "SAGAT_STUDIO_OIDC_ISSUER",
+        ),
+        (
+            vec![
+                ("SAGAT_STUDIO_OIDC_ISSUER", "https://user:pw@login.example/"),
+                ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+            ],
+            "SAGAT_STUDIO_OIDC_ISSUER",
+        ),
+        (
+            vec![
+                ("SAGAT_STUDIO_OIDC_ISSUER", "https://login.example/"),
+                ("SAGAT_STUDIO_OIDC_CLIENT_ID", "stu dio"),
+            ],
+            "SAGAT_STUDIO_OIDC_CLIENT_ID",
+        ),
+    ] {
+        let mut pairs = vec![("SAGAT_STUDIO_DIR", "/srv/studio")];
+        pairs.extend(extra);
+        let error = serve_with(&pairs).expect_err(name);
+        assert!(error.to_string().contains(name), "{name}: {error}");
+    }
+    // A loopback issuer over http is how development works.
+    assert!(
+        serve_with(&[
+            ("SAGAT_STUDIO_DIR", "/srv/studio"),
+            (
+                "SAGAT_STUDIO_OIDC_ISSUER",
+                "http://localhost:8081/realms/dev"
+            ),
+            ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+        ])
+        .is_ok()
+    );
+}

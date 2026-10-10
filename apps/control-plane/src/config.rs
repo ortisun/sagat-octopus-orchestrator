@@ -346,6 +346,9 @@ pub struct ServeConfig {
     /// The key that signs artifacts and the most a script may be given; without a key the script
     /// routes do not exist.
     pub scripts: Option<ScriptsConfig>,
+    /// The directory of the Studio build and how the browser signs in; without a directory the
+    /// Studio is not served (`SAGAT_STUDIO_DIR`).
+    pub studio: Option<sagat_api_http::studio::StudioConfig>,
 }
 
 impl ServeConfig {
@@ -486,8 +489,87 @@ impl ServeConfig {
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
             secrets,
             scripts: read_scripts(get)?,
+            studio: read_studio(get)?,
         })
     }
+}
+
+/// The Studio, from `SAGAT_STUDIO_DIR` and, for the browser sign-in, `SAGAT_STUDIO_OIDC_ISSUER`,
+/// `SAGAT_STUDIO_OIDC_CLIENT_ID` and `SAGAT_STUDIO_OIDC_SCOPE`. The issuer must be an `https` URL
+/// (an `http` one only on a loopback address) with no credentials in it: the page is told to call
+/// it with a token. Nothing here is secret: a public client has an id and no secret.
+fn read_studio(
+    get: Lookup<'_>,
+) -> Result<Option<sagat_api_http::studio::StudioConfig>, ConfigError> {
+    use sagat_api_http::studio::{StudioConfig, StudioOidc};
+    let value = |name: &str| {
+        get(name)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    let issuer = value("SAGAT_STUDIO_OIDC_ISSUER");
+    let client_id = value("SAGAT_STUDIO_OIDC_CLIENT_ID");
+    let oidc = match (issuer, client_id) {
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(ConfigError::Missing("SAGAT_STUDIO_OIDC_CLIENT_ID"));
+        }
+        (None, Some(_)) => {
+            return Err(ConfigError::Missing("SAGAT_STUDIO_OIDC_ISSUER"));
+        }
+        (Some(issuer), Some(client_id)) => {
+            let invalid = |name, reason: &str| ConfigError::Invalid {
+                name,
+                reason: reason.to_owned(),
+            };
+            let https = issuer.starts_with("https://");
+            let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+                .iter()
+                .any(|prefix| {
+                    issuer
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+                });
+            let authority = issuer.split("://").nth(1).unwrap_or_default();
+            let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+            if !(https || loopback)
+                || authority.contains('@')
+                || issuer.contains(char::is_whitespace)
+            {
+                return Err(invalid(
+                    "SAGAT_STUDIO_OIDC_ISSUER",
+                    "must be an https URL (http only on a loopback address) with no credentials",
+                ));
+            }
+            if client_id.len() > 128
+                || !client_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._~-:@".contains(&b))
+            {
+                return Err(invalid(
+                    "SAGAT_STUDIO_OIDC_CLIENT_ID",
+                    "must be 1 to 128 characters of letters, digits and . _ ~ - : @",
+                ));
+            }
+            let scope =
+                value("SAGAT_STUDIO_OIDC_SCOPE").unwrap_or_else(|| "openid profile".to_owned());
+            if scope.len() > 256 || !scope.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
+                return Err(invalid(
+                    "SAGAT_STUDIO_OIDC_SCOPE",
+                    "must be space-separated printable ASCII, at most 256 characters",
+                ));
+            }
+            Some(StudioOidc {
+                issuer,
+                client_id,
+                scope,
+            })
+        }
+    };
+    Ok(value("SAGAT_STUDIO_DIR").map(|dir| StudioConfig {
+        dir: dir.into(),
+        oidc,
+    }))
 }
 
 /// Settings for `seed-dev`.
