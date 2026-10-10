@@ -87,8 +87,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   Polling the database per stream is the honest first version; a push from the engine (`LISTEN/NOTIFY` or NATS) is
   feature 010's (G143).
 - **D143 — The control plane serves the Studio** under `/studio/` from `SAGAT_STUDIO_DIR` (off when unset), same origin as
-  the API, so no CORS is added. Headers: a CSP of `default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr
-  'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; base-uri 'none';
+  the API, so no CORS is added. Headers: a CSP of `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; base-uri 'none';
   form-action 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Opener-Policy: same-origin`; hashed assets are `immutable`, `index.html` is `no-store`. A Studio on
   another origin is an ingress decision, not a feature of the API.
@@ -103,10 +102,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **D146 — Two people editing the same draft** is a `409` on `draftRevision`. The Studio keeps the author's copy, shows
   the server's, offers *reload theirs*, *keep mine and save over* (after a diff of the two) and *save mine as a copy*.
   Nothing is overwritten without a diff on screen.
-- **D147 — Large graphs degrade by thresholds, not by freezing.** Up to 1 000 nodes the canvas is interactive
-  (`onlyRenderVisibleElements`, no per-node effects); above 1 000 it draws simplified nodes; above 10 000 (the
+- **D147 — Large graphs degrade by thresholds, not by freezing.** Up to 1 000 nodes the canvas draws every card and is
+  interactive (no per-node effects; the benchmark measured 59–60 frames per second panning and zooming 1 000 drawn cards);
+  above 1 000 it draws simplified cards and only the ones in view (`onlyRenderVisibleElements`); above 10 000 (the
   definition limit, with derived nodes more) it opens in the list view and offers the canvas on demand. Lists of
-  10 000+ rows (runs, journal, table view) are windowed.
+  10 000+ rows (runs, journal, table view) are windowed (29 rows in the page at most, of 9 991).
 - **D148 — The alternative view is first class.** Every graph has a table/list view with the same data and actions (a
   list of nodes with status, attempts, duration, failure, and the actions available), reachable by keyboard, and the
   default for assistive technology users who ask for it (`prefers-reduced-motion` and a visible toggle). WCAG 2.2 AA is
@@ -148,8 +148,12 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **G148 — Manual positions are per browser.** A card a user moves is remembered in that browser only (not shared, not in the
   document); another person, or the same one elsewhere, sees the computed layout.
 - **G149 — The browser sign-in with an identity provider (authorization code with PKCE) is built from the deployment's public
-  settings and tested against a stand-in provider; it has not been run against a real one.** The pasted token is the supported
-  development path (D144).
+  settings and tested against a stand-in provider, played by the journeys (`tests/oidc.spec.ts`: discovery, the redirect, the
+  verifier checked against the challenge, a wrong state, a refusal); it has not been run against a real one.** The pasted token
+  is the supported development path (D144).
 - **G150 — The code editor offers syntax colouring and the language service the browser has** (TypeScript and JSON only); for
   the other languages the platform checks the source when it builds it, and the page says so.
-
+- **G151 — The "reference browser" of NFR-007-PERF is not defined by the specification, and the benchmark measures one.** The
+  report (`tests/performance/reports/007-workflow-studio.md`) says which: headless Chromium on the machine it names. A low-end
+  machine, Firefox and Safari are not measured, and the floors of the report ("usable": 30 frames per second, a few seconds to
+  open) are this feature's reading of "usable", chosen before the measured rounds.
