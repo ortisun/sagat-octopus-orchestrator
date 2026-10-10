@@ -135,3 +135,30 @@ function defaultMessage(code: ErrorCode): string {
       return 'The request failed.';
   }
 }
+
+/**
+ * What a person can do about a failure, for the codes whose message does not already say (a validation message or a
+ * conflict names its own way out). It is advice, not a promise: the platform's message and code stay the authority.
+ */
+export function remedy(code: ErrorCode): string | undefined {
+  switch (code) {
+    case 'UNAUTHENTICATED':
+      return 'Sign in again.';
+    case 'FORBIDDEN':
+      return 'Ask an administrator for the permission it needs.';
+    case 'NOT_FOUND':
+      return 'Check the address and the namespace you are working in.';
+    case 'RATE_LIMITED':
+      return 'Wait a moment and try again.';
+    case 'QUOTA_EXCEEDED':
+      return 'Free some of it, or ask an administrator to raise the quota.';
+    case 'UNAVAILABLE':
+    case 'TRANSPORT':
+      return 'Try again in a moment; if it keeps failing, tell whoever runs the platform.';
+    case 'INTERNAL':
+      return 'Tell whoever runs the platform, and quote the trace id.';
+    default:
+      return undefined;
+  }
+}
+

@@ -1,8 +1,8 @@
-import { isApiError } from '../api/errors';
+import { isApiError, remedy } from '../api/errors';
 import { Banner } from './Banner';
 import { Button } from './Button';
 
-/** What to tell a person who hit an error, with the trace id they can quote. Never a payload. */
+/** What to tell a person who hit an error: what the platform said, what to do about it, and the code and trace id they can quote. Never a payload. */
 export function ErrorState({ error, onRetry, what }: { error: unknown; onRetry?: () => void; what?: string }) {
   if (!isApiError(error)) {
     return (
@@ -14,6 +14,17 @@ export function ErrorState({ error, onRetry, what }: { error: unknown; onRetry?:
   return (
     <Banner tone="error" title={what ? `${what} failed.` : 'The request failed.'}>
       {error.message}{' '}
+      {remedy(error.code) ? <>{remedy(error.code)} </> : null}
+      <span>
+        Code <code>{error.code}</code>
+        {error.reason ? (
+          <>
+            {' '}
+            (<code>{error.reason}</code>)
+          </>
+        ) : null}
+        .{' '}
+      </span>
       {error.traceId ? (
         <span>
           Trace <code>{error.traceId}</code>.{' '}

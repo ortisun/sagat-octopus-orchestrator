@@ -149,6 +149,9 @@ test('SEC what belongs to another tenant is not found, from the API and from the
   await signIn(page, env.tokens.foreign);
   await goTo(page, `/runs/${run}`);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  // SC-007-004: what is said carries the code and the trace id to quote, and a way on; none of what it is about.
+  await expect(page.getByText(/Code (NOT_FOUND|FORBIDDEN)\./)).toBeVisible();
+  await expect(page.getByText(/Trace [0-9a-f]{32}\./)).toBeVisible();
   await goTo(page, `/workflows/${wf.body.id}`);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   const text = await page.locator('body').innerText();
