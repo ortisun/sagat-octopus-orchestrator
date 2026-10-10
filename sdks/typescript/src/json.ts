@@ -1,22 +1,34 @@
 import { SagatError } from './errors.js';
 
-/** Canonical JSON text: UTF-8, keys sorted at every depth, no insignificant whitespace (SPEC §7). */
+/**
+ * Canonical JSON text (RFC 8785, SPEC §7): UTF-8, no insignificant whitespace, the keys of every object sorted by
+ * UTF-16 code unit, numbers as ECMAScript prints them. The text is built here and not through a JavaScript
+ * object: an object lists integer-like keys first and in numeric order whatever order they were put in, which
+ * would make `"10"` come after `"9"` and the text differ from the other SDKs'.
+ */
 export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeys(value));
+  return canonical(value, '$');
 }
 
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
+function canonical(value: unknown, path: string): string {
+  if (Array.isArray(value)) return `[${value.map((item, i) => (item === undefined ? 'null' : canonical(item, `${path}[${i}]`))).join(',')}]`;
   if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const item = (value as Record<string, unknown>)[key];
-      // defineProperty, not assignment: `out['__proto__'] = x` would set the prototype and lose the key.
-      if (item !== undefined) Object.defineProperty(out, key, { value: sortKeys(item), enumerable: true, writable: true, configurable: true });
-    }
-    return out;
+    const entries = value as Record<string, unknown>;
+    const keys = Object.keys(entries).filter((key) => entries[key] !== undefined).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonical(entries[key], `${path}.${key}`)}`).join(',')}}`;
   }
-  return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new SagatError({ code: 'VALIDATION_FAILED', message: `${path} is not a finite number` });
+    const text = JSON.stringify(value);
+    // An integer beyond 2^53 - 1 that ECMAScript prints in digits was rounded on the way in: it is refused, so that the
+    // text is the same bytes in every language. One it prints with an exponent (1e21) is a number, not a rounded integer.
+    if (Number.isInteger(value) && !Number.isSafeInteger(value) && !text.includes('e')) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: `${path} is an integer beyond 2^53 - 1: write it as a string` });
+    }
+    return text;
+  }
+  if (typeof value === 'bigint') throw new SagatError({ code: 'VALIDATION_FAILED', message: `${path} is a bigint: write it as a string` });
+  return JSON.stringify(value) ?? 'null';
 }
 
 /**

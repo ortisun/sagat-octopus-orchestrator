@@ -133,6 +133,32 @@ export function errorOfStatus(method: Method, error: grpc.ServiceError): SagatEr
   }
 }
 
+/**
+ * What a worker URL must be, checked where the host is made so that a mistake is told then and not at the first
+ * poll: `http://` or `https://` (any other scheme would be sent in plaintext by the channel without a word,
+ * SPEC §1), and over TLS to an IP address the name of the certificate (a TLS server name cannot be an IP address).
+ */
+export function checkGrpcConfig(config: GrpcConfig): URL {
+  let url: URL;
+  try {
+    url = new URL(config.grpcUrl);
+  } catch {
+    throw new SagatError({ code: 'VALIDATION_FAILED', message: 'grpcUrl is not a URL: it is http://host:port or https://host:port' });
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new SagatError({ code: 'VALIDATION_FAILED', message: 'grpcUrl is http://host:port or https://host:port' });
+  }
+  if (url.protocol === 'https:' && isIP(url.hostname.replace(/^\[|\]$/g, '')) !== 0 && !config.tls?.serverName) {
+    throw new SagatError({ code: 'VALIDATION_FAILED', message: 'gRPC over TLS to an IP address needs tls.serverName, the name the server certificate was issued for' });
+  }
+  return url;
+}
+
+/** `host:port` for the channel; the port of the scheme when the URL names none (`URL.host` would drop it and grpc-js would dial 443). */
+export function grpcTarget(url: URL): string {
+  return `${url.hostname}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
+}
+
 /** The typed, authenticated, error-mapped worker RPCs. */
 export class WorkerRpc {
   private readonly client: WorkerServiceClient;
@@ -141,21 +167,8 @@ export class WorkerRpc {
 
   constructor(config: GrpcConfig) {
     this.#config = config;
-    let url: URL;
-    try {
-      url = new URL(config.grpcUrl);
-    } catch {
-      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'grpcUrl is not a URL: it is http://host:port or https://host:port' });
-    }
-    // Any other scheme would be sent in plaintext by the channel without a word (SPEC §1).
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'grpcUrl is http://host:port or https://host:port' });
-    }
+    const url = checkGrpcConfig(config);
     const secure = url.protocol === 'https:';
-    // grpc-js sends the host as the TLS server name, and a server name cannot be an IP address.
-    if (secure && isIP(url.hostname.replace(/^\[|\]$/g, '')) !== 0 && !config.tls?.serverName) {
-      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'gRPC over TLS to an IP address needs tls.serverName, the name the server certificate was issued for' });
-    }
     const credentials = secure
       ? grpc.credentials.createSsl(
           config.tls?.ca ? Buffer.from(config.tls.ca) : undefined,
@@ -164,7 +177,7 @@ export class WorkerRpc {
         )
       : grpc.credentials.createInsecure();
     const Service = loadService();
-    this.client = new Service(url.host, credentials, {
+    this.client = new Service(grpcTarget(url), credentials, {
       interceptors: config.interceptors ?? [],
       ...(secure && config.tls?.serverName ? { 'grpc.ssl_target_name_override': config.tls.serverName } : {}),
       'grpc.keepalive_time_ms': 120_000,
@@ -172,7 +185,12 @@ export class WorkerRpc {
     }) as unknown as WorkerServiceClient;
   }
 
+  /** Calls in flight: closing the channel does not end them, so they are cancelled with it. */
+  readonly #calls = new Set<grpc.ClientUnaryCall>();
+
   close(): void {
+    for (const call of this.#calls) call.cancel();
+    this.#calls.clear();
     this.client.close();
   }
 
@@ -186,12 +204,14 @@ export class WorkerRpc {
       metadata: grpc.Metadata,
       options: grpc.CallOptions,
       callback: (error: grpc.ServiceError | null, response?: Res) => void,
-    ) => void;
+    ) => grpc.ClientUnaryCall;
     return new Promise<Res>((resolve, reject) => {
-      fn.call(this.client, request, metadata, { deadline }, (error, response) => {
+      const call = fn.call(this.client, request, metadata, { deadline }, (error, response) => {
+        this.#calls.delete(call);
         if (error) reject(errorOfStatus(method, error));
         else resolve(response as Res);
       });
+      this.#calls.add(call);
     });
   }
 

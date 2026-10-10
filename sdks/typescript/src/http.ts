@@ -30,7 +30,13 @@ export interface HttpResponse {
 }
 
 export async function resolveToken(token: TokenSource): Promise<string> {
-  return typeof token === 'string' ? token : await token();
+  if (typeof token === 'string') return token;
+  try {
+    return await token();
+  } catch {
+    // The provider's own error may carry what it was talking to (a client secret, a URL): only its class of failure is ours.
+    throw new SagatError({ code: 'UNAUTHENTICATED', message: 'the token provider failed', reason: 'TOKEN_PROVIDER_FAILED' });
+  }
 }
 
 /** The REST transport: one place for headers, error mapping and the retry rules of SPEC §5. */

@@ -67,8 +67,12 @@ function builderOf(definition: Obj): WorkflowBuilder {
 
 function build(scenario: Obj): Obj {
   const workflows: Record<string, Json> = {};
+  const canonical: Record<string, string> = {};
   for (const [key, definition] of Object.entries<Obj>(scenario['workflows'] ?? {})) {
-    workflows[key] = builderOf(definition).build();
+    const builder = builderOf(definition);
+    workflows[key] = builder.build();
+    // The canonical text is part of the contract (SPEC §7): the same bytes in every language.
+    canonical[key] = builder.toJson();
   }
   const errors: Record<string, Json> = {};
   for (const [key, invalid] of Object.entries<Obj>(scenario['invalidWorkflows'] ?? {})) {
@@ -81,7 +85,7 @@ function build(scenario: Obj): Obj {
         : { raised: true, code: 'UNEXPECTED', mentions: false };
     }
   }
-  return Object.keys(errors).length > 0 ? { workflows, errors } : { workflows };
+  return Object.keys(errors).length > 0 ? { workflows, canonical, errors } : { workflows, canonical };
 }
 
 // ---------------------------------------------------------------------------------------- observations
@@ -150,7 +154,14 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
       if (behavior['hang']) {
         await abortable(0, ctx.signal);
         outcome = 'cancelled';
+        // `onCancel.raises`: the handler ends by raising the SDK's cancellation error.
+        if (behavior['onCancel']?.['raises']) throw new SagatError({ code: 'CANCELLED', message: 'cancelled' });
         return null;
+      }
+      if (behavior['ignoresCancel']) {
+        // A handler that never looks at its token: it runs to its end and what it returns is reported.
+        await new Promise((resolve) => setTimeout(resolve, behavior['sleepMs'] ?? 0));
+        return behavior['returns'] ?? null;
       }
       if (behavior['sleepMs'] !== undefined) {
         const cancelled = await abortable(behavior['sleepMs'], ctx.signal);
@@ -316,6 +327,15 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         }
         case 'startWorker': result = await startWorker(step['worker']); break;
         case 'stopWorker': await hosts[step['worker']]?.host?.stop(step['timeoutMs'] ?? 5000); break;
+        case 'restartWorker': {
+          // The same host object, stopped and started again (SPEC §6.8: the host is restartable).
+          const host = hosts[step['worker']]?.host;
+          if (!host) throw new Error(`worker ${String(step['worker'])} was never started`);
+          await host.stop(step['timeoutMs'] ?? 5000);
+          await host.start();
+          result = { protocolVersion: host.protocolVersion };
+          break;
+        }
         case 'probeWorker': {
           const probe = new WorkerHost({ grpcUrl: config['grpcUrl'], namespace: config['namespace'], token: config['workerToken'], workerName: `probe-${unique}`, protocolVersion: step['protocolVersion'], retry: { maxAttempts: 1 } });
           probe.registerActivity('conformance.probe', () => null);

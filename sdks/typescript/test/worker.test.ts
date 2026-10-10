@@ -493,3 +493,145 @@ test('a poll that found nothing is followed by another as soon as a task has fin
   assert.equal(fake.of('completeStep').length, 0, 'the task is still running');
   await until(() => fake.of('pollTasks').length > polls, 'a poll after the task finished', 1500);
 });
+
+// ------------------------------------------------------- from the correctness review of the first three SDKs
+
+test('a host is restartable: stopped, it can be started again and serves again (SPEC §6.8)', async () => {
+  const worker = host();
+  worker.registerActivity('charge', () => ({ ok: true }));
+  fake.leases = [lease()];
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 1, 'the first completion');
+  await worker.stop(500);
+  fake.leases = [lease({ task_id: 'run-1/charge/2', generation: 2 })];
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 2, 'the completion after the restart');
+  assert.equal(fake.of('registerWorker').length, 2, 'it registered again');
+  await worker.stop(500);
+});
+
+test('two starts at once register once', async () => {
+  const worker = host();
+  worker.registerActivity('charge', () => null);
+  await Promise.all([worker.start(), worker.start()]);
+  assert.equal(fake.of('registerWorker').length, 1);
+  await worker.stop(500);
+});
+
+test('stop does not wait for a poll the server holds: it ends within its timeout and the channel is closed', async () => {
+  fake.pollDelayMs = 6000;
+  const worker = host();
+  worker.registerActivity('charge', () => null);
+  await worker.start();
+  await until(() => fake.of('pollTasks').length === 1, 'the poll');
+  const began = Date.now();
+  await worker.stop(200);
+  assert.ok(Date.now() - began < 2500, `stop took ${Date.now() - began} ms`);
+});
+
+test('after a stop that timed out the heartbeats of a task that will not end stop too', async () => {
+  fake.leases = [lease()];
+  const worker = host({ heartbeatIntervalMs: 30 });
+  worker.registerActivity('charge', () => new Promise(() => undefined));
+  await worker.start();
+  await until(() => fake.of('heartbeat').length >= 2, 'heartbeats');
+  await worker.stop(100);
+  // A heartbeat that was already on its way when the host stopped may still arrive; none is sent after that.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const after = fake.of('heartbeat').length;
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(fake.of('heartbeat').length, after, 'no heartbeat after the host stopped');
+});
+
+test('a failure while reporting is cut by code points, never inside a pair, and what is sent is well formed', async () => {
+  fake.leases = [lease()];
+  const worker = host();
+  worker.registerActivity('charge', () => {
+    throw ActivityFailure.permanent('TOO_LONG', '😀'.repeat(600) + '\ud800');
+  });
+  await worker.start();
+  await until(() => fake.of('failStep').length === 1, 'the failure');
+  const message = String(fake.of('failStep')[0]!.request['safe_message']);
+  assert.ok(Array.from(message).length <= 512, `${Array.from(message).length} code points`);
+  assert.equal(message, message.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd'), 'no lone surrogate');
+  await worker.stop(500);
+});
+
+test('against 1.1 every task is a forward task: task_kind and the target are not read', async () => {
+  fake.acceptedVersion = '1.1';
+  fake.leases = [lease({ task_kind: 'COMPENSATION', target_node: 'charge', target_idempotency_key: 'run-1:charge' })];
+  const worker = host();
+  let seen: { kind: string; target: string; key: string } | undefined;
+  worker.registerCompensation('charge', (_input, ctx) => void (seen = { kind: ctx.taskKind, target: ctx.targetNode, key: ctx.targetIdempotencyKey }));
+  await worker.start();
+  await until(() => seen !== undefined, 'the task');
+  assert.deepEqual(seen, { kind: 'FORWARD', target: '', key: '' });
+  await worker.stop(500);
+});
+
+test('the node of the context is the document\'s, and the lease\'s step id only when the document has none', async () => {
+  const seen: string[] = [];
+  const worker = host();
+  worker.registerActivity('charge', (_input, ctx) => void seen.push(ctx.node));
+  fake.leases = [
+    lease({ input_json: JSON.stringify({ node: 'from-document', input: {}, steps: {} }) }),
+    lease({ task_id: 'run-1/charge/2', generation: 2, step_id: 'the-step-id', input_json: JSON.stringify({ input: {}, steps: {} }) }),
+  ];
+  await worker.start();
+  await until(() => seen.length === 2, 'both tasks');
+  assert.deepEqual([...seen].sort(), ['from-document', 'the-step-id']);
+  await worker.stop(500);
+});
+
+test('a failed poll is followed by a pause, a refusal that asks for a pace is obeyed, and a full host does not poll in a loop', async () => {
+  // UNAVAILABLE: backoff, not a loop.
+  fake.failures['pollTasks'] = Array.from({ length: 5000 }, () => ({ code: 14 }));
+  const down = host();
+  down.registerActivity('charge', () => null);
+  await down.start();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const unavailable = fake.of('pollTasks').length;
+  await down.stop(300);
+  assert.ok(unavailable >= 2 && unavailable <= 14, `${unavailable} polls in 0.7 s of failures`);
+
+  // RESOURCE_EXHAUSTED with retry-after-ms: exactly the pause asked for.
+  fake.reset();
+  fake.failures['pollTasks'] = [{ code: 8, retryAfterMs: 600 }];
+  const slow = host();
+  slow.registerActivity('charge', () => null);
+  await slow.start();
+  await until(() => fake.of('pollTasks').length === 1, 'the refused poll');
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(fake.of('pollTasks').length, 1, 'no second poll before the pause asked for');
+  await slow.stop(300);
+
+  // A host with every slot busy pauses between looks.
+  fake.reset();
+  fake.leases = [lease()];
+  const full = host({ maxInflight: 1 });
+  full.registerActivity('charge', () => new Promise((resolve) => setTimeout(resolve, 700)));
+  await full.start();
+  await until(() => fake.of('pollTasks').length >= 1, 'the first poll');
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.ok(fake.of('pollTasks').length <= 14, `${fake.of('pollTasks').length} polls while full`);
+  await full.stop(1500);
+});
+
+test('a static token is not asked for again when the registration is refused', async () => {
+  fake.failures['registerWorker'] = [{ code: 16 }, { code: 16 }];
+  const worker = host({ token: 'static-token' });
+  worker.registerActivity('charge', () => null);
+  await assert.rejects(worker.start(), (error: unknown) => error instanceof SagatError && error.code === 'UNAUTHENTICATED');
+  assert.equal(fake.of('registerWorker').length, 1, 'one attempt: a static token cannot be refreshed');
+});
+
+test('the heartbeat interval is never under 500 ms unless the caller sets it', async () => {
+  fake.leases = [lease({ expires_at_epoch_ms: Date.now() + 900 })];
+  const worker = host();
+  worker.registerActivity('charge', () => new Promise((resolve) => setTimeout(resolve, 1600)));
+  await worker.start();
+  await until(() => fake.of('heartbeat').length >= 1, 'a heartbeat', 3000);
+  const times = fake.of('heartbeat').length;
+  assert.ok(times <= 4, `${times} heartbeats in 1.6 s with a lease of 0.9 s: at most one per 500 ms`);
+  await worker.stop(2500);
+});

@@ -12,7 +12,7 @@ import {
   type TaskKind,
   type Verdict,
 } from './activity.js';
-import { WorkerRpc, type TaskLease } from './grpc.js';
+import { WorkerRpc, checkGrpcConfig, type TaskLease } from './grpc.js';
 import type * as grpc from '@grpc/grpc-js';
 
 export interface WorkerConfig {
@@ -72,7 +72,10 @@ function minorOf(version: string): number {
 /** The worker host of the SDK (SPEC §6). */
 export class WorkerHost {
   private readonly handlers = new Map<string, Registered>();
-  readonly #rpc: WorkerRpc;
+  // Made on the first use and closed by `stop`: a stopped host can be started again (SPEC §6.8).
+  #rpc: WorkerRpc | undefined;
+  #starting: Promise<void> | undefined;
+  readonly #beats = new Set<() => void>();
   readonly #config: WorkerConfig;
   private readonly log: Logger;
   private readonly retry: RetryPolicy;
@@ -94,13 +97,18 @@ export class WorkerHost {
     }
     this.log = config.logger ?? silentLogger;
     this.retry = { ...DEFAULT_RETRY, ...config.retry };
-    this.#rpc = new WorkerRpc({
-      grpcUrl: config.grpcUrl,
-      token: config.token,
-      tls: config.tls,
-      timeoutMs: config.timeoutMs,
-      interceptors: config.interceptors,
-    });
+    // A mistake in the URL is told here, not at the first poll.
+    checkGrpcConfig(this.#grpcConfig());
+  }
+
+  #grpcConfig(): { grpcUrl: string; token: WorkerConfig['token']; tls: WorkerConfig['tls']; timeoutMs: number | undefined; interceptors: WorkerConfig['interceptors'] } {
+    const config = this.#config;
+    return { grpcUrl: config.grpcUrl, token: config.token, tls: config.tls, timeoutMs: config.timeoutMs, interceptors: config.interceptors };
+  }
+
+  /** The channel to the worker service: made when it is first needed. */
+  #channel(): WorkerRpc {
+    return (this.#rpc ??= new WorkerRpc(this.#grpcConfig()));
   }
 
   /** A hook of the caller that throws must not take the host, or the process, with it. */
@@ -143,9 +151,16 @@ export class WorkerHost {
     return this.add('reconciler', name, handler, options);
   }
 
-  /** Registers with the server and starts the loop; resolves once registered. */
-  async start(): Promise<void> {
-    if (this.running) return;
+  /** Registers with the server and starts the loop; resolves once registered. Two starts at once are one. */
+  start(): Promise<void> {
+    if (this.running) return Promise.resolve();
+    this.#starting ??= this.#begin().finally(() => {
+      this.#starting = undefined;
+    });
+    return this.#starting;
+  }
+
+  async #begin(): Promise<void> {
     if (this.handlers.size === 0) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'register at least one activity before start' });
     warnIfNotSecure(this.#config.grpcUrl, this.log);
     await this.register();
@@ -155,28 +170,42 @@ export class WorkerHost {
   }
 
   /**
-   * Stops polling, waits up to `timeoutMs` (30 s by default) for the tasks in flight, then aborts the
-   * ones left (reason `shutdown`). A task that did not finish keeps its lease until it lapses.
+   * Stops polling, waits up to `timeoutMs` (30 s by default) for the tasks in flight, then cancels the
+   * tokens of the ones left (reason `shutdown`). A task that did not finish keeps its lease until it lapses.
+   * The whole of it is bounded by the timeout: a poll the server holds is cancelled, and the heartbeats of
+   * a task that will not end stop with the host.
    */
   async stop(timeoutMs = 30_000): Promise<void> {
+    if (this.#starting) await this.#starting.catch(() => undefined);
     if (!this.running) return;
     this.stopping = true;
     this.wake?.();
+    const grace = Date.now() + timeoutMs;
+    const within = async (promise: Promise<unknown>, ms: number): Promise<'done' | 'late'> => {
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<'late'>((resolve) => {
+        timer = setTimeout(() => resolve('late'), Math.max(0, ms));
+      });
+      const outcome = await Promise.race([promise.then(() => 'done' as const, () => 'done' as const), late]);
+      clearTimeout(timer);
+      return outcome;
+    };
     // The poll in progress ends and no other starts; what it leased is in flight from here on.
-    await this.loop;
+    if (this.loop && (await within(this.loop, timeoutMs)) === 'late') {
+      this.#rpc?.close();
+      await this.loop.catch(() => undefined);
+    }
     const pending = Promise.all([...this.inflight.values()].map((task) => task.done));
-    let late: NodeJS.Timeout | undefined;
-    const timer = new Promise<'late'>((resolve) => {
-      late = setTimeout(() => resolve('late'), timeoutMs);
-    });
-    const outcome = await Promise.race([pending.then(() => 'done' as const), timer]);
-    clearTimeout(late);
-    if (outcome === 'late') {
+    if ((await within(pending, grace - Date.now())) === 'late') {
       for (const task of this.inflight.values()) task.abort.abort('shutdown');
       await Promise.race([pending, sleep(2000).catch(() => undefined)]);
     }
+    // Whatever is left keeps its lease until it lapses; its heartbeats end with the host.
+    for (const stopBeat of this.#beats) stopBeat();
+    this.#beats.clear();
     this.running = false;
-    this.#rpc.close();
+    this.#rpc?.close();
+    this.#rpc = undefined;
   }
 
   // ------------------------------------------------------------------------------------ registration
@@ -196,7 +225,7 @@ export class WorkerHost {
     let refreshed = false;
     for (let n = 0; ; n++) {
       try {
-        const response = await this.#rpc.registerWorker(request);
+        const response = await this.#channel().registerWorker(request);
         this.workerId = response.worker_id;
         this.#session = response.session_token;
         this.accepted = response.accepted_protocol_version;
@@ -246,7 +275,7 @@ export class WorkerHost {
           await this.idle(50);
           continue;
         }
-        const response = await this.#rpc.pollTasks({ worker_id: this.workerId, session_token: this.#session, max_tasks: Math.min(free, MAX_POLL) });
+        const response = await this.#channel().pollTasks({ worker_id: this.workerId, session_token: this.#session, max_tasks: Math.min(free, MAX_POLL) });
         failures = 0;
         refused = 0;
         this.#emit({ type: 'poll', tasks: response.tasks.length });
@@ -320,8 +349,9 @@ export class WorkerHost {
     const started = Date.now();
     const registered = this.handlers.get(lease.activity_name);
     const state = { deadline: lease.expires_at_epoch_ms, lost: false };
-    const kind: TaskKind = lease.task_kind === 'COMPENSATION' || lease.task_kind === 'RECONCILIATION' ? lease.task_kind : 'FORWARD';
     const minor = minorOf(this.accepted);
+    // Against 1.1 or older every task is a forward task: `task_kind` and the target came with 1.2 (SPEC §6.1).
+    const kind: TaskKind = minor >= 2 && (lease.task_kind === 'COMPENSATION' || lease.task_kind === 'RECONCILIATION') ? lease.task_kind : 'FORWARD';
 
     if (!registered) {
       await this.fail(lease, 'NO_HANDLER', 'no handler is registered for the activity', false, started);
@@ -348,7 +378,12 @@ export class WorkerHost {
     for (const [node, value] of Object.entries(document.steps ?? {})) steps[node] = value?.output;
 
     // The heartbeat starts before the handler and runs until the report is made (`execute` stops it).
-    cleanup.push(this.beat(lease, minor, abort, state).stop);
+    const stopBeat = this.beat(lease, minor, abort, state).stop;
+    this.#beats.add(stopBeat);
+    cleanup.push(() => {
+      stopBeat();
+      this.#beats.delete(stopBeat);
+    });
 
     let secretsCache: Promise<Secrets> | undefined;
     const secretsHolder: { dispose?: () => void } = {};
@@ -365,8 +400,8 @@ export class WorkerHost {
       idempotencyKey: lease.idempotency_key,
       traceparent: lease.traceparent,
       taskKind: kind,
-      targetNode: lease.target_node,
-      targetIdempotencyKey: lease.target_idempotency_key,
+      targetNode: minor >= 2 ? lease.target_node : '',
+      targetIdempotencyKey: minor >= 2 ? lease.target_idempotency_key : '',
       steps,
       get deadline() {
         return new Date(state.deadline);
@@ -423,7 +458,7 @@ export class WorkerHost {
       return;
     }
 
-    if (lease.task_kind === 'RECONCILIATION' && registered.kind === 'reconciler') {
+    if (kind === 'RECONCILIATION' && registered.kind === 'reconciler') {
       const verdict = result as Partial<Verdict> | undefined;
       const effect = verdict?.effect;
       if (effect !== 'applied' && effect !== 'not_applied' && effect !== 'unknown') {
@@ -467,7 +502,7 @@ export class WorkerHost {
     const tick = async (): Promise<void> => {
       if (stopped) return;
       try {
-        const answer = await this.#rpc.heartbeat(
+        const answer = await this.#channel().heartbeat(
           {
             task_id: lease.task_id,
             worker_id: this.workerId,
@@ -528,7 +563,7 @@ export class WorkerHost {
   private async complete(lease: TaskLease, output: string, started: number): Promise<void> {
     try {
       const answer = await this.withRetries(() =>
-        this.#rpc.completeStep(
+        this.#channel().completeStep(
           {
             task_id: lease.task_id,
             run_id: lease.run_id,
@@ -560,7 +595,7 @@ export class WorkerHost {
     const safeCode = CODE.test(code) ? code : 'WORKER_ERROR';
     try {
       const answer = await this.withRetries(() =>
-        this.#rpc.failStep(
+        this.#channel().failStep(
           {
             task_id: lease.task_id,
             run_id: lease.run_id,
@@ -570,7 +605,7 @@ export class WorkerHost {
             lease_token: lease.lease_token,
             idempotency_key: `failed-${lease.task_id}`,
             error_code: safeCode,
-            safe_message: message.slice(0, 512),
+            safe_message: safeMessage(message),
             retryable,
             traceparent: lease.traceparent,
           },
@@ -594,7 +629,7 @@ export class WorkerHost {
     if (minor < 2) {
       throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: 'the server speaks a protocol older than 1.2, which has no ResolveSecrets' });
     }
-    const answer = await this.#rpc.resolveSecrets(
+    const answer = await this.#channel().resolveSecrets(
       {
         task_id: lease.task_id,
         run_id: lease.run_id,
@@ -636,4 +671,10 @@ export class WorkerHost {
       },
     };
   }
+}
+
+/** At most 512 code points, never cut inside a surrogate pair, and a lone surrogate is U+FFFD: valid UTF-8 on the wire (SPEC §6.5). */
+function safeMessage(message: string): string {
+  const wellFormed = message.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd');
+  return Array.from(wellFormed).slice(0, 512).join('');
 }

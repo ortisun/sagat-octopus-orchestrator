@@ -283,3 +283,69 @@ test('plain http outside loopback is accepted but warned about once; loopback an
   new SagatClient({ apiUrl: 'http://octopus.example.com/v1', namespace: 'payments', token: 'tok-1', logger: { ...logger, warn: (message) => void seenWarnings.push(message) } });
   assert.equal(seenWarnings.length, 1);
 });
+
+test('the retry rule is by code: a 408 is repeated, a 429 for a quota is not, and a 4xx that claims to be retryable is not believed', async () => {
+  const id = '0190aaaa-0000-7000-8000-000000000001';
+  let attempts = 0;
+  prepare((_req, res) => (++attempts < 3 ? reply(res, 408, { code: 'UNAVAILABLE', message: 'timeout', retryable: true, traceId: 'a'.repeat(32) }) : reply(res, 200, run())));
+  assert.equal((await client().get(id)).runId, id);
+  assert.equal(attempts, 3);
+
+  attempts = 0;
+  prepare((_req, res) => {
+    attempts++;
+    reply(res, 429, { code: 'QUOTA_EXCEEDED', message: 'no room', retryable: true, traceId: 'a'.repeat(32) });
+  });
+  await assert.rejects(client().get(id), (error: unknown) => error instanceof SagatError && error.code === 'QUOTA_EXCEEDED');
+  assert.equal(attempts, 1, 'a quota is not repeated, whatever the body says');
+});
+
+test('a Retry-After is honoured, and one that asks for more than a minute is cut to a minute', async () => {
+  const id = '0190aaaa-0000-7000-8000-000000000001';
+  let attempts = 0;
+  prepare((_req, res) => (++attempts === 1 ? reply(res, 429, { code: 'RATE_LIMITED', message: 'slow', retryable: true, traceId: 'a'.repeat(32) }, { 'retry-after': '1' }) : reply(res, 200, run())));
+  const began = Date.now();
+  await client({ retry: { initialDelayMs: 1, maxDelayMs: 2 } }).get(id);
+  assert.ok(Date.now() - began >= 900, `waited ${Date.now() - began} ms`);
+  prepare((_req, res) => reply(res, 429, { code: 'RATE_LIMITED', message: 'slow', retryable: true, traceId: 'a'.repeat(32) }, { 'retry-after': '86400' }));
+  await assert.rejects(client({ retry: { maxAttempts: 1 } }).get(id), (error: unknown) => error instanceof SagatError && error.retryAfterMs === 60_000);
+});
+
+test('start validates the key and the trace before it looks the workflow up by name', async () => {
+  prepare((_req, res) => reply(res, 200, { items: [], nextCursor: null }));
+  await assert.rejects(client().start('charge-card', {}, { idempotencyKey: 'short' }), (error: unknown) => error instanceof SagatError && error.code === 'VALIDATION_FAILED');
+  await assert.rejects(client().start('charge-card', {}, { traceparent: 'nonsense' }), (error: unknown) => error instanceof SagatError);
+  assert.equal(seen.length, 0, 'nothing was asked of the server');
+});
+
+test('a token provider that throws is UNAUTHENTICATED with a reason, not the provider\'s own error', async () => {
+  prepare((_req, res) => reply(res, 200, run()));
+  const failing = client({ token: () => { throw new Error('the identity provider said: client_secret=hunter2'); } });
+  await assert.rejects(failing.get('0190aaaa-0000-7000-8000-000000000001'), (error: unknown) => {
+    assert.ok(error instanceof SagatError);
+    assert.equal(error.code, 'UNAUTHENTICATED');
+    assert.equal(error.reason, 'TOKEN_PROVIDER_FAILED');
+    assert.ok(!error.message.includes('hunter2'));
+    return true;
+  });
+  assert.equal(seen.length, 0);
+});
+
+test('a gRPC target keeps the port of the scheme when the URL has none', async () => {
+  const { grpcTarget } = await import('../src/worker/grpc.js');
+  assert.equal(grpcTarget(new URL('http://octopus.internal')), 'octopus.internal:80');
+  assert.equal(grpcTarget(new URL('https://octopus.internal')), 'octopus.internal:443');
+  assert.equal(grpcTarget(new URL('http://octopus.internal:50051')), 'octopus.internal:50051');
+  assert.equal(grpcTarget(new URL('https://[::1]:50051')), '[::1]:50051');
+});
+
+test('the canonical text sorts integer-like keys as text, as the other SDKs do, and refuses an integer it cannot print exactly', async () => {
+  const { workflow } = await import('../src/index.js');
+  const text = workflow('canon-check').step('a', 'x.y').inputSchema({ type: 'object', properties: { '10': {}, '9': {}, a: {}, '\u{1F600}': {}, '\uFF5E': {} } }).toJson();
+  const keys = [...text.matchAll(/"(10|9|a|\u{1F600}|\uFF5E)":\{\}/gu)].map((m) => m[1]);
+  assert.deepEqual(keys, ['10', '9', 'a', '\u{1F600}', '\uFF5E'], 'UTF-16 code unit order: "10" < "9" < "a" < U+1F600 (a surrogate pair) < U+FF5E');
+  const big = () => workflow('canon-big').step('a', 'x.y').inputSchema({ type: 'integer', maximum: 2 ** 60 }).toJson();
+  assert.throws(big, (error: unknown) => error instanceof SagatError && error.code === 'VALIDATION_FAILED');
+  // 1e21 is written with an exponent by ECMAScript: it is a number, not an integer that was rounded.
+  assert.match(workflow('canon-exp').step('a', 'x.y').inputSchema({ maximum: 1e21, minimum: -1e-7 }).toJson(), /"maximum":1e\+21/);
+});

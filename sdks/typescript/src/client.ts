@@ -238,6 +238,9 @@ export class SagatClient {
 
   /** Starts a run of a published workflow, given by id or by name. */
   async start(workflow: string, input: Record<string, unknown>, options: StartOptions = {}): Promise<Run> {
+    // What the SDK can refuse by itself is refused before anything is asked of the server.
+    const idempotencyKey = this.key(options.idempotencyKey);
+    const traceparent = this.trace(options.traceparent);
     const workflowId = await this.resolveWorkflow(workflow);
     let deadline = options.deadline;
     if (options.deadlineInMs !== undefined) deadline = new Date(Date.now() + options.deadlineInMs);
@@ -249,8 +252,8 @@ export class SagatClient {
       method: 'POST',
       path: '/runs',
       body,
-      idempotencyKey: this.key(options.idempotencyKey),
-      traceparent: this.trace(options.traceparent),
+      idempotencyKey,
+      traceparent,
       safeToRepeat: true,
     });
     return toRun(response.body);

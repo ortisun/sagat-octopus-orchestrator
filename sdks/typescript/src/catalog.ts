@@ -95,6 +95,7 @@ export const CATALOG: readonly CatalogEntry[] = [
     "code": "UNAVAILABLE",
     "origin": "rest",
     "http": [
+      408,
       502,
       503,
       504
