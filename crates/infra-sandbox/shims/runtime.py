@@ -2,7 +2,9 @@
 # `run(input, octopus)` of the script and writes the result back. Whatever the script prints goes to
 # standard error (the log); standard output is the platform's channel. The script has no network and
 # no secrets: `octopus.fetch` and `octopus.secret` ask the platform, which may refuse.
+import asyncio
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -94,6 +96,12 @@ def _main():
         if not callable(entry):
             raise RuntimeError("the script must define run(input, octopus)")
         value = entry(message["input"], _Octopus(message.get("idempotencyKey")))
+        if inspect.isawaitable(value):
+            # `async def run(...)` is accepted at build time, so it has to be run.
+            async def _await(awaitable):
+                return await awaitable
+
+            value = asyncio.run(_await(value))
         _write({"op": "result", "value": value})
     except BaseException as error:  # noqa: BLE001 - everything the script does ends here
         code = 1

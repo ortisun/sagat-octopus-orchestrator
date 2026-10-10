@@ -171,7 +171,7 @@ async fn a_memory_bomb_is_killed_and_nothing_is_left_running() {
         Some("SCRIPT_OUT_OF_MEMORY")
     );
     assert_eq!(
-        lab.runner.sandbox().sweep(std::time::Duration::ZERO).await,
+        lab.runner.sandbox().leftovers().await,
         0,
         "no container is left behind"
     );
@@ -190,7 +190,20 @@ async fn a_script_that_floods_its_output_is_cut_off() {
     .await;
     assert_eq!(lab.drive(&run).await, "FAILED");
     let executions = lab.executions(&digest).await;
-    assert_eq!(executions[0]["logTruncated"], true);
+    assert_eq!(
+        executions[0]["logTruncated"],
+        true,
+        "{}",
+        executions[0]
+            .as_object()
+            .map(|o| o
+                .iter()
+                .filter(|(k, _)| *k != "log")
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" "))
+            .unwrap_or_default()
+    );
     assert!(executions[0]["log"].as_str().expect("log").len() <= 64 * 1024);
 }
 

@@ -61,6 +61,12 @@ async fn run(command: Command) -> Result<(), String> {
         .map_err(|_| "the container engine could not be reached".to_owned())?;
     let admin_addr = config.admin_addr;
     let sweep_after = config.sweep_after;
+    // Install the metrics recorder before anything runs so the first samples are kept; idle series
+    // are forgotten when the page is rendered, so a process nobody scrapes needs this timer.
+    let metrics_upkeep = sagat_control_plane::spawn_metrics_upkeep(
+        sagat_telemetry::Metrics::global(),
+        sagat_control_plane::METRICS_UPKEEP_INTERVAL,
+    );
     let runner = Runner::start(config, sandbox)
         .await
         .map_err(|e| e.to_string())?;
@@ -101,6 +107,7 @@ async fn run(command: Command) -> Result<(), String> {
     };
     runner.serve(sagat_control_plane::stopped(stop_rx)).await;
     sweeper.abort();
+    metrics_upkeep.abort();
     if let Some(admin) = admin {
         let _ = admin.await;
     }

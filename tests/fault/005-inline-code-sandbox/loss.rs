@@ -123,10 +123,12 @@ async fn a_test_run_whose_runner_dies_is_run_again_by_another() {
 
 #[tokio::test]
 async fn a_step_whose_runner_dies_runs_again_elsewhere_and_the_late_attempt_is_dropped() {
-    let mut options = Options::default();
-    options.worker = WorkerSettings {
-        lease_ttl: Duration::from_secs(5),
-        ..WorkerSettings::default()
+    let options = Options {
+        worker: WorkerSettings {
+            lease_ttl: Duration::from_secs(5),
+            ..WorkerSettings::default()
+        },
+        ..Options::default()
     };
     let lab = lab_with(options).await;
     let script = lab
@@ -176,11 +178,13 @@ async fn a_step_whose_runner_dies_runs_again_elsewhere_and_the_late_attempt_is_d
     // external effect safe to repeat is the key it can put in the request, the same on every attempt.
     let key = kept["key"].as_str().expect("the key").to_owned();
     assert_eq!(key, format!("{run}:s"));
+    // The attempt that lost its lease is stopped at the next beat of the lease if it is still
+    // running, and recorded if it finished before: either way the record that exists says what
+    // ran, with the key.
     let executions = lab.executions(&digest).await;
-    assert_eq!(
-        executions.len(),
-        2,
-        "both attempts are on record: {executions:?}"
+    assert!(
+        (1..=2).contains(&executions.len()),
+        "the second attempt is on record, the first if it got to finish: {executions:?}"
     );
     for execution in executions {
         assert!(

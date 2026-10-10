@@ -67,8 +67,15 @@ pub enum ScriptError {
     AboveCeiling,
     #[error("the language is not built yet: typescript and python are")]
     LanguageNotBuilt,
+    #[error("the artifact does not describe the version it is reported for")]
+    BundleMismatch,
 }
 
+/// Versions one script may have. They are never deleted (a workflow may pin any of them), so the
+/// number is what bounds what one script can leave behind; a byte quota per tenant is open (G117).
+pub const MAX_VERSIONS_PER_SCRIPT: i32 = 500;
+/// Finished test runs kept per script, whatever the retention: the oldest go as new ones come.
+pub const MAX_TEST_RUNS_KEPT: i64 = 100;
 /// Longest source accepted, in bytes.
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 /// Longest lockfile accepted, in bytes.
@@ -332,7 +339,9 @@ impl Limits {
         Ok(Self {
             memory_bytes,
             cpu_millis,
-            wall,
+            // Whole seconds, rounded up: the canonical text, the build key and the container's
+            // limit are all in seconds, and the answer to the author must say what they will get.
+            wall: Duration::from_secs(wall.as_secs() + u64::from(wall.subsec_nanos() > 0)),
             processes,
             output_bytes,
             scratch_bytes,
@@ -745,10 +754,15 @@ pub const MIN_REDACTED_LEN: usize = 6;
 #[must_use]
 pub fn redact(text: &str, secrets: &[&str]) -> String {
     let mut out = text.to_owned();
-    for secret in secrets {
-        if secret.len() >= MIN_REDACTED_LEN {
-            out = out.replace(secret, REDACTED);
-        }
+    // The longest first: a value that is the start of another would leave the rest of it in view.
+    let mut known: Vec<&str> = secrets
+        .iter()
+        .copied()
+        .filter(|secret| secret.len() >= MIN_REDACTED_LEN)
+        .collect();
+    known.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    for secret in known {
+        out = out.replace(secret, REDACTED);
     }
     redact_credentials(&out)
 }
@@ -1141,6 +1155,29 @@ mod tests {
     }
 
     #[test]
+    fn a_wall_time_in_fractions_of_a_second_is_the_whole_second_the_policy_will_say() {
+        let limits = Limits::new(
+            64 * 1024 * 1024,
+            1000,
+            Duration::from_millis(1500),
+            64,
+            64 * 1024,
+            16 * 1024 * 1024,
+        )
+        .expect("limits");
+        assert_eq!(limits.wall(), Duration::from_secs(2));
+        let policy = Policy {
+            limits,
+            ..Policy::default()
+        };
+        assert_eq!(
+            Policy::parse_canonical(&policy.canonical()).expect("round trip"),
+            policy,
+            "what is stored and read back is what the author was told"
+        );
+    }
+
+    #[test]
     fn the_secrets_a_run_was_given_do_not_reach_its_output() {
         let secrets = ["sk_live_0123456789abcdef", "tiny"];
         let out = redact(
@@ -1154,6 +1191,14 @@ mod tests {
             "a value of under six characters is not searched for: {out}"
         );
         assert_eq!(redact("nothing to hide", &secrets), "nothing to hide");
+    }
+
+    #[test]
+    fn a_secret_that_is_the_start_of_another_does_not_leave_the_rest_of_it_in_view() {
+        for order in [["abcdef", "abcdefghijkl"], ["abcdefghijkl", "abcdef"]] {
+            let out = redact("token abcdefghijkl end", &order);
+            assert_eq!(out, "token [REDACTED] end", "{order:?}");
+        }
     }
 
     #[test]

@@ -176,8 +176,13 @@ CREATE TABLE script_build_jobs (
     attempts         integer     NOT NULL DEFAULT 0,
     lease_token_hash bytea,
     lease_expires_at timestamptz,
+    -- The key the build was handed out for: what the runner reports is judged against it.
+    build_key        text,
+    -- A build that failed for a reason that may pass is not handed out again before this.
+    not_before       timestamptz,
     created_at       timestamptz NOT NULL,
     finished_at      timestamptz,
+    CONSTRAINT script_build_jobs_key_valid CHECK (build_key IS NULL OR build_key ~ '^sha256:[0-9a-f]{64}$'),
     CONSTRAINT script_build_jobs_version_uniq UNIQUE (tenant_id, version_id),
     CONSTRAINT script_build_jobs_version_fk FOREIGN KEY (tenant_id, version_id)
         REFERENCES script_versions (tenant_id, id),

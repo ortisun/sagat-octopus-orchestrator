@@ -99,8 +99,8 @@ pub enum AuditAction {
     /// A draft was tried in the sandbox.
     ScriptTested,
     /// A script asked for something it may not have (a request the egress policy refuses, a secret
-    /// it did not declare). Written once per script, kind and reason in a window: a script in a
-    /// loop can ask as often as it likes.
+    /// it did not declare). Written once per script, kind and reason, and at most a hundred
+    /// different ones per script: a script in a loop can ask as often as it likes.
     ScriptViolation,
 }
 
@@ -116,6 +116,17 @@ impl AuditAction {
             self,
             Self::SecretResolved | Self::SecretDenied | Self::EventRejected | Self::ScriptViolation
         )
+    }
+
+    /// How many different events of this action one actor may have on one resource before the
+    /// rest are not recorded: `None` for no limit. The text of an event can be chosen by whoever
+    /// causes it, so "once per distinct text" alone does not bound the trail.
+    #[must_use]
+    pub const fn distinct_cap(self) -> Option<u32> {
+        match self {
+            Self::ScriptViolation => Some(100),
+            _ => None,
+        }
     }
 
     #[must_use]

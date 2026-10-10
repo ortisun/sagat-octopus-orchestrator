@@ -481,3 +481,137 @@ async fn a_test_run_has_no_secrets_of_the_namespace() {
         "the name that was asked for, never a value"
     );
 }
+
+/// Asks for a test run of `script` and has it reported as finished with `denied`.
+async fn tried_and_refused(
+    w: &crate::support::engine::World,
+    script: &sagat_application::scripts::ScriptRecord,
+    denied: Vec<String>,
+) {
+    let queued = w
+        .scripts
+        .test(
+            &w.admin,
+            w.namespace.id(),
+            script.id,
+            b"{}".to_vec(),
+            &ctx(),
+        )
+        .await
+        .expect("test");
+    let taken = w
+        .runner
+        .claim_test(&w.runner_identity, &[Language::TypeScript])
+        .await
+        .expect("claim")
+        .expect("run");
+    let mut asked = report(Err(Failure::Denied));
+    asked.denied = denied;
+    w.runner
+        .complete_test(
+            &w.runner_identity,
+            queued.id,
+            &taken.lease_token,
+            asked,
+            &ctx(),
+        )
+        .await
+        .expect("complete");
+}
+
+#[tokio::test]
+async fn trying_a_script_over_and_over_audits_what_it_was_refused_once_and_bounds_the_trail() {
+    let w = world().await;
+    let script = create(&w, "again-and-again").await;
+    for _ in 0..3 {
+        tried_and_refused(&w, &script, vec!["fetch http://169.254.169.254".to_owned()]).await;
+    }
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND action = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(AuditAction::ScriptViolation.as_str())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(
+        rows, 1,
+        "the same refusal of the same script is one entry, however often it is tried"
+    );
+    let resource: String = sqlx::query_scalar(
+        "SELECT resource_id FROM audit_records WHERE tenant_id = $1 AND action = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(AuditAction::ScriptViolation.as_str())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("resource");
+    assert_eq!(
+        resource,
+        script.id.to_string(),
+        "against the script, not the run"
+    );
+
+    // Refusals the script chooses the words of cannot grow the trail without end either: at most a
+    // hundred different ones are kept for one script, and each is short.
+    for batch in 0..5 {
+        let names: Vec<String> = (0..32)
+            .map(|i| format!("secret n{batch}-{i}-{}", "x".repeat(500)))
+            .collect();
+        tried_and_refused(&w, &script, names).await;
+    }
+    let (rows, longest): (i64, Option<i32>) = sqlx::query_as(
+        "SELECT count(*), max(length(reason)) FROM audit_records WHERE tenant_id = $1 AND action = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(AuditAction::ScriptViolation.as_str())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(rows, 100, "the cap holds");
+    assert!(longest.is_some_and(|n| n <= 200), "{longest:?}");
+}
+
+#[tokio::test]
+async fn only_the_latest_finished_test_runs_of_a_script_are_kept() {
+    let w = world().await;
+    let script = create(&w, "chatty").await;
+    sqlx::query(
+        "INSERT INTO script_test_runs (id, tenant_id, namespace_id, script_id, language, status, \
+             source, policy, retention_days, input, failure, finished_at, created_by, created_at, \
+             deadline_at) \
+         SELECT gen_random_uuid(), s.tenant_id, s.namespace_id, s.id, s.language, 'FAILED', 'x', \
+                s.policy, s.retention_days, '{}', 'SCRIPT_ERROR', now(), 'test', now(), now() \
+         FROM scripts s, generate_series(1, 105) n WHERE s.id = $1",
+    )
+    .bind(script.id.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("seed the runs");
+    w.scripts
+        .test(
+            &w.admin,
+            w.namespace.id(),
+            script.id,
+            b"{}".to_vec(),
+            &ctx(),
+        )
+        .await
+        .expect("another one");
+    let finished: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM script_test_runs WHERE script_id = $1 AND status = 'FAILED'",
+    )
+    .bind(script.id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(finished, 100, "the oldest finished runs went");
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM script_test_runs WHERE script_id = $1 AND status = 'QUEUED'",
+    )
+    .bind(script.id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(queued, 1, "and the new one is waiting");
+}

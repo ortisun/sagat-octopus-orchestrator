@@ -26,8 +26,21 @@ async fn a_build_the_engine_cannot_do_is_tried_three_times_and_then_says_it_was_
         )
         .await;
     assert_eq!(status, 202, "{published}");
-    for _ in 0..3 {
+    for attempt in 1..=3 {
         assert!(lab.runner.build_once().await.expect("claimed and reported"));
+        if attempt < 3 {
+            // A build that failed for a reason that may pass waits before it is offered again.
+            assert!(
+                !lab.runner.build_once().await.expect("nothing yet"),
+                "attempt {attempt} waits"
+            );
+            sqlx::query(
+                "UPDATE script_build_jobs SET not_before = clock_timestamp() - interval '1 second'",
+            )
+            .execute(&lab.p.api.db.pool)
+            .await
+            .expect("let the wait pass");
+        }
     }
     assert!(
         !lab.runner.build_once().await.expect("nothing left"),

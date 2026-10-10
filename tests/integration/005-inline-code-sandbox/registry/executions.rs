@@ -96,8 +96,8 @@ async fn an_execution_is_kept_once_per_step_attempt_until_its_retention_ends() {
         .await
         .expect("publish");
     let job = super::claim(&w).await.expect("build");
-    super::complete(&w, &job, super::built("week", &super::toolchains()[0].1)).await;
-    let week_digest = sagat_application::sandbox::digest_of(&super::artifact("week"));
+    super::complete(&w, &job, super::built(&job, "week")).await;
+    let week_digest = sagat_application::sandbox::digest_of(&super::artifact(&job, "week"));
     w.runner
         .record_execution(
             &w.runner_identity,

@@ -403,6 +403,7 @@ pub async fn serve_with_admin(
                 SystemClock,
                 SystemEntropy,
                 scripts.signer()?,
+                sagat_infra_schema::bundle::Bundles,
                 scripts.ceiling,
             ),
         );

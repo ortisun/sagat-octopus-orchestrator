@@ -11,8 +11,8 @@ use sagat_domain::quota::QuotaResource;
 use sagat_domain::scripts::{Egress, Language, ScriptError, Source, VersionStatus};
 
 use super::{
-    PY_SOURCE, TS_SOURCE, built, claim, complete, create, developer, publish, ready, spec,
-    toolchains, ts, viewer,
+    PY_SOURCE, TS_SOURCE, built, claim, complete, create, developer, publish, ready, spec, ts,
+    viewer,
 };
 use crate::support::engine::{ctx, world};
 
@@ -32,6 +32,11 @@ async fn an_author_writes_reads_changes_and_deletes_a_script() {
     assert_eq!(
         listed.iter().map(|s| s.id).collect::<Vec<_>>(),
         vec![script.id]
+    );
+    assert_eq!(
+        listed[0].source_bytes,
+        TS_SOURCE.len() as u64,
+        "a listing says how big the source is and does not carry it"
     );
 
     let changed = w
@@ -568,9 +573,121 @@ async fn builds_in_progress_are_a_hard_limit_of_the_namespace() {
     ));
     // Finishing a build makes room.
     let job = claim(&w).await.expect("a build");
-    complete(&w, &job, built("job-a", &toolchains()[0].1)).await;
+    complete(&w, &job, built(&job, "job-a")).await;
     w.scripts
         .publish(&w.admin, w.namespace.id(), c.id, &ctx())
         .await
         .expect("room again");
+}
+
+#[tokio::test]
+async fn a_script_has_a_bounded_number_of_versions_because_they_are_never_deleted() {
+    let w = world().await;
+    let script = create(&w, "many").await;
+    // 499 versions that failed to build, as if published one after the other.
+    sqlx::query(
+        "INSERT INTO script_versions (id, tenant_id, namespace_id, script_id, number, language, \
+             status, source, policy, retention_days, content_digest, failure, created_by, created_at) \
+         SELECT gen_random_uuid(), s.tenant_id, s.namespace_id, s.id, n, s.language, 'FAILED', 'x', \
+                s.policy, s.retention_days, 'sha256:' || lpad(to_hex(n), 64, '0'), \
+                'unavailable: seeded', 'test', now() \
+         FROM scripts s, generate_series(1, 499) n WHERE s.id = $1",
+    )
+    .bind(script.id.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("seed the versions");
+    sqlx::query("UPDATE scripts SET latest_version = 499 WHERE id = $1")
+        .bind(script.id.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("seed the counter");
+    let edit = |n: u32, revision: u64| {
+        let w = &w;
+        async move {
+            w.scripts
+                .update(
+                    &w.admin,
+                    w.namespace.id(),
+                    script.id,
+                    DraftChange {
+                        source: Some(
+                            Source::parse(&format!("export default () => {n}\n")).expect("source"),
+                        ),
+                        ..DraftChange::default()
+                    },
+                    revision,
+                    &ctx(),
+                )
+                .await
+                .expect("update");
+        }
+    };
+    edit(1, 1).await;
+    let last = w
+        .scripts
+        .publish(&w.admin, w.namespace.id(), script.id, &ctx())
+        .await
+        .expect("the 500th version is allowed");
+    assert_eq!(last.version.number.get(), 500);
+    edit(2, 2).await;
+    assert_eq!(
+        w.scripts
+            .publish(&w.admin, w.namespace.id(), script.id, &ctx())
+            .await
+            .map(|p| p.version.number.get()),
+        Err(AppError::QuotaExceeded("versions of one script")),
+        "the 501st is refused: what one script can keep is bounded"
+    );
+}
+
+#[tokio::test]
+async fn publishing_and_trying_the_same_script_at_the_same_time_never_wait_for_each_other_for_ever()
+{
+    // A stress, not a proof: publishing holds the script's row and then the namespace's lock, and
+    // trying takes the same two, so they must take them in the same order. Run together many times,
+    // a pair that took them the other way round would deadlock and one side would fail (40P01).
+    let w = world().await;
+    let script = create(&w, "contended").await;
+    for (n, revision) in (0..25_u32).zip(1_u64..) {
+        w.scripts
+            .update(
+                &w.admin,
+                w.namespace.id(),
+                script.id,
+                DraftChange {
+                    source: Some(
+                        Source::parse(&format!("export default () => {n}\n")).expect("source"),
+                    ),
+                    ..DraftChange::default()
+                },
+                revision,
+                &ctx(),
+            )
+            .await
+            .expect("update");
+        let context = ctx();
+        let publish = w
+            .scripts
+            .publish(&w.admin, w.namespace.id(), script.id, &context);
+        let test = w.scripts.test(
+            &w.admin,
+            w.namespace.id(),
+            script.id,
+            b"{}".to_vec(),
+            &context,
+        );
+        let (published, tried) = tokio::join!(publish, test);
+        published.expect("publish");
+        tried.expect("test");
+        // Keep the namespace's quota free for the next round.
+        sqlx::query("UPDATE script_build_jobs SET status = 'FAILED', finished_at = now()")
+            .execute(&w.db.pool)
+            .await
+            .expect("clear");
+        sqlx::query("UPDATE script_test_runs SET status = 'FAILED', failure = 'SCRIPT_ERROR', finished_at = now()")
+            .execute(&w.db.pool)
+            .await
+            .expect("clear");
+    }
 }

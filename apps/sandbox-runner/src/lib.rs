@@ -21,6 +21,7 @@ pub mod host;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -35,7 +36,7 @@ use sagat_domain::scripts::{
     Digest, Failure, Language, Lockfile, Policy, Source, digest_of_activity,
 };
 use sagat_infra_sandbox::{artifact_contract, artifact_policy};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
@@ -43,14 +44,41 @@ use crate::api::{ControlPlane, ExecutionReport, RunnerError, TestJob, TestResult
 pub use crate::config::{NamespaceTarget, RunnerConfig};
 use crate::host::ScriptHost;
 
-/// Sessions kept per namespace.
-const MAX_SESSIONS: usize = 8;
+/// The longest a lease is assumed to last for the sake of beating it: the engine's default is 30 s.
+/// The expiry is read against this machine's clock, and a clock that is behind would otherwise
+/// stretch the interval past the lease.
+const MAX_LEASE_BEAT: Duration = Duration::from_secs(30);
+/// Times a completion or a failure is told to the engine before the runner gives up on it (the
+/// lease then lapses and the engine decides what to do with the step).
+const ENGINE_TRIES: usize = 3;
+/// Steps one poll leases, at most.
+const MAX_POLL: usize = 100;
 /// A session is renewed after this long, well inside the engine's session lifetime.
 const SESSION_AGE: Duration = Duration::from_secs(1800);
 /// Artifacts kept verified in memory.
 const MAX_CACHED_ARTIFACTS: usize = 128;
 /// The languages this runner knows how to build, in the order they are looked at.
 const LANGUAGES: [Language; 2] = [Language::TypeScript, Language::Python];
+
+/// Why the secrets of a step were not taken.
+enum SecretsFailure {
+    /// The engine said the step may not have them: a failure of the step, for good.
+    Refused,
+    /// The engine did not answer, or the runner's own credentials were refused: not the step's fault.
+    Unavailable,
+}
+
+/// Whether an error talking to the control plane says something about the runner or the network
+/// rather than about what was asked for: such a step goes back to the queue instead of failing.
+fn is_transient(error: &RunnerError) -> bool {
+    match error {
+        RunnerError::Transport | RunnerError::Credentials => true,
+        // The runner's own token being refused (401/403) is for an operator to fix, and the step
+        // should still be there when they have.
+        RunnerError::Status { status, .. } => matches!(status, 401 | 403 | 408 | 429 | 500..=599),
+        RunnerError::Decode | RunnerError::Sandbox(_) => false,
+    }
+}
 
 /// An artifact whose digest and signature were checked.
 #[derive(Debug)]
@@ -76,6 +104,9 @@ pub struct StepTask {
     pub namespace: NamespaceTarget,
     worker_id: String,
     pub lease: pb::TaskLease,
+    /// The room this step takes in the runner, held from the moment it is leased to the moment it
+    /// ends: a step that waited for room would hold a lease nobody is beating.
+    permit: Option<Arc<OwnedSemaphorePermit>>,
 }
 
 /// How a step ended, for the one that ran it.
@@ -94,7 +125,9 @@ pub struct Runner<S> {
     toolchains: BTreeMap<Language, String>,
     verifier: RwLock<Verifier>,
     grpc: tokio::sync::Mutex<Option<WorkerServiceClient<Channel>>>,
-    sessions: Mutex<HashMap<String, Vec<Session>>>,
+    /// One worker session per namespace: the engine keeps one per (identity, name), so a second
+    /// registration under the same name replaces the first, token and advertisement.
+    sessions: Mutex<HashMap<String, Session>>,
     artifacts: Mutex<HashMap<String, Arc<Loaded>>>,
     warmed: Mutex<HashSet<Language>>,
     permits: Arc<Semaphore>,
@@ -164,19 +197,20 @@ impl<S: Sandbox + 'static> Runner<S> {
 
     // ------------------------------------------------------------------------------- leases
 
-    /// Runs `work` while the lease is kept alive; `None` if the lease was lost first (the work is
-    /// dropped, which removes its container).
-    async fn held<T, B, Fut>(
-        &self,
+    /// Starts beating a lease: the task runs until it is aborted, and the receiver is told if the
+    /// holder no longer has the lease (the engine says so, or the step was cancelled).
+    fn beating<B, Fut>(
         lease: Duration,
         beat: B,
-        work: impl Future<Output = T>,
-    ) -> Option<T>
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )
     where
         B: Fn() -> Fut + Send + 'static,
         Fut: Future<Output = Result<bool, RunnerError>> + Send + 'static,
     {
-        let (lost_tx, mut lost_rx) = tokio::sync::oneshot::channel::<()>();
+        let (lost_tx, lost_rx) = tokio::sync::oneshot::channel::<()>();
         let every = (lease / 3).max(Duration::from_secs(1));
         let ticker = tokio::spawn(async move {
             let mut interval = tokio::time::interval(every);
@@ -195,9 +229,25 @@ impl<S: Sandbox + 'static> Runner<S> {
                 }
             }
         });
+        (ticker, lost_rx)
+    }
+
+    /// Runs `work` while the lease is kept alive; `None` if the lease was lost first (the work is
+    /// dropped, which removes its container).
+    async fn held<T, B, Fut>(
+        &self,
+        lease: Duration,
+        beat: B,
+        work: impl Future<Output = T>,
+    ) -> Option<T>
+    where
+        B: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<bool, RunnerError>> + Send + 'static,
+    {
+        let (ticker, mut lost) = Self::beating(lease, beat);
         let out = tokio::select! {
             out = work => Some(out),
-            _ = &mut lost_rx => None,
+            _ = &mut lost => None,
         };
         ticker.abort();
         out
@@ -501,37 +551,61 @@ impl<S: Sandbox + 'static> Runner<S> {
         Ok(request)
     }
 
-    /// Makes sure every activity in `pending` is advertised by one of the namespace's sessions.
+    /// Makes sure every activity in `pending` is advertised by the namespace's session.
+    ///
+    /// The engine keeps one session per (identity, name) and a registration under a name that has
+    /// one replaces it, token and advertisement alike. So the runner has one session per namespace
+    /// and, when something new is pending, registers it again with the new activities *and* the
+    /// ones it already advertised (the pending ones first, if there are more than a session holds).
     async fn cover(
         &self,
         namespace: &NamespaceTarget,
         pending: &[String],
     ) -> Result<(), RunnerError> {
-        let uncovered: Vec<String> = {
+        let advertise: Vec<String> = {
             let mut sessions = lock(&self.sessions);
-            let list = sessions.entry(namespace.slug.clone()).or_default();
-            list.retain(|s| s.since.elapsed() < SESSION_AGE);
-            pending
+            if sessions
+                .get(&namespace.slug)
+                .is_some_and(|s| s.since.elapsed() >= SESSION_AGE)
+            {
+                sessions.remove(&namespace.slug);
+            }
+            let current = sessions.get(&namespace.slug);
+            if pending
                 .iter()
-                .filter(|a| !list.iter().any(|s| s.activities.contains(*a)))
+                .all(|a| current.is_some_and(|s| s.activities.contains(a)))
+            {
+                return Ok(());
+            }
+            let mut union: BTreeSet<String> = pending
+                .iter()
+                .take(sagat_application::worker::MAX_ACTIVITIES)
                 .cloned()
-                .collect()
+                .collect();
+            for kept in current.iter().flat_map(|s| s.activities.iter()) {
+                if union.len() >= sagat_application::worker::MAX_ACTIVITIES {
+                    break;
+                }
+                union.insert(kept.clone());
+            }
+            union.into_iter().collect()
         };
-        if uncovered.is_empty() {
-            return Ok(());
-        }
         let languages: Vec<String> = self
             .languages()
             .iter()
             .map(|l| l.as_str().to_owned())
             .collect();
+        let name: String = format!("{}/{}", self.config.name, namespace.slug)
+            .chars()
+            .take(120)
+            .collect();
         let request = self
             .authed(pb::RegisterWorkerRequest {
-                worker_name: self.config.name.clone(),
+                worker_name: name,
                 namespace: namespace.slug.clone(),
                 capabilities: Some(pb::WorkerCapabilities {
                     languages,
-                    activities: uncovered.clone(),
+                    activities: advertise.clone(),
                     pools: vec![],
                     max_inflight: i32::try_from(self.config.max_concurrent).unwrap_or(i32::MAX),
                     protocol_version: "1".to_owned(),
@@ -544,22 +618,20 @@ impl<S: Sandbox + 'static> Runner<S> {
             RunnerError::Transport
         })?;
         let response = response.into_inner();
-        let mut sessions = lock(&self.sessions);
-        let list = sessions.entry(namespace.slug.clone()).or_default();
-        if list.len() >= MAX_SESSIONS {
-            list.remove(0);
-        }
-        list.push(Session {
-            worker_id: response.worker_id,
-            token: response.session_token,
-            activities: uncovered.into_iter().collect(),
-            since: Instant::now(),
-        });
+        lock(&self.sessions).insert(
+            namespace.slug.clone(),
+            Session {
+                worker_id: response.worker_id,
+                token: response.session_token,
+                activities: advertise.into_iter().collect(),
+                since: Instant::now(),
+            },
+        );
         Ok(())
     }
 
     /// Leases the script steps that are ready in a namespace, at most as many as this runner has
-    /// room to run.
+    /// room to run. The room is taken here, before the lease, and goes with each step.
     ///
     /// # Errors
     /// [`RunnerError`] when the control plane or the engine cannot be spoken to.
@@ -567,7 +639,7 @@ impl<S: Sandbox + 'static> Runner<S> {
         &self,
         namespace: &NamespaceTarget,
     ) -> Result<Vec<StepTask>, RunnerError> {
-        let room = self.permits.available_permits();
+        let room = self.permits.available_permits().min(MAX_POLL);
         if room == 0 {
             return Ok(Vec::new());
         }
@@ -575,51 +647,56 @@ impl<S: Sandbox + 'static> Runner<S> {
         if pending.is_empty() {
             return Ok(Vec::new());
         }
+        // Taken, not just looked at: another namespace polled a moment later would otherwise lease
+        // for the same room.
+        let Ok(mut reserved) =
+            Arc::clone(&self.permits).try_acquire_many_owned(u32::try_from(room).unwrap_or(1))
+        else {
+            return Ok(Vec::new());
+        };
         self.cover(namespace, &pending).await?;
-        let candidates: Vec<Session> = lock(&self.sessions)
-            .get(&namespace.slug)
-            .map(|list| {
-                list.iter()
-                    .filter(|s| pending.iter().any(|a| s.activities.contains(a)))
-                    .cloned()
-                    .collect()
+        let Some(session) = lock(&self.sessions).get(&namespace.slug).cloned() else {
+            return Ok(Vec::new());
+        };
+        let request = self
+            .authed(pb::PollTasksRequest {
+                worker_id: session.worker_id.clone(),
+                session_token: session.token.clone(),
+                max_tasks: i32::try_from(room).unwrap_or(1),
             })
-            .unwrap_or_default();
+            .await?;
+        let mut client = self.client().await?;
         let mut tasks = Vec::new();
-        for session in candidates {
-            if tasks.len() >= room {
-                break;
-            }
-            let wanted = (room - tasks.len()).min(100);
-            let request = self
-                .authed(pb::PollTasksRequest {
-                    worker_id: session.worker_id.clone(),
-                    session_token: session.token.clone(),
-                    max_tasks: i32::try_from(wanted).unwrap_or(1),
-                })
-                .await?;
-            let mut client = self.client().await?;
-            match client.poll_tasks(request).await {
-                Ok(response) => {
-                    for lease in response.into_inner().tasks {
-                        tasks.push(StepTask {
-                            namespace: namespace.clone(),
-                            worker_id: session.worker_id.clone(),
-                            lease,
-                        });
-                    }
+        match client.poll_tasks(request).await {
+            Ok(response) => {
+                for lease in response.into_inner().tasks {
+                    let Some(permit) = reserved.split(1) else {
+                        break;
+                    };
+                    tasks.push(StepTask {
+                        namespace: namespace.clone(),
+                        worker_id: session.worker_id.clone(),
+                        lease,
+                        permit: Some(Arc::new(permit)),
+                    });
                 }
-                Err(status) => {
-                    use tonic::Code::{DeadlineExceeded, Unavailable};
-                    if matches!(status.code(), Unavailable | DeadlineExceeded) {
-                        self.forget_client().await;
-                        return Err(RunnerError::Transport);
-                    }
-                    // The session is gone (expired, or the binding changed): a new one is made.
-                    tracing::warn!(code = ?status.code(), "a worker session was refused; it is dropped");
-                    if let Some(list) = lock(&self.sessions).get_mut(&namespace.slug) {
-                        list.retain(|s| s.worker_id != session.worker_id);
-                    }
+            }
+            Err(status) => {
+                use tonic::Code::{DeadlineExceeded, Unavailable};
+                if matches!(status.code(), Unavailable | DeadlineExceeded) {
+                    self.forget_client().await;
+                    return Err(RunnerError::Transport);
+                }
+                // The session is gone (expired, or the binding changed): a new one is made, with
+                // what it advertised, on the next round. Only that one is dropped: a newer
+                // registration would have replaced it.
+                tracing::warn!(code = ?status.code(), "the worker session was refused; it is dropped");
+                let mut sessions = lock(&self.sessions);
+                if sessions
+                    .get(&namespace.slug)
+                    .is_some_and(|s| s.token == session.token)
+                {
+                    sessions.remove(&namespace.slug);
                 }
             }
         }
@@ -678,7 +755,12 @@ impl<S: Sandbox + 'static> Runner<S> {
             |verifier: &Verifier| verifier.verify(key_id, tenant, digest, language, signature);
         match check(&*self.verifier.read().await) {
             Ok(()) => return Ok(()),
-            Err(SigningError::UnknownKey) if self.config.trusted_keys.is_empty() => {}
+            // Trust on first use is once: with no keys configured the first key the control plane
+            // names is kept, and a key that shows up later is not believed on its word (a rotation
+            // is a restart, or a configured key).
+            Err(SigningError::UnknownKey)
+                if self.config.trusted_keys.is_empty()
+                    && self.verifier.read().await.keys().is_empty() => {}
             Err(_) => {
                 return Err(RunnerError::Sandbox(
                     "untrusted artifact: the signature does not verify".to_owned(),
@@ -690,9 +772,9 @@ impl<S: Sandbox + 'static> Runner<S> {
         let key = self.api.signing_key().await?;
         {
             let mut verifier = self.verifier.write().await;
-            let mut keys: Vec<Vec<u8>> = verifier.keys().iter().map(|(_, k)| k.clone()).collect();
-            keys.push(key);
-            *verifier = Verifier::new(keys);
+            if verifier.keys().is_empty() {
+                *verifier = Verifier::new(vec![key]);
+            }
         }
         check(&*self.verifier.read().await).map_err(|_| {
             RunnerError::Sandbox("untrusted artifact: the signature does not verify".to_owned())
@@ -701,15 +783,19 @@ impl<S: Sandbox + 'static> Runner<S> {
 
     fn observe(&self, language: Language, outcome: &RunOutcome) {
         let name = language.as_str();
-        let temperature = if lock(&self.warmed).insert(language) {
-            "cold"
-        } else {
-            "warm"
-        };
-        metrics::histogram!("script_start_seconds", "language" => name, "temperature" => temperature)
-            .record(outcome.start.as_secs_f64());
-        metrics::histogram!("script_run_seconds", "language" => name)
-            .record(outcome.wall.as_secs_f64());
+        // A run that never reached a container (an input that broke its schema, an artifact that
+        // could not be loaded) took no time to start and says nothing about starting.
+        if outcome.start > Duration::ZERO {
+            let temperature = if lock(&self.warmed).insert(language) {
+                "cold"
+            } else {
+                "warm"
+            };
+            metrics::histogram!("script_start_seconds", "language" => name, "temperature" => temperature)
+                .record(outcome.start.as_secs_f64());
+            metrics::histogram!("script_run_seconds", "language" => name)
+                .record(outcome.wall.as_secs_f64());
+        }
         if let Some(peak) = outcome.memory_peak_bytes {
             #[allow(clippy::cast_precision_loss)] // a gauge of megabytes
             metrics::histogram!("script_memory_peak_bytes", "language" => name).record(peak as f64);
@@ -724,8 +810,10 @@ impl<S: Sandbox + 'static> Runner<S> {
         for entry in &outcome.denied {
             let kind = if entry.starts_with("fetch") {
                 "fetch"
-            } else {
+            } else if entry.starts_with("secret") {
                 "secret"
+            } else {
+                "limit"
             };
             metrics::counter!("script_denied_total", "kind" => kind).increment(1);
         }
@@ -734,13 +822,15 @@ impl<S: Sandbox + 'static> Runner<S> {
     /// Runs one leased step to its end: fetch and check the artifact, take the secrets it declared,
     /// run it, keep the record of what happened, and complete or fail the step.
     ///
+    /// What cannot be told apart from a fault on this side (the control plane or the engine did not
+    /// answer, the runner's own credentials were refused) fails the step as *unavailable*, which the
+    /// engine tries again; only what is wrong with the script, its artifact or its secrets fails it
+    /// for good.
+    ///
     /// # Errors
     /// [`RunnerError`] when the engine cannot be told how it ended.
     pub async fn run_step(self: &Arc<Self>, task: StepTask) -> Result<StepOutcome, RunnerError> {
-        let _permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| RunnerError::Transport)?;
+        let _room = task.permit.clone();
         let lease = &task.lease;
         let Some(digest) = digest_of_activity(&lease.activity_name) else {
             return self
@@ -749,13 +839,8 @@ impl<S: Sandbox + 'static> Runner<S> {
         };
         let loaded = match self.load(&digest).await {
             Ok(loaded) => loaded,
-            // The control plane could not be asked: the step goes back to the queue.
-            Err(
-                RunnerError::Transport
-                | RunnerError::Status {
-                    status: 500..=599, ..
-                },
-            ) => {
+            Err(error) if is_transient(&error) => {
+                tracing::warn!(%error, %digest, "an artifact could not be fetched; the step goes back");
                 return self
                     .fail_step(
                         &task,
@@ -773,19 +858,41 @@ impl<S: Sandbox + 'static> Runner<S> {
         };
         let secrets = match self.secrets_of(&task).await {
             Ok(secrets) => secrets,
-            Err(_) => {
+            Err(SecretsFailure::Refused) => {
                 return self
                     .fail_step(&task, Failure::Denied, "a declared secret is not available")
+                    .await;
+            }
+            Err(SecretsFailure::Unavailable) => {
+                return self
+                    .fail_step(
+                        &task,
+                        Failure::Unavailable,
+                        "the secrets of the step could not be taken",
+                    )
                     .await;
             }
         };
         let policy = loaded.policy.within(&self.config.ceiling);
         let egress = match policy.egress {
-            sagat_domain::scripts::Egress::Namespace => self
-                .api
-                .egress_policy(&task.namespace.id.to_string())
-                .await
-                .ok(),
+            sagat_domain::scripts::Egress::Namespace => {
+                match self.api.egress_policy(&task.namespace.id.to_string()).await {
+                    Ok(view) => Some(view),
+                    // Not knowing the policy is not the same as there being none: a script run with
+                    // no network because the read failed would be refused what it may have, and
+                    // audited for asking.
+                    Err(error) => {
+                        tracing::warn!(%error, "the egress policy could not be read; the step goes back");
+                        return self
+                            .fail_step(
+                                &task,
+                                Failure::Unavailable,
+                                "the egress policy could not be read",
+                            )
+                            .await;
+                    }
+                }
+            }
             sagat_domain::scripts::Egress::None => None,
         };
         let Ok(host) = ScriptHost::open(egress.as_ref(), secrets) else {
@@ -807,22 +914,39 @@ impl<S: Sandbox + 'static> Runner<S> {
             secrets_to_hide: host.secret_values(),
             idempotency_key: Some(lease.idempotency_key.clone()).filter(|k| !k.is_empty()),
         };
+        let cancelled = Arc::new(AtomicBool::new(false));
         let beat = {
-            let (me, task) = (Arc::clone(self), task.clone());
+            let (me, task, cancelled) = (Arc::clone(self), task.clone(), Arc::clone(&cancelled));
             move || {
-                let (me, task) = (Arc::clone(&me), task.clone());
-                async move { me.heartbeat_step(&task).await }
+                let (me, task, cancelled) = (Arc::clone(&me), task.clone(), Arc::clone(&cancelled));
+                async move { me.heartbeat_step(&task, &cancelled).await }
             }
         };
-        let Some(outcome) = self
-            .held(lease_ttl(lease), beat, self.sandbox.run(request, &host))
-            .await
-        else {
+        // The lease is beaten while the script runs (and the script is stopped if the lease is
+        // lost) and also while the record is kept, which can take a while when the control plane
+        // is slow: a lease that lapsed meanwhile would run the script again elsewhere. What ran is
+        // recorded even if the lease is lost during the record: it may have had effects.
+        let (ticker, mut lost) = Self::beating(lease_ttl(lease), beat);
+        let ran = tokio::select! {
+            outcome = self.sandbox.run(request, &host) => Some(outcome),
+            _ = &mut lost => None,
+        };
+        let Some(outcome) = ran else {
+            ticker.abort();
+            if cancelled.load(Ordering::SeqCst) {
+                // The run is being cancelled: the script is stopped and the stop is reported, as
+                // the worker protocol asks, so the run does not wait for the lease to lapse.
+                tracing::info!(task = %lease.task_id, "the run was cancelled; the script is stopped");
+                self.report_failure(&task, "STEP_CANCELLED", false, "the run was cancelled")
+                    .await?;
+                return Ok(StepOutcome::Abandoned);
+            }
             tracing::warn!(task = %lease.task_id, "the step was taken back; the script is stopped");
             return Ok(StepOutcome::Abandoned);
         };
         self.observe(loaded.language, &outcome);
         self.keep_record(&task, &digest, &outcome).await;
+        ticker.abort();
         match outcome.result {
             Ok(output) => {
                 let output_json = String::from_utf8_lossy(&output).into_owned();
@@ -839,7 +963,7 @@ impl<S: Sandbox + 'static> Runner<S> {
         }
     }
 
-    async fn secrets_of(&self, task: &StepTask) -> Result<HashMap<String, String>, RunnerError> {
+    async fn secrets_of(&self, task: &StepTask) -> Result<HashMap<String, String>, SecretsFailure> {
         let lease = &task.lease;
         let request = self
             .authed(pb::ResolveSecretsRequest {
@@ -851,12 +975,32 @@ impl<S: Sandbox + 'static> Runner<S> {
                 lease_token: lease.lease_token.clone(),
                 traceparent: lease.traceparent.clone(),
             })
-            .await?;
-        let mut client = self.client().await?;
-        let response = client
-            .resolve_secrets(request)
             .await
-            .map_err(|_| RunnerError::Transport)?;
+            .map_err(|_| SecretsFailure::Unavailable)?;
+        let mut client = self
+            .client()
+            .await
+            .map_err(|_| SecretsFailure::Unavailable)?;
+        let response = client.resolve_secrets(request).await.map_err(|status| {
+            use tonic::Code::{FailedPrecondition, InvalidArgument, NotFound, PermissionDenied};
+            if matches!(
+                status.code(),
+                PermissionDenied | NotFound | InvalidArgument | FailedPrecondition
+            ) {
+                SecretsFailure::Refused
+            } else {
+                SecretsFailure::Unavailable
+            }
+        });
+        let response = match response {
+            Ok(response) => response,
+            Err(failure) => {
+                if matches!(failure, SecretsFailure::Unavailable) {
+                    self.forget_client().await;
+                }
+                return Err(failure);
+            }
+        };
         Ok(response
             .into_inner()
             .secrets
@@ -865,7 +1009,14 @@ impl<S: Sandbox + 'static> Runner<S> {
             .collect())
     }
 
-    async fn heartbeat_step(&self, task: &StepTask) -> Result<bool, RunnerError> {
+    /// Beats the lease of a step. `Ok(false)` when it is no longer ours; `cancelled` is set when the
+    /// engine asked for the step to stop (the run is being cancelled), which is told apart from a
+    /// lease that was lost because the protocol has the worker report the first.
+    async fn heartbeat_step(
+        &self,
+        task: &StepTask,
+        cancelled: &AtomicBool,
+    ) -> Result<bool, RunnerError> {
         let lease = &task.lease;
         let request = self
             .authed(pb::HeartbeatRequest {
@@ -880,7 +1031,13 @@ impl<S: Sandbox + 'static> Runner<S> {
             .await?;
         let mut client = self.client().await?;
         match client.heartbeat(request).await {
-            Ok(response) => Ok(!response.into_inner().cancel_requested),
+            Ok(response) => {
+                let cancel = response.into_inner().cancel_requested;
+                if cancel {
+                    cancelled.store(true, Ordering::SeqCst);
+                }
+                Ok(!cancel)
+            }
             // The engine no longer knows the lease: it was reclaimed.
             Err(status)
                 if status.code() == tonic::Code::Aborted
@@ -924,39 +1081,49 @@ impl<S: Sandbox + 'static> Runner<S> {
 
     /// `false` when the engine says the attempt is no longer this runner's (the lease was lost and
     /// the step went to someone else): what the script did is not reported.
+    ///
+    /// A call the engine could not answer is made again, with the same idempotency key, so a
+    /// completion that did arrive is not told twice and one that did not is not lost.
     async fn complete_step(
         &self,
         task: &StepTask,
         output_json: String,
     ) -> Result<bool, RunnerError> {
         let lease = &task.lease;
-        let request = self
-            .authed(pb::CompleteStepRequest {
-                task_id: lease.task_id.clone(),
-                run_id: lease.run_id.clone(),
-                step_id: lease.step_id.clone(),
-                attempt: lease.attempt,
-                generation: lease.generation,
-                lease_token: lease.lease_token.clone(),
-                idempotency_key: format!("done-{}", lease.task_id),
-                output_json,
-                output_blob_ref: String::new(),
-                output_sha256: String::new(),
-                traceparent: lease.traceparent.clone(),
-            })
-            .await?;
-        let mut client = self.client().await?;
-        match client.complete_step(request).await {
-            Ok(_) => Ok(true),
-            Err(status) if status.code() == tonic::Code::Aborted => {
-                tracing::warn!("the engine says the attempt is stale; the completion is dropped");
-                Ok(false)
-            }
-            Err(status) => {
-                tracing::warn!(code = ?status.code(), "the engine refused the completion of a step");
-                Err(RunnerError::Transport)
+        for attempt in 0..ENGINE_TRIES {
+            let request = self
+                .authed(pb::CompleteStepRequest {
+                    task_id: lease.task_id.clone(),
+                    run_id: lease.run_id.clone(),
+                    step_id: lease.step_id.clone(),
+                    attempt: lease.attempt,
+                    generation: lease.generation,
+                    lease_token: lease.lease_token.clone(),
+                    idempotency_key: format!("done-{}", lease.task_id),
+                    output_json: output_json.clone(),
+                    output_blob_ref: String::new(),
+                    output_sha256: String::new(),
+                    traceparent: lease.traceparent.clone(),
+                })
+                .await?;
+            let mut client = self.client().await?;
+            match client.complete_step(request).await {
+                Ok(_) => return Ok(true),
+                Err(status) if status.code() == tonic::Code::Aborted => {
+                    tracing::warn!(
+                        "the engine says the attempt is stale; the completion is dropped"
+                    );
+                    return Ok(false);
+                }
+                Err(status) => {
+                    tracing::warn!(code = ?status.code(), attempt, "the engine refused the completion of a step");
+                    if !self.engine_may_answer(&status, attempt).await {
+                        return Err(RunnerError::Transport);
+                    }
+                }
             }
         }
+        Err(RunnerError::Transport)
     }
 
     async fn fail_step(
@@ -965,34 +1132,76 @@ impl<S: Sandbox + 'static> Runner<S> {
         failure: Failure,
         message: &str,
     ) -> Result<StepOutcome, RunnerError> {
+        if self
+            .report_failure(task, failure.code(), failure.retryable(), message)
+            .await?
+        {
+            Ok(StepOutcome::Failed(failure))
+        } else {
+            Ok(StepOutcome::Abandoned)
+        }
+    }
+
+    /// Tells the engine a step failed with `code`. `false` when the engine says the attempt is no
+    /// longer this runner's: the report is dropped.
+    async fn report_failure(
+        &self,
+        task: &StepTask,
+        code: &str,
+        retryable: bool,
+        message: &str,
+    ) -> Result<bool, RunnerError> {
         let lease = &task.lease;
-        let request = self
-            .authed(pb::FailStepRequest {
-                task_id: lease.task_id.clone(),
-                run_id: lease.run_id.clone(),
-                step_id: lease.step_id.clone(),
-                attempt: lease.attempt,
-                generation: lease.generation,
-                lease_token: lease.lease_token.clone(),
-                idempotency_key: format!("failed-{}", lease.task_id),
-                error_code: failure.code().to_owned(),
-                safe_message: message.to_owned(),
-                retryable: failure.retryable(),
-                traceparent: lease.traceparent.clone(),
-            })
-            .await?;
-        let mut client = self.client().await?;
-        match client.fail_step(request).await {
-            Ok(_) => Ok(StepOutcome::Failed(failure)),
-            Err(status) if status.code() == tonic::Code::Aborted => {
-                tracing::warn!("the engine says the attempt is stale; the failure is dropped");
-                Ok(StepOutcome::Abandoned)
-            }
-            Err(status) => {
-                tracing::warn!(code = ?status.code(), "the engine refused the failure of a step");
-                Err(RunnerError::Transport)
+        for attempt in 0..ENGINE_TRIES {
+            let request = self
+                .authed(pb::FailStepRequest {
+                    task_id: lease.task_id.clone(),
+                    run_id: lease.run_id.clone(),
+                    step_id: lease.step_id.clone(),
+                    attempt: lease.attempt,
+                    generation: lease.generation,
+                    lease_token: lease.lease_token.clone(),
+                    idempotency_key: format!("failed-{}", lease.task_id),
+                    error_code: code.to_owned(),
+                    safe_message: message.to_owned(),
+                    retryable,
+                    traceparent: lease.traceparent.clone(),
+                })
+                .await?;
+            let mut client = self.client().await?;
+            match client.fail_step(request).await {
+                Ok(_) => return Ok(true),
+                Err(status) if status.code() == tonic::Code::Aborted => {
+                    tracing::warn!("the engine says the attempt is stale; the failure is dropped");
+                    return Ok(false);
+                }
+                Err(status) => {
+                    tracing::warn!(code = ?status.code(), attempt, "the engine refused the failure of a step");
+                    if !self.engine_may_answer(&status, attempt).await {
+                        return Err(RunnerError::Transport);
+                    }
+                }
             }
         }
+        Err(RunnerError::Transport)
+    }
+
+    /// Whether a call the engine refused is worth making again (it did not answer, or said to try
+    /// later); waits a little first. A refusal that is an answer is not.
+    async fn engine_may_answer(&self, status: &tonic::Status, attempt: usize) -> bool {
+        use tonic::Code::{DeadlineExceeded, Internal, ResourceExhausted, Unavailable};
+        let transient = matches!(
+            status.code(),
+            Unavailable | DeadlineExceeded | ResourceExhausted | Internal
+        );
+        if !transient || attempt + 1 >= ENGINE_TRIES {
+            return false;
+        }
+        if matches!(status.code(), Unavailable | DeadlineExceeded) {
+            self.forget_client().await;
+        }
+        tokio::time::sleep(Duration::from_millis(200 * (attempt as u64 + 1))).await;
+        true
     }
 
     // ------------------------------------------------------------------------------ the loop
@@ -1086,7 +1295,7 @@ fn lease_ttl(lease: &pb::TaskLease) -> Duration {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     let left = lease.expires_at_epoch_ms.saturating_sub(now);
     Duration::from_millis(u64::try_from(left).unwrap_or(0))
-        .clamp(Duration::from_secs(3), Duration::from_secs(300))
+        .clamp(Duration::from_secs(3), MAX_LEASE_BEAT)
 }
 
 /// The node a step is of: the step document says so; the id of the step stands in if it does not.
@@ -1128,7 +1337,10 @@ fn failure_message(failure: Failure) -> &'static str {
 
 fn test_result(outcome: &RunOutcome) -> TestResult {
     let (result, failure) = match &outcome.result {
-        Ok(bytes) => (serde_json::from_slice(bytes).ok(), None),
+        Ok(bytes) => match serde_json::from_slice(bytes) {
+            Ok(value) => (Some(value), None),
+            Err(_) => (None, Some(Failure::NoResult.code().to_owned())),
+        },
         Err(failure) => (None, Some(failure.code().to_owned())),
     };
     let schema = |bytes: &Option<Vec<u8>>| {
@@ -1154,6 +1366,49 @@ fn test_result(outcome: &RunOutcome) -> TestResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_the_runner_or_the_network_did_is_told_apart_from_what_the_step_did() {
+        let status = |status| RunnerError::Status {
+            status,
+            code: String::new(),
+            reason: String::new(),
+        };
+        for transient in [
+            RunnerError::Transport,
+            RunnerError::Credentials,
+            status(401),
+            status(403),
+            status(408),
+            status(429),
+            status(500),
+            status(503),
+        ] {
+            assert!(is_transient(&transient), "{transient}");
+        }
+        for permanent in [
+            status(404),
+            status(422),
+            RunnerError::Decode,
+            RunnerError::Sandbox("untrusted artifact: bad".to_owned()),
+        ] {
+            assert!(!is_transient(&permanent), "{permanent}");
+        }
+    }
+
+    #[test]
+    fn a_clock_that_is_behind_cannot_stretch_the_beat_past_the_lease() {
+        let lease = |ahead_ms: i64| pb::TaskLease {
+            expires_at_epoch_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
+                + ahead_ms,
+            ..pb::TaskLease::default()
+        };
+        assert!(lease_ttl(&lease(60 * 60 * 1000)) <= Duration::from_secs(30));
+        assert_eq!(lease_ttl(&lease(-5_000)), Duration::from_secs(3));
+        assert!((19..=20).contains(&lease_ttl(&lease(20_000)).as_secs()));
+    }
 
     #[test]
     fn a_trace_id_is_read_from_a_traceparent_and_nothing_else_is() {

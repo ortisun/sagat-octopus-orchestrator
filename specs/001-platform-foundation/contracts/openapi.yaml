@@ -1401,21 +1401,6 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
-  /scripts/builds:
-    post:
-      operationId: buildInlineScript
-      summary: Build an inline script
-      tags: [Scripts]
-      parameters:
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/BuildRequest'}
-      responses:
-        '202': {description: Async isolated build accepted, content: {application/json: {schema: {$ref: '#/components/schemas/BuildStatus'}}}}
   /namespaces/{namespaceId}/scripts:
     get:
       operationId: listScripts
@@ -1772,7 +1757,7 @@ paths:
       tags: [Scripts]
       x-implemented: '005'
       description: |
-        Needs `script:build`. `built` carries the artifact (base64), its bill of materials and the toolchain that made it; the control plane signs the digest and the version becomes `READY`. `failed` says why nothing was made (`rejected`, `lockfile`, `limit`, `unsupported`, `unavailable`); `unavailable` is tried again up to three times. Repeating a completion the same holder already made is accepted; one from a runner that lost the lease is `409`.
+        Needs `script:build`. `built` carries the artifact (base64), its bill of materials and the toolchain that made it; the control plane signs the digest and the version becomes `READY`. `failed` says why nothing was made (`rejected`, `lockfile`, `limit`, `unsupported`, `unavailable`); `unavailable` is tried again up to three times, each after a wait of 15 s times the attempts made. The control plane signs only an artifact that says what the version says (language, entry point, plain file names, the policy it was clamped to and its schemas): any other is `422` with reason `BUNDLE_MISMATCH` and the build is left to its lease. Repeating a completion the same holder already made is accepted; one from a runner that lost the lease is `409`. The body may be up to 4 MiB.
       parameters:
         - {$ref: '#/components/parameters/JobId'}
       requestBody:
@@ -1848,7 +1833,7 @@ paths:
       tags: [Scripts]
       x-implemented: '005'
       description: |
-        Needs `script:build`. Exactly one of `result` and `failure` (a `SCRIPT_*` code).
+        Needs `script:build`. Exactly one of `result` and `failure` (a `SCRIPT_*` code). A script that returns nothing has a `result` of `null`, which is a result; an absent `result` is not one.
       parameters:
         - {$ref: '#/components/parameters/TestRunId'}
       requestBody:
@@ -2056,11 +2041,6 @@ components:
       in: path
       required: true
       schema: {type: string, format: uuid}
-    VersionNumber:
-      name: versionNumber
-      in: path
-      required: true
-      schema: {type: integer, minimum: 1}
     TestRunId:
       name: testRunId
       in: path
@@ -2772,21 +2752,6 @@ components:
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/DeadLetter'}}
         nextCursor: {type: string}
-    BuildRequest:
-      type: object
-      required: [language, source, lockfile]
-      properties:
-        language: {type: string, enum: [typescript, python, csharp, go, java]}
-        source: {type: string}
-        lockfile: {type: string}
-        toolchain: {type: string}
-    BuildStatus:
-      type: object
-      required: [buildId, status]
-      properties:
-        buildId: {type: string, format: uuid}
-        status: {type: string, enum: [QUEUED, BUILDING, SUCCEEDED, FAILED, CANCELLED]}
-        artifactDigest: {type: string}
     ScriptPolicy:
       type: object
       additionalProperties: false
@@ -2829,11 +2794,28 @@ components:
         createdBy: {type: string}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    ScriptSummary:
+      type: object
+      required: [id, namespaceId, name, language, policy, retentionDays, revision, sourceBytes, createdBy, createdAt, updatedAt]
+      description: 'A script as a listing shows it: without its source, lockfile and schemas (up to 640 KiB a script). `getScript` has them.'
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        language: {type: string, enum: [typescript, python]}
+        policy: {$ref: '#/components/schemas/ScriptPolicyView'}
+        retentionDays: {type: integer, minimum: 1, maximum: 365}
+        revision: {type: integer}
+        latestVersion: {type: integer}
+        sourceBytes: {type: integer, description: 'How big the source of the draft is.'}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
     ScriptList:
       type: object
       required: [items]
       properties:
-        items: {type: array, items: {$ref: '#/components/schemas/Script'}}
+        items: {type: array, items: {$ref: '#/components/schemas/ScriptSummary'}}
     CreateScriptRequest:
       type: object
       additionalProperties: false
@@ -2885,11 +2867,33 @@ components:
         createdBy: {type: string}
         createdAt: {type: string, format: date-time}
         builtAt: {type: string, format: date-time}
+    ScriptVersionSummary:
+      type: object
+      required: [id, scriptId, number, language, status, policy, retentionDays, contentDigest, createdBy, createdAt]
+      description: 'A version as a listing shows it: without its source, lockfile, schemas and build log. `getScriptVersion` has them.'
+      properties:
+        id: {type: string, format: uuid}
+        scriptId: {type: string, format: uuid}
+        number: {type: integer, minimum: 1}
+        language: {type: string, enum: [typescript, python]}
+        status: {type: string, enum: [BUILDING, READY, FAILED]}
+        policy: {$ref: '#/components/schemas/ScriptPolicyView'}
+        retentionDays: {type: integer}
+        contentDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        buildKey: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        artifactDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        activity: {type: string}
+        keyId: {type: string}
+        toolchain: {type: string}
+        failure: {type: string}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        builtAt: {type: string, format: date-time}
     ScriptVersionList:
       type: object
       required: [items]
       properties:
-        items: {type: array, items: {$ref: '#/components/schemas/ScriptVersion'}}
+        items: {type: array, items: {$ref: '#/components/schemas/ScriptVersionSummary'}}
     PublishedScriptVersion:
       type: object
       required: [version, created]

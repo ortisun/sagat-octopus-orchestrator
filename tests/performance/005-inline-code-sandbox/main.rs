@@ -512,11 +512,7 @@ async fn script_sandbox_benchmark() {
         .0,
     );
     report.push_str(&row("log flood: until it was cut off", flood_times).0);
-    assert_eq!(
-        sandbox.sweep(Duration::ZERO).await,
-        0,
-        "no container was left behind"
-    );
+    assert_eq!(sandbox.leftovers().await, 0, "no container was left behind");
 
     // -------------------------------------------------------------------------------------- verdicts
     let held = |ok: bool| if ok { "held" } else { "NOT MET" };
@@ -570,9 +566,7 @@ async fn script_sandbox_benchmark() {
         held(kill_p95 < KILL_OVERSHOOT),
         ms(kill_p95)
     ));
-    report.push_str(&format!(
-        "| A bounded environment (`environment()` above) | recorded |\n"
-    ));
+    report.push_str("| A bounded environment (`environment()` above) | recorded |\n");
 
     let report = format!(
         "# Benchmark: inline code sandbox (feature 005)\n\nProduced by `tests/performance/005-inline-code-sandbox` (T005-034, NFR-005-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.\n\n## Environment\n\n{}\n\n{report}",

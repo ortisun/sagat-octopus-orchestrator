@@ -28,7 +28,15 @@ try {
 writeFileSync('/tmp/main.mjs', code);
 const check = spawnSync(process.execPath, ['--check', '/tmp/main.mjs'], { encoding: 'utf8' });
 if (check.status !== 0) reject(check.stderr);
-if (!/export\s+default|export\s+(async\s+)?function\s+run/.test(code)) {
+// What the runner loads is `module.default ?? module.run`: any way of exporting one of those counts,
+// and a mention in a comment does not.
+const bare = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:\\])\/\/.*$/gm, '$1');
+const exported =
+  /\bexport\s+default\b/.test(bare) ||
+  /\bexport\s+(async\s+)?function\s+run\b/.test(bare) ||
+  /\bexport\s+(const|let|var)\s+run\b/.test(bare) ||
+  /\bexport\s*\{[^}]*\b(run|default)\b[^}]*\}/.test(bare);
+if (!exported) {
   reject('the script must export a default function (export default async function (input, octopus) { ... })');
 }
 say({ op: 'built', entry: 'main.mjs', files: { 'main.mjs': code } });

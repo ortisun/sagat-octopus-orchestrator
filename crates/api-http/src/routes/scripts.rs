@@ -17,8 +17,9 @@ use uuid::Uuid;
 
 use crate::dto_scripts::{
     ArtifactSummaryBody, CreateScriptBody, ExecutionBody, ExecutionListBody, ExecutionSummaryBody,
-    PublishedBody, ScriptBody, ScriptListBody, TestRunBody, TestRunListBody, TestRunRequestBody,
-    TestRunSummaryBody, UpdateScriptBody, VersionBody, VersionListBody,
+    PublishedBody, ScriptBody, ScriptListBody, ScriptSummaryBody, TestRunBody, TestRunListBody,
+    TestRunRequestBody, TestRunSummaryBody, UpdateScriptBody, VersionBody, VersionListBody,
+    VersionSummaryBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -109,7 +110,7 @@ pub async fn list_scripts<B: Governance>(
         )
         .await?;
     Ok(Json(ScriptListBody {
-        items: items.iter().map(ScriptBody::from).collect(),
+        items: items.iter().map(ScriptSummaryBody::from).collect(),
     }))
 }
 
@@ -233,7 +234,7 @@ pub async fn list_versions<B: Governance>(
         )
         .await?;
     Ok(Json(VersionListBody {
-        items: items.iter().map(VersionBody::from).collect(),
+        items: items.iter().map(VersionSummaryBody::from).collect(),
     }))
 }
 

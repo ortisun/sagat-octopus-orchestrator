@@ -50,6 +50,21 @@ async fn an_author_tries_a_typescript_script_and_gets_the_result_the_log_and_the
 }
 
 #[tokio::test]
+async fn a_script_that_returns_nothing_has_succeeded_with_a_null_result() {
+    let lab = lab().await;
+    let script = lab
+        .script("nothing", "python", "def run(input, octopus):\n    pass\n")
+        .await;
+    let run = lab.test(&script, &json!({})).await;
+    assert_eq!(run["status"], "SUCCEEDED", "{run}");
+    assert!(run["result"].is_null(), "{run}");
+    assert!(
+        run.get("failure").is_none_or(serde_json::Value::is_null),
+        "{run}"
+    );
+}
+
+#[tokio::test]
 async fn a_python_script_is_tried_the_same_way() {
     let lab = lab().await;
     let script = lab

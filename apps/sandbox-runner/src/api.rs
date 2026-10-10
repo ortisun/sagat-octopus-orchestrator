@@ -401,23 +401,28 @@ impl ControlPlane {
         lease: &str,
         result: &TestResult,
     ) -> Result<(), RunnerError> {
+        let mut body = json!({
+            "leaseToken": lease,
+            "log": result.log,
+            "logTruncated": result.log_truncated,
+            "denied": result.denied,
+            "exitCode": result.exit_code,
+            "wallMs": result.wall_ms,
+            "startMs": result.start_ms,
+            "memoryPeakBytes": result.memory_peak_bytes,
+            "inferredInputSchema": result.inferred_input_schema,
+            "inferredOutputSchema": result.inferred_output_schema,
+        });
+        // Exactly one of the two: a failure, or a result (which may be `null`: a script that
+        // returned nothing). The control plane tells an absent result from a `null` one.
+        match &result.failure {
+            Some(code) => body["failure"] = json!(code),
+            None => body["result"] = result.result.clone().unwrap_or(Value::Null),
+        }
         self.call(
             Method::POST,
             &format!("/script-runner/test-runs/{run}/complete"),
-            Some(json!({
-                "leaseToken": lease,
-                "result": result.result,
-                "failure": result.failure,
-                "log": result.log,
-                "logTruncated": result.log_truncated,
-                "denied": result.denied,
-                "exitCode": result.exit_code,
-                "wallMs": result.wall_ms,
-                "startMs": result.start_ms,
-                "memoryPeakBytes": result.memory_peak_bytes,
-                "inferredInputSchema": result.inferred_input_schema,
-                "inferredOutputSchema": result.inferred_output_schema,
-            })),
+            Some(body),
         )
         .await
         .map(|_| ())

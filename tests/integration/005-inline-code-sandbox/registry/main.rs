@@ -80,19 +80,27 @@ pub async fn publish(w: &World, script: &ScriptRecord) -> Published {
         .expect("publish")
 }
 
-/// Some bytes a build could have made: the control plane treats an artifact as opaque.
-pub fn artifact(label: &str) -> Vec<u8> {
-    format!(
-        r#"{{"v":1,"language":"typescript","entry":"main.mjs","files":{{"main.mjs":"{label}"}}}}"#
-    )
-    .into_bytes()
+/// What a runner would report for `job`: a bundle that says what the version says (its policy under
+/// the ceiling, its schemas, its language), with `label` as the code.
+pub fn artifact(job: &BuildAssignment, label: &str) -> Vec<u8> {
+    let schema = |bytes: &Option<Vec<u8>>| {
+        bytes
+            .as_deref()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "v": 1, "language": job.language.as_str(), "policy": job.policy.canonical(),
+        "inputSchema": schema(&job.input_schema), "outputSchema": schema(&job.output_schema),
+        "entry": "main.mjs", "files": {"main.mjs": label}
+    }))
+    .expect("json")
 }
 
-pub fn built(label: &str, toolchain: &str) -> BuildReport {
+pub fn built(job: &BuildAssignment, label: &str) -> BuildReport {
     BuildReport::Built {
-        artifact: artifact(label),
+        artifact: artifact(job, label),
         sbom: br#"{"bomFormat":"CycloneDX"}"#.to_vec(),
-        toolchain: toolchain.to_owned(),
+        toolchain: toolchains()[0].1.clone(),
         log: "built".to_owned(),
     }
 }
@@ -123,7 +131,7 @@ pub async fn ready(w: &World, name: &str, label: &str) -> (ScriptRecord, Version
     let published = publish(w, &script).await;
     let job = claim(w).await.expect("a build is waiting");
     assert_eq!(job.version, published.version.id);
-    complete(w, &job, built(label, &toolchains()[0].1)).await;
+    complete(w, &job, built(&job, label)).await;
     let version = w
         .scripts
         .version(

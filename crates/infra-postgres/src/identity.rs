@@ -156,7 +156,25 @@ pub(crate) async fn insert_audit(
     // An event the caller can repeat at will is written once per identical event. The lookup is
     // served by `audit_records_denial_dedupe_idx` (tenant, actor, action, resource), and the
     // callers hold the lock of the run the event is about, so repeats cannot race each other.
-    let statement = if audit.action().collapses_repeats() {
+    let collapses = audit.action().collapses_repeats();
+    if collapses {
+        // Two identical events racing would both pass the check below before either commits; a
+        // lock on the event's identity, held to the end of the transaction, lets the second see
+        // the first.
+        let key = format!(
+            "{}|{}|{}|{}",
+            audit.tenant_id(),
+            audit.actor(),
+            audit.action(),
+            audit.resource_id()
+        );
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 2))")
+            .bind(&key)
+            .execute(&mut *conn)
+            .await
+            .map_err(store_error)?;
+    }
+    let statement = if collapses {
         "INSERT INTO audit_records \
          (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at) \
          SELECT $1::uuid, $2::uuid, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, \
@@ -164,13 +182,16 @@ pub(crate) async fn insert_audit(
          WHERE NOT EXISTS ( \
              SELECT 1 FROM audit_records \
              WHERE tenant_id = $2::uuid AND actor = $3::text AND action = $4::text \
-               AND resource_id = $6::text AND reason IS NOT DISTINCT FROM $7::text)"
+               AND resource_id = $6::text AND reason IS NOT DISTINCT FROM $7::text) \
+           AND (SELECT count(*) FROM audit_records \
+                WHERE tenant_id = $2::uuid AND actor = $3::text AND action = $4::text \
+                  AND resource_id = $6::text) < $10::bigint"
     } else {
         "INSERT INTO audit_records \
          (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
     };
-    sqlx::query(statement)
+    let mut query = sqlx::query(statement)
         .bind(audit.id().as_uuid())
         .bind(audit.tenant_id().as_uuid())
         .bind(audit.actor().as_str())
@@ -179,10 +200,11 @@ pub(crate) async fn insert_audit(
         .bind(audit.resource_id())
         .bind(audit.reason())
         .bind(audit.trace_id())
-        .bind(audit.created_at())
-        .execute(conn)
-        .await
-        .map_err(store_error)?;
+        .bind(audit.created_at());
+    if collapses {
+        query = query.bind(audit.action().distinct_cap().map_or(i64::MAX, i64::from));
+    }
+    query.execute(conn).await.map_err(store_error)?;
     Ok(())
 }
 

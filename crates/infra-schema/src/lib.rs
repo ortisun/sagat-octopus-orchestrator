@@ -1,6 +1,8 @@
 //! JSON Schema for the input and the result of a script: checking a schema when it is written,
 //! checking a value against the schema the author declared, and inferring a schema from a value
-//! that was seen (`FR-005-006`).
+//! that was seen (`FR-005-006`), and the format of the artifact bundle.
+
+pub mod bundle;
 
 use sagat_application::scripts::{SchemaChecker, SchemaProblem};
 use sagat_domain::scripts::MAX_SCHEMA_BYTES;
@@ -20,9 +22,27 @@ impl SchemaChecker for Schemas {
             return Err(SchemaProblem::NotAnObject);
         }
         // Compiles it, which also refuses a reference to anything outside the document.
-        jsonschema::validator_for(&value).map_err(|_| SchemaProblem::Invalid)?;
+        compile(&value).map_err(|_| SchemaProblem::Invalid)?;
         Ok(())
     }
+}
+
+/// Largest compiled size of one `pattern`, in bytes: the author chooses the pattern.
+const PATTERN_SIZE_LIMIT: usize = 1024 * 1024;
+
+/// Compiles a schema the author wrote. Its `pattern`s are matched with the linear-time engine: the
+/// backtracking one (lookaround, backreferences) can be made to spend a million steps per string on
+/// every string of a result, on the host and outside any container's limits, so a schema that needs
+/// it is refused when it is written instead of being evaluated.
+fn compile(schema: &Value) -> Result<jsonschema::Validator, ()> {
+    jsonschema::options()
+        .with_pattern_options(
+            jsonschema::PatternOptions::regex()
+                .size_limit(PATTERN_SIZE_LIMIT)
+                .dfa_size_limit(PATTERN_SIZE_LIMIT),
+        )
+        .build(schema)
+        .map_err(|_| ())
 }
 
 /// Why a value does not satisfy a schema, in a form that names where and which rule but never the
@@ -31,8 +51,7 @@ impl SchemaChecker for Schemas {
 /// # Errors
 /// A description of up to three violations, or of a schema that is not one.
 pub fn validate(schema: &Value, instance: &Value) -> Result<(), String> {
-    let validator =
-        jsonschema::validator_for(schema).map_err(|_| "the schema is not valid".to_owned())?;
+    let validator = compile(schema).map_err(|()| "the schema is not valid".to_owned())?;
     let mut problems: Vec<String> = Vec::new();
     for error in validator.iter_errors(instance).take(3) {
         let at = error.instance_path().to_string();
@@ -165,6 +184,29 @@ mod tests {
         assert!(
             validate(&json!({"type": "nonsense"}), &json!(1)).is_err(),
             "a schema that is not one"
+        );
+    }
+
+    #[test]
+    fn a_pattern_that_needs_backtracking_is_refused_when_the_schema_is_written() {
+        let check = |pattern: &str| {
+            Schemas.check(
+                json!({"type": "string", "pattern": pattern})
+                    .to_string()
+                    .as_bytes(),
+            )
+        };
+        assert_eq!(check("^[a-z]{2,8}-\\d+$"), Ok(()));
+        for risky in ["^(?=a)a$", "(a+)\\1", "^(?!x).*$", "(?<=a)b"] {
+            assert_eq!(check(risky), Err(SchemaProblem::Invalid), "{risky}");
+        }
+        assert!(
+            validate(
+                &json!({"type": "string", "pattern": "^(?=a)a$"}),
+                &json!("a")
+            )
+            .is_err(),
+            "and a value is never checked against one"
         );
     }
 

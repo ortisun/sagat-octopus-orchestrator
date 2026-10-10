@@ -14,7 +14,8 @@ use sagat_application::scripts::{
     ArtifactRecord, ArtifactSummary, BuildJobRecord, BuiltArtifact, ClaimedBuild, ClaimedTest,
     Deleted, Draft, DraftUpdate, ExecutionRecord, ExecutionStatus, ExecutionSummary, Finished,
     Hold, MAX_BUILD_ATTEMPTS, NewExecution, NewVersion, RunnerStore, ScriptLookup, ScriptRecord,
-    ScriptStore, TEST_QUEUE_WAIT, TestReport, TestRunRecord, TestRunSummary, VersionRecord,
+    ScriptStore, ScriptSummary, TEST_QUEUE_WAIT, TestReport, TestRunRecord, TestRunSummary,
+    VersionRecord, VersionSummary,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{NamespaceId, Slug, TenantId};
@@ -35,6 +36,8 @@ use crate::quotas::{
 
 /// How many times a test run is taken before its runner is presumed lost for good.
 const MAX_TEST_ATTEMPTS: i32 = 3;
+/// A build that failed for a reason that may pass waits this long per attempt made.
+const BUILD_RETRY_BACKOFF: Duration = Duration::from_secs(15);
 
 macro_rules! select_scripts {
     ($tail:literal) => {
@@ -158,6 +161,80 @@ fn version_of(row: &PgRow) -> Result<VersionRecord, StoreError> {
         key_id: col(row, "key_id")?,
         toolchain: col(row, "toolchain")?,
         build_log: col(row, "build_log")?,
+        failure: col(row, "failure")?,
+        created_by: col(row, "created_by")?,
+        created_at: col(row, "created_at")?,
+        built_at: col(row, "built_at")?,
+    })
+}
+
+fn policy_of_row(row: &PgRow) -> Result<(Policy, Retention), StoreError> {
+    let policy: String = col(row, "policy")?;
+    let retention: i16 = col(row, "retention_days")?;
+    Ok((
+        Policy::parse_canonical(&policy).map_err(|_| corrupt("script policy"))?,
+        u16::try_from(retention)
+            .ok()
+            .and_then(|days| Retention::days(days).ok())
+            .ok_or_else(|| corrupt("script retention"))?,
+    ))
+}
+
+fn script_summary_of(row: &PgRow) -> Result<ScriptSummary, StoreError> {
+    let name: String = col(row, "name")?;
+    let revision: i64 = col(row, "revision")?;
+    let latest: Option<i32> = col(row, "latest_version")?;
+    let bytes: i64 = col(row, "source_bytes")?;
+    let (policy, retention) = policy_of_row(row)?;
+    Ok(ScriptSummary {
+        id: ScriptId::new(col::<Uuid>(row, "id")?),
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
+        name: Slug::parse(&name).map_err(|_| corrupt("script name"))?,
+        language: language_of(row)?,
+        policy,
+        retention,
+        revision: u64::try_from(revision).map_err(|_| corrupt("script revision"))?,
+        latest_version: latest
+            .map(|n| {
+                u32::try_from(n)
+                    .ok()
+                    .and_then(|n| VersionNumber::new(n).ok())
+                    .ok_or_else(|| corrupt("script latest version"))
+            })
+            .transpose()?,
+        source_bytes: u64::try_from(bytes).unwrap_or(0),
+        created_by: col(row, "created_by")?,
+        created_at: col(row, "created_at")?,
+        updated_at: col(row, "updated_at")?,
+    })
+}
+
+fn version_summary_of(row: &PgRow) -> Result<VersionSummary, StoreError> {
+    let number: i32 = col(row, "number")?;
+    let status: String = col(row, "status")?;
+    let content: String = col(row, "content_digest")?;
+    let (policy, retention) = policy_of_row(row)?;
+    Ok(VersionSummary {
+        id: ScriptVersionId::new(col::<Uuid>(row, "id")?),
+        script_id: ScriptId::new(col::<Uuid>(row, "script_id")?),
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
+        number: u32::try_from(number)
+            .ok()
+            .and_then(|n| VersionNumber::new(n).ok())
+            .ok_or_else(|| corrupt("script version number"))?,
+        language: language_of(row)?,
+        status: status
+            .parse::<VersionStatus>()
+            .map_err(|_| corrupt("script version status"))?,
+        policy,
+        retention,
+        content_digest: digest_of(&content, "script content digest")?,
+        build_key: optional_digest(row, "build_key")?,
+        artifact: optional_digest(row, "artifact_digest")?,
+        key_id: col(row, "key_id")?,
+        toolchain: col(row, "toolchain")?,
         failure: col(row, "failure")?,
         created_by: col(row, "created_by")?,
         created_at: col(row, "created_at")?,
@@ -328,14 +405,14 @@ async fn held_build_in(
     let row = if lock {
         sqlx::query(
             "SELECT j.id AS job_id, j.version_id, j.attempts, j.status AS job_status, \
-                    j.lease_expires_at \
+                    j.lease_expires_at, j.build_key \
              FROM script_build_jobs j \
              WHERE j.tenant_id = $1 AND j.id = $2 AND j.lease_token_hash = $3 FOR UPDATE",
         )
     } else {
         sqlx::query(
             "SELECT j.id AS job_id, j.version_id, j.attempts, j.status AS job_status, \
-                    j.lease_expires_at \
+                    j.lease_expires_at, j.build_key \
              FROM script_build_jobs j \
              WHERE j.tenant_id = $1 AND j.id = $2 AND j.lease_token_hash = $3",
         )
@@ -351,6 +428,7 @@ async fn held_build_in(
     let attempts: i32 = col(&row, "attempts")?;
     let status: String = col(&row, "job_status")?;
     let expires: Option<OffsetDateTime> = col(&row, "lease_expires_at")?;
+    let build_key: Option<String> = col(&row, "build_key")?;
     let version = sqlx::query(select_versions!("WHERE tenant_id = $1 AND id = $2"))
         .bind(tenant.as_uuid())
         .bind(version_id)
@@ -364,6 +442,9 @@ async fn held_build_in(
                 version_id: ScriptVersionId::new(version_id),
                 attempts: u32::try_from(attempts).unwrap_or(0),
                 lease_expires_at: expires.unwrap_or(OffsetDateTime::UNIX_EPOCH),
+                build_key: build_key
+                    .map(|text| digest_of(&text, "build key"))
+                    .transpose()?,
             },
             version: version_of(&version)?,
         },
@@ -459,11 +540,15 @@ impl ScriptStore for PgRunStore {
         namespace: NamespaceId,
         after: Option<&str>,
         limit: u32,
-    ) -> Result<Vec<ScriptRecord>, StoreError> {
-        sqlx::query(select_scripts!(
-            "WHERE tenant_id = $1 AND namespace_id = $2 AND ($3::text IS NULL OR name > $3) \
-             ORDER BY name LIMIT $4"
-        ))
+    ) -> Result<Vec<ScriptSummary>, StoreError> {
+        sqlx::query(
+            "SELECT id, tenant_id, namespace_id, name, language, policy, retention_days, revision, \
+                    latest_version, octet_length(source)::bigint AS source_bytes, created_by, \
+                    created_at, updated_at \
+             FROM scripts \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND ($3::text IS NULL OR name > $3) \
+             ORDER BY name LIMIT $4",
+        )
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(after)
@@ -472,7 +557,7 @@ impl ScriptStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(script_of)
+        .map(script_summary_of)
         .collect()
     }
 
@@ -642,6 +727,12 @@ impl ScriptStore for PgRunStore {
                 return Ok(Some((existing, false)));
             }
         }
+        // Versions are never deleted, so what one script can keep is bounded here.
+        if latest.unwrap_or(0) >= sagat_domain::scripts::MAX_VERSIONS_PER_SCRIPT {
+            return Err(StoreError::QuotaExceeded {
+                what: "versions of one script",
+            });
+        }
         lock_script_jobs(&mut tx, version.tenant_id, version.namespace_id).await?;
         ensure_room_for_script_job(&mut tx, version.tenant_id, version.namespace_id, jobs_limit)
             .await?;
@@ -712,11 +803,15 @@ impl ScriptStore for PgRunStore {
         script: ScriptId,
         before: Option<VersionNumber>,
         limit: u32,
-    ) -> Result<Vec<VersionRecord>, StoreError> {
-        sqlx::query(select_versions!(
-            "WHERE tenant_id = $1 AND namespace_id = $2 AND script_id = $3 \
-               AND ($4::int IS NULL OR number < $4) ORDER BY number DESC LIMIT $5"
-        ))
+    ) -> Result<Vec<VersionSummary>, StoreError> {
+        sqlx::query(
+            "SELECT id, tenant_id, namespace_id, script_id, number, language, status, policy, \
+                    retention_days, content_digest, build_key, artifact_digest, key_id, toolchain, \
+                    failure, created_by, created_at, built_at \
+             FROM script_versions \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND script_id = $3 \
+               AND ($4::int IS NULL OR number < $4) ORDER BY number DESC LIMIT $5",
+        )
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(script.as_uuid())
@@ -726,7 +821,7 @@ impl ScriptStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(version_of)
+        .map(version_summary_of)
         .collect()
     }
 
@@ -758,6 +853,19 @@ impl ScriptStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
+        // The script row first, then the namespace's lock: publishing a version holds the row
+        // while it waits for the lock, and the insert below needs the row (its foreign key). Taken
+        // the other way round the two would wait for each other.
+        sqlx::query(
+            "SELECT 1 FROM scripts WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 \
+             FOR KEY SHARE",
+        )
+        .bind(run.tenant_id.as_uuid())
+        .bind(run.namespace_id.as_uuid())
+        .bind(run.script_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
         lock_script_jobs(&mut tx, run.tenant_id, run.namespace_id).await?;
         // Test runs nobody took in time are failed now, so they do not hold a place in the quota.
         sqlx::query(
@@ -796,6 +904,22 @@ impl ScriptStore for PgRunStore {
         .bind(&run.created_by)
         .bind(run.created_at)
         .bind(seconds(TEST_QUEUE_WAIT))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        // The oldest finished runs of the script go beyond what is kept, whatever their retention:
+        // an author who tests in a loop does not make the table grow.
+        sqlx::query(
+            "DELETE FROM script_test_runs \
+             WHERE tenant_id = $1 AND script_id = $2 AND status IN ('SUCCEEDED', 'FAILED') \
+               AND id NOT IN ( \
+                   SELECT id FROM script_test_runs \
+                   WHERE tenant_id = $1 AND script_id = $2 AND status IN ('SUCCEEDED', 'FAILED') \
+                   ORDER BY id DESC LIMIT $3)",
+        )
+        .bind(run.tenant_id.as_uuid())
+        .bind(run.script_id.as_uuid())
+        .bind(sagat_domain::scripts::MAX_TEST_RUNS_KEPT)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -991,7 +1115,8 @@ impl RunnerStore for PgRunStore {
         let Some(row) = sqlx::query(
             "SELECT id, version_id FROM script_build_jobs \
              WHERE tenant_id = $1 AND language = ANY($2) \
-               AND (status = 'QUEUED' OR (status = 'RUNNING' AND lease_expires_at < $3)) \
+               AND ((status = 'QUEUED' AND (not_before IS NULL OR not_before <= $3)) \
+                    OR (status = 'RUNNING' AND lease_expires_at < $3)) \
              ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
         )
         .bind(tenant.as_uuid())
@@ -1007,7 +1132,8 @@ impl RunnerStore for PgRunStore {
         let id: Uuid = col(&row, "id")?;
         sqlx::query(
             "UPDATE script_build_jobs SET status = 'RUNNING', attempts = attempts + 1, \
-                 lease_token_hash = $3, lease_expires_at = $4 + make_interval(secs => $5) \
+                 lease_token_hash = $3, lease_expires_at = $4 + make_interval(secs => $5), \
+                 build_key = NULL, not_before = NULL \
              WHERE tenant_id = $1 AND id = $2",
         )
         .bind(tenant.as_uuid())
@@ -1021,6 +1147,27 @@ impl RunnerStore for PgRunStore {
         let held = held_build_in(&mut tx, tenant, BuildJobId::new(id), token_hash, false).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(held.map(|(claimed, _)| claimed))
+    }
+
+    async fn set_build_key(
+        &self,
+        tenant: TenantId,
+        job: BuildJobId,
+        token_hash: &[u8],
+        key: &Digest,
+    ) -> Result<bool, StoreError> {
+        let updated = sqlx::query(
+            "UPDATE script_build_jobs SET build_key = $4 \
+             WHERE tenant_id = $1 AND id = $2 AND lease_token_hash = $3 AND status = 'RUNNING'",
+        )
+        .bind(tenant.as_uuid())
+        .bind(job.as_uuid())
+        .bind(token_hash)
+        .bind(key.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(updated.rows_affected() == 1)
     }
 
     async fn held_build(
@@ -1230,13 +1377,17 @@ impl RunnerStore for PgRunStore {
         }
         if retry && claimed.job.attempts < MAX_BUILD_ATTEMPTS {
             // Another runner (or this one, later) takes it again.
+            // Not at once: an engine that is restarting would use up every attempt in a moment.
             sqlx::query(
                 "UPDATE script_build_jobs SET status = 'QUEUED', lease_token_hash = NULL, \
-                     lease_expires_at = NULL \
+                     lease_expires_at = NULL, \
+                     not_before = $3 + make_interval(secs => $4) \
                  WHERE tenant_id = $1 AND id = $2",
             )
             .bind(tenant.as_uuid())
             .bind(job.as_uuid())
+            .bind(now)
+            .bind(seconds(BUILD_RETRY_BACKOFF * claimed.job.attempts))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1356,6 +1507,22 @@ impl RunnerStore for PgRunStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(store_error)
+    }
+
+    async fn test_script(
+        &self,
+        tenant: TenantId,
+        run: TestRunId,
+    ) -> Result<Option<ScriptId>, StoreError> {
+        let found: Option<Uuid> = sqlx::query_scalar(
+            "SELECT script_id FROM script_test_runs WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(found.map(ScriptId::new))
     }
 
     async fn finish_test(

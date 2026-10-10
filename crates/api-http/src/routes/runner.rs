@@ -198,9 +198,8 @@ pub async fn complete_test<B: Governance>(
     ApiJson(body): ApiJson<CompleteTestBody>,
 ) -> Result<StatusCode, ApiError> {
     let result = match (&body.result, &body.failure) {
-        (Some(value), None) => {
-            Ok(serde_json::to_vec(value).map_err(|_| invalid("the result is JSON"))?)
-        }
+        (Some(value), None) => Ok(serde_json::to_vec(&value.clone().unwrap_or_default())
+            .map_err(|_| invalid("the result is JSON"))?),
         (None, Some(code)) => Err(failure(code)?),
         _ => {
             return Err(invalid(

@@ -103,8 +103,39 @@ async fn a_script_that_throws_fails_with_its_message_and_the_run_is_cleaned_up()
     assert_eq!(result_of(&outcome), "FAILED SCRIPT_ERROR");
     assert!(outcome.log.contains("boom"), "{}", outcome.log);
     assert_eq!(
-        sandbox.sweep(std::time::Duration::ZERO).await,
+        sandbox.leftovers().await,
         0,
         "nothing left behind by the run"
+    );
+}
+
+#[tokio::test]
+async fn every_way_of_exporting_the_entry_point_the_runner_loads_builds_and_a_comment_is_not_one() {
+    let sandbox = sandbox();
+    for source in [
+        "export const run = async (input: unknown) => ({ via: 'const' });\n",
+        "function main() { return { via: 'list' }; }\nexport { main as default };\n",
+        "export async function run() { return { via: 'function' }; }\n",
+    ] {
+        let outcome = run(&sandbox, Language::TypeScript, source, "{}").await;
+        assert!(
+            result_of(&outcome).contains(r#""via":"#),
+            "{source}: {} / {}",
+            result_of(&outcome),
+            outcome.log
+        );
+    }
+    let only_a_comment = build(
+        &sandbox,
+        Language::TypeScript,
+        "// export default function () {}\nconst x = 1;\n",
+    )
+    .await;
+    assert!(
+        matches!(
+            only_a_comment,
+            Err(sagat_application::sandbox::BuildFailure::Rejected(_))
+        ),
+        "{only_a_comment:?}"
     );
 }

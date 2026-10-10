@@ -83,6 +83,29 @@ impl ScriptHost {
     }
 }
 
+/// Whether a script may set a header on a request it asks the runner to make. The allowlist is by
+/// the host of the URL, so a `Host` the script chose would route the request inside whatever answers
+/// at an allowed address; the framing and connection headers belong to the client that sends it.
+fn script_may_set(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    !(matches!(
+        name.as_str(),
+        "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "upgrade"
+            | "te"
+            | "trailer"
+            | "keep-alive"
+            | "expect"
+            | "forwarded"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-proto"
+    ) || name.starts_with("proxy-"))
+}
+
 impl HostCalls for ScriptHost {
     async fn fetch(&self, request: HttpRequest) -> Result<HttpReply, Refusal> {
         let Some(client) = &self.egress else {
@@ -95,7 +118,11 @@ impl HostCalls for ScriptHost {
                 EgressRequest {
                     method,
                     url: request.url,
-                    headers: request.headers,
+                    headers: request
+                        .headers
+                        .into_iter()
+                        .filter(|(name, _)| script_may_set(name))
+                        .collect(),
                     body: request.body,
                 },
                 ResponseBody::Keep(MAX_RESPONSE_BYTES),
@@ -128,6 +155,32 @@ impl HostCalls for ScriptHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_script_cannot_choose_where_an_allowed_request_is_routed_or_how_it_is_framed() {
+        for name in [
+            "Host",
+            "host",
+            "Content-Length",
+            "Transfer-Encoding",
+            "Connection",
+            "Upgrade",
+            "TE",
+            "Proxy-Authorization",
+            "X-Forwarded-Host",
+        ] {
+            assert!(!script_may_set(name), "{name}");
+        }
+        for name in [
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "Idempotency-Key",
+            "X-Api-Key",
+        ] {
+            assert!(script_may_set(name), "{name}");
+        }
+    }
 
     #[tokio::test]
     async fn a_closed_host_refuses_everything() {

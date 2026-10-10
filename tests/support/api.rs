@@ -302,6 +302,7 @@ pub async fn start_with(options: Options) -> TestApi {
             SystemClock,
             SystemEntropy,
             signer,
+            sagat_infra_schema::bundle::Bundles,
             options.script_ceiling,
         ),
     );

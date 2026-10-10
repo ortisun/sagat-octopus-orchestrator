@@ -425,6 +425,7 @@ const fn script_reason(error: ScriptError) -> &'static str {
         ScriptError::UnknownLanguage => "LANGUAGE",
         ScriptError::InvalidDigest | ScriptError::InvalidVersion => "IDENTIFIER",
         ScriptError::NotATrustedArtifact => "UNTRUSTED_ARTIFACT",
+        ScriptError::BundleMismatch => "BUNDLE_MISMATCH",
     }
 }
 

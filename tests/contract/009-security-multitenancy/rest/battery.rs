@@ -62,6 +62,26 @@ fn body_of(operation: &str) -> Option<Value> {
             "settings": {"servers": ["attacker.example.net:9092"], "topic": "orders", "startFrom": "earliest"}
         }),
         "receiveSignedWebhook" => json!({"attacker": true}),
+        // Feature 005: what an attacker would send to write, try, build or report on the victim's
+        // scripts. (The body is read before the handler looks at the path, so an operation that
+        // takes one needs a valid one for the answer to be the 404 it is meant to be.)
+        "createScript" => {
+            json!({"name": "attacker-script", "language": "typescript", "source": "export default () => 1"})
+        }
+        "updateScript" => json!({"revision": 1, "source": "export default () => 'attacker'"}),
+        "createScriptTestRun" => json!({"input": {"attacker": true}}),
+        "claimScriptBuild" => json!({"toolchains": {"typescript": "node@sha256:aa;shim=1"}}),
+        "claimScriptTestRun" => json!({"languages": ["typescript"]}),
+        "heartbeatScriptBuild" | "heartbeatScriptTestRun" => json!({"leaseToken": "0".repeat(64)}),
+        "completeScriptBuild" => {
+            json!({"leaseToken": "0".repeat(64), "outcome": "failed", "kind": "rejected", "message": "attacker"})
+        }
+        "completeScriptTestRun" => {
+            json!({"leaseToken": "0".repeat(64), "result": {"attacker": true}})
+        }
+        "recordScriptExecution" => {
+            json!({"namespaceId": "{namespaceId}", "digest": format!("sha256:{}", "ab".repeat(32)), "status": "FAILED", "denied": ["attacker"]})
+        }
         _ => return None,
     })
 }
@@ -108,7 +128,10 @@ impl Victim {
 
 /// The parameters that name a resource of a tenant (the others are names and enumerations).
 fn is_resource_id(name: &str) -> bool {
-    matches!(name, "workspaceId" | "namespaceId" | "workflowId" | "runId")
+    matches!(
+        name,
+        "workspaceId" | "namespaceId" | "workflowId" | "runId" | "scriptId" | "executionId"
+    )
 }
 
 async fn send(
@@ -157,6 +180,15 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
         format!("/namespaces/{ns}/secrets"),
         format!("/namespaces/{ns}/secrets/stripe-key/access"),
         format!("/namespaces/{ns}/egress-policy"),
+        format!("/namespaces/{ns}/scripts"),
+        format!(
+            "/namespaces/{ns}/scripts/{}/versions",
+            victim.ids["scriptId"]
+        ),
+        format!(
+            "/namespaces/{ns}/scripts/{}/test-runs",
+            victim.ids["scriptId"]
+        ),
     ] {
         let (status, body) = send(api, "GET", &path, ("alice", "acme"), None).await;
         assert_eq!(status, 200, "{path}: {body}");
@@ -260,8 +292,44 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         );
     }
 
+    // Scripts of every kind the victim can hold: a draft, a version being built, a test run.
+    let (status, script) = send(
+        &api,
+        "POST",
+        &format!("/namespaces/{ns}/scripts"),
+        alice,
+        Some(&json!({"name": "victim-script", "language": "typescript", "source": "export default () => 'victim-source'"})),
+    )
+    .await;
+    assert_eq!(status, 201, "{script}");
+    let script = script["id"].as_str().expect("script id").to_owned();
+    let (status, version) = send(
+        &api,
+        "POST",
+        &format!("/namespaces/{ns}/scripts/{script}/versions"),
+        alice,
+        None,
+    )
+    .await;
+    assert_eq!(status, 202, "{version}");
+    let (status, test_run) = send(
+        &api,
+        "POST",
+        &format!("/namespaces/{ns}/scripts/{script}/test-runs"),
+        alice,
+        Some(&json!({"input": {"victim": true}})),
+    )
+    .await;
+    assert_eq!(status, 202, "{test_run}");
+    let test_run = test_run["id"].as_str().expect("test run id").to_owned();
+
     let victim = Victim {
         ids: BTreeMap::from([
+            ("scriptId", script.clone()),
+            ("testRunId", test_run.clone()),
+            ("executionId", Uuid::now_v7().to_string()),
+            ("jobId", Uuid::now_v7().to_string()),
+            ("digest", format!("sha256:{}", "ab".repeat(32))),
             ("workspaceId", ws.clone()),
             ("namespaceId", ns.clone()),
             ("workflowId", wf.clone()),
@@ -274,10 +342,10 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ]),
     };
     let before = snapshot(&api, &victim).await;
-    let victim_ids: Vec<&String> = vec![&ws, &ns, &wf, &run];
+    let victim_ids: Vec<&String> = vec![&ws, &ns, &wf, &run, &script, &test_run];
 
     // Operations nobody has built yet are listed by name, so they cannot be forgotten later.
-    let not_built: BTreeSet<&str> = ["publishEvent", "receiveSignedWebhook", "buildInlineScript"]
+    let not_built: BTreeSet<&str> = ["publishEvent", "receiveSignedWebhook"]
         .into_iter()
         .collect();
     let bob = ("bob", "globex");
@@ -301,8 +369,14 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             .any(is_resource_id)
             || operation == "startRun";
         let body = body_of(&operation).map(|b| {
-            // A body that names the victim's workflow (startRun) names it by its real id.
-            serde_json::from_str(&b.to_string().replace("{workflowId}", &wf)).expect("json")
+            // A body that names the victim's workflow (startRun) or namespace (a report from a
+            // runner) names it by its real id.
+            serde_json::from_str(
+                &b.to_string()
+                    .replace("{workflowId}", &wf)
+                    .replace("{namespaceId}", &ns),
+            )
+            .expect("json")
         });
 
         let real = victim.fill(&template, true);
@@ -316,7 +390,8 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             let fake_body = body.as_ref().map(|b| {
                 serde_json::from_str(
                     &b.to_string()
-                        .replace(wf.as_str(), &Uuid::now_v7().to_string()),
+                        .replace(wf.as_str(), &Uuid::now_v7().to_string())
+                        .replace(ns.as_str(), &Uuid::now_v7().to_string()),
                 )
                 .expect("json")
             });
@@ -347,6 +422,8 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "victim-secret-value",
                 "partner.example.com",
                 "worker-7",
+                "victim-script",
+                "victim-source",
             ] {
                 assert!(
                     !text.contains(needle),

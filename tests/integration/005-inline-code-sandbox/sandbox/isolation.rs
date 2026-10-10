@@ -211,7 +211,7 @@ async fn a_fork_bomb_cannot_exceed_the_process_limit_and_does_not_hurt_the_host(
         outcome.log
     );
     assert_eq!(
-        sandbox.sweep(Duration::ZERO).await,
+        sandbox.leftovers().await,
         0,
         "the children went with the container"
     );
@@ -329,4 +329,131 @@ async fn a_script_in_a_loop_cannot_make_its_supervisor_work_without_end() {
         ],
         "refusals are noted once each"
     );
+}
+
+/// A run must end in about its wall clock plus the time to take the container down, whatever the
+/// script does with the channel; a supervisor that hangs here holds a runner slot for ever.
+async fn ends_in(limit: Duration, wall: Duration, source: &'static str) -> super::RunOutcome {
+    let sandbox = sandbox();
+    let began = std::time::Instant::now();
+    let outcome = tokio::time::timeout(
+        limit,
+        run_with(
+            &sandbox,
+            Language::Python,
+            source,
+            "{}",
+            quick(wall, 128),
+            &Host::default(),
+        ),
+    )
+    .await
+    .expect("the run ended: a script cannot hold its supervisor");
+    assert!(began.elapsed() < limit, "stopped in {:?}", began.elapsed());
+    outcome
+}
+
+#[tokio::test]
+async fn a_script_that_never_reads_its_replies_cannot_hold_its_supervisor() {
+    // 1 200 000 asks, none of them answered by reading, then it sleeps: the replies fill every buffer
+    // between the two, and a supervisor that waits for room to write waits for ever.
+    let outcome = ends_in(
+        Duration::from_secs(45),
+        Duration::from_secs(4),
+        "import os, time\ndef run(input, octopus):\n    line = b'{\"op\":\"fetch\",\"id\":1,\"url\":\"x\"}\\n'\n    for _ in range(2400):\n        os.write(1, line * 500)\n    time.sleep(3600)\n",
+    )
+    .await;
+    assert!(outcome.result.is_err(), "{}", result_of(&outcome));
+}
+
+#[tokio::test]
+async fn a_script_that_floods_the_channel_with_short_lines_is_stopped() {
+    let outcome = ends_in(
+        Duration::from_secs(45),
+        Duration::from_secs(20),
+        "import os\ndef run(input, octopus):\n    while True:\n        os.write(1, b'x\\n' * 100000)\n",
+    )
+    .await;
+    assert_eq!(
+        result_of(&outcome),
+        "FAILED SCRIPT_OUTPUT_LIMIT",
+        "{}",
+        outcome.log
+    );
+}
+
+#[tokio::test]
+async fn what_a_script_is_refused_is_kept_short_and_without_credentials() {
+    let sandbox = sandbox();
+    let outcome = run_with(
+        &sandbox,
+        Language::Python,
+        "def run(input, octopus):\n    for i in range(5):\n        try:\n            octopus.secret(str(i) + 'n' * 100000)\n        except Exception:\n            pass\n    try:\n        octopus.fetch('https://svc:hunter2pw@api.example.test/x?token=abc')\n    except Exception:\n        pass\n    return 1\n",
+        "{}",
+        sagat_domain::scripts::Policy::default(),
+        &Host::default(),
+    )
+    .await;
+    assert_eq!(result_of(&outcome), "1", "{}", outcome.log);
+    assert!(
+        outcome.denied.iter().all(|d| d.chars().count() <= 200),
+        "{:?}",
+        outcome.denied.iter().map(String::len).collect::<Vec<_>>()
+    );
+    assert!(
+        outcome
+            .denied
+            .contains(&"fetch https://api.example.test".to_owned()),
+        "{:?}",
+        outcome.denied
+    );
+    let all = outcome.denied.join("\n");
+    assert!(
+        !all.contains("hunter2pw") && !all.contains("token=abc"),
+        "{all}"
+    );
+}
+
+#[tokio::test]
+async fn a_secret_with_quotes_in_it_is_kept_out_of_a_result_that_stays_valid_json() {
+    let sandbox = sandbox();
+    let host = Host {
+        known_secrets: vec![("db", "pa\"ss\\word-0123456789")],
+        ..Host::default()
+    };
+    let outcome = run_with(
+        &sandbox,
+        Language::Python,
+        "def run(input, octopus):\n    s = octopus.secret('db')\n    return {'echo': s, 'n': 7, 'list': [s]}\n",
+        "{}",
+        sagat_domain::scripts::Policy::default(),
+        &host,
+    )
+    .await;
+    let text = result_of(&outcome);
+    assert!(!text.contains("word-0123456789"), "{text}");
+    let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    assert_eq!(parsed["echo"], "[REDACTED]");
+    assert_eq!(parsed["n"], 7);
+}
+
+#[tokio::test]
+async fn a_script_that_returns_nothing_returns_null_and_an_async_python_function_is_awaited() {
+    let sandbox = sandbox();
+    let nothing = run(
+        &sandbox,
+        Language::Python,
+        "def run(input, octopus):\n    pass\n",
+        "{}",
+    )
+    .await;
+    assert_eq!(result_of(&nothing), "null", "{}", nothing.log);
+    let awaited = run(
+        &sandbox,
+        Language::Python,
+        "import asyncio\nasync def run(input, octopus):\n    await asyncio.sleep(0)\n    return {'ok': True}\n",
+        "{}",
+    )
+    .await;
+    assert_eq!(result_of(&awaited), r#"{"ok":true}"#, "{}", awaited.log);
 }

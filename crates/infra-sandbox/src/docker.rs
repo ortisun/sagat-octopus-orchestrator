@@ -5,14 +5,15 @@
 //! not executable, every Linux capability dropped, `no-new-privileges`, the engine's default seccomp
 //! profile, an unprivileged user, a private PID and IPC namespace, a memory limit with swap off, a
 //! CPU quota and a CPU-time limit, a limit on processes, on file size and on open files, no log
-//! driver, no mounts and nothing from the host. The code gets in as a tar archive before the
-//! container starts and gets out as one line on standard output.
+//! driver, no mounts and nothing from the host. The code gets in as the first message on the
+//! container's standard input and the result gets out as one line on standard output.
 //!
 //! This is as strong as the container runtime under it (`runc` here; a kernel bug or a runtime bug
 //! is an escape). A stronger runtime (gVisor, Kata) is a matter of the engine's configuration, not
 //! of this code, and is the recommended setting for a shared deployment.
 
 use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -31,7 +32,7 @@ use sagat_application::sandbox::{
 use sagat_domain::scripts::{Failure, Language, Limits, Policy, redact};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
 use crate::lockfile;
 use crate::protocol::{self, Message};
@@ -55,6 +56,9 @@ impl Default for Images {
 }
 
 const LABEL: &str = "sagat.sandbox";
+/// Which sandbox (which `DockerSandbox` value) made a container: lets one ask what *it* left behind
+/// without counting what another one is running.
+const OWNER_LABEL: &str = "sagat.sandbox.owner";
 
 /// Logs which step with the container engine failed and why, and turns the failure into `()`: what
 /// the engine said is for the operator, never for the author of the script.
@@ -76,12 +80,33 @@ const MAX_DENIED: usize = 32;
 /// error reach the supervisor by separate paths, so the end of one can arrive before the end of the
 /// other. The shims exit right after their last message, so the stream normally ends at once.
 const DRAIN: Duration = Duration::from_millis(750);
+/// Lines a script may write on the channel in one run, whatever they say: past the host calls it is
+/// answered, the rest is noise, and a script that keeps writing is stopped instead of read for ever.
+const MAX_CHANNEL_LINES: usize = MAX_HOST_CALLS * 4;
+/// Time a run is given beyond its wall clock for what is not the script's: starting the container
+/// and reading it back. Nothing the engine does is allowed to hold a runner longer than this.
+const SETUP_GRACE: Duration = Duration::from_secs(60);
+/// The longest any one call to the container engine is waited for. An engine that stops answering
+/// (it can: a daemon wedged on one container) must cost a run this much, not a runner for ever.
+/// Not exercised against a wedged engine in the test suite: that needs one (G117).
+const ENGINE_CALL: Duration = Duration::from_secs(20);
+
+/// `future`, unless the engine takes longer than [`ENGINE_CALL`] to answer.
+async fn within<T>(future: impl std::future::Future<Output = T>) -> Option<T> {
+    tokio::time::timeout(ENGINE_CALL, future).await.ok()
+}
+/// What is kept of one refusal. A script names what it asks for and could name it at any length.
+const MAX_DENIED_LEN: usize = 200;
+/// Standard error is read this much past what is kept so a secret on the edge of the cut is still
+/// whole when it is looked for; the cut is made after.
+const LOG_REDACTION_MARGIN: usize = 8 * 1024;
 
 /// The container engine, as a sandbox.
 pub struct DockerSandbox {
     docker: Docker,
     images: Images,
     pulled: Mutex<HashSet<String>>,
+    owner: String,
 }
 
 impl std::fmt::Debug for DockerSandbox {
@@ -118,6 +143,21 @@ struct Job {
     limits: Limits,
 }
 
+/// The write side of the channel to a script.
+type ToScript = Pin<Box<dyn AsyncWrite + Send>>;
+
+/// Tells the script something, unless it takes longer than the run has: a script that stopped
+/// reading its replies would otherwise fill the pipe and hold its supervisor, and the runner slot,
+/// for ever. `false` means the run is over.
+async fn send(input: &mut ToScript, bytes: &[u8], deadline: tokio::time::Instant) -> bool {
+    let written = tokio::time::timeout_at(deadline, async {
+        input.write_all(bytes).await?;
+        input.flush().await
+    })
+    .await;
+    matches!(written, Ok(Ok(())))
+}
+
 impl DockerSandbox {
     /// Connects to the container engine the environment names (the local socket by default).
     ///
@@ -128,6 +168,7 @@ impl DockerSandbox {
             docker: Docker::connect_with_local_defaults()?,
             images,
             pulled: Mutex::new(HashSet::new()),
+            owner: uuid::Uuid::now_v7().to_string(),
         })
     }
 
@@ -143,14 +184,21 @@ impl DockerSandbox {
         if let Ok(found) = self.docker.inspect_image(reference).await {
             return found.id.ok_or(());
         }
-        let (name, tag) = reference
-            .rsplit_once(':')
-            .filter(|(_, t)| !t.contains('/'))
-            .unwrap_or((reference, "latest"));
-        let options = CreateImageOptionsBuilder::default()
-            .from_image(name)
-            .tag(tag)
-            .build();
+        let options = if reference.contains('@') {
+            // `name@sha256:<hex>`: the digest is the whole reference, there is no tag to split off.
+            CreateImageOptionsBuilder::default()
+                .from_image(reference)
+                .build()
+        } else {
+            let (name, tag) = reference
+                .rsplit_once(':')
+                .filter(|(_, t)| !t.contains('/'))
+                .unwrap_or((reference, "latest"));
+            CreateImageOptionsBuilder::default()
+                .from_image(name)
+                .tag(tag)
+                .build()
+        };
         let mut pull = self.docker.create_image(Some(options), None, None);
         while let Some(progress) = pull.next().await {
             if let Err(error) = progress {
@@ -170,6 +218,24 @@ impl DockerSandbox {
             .ok_or(())
     }
 
+    /// Containers this sandbox made that still exist, running or not: what a run that cleaned up
+    /// after itself leaves is none.
+    pub async fn leftovers(&self) -> usize {
+        use bollard::query_parameters::ListContainersOptionsBuilder;
+        let filters = HashMap::from([(
+            "label".to_owned(),
+            vec![format!("{OWNER_LABEL}={}", self.owner)],
+        )]);
+        let options = ListContainersOptionsBuilder::default()
+            .all(true)
+            .filters(&filters)
+            .build();
+        within(self.docker.list_containers(Some(options)))
+            .await
+            .and_then(Result::ok)
+            .map_or(0, |found| found.len())
+    }
+
     /// Removes the sandboxes older than `age` that something left behind (a supervisor that died
     /// mid-run): every container this crate makes carries a label.
     pub async fn sweep(&self, age: Duration) -> usize {
@@ -179,7 +245,7 @@ impl DockerSandbox {
             .all(true)
             .filters(&filters)
             .build();
-        let Ok(found) = self.docker.list_containers(Some(options)).await else {
+        let Some(Ok(found)) = within(self.docker.list_containers(Some(options))).await else {
             return 0;
         };
         let now = std::time::SystemTime::now()
@@ -203,13 +269,12 @@ impl DockerSandbox {
             .force(true)
             .v(true)
             .build();
-        self.docker
-            .remove_container(name, Some(options))
+        within(self.docker.remove_container(name, Some(options)))
             .await
-            .is_ok()
+            .is_some_and(|removed| removed.is_ok())
     }
 
-    fn config(job: &Job) -> ContainerCreateBody {
+    fn config(job: &Job, owner: &str) -> ContainerCreateBody {
         let limits = &job.limits;
         let memory = i64::try_from(limits.memory_bytes()).unwrap_or(i64::MAX);
         let scratch = limits.scratch_bytes();
@@ -228,7 +293,10 @@ impl DockerSandbox {
                 "LANG=C.UTF-8".to_owned(),
                 "PYTHONDONTWRITEBYTECODE=1".to_owned(),
             ]),
-            labels: Some(HashMap::from([(LABEL.to_owned(), "1".to_owned())])),
+            labels: Some(HashMap::from([
+                (LABEL.to_owned(), "1".to_owned()),
+                (OWNER_LABEL.to_owned(), owner.to_owned()),
+            ])),
             network_disabled: Some(true),
             open_stdin: Some(true),
             stdin_once: Some(true),
@@ -282,22 +350,42 @@ impl DockerSandbox {
         let began = Instant::now();
         let mut driven = Driven::default();
         let name = format!("sagat-sbx-{}", uuid::Uuid::now_v7());
-        let create = CreateContainerOptionsBuilder::default().name(&name).build();
-        if let Err(error) = self
-            .docker
-            .create_container(Some(create), Self::config(&job))
-            .await
-        {
-            failed_at("create")(error);
-            driven.unavailable = true;
-            return driven;
-        }
         // If this future is dropped (the step was cancelled, the runner is stopping) the container
-        // is still removed, in the background: a script never outlives the call that ran it.
+        // is still removed, in the background: a script never outlives the call that ran it. The
+        // guard exists before the container does, so one made after the engine was given up on is
+        // removed too.
         let guard = Removal::new(self.docker.clone(), name.clone());
-        let outcome = self
-            .drive_created(&name, &job, host, began, &mut driven)
-            .await;
+        let create = CreateContainerOptionsBuilder::default().name(&name).build();
+        match within(
+            self.docker
+                .create_container(Some(create), Self::config(&job, &self.owner)),
+        )
+        .await
+        {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => {
+                failed_at("create")(error);
+                driven.unavailable = true;
+                return driven;
+            }
+            None => {
+                failed_at("create")("the engine did not answer in time");
+                driven.unavailable = true;
+                return driven;
+            }
+        }
+        let outcome = match tokio::time::timeout(
+            job.limits.wall() + SETUP_GRACE,
+            self.drive_created(&name, &job, host, began, &mut driven),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                driven.timed_out = driven.message.is_none();
+                Ok(())
+            }
+        };
         if outcome.is_err() {
             driven.unavailable = true;
         }
@@ -331,17 +419,16 @@ impl DockerSandbox {
             .await
             .map_err(failed_at("start"))?;
         let sampler = self.sample_memory(name);
-        attached
-            .input
-            .write_all(&job.first_message)
-            .await
-            .map_err(failed_at("send"))?;
-        attached.input.flush().await.map_err(failed_at("send"))?;
-
         let limits = job.limits;
         let deadline = tokio::time::Instant::now() + limits.wall();
+        if !send(&mut attached.input, &job.first_message, deadline).await {
+            failed_at("send")("the script did not take its first message");
+            return Err(());
+        }
         let keep = limits.output_bytes();
+        let capacity = keep.saturating_add(LOG_REDACTION_MARGIN);
         let mut line: Vec<u8> = Vec::new();
+        let mut lines = 0_usize;
         let mut secrets_handed: Vec<String> = Vec::new();
         let mut stderr_seen = 0_usize;
         let mut host_calls = 0_usize;
@@ -359,7 +446,7 @@ impl DockerSandbox {
             };
             match chunk {
                 LogOutput::StdErr { message } => {
-                    let room = keep.saturating_sub(driven.log.len());
+                    let room = capacity.saturating_sub(driven.log.len());
                     driven
                         .log
                         .extend_from_slice(&message[..message.len().min(room)]);
@@ -368,7 +455,9 @@ impl DockerSandbox {
                     }
                     // Past what is kept the script is read a while longer and then stopped.
                     stderr_seen = stderr_seen.saturating_add(message.len());
-                    if driven.log_truncated && stderr_seen > keep.saturating_mul(LOG_FLOOD_FACTOR) {
+                    if driven.log_truncated
+                        && stderr_seen > capacity.saturating_mul(LOG_FLOOD_FACTOR)
+                    {
                         driven.flooded = true;
                         break;
                     }
@@ -387,16 +476,21 @@ impl DockerSandbox {
                         }
                         let parsed = protocol::parse(&line);
                         line.clear();
+                        lines += 1;
+                        if lines > MAX_CHANNEL_LINES {
+                            driven.flooded = true;
+                            break 'read;
+                        }
                         let Some(parsed) = parsed else { continue };
                         if let Message::Fetch { id, .. } | Message::Secret { id, .. } = &parsed {
                             host_calls += 1;
                             if host_calls > MAX_HOST_CALLS {
                                 deny(&mut driven.denied, "host calls over the limit".to_owned());
-                                let _ = attached
-                                    .input
-                                    .write_all(&protocol::refusal(*id, "denied"))
-                                    .await;
-                                let _ = attached.input.flush().await;
+                                let refusal = protocol::refusal(*id, "denied");
+                                if !send(&mut attached.input, &refusal, deadline).await {
+                                    driven.timed_out = driven.message.is_none();
+                                    break 'read;
+                                }
                                 continue;
                             }
                         }
@@ -409,8 +503,10 @@ impl DockerSandbox {
                                     self.serve_fetch(host, id, request, driven, deadline).await;
                                 match reply {
                                     Some(bytes) => {
-                                        let _ = attached.input.write_all(&bytes).await;
-                                        let _ = attached.input.flush().await;
+                                        if !send(&mut attached.input, &bytes, deadline).await {
+                                            driven.timed_out = true;
+                                            break 'read;
+                                        }
                                     }
                                     None => {
                                         driven.timed_out = true;
@@ -447,8 +543,10 @@ impl DockerSandbox {
                                         }
                                     },
                                 };
-                                let _ = attached.input.write_all(&reply).await;
-                                let _ = attached.input.flush().await;
+                                if !send(&mut attached.input, &reply, deadline).await {
+                                    driven.timed_out = true;
+                                    break 'read;
+                                }
                             }
                             done @ (Message::Result(_)
                             | Message::Error { .. }
@@ -467,17 +565,15 @@ impl DockerSandbox {
         }
         // The code has said what it had to say, or run out of time or room: end it, then see how.
         drop(attached);
-        let _ = self
-            .docker
-            .kill_container(
-                name,
-                None::<bollard::query_parameters::KillContainerOptions>,
-            )
-            .await;
+        let _ = within(self.docker.kill_container(
+            name,
+            None::<bollard::query_parameters::KillContainerOptions>,
+        ))
+        .await;
         driven.memory_peak = sampler.finish().await;
         let end = Instant::now() + KILL_GRACE;
         loop {
-            if let Ok(state) = self.docker.inspect_container(name, None).await {
+            if let Some(Ok(state)) = within(self.docker.inspect_container(name, None)).await {
                 let state = state.state.unwrap_or_default();
                 if state.running != Some(true) || Instant::now() >= end {
                     driven.exit_code = state.exit_code;
@@ -488,6 +584,11 @@ impl DockerSandbox {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // The CPU-time limit (SIGXCPU, 128 + 24) can end a burning script a moment before the wall
+        // clock does: it is the same limit, and says the same thing.
+        if driven.message.is_none() && driven.exit_code == Some(152) {
+            driven.timed_out = true;
         }
         driven.handed = secrets_handed;
         Ok(())
@@ -588,6 +689,7 @@ impl Sampler {
 
 /// Notes what a script was refused, once.
 fn deny(denied: &mut Vec<String>, what: String) {
+    let what: String = what.chars().take(MAX_DENIED_LEN).collect();
     if denied.len() < MAX_DENIED && !denied.contains(&what) {
         denied.push(what);
     }
@@ -596,12 +698,20 @@ fn deny(denied: &mut Vec<String>, what: String) {
 /// `scheme://host[:port]` of a URL: what may be recorded about a refused request. The path and the
 /// query can be the credential.
 fn destination(url: &str) -> String {
-    let end = url
-        .find("://")
-        .map(|at| at + 3)
-        .and_then(|from| url[from..].find(['/', '?', '#']).map(|rel| from + rel))
-        .unwrap_or(url.len());
-    url[..end.min(url.len())].chars().take(200).collect()
+    let Some(from) = url.find("://").map(|at| at + 3) else {
+        return url.chars().take(MAX_DENIED_LEN).collect();
+    };
+    let authority_end = url[from..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |rel| from + rel);
+    // `user:password@` is a credential too: only what follows the last `@` is the host.
+    let host_from = url[from..authority_end]
+        .rfind('@')
+        .map_or(from, |at| from + at + 1);
+    format!("{}{}", &url[..from], &url[host_from..authority_end])
+        .chars()
+        .take(MAX_DENIED_LEN)
+        .collect()
 }
 
 fn shim_version() -> String {
@@ -672,31 +782,7 @@ pub fn artifact_policy(artifact: &[u8]) -> Option<Policy> {
 }
 
 fn parse_artifact(bytes: &[u8], language: Language) -> Option<Vec<(String, String)>> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    if value.get("v")?.as_u64()? != 1 || value.get("language")?.as_str()? != language.as_str() {
-        return None;
-    }
-    let files = value.get("files")?.as_object()?;
-    if files.is_empty() || files.len() > 32 {
-        return None;
-    }
-    files
-        .iter()
-        .map(|(name, content)| {
-            let safe = !name.is_empty()
-                && name.len() <= 64
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-                && !name.starts_with('.');
-            safe.then(|| {
-                (
-                    name.clone(),
-                    content.as_str().unwrap_or_default().to_owned(),
-                )
-            })
-        })
-        .collect()
+    sagat_infra_schema::bundle::files(bytes, language)
 }
 
 impl Sandbox for DockerSandbox {
@@ -731,13 +817,20 @@ impl Sandbox for DockerSandbox {
             image,
             command: command.map(str::to_owned).to_vec(),
             first_message: protocol::build_message(request.source.as_str()),
-            limits: request.policy.limits,
+            // Reading a script takes a fraction of what running it may: a build gets at most the
+            // default limits, whatever the policy of the script allows it later.
+            limits: request.policy.within(&Policy::default()).limits,
         };
         let driven = self.drive::<NoHost>(job, None).await;
         if driven.unavailable {
             return Err(BuildFailure::Unavailable);
         }
-        let log = redact(&String::from_utf8_lossy(&driven.log), &[]);
+        let (log, _) = shown_log(
+            &driven.log,
+            &[],
+            request.policy.limits.output_bytes(),
+            driven.log_truncated,
+        );
         match driven.message {
             Some(Message::Built { entry, files }) => {
                 let artifact = artifact_json(
@@ -844,7 +937,9 @@ impl Sandbox for DockerSandbox {
 
         let mut hide: Vec<&str> = request.secrets_to_hide.iter().map(String::as_str).collect();
         hide.extend(driven.handed.iter().map(String::as_str));
-        let log = redact(&String::from_utf8_lossy(&driven.log), &hide);
+        let keep = request.policy.limits.output_bytes();
+        let (log, log_truncated) = shown_log(&driven.log, &hide, keep, driven.log_truncated);
+        let denied: Vec<String> = driven.denied.iter().map(|d| redact(d, &hide)).collect();
         let result = if driven.unavailable {
             Err(Failure::Unavailable)
         } else if driven.timed_out {
@@ -865,13 +960,11 @@ impl Sandbox for DockerSandbox {
                     {
                         Err(Failure::SchemaViolation)
                     } else {
-                        let shown = redact(&String::from_utf8_lossy(&bytes), &hide);
-                        if shown == String::from_utf8_lossy(&bytes) {
-                            Ok(bytes)
-                        } else {
-                            // A secret in the result is kept out of it, and the run says so.
-                            Ok(shown.into_bytes())
-                        }
+                        // A secret in the result is kept out of it. It is taken out of the strings of
+                        // the value, not of its text: a secret with a quote or a backslash in it is
+                        // written differently in the text, and the result stays valid JSON.
+                        let shown = redact_value(value, &hide);
+                        Ok(serde_json::to_vec(&shown).unwrap_or(bytes))
                     }
                 }
                 Some(Message::Error { message, stack }) => {
@@ -886,9 +979,9 @@ impl Sandbox for DockerSandbox {
                         } else {
                             Failure::Error
                         }),
-                        log: join_log(log, &text, request.policy.limits.output_bytes()),
-                        log_truncated: driven.log_truncated,
-                        denied: driven.denied,
+                        log: join_log(log, &text, keep),
+                        log_truncated,
+                        denied,
                         exit_code: driven.exit_code,
                         wall: driven.wall,
                         memory_peak_bytes: driven.memory_peak,
@@ -921,8 +1014,8 @@ impl Sandbox for DockerSandbox {
         RunOutcome {
             result,
             log,
-            log_truncated: driven.log_truncated,
-            denied: driven.denied,
+            log_truncated,
+            denied,
             exit_code: driven.exit_code,
             wall: driven.wall,
             memory_peak_bytes: driven.memory_peak,
@@ -930,6 +1023,36 @@ impl Sandbox for DockerSandbox {
             inferred_input_schema: inferred_input.and_then(|v| serde_json::to_vec(&v).ok()),
             inferred_output_schema: inferred_output.and_then(|v| serde_json::to_vec(&v).ok()),
         }
+    }
+}
+
+/// The log of a run as it may be kept: what the run was handed and what looks like a credential
+/// taken out first and the cut made after, so a secret on the edge of the cut is not shown by its
+/// first half. Also says whether anything was cut.
+fn shown_log(raw: &[u8], hide: &[&str], keep: usize, truncated: bool) -> (String, bool) {
+    let mut text = redact(&String::from_utf8_lossy(raw), hide);
+    let over = text.len() > keep;
+    if over {
+        let mut cut = keep;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+    }
+    (text, truncated || over)
+}
+
+/// `value` with every string, and every key, redacted.
+fn redact_value(value: &Value, hide: &[&str]) -> Value {
+    match value {
+        Value::String(text) => Value::String(redact(text, hide)),
+        Value::Array(items) => Value::Array(items.iter().map(|i| redact_value(i, hide)).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (redact(k, hide), redact_value(v, hide)))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -971,6 +1094,8 @@ impl HostCalls for NoHost {
 mod tests {
     use super::*;
 
+    const REDACTED_STR: &str = sagat_domain::scripts::REDACTED;
+
     #[test]
     fn only_the_host_of_a_refused_request_is_recorded() {
         assert_eq!(
@@ -983,6 +1108,71 @@ mod tests {
         );
         assert_eq!(destination("https://host"), "https://host");
         assert_eq!(destination("not a url"), "not a url");
+    }
+
+    #[test]
+    fn the_credentials_in_the_address_of_a_refused_request_are_never_recorded() {
+        for (url, shown) in [
+            (
+                "https://svc:s3cr3t@api.example.com/x",
+                "https://api.example.com",
+            ),
+            (
+                "https://svc:s3cr3t@api.example.com:8443?a=b",
+                "https://api.example.com:8443",
+            ),
+            ("http://a:b@c@host/p", "http://host"),
+            ("https://user@host#frag", "https://host"),
+        ] {
+            assert_eq!(destination(url), shown, "{url}");
+        }
+        assert!(destination(&format!("https://{}", "a".repeat(5000))).len() <= MAX_DENIED_LEN);
+    }
+
+    #[test]
+    fn a_refusal_is_kept_short_and_the_list_of_them_is_bounded() {
+        let mut denied = Vec::new();
+        deny(&mut denied, format!("secret {}", "x".repeat(250_000)));
+        assert_eq!(denied[0].chars().count(), MAX_DENIED_LEN);
+        for i in 0..100 {
+            deny(&mut denied, format!("secret n{i}"));
+        }
+        assert_eq!(denied.len(), MAX_DENIED);
+    }
+
+    #[test]
+    fn a_secret_is_taken_out_of_the_strings_of_a_result_however_json_writes_it() {
+        let secret = "pa\"ss\\word\nnext";
+        let value = json!({"echo": secret, "list": ["x", secret], "k": {secret: 1}, "n": 424_242});
+        let shown = redact_value(&value, &[secret, "424242"]);
+        let text = shown.to_string();
+        assert!(!text.contains("pa\\\"ss"), "{text}");
+        assert!(!text.contains("word"), "{text}");
+        assert_eq!(shown["echo"], REDACTED_STR);
+        assert_eq!(shown["list"][1], REDACTED_STR);
+        assert_eq!(
+            shown["n"], 424_242,
+            "only text is searched, so the value stays valid JSON"
+        );
+        serde_json::from_str::<Value>(&text).expect("still JSON");
+    }
+
+    #[test]
+    fn a_secret_on_the_edge_of_the_cut_is_not_shown_by_its_first_half() {
+        let secret = "sk_live_0123456789abcdef";
+        let raw = format!("{}{secret} and more", "y".repeat(100 - 8));
+        let (log, truncated) = shown_log(raw.as_bytes(), &[secret], 100, false);
+        assert!(truncated);
+        assert!(!log.contains("sk_live"), "{log}");
+        assert!(log.len() <= 100);
+    }
+
+    #[test]
+    fn a_pem_block_without_an_end_does_not_take_the_json_around_it_with_it() {
+        let value = json!({"a": "-----BEGIN PRIVATE KEY-----\nabc", "b": 1});
+        let shown = redact_value(&value, &[]);
+        assert_eq!(shown["b"], 1);
+        serde_json::from_str::<Value>(&shown.to_string()).expect("still JSON");
     }
 
     #[test]

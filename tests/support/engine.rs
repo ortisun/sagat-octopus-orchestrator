@@ -180,6 +180,7 @@ pub async fn world_with_breaker(
             SystemClock,
             SystemEntropy,
             signer,
+            sagat_infra_schema::bundle::Bundles,
             sagat_domain::scripts::Policy::default(),
         ),
         signing_key,

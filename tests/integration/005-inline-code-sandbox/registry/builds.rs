@@ -6,7 +6,7 @@ use sagat_application::script_signing::Verifier;
 use sagat_application::scripts::{BuildFailureKind, BuildReport, DraftChange, PolicyRequest};
 use sagat_domain::audit::AuditAction;
 use sagat_domain::identity::Permission;
-use sagat_domain::scripts::{Language, VersionStatus};
+use sagat_domain::scripts::{Egress, Language, Policy, ScriptError, VersionStatus};
 use std::time::Duration;
 
 use super::{
@@ -29,7 +29,7 @@ async fn a_runner_takes_a_build_and_the_artifact_it_makes_is_signed_for_the_tena
         "a build held by a runner is not given to another"
     );
 
-    complete(&w, &job, built("v1", &toolchains()[0].1)).await;
+    complete(&w, &job, built(&job, "v1")).await;
     let version = w
         .scripts
         .version(
@@ -45,7 +45,7 @@ async fn a_runner_takes_a_build_and_the_artifact_it_makes_is_signed_for_the_tena
     let digest = digest_of(&version);
     assert_eq!(
         digest,
-        sagat_application::sandbox::digest_of(&artifact("v1"))
+        sagat_application::sandbox::digest_of(&artifact(&job, "v1"))
     );
     assert_eq!(version.build_key.as_ref(), Some(&job.build_key));
     assert_eq!(version.toolchain.as_deref(), Some("node@sha256:aa;shim=1"));
@@ -58,7 +58,7 @@ async fn a_runner_takes_a_build_and_the_artifact_it_makes_is_signed_for_the_tena
         .await
         .expect("fetch")
         .artifact;
-    assert_eq!(fetched.content, artifact("v1"));
+    assert_eq!(fetched.content, artifact(&job, "v1"));
     let verifier = Verifier::new([w.signing_key.clone()]);
     assert_eq!(
         verifier.verify(
@@ -145,7 +145,7 @@ async fn an_identical_build_is_reused_and_a_change_of_source_policy_or_toolchain
         .await
         .expect("a different source is a different build");
     assert_ne!(job.build_key, first.build_key.clone().expect("key"));
-    complete(&w, &job, built("other", &toolchains()[0].1)).await;
+    complete(&w, &job, built(&job, "other")).await;
 
     // A change of policy invalidates the cache: the same source under other limits is built again.
     let tight = create(&w, "tighter").await;
@@ -171,7 +171,7 @@ async fn an_identical_build_is_reused_and_a_change_of_source_policy_or_toolchain
     let job = claim(&w).await.expect("another policy is another build");
     assert_ne!(job.build_key, first.build_key.clone().expect("key"));
     assert_eq!(job.policy.limits.memory_bytes(), 64 * 1024 * 1024);
-    complete(&w, &job, built("tight", &toolchains()[0].1)).await;
+    complete(&w, &job, built(&job, "tight")).await;
 
     // A new toolchain (a new image, a new shim) invalidates it as well.
     let again = create(&w, "same-again").await;
@@ -251,6 +251,19 @@ async fn a_sandbox_that_was_unavailable_is_tried_again_but_not_for_ever() {
             },
         )
         .await;
+        if attempt < 3 {
+            // Not at once: an engine that is restarting would use every attempt in a moment.
+            assert!(
+                claim(&w).await.is_none(),
+                "attempt {attempt} waits before it is offered again"
+            );
+            sqlx::query(
+                "UPDATE script_build_jobs SET not_before = clock_timestamp() - interval '1 second'",
+            )
+            .execute(&w.db.pool)
+            .await
+            .expect("let the wait pass");
+        }
     }
     let version = w
         .scripts
@@ -279,6 +292,94 @@ async fn a_sandbox_that_was_unavailable_is_tried_again_but_not_for_ever() {
 }
 
 #[tokio::test]
+async fn a_bundle_the_version_does_not_describe_is_not_signed() {
+    let w = world().await;
+    let script = create(&w, "described").await;
+    let published = publish(&w, &script).await;
+    let job = claim(&w).await.expect("a build");
+    let wider = Policy {
+        egress: Egress::Namespace,
+        ..job.policy
+    };
+    let mut forged = job.clone();
+    forged.policy = wider;
+    for (what, report) in [
+        ("another policy", built(&forged, "x")),
+        (
+            "not a bundle",
+            BuildReport::Built {
+                artifact: b"export default () => 1".to_vec(),
+                sbom: b"{}".to_vec(),
+                toolchain: "t".to_owned(),
+                log: String::new(),
+            },
+        ),
+    ] {
+        assert_eq!(
+            w.runner
+                .complete_build(
+                    &w.runner_identity,
+                    job.job,
+                    &job.lease_token,
+                    report,
+                    &ctx()
+                )
+                .await,
+            Err(AppError::InvalidScript(ScriptError::BundleMismatch)),
+            "{what}"
+        );
+    }
+    let still = w
+        .scripts
+        .version(
+            &w.admin,
+            w.namespace.id(),
+            script.id,
+            published.version.number,
+            &ctx(),
+        )
+        .await
+        .expect("version");
+    assert_eq!(still.status, VersionStatus::Building, "nothing was signed");
+    // The honest report is accepted, and the key is the one handed out, whatever toolchain the
+    // runner says it used.
+    let BuildReport::Built {
+        artifact,
+        sbom,
+        log,
+        ..
+    } = built(&job, "ok")
+    else {
+        unreachable!("built reports a build")
+    };
+    complete(
+        &w,
+        &job,
+        BuildReport::Built {
+            artifact,
+            sbom,
+            toolchain: "something-else;shim=9".to_owned(),
+            log,
+        },
+    )
+    .await;
+    let ready = w
+        .scripts
+        .version(
+            &w.admin,
+            w.namespace.id(),
+            script.id,
+            published.version.number,
+            &ctx(),
+        )
+        .await
+        .expect("version");
+    assert_eq!(ready.status, VersionStatus::Ready);
+    assert_eq!(ready.build_key.as_ref(), Some(&job.build_key));
+    assert_eq!(ready.toolchain.as_deref(), Some("something-else;shim=9"));
+}
+
+#[tokio::test]
 async fn a_runner_that_lost_its_lease_cannot_finish_what_another_took() {
     let w = world().await;
     let script = create(&w, "lease").await;
@@ -302,7 +403,7 @@ async fn a_runner_that_lost_its_lease_cannot_finish_what_another_took() {
             &w.runner_identity,
             slow.job,
             &slow.lease_token,
-            built("late", &toolchains()[0].1),
+            built(&slow, "late"),
             &ctx(),
         )
         .await;
@@ -321,7 +422,7 @@ async fn a_runner_that_lost_its_lease_cannot_finish_what_another_took() {
             .expect("heartbeat")
             .is_some()
     );
-    complete(&w, &fast, built("fast", &toolchains()[0].1)).await;
+    complete(&w, &fast, built(&fast, "fast")).await;
     let version = w
         .scripts
         .version(
@@ -335,11 +436,13 @@ async fn a_runner_that_lost_its_lease_cannot_finish_what_another_took() {
         .expect("version");
     assert_eq!(
         version.artifact,
-        Some(sagat_application::sandbox::digest_of(&artifact("fast")))
+        Some(sagat_application::sandbox::digest_of(&artifact(
+            &fast, "fast"
+        )))
     );
 
     // A completion repeated by its holder (the answer was lost) is accepted once and the same.
-    complete(&w, &fast, built("fast", &toolchains()[0].1)).await;
+    complete(&w, &fast, built(&fast, "fast")).await;
     // A token nobody holds opens nothing.
     assert_eq!(
         w.runner
@@ -347,7 +450,7 @@ async fn a_runner_that_lost_its_lease_cannot_finish_what_another_took() {
                 &w.runner_identity,
                 fast.job,
                 &"0".repeat(64),
-                built("x", "t"),
+                built(&fast, "x"),
                 &ctx()
             )
             .await,
@@ -392,20 +495,8 @@ async fn a_runner_serves_its_own_tenant_and_no_other() {
     let digest = digest_of(&version);
     let stranger = other_runner(&w);
     // It sees none of the tenant's builds ...
-    create(&w, "waiting").await;
-    let waiting = w
-        .scripts
-        .list(&w.admin, w.namespace.id(), None, 10, &ctx())
-        .await
-        .expect("list");
-    publish(
-        &w,
-        waiting
-            .iter()
-            .find(|s| s.name.as_str() == "waiting")
-            .expect("script"),
-    )
-    .await;
+    let waiting = create(&w, "waiting").await;
+    publish(&w, &waiting).await;
     assert!(
         w.runner
             .claim_build(&stranger, &toolchains(), &ctx())

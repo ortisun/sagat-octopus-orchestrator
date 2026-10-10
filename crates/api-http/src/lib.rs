@@ -539,7 +539,12 @@ where
                         "/script-runner/executions",
                         post(rn::record_execution::<B<S, C, G>>),
                     )
-                    .layer(RequestBodyLimitLayer::new(rn::RUNNER_MAX_BODY_BYTES)),
+                    .layer(RequestBodyLimitLayer::new(rn::RUNNER_MAX_BODY_BYTES))
+                    // The `Json` extractor limits a body to 2 MiB by itself, which is under what an
+                    // artifact of 2 MiB takes once it is encoded.
+                    .layer(axum::extract::DefaultBodyLimit::max(
+                        rn::RUNNER_MAX_BODY_BYTES,
+                    )),
             );
     }
     router

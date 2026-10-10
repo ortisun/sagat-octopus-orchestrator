@@ -7,7 +7,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use sagat_application::scripts::{
     ArtifactRecord, ArtifactSummary, BuildAssignment, ExecutionRecord, ExecutionSummary,
-    PolicyRequest, ScriptRecord, TestAssignment, TestRunRecord, TestRunSummary, VersionRecord,
+    PolicyRequest, ScriptRecord, ScriptSummary, TestAssignment, TestRunRecord, TestRunSummary,
+    VersionRecord, VersionSummary,
 };
 use sagat_domain::scripts::{Egress, Failure, Policy, activity_of};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -222,9 +223,49 @@ impl From<&ScriptRecord> for ScriptBody {
     }
 }
 
+/// A script in a listing: no source, lockfile or schemas (`GET` one for them).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptSummaryBody {
+    pub id: String,
+    pub namespace_id: String,
+    pub name: String,
+    pub language: &'static str,
+    pub policy: PolicyView,
+    pub retention_days: u16,
+    pub revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<u32>,
+    pub source_bytes: u64,
+    pub created_by: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: time::OffsetDateTime,
+}
+
+impl From<&ScriptSummary> for ScriptSummaryBody {
+    fn from(script: &ScriptSummary) -> Self {
+        Self {
+            id: script.id.to_string(),
+            namespace_id: script.namespace_id.to_string(),
+            name: script.name.to_string(),
+            language: script.language.as_str(),
+            policy: PolicyView::from(&script.policy),
+            retention_days: script.retention.get(),
+            revision: script.revision,
+            latest_version: script.latest_version.map(|n| n.get()),
+            source_bytes: script.source_bytes,
+            created_by: script.created_by.clone(),
+            created_at: script.created_at,
+            updated_at: script.updated_at,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ScriptListBody {
-    pub items: Vec<ScriptBody>,
+    pub items: Vec<ScriptSummaryBody>,
 }
 
 #[derive(Debug, Serialize)]
@@ -301,9 +342,67 @@ impl From<&VersionRecord> for VersionBody {
     }
 }
 
+/// A version in a listing: no source, lockfile, schemas or build log (`GET` one for them).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionSummaryBody {
+    pub id: String,
+    pub script_id: String,
+    pub number: u32,
+    pub language: &'static str,
+    pub status: &'static str,
+    pub policy: PolicyView,
+    pub retention_days: u16,
+    pub content_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toolchain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    pub created_by: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    #[serde(
+        with = "time::serde::rfc3339::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub built_at: Option<time::OffsetDateTime>,
+}
+
+impl From<&VersionSummary> for VersionSummaryBody {
+    fn from(version: &VersionSummary) -> Self {
+        Self {
+            id: version.id.to_string(),
+            script_id: version.script_id.to_string(),
+            number: version.number.get(),
+            language: version.language.as_str(),
+            status: version.status.as_str(),
+            policy: PolicyView::from(&version.policy),
+            retention_days: version.retention.get(),
+            content_digest: version.content_digest.to_string(),
+            build_key: version.build_key.as_ref().map(ToString::to_string),
+            artifact_digest: version.artifact.as_ref().map(ToString::to_string),
+            activity: version.artifact.as_ref().map(activity_of),
+            key_id: version.key_id.clone(),
+            toolchain: version.toolchain.clone(),
+            failure: version.failure.clone(),
+            created_by: version.created_by.clone(),
+            created_at: version.created_at,
+            built_at: version.built_at,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct VersionListBody {
-    pub items: Vec<VersionBody>,
+    pub items: Vec<VersionSummaryBody>,
 }
 
 /// Published, or already the latest version.
@@ -722,9 +821,10 @@ impl From<&TestAssignment> for TestAssignmentBody {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompleteTestBody {
     pub lease_token: String,
-    /// The result, when there is one.
-    #[serde(default)]
-    pub result: Option<Value>,
+    /// The result, when there is one. A script may return `null`: that is a result (`Some(None)`),
+    /// and an absent field is not one (`None`).
+    #[serde(default, deserialize_with = "present")]
+    pub result: Option<Option<Value>>,
     /// Why there is none: a `SCRIPT_*` code.
     #[serde(default)]
     pub failure: Option<String>,

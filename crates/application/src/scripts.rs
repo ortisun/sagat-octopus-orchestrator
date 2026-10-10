@@ -52,7 +52,10 @@ pub const MAX_LIST: u32 = 200;
 /// Most builds reused from the cache in one claim before the runner is told there is nothing.
 const MAX_CACHE_HITS_PER_CLAIM: usize = 16;
 /// Most refusals one execution record turns into audit entries.
-const MAX_VIOLATIONS_AUDITED: usize = 10;
+/// Refusals kept of one run and audited: the most a runner reports.
+const MAX_VIOLATIONS_AUDITED: usize = 32;
+/// What is kept of one refusal.
+const MAX_VIOLATION_LEN: usize = 200;
 
 // ---------------------------------------------------------------------------------------------
 // Records
@@ -302,6 +305,48 @@ pub struct ExecutionRecord {
     pub expires_at: OffsetDateTime,
 }
 
+/// A script as a listing shows it: what identifies it and where it stands, without the source, the
+/// lockfile or the schemas, which are up to 640 KiB a script. `get` returns the whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptSummary {
+    pub id: ScriptId,
+    pub tenant_id: TenantId,
+    pub namespace_id: NamespaceId,
+    pub name: Slug,
+    pub language: Language,
+    pub policy: Policy,
+    pub retention: Retention,
+    pub revision: u64,
+    pub latest_version: Option<VersionNumber>,
+    pub source_bytes: u64,
+    pub created_by: String,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+/// A version as a listing shows it: no source, lockfile, schemas or build log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionSummary {
+    pub id: ScriptVersionId,
+    pub script_id: ScriptId,
+    pub tenant_id: TenantId,
+    pub namespace_id: NamespaceId,
+    pub number: VersionNumber,
+    pub language: Language,
+    pub status: VersionStatus,
+    pub policy: Policy,
+    pub retention: Retention,
+    pub content_digest: Digest,
+    pub build_key: Option<Digest>,
+    pub artifact: Option<Digest>,
+    pub key_id: Option<String>,
+    pub toolchain: Option<String>,
+    pub failure: Option<String>,
+    pub created_by: String,
+    pub created_at: OffsetDateTime,
+    pub built_at: Option<OffsetDateTime>,
+}
+
 /// The job that builds a version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildJobRecord {
@@ -309,6 +354,8 @@ pub struct BuildJobRecord {
     pub version_id: ScriptVersionId,
     pub attempts: u32,
     pub lease_expires_at: OffsetDateTime,
+    /// The build key handed out with the claim; the same on every read of the claim.
+    pub build_key: Option<Digest>,
 }
 
 /// A build taken by a runner.
@@ -450,6 +497,23 @@ pub trait SchemaChecker: Send + Sync {
     fn check(&self, schema: &[u8]) -> Result<(), SchemaProblem>;
 }
 
+/// What the bundle a runner built must say about the version it was built from.
+#[derive(Debug, Clone, Copy)]
+pub struct Expected<'a> {
+    pub language: Language,
+    pub policy: &'a Policy,
+    pub input_schema: Option<&'a [u8]>,
+    pub output_schema: Option<&'a [u8]>,
+}
+
+/// Checks the bundle a runner reports before the platform signs it. Implemented by
+/// `sagat-infra-schema`, which knows the bundle's format.
+pub trait BundleChecker: Send + Sync {
+    /// # Errors
+    /// What is wrong with the bundle, in words that name no part of its content.
+    fn check(&self, bundle: &[u8], expected: &Expected<'_>) -> Result<(), &'static str>;
+}
+
 /// What a workflow that pins scripts is checked against when it is published.
 pub trait ScriptLookup: Send + Sync {
     /// The digests among `digests` that no ready version of the tenant has built.
@@ -479,7 +543,7 @@ pub trait ScriptStore: NamespaceDirectory + QuotaLookup + ScriptLookup {
         namespace: NamespaceId,
         after: Option<&str>,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<ScriptRecord>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<ScriptSummary>, StoreError>> + Send;
 
     fn script(
         &self,
@@ -523,7 +587,7 @@ pub trait ScriptStore: NamespaceDirectory + QuotaLookup + ScriptLookup {
         script: ScriptId,
         before: Option<VersionNumber>,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<VersionRecord>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<VersionSummary>, StoreError>> + Send;
 
     fn version(
         &self,
@@ -599,6 +663,17 @@ pub trait RunnerStore: NamespaceDirectory {
         now: OffsetDateTime,
     ) -> impl Future<Output = Result<Option<ClaimedBuild>, StoreError>> + Send;
 
+    /// Remembers on the build held under `token_hash` the key it is being built for, so that what
+    /// is reported at the end is judged against what was handed out and not against what the
+    /// runner says. `false` when the build is no longer held.
+    fn set_build_key(
+        &self,
+        tenant: TenantId,
+        job: BuildJobId,
+        token_hash: &[u8],
+        key: &Digest,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// The build held under `token_hash`, if it still is.
     fn held_build(
         &self,
@@ -670,6 +745,13 @@ pub trait RunnerStore: NamespaceDirectory {
         now: OffsetDateTime,
     ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send;
 
+    /// The script a test run is of.
+    fn test_script(
+        &self,
+        tenant: TenantId,
+        run: TestRunId,
+    ) -> impl Future<Output = Result<Option<ScriptId>, StoreError>> + Send;
+
     fn finish_test(
         &self,
         tenant: TenantId,
@@ -737,6 +819,10 @@ pub struct PolicyRequest {
 
 impl PolicyRequest {
     fn resolve(&self, base: &Policy, ceiling: &Policy) -> Result<Policy, ScriptError> {
+        // What the request leaves out is the base *as far as the ceiling lets it be*: a platform
+        // that lowered its ceiling below the defaults must not refuse a request that asked for
+        // nothing, only one that asks for more than it has.
+        let base = &base.within(ceiling);
         let l = &base.limits;
         let limits = Limits::new(
             self.memory_bytes.unwrap_or(l.memory_bytes()),
@@ -912,7 +998,7 @@ where
         after: Option<&str>,
         limit: u32,
         ctx: &RequestContext,
-    ) -> Result<Vec<ScriptRecord>, AppError> {
+    ) -> Result<Vec<ScriptSummary>, AppError> {
         principal.authorize(Permission::ScriptRead)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         Ok(self
@@ -1122,7 +1208,7 @@ where
         before: Option<VersionNumber>,
         limit: u32,
         ctx: &RequestContext,
-    ) -> Result<Vec<VersionRecord>, AppError> {
+    ) -> Result<Vec<VersionSummary>, AppError> {
         principal.authorize(Permission::ScriptRead)?;
         self.load(principal, namespace, id, ctx).await?;
         Ok(self
@@ -1394,6 +1480,7 @@ pub struct RunnerService<S, C> {
     clock: C,
     entropy: Arc<dyn Entropy>,
     signer: Signer,
+    bundles: Arc<dyn BundleChecker>,
     ceiling: Policy,
 }
 
@@ -1408,6 +1495,7 @@ where
         clock: C,
         entropy: impl Entropy + 'static,
         signer: Signer,
+        bundles: impl BundleChecker + 'static,
         ceiling: Policy,
     ) -> Self {
         Self {
@@ -1415,6 +1503,7 @@ where
             clock,
             entropy: Arc::new(entropy),
             signer,
+            bundles: Arc::new(bundles),
             ceiling,
         }
     }
@@ -1495,6 +1584,13 @@ where
                     Finished::Stale => continue,
                 }
             }
+            if !self
+                .store
+                .set_build_key(principal.tenant_id(), claimed.job.id, &token.hash(), &key)
+                .await?
+            {
+                continue;
+            }
             return Ok(Some(BuildAssignment {
                 job: claimed.job.id,
                 lease_token: token.expose().to_owned(),
@@ -1571,17 +1667,26 @@ where
                 if artifact.len() > MAX_ARTIFACT_BYTES || sbom.len() > MAX_SBOM_BYTES {
                     return Err(AppError::PayloadTooLarge("an artifact is at most 2 MiB"));
                 }
-                // The key is computed again from the version and the toolchain the runner built
-                // with, never taken from the runner: it is what a later build is compared to.
+                // The key is the one handed out with the claim, never one worked out from what the
+                // runner says it built with: it is what a later build is compared to.
+                let key = claimed.job.build_key.clone().ok_or(AppError::Internal)?;
+                // What is signed says what the version says: the policy it was clamped to, its
+                // schemas, its language. A runner that reports anything else gets nothing signed.
                 let policy = version.draft.policy.within(&self.ceiling);
-                let key = build_key(
-                    version.language,
-                    &version.draft.source,
-                    version.draft.lockfile.as_ref(),
-                    &toolchain,
-                    &policy,
-                    contract_of(&version.draft),
-                );
+                let contract = contract_of(&version.draft);
+                if let Err(why) = self.bundles.check(
+                    &artifact,
+                    &Expected {
+                        language: version.language,
+                        policy: &policy,
+                        input_schema: contract.input_schema,
+                        output_schema: contract.output_schema,
+                    },
+                ) {
+                    tracing::warn!(job = %job, why, "a runner reported a bundle the version does not describe");
+                    metrics::counter!("script_bundles_refused_total").increment(1);
+                    return Err(AppError::InvalidScript(ScriptError::BundleMismatch));
+                }
                 let digest = digest_of(&artifact);
                 let signature = self.signer.sign(tenant, &digest, version.language);
                 let built = BuiltArtifact {
@@ -1724,12 +1829,19 @@ where
             return Err(AppError::PayloadTooLarge("a result is at most 240 KiB"));
         }
         report.log = clip(&report.log, 1024 * 1024);
-        report.denied.truncate(MAX_VIOLATIONS_AUDITED);
+        tidy_denied(&mut report.denied);
         let now = self.clock.now();
+        // The refusals are audited against the script, not the run: a script tried over and over
+        // is one script, and its trail does not grow with every try.
+        let script = self
+            .store
+            .test_script(principal.tenant_id(), run)
+            .await?
+            .ok_or(AppError::StaleAttempt)?;
         let audits: Vec<AuditRecord> = report
             .denied
             .iter()
-            .map(|what| self.violation_audit(principal, run.to_string(), what, ctx))
+            .map(|what| self.violation_audit(principal, script.to_string(), what, ctx))
             .collect();
         match self
             .store
@@ -1786,7 +1898,8 @@ where
     }
 
     /// Keeps the record of an execution, and audits what the script was refused (once per script,
-    /// kind and destination in a window: a script in a loop cannot grow the trail).
+    /// kind and destination, and at most a hundred different ones per script: a script in a loop
+    /// cannot grow the trail).
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `script:execute`; [`AppError::NotFound`] for an artifact
@@ -1813,7 +1926,7 @@ where
             .await?
             .ok_or(AppError::NotFound)?;
         execution.log = clip(&execution.log, 1024 * 1024);
-        execution.denied.truncate(MAX_VIOLATIONS_AUDITED);
+        tidy_denied(&mut execution.denied);
         let now = self.clock.now();
         let audits: Vec<AuditRecord> = execution
             .denied
@@ -1853,7 +1966,7 @@ where
         )
         // What the script was refused: the kind and the destination, never the path or a secret's
         // value.
-        .with_reason(clip(what, 200))
+        .with_reason(clip(what, MAX_VIOLATION_LEN))
     }
 
     fn built_audit(
@@ -1874,6 +1987,17 @@ where
         )
         .with_reason(format!("{how}: {artifact}"))
     }
+}
+
+/// What a runner says a script was refused, kept to what can be kept: each entry short, and no more
+/// than a run can have.
+fn tidy_denied(denied: &mut Vec<String>) {
+    *denied = std::mem::take(denied)
+        .into_iter()
+        .map(|what| clip(&what, MAX_VIOLATION_LEN))
+        .filter(|what| !what.is_empty())
+        .take(MAX_VIOLATIONS_AUDITED)
+        .collect();
 }
 
 fn contract_of(draft: &Draft) -> Contract<'_> {
@@ -2003,6 +2127,41 @@ mod tests {
         assert_eq!(
             out_of_bounds.resolve(&Policy::default(), &ceiling),
             Err(ScriptError::InvalidMemory)
+        );
+    }
+
+    #[test]
+    fn a_ceiling_below_the_defaults_refuses_what_is_asked_not_what_is_left_out() {
+        let low = Policy::default().within(&Policy {
+            limits: Limits::new(
+                64 * 1024 * 1024,
+                500,
+                Duration::from_secs(10),
+                64,
+                64 * 1024,
+                16 * 1024 * 1024,
+            )
+            .expect("limits"),
+            egress: Egress::None,
+        });
+        let nothing = PolicyRequest::default();
+        let policy = nothing
+            .resolve(&Policy::default(), &low)
+            .expect("a request that asks for nothing is not above the ceiling");
+        assert_eq!(policy, low);
+        // A change of one field of a draft above the ceiling keeps the rest as far as it goes.
+        let egress_only = PolicyRequest {
+            egress: Some(Egress::None),
+            ..PolicyRequest::default()
+        };
+        assert_eq!(egress_only.resolve(&Policy::default(), &low), Ok(low));
+        let more = PolicyRequest {
+            wall: Some(Duration::from_secs(11)),
+            ..PolicyRequest::default()
+        };
+        assert_eq!(
+            more.resolve(&Policy::default(), &low),
+            Err(ScriptError::AboveCeiling)
         );
     }
 

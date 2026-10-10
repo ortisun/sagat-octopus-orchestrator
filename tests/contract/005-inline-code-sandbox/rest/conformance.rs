@@ -274,7 +274,27 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
     ])
     .await;
 
-    let artifact = br#"{"v":1,"language":"typescript","entry":"main.mjs","files":{"main.mjs":"export default () => 2"}}"#;
+    // What a runner reports says what the version says: the policy it was handed and its schemas.
+    let bundle = |policy: &Value, code: &str| {
+        serde_json::to_vec(&json!({
+            "v": 1, "language": "typescript", "policy": policy,
+            "inputSchema": job.get("inputSchema").cloned().unwrap_or(Value::Null),
+            "outputSchema": job.get("outputSchema").cloned().unwrap_or(Value::Null),
+            "entry": "main.mjs", "files": {"main.mjs": code}
+        }))
+        .expect("json")
+    };
+    let artifact = bundle(&job["policy"], "export default () => 2");
+    // A bundle the version does not describe is not signed (and the runner may report again).
+    let wider = bundle(
+        &json!(
+            "v1;memory=2147483648;cpu=4000;wall=900;pids=512;output=1048576;scratch=536870912;egress=namespace"
+        ),
+        "export default () => 2",
+    );
+    // Bodies between axum's default and the contract's limit reach the handler: this one is a
+    // bundle of 1.9 MiB (2.5 MiB once encoded), which is not a bundle, and is refused as that.
+    let huge = vec![b'{'; 1_900_000];
     let complete = |id: &str, body: Value, who: &As, expect: u16| {
         scenario(
             "POST",
@@ -286,11 +306,25 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
         )
     };
     let built = json!({
-        "leaseToken": lease, "outcome": "built", "artifact": STANDARD.encode(artifact),
+        "leaseToken": lease, "outcome": "built", "artifact": STANDARD.encode(&artifact),
         "sbom": {"bomFormat": "CycloneDX"}, "toolchain": "node@sha256:aa;shim=1", "log": "built"
     });
     run.all(vec![
         complete(&job_id, built.clone(), &vera, 403),
+        complete(
+            &job_id,
+            json!({"leaseToken": lease, "outcome": "built", "artifact": STANDARD.encode(&wider),
+                   "sbom": {"bomFormat": "CycloneDX"}, "toolchain": "node@sha256:aa;shim=1"}),
+            &wanda,
+            422,
+        ),
+        complete(
+            &job_id,
+            json!({"leaseToken": lease, "outcome": "built", "artifact": STANDARD.encode(&huge),
+                   "sbom": {"bomFormat": "CycloneDX"}, "toolchain": "node@sha256:aa;shim=1"}),
+            &wanda,
+            422,
+        ),
         complete(
             &job_id,
             json!({"leaseToken": lease, "outcome": "sideways"}),
@@ -657,8 +691,9 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
             expect,
         )
     };
+    // A script that returns nothing returns `null`: that is a result, and an absent one is not.
     let finished = json!({
-        "leaseToken": test_lease, "result": {"n": 1}, "log": "hello\n", "denied": ["fetch http://169.254.169.254"],
+        "leaseToken": test_lease, "result": null, "log": "hello\n", "denied": ["fetch http://169.254.169.254"],
         "exitCode": 0, "wallMs": 120, "startMs": 80, "memoryPeakBytes": 30000000,
         "inferredInputSchema": {"type": "object"}, "inferredOutputSchema": {"type": "object"}
     });
@@ -698,6 +733,7 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
         ))
         .await;
     assert_eq!(done["status"], "SUCCEEDED", "{done}");
+    assert!(done["result"].is_null(), "{done}");
     assert_eq!(done["denied"], json!(["fetch http://169.254.169.254"]));
 
     // ------------------------------------------------------------------------------ executions
