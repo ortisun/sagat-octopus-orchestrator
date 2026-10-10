@@ -24,7 +24,7 @@ ADR-0002). The builders only write a document the server validates and versions.
 | Setting | Meaning | Default |
 |---|---|---|
 | `apiUrl` | Base URL of the REST API including `/v1`, e.g. `https://api.example/v1` | required |
-| `grpcUrl` | URL of the worker service, `https://host:port` (`http://` only for loopback or development) | required for a worker |
+| `grpcUrl` | URL of the worker service, `https://host:port` (`http://` only for loopback or development; any other scheme is `VALIDATION_FAILED`, never plaintext) | required for a worker |
 | `namespace` | Slug of the namespace every call is made in | required |
 | `token` | A bearer token, **or** a provider called before every request that returns a fresh one | required |
 | `timeout` | Deadline of one REST call or one unary RPC | 30 s |
@@ -42,7 +42,10 @@ ADR-0002). The builders only write a document the server validates and versions.
 - **An HTTP redirect is never followed.** A `Location` can point anywhere, and the request carries a bearer
   token, the namespace and an idempotency key; a `3xx` is raised as `PROTOCOL` ("the server redirected the
   call"), whatever its target. A transport that follows redirects by default is configured not to.
-- The SDK has no setting, and no code, that turns certificate or host-name verification off. A server name
+- The SDK has no setting of its own, and no code, that turns certificate or host-name verification off. Where an
+  ecosystem lets the caller hand the SDK its own transport object (Go's `*http.Client` and `*tls.Config`, .NET's
+  `HttpMessageHandler`, Java's `HttpTransport`), what that object does is the caller's choice and the README says
+  so; the SDK never builds such an object with verification off. A server name
   other than the URL's host can be given for verification (`tls.serverName`); it is verified, not skipped.
 
 ## 2. Canonical errors
@@ -182,10 +185,16 @@ register → loop:
      tasks → dispatch each (§6.3), concurrently
      none → wait retryAfterMs from the answer (default 1000, minimum 50), with ±20 % jitter, or
             until a task finishes, whichever comes first
-  UNAUTHENTICATED (session gone or expired) → register again, then continue
+  UNAUTHENTICATED (session gone or expired) → register again, then continue; if the next poll is
+            UNAUTHENTICATED again, wait with the backoff of §5 before the next registration (reset by a
+            successful poll): a server that registers a worker and refuses it at once must not be hammered
   RESOURCE_EXHAUSTED → wait retry-after-ms
   UNAVAILABLE / transport → wait with the backoff of §5 (no limit on attempts, cap 30 s), reconnect
 ```
+
+The host runs at most as many tasks as it asked for (`max_tasks`): if a poll answer carries more, it runs the
+first ones, logs the rest and leaves their leases to lapse. A wait derived from the server (`retry_after_ms`,
+`Retry-After`) is capped at 60 s, whatever it says.
 
 The host never busy-polls: an empty answer is always followed by a wait. It opens its connection when
 it starts, not before. A connection that was idle may be closed by the server; `UNAVAILABLE` on it is
@@ -275,7 +284,9 @@ A handler's input type that cannot be built from the document is not a crash: th
 
 `ctx.secrets()` calls `ResolveSecrets` once per attempt, lazily, with the task's identity, and returns a
 read-only map of name → value (bytes; text on request). The values are credentials: the SDK never logs
-them, never includes them in an error and drops them when the handler returns. Against protocol 1 it
+them, never includes them in an error, never hands out its own buffer (the caller gets copies), wipes and drops
+them when the handler returns (a later `secrets()` raises), and does not cache a failed resolution for the rest of
+the attempt. Against protocol 1 it
 raises `UNSUPPORTED_PROTOCOL` instead of calling.
 
 ### 6.8 Lifecycle
@@ -357,6 +368,15 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
 - Every request and RPC propagates `traceparent`; the C# SDK emits `Activity` spans from an
   `ActivitySource` named `SagatOctopusOrchestrator.Sdk`, and the others expose a tracing hook.
 - Lease tokens and session tokens live in memory only and are dropped with the task / session.
+- **A config, a client or a host never prints a credential**: its string form, its JSON and its debugger/inspect
+  form show no bearer token, session token, lease token or TLS private key (a test builds one with a canary token
+  and looks for it).
+- **What the server says is bounded.** A REST body is read up to 32 MiB, then the call fails as `PROTOCOL`; the
+  `message` of a server error is cut to 512 characters; a `traceId` that is not 32 hexadecimal characters is not
+  repeated; the heartbeat and the host survive an exception of their own hooks (a token provider, an event or log
+  callback) instead of dying with it.
+- **Ids and names in a URL path** (run id, signal name, event type...) are percent-encoded; a run id is a UUID and
+  a name of `.`, `..` or the empty string is refused as `VALIDATION_FAILED` before anything is sent.
 - Errors follow §2: a message that could carry a payload is replaced by its class.
 
 ## 11. What each SDK ships
