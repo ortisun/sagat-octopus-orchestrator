@@ -107,12 +107,12 @@ test('GET is retried on unavailability and on rate limiting, honouring Retry-Aft
     if (attempts === 1) reply(res, 429, { code: 'RATE_LIMITED', message: 'slow', retryable: true, traceId: 'a'.repeat(32) }, { 'retry-after': '0' });
     else reply(res, 200, run());
   });
-  const got = await client().get('r-1');
+  const got = await client().get('0190aaaa-0000-7000-8000-000000000001');
   assert.equal(got.runId, '0190aaaa-0000-7000-8000-000000000001');
   assert.equal(seen.length, 2);
 
   prepare((_req, res) => reply(res, 503, '<html>bad gateway</html>'));
-  await assert.rejects(client().get('r-1'), (error: unknown) => {
+  await assert.rejects(client().get('0190aaaa-0000-7000-8000-000000000001'), (error: unknown) => {
     assert.ok(error instanceof SagatError);
     assert.equal(error.code, 'UNAVAILABLE');
     assert.equal(error.status, 503);
@@ -138,7 +138,7 @@ test('a 4xx other than 429 is never retried and keeps what the server said', asy
 test('a refused token, a missing resource and a validation error are told apart', async () => {
   for (const [status, code] of [[401, 'UNAUTHENTICATED'], [403, 'FORBIDDEN'], [404, 'NOT_FOUND'], [422, 'VALIDATION_FAILED']] as const) {
     prepare((_req, res) => reply(res, status, { code, message: 'no', retryable: false, traceId: 'b'.repeat(32) }));
-    await assert.rejects(client().get('x'), (error: unknown) => error instanceof SagatError && error.code === code && error.status === status);
+    await assert.rejects(client().get('0190aaaa-0000-7000-8000-000000000001'), (error: unknown) => error instanceof SagatError && error.code === code && error.status === status);
     assert.equal(seen.length, 1, String(status));
   }
 });
@@ -147,8 +147,8 @@ test('the token is asked for before every request, so a rotated one is used at o
   let n = 0;
   prepare((_req, res) => reply(res, 200, run()));
   const c = client({ token: () => `tok-${++n}` });
-  await c.get('a');
-  await c.get('b');
+  await c.get('0190aaaa-0000-7000-8000-000000000001');
+  await c.get('0190aaaa-0000-7000-8000-000000000001');
   assert.deepEqual(seen.map((s) => s.headers['authorization']), ['Bearer tok-1', 'Bearer tok-2']);
 });
 
@@ -178,7 +178,7 @@ test('a malformed traceparent or key is refused before anything is sent', async 
 
 test('the ambient trace context is used when the call has none', async () => {
   prepare((_req, res) => reply(res, 200, run()));
-  await client({ traceContext: () => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' }).get('r');
+  await client({ traceContext: () => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' }).get('0190aaaa-0000-7000-8000-000000000001');
   assert.equal(seen[0]?.headers['traceparent'], '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01');
 });
 
@@ -217,28 +217,28 @@ test('no answer at all is a retryable transport error, and a lost answer is retr
   assert.equal(seen[0]?.headers['idempotency-key'], seen[1]?.headers['idempotency-key']);
 
   const dead = new SagatClient({ apiUrl: 'http://127.0.0.1:1/v1', namespace: 'p', token: 't', retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 2 } });
-  await assert.rejects(dead.get('x'), (e: unknown) => e instanceof SagatError && e.code === 'TRANSPORT' && e.retryable && e.status === null);
+  await assert.rejects(dead.get('0190aaaa-0000-7000-8000-000000000001'), (e: unknown) => e instanceof SagatError && e.code === 'TRANSPORT' && e.retryable && e.status === null);
 });
 
 test('cancel and signal are operations with a reason and a payload and the result is typed', async () => {
   prepare((req, res) => (req.url.endsWith('/operations') ? reply(res, 202, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9 }) : reply(res, 202, { deliveredTo: ['wait'] })));
-  const cancelled = await client().cancel('r-1', 'no longer needed', { expectedRunVersion: 3 });
+  const cancelled = await client().cancel('0190aaaa-0000-7000-8000-000000000001', 'no longer needed', { expectedRunVersion: 3 });
   assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, raw: undefined });
   assert.deepEqual(seen[0]?.body, { action: 'CANCEL', reason: 'no longer needed', expectedRunVersion: 3 });
-  const signalled = await client().signal('r-1', 'payment-confirmed', { paymentId: 'p-1' });
+  const signalled = await client().signal('0190aaaa-0000-7000-8000-000000000001', 'payment-confirmed', { paymentId: 'p-1' });
   assert.deepEqual(signalled.deliveredTo, ['wait']);
-  assert.equal(seen[1]?.url, '/v1/runs/r-1/signals/payment-confirmed');
+  assert.equal(seen[1]?.url, '/v1/runs/0190aaaa-0000-7000-8000-000000000001/signals/payment-confirmed');
   assert.deepEqual(seen[1]?.body, { paymentId: 'p-1' });
 });
 
 test('waiting for completion polls until the run is terminal', async () => {
   let polls = 0;
   prepare((_req, res) => reply(res, 200, run({ status: ++polls < 3 ? 'RUNNING' : 'SUCCEEDED' })));
-  const done = await client().waitForCompletion('r', { pollIntervalMs: 5, timeoutMs: 5000 });
+  const done = await client().waitForCompletion('0190aaaa-0000-7000-8000-000000000001', { pollIntervalMs: 5, timeoutMs: 5000 });
   assert.equal(done.status, 'SUCCEEDED');
   assert.equal(polls, 3);
   prepare((_req, res) => reply(res, 200, run()));
-  await assert.rejects(client().waitForCompletion('r', { pollIntervalMs: 5, timeoutMs: 30 }), (e: unknown) => e instanceof SagatError && e.reason === 'WAIT_TIMEOUT');
+  await assert.rejects(client().waitForCompletion('0190aaaa-0000-7000-8000-000000000001', { pollIntervalMs: 5, timeoutMs: 30 }), (e: unknown) => e instanceof SagatError && e.reason === 'WAIT_TIMEOUT');
 });
 
 test('a 4xx is not repeated whatever the body says about retrying, and a 5xx is only when the server says it may be', async () => {

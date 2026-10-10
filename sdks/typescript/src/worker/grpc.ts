@@ -137,8 +137,20 @@ export function errorOfStatus(method: Method, error: grpc.ServiceError): SagatEr
 export class WorkerRpc {
   private readonly client: WorkerServiceClient;
 
-  constructor(private readonly config: GrpcConfig) {
-    const url = new URL(config.grpcUrl);
+  readonly #config: GrpcConfig;
+
+  constructor(config: GrpcConfig) {
+    this.#config = config;
+    let url: URL;
+    try {
+      url = new URL(config.grpcUrl);
+    } catch {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'grpcUrl is not a URL: it is http://host:port or https://host:port' });
+    }
+    // Any other scheme would be sent in plaintext by the channel without a word (SPEC §1).
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'grpcUrl is http://host:port or https://host:port' });
+    }
     const secure = url.protocol === 'https:';
     // grpc-js sends the host as the TLS server name, and a server name cannot be an IP address.
     if (secure && isIP(url.hostname.replace(/^\[|\]$/g, '')) !== 0 && !config.tls?.serverName) {
@@ -166,9 +178,9 @@ export class WorkerRpc {
 
   private async call<Req, Res>(method: Method, request: Req, traceparent?: string): Promise<Res> {
     const metadata = new grpc.Metadata();
-    metadata.set('authorization', `Bearer ${await resolveToken(this.config.token)}`);
+    metadata.set('authorization', `Bearer ${await resolveToken(this.#config.token)}`);
     if (traceparent) metadata.set('traceparent', checkTraceparent(traceparent));
-    const deadline = new Date(Date.now() + (this.config.timeoutMs ?? 30_000));
+    const deadline = new Date(Date.now() + (this.#config.timeoutMs ?? 30_000));
     const fn = this.client[method.charAt(0).toLowerCase() + method.slice(1)] as (
       request: Req,
       metadata: grpc.Metadata,

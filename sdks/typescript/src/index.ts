@@ -5,7 +5,7 @@ export type {
 } from './client.js';
 export { PROTOCOL_VERSION, SDK_VERSION, silentLogger, warnIfNotSecure } from './config.js';
 export type { ClientConfig, Logger, TlsOptions, TokenSource } from './config.js';
-export { SagatError, codeOfHttpStatus, isRetriable, remediationOf, retryableByDefault } from './errors.js';
+export { MAX_WAIT_MS, SagatError, codeOfHttpStatus, isRetriable, remediationOf, retryableByDefault } from './errors.js';
 export type { ErrorCode, SagatErrorInit } from './errors.js';
 export { canonicalJson } from './json.js';
 export { DEFAULT_RETRY, backoffDelayMs } from './retry.js';

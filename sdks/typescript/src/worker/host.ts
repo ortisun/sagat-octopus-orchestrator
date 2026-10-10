@@ -1,6 +1,6 @@
 import { PROTOCOL_VERSION, silentLogger, warnIfNotSecure, type Logger, type TlsOptions, type TokenSource } from '../config.js';
-import { SagatError, isRetriable } from '../errors.js';
-import { encodeJson } from '../json.js';
+import { MAX_WAIT_MS, SagatError, isRetriable } from '../errors.js';
+import { encodeJson, parseJson } from '../json.js';
 import { DEFAULT_RETRY, backoffDelayMs, sleep, type RetryPolicy } from '../retry.js';
 import {
   ActivityFailure,
@@ -72,12 +72,13 @@ function minorOf(version: string): number {
 /** The worker host of the SDK (SPEC §6). */
 export class WorkerHost {
   private readonly handlers = new Map<string, Registered>();
-  private readonly rpc: WorkerRpc;
+  readonly #rpc: WorkerRpc;
+  readonly #config: WorkerConfig;
   private readonly log: Logger;
   private readonly retry: RetryPolicy;
   private readonly maxInflight: number;
   private workerId = '';
-  private session = '';
+  #session = '';
   private accepted = '';
   private running = false;
   private stopping = false;
@@ -85,20 +86,30 @@ export class WorkerHost {
   private wake: (() => void) | undefined;
   private readonly inflight = new Map<string, { abort: AbortController; done: Promise<void> }>();
 
-  constructor(private readonly config: WorkerConfig) {
+  constructor(config: WorkerConfig) {
+    this.#config = config;
     this.maxInflight = config.maxInflight ?? 10;
     if (!Number.isInteger(this.maxInflight) || this.maxInflight < 1 || this.maxInflight > 1000) {
       throw new SagatError({ code: 'VALIDATION_FAILED', message: 'maxInflight is between 1 and 1000' });
     }
     this.log = config.logger ?? silentLogger;
     this.retry = { ...DEFAULT_RETRY, ...config.retry };
-    this.rpc = new WorkerRpc({
+    this.#rpc = new WorkerRpc({
       grpcUrl: config.grpcUrl,
       token: config.token,
       tls: config.tls,
       timeoutMs: config.timeoutMs,
       interceptors: config.interceptors,
     });
+  }
+
+  /** A hook of the caller that throws must not take the host, or the process, with it. */
+  #emit(event: WorkerEvent): void {
+    try {
+      this.#config.onEvent?.(event);
+    } catch {
+      this.log.warn('an event hook threw; the host goes on');
+    }
   }
 
   /** The version the server agreed to; empty before `start`. */
@@ -136,7 +147,7 @@ export class WorkerHost {
   async start(): Promise<void> {
     if (this.running) return;
     if (this.handlers.size === 0) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'register at least one activity before start' });
-    warnIfNotSecure(this.config.grpcUrl, this.log);
+    warnIfNotSecure(this.#config.grpcUrl, this.log);
     await this.register();
     this.running = true;
     this.stopping = false;
@@ -165,37 +176,37 @@ export class WorkerHost {
       await Promise.race([pending, sleep(2000).catch(() => undefined)]);
     }
     this.running = false;
-    this.rpc.close();
+    this.#rpc.close();
   }
 
   // ------------------------------------------------------------------------------------ registration
 
   private async register(): Promise<void> {
     const request = {
-      worker_name: this.config.workerName,
-      namespace: this.config.namespace,
+      worker_name: this.#config.workerName,
+      namespace: this.#config.namespace,
       capabilities: {
-        languages: this.config.languages ?? ['typescript'],
+        languages: this.#config.languages ?? ['typescript'],
         activities: [...this.handlers.keys()].sort(),
-        pools: this.config.pools ?? [],
+        pools: this.#config.pools ?? [],
         max_inflight: this.maxInflight,
-        protocol_version: this.config.protocolVersion ?? PROTOCOL_VERSION,
+        protocol_version: this.#config.protocolVersion ?? PROTOCOL_VERSION,
       },
     };
     let refreshed = false;
     for (let n = 0; ; n++) {
       try {
-        const response = await this.rpc.registerWorker(request);
+        const response = await this.#rpc.registerWorker(request);
         this.workerId = response.worker_id;
-        this.session = response.session_token;
+        this.#session = response.session_token;
         this.accepted = response.accepted_protocol_version;
-        this.log.info('worker registered', { worker: this.config.workerName, protocol: this.accepted });
-        this.config.onEvent?.({ type: 'registered', protocolVersion: this.accepted });
+        this.log.info('worker registered', { worker: this.#config.workerName, protocol: this.accepted });
+        this.#emit({ type: 'registered', protocolVersion: this.accepted });
         return;
       } catch (error) {
         if (!(error instanceof SagatError)) throw error;
         // A token the provider can refresh gets one more chance (SPEC §5).
-        if (error.code === 'UNAUTHENTICATED' && !refreshed && typeof this.config.token === 'function') {
+        if (error.code === 'UNAUTHENTICATED' && !refreshed && typeof this.#config.token === 'function') {
           refreshed = true;
           continue;
         }
@@ -225,6 +236,9 @@ export class WorkerHost {
 
   private async run(): Promise<void> {
     let failures = 0;
+    // Refusals of the session in a row, after registering again: a server that registers a worker and refuses
+    // it at once is not asked again at once (SPEC §6.2).
+    let refused = 0;
     while (!this.stopping) {
       try {
         const free = this.maxInflight - this.inflight.size;
@@ -232,12 +246,17 @@ export class WorkerHost {
           await this.idle(50);
           continue;
         }
-        const response = await this.rpc.pollTasks({ worker_id: this.workerId, session_token: this.session, max_tasks: Math.min(free, MAX_POLL) });
+        const response = await this.#rpc.pollTasks({ worker_id: this.workerId, session_token: this.#session, max_tasks: Math.min(free, MAX_POLL) });
         failures = 0;
-        this.config.onEvent?.({ type: 'poll', tasks: response.tasks.length });
-        for (const lease of response.tasks) this.dispatch(lease);
+        refused = 0;
+        this.#emit({ type: 'poll', tasks: response.tasks.length });
+        // At most as many as there is room for: the platform honours `max_tasks`, a broken one is not believed.
+        for (const lease of response.tasks.slice(0, free)) this.dispatch(lease);
+        if (response.tasks.length > free) {
+          this.log.warn('the platform leased more tasks than were asked for; the others are left to lapse', { asked: free, got: response.tasks.length });
+        }
         if (response.tasks.length === 0) {
-          const wait = Math.max(50, response.retry_after_ms > 0 ? response.retry_after_ms : 1000);
+          const wait = Math.min(MAX_WAIT_MS, Math.max(50, response.retry_after_ms > 0 ? response.retry_after_ms : 1000));
           await this.idle(Math.round(wait * (0.8 + Math.random() * 0.4)));
         }
       } catch (error) {
@@ -248,8 +267,10 @@ export class WorkerHost {
           continue;
         }
         if (error.code === 'UNAUTHENTICATED') {
+          if (refused++ > 0) await this.idle(Math.min(30_000, backoffDelayMs({ ...this.retry, maxDelayMs: 30_000 }, refused - 2)));
+          if (this.stopping) return;
           this.log.warn('the session is gone: registering again');
-          this.config.onEvent?.({ type: 'reconnect' });
+          this.#emit({ type: 'reconnect' });
           try {
             await this.register();
             continue;
@@ -261,7 +282,7 @@ export class WorkerHost {
           await this.idle(Math.max(error.retryAfterMs ?? 0, 100));
           continue;
         }
-        this.config.onEvent?.({ type: 'reconnect' });
+        this.#emit({ type: 'reconnect' });
         await this.idle(Math.min(30_000, Math.max(backoffDelayMs({ ...this.retry, maxDelayMs: 30_000 }, failures++), error.retryAfterMs ?? 0)));
       }
     }
@@ -271,26 +292,31 @@ export class WorkerHost {
 
   private dispatch(lease: TaskLease): void {
     const abort = new AbortController();
-    const done = this.execute(lease, abort).finally(() => {
+    const done = this.execute(lease, abort)
+      .catch((error: unknown) => {
+        // Nothing here may reject: `stop` waits on these and an unhandled rejection ends the process.
+        this.log.error('a task failed unexpectedly', { task: lease.task_id, error: error instanceof Error ? error.name : 'unknown' });
+      })
+      .finally(() => {
       this.inflight.delete(lease.task_id);
       // A task finished: there is room, so the pause after an empty poll ends (SPEC §6.2).
       this.wake?.();
     });
     this.inflight.set(lease.task_id, { abort, done });
-    this.config.onEvent?.({ type: 'task.taken', taskId: lease.task_id, activity: lease.activity_name, attempt: lease.attempt });
+    this.#emit({ type: 'task.taken', taskId: lease.task_id, activity: lease.activity_name, attempt: lease.attempt });
   }
 
   private async execute(lease: TaskLease, abort: AbortController): Promise<void> {
     // The heartbeat runs until the report is made, whatever way the task ends (SPEC §6.3).
-    const beats: { stop?: () => void } = {};
+    const cleanup: Array<() => void> = [];
     try {
-      await this.serve(lease, abort, beats);
+      await this.serve(lease, abort, cleanup);
     } finally {
-      beats.stop?.();
+      for (const done of cleanup) done();
     }
   }
 
-  private async serve(lease: TaskLease, abort: AbortController, beats: { stop?: () => void }): Promise<void> {
+  private async serve(lease: TaskLease, abort: AbortController, cleanup: Array<() => void>): Promise<void> {
     const started = Date.now();
     const registered = this.handlers.get(lease.activity_name);
     const state = { deadline: lease.expires_at_epoch_ms, lost: false };
@@ -304,10 +330,11 @@ export class WorkerHost {
 
     let document: { node?: string; input?: unknown; steps?: Record<string, { output?: unknown }> };
     try {
-      const parsed: unknown = lease.input_json === '' ? {} : JSON.parse(lease.input_json);
+      const parsed: unknown = lease.input_json === '' ? {} : parseJson(lease.input_json);
       document = parsed !== null && typeof parsed === 'object' ? (parsed as typeof document) : {};
-    } catch {
-      await this.fail(lease, 'INPUT_INVALID', 'the step document is not JSON', false, started);
+    } catch (error) {
+      // Not JSON, or an integer beyond 2^53 - 1 that a JavaScript number would round (SPEC §8).
+      await this.fail(lease, 'INPUT_INVALID', error instanceof SagatError ? error.message : 'the step document is not JSON', false, started);
       return;
     }
     let input: unknown = document.input;
@@ -321,9 +348,12 @@ export class WorkerHost {
     for (const [node, value] of Object.entries(document.steps ?? {})) steps[node] = value?.output;
 
     // The heartbeat starts before the handler and runs until the report is made (`execute` stops it).
-    beats.stop = this.beat(lease, minor, abort, state).stop;
+    cleanup.push(this.beat(lease, minor, abort, state).stop);
 
     let secretsCache: Promise<Secrets> | undefined;
+    const secretsHolder: { dispose?: () => void } = {};
+    // The secrets are wiped and refused when the handler is done, however it ended.
+    cleanup.push(() => secretsHolder.dispose?.());
     const context: ActivityContext = {
       activityName: lease.activity_name,
       taskId: lease.task_id,
@@ -348,7 +378,17 @@ export class WorkerHost {
         warn: (message, fields) => this.log.warn(message, { ...fields, task: lease.task_id }),
         error: (message, fields) => this.log.error(message, { ...fields, task: lease.task_id }),
       },
-      secrets: () => (secretsCache ??= this.resolveSecrets(lease, minor)),
+      secrets: () => {
+        if (!secretsCache) {
+          const pending = this.resolveSecrets(lease, minor, secretsHolder);
+          secretsCache = pending;
+          // A failed resolution is not remembered for the rest of the attempt: the next call asks again.
+          pending.catch(() => {
+            if (secretsCache === pending) secretsCache = undefined;
+          });
+        }
+        return secretsCache;
+      },
     };
 
     let result: unknown;
@@ -374,7 +414,7 @@ export class WorkerHost {
       return;
     }
     if (state.lost) {
-      this.config.onEvent?.({ type: 'task.stale', taskId: lease.task_id });
+      this.#emit({ type: 'task.stale', taskId: lease.task_id });
       this.log.warn('the lease was lost: the result is dropped', { task: lease.task_id });
       return;
     }
@@ -420,14 +460,14 @@ export class WorkerHost {
     let stopped = false;
     let timer: NodeJS.Timeout | undefined;
     const interval = (): number => {
-      if (this.config.heartbeatIntervalMs) return this.config.heartbeatIntervalMs;
+      if (this.#config.heartbeatIntervalMs) return this.#config.heartbeatIntervalMs;
       const left = Math.max(0, state.deadline - Date.now());
       return Math.min(10_000, Math.max(500, Math.round(left / 3)));
     };
     const tick = async (): Promise<void> => {
       if (stopped) return;
       try {
-        const answer = await this.rpc.heartbeat(
+        const answer = await this.#rpc.heartbeat(
           {
             task_id: lease.task_id,
             worker_id: this.workerId,
@@ -440,7 +480,7 @@ export class WorkerHost {
           },
           lease.traceparent || undefined,
         );
-        this.config.onEvent?.({ type: 'heartbeat', taskId: lease.task_id });
+        this.#emit({ type: 'heartbeat', taskId: lease.task_id });
         if (answer.lease_expires_at_epoch_ms > 0) state.deadline = answer.lease_expires_at_epoch_ms;
         if (answer.cancel_requested && !abort.signal.aborted) abort.abort('run-cancelled');
       } catch (error) {
@@ -488,7 +528,7 @@ export class WorkerHost {
   private async complete(lease: TaskLease, output: string, started: number): Promise<void> {
     try {
       const answer = await this.withRetries(() =>
-        this.rpc.completeStep(
+        this.#rpc.completeStep(
           {
             task_id: lease.task_id,
             run_id: lease.run_id,
@@ -506,12 +546,12 @@ export class WorkerHost {
         ),
       );
       if (answer === 'stale') {
-        this.config.onEvent?.({ type: 'task.stale', taskId: lease.task_id });
+        this.#emit({ type: 'task.stale', taskId: lease.task_id });
         return;
       }
-      this.config.onEvent?.({ type: 'task.completed', taskId: lease.task_id, durationMs: Date.now() - started });
+      this.#emit({ type: 'task.completed', taskId: lease.task_id, durationMs: Date.now() - started });
     } catch (error) {
-      this.config.onEvent?.({ type: 'task.dropped', taskId: lease.task_id, reason: error instanceof SagatError ? error.code : 'unknown' });
+      this.#emit({ type: 'task.dropped', taskId: lease.task_id, reason: error instanceof SagatError ? error.code : 'unknown' });
       this.log.error('the completion could not be reported', { task: lease.task_id, code: error instanceof SagatError ? error.code : 'unknown' });
     }
   }
@@ -520,7 +560,7 @@ export class WorkerHost {
     const safeCode = CODE.test(code) ? code : 'WORKER_ERROR';
     try {
       const answer = await this.withRetries(() =>
-        this.rpc.failStep(
+        this.#rpc.failStep(
           {
             task_id: lease.task_id,
             run_id: lease.run_id,
@@ -538,23 +578,23 @@ export class WorkerHost {
         ),
       );
       if (answer === 'stale') {
-        this.config.onEvent?.({ type: 'task.stale', taskId: lease.task_id });
+        this.#emit({ type: 'task.stale', taskId: lease.task_id });
         return;
       }
-      this.config.onEvent?.({ type: 'task.failed', taskId: lease.task_id, code: safeCode, retryable, durationMs: Date.now() - started });
+      this.#emit({ type: 'task.failed', taskId: lease.task_id, code: safeCode, retryable, durationMs: Date.now() - started });
     } catch (error) {
-      this.config.onEvent?.({ type: 'task.dropped', taskId: lease.task_id, reason: error instanceof SagatError ? error.code : 'unknown' });
+      this.#emit({ type: 'task.dropped', taskId: lease.task_id, reason: error instanceof SagatError ? error.code : 'unknown' });
       this.log.error('the failure could not be reported', { task: lease.task_id, code: error instanceof SagatError ? error.code : 'unknown' });
     }
   }
 
   // --------------------------------------------------------------------------------------- secrets
 
-  private async resolveSecrets(lease: TaskLease, minor: number): Promise<Secrets> {
+  private async resolveSecrets(lease: TaskLease, minor: number, holder: { dispose?: () => void }): Promise<Secrets> {
     if (minor < 2) {
       throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: 'the server speaks a protocol older than 1.2, which has no ResolveSecrets' });
     }
-    const answer = await this.rpc.resolveSecrets(
+    const answer = await this.#rpc.resolveSecrets(
       {
         task_id: lease.task_id,
         run_id: lease.run_id,
@@ -567,18 +607,33 @@ export class WorkerHost {
       lease.traceparent || undefined,
     );
     const values = new Map(answer.secrets.map((secret) => [secret.name, Buffer.from(secret.value)]));
+    let disposed = false;
+    const alive = (): void => {
+      if (disposed) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'the secrets of an attempt are only valid while its handler runs' });
+    };
+    holder.dispose = () => {
+      disposed = true;
+      for (const value of values.values()) value.fill(0);
+      values.clear();
+    };
     return {
+      // A copy: what the caller does to it (wiping it, say) is the caller's, and the host's own is wiped by the host.
       get: (name) => {
+        alive();
         const value = values.get(name);
         if (!value) throw new SagatError({ code: 'NOT_FOUND', message: `the step declares no secret named ${name}` });
-        return value;
+        return Buffer.from(value);
       },
       text: (name) => {
+        alive();
         const value = values.get(name);
         if (!value) throw new SagatError({ code: 'NOT_FOUND', message: `the step declares no secret named ${name}` });
         return value.toString('utf8');
       },
-      names: () => [...values.keys()],
+      names: () => {
+        alive();
+        return [...values.keys()];
+      },
     };
   }
 }

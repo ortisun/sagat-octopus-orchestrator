@@ -125,8 +125,8 @@
         "traceId": "<trace:4>",
         "updatedAt": "<time>",
         "version": "<n>",
-        "versionId": "<uuid:2>",
-        "workflowId": "<uuid:3>"
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
       }
     },
     {
@@ -198,7 +198,7 @@
           "cancelRequested": false,
           "failureCode": null,
           "forward": null,
-          "id": "work",
+          "id": "wait",
           "kind": "FORWARD",
           "status": "READY",
           "type": "activity",

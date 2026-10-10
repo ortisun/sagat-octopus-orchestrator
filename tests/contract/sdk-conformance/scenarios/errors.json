@@ -1,6 +1,6 @@
 {
   "name": "errors",
-  "description": "SC-006-004: every critical error is one canonical SagatError with a code, the trace id of the server's answer, a retryable flag and a remediation, and none of them repeats a payload or a token. Errors the SDK raises about its own input are raised before anything is sent.",
+  "description": "SC-006-004: every critical error is one canonical SagatError with a code, the trace id of the server's answer, a retryable flag and a remediation, and none of them repeats a payload or a token. Errors the SDK raises about its own input are raised before anything is sent. The runs that the key tests start use a workflow nobody serves, so the state the platform ends with does not depend on when the worker polls.",
   "workflows": {
     "one": {
       "name": "errors-flow",
@@ -9,6 +9,16 @@
           "op": "step",
           "id": "work",
           "activity": "errors.work"
+        }
+      ]
+    },
+    "idle": {
+      "name": "errors-idle-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "wait",
+          "activity": "errors.nobody"
         }
       ]
     }
@@ -84,7 +94,7 @@
     {
       "id": "reused-key",
       "op": "start",
-      "workflow": "one",
+      "workflow": "idle",
       "input": {
         "marker": "payload-marker-first"
       },
@@ -93,7 +103,7 @@
     {
       "id": "reused-key-again",
       "op": "start",
-      "workflow": "one",
+      "workflow": "idle",
       "input": {
         "marker": "payload-marker-second"
       },

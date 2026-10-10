@@ -104,6 +104,18 @@ export interface JournalEvent {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A run id is a UUID: anything else would be a path of its own (`..`, `x/operations`) and is refused before a request (SPEC §10). */
+function runIdOf(value: string): string {
+  if (typeof value !== 'string' || !UUID.test(value)) throw invalid('a run id is a UUID');
+  return value.toLowerCase();
+}
+
+/** A name in a URL path segment: never empty and never `.` or `..`; the rest is percent-encoded where it is used. */
+function segmentOf(value: string, what: string): string {
+  if (typeof value !== 'string' || value === '' || value === '.' || value === '..') throw invalid(`${what} is not a name: it is empty, \`.\` or \`..\``);
+  return value;
+}
 const KEY = /^[\x21-\x7e]{8,160}$/;
 
 function object(value: unknown, what: string): Record<string, unknown> {
@@ -172,17 +184,20 @@ function toPage(body: unknown): RunPage {
 
 /** The client of the REST API (SPEC §3). */
 export class SagatClient {
-  private readonly http: HttpTransport;
+  // `#` fields: neither JSON.stringify, util.inspect nor Object.entries of a client can reach the token.
+  readonly #http: HttpTransport;
+  readonly #config: ClientConfig;
   private readonly names = new Map<string, { id: string; at: number }>();
 
-  constructor(private readonly config: ClientConfig) {
+  constructor(config: ClientConfig) {
+    this.#config = config;
     if (!config.apiUrl || !config.namespace) throw invalid('apiUrl and namespace are required');
     warnIfNotSecure(config.apiUrl, config.logger ?? silentLogger);
-    this.http = new HttpTransport(config);
+    this.#http = new HttpTransport(config);
   }
 
   private trace(explicit?: string): string | undefined {
-    const value = explicit ?? this.config.traceContext?.();
+    const value = explicit ?? this.#config.traceContext?.();
     return value === undefined ? undefined : checkTraceparent(value);
   }
 
@@ -199,7 +214,7 @@ export class SagatClient {
     if (cached && Date.now() - cached.at < 60_000) return cached.id;
     let cursor: string | undefined;
     do {
-      const response: HttpResponse = await this.http.request({
+      const response: HttpResponse = await this.#http.request({
         method: 'GET',
         path: '/workflows',
         query: { limit: 200, cursor },
@@ -230,7 +245,7 @@ export class SagatClient {
     if (options.versionId) body['versionId'] = options.versionId;
     if (options.correlationId !== undefined) body['correlationId'] = options.correlationId;
     if (deadline) body['deadline'] = instant(deadline);
-    const response = await this.http.request({
+    const response = await this.#http.request({
       method: 'POST',
       path: '/runs',
       body,
@@ -242,12 +257,12 @@ export class SagatClient {
   }
 
   async get(runId: string): Promise<Run> {
-    const response = await this.http.request({ method: 'GET', path: `/runs/${encodeURIComponent(runId)}`, safeToRepeat: true, traceparent: this.trace() });
+    const response = await this.#http.request({ method: 'GET', path: `/runs/${encodeURIComponent(runIdOf(runId))}`, safeToRepeat: true, traceparent: this.trace() });
     return toRun(response.body);
   }
 
   async list(options: ListOptions = {}): Promise<RunPage> {
-    const response = await this.http.request({
+    const response = await this.#http.request({
       method: 'GET',
       path: '/runs',
       query: { workflowId: options.workflowId, status: options.status, limit: options.limit, cursor: options.cursor },
@@ -278,9 +293,9 @@ export class SagatClient {
     if (options.outcome !== undefined) body['outcome'] = options.outcome;
     if (options.errorCode !== undefined) body['errorCode'] = options.errorCode;
     if (options.expectedRunVersion !== undefined) body['expectedRunVersion'] = options.expectedRunVersion;
-    const response = await this.http.request({
+    const response = await this.#http.request({
       method: 'POST',
-      path: `/runs/${encodeURIComponent(runId)}/operations`,
+      path: `/runs/${encodeURIComponent(runIdOf(runId))}/operations`,
       body,
       idempotencyKey: this.key(options.idempotencyKey),
       traceparent: this.trace(options.traceparent),
@@ -303,9 +318,9 @@ export class SagatClient {
 
   /** Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a `CONFLICT`. */
   async signal(runId: string, name: string, payload: Record<string, unknown>, options: CallOptions = {}): Promise<SignalResult> {
-    const response = await this.http.request({
+    const response = await this.#http.request({
       method: 'POST',
-      path: `/runs/${encodeURIComponent(runId)}/signals/${encodeURIComponent(name)}`,
+      path: `/runs/${encodeURIComponent(runIdOf(runId))}/signals/${encodeURIComponent(segmentOf(name, 'a signal name'))}`,
       body: payload,
       idempotencyKey: this.key(options.idempotencyKey),
       traceparent: this.trace(options.traceparent),
@@ -323,7 +338,7 @@ export class SagatClient {
     if (event.occurredAt) body['occurredAt'] = instant(event.occurredAt);
     if (event.correlationKey !== undefined) body['correlationKey'] = event.correlationKey;
     if (event.dedupeTtlSeconds !== undefined) body['dedupeTtlSeconds'] = event.dedupeTtlSeconds;
-    const response = await this.http.request({
+    const response = await this.#http.request({
       method: 'POST',
       path: '/events',
       body,
@@ -337,9 +352,9 @@ export class SagatClient {
 
   /** The journal of a run, a page at a time. */
   async events(runId: string, options: { cursor?: string; limit?: number } = {}): Promise<{ items: JournalEvent[]; nextCursor: string | null }> {
-    const response = await this.http.request({
+    const response = await this.#http.request({
       method: 'GET',
-      path: `/runs/${encodeURIComponent(runId)}/events`,
+      path: `/runs/${encodeURIComponent(runIdOf(runId))}/events`,
       query: { cursor: options.cursor, limit: options.limit },
       safeToRepeat: true,
       traceparent: this.trace(),

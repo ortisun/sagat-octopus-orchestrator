@@ -1,5 +1,20 @@
 {
   "workflows": {
+    "idle": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "wait",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "errors-idle-flow"
+      },
+      "nodes": [
+        {
+          "activity": "errors.nobody",
+          "id": "wait",
+          "type": "activity"
+        }
+      ]
+    },
     "one": {
       "apiVersion": "sagat-octopus-orchestrator.io/v1",
       "entrypoint": "work",

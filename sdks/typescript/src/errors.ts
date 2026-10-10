@@ -65,6 +65,11 @@ export function codeOfHttpStatus(status: number): ErrorCode {
   return status >= 500 ? 'INTERNAL' : 'BAD_REQUEST';
 }
 
+const MAX_MESSAGE = 512;
+
+/** The longest wait the SDK takes from what a server says (`Retry-After`, `retry_after_ms`). */
+export const MAX_WAIT_MS = 60_000;
+
 /**
  * The one error an SDK raises. `message` is safe to log: it never holds a payload, a token or a
  * secret; `remediation` says what to do about `code`.
@@ -79,14 +84,16 @@ export class SagatError extends Error {
   readonly remediation: string;
 
   constructor(init: SagatErrorInit) {
-    super(init.message);
+    // What a server says is bounded (SPEC §10): its words are cut, a trace id that is not 32 hexadecimal
+    // characters is not repeated, and no wait it asks for is longer than a minute.
+    super(init.message.slice(0, MAX_MESSAGE));
     this.name = 'SagatError';
     this.code = init.code;
     this.status = init.status ?? null;
     this.retryable = init.retryable ?? retryableByDefault(init.code);
-    this.traceId = init.traceId ?? '';
-    this.reason = init.reason ?? null;
-    this.retryAfterMs = init.retryAfterMs ?? null;
+    this.traceId = init.traceId !== undefined && /^[0-9a-f]{32}$/.test(init.traceId) ? init.traceId : '';
+    this.reason = init.reason === undefined || init.reason === null ? null : init.reason.slice(0, 128);
+    this.retryAfterMs = init.retryAfterMs === undefined || init.retryAfterMs === null ? null : Math.min(init.retryAfterMs, MAX_WAIT_MS);
     this.remediation = remediationOf(init.code);
   }
 
