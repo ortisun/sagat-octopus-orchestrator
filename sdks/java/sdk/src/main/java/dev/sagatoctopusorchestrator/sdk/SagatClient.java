@@ -62,6 +62,12 @@ public final class SagatClient implements AutoCloseable {
         }
     }
 
+    /** Never shows the token: only where the client talks to. */
+    @Override
+    public String toString() {
+        return "SagatClient[" + config + "]";
+    }
+
     /** Shortcut for {@code new SagatClient(config)}. */
     public static SagatClient create(ClientConfig config) {
         return new SagatClient(config);
@@ -79,9 +85,36 @@ public final class SagatClient implements AutoCloseable {
     private String trace(String explicit) {
         String value = explicit;
         if (value == null && config.traceContext() != null) {
-            value = config.traceContext().get();
+            try {
+                value = config.traceContext().get();
+            } catch (Throwable t) {
+                // A tracer that fails is no reason to fail the call: no ambient context, the server makes a trace.
+                if (!Hooks.survivable(t)) {
+                    throw (VirtualMachineError) t;
+                }
+                Hooks.log(config.logger(), System.Logger.Level.WARNING, "the trace context hook failed (" + t.getClass().getSimpleName() + "): no traceparent is sent");
+                value = null;
+            }
         }
         return value == null ? null : Traceparents.check(value);
+    }
+
+    private static final Pattern RUN_ID = UUID_TEXT;
+
+    /** A run id is a UUID: anything else would be a path of its own ({@code ..}, {@code x/operations}) and is refused before a request. */
+    private static String runId(String id) {
+        if (id == null || !RUN_ID.matcher(id).matches()) {
+            throw SagatException.invalid("a run id is a UUID");
+        }
+        return id.toLowerCase(Locale.ROOT);
+    }
+
+    /** A name in a URL path (a signal) is percent-encoded; empty, {@code .} and {@code ..} would change the path and are refused. */
+    private static String pathName(String name, String what) {
+        if (name == null || name.isEmpty() || name.equals(".") || name.equals("..")) {
+            throw SagatException.invalid(what + " is not empty, \".\" or \"..\"");
+        }
+        return Endpoints.encodeComponent(name);
     }
 
     private static String key(String given) {
@@ -149,6 +182,12 @@ public final class SagatClient implements AutoCloseable {
     /** Starts a run of a published workflow, given by id or by name. {@code input} is any JSON value (an object by convention). */
     public Run start(String workflow, Object input, StartOptions options) {
         StartOptions opts = options == null ? StartOptions.create() : options;
+        if (workflow == null || workflow.isEmpty()) {
+            throw SagatException.invalid("start needs the name or the id of a workflow");
+        }
+        // Validated before the name is looked up: a call that cannot be made does not cost a request.
+        String idempotencyKey = key(opts.idempotencyKey());
+        String traceparent = trace(opts.traceparent());
         String workflowId = resolveWorkflow(workflow);
         Instant deadline = opts.deadline();
         if (opts.deadlineIn() != null) {
@@ -167,7 +206,7 @@ public final class SagatClient implements AutoCloseable {
             body.put("deadline", Json.instant(deadline));
         }
         RestClient.Response response = http.request(new RestClient.Request(
-                "POST", "/runs", null, body, key(opts.idempotencyKey()), trace(opts.traceparent()), true));
+                "POST", "/runs", null, body, idempotencyKey, traceparent, true));
         return toRun(response.body());
     }
 
@@ -183,7 +222,7 @@ public final class SagatClient implements AutoCloseable {
     /** Reads a run. */
     public Run get(String runId) {
         RestClient.Response response = http.request(new RestClient.Request(
-                "GET", "/runs/" + Endpoints.encodeComponent(runId), null, null, null, trace(null), true));
+                "GET", "/runs/" + runId(runId), null, null, null, trace(null), true));
         return toRun(response.body());
     }
 
@@ -282,7 +321,7 @@ public final class SagatClient implements AutoCloseable {
         }
         RestClient.Response response = http.request(new RestClient.Request(
                 "POST",
-                "/runs/" + Endpoints.encodeComponent(runId) + "/operations",
+                "/runs/" + runId(runId) + "/operations",
                 null,
                 body,
                 key(opts.idempotencyKey()),
@@ -316,7 +355,7 @@ public final class SagatClient implements AutoCloseable {
         JsonNode body = payload == null ? JsonNodeFactory.instance.objectNode() : Json.toTree(payload);
         RestClient.Response response = http.request(new RestClient.Request(
                 "POST",
-                "/runs/" + Endpoints.encodeComponent(runId) + "/signals/" + Endpoints.encodeComponent(name),
+                "/runs/" + runId(runId) + "/signals/" + pathName(name, "a signal name"),
                 null,
                 body,
                 key(opts.idempotencyKey()),
@@ -379,7 +418,7 @@ public final class SagatClient implements AutoCloseable {
         query.put("cursor", cursor);
         query.put("limit", limit == null ? null : Integer.toString(limit));
         RestClient.Response response = http.request(new RestClient.Request(
-                "GET", "/runs/" + Endpoints.encodeComponent(runId) + "/events", query, null, null, trace(null), true));
+                "GET", "/runs/" + runId(runId) + "/events", query, null, null, trace(null), true));
         JsonNode raw = object(response.body(), "a page");
         List<JournalEvent> items = new ArrayList<>();
         for (JsonNode item : raw.path("items")) {
@@ -400,6 +439,7 @@ public final class SagatClient implements AutoCloseable {
      */
     public Run waitForCompletion(String runId, WaitOptions options) {
         WaitOptions opts = options == null ? WaitOptions.create() : options;
+        runId(runId);
         long start = System.nanoTime();
         long timeoutNanos = opts.timeout().toNanos();
         long interval = opts.pollInterval().toMillis();

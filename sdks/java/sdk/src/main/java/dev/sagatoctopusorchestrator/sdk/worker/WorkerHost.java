@@ -5,10 +5,12 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.NullNode;
 import dev.sagatoctopusorchestrator.protocol.v1.Worker;
 import dev.sagatoctopusorchestrator.sdk.ErrorCode;
+import dev.sagatoctopusorchestrator.sdk.Hooks;
 import dev.sagatoctopusorchestrator.sdk.Json;
 import dev.sagatoctopusorchestrator.sdk.RetryPolicy;
 import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.SagatSdk;
+import dev.sagatoctopusorchestrator.sdk.Text;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -96,6 +98,12 @@ public final class WorkerHost implements AutoCloseable {
         this.config = config;
         this.log = config.logger();
         this.retry = config.retry();
+    }
+
+    /** Never shows a credential: only the name of the host. */
+    @Override
+    public String toString() {
+        return "WorkerHost[" + config + ", running=" + running + "]";
     }
 
     /** The version the server agreed to; empty before {@link #start()}. */
@@ -280,15 +288,18 @@ public final class WorkerHost implements AutoCloseable {
         stop();
     }
 
+    /** Tells the metrics hook of the caller; a hook that throws, an Error included, is ignored. */
     private void emit(WorkerEvent event) {
-        if (config.onEvent() == null) {
-            return;
-        }
-        try {
-            config.onEvent().accept(event);
-        } catch (RuntimeException e) {
-            log.log(System.Logger.Level.WARNING, "an event listener failed (" + e.getClass().getSimpleName() + ")");
-        }
+        Hooks.call(config.onEvent(), event);
+    }
+
+    /** What the server asked us to wait, never more than the cap (a minute by default; SPEC section 6.2). */
+    private long serverWait(long millis) {
+        return Math.min(Math.max(0, millis), config.maxServerWait().toMillis());
+    }
+
+    private long retryDelay(int n, SagatException error) {
+        return retry.delayAfterMillis(n, error, config.maxServerWait().toMillis(), random());
     }
 
     // ------------------------------------------------------------------------------- registration RPC
@@ -312,7 +323,7 @@ public final class WorkerHost implements AutoCloseable {
                 workerId = response.getWorkerId();
                 session = response.getSessionToken();
                 accepted = response.getAcceptedProtocolVersion();
-                log.log(System.Logger.Level.INFO, "worker registered worker=" + config.workerName() + " protocol=" + accepted);
+                Hooks.log(log, System.Logger.Level.INFO, "worker registered worker=" + config.workerName() + " protocol=" + accepted);
                 emit(new WorkerEvent.Registered(accepted));
                 return;
             } catch (SagatException error) {
@@ -324,7 +335,7 @@ public final class WorkerHost implements AutoCloseable {
                 if (!error.isRetriable() || n + 1 >= retry.maxAttempts()) {
                     throw error;
                 }
-                sleep(retry.delayAfterMillis(n, error, random()));
+                sleep(retryDelay(n, error));
             }
         }
     }
@@ -375,6 +386,8 @@ public final class WorkerHost implements AutoCloseable {
 
     private void run() {
         int failures = 0;
+        // Polls in a row that were refused as UNAUTHENTICATED since the last one that was not (reset by a good poll).
+        int refused = 0;
         while (!stopping) {
             try {
                 int free = config.maxInflight() - inflight.size();
@@ -382,18 +395,26 @@ public final class WorkerHost implements AutoCloseable {
                     idle(50);
                     continue;
                 }
+                int asked = Math.min(free, MAX_POLL);
                 Worker.PollTasksResponse response = rpc.pollTasks(Worker.PollTasksRequest.newBuilder()
                         .setWorkerId(workerId)
                         .setSessionToken(session)
-                        .setMaxTasks(Math.min(free, MAX_POLL))
+                        .setMaxTasks(asked)
                         .build());
                 failures = 0;
+                refused = 0;
                 emit(new WorkerEvent.Poll(response.getTasksCount()));
-                for (Worker.TaskLease lease : response.getTasksList()) {
-                    dispatch(lease);
+                List<Worker.TaskLease> leases = response.getTasksList();
+                // The host runs at most as many tasks as it asked for: the rest are logged and left to lapse.
+                for (int i = 0; i < leases.size() && i < asked; i++) {
+                    dispatch(leases.get(i));
                 }
-                if (response.getTasksCount() == 0) {
-                    long wait = Math.max(50, response.getRetryAfterMs() > 0 ? response.getRetryAfterMs() : 1000);
+                if (leases.size() > asked) {
+                    Hooks.log(log, System.Logger.Level.WARNING,
+                            "a poll answer carried " + leases.size() + " tasks, " + asked + " were asked for: the rest are left to lapse");
+                }
+                if (leases.isEmpty()) {
+                    long wait = serverWait(Math.max(50, response.getRetryAfterMs() > 0 ? response.getRetryAfterMs() : 1000));
                     idle(Math.round(wait * (0.8 + ThreadLocalRandom.current().nextDouble() * 0.4)));
                 }
             } catch (SagatException error) {
@@ -401,27 +422,41 @@ public final class WorkerHost implements AutoCloseable {
                     return;
                 }
                 if (error.code() == ErrorCode.UNAUTHENTICATED) {
-                    log.log(System.Logger.Level.WARNING, "the session is gone: registering again worker=" + config.workerName());
+                    Hooks.log(log, System.Logger.Level.WARNING, "the session is gone: registering again worker=" + config.workerName());
                     emit(new WorkerEvent.Reconnect());
+                    if (refused > 0) {
+                        // The session registered a moment ago was refused at once: a server that does that is not to be
+                        // hammered with registrations, so the next one waits (SPEC sections 5 and 6.2).
+                        idle(retry.withMaxDelay(Duration.ofSeconds(30)).backoffMillis(refused - 1, random()));
+                        if (stopping) {
+                            return;
+                        }
+                    }
+                    refused++;
                     try {
                         register();
                         continue;
                     } catch (SagatException again) {
-                        log.log(System.Logger.Level.ERROR, "registering again failed code=" + again.code());
+                        Hooks.log(log, System.Logger.Level.ERROR, "registering again failed code=" + again.code());
                     }
                 }
                 if (error.code() == ErrorCode.RATE_LIMITED) {
-                    idle(Math.max(error.retryAfterMs().orElse(0L), 100));
+                    idle(serverWait(Math.max(error.retryAfterMs().orElse(0L), 100)));
                     continue;
                 }
                 emit(new WorkerEvent.Reconnect());
                 RetryPolicy slow = retry.withMaxDelay(Duration.ofSeconds(30));
-                idle(Math.min(30_000, Math.max(slow.backoffMillis(failures++, random()), error.retryAfterMs().orElse(0L))));
-            } catch (RuntimeException error) {
+                idle(Math.min(30_000, Math.max(slow.backoffMillis(failures++, random()), serverWait(error.retryAfterMs().orElse(0L)))));
+            } catch (Throwable error) {
+                // Whatever else goes wrong in the loop (an Error from a hook, a bug of ours) is logged and survived: a
+                // host that stops polling without a word is the worst failure it has. Only the VM's own are rethrown.
+                if (!Hooks.survivable(error)) {
+                    throw (VirtualMachineError) error;
+                }
                 if (stopping) {
                     return;
                 }
-                log.log(System.Logger.Level.ERROR, "the poll loop failed (" + error.getClass().getSimpleName() + ")");
+                Hooks.log(log, System.Logger.Level.ERROR, "the poll loop failed (" + error.getClass().getSimpleName() + ")");
                 idle(1000);
             }
         }
@@ -433,7 +468,7 @@ public final class WorkerHost implements AutoCloseable {
         WorkerRpc channel = rpc;
         Inflight task = new Inflight();
         if (inflight.putIfAbsent(lease.getTaskId(), task) != null) {
-            log.log(System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
+            Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
             return;
         }
         emit(new WorkerEvent.TaskTaken(lease.getTaskId(), lease.getActivityName(), lease.getAttempt()));
@@ -442,7 +477,10 @@ public final class WorkerHost implements AutoCloseable {
                 try {
                     execute(channel, lease, task);
                 } catch (Throwable t) {
-                    log.log(System.Logger.Level.ERROR, "a task failed outside its handler task=" + lease.getTaskId() + " (" + t.getClass().getSimpleName() + ")");
+                    Hooks.log(log, System.Logger.Level.ERROR, "a task failed outside its handler task=" + lease.getTaskId() + " (" + t.getClass().getSimpleName() + ")");
+                    if (!Hooks.survivable(t)) {
+                        throw (VirtualMachineError) t;
+                    }
                 } finally {
                     inflight.remove(lease.getTaskId());
                     task.done.complete(null);
@@ -484,8 +522,9 @@ public final class WorkerHost implements AutoCloseable {
         long started = System.nanoTime();
         Registered registered = active.get(lease.getActivityName());
         LeaseState state = new LeaseState(lease.getExpiresAtEpochMs());
-        TaskKind kind = TaskKind.of(lease.getTaskKind());
         int minor = minorOf(accepted);
+        // Against 1.0 and 1.1 the task kind is not read at all: every task is a forward task (SPEC section 6.1).
+        TaskKind kind = minor >= 2 ? TaskKind.of(lease.getTaskKind()) : TaskKind.FORWARD;
 
         if (registered == null) {
             fail(channel, lease, state, "NO_HANDLER", "no handler is registered for the activity", false, started);
@@ -551,12 +590,12 @@ public final class WorkerHost implements AutoCloseable {
 
             if (state.lost) {
                 emit(new WorkerEvent.TaskStale(lease.getTaskId()));
-                log.log(System.Logger.Level.WARNING, "the lease was lost: the result is dropped task=" + lease.getTaskId());
+                Hooks.log(log, System.Logger.Level.WARNING, "the lease was lost: the result is dropped task=" + lease.getTaskId());
                 return;
             }
             if (unreported) {
                 emit(new WorkerEvent.TaskDropped(lease.getTaskId(), "shutdown"));
-                log.log(System.Logger.Level.INFO, "the host is stopping: the cancelled task is left to its lease task=" + lease.getTaskId());
+                Hooks.log(log, System.Logger.Level.INFO, "the host is stopping: the cancelled task is left to its lease task=" + lease.getTaskId());
                 return;
             }
             if (failure != null) {
@@ -622,7 +661,7 @@ public final class WorkerHost implements AutoCloseable {
             this.state = state;
             this.cancel = cancel;
             this.minor = minor;
-            this.logger = (level, message) -> log.log(level, "task=" + lease.getTaskId() + " " + message);
+            this.logger = (level, message) -> Hooks.log(log, level, "task=" + lease.getTaskId() + " " + message);
         }
 
         @Override
@@ -677,12 +716,12 @@ public final class WorkerHost implements AutoCloseable {
 
         @Override
         public String targetNode() {
-            return lease.getTargetNode();
+            return minor >= 2 ? lease.getTargetNode() : "";
         }
 
         @Override
         public String targetIdempotencyKey() {
-            return lease.getTargetIdempotencyKey();
+            return minor >= 2 ? lease.getTargetIdempotencyKey() : "";
         }
 
         @Override
@@ -818,9 +857,14 @@ public final class WorkerHost implements AutoCloseable {
                     return;
                 }
                 // Anything else: the next beat tries again; the lease is ours until it runs out.
-                log.log(System.Logger.Level.WARNING, "a heartbeat failed task=" + lease.getTaskId() + " code=" + error.code());
-            } catch (RuntimeException error) {
-                log.log(System.Logger.Level.WARNING, "a heartbeat failed task=" + lease.getTaskId() + " (" + error.getClass().getSimpleName() + ")");
+                Hooks.log(log, System.Logger.Level.WARNING, "a heartbeat failed task=" + lease.getTaskId() + " code=" + error.code());
+            } catch (Throwable error) {
+                // A hook of the caller (a token provider, a logger, a metrics callback) or a bug of ours: the next beat
+                // tries again. A heartbeat that dies of it would let the lease lapse under a task that is still running.
+                if (!Hooks.survivable(error)) {
+                    throw (VirtualMachineError) error;
+                }
+                Hooks.log(log, System.Logger.Level.WARNING, "a heartbeat failed task=" + lease.getTaskId() + " (" + error.getClass().getSimpleName() + ")");
             }
             if (!stopped) {
                 schedule(interval());
@@ -855,7 +899,7 @@ public final class WorkerHost implements AutoCloseable {
                     return null;
                 }
                 if (error.isRetriable() && n + 1 < MAX_REPORT_ATTEMPTS) {
-                    sleep(retry.delayAfterMillis(n, error, random()));
+                    sleep(retryDelay(n, error));
                     continue;
                 }
                 throw error;
@@ -888,7 +932,7 @@ public final class WorkerHost implements AutoCloseable {
             emit(new WorkerEvent.TaskCompleted(lease.getTaskId(), Duration.ofMillis(millisSince(started))));
         } catch (SagatException error) {
             emit(new WorkerEvent.TaskDropped(lease.getTaskId(), error.code().name()));
-            log.log(System.Logger.Level.ERROR, "the completion could not be reported task=" + lease.getTaskId() + " code=" + error.code());
+            Hooks.log(log, System.Logger.Level.ERROR, "the completion could not be reported task=" + lease.getTaskId() + " code=" + error.code());
         }
     }
 
@@ -904,7 +948,7 @@ public final class WorkerHost implements AutoCloseable {
                     .setLeaseToken(lease.getLeaseToken())
                     .setIdempotencyKey("failed-" + lease.getTaskId())
                     .setErrorCode(safeCode)
-                    .setSafeMessage(cut(message))
+                    .setSafeMessage(Text.cut(message, 512))
                     .setRetryable(retryable)
                     .setTraceparent(lease.getTraceparent())
                     .build();
@@ -916,19 +960,7 @@ public final class WorkerHost implements AutoCloseable {
             emit(new WorkerEvent.TaskFailed(lease.getTaskId(), safeCode, retryable, Duration.ofMillis(millisSince(started))));
         } catch (SagatException error) {
             emit(new WorkerEvent.TaskDropped(lease.getTaskId(), error.code().name()));
-            log.log(System.Logger.Level.ERROR, "the failure could not be reported task=" + lease.getTaskId() + " code=" + error.code());
+            Hooks.log(log, System.Logger.Level.ERROR, "the failure could not be reported task=" + lease.getTaskId() + " code=" + error.code());
         }
-    }
-
-    /** The first 512 characters, without cutting a surrogate pair in half. */
-    private static String cut(String message) {
-        if (message == null) {
-            return "";
-        }
-        if (message.length() <= 512) {
-            return message;
-        }
-        int end = Character.isHighSurrogate(message.charAt(511)) ? 511 : 512;
-        return message.substring(0, end);
     }
 }

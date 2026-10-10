@@ -29,6 +29,8 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(60)
 class SagatClientTest {
     private static final String WORKFLOW = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+    /** A run id: the SDK refuses anything that is not a UUID before it sends a request. */
+    private static final String RUN = "0190aaaa-0000-7000-8000-000000000001";
     private static final String TRACE = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
     private static FakeRestServer server;
 
@@ -162,12 +164,12 @@ class SagatClientTest {
                 reply.send(200, run());
             }
         });
-        Run got = client().get("r-1");
+        Run got = client().get(RUN);
         assertEquals("0190aaaa-0000-7000-8000-000000000001", got.runId());
         assertEquals(2, server.seen.size());
 
         server.prepare((req, reply) -> reply.send(503, "<html>bad gateway</html>"));
-        SagatException error = assertThrows(SagatException.class, () -> client().get("r-1"));
+        SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
         assertEquals(ErrorCode.UNAVAILABLE, error.code());
         assertEquals(503, error.httpStatus().getAsInt());
         assertEquals(4, server.seen.size(), "four attempts in all");
@@ -184,7 +186,7 @@ class SagatClientTest {
             }
         });
         long began = System.nanoTime();
-        client().get("r-1");
+        client().get(RUN);
         assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began) >= 950, "waited for Retry-After: 1");
     }
 
@@ -208,19 +210,19 @@ class SagatClientTest {
             {400, "BAD_REQUEST"}, {401, "UNAUTHENTICATED"}, {403, "FORBIDDEN"}, {404, "NOT_FOUND"}, {409, "CONFLICT"}, {422, "VALIDATION_FAILED"}};
         for (Object[] c : refused) {
             server.prepare((req, reply) -> reply.send((Integer) c[0], "{\"code\":\"" + c[1] + "\",\"message\":\"no\",\"retryable\":true}"));
-            SagatException error = assertThrows(SagatException.class, () -> client().get("x"));
+            SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
             assertTrue(error.retryable(), "the server said so: " + c[1]);
             assertFalse(error.isRetriable(), String.valueOf(c[1]));
             assertEquals(1, server.seen.size(), c[0] + " is not repeated");
         }
         server.prepare((req, reply) -> reply.send(500, "{\"code\":\"INTERNAL\",\"message\":\"oops\",\"retryable\":true}"));
-        assertThrows(SagatException.class, () -> client().get("x"));
+        assertThrows(SagatException.class, () -> client().get(RUN));
         assertEquals(4, server.seen.size(), "an INTERNAL that says it may be repeated is");
         server.prepare((req, reply) -> reply.send(500, "{\"code\":\"INTERNAL\",\"message\":\"oops\",\"retryable\":false}"));
-        assertThrows(SagatException.class, () -> client().get("x"));
+        assertThrows(SagatException.class, () -> client().get(RUN));
         assertEquals(1, server.seen.size(), "and one that does not say so is not");
         server.prepare((req, reply) -> reply.send(429, "{\"code\":\"QUOTA_EXCEEDED\",\"message\":\"full\",\"retryable\":false}"));
-        assertThrows(SagatException.class, () -> client().get("x"));
+        assertThrows(SagatException.class, () -> client().get(RUN));
         assertEquals(1, server.seen.size(), "a quota is not a rate limit");
     }
 
@@ -242,7 +244,7 @@ class SagatClientTest {
             int status = (Integer) c[0];
             String code = (String) c[1];
             server.prepare((req, reply) -> reply.send(status, "{\"code\":\"" + code + "\",\"message\":\"no\",\"retryable\":false,\"traceId\":\"" + "b".repeat(32) + "\"}"));
-            SagatException error = assertThrows(SagatException.class, () -> client().get("x"));
+            SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
             assertEquals(ErrorCode.valueOf(code), error.code());
             assertEquals(status, error.httpStatus().getAsInt());
             assertEquals(1, server.seen.size(), String.valueOf(status));
@@ -254,8 +256,8 @@ class SagatClientTest {
         AtomicInteger n = new AtomicInteger();
         server.prepare((req, reply) -> reply.send(200, run()));
         SagatClient c = client(b -> b.tokenProvider(() -> "tok-" + n.incrementAndGet()));
-        c.get("a");
-        c.get("b");
+        c.get(RUN);
+        c.get(RUN);
         assertEquals(List.of("Bearer tok-1", "Bearer tok-2"), server.seen.stream().map(s -> s.header("authorization")).toList());
     }
 
@@ -265,7 +267,7 @@ class SagatClientTest {
             throw new IllegalStateException("vault said: password=hunter2");
         }));
         server.prepare((req, reply) -> reply.send(200, run()));
-        SagatException error = assertThrows(SagatException.class, () -> c.get("a"));
+        SagatException error = assertThrows(SagatException.class, () -> c.get(RUN));
         assertEquals(ErrorCode.UNAUTHENTICATED, error.code());
         assertFalse(error.getMessage().contains("hunter2"));
         assertEquals(0, server.seen.size());
@@ -303,7 +305,7 @@ class SagatClientTest {
             elsewhere.prepare((req, reply) -> reply.send(200, run()));
             for (int status : new int[] {301, 302, 303, 307, 308}) {
                 server.prepare((req, reply) -> reply.send(status, "", "Location", elsewhere.base() + "/runs/r"));
-                SagatException get = assertThrows(SagatException.class, () -> client().get("r"), "GET " + status);
+                SagatException get = assertThrows(SagatException.class, () -> client().get(RUN), "GET " + status);
                 assertEquals(ErrorCode.PROTOCOL, get.code());
                 assertEquals(status, get.httpStatus().getAsInt());
                 assertEquals("the server redirected the call", get.getMessage());
@@ -332,7 +334,7 @@ class SagatClientTest {
             elsewhere.prepare((req, reply) -> reply.send(200, run()));
             server.prepare((req, reply) -> reply.send(307, "", "Location", elsewhere.base() + "/runs/r"));
             HttpTransport supplied = JdkHttpTransport.using(java.net.http.HttpClient.newBuilder().followRedirects(java.net.http.HttpClient.Redirect.NEVER).build());
-            SagatException error = assertThrows(SagatException.class, () -> client(b -> b.transport(supplied)).get("r"));
+            SagatException error = assertThrows(SagatException.class, () -> client(b -> b.transport(supplied)).get(RUN));
             assertEquals(ErrorCode.PROTOCOL, error.code());
             assertEquals(0, elsewhere.seen.size());
         }
@@ -366,7 +368,7 @@ class SagatClientTest {
                     .retry(new RetryPolicy(1, Duration.ofMillis(1), Duration.ofMillis(1)))
                     .build());
             long began = System.nanoTime();
-            SagatException error = assertThrows(SagatException.class, () -> slow.get("r"));
+            SagatException error = assertThrows(SagatException.class, () -> slow.get(RUN));
             long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began);
             assertEquals(ErrorCode.TRANSPORT, error.code());
             assertEquals("the request timed out", error.getMessage());
@@ -421,8 +423,8 @@ class SagatClientTest {
                 .apiUrl("http://api.example.com/v1").namespace("p").token("tok-secret-1").logger(log).transport(dead)
                 .retry(new RetryPolicy(2, Duration.ofMillis(1), Duration.ofMillis(1))).build());
         assertEquals(1, log.warnings("plain text").size(), "one warning, at start");
-        assertThrows(SagatException.class, () -> plain.get("r"));
-        assertThrows(SagatException.class, () -> plain.get("r"));
+        assertThrows(SagatException.class, () -> plain.get(RUN));
+        assertThrows(SagatException.class, () -> plain.get(RUN));
         assertEquals(1, log.warnings("plain text").size(), "not repeated by the calls");
         assertTrue(log.lines().stream().noneMatch(l -> l.message().contains("tok-secret")), "no log line holds the token");
     }
@@ -430,10 +432,10 @@ class SagatClientTest {
     @Test
     void theAmbientTraceContextIsUsedWhenTheCallHasNone() {
         server.prepare((req, reply) -> reply.send(200, run()));
-        client(b -> b.traceContext(() -> TRACE)).get("r");
+        client(b -> b.traceContext(() -> TRACE)).get(RUN);
         assertEquals(TRACE, server.seen.get(0).header("traceparent"));
         server.prepare((req, reply) -> reply.send(200, run()));
-        client(b -> b.traceContext(() -> null)).get("r");
+        client(b -> b.traceContext(() -> null)).get(RUN);
         assertEquals(null, server.seen.get(0).header("traceparent"), "no context, no header");
     }
 
@@ -513,7 +515,7 @@ class SagatClientTest {
                 .token("t")
                 .retry(new RetryPolicy(2, Duration.ofMillis(1), Duration.ofMillis(2)))
                 .build());
-        SagatException error = assertThrows(SagatException.class, () -> dead.get("x"));
+        SagatException error = assertThrows(SagatException.class, () -> dead.get(RUN));
         assertEquals(ErrorCode.TRANSPORT, error.code());
         assertTrue(error.retryable());
         assertTrue(error.httpStatus().isEmpty());
@@ -526,57 +528,50 @@ class SagatClientTest {
         server.prepare((req, reply) -> reply.send(202, req.path().endsWith("/operations")
                 ? "{\"operationId\":\"op-1\",\"accepted\":true,\"runStatus\":\"CANCELLING\",\"runVersion\":9}"
                 : "{\"deliveredTo\":[\"wait\"]}"));
-        OperationResult cancelled = client().cancel("r-1", "no longer needed", OperateOptions.create().expectedRunVersion(3L));
+        OperationResult cancelled = client().cancel(RUN, "no longer needed", OperateOptions.create().expectedRunVersion(3L));
         assertEquals("op-1", cancelled.operationId());
         assertTrue(cancelled.accepted());
         assertEquals("CANCELLING", cancelled.runStatus());
         assertEquals(9L, cancelled.runVersion());
         assertEquals("{\"action\":\"CANCEL\",\"reason\":\"no longer needed\",\"expectedRunVersion\":3}", server.seen.get(0).rawBody());
-        SignalResult signalled = client().signal("r-1", "payment-confirmed", Map.of("paymentId", "p-1"), null);
+        SignalResult signalled = client().signal(RUN, "payment-confirmed", Map.of("paymentId", "p-1"), null);
         assertEquals(List.of("wait"), signalled.deliveredTo());
-        assertEquals("/v1/runs/r-1/signals/payment-confirmed", server.seen.get(1).path());
+        assertEquals("/v1/runs/" + RUN + "/signals/payment-confirmed", server.seen.get(1).path());
         assertEquals("{\"paymentId\":\"p-1\"}", server.seen.get(1).rawBody());
-    }
-
-    @Test
-    void pathSegmentsAreEncodedLikeEncodeURIComponent() {
-        server.prepare((req, reply) -> reply.send(202, "{\"deliveredTo\":[]}"));
-        client().signal("a b/c", "x y", Map.of(), null);
-        assertEquals("/v1/runs/a%20b%2Fc/signals/x%20y", server.seen.get(0).uri());
     }
 
     @Test
     void waitingForCompletionPollsUntilTheRunIsTerminal() {
         AtomicInteger polls = new AtomicInteger();
         server.prepare((req, reply) -> reply.send(200, run("status", polls.incrementAndGet() < 3 ? "\"RUNNING\"" : "\"SUCCEEDED\"")));
-        Run done = client().waitForCompletion("r", WaitOptions.create().pollInterval(Duration.ofMillis(5)).timeout(Duration.ofSeconds(5)));
+        Run done = client().waitForCompletion(RUN, WaitOptions.create().pollInterval(Duration.ofMillis(5)).timeout(Duration.ofSeconds(5)));
         assertEquals(RunStatus.SUCCEEDED, done.status());
         assertTrue(done.isTerminal());
         assertEquals(3, polls.get());
 
         server.prepare((req, reply) -> reply.send(200, run()));
         SagatException timeout = assertThrows(SagatException.class,
-                () -> client().waitForCompletion("r", WaitOptions.create().pollInterval(Duration.ofMillis(5)).timeout(Duration.ofMillis(30))));
+                () -> client().waitForCompletion(RUN, WaitOptions.create().pollInterval(Duration.ofMillis(5)).timeout(Duration.ofMillis(30))));
         assertEquals("WAIT_TIMEOUT", timeout.reason().orElseThrow());
     }
 
     @Test
     void aCallTheOlderServerDoesNotHaveIsNotFoundWithTheReasonUnsupportedByServer() {
         server.prepare((req, reply) -> reply.send(404, ""));
-        SagatException routing = assertThrows(SagatException.class, () -> client().get("r"));
+        SagatException routing = assertThrows(SagatException.class, () -> client().get(RUN));
         assertEquals(ErrorCode.NOT_FOUND, routing.code());
         assertEquals("UNSUPPORTED_BY_SERVER", routing.reason().orElseThrow());
         assertEquals(1, server.seen.size(), "a 404 is not repeated");
 
         server.prepare((req, reply) -> reply.send(501, "<html>not implemented</html>"));
-        SagatException notImplemented = assertThrows(SagatException.class, () -> client().get("r"));
+        SagatException notImplemented = assertThrows(SagatException.class, () -> client().get(RUN));
         assertEquals(ErrorCode.NOT_FOUND, notImplemented.code());
         assertEquals("UNSUPPORTED_BY_SERVER", notImplemented.reason().orElseThrow());
         assertEquals(501, notImplemented.httpStatus().getAsInt());
         assertFalse(notImplemented.retryable());
 
         server.prepare((req, reply) -> reply.send(404, "{\"code\":\"NOT_FOUND\",\"message\":\"no such run\",\"retryable\":false}"));
-        SagatException missing = assertThrows(SagatException.class, () -> client().get("r"));
+        SagatException missing = assertThrows(SagatException.class, () -> client().get(RUN));
         assertEquals(ErrorCode.NOT_FOUND, missing.code());
         assertTrue(missing.reason().isEmpty(), "a missing run is not an unsupported call");
     }
@@ -586,9 +581,9 @@ class SagatClientTest {
         server.prepare((req, reply) -> reply.send(200, "{\"items\":[" + run() + "],\"nextCursor\":null,\"extra\":1}"));
         assertEquals(1, client().list(null).raw().get("extra").intValue());
         server.prepare((req, reply) -> reply.send(200, "{\"items\":[],\"nextCursor\":null,\"extra\":2}"));
-        assertEquals(2, client().events("r", null, null).raw().get("extra").intValue());
+        assertEquals(2, client().events(RUN, null, null).raw().get("extra").intValue());
         server.prepare((req, reply) -> reply.send(202, "{\"deliveredTo\":[],\"extra\":3}"));
-        assertEquals(3, client().signal("r", "n", null, null).raw().get("extra").intValue());
+        assertEquals(3, client().signal(RUN, "n", null, null).raw().get("extra").intValue());
         server.prepare((req, reply) -> reply.send(202, "{\"eventId\":\"e\",\"source\":\"api\",\"status\":\"DUPLICATE\",\"extra\":4}"));
         EventAccepted duplicate = client().publishEvent(EventInput.of("t", null), null);
         assertEquals(EventAccepted.Status.DUPLICATE, duplicate.status());
@@ -598,7 +593,7 @@ class SagatClientTest {
     @Test
     void aStatusANewerServerAddedIsUnknownButItsTextIsKept() {
         server.prepare((req, reply) -> reply.send(200, run("status", "\"HIBERNATING\"")));
-        Run got = client().get("r");
+        Run got = client().get(RUN);
         assertEquals(RunStatus.UNKNOWN, got.status());
         assertEquals("HIBERNATING", got.statusText());
         assertFalse(got.isTerminal());
@@ -608,16 +603,16 @@ class SagatClientTest {
     void asyncCallsReturnFuturesAndCancellingOneInterruptsAWait() throws Exception {
         server.prepare((req, reply) -> reply.send(200, run()));
         try (SagatClient c = client()) {
-            Run viaFuture = c.getAsync("r").get(5, TimeUnit.SECONDS);
+            Run viaFuture = c.getAsync(RUN).get(5, TimeUnit.SECONDS);
             assertEquals(RunStatus.RUNNING, viaFuture.status());
 
             server.prepare((req, reply) -> reply.send(404, "{\"code\":\"NOT_FOUND\",\"message\":\"no\",\"retryable\":false}"));
-            CompletableFuture<Run> failing = c.getAsync("missing");
+            CompletableFuture<Run> failing = c.getAsync(RUN);
             CompletionException wrapped = assertThrows(CompletionException.class, failing::join);
             assertTrue(wrapped.getCause() instanceof SagatException e && e.code() == ErrorCode.NOT_FOUND);
 
             server.prepare((req, reply) -> reply.send(200, run()));
-            CompletableFuture<Run> waiting = c.waitForCompletionAsync("r", WaitOptions.create().pollInterval(Duration.ofMillis(20)).timeout(Duration.ofMinutes(5)));
+            CompletableFuture<Run> waiting = c.waitForCompletionAsync(RUN, WaitOptions.create().pollInterval(Duration.ofMillis(20)).timeout(Duration.ofMinutes(5)));
             Thread.sleep(100);
             long before = server.seen.size();
             assertTrue(waiting.cancel(true));
@@ -636,15 +631,15 @@ class SagatClientTest {
         client(b -> b.transport(call -> {
             seenByHook.add(call.method() + " " + call.uri().getPath());
             return real.send(call);
-        })).get("r-9");
-        assertEquals(List.of("GET /v1/runs/r-9"), seenByHook);
+        })).get(RUN);
+        assertEquals(List.of("GET /v1/runs/" + RUN), seenByHook);
     }
 
     @Test
     void everyInstantOfARunIsUtcWhateverTheZoneOfTheProcess() {
         assertEquals("Asia/Kolkata", java.util.TimeZone.getDefault().getID(), "the build runs the tests in a zone that is not UTC");
         server.prepare((req, reply) -> reply.send(200, run("deadline", "\"2030-01-01T05:30:00+05:30\"")));
-        Run got = client().get("r");
+        Run got = client().get(RUN);
         assertEquals("2030-01-01T00:00:00Z", got.deadline().toString());
         assertEquals("2026-10-10T10:00:00Z", got.createdAt().toString());
         assertNotNull(Json.instant(got.createdAt()));

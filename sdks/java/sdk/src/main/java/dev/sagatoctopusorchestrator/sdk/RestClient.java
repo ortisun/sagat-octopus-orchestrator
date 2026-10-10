@@ -54,8 +54,9 @@ final class RestClient {
                 if (!error.isRetriable() || n + 1 >= attempts) {
                     throw error;
                 }
-                long wait = config.retry().delayAfterMillis(n, error, () -> ThreadLocalRandom.current().nextDouble());
-                config.logger().log(
+                long wait = config.retry().delayAfterMillis(n, error, config.maxServerWait().toMillis(), () -> ThreadLocalRandom.current().nextDouble());
+                Hooks.log(
+                        config.logger(),
                         System.Logger.Level.WARNING,
                         "retrying a request method=" + req.method() + " path=" + req.path() + " code=" + error.code()
                                 + " attempt=" + (n + 1) + " waitMs=" + wait);
@@ -110,19 +111,23 @@ final class RestClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw SagatException.builder(ErrorCode.CANCELLED, "interrupted while waiting for the server").cause(e).build();
+        } catch (HttpTransport.ResponseTooLargeException e) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "the answer is larger than the SDK reads");
         } catch (IOException e) {
             boolean timedOut = e instanceof HttpTimeoutException;
             throw SagatException.builder(ErrorCode.TRANSPORT, timedOut ? "the request timed out" : "no answer from the server")
                     .cause(e)
                     .build();
         } catch (RuntimeException e) {
-            throw SagatException.builder(ErrorCode.TRANSPORT, "no answer from the server (" + e.getClass().getSimpleName() + ")")
-                    .cause(e)
-                    .build();
+            // A transport of the caller: what it says is not kept (a library may print the request it was making).
+            throw SagatException.of(ErrorCode.TRANSPORT, "no answer from the server (" + e.getClass().getSimpleName() + ")");
         }
 
         String traceId = result.header("x-trace-id").orElse("");
         byte[] bytes = result.body() == null ? new byte[0] : result.body();
+        if (bytes.length > HttpTransport.MAX_RESPONSE_BYTES) {
+            throw SagatException.builder(ErrorCode.PROTOCOL, "the answer is larger than the SDK reads").httpStatus(result.status()).build();
+        }
         if (result.status() >= 300 && result.status() < 400) {
             // A redirect is never followed (SPEC section 1): the request carries a bearer token, the namespace and an
             // idempotency key, and a Location can point anywhere. Whatever its target, it is a PROTOCOL error that
@@ -139,10 +144,10 @@ final class RestClient {
             try {
                 return new Response(result.status(), traceId, Json.mapper().readTree(bytes));
             } catch (IOException e) {
+                // Jackson's message quotes what it could not read: not kept, not even as a cause.
                 throw SagatException.builder(ErrorCode.PROTOCOL, "the answer is not JSON")
                         .httpStatus(result.status())
                         .traceId(traceId)
-                        .cause(e)
                         .build();
             }
         }
@@ -150,15 +155,10 @@ final class RestClient {
     }
 
     private static SagatException errorOf(HttpTransport.Result result, byte[] bytes, String headerTraceId) {
+        // Seconds only (an HTTP date is ignored). More digits than a long holds is a very long wait: capped like any other.
         Long retryAfterMs = result.header("retry-after")
                 .filter(value -> DIGITS.matcher(value).matches())
-                .map(value -> {
-                    try {
-                        return Math.multiplyExact(Long.parseLong(value), 1000L);
-                    } catch (ArithmeticException | NumberFormatException e) {
-                        return null;
-                    }
-                })
+                .map(value -> value.length() > 12 ? Long.MAX_VALUE : Long.parseLong(value) * 1000L)
                 .orElse(null);
         JsonNode envelope = null;
         try {
@@ -172,10 +172,13 @@ final class RestClient {
         ErrorCode given = envelope != null && envelope.path("code").isTextual() ? ErrorCode.fromEnvelope(envelope.path("code").textValue()) : null;
         // SPEC section 9: a call the (older) server does not have is answered 404 or 501 with no error envelope of the
         // platform; it is NOT_FOUND with the reason UNSUPPORTED_BY_SERVER. A 404 with an envelope is a missing resource.
-        boolean unsupported = result.status() == 501 || (result.status() == 404 && given == null);
-        ErrorCode code = unsupported ? ErrorCode.NOT_FOUND : given != null ? given : ErrorCatalog.codeOfHttpStatus(result.status());
         JsonNode reasonNode = envelope == null ? null : envelope.path("details").path("reason");
-        String reason = reasonNode != null && reasonNode.isTextual() ? reasonNode.textValue() : unsupported ? "UNSUPPORTED_BY_SERVER" : null;
+        String serverReason = reasonNode != null && reasonNode.isTextual() ? reasonNode.textValue() : null;
+        boolean unsupported = result.status() == 501
+                || (result.status() == 404 && (given == null || "ROUTE_NOT_FOUND".equals(serverReason)))
+                || (result.status() == 405 && "METHOD_NOT_ALLOWED".equals(serverReason));
+        ErrorCode code = unsupported ? ErrorCode.NOT_FOUND : given != null ? given : ErrorCatalog.codeOfHttpStatus(result.status());
+        String reason = unsupported ? "UNSUPPORTED_BY_SERVER" : serverReason;
         String message = unsupported
                 ? "the server does not have this call"
                 : envelope != null && given != null && envelope.path("message").isTextual()

@@ -66,6 +66,12 @@ public final class TlsOptions {
         return new TlsOptions(trustRootsPem, Files.readAllBytes(certificateFile), Files.readAllBytes(pkcs8KeyFile));
     }
 
+    /** Never shows a certificate or a key: only what is configured. */
+    @Override
+    public String toString() {
+        return "TlsOptions[trustRoots=" + (trustRootsPem == null ? "system" : "custom") + ", clientCertificate=" + (clientCertificatePem == null ? "none" : "set") + "]";
+    }
+
     /** The credentials of the gRPC channel (https): the trust roots and, for mTLS, the client certificate. */
     public io.grpc.ChannelCredentials channelCredentials() {
         try {
@@ -78,9 +84,7 @@ public final class TlsOptions {
             }
             return builder.build();
         } catch (IOException e) {
-            throw SagatException.builder(ErrorCode.VALIDATION_FAILED, "the TLS settings cannot be used (" + e.getClass().getSimpleName() + ")")
-                    .cause(e)
-                    .build();
+            throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the TLS settings cannot be used (" + e.getClass().getSimpleName() + ")");
         }
     }
 
@@ -126,9 +130,7 @@ public final class TlsOptions {
             context.init(keys, trust, null);
             return context;
         } catch (GeneralSecurityException | IOException e) {
-            throw SagatException.builder(ErrorCode.VALIDATION_FAILED, "the TLS settings cannot be used (" + e.getClass().getSimpleName() + ")")
-                    .cause(e)
-                    .build();
+            throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the TLS settings cannot be used (" + e.getClass().getSimpleName() + ")");
         }
     }
 

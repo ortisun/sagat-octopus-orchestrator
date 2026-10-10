@@ -17,6 +17,18 @@ import java.util.Optional;
  */
 @FunctionalInterface
 public interface HttpTransport {
+    /** The most of an answer the SDK reads (SPEC section 10): a server that streams on is told "no". */
+    long MAX_RESPONSE_BYTES = 32L * 1024 * 1024;
+
+    /** Thrown by a transport whose answer is larger than {@link #MAX_RESPONSE_BYTES}; the SDK raises it as {@code PROTOCOL}. */
+    final class ResponseTooLargeException extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        public ResponseTooLargeException() {
+            super("the answer is larger than the SDK reads");
+        }
+    }
+
     /** One request. */
     record Call(String method, URI uri, Map<String, String> headers, byte[] body, Duration timeout) {}
 

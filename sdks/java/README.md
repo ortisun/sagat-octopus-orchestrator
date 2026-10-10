@@ -135,7 +135,9 @@ ObjectNode document = WorkflowBuilder.named("order-flow")
 
 The builders (`step`, `sleep`/`sleepMs`, `waitForEvent`, `invokeChild`, `condition`, `parallel`, `saga`, `end`) have no
 side effects and refuse what the server would refuse and they can see (a duplicate id, a dangling reference, a
-saga without a body), as `VALIDATION_FAILED`. `build()` returns the document; `toJson()` its canonical JSON (RFC 8785: no whitespace, keys sorted by UTF-16 code
+saga without a body), as `VALIDATION_FAILED`. A duplicate node id is raised when the node is added, across nested flows;
+joining a `Flow` to a workflow (`parallel`, `saga`, `append`) takes a copy of it as it is then, so a flow can be joined to
+more than one workflow and changing it afterwards changes none of them. `build()` returns the document; `toJson()` its canonical JSON (RFC 8785: no whitespace, keys sorted by UTF-16 code
 unit, numbers as ECMAScript prints them, so `1.0` is `1`), byte for byte what the other four SDKs write for the same
 program. Canonical text refuses an integer beyond 2^53 - 1 (send it as a string); the text sent on the wire does not
 round anything.
@@ -173,9 +175,18 @@ Options (`TlsOptions`, given to `ClientConfig.Builder.tls(...)` and `WorkerConfi
   message that says how to convert it (`openssl pkcs8 -topk8 -nocrypt`).
 * `tls.sslContext()` feeds `java.net.http.HttpClient` (REST); `tls.channelCredentials()` feeds the gRPC channel.
 * Not offered: encrypted keys, PKCS#12/JKS stores, protocol or cipher selection (the JVM's defaults apply),
-  revocation checking, pinning, a server name other than the URL's host (`tls.serverName`). There is **no option that
-  turns verification off**: no trust-all `TrustManager`, no disabled host-name verification (a test reads the
-  sources, scripts and poms of the SDK and its runner and fails on any of them).
+  revocation checking, pinning. There is **no option that turns verification off**: no trust-all `TrustManager`, no
+  disabled host-name verification (a test reads the sources, scripts and poms of the SDK and its runner and fails on
+  any of them).
+* **`tls.serverName` (verify against a name other than the URL's host) is not offered.** `java.net.http.HttpClient`
+  verifies the certificate against the host of the URL and offers no way to change that short of a custom trust
+  manager, which is exactly the code this SDK does not write. To reach a server by an address its certificate does not
+  name, give the URL a name that does (DNS or a hosts entry), or hand the SDK a transport of your own (next point).
+* **A transport you hand the SDK is your choice.** `JdkHttpTransport(Duration, SSLContext)`, `JdkHttpTransport.using(HttpClient)`
+  and any `HttpTransport` you implement use the certificate and host-name checks you configured in them: the SDK never
+  builds such an object with verification off, and it cannot inspect yours (it only refuses an `HttpClient` that
+  follows redirects). For gRPC the equivalent is `WorkerConfig.Builder.interceptor(...)`, which cannot change the
+  channel's TLS.
 
 Tested, on both channels, against in-process TLS servers (HTTPS for REST, a Netty TLS gRPC server for the worker) with
 throw-away EC identities made by `keytool` at test time for `127.0.0.1`:
@@ -194,6 +205,46 @@ throw-away EC identities made by `keytool` at test time for `127.0.0.1`:
 Not tested: TLS 1.2-only peers, client certificate chains longer than one certificate, RSA and Ed25519 client keys
 (only EC P-256 was generated), certificate expiry, a corporate proxy.
 
+## A server that is wrong or hostile
+
+What a server says is bounded (SPEC sections 6.2, 8 and 10), and each rule has a test that failed before it:
+
+* A wait taken from the server (`Retry-After`, `retry-after-ms`, `retry_after_ms`) is capped at 60 s whatever it says
+  (`maxServerWait` on both configs lowers the cap); a `Retry-After` is read in seconds only, an HTTP date is ignored.
+* A REST answer is read up to 32 MiB while it streams (a declared `Content-Length` over it is refused on the headers), then
+  the call fails as `PROTOCOL`. The deadline of a call (`timeout`) covers the whole exchange, body included.
+* The `message` of an error is cut to 512 characters, its `reason` to 128, a `traceId` that is not 32 lower case hex
+  characters is not repeated; text is cut by code points and never leaves a lone surrogate (U+FFFD instead).
+* A poll answer that carries more tasks than were asked for runs the first ones, logs the rest and leaves their leases to
+  lapse; a session refused again right after registering is registered again with a backoff, not in a loop; the host
+  runs at most `maxInflight` handlers.
+* A number with an exponent such as `1e999999999` is never expanded in memory (the wire text keeps `1E+999999999`; the
+  canonical text refuses it or reads it as the double it is); typed input binding is Jackson 2.22.3 or newer, because
+  2.22.2 spends seconds on a 40 000 character string given to a number field.
+* A run id must be a UUID and a signal name may not be empty, `.` or `..` (refused before anything is sent); other names
+  are percent-encoded. A redirect is never followed.
+* A logger, a metrics callback, a trace hook or a token provider that throws, an `Error` included, does not stop the poll
+  loop, a heartbeat or a task in flight (only the virtual machine's own `VirtualMachineError` is rethrown). A token
+  provider that fails is `UNAUTHENTICATED` with the reason `TOKEN_PROVIDER_FAILED`, and neither its message nor its
+  exception is kept (its stack trace carries what it was talking to); the same goes for the text of malformed JSON.
+* A string form never shows a credential: `toString` of a config, a client, a host, a token provider and `TlsOptions` names
+  only the host and namespace (a test builds each with a canary token and key and looks for it, also in their JSON and
+  serialized forms; none is `Serializable`).
+
+**Dependency advisories** were checked on 2026-10-10 by sending every artifact of the run-time classpath (24 of them,
+Jackson 2.22.3, gRPC 1.83.1, protobuf-java 3.25.9, Guava, gson...) to the OSV database (`https://api.osv.dev/v1/querybatch`,
+which includes the GitHub advisories): none has an advisory. The same query answers `GHSA-cxp5-3px4-pw24` and
+`GHSA-wv8q-qhhj-9h54` for Jackson 2.22.2, which is why the version is 2.22.3. This is a point-in-time check, not a
+scanner: run OSV-Scanner or OWASP Dependency-Check in your pipeline. The Netty inside `grpc-netty-shaded` is shaded and is
+not seen by OSV as an artifact of its own; it is covered by the gRPC release.
+
+**Build supply chain.** `.mvn/maven.config` makes every build `--strict-checksums`: a download whose checksum does not match
+(or is missing) fails the build instead of warning. The build also downloads two native binaries from Maven Central,
+`protoc` 3.25.9 and `protoc-gen-grpc-java` 1.83.1 (the version of each is pinned in the poms); the protobuf Maven plugin
+has no setting for a checksum of its own, so their integrity rests on Central's checksums under that strict mode, and the
+Maven Wrapper pins the SHA-256 of the Maven distribution. A build from an empty local repository (511 files) was run under
+the strict mode and passed. Nothing is signed or reproducible beyond that.
+
 ## Versions
 
 **SemVer.** `0.x` is pre-release: a minor may change the public API and says so in the changelog. From `1.0` the
@@ -209,8 +260,8 @@ repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automat
 
 | Runtime | Status |
 |---|---|
-| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (125 unit tests) and the conformance suite (13 scenarios) |
-| JDK 26.0.2.1 (Homebrew OpenJDK, macOS arm64) | **tested**: the 125 unit tests only (not the conformance suite). The JVM prints warnings from `protobuf-java` 3.25 (`sun.misc.Unsafe`) and Netty (`System::loadLibrary`) on 24+ |
+| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (180 unit tests) and the conformance suite (14 scenarios) |
+| JDK 26.0.2.1 (Homebrew OpenJDK, macOS arm64) | **tested**: the 180 unit tests only (not the conformance suite). The JVM prints warnings from `protobuf-java` 3.25 (`sun.misc.Unsafe`) and Netty (`System::loadLibrary`) on 24+ |
 | Java 17 and 21 | **declared (`--release 17`), not run here**. The library is compiled with `--release 17`, so it uses only Java 17 APIs, and every dependency's class files are Java 8 level (checked on the class files of the run-time classpath); no JDK 17 or 21 runtime was available |
 | Linux, Windows | not run. The `protoc` artifact is chosen by `os-maven-plugin` for the build machine |
 | Android, GraalVM native image | not supported / not tried |
@@ -219,13 +270,13 @@ The Maven Wrapper in this directory is the Unix script only (`mvnw`, `distributi
 `mvnw.cmd`. It pins Apache Maven 3.9.16 with its SHA-256.
 
 Pinned dependencies (each at least two weeks old when chosen): gRPC 1.83.1, protobuf-java and `protoc` 3.25.9 (the
-version `grpc-protobuf` 1.83.1 depends on), Jackson 2.22.2, JUnit Jupiter 5.14.4, `org.xolstice` protobuf-maven-plugin
+version `grpc-protobuf` 1.83.1 depends on), Jackson 2.22.3, JUnit Jupiter 5.14.4, `org.xolstice` protobuf-maven-plugin
 0.6.1 with os-maven-plugin 1.7.1, and the Maven plugins listed in `pom.xml`.
 
 ## Develop
 
 ```text
-./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 125 unit tests
+./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 180 unit tests
 scripts/sync-shared.sh                # copies worker.proto and error-catalog.json from the repository; SharedContractsTest fails when behind
 conformance/prepare.sh                # builds the runner (target/classpath.txt); conformance/run.sh build|run ... is what the harness calls
 cargo test -p sagat-tests --test sdk_conformance   # the conformance suite (needs Docker), from the repository root

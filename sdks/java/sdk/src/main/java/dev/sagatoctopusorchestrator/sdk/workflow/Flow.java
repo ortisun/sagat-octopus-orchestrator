@@ -7,7 +7,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.sagatoctopusorchestrator.sdk.SagatException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -33,6 +35,8 @@ public final class Flow {
 
     private final List<ObjectNode> nodes = new ArrayList<>();
     private final List<Flow> embedded = new ArrayList<>();
+    /** The ids of this flow's nodes and of the flows joined into it: an id is unique in the whole document. */
+    private final Set<String> ids = new HashSet<>();
 
     /** An empty flow, for a parallel branch or a saga body. */
     public static Flow create() {
@@ -41,10 +45,50 @@ public final class Flow {
 
     Flow() {}
 
-    /** Adds the nodes of another flow, in order, after the ones this flow has. */
+    /** A copy of the flow as it is now: the nodes are not shared, so joining it twice or changing it later changes nothing else. */
+    private Flow copy() {
+        Flow flow = new Flow();
+        for (ObjectNode node : nodes) {
+            flow.nodes.add(node.deepCopy());
+        }
+        flow.ids.addAll(ids);
+        for (Flow inner : embedded) {
+            flow.embedded.add(inner.copy());
+        }
+        return flow;
+    }
+
+    private static SagatException duplicate(String id) {
+        return SagatException.invalid("the node id \"" + id + "\" is used twice");
+    }
+
+    /** The ids that joining flows would add, each once; raises on the first one this flow (or another of them) already has. */
+    private Set<String> claim(String nodeId, List<Flow> joining) {
+        Set<String> incoming = new HashSet<>();
+        if (nodeId != null && !incoming.add(nodeId)) {
+            throw duplicate(nodeId);
+        }
+        for (Flow flow : joining) {
+            for (String id : flow.ids) {
+                if (!incoming.add(id)) {
+                    throw duplicate(id);
+                }
+            }
+        }
+        for (String id : incoming) {
+            if (ids.contains(id)) {
+                throw duplicate(id);
+            }
+        }
+        return incoming;
+    }
+
+    /** Adds the nodes of another flow (a copy of it), in order, after the ones this flow has. */
     void appendAll(Flow other) {
-        nodes.addAll(other.nodes);
-        embedded.addAll(other.embedded);
+        Flow copy = other.copy();
+        ids.addAll(claim(null, List.of(copy)));
+        nodes.addAll(copy.nodes);
+        embedded.addAll(copy.embedded);
     }
 
     boolean isEmpty() {
@@ -59,6 +103,10 @@ public final class Flow {
         JsonNode id = node.get("id");
         if (id == null || !id.isTextual() || id.textValue().isEmpty()) {
             throw SagatException.invalid("a node needs an id");
+        }
+        // Raised when the node is added (SPEC section 7), against every node of the document this flow belongs to.
+        if (!ids.add(id.textValue())) {
+            throw duplicate(id.textValue());
         }
         nodes.add(node);
         return this;
@@ -223,14 +271,18 @@ public final class Flow {
         if (branches.stream().anyMatch(Flow::isEmpty)) {
             throw SagatException.invalid("parallel " + id + " has an empty branch");
         }
+        // The branches are joined as copies of what they are now; their ids are checked here, with the node's own.
+        List<Flow> copies = branches.stream().map(Flow::copy).toList();
+        Set<String> claimed = claim(id, copies);
         ObjectNode node = F.objectNode();
         node.put("id", id);
         node.put("type", "parallel");
         ArrayNode first = node.putArray("branches");
-        branches.forEach(branch -> first.add(branch.firstId()));
+        copies.forEach(branch -> first.add(branch.firstId()));
         node.put("join", join.wire());
         push(node);
-        embedded.addAll(branches);
+        ids.addAll(claimed);
+        embedded.addAll(copies);
         return this;
     }
 
@@ -250,10 +302,12 @@ public final class Flow {
         if (body.nodes.stream().anyMatch(node -> "end".equals(node.path("type").textValue()))) {
             throw SagatException.invalid("saga " + id + " cannot hold an end node");
         }
+        Flow joined = body.copy();
+        Set<String> claimed = claim(id, List.of(joined));
         ObjectNode node = F.objectNode();
         node.put("id", id);
         node.put("type", "saga");
-        node.put("begin", body.firstId());
+        node.put("begin", joined.firstId());
         if (options != null) {
             if (options.onCompensationFailure != null) {
                 node.put("onCompensationFailure", options.onCompensationFailure.wire());
@@ -263,7 +317,8 @@ public final class Flow {
             }
         }
         push(node);
-        embedded.add(body);
+        ids.addAll(claimed);
+        embedded.add(joined);
         return this;
     }
 

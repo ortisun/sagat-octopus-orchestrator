@@ -57,9 +57,7 @@ final class WorkerRpc implements AutoCloseable {
                     .maxInboundMessageSize(16 * 1024 * 1024)
                     .keepAliveTime(120, TimeUnit.SECONDS);
         } catch (RuntimeException e) {
-            throw SagatException.builder(ErrorCode.VALIDATION_FAILED, "the channel to the worker service cannot be opened (" + e.getClass().getSimpleName() + ")")
-                    .cause(e)
-                    .build();
+            throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the channel to the worker service cannot be opened (" + e.getClass().getSimpleName() + ")");
         }
         if (!config.interceptors().isEmpty()) {
             builder.intercept(config.interceptors());

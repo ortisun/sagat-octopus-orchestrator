@@ -123,6 +123,17 @@ class SharedContractsTest {
     }
 
     @Test
+    void theBuildFailsOnAChecksumThatDoesNotMatchInsteadOfWarning() throws IOException {
+        // protoc and protoc-gen-grpc-java are binaries downloaded at build time: Maven must refuse a corrupted one.
+        Path config = MODULE.getParent().resolve(".mvn/maven.config");
+        assertTrue(Files.exists(config), ".mvn/maven.config is missing");
+        assertTrue(Files.readString(config, StandardCharsets.UTF_8).contains("--strict-checksums"));
+        String pom = Files.readString(MODULE.getParent().resolve("pom.xml"), StandardCharsets.UTF_8);
+        assertTrue(pom.contains("<protobuf.version>3.25.9</protobuf.version>"), "the protoc release is pinned");
+        assertTrue(Files.readString(MODULE.resolve("pom.xml"), StandardCharsets.UTF_8).contains("protoc-gen-grpc-java:${grpc.version}"));
+    }
+
+    @Test
     void theTraceparentRulesAreTheW3COnes() {
         assertTrue(Traceparents.isValid("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"));
         assertFalse(Traceparents.isValid("00-" + "0".repeat(32) + "-b7ad6b7169203331-01"));

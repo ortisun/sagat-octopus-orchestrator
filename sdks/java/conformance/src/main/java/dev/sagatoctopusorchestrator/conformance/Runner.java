@@ -263,7 +263,13 @@ public final class Runner {
 
     private static ObjectNode build(JsonNode scenario) {
         ObjectNode workflows = F.objectNode();
-        scenario.path("workflows").properties().forEach(e -> workflows.set(e.getKey(), builderOf(e.getValue()).build()));
+        ObjectNode canonical = F.objectNode();
+        scenario.path("workflows").properties().forEach(e -> {
+            WorkflowBuilder builder = builderOf(e.getValue());
+            workflows.set(e.getKey(), builder.build());
+            // The canonical text is part of the contract (SPEC section 7): the same bytes in every language.
+            canonical.put(e.getKey(), builder.toJson());
+        });
         ObjectNode errors = F.objectNode();
         scenario.path("invalidWorkflows").properties().forEach(e -> {
             JsonNode invalid = e.getValue();
@@ -285,6 +291,7 @@ public final class Runner {
         });
         ObjectNode out = F.objectNode();
         out.set("workflows", workflows);
+        out.set("canonical", canonical);
         if (errors.size() > 0) {
             out.set("errors", errors);
         }
@@ -653,6 +660,18 @@ public final class Runner {
                     entry.host.stop(Duration.ofMillis(step.has("timeoutMs") ? step.get("timeoutMs").asLong() : 5000));
                 }
                 return null;
+            }
+            case "restartWorker": {
+                // The same host object, stopped and started again (SPEC section 6.8: the host is restartable).
+                WorkerEntry entry = hosts.get(step.get("worker").asText());
+                if (entry == null || entry.host == null) {
+                    throw new IllegalStateException("worker " + step.get("worker").asText() + " was never started");
+                }
+                entry.host.stop(Duration.ofMillis(step.has("timeoutMs") ? step.get("timeoutMs").asLong() : 5000));
+                entry.host.start();
+                ObjectNode result = F.objectNode();
+                result.put("protocolVersion", entry.host.protocolVersion());
+                return result;
             }
             case "probeWorker": {
                 WorkerConfig.Builder builder = WorkerConfig.builder()

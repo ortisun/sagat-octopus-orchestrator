@@ -42,9 +42,18 @@ public record RetryPolicy(int maxAttempts, Duration initialDelay, Duration maxDe
         return Math.round(ceiling * (0.5 + random.getAsDouble() * 0.5));
     }
 
-    /** The wait before the next attempt: the backoff, or what the server asked for if that is longer. */
+    /**
+     * The wait before the next attempt: the backoff, or what the server asked for if that is longer, which is never
+     * more than {@link SagatException#MAX_SERVER_WAIT_MS} (a minute).
+     */
     public long delayAfterMillis(int n, SagatException error, DoubleSupplier random) {
-        return Math.max(backoffMillis(n, random), error.retryAfterMs().orElse(0L));
+        return delayAfterMillis(n, error, SagatException.MAX_SERVER_WAIT_MS, random);
+    }
+
+    /** {@link #delayAfterMillis(int, SagatException, DoubleSupplier)} with a lower cap for what the server asks for. */
+    public long delayAfterMillis(int n, SagatException error, long maxServerWaitMillis, DoubleSupplier random) {
+        long asked = Math.min(error.retryAfterMs().orElse(0L), maxServerWaitMillis);
+        return Math.max(backoffMillis(n, random), asked);
     }
 
     /** {@link #backoffMillis(int, DoubleSupplier)} with the thread-local random. */

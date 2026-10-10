@@ -75,9 +75,13 @@ final class FakeRestServer implements AutoCloseable {
     private static void write(HttpExchange exchange, int status, String body, String... headerPairs) {
         try {
             exchange.getResponseHeaders().add("Content-Type", "application/json");
-            exchange.getResponseHeaders().add("X-Trace-Id", "f".repeat(32));
+            boolean ownTrace = false;
             for (int i = 0; i + 1 < headerPairs.length; i += 2) {
+                ownTrace |= headerPairs[i].equalsIgnoreCase("X-Trace-Id");
                 exchange.getResponseHeaders().add(headerPairs[i], headerPairs[i + 1]);
+            }
+            if (!ownTrace) {
+                exchange.getResponseHeaders().add("X-Trace-Id", "f".repeat(32));
             }
             byte[] bytes = body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);

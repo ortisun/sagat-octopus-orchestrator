@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(120)
 class TlsTest {
+    private static final String RUN = "0190aaaa-0000-7000-8000-000000000001";
     private static final String BODY = "{\"runId\":\"r\",\"workflowId\":\"w\",\"versionId\":\"v\",\"status\":\"RUNNING\",\"createdAt\":\"2026-10-10T10:00:00Z\"}";
 
     private static TlsFixture serverIdentity;
@@ -124,7 +125,7 @@ class TlsTest {
     void withMutualTlsTheServerSeesTheClientCertificateAndServesIt() throws Exception {
         SEEN_BY_MUTUAL.clear();
         TlsOptions tls = TlsOptions.trusting(serverIdentity.certificatePem).withClientCertificate(clientIdentity.certificatePem, clientIdentity.pkcs8KeyPem);
-        assertEquals(RunStatus.RUNNING, clientFor(mutual, tls).get("r").status());
+        assertEquals(RunStatus.RUNNING, clientFor(mutual, tls).get(RUN).status());
         assertEquals(1, SEEN_BY_MUTUAL.size());
         assertEquals(1, SEEN_BY_MUTUAL.get(0).size(), "the server saw one certificate");
         assertArrayEquals(clientIdentity.certificate().getEncoded(), SEEN_BY_MUTUAL.get(0).get(0).getEncoded(), "and it is the client's own");
@@ -133,7 +134,7 @@ class TlsTest {
     @Test
     void aServerThatRequiresAClientCertificateRefusesAClientWithoutOne() {
         SEEN_BY_MUTUAL.clear();
-        SagatException error = assertThrows(SagatException.class, () -> clientFor(mutual, TlsOptions.trusting(serverIdentity.certificatePem)).get("r"));
+        SagatException error = assertThrows(SagatException.class, () -> clientFor(mutual, TlsOptions.trusting(serverIdentity.certificatePem)).get(RUN));
         assertEquals(ErrorCode.TRANSPORT, error.code());
         assertTrue(SEEN_BY_MUTUAL.isEmpty(), "no request got through the handshake");
     }
@@ -141,34 +142,34 @@ class TlsTest {
     @Test
     void aServerThatDoesNotAskForAClientCertificateIsServedWithTheConfiguredCaAndSeesNone() {
         SEEN_CLIENT_CERT_BY_ONE_WAY.clear();
-        assertEquals(RunStatus.RUNNING, clientFor(oneWay, TlsOptions.trusting(serverIdentity.certificatePem)).get("r").status());
+        assertEquals(RunStatus.RUNNING, clientFor(oneWay, TlsOptions.trusting(serverIdentity.certificatePem)).get(RUN).status());
         assertEquals(List.of(false), SEEN_CLIENT_CERT_BY_ONE_WAY, "without mTLS configured, no client certificate is sent");
     }
 
     @Test
     void aServerCertificateTheClientDoesNotTrustFailsAsTransportWhateverTheConfiguration() {
         // The CA is configured, but it is not the server's.
-        SagatException wrongCa = assertThrows(SagatException.class, () -> clientFor(oneWay, TlsOptions.trusting(stranger.certificatePem)).get("r"));
+        SagatException wrongCa = assertThrows(SagatException.class, () -> clientFor(oneWay, TlsOptions.trusting(stranger.certificatePem)).get(RUN));
         assertEquals(ErrorCode.TRANSPORT, wrongCa.code());
         assertTrue(wrongCa.retryable());
         // No TLS configuration at all: the JVM's roots do not hold a self-signed certificate.
-        SagatException defaults = assertThrows(SagatException.class, () -> clientFor(oneWay, null).get("r"));
+        SagatException defaults = assertThrows(SagatException.class, () -> clientFor(oneWay, null).get(RUN));
         assertEquals(ErrorCode.TRANSPORT, defaults.code());
-        SagatException systemRoots = assertThrows(SagatException.class, () -> clientFor(oneWay, TlsOptions.systemRoots()).get("r"));
+        SagatException systemRoots = assertThrows(SagatException.class, () -> clientFor(oneWay, TlsOptions.systemRoots()).get(RUN));
         assertEquals(ErrorCode.TRANSPORT, systemRoots.code());
     }
 
     @Test
     void theHostNameIsVerifiedEvenWhenTheCertificateIsTrusted() {
         // The CA of the server is configured and trusted; its certificate names other.example, not 127.0.0.1.
-        SagatException error = assertThrows(SagatException.class, () -> clientFor(wrongHost, TlsOptions.trusting(elsewhere.certificatePem)).get("r"));
+        SagatException error = assertThrows(SagatException.class, () -> clientFor(wrongHost, TlsOptions.trusting(elsewhere.certificatePem)).get(RUN));
         assertEquals(ErrorCode.TRANSPORT, error.code());
     }
 
     @Test
     void httpsLogsNoPlainTextWarning() {
         CapturingLogger log = new CapturingLogger();
-        clientFor(oneWay, TlsOptions.trusting(serverIdentity.certificatePem), log).get("r");
+        clientFor(oneWay, TlsOptions.trusting(serverIdentity.certificatePem), log).get(RUN);
         assertEquals(0, log.warnings("plain text").size());
         assertTrue(log.lines().stream().noneMatch(l -> l.message().contains("tok")), "no line holds the token");
     }

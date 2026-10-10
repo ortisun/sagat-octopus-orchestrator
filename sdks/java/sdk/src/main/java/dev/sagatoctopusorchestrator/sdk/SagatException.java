@@ -21,15 +21,22 @@ public class SagatException extends RuntimeException {
     private final String reason;
     private final Long retryAfterMs;
 
+    /** The longest wait the SDK takes from what a server says ({@code Retry-After}, {@code retry-after-ms}). */
+    public static final long MAX_SERVER_WAIT_MS = 60_000;
+
+    private static final java.util.regex.Pattern TRACE_ID = java.util.regex.Pattern.compile("^[0-9a-f]{32}$");
+
+    // What a server says is bounded (SPEC section 10): its words are cut (to 512 characters, a reason to 128), a trace
+    // id that is not 32 lower case hexadecimal characters is not repeated, and no wait it asks for is longer than a minute.
     private SagatException(Builder builder) {
-        super(builder.message, builder.cause);
+        super(Text.cut(builder.message, 512), builder.cause);
         this.code = builder.code;
         this.httpStatus = builder.httpStatus;
         this.grpcStatus = builder.grpcStatus;
         this.retryable = builder.retryable != null ? builder.retryable : builder.code.retryableByDefault();
-        this.traceId = builder.traceId == null ? "" : builder.traceId;
-        this.reason = builder.reason;
-        this.retryAfterMs = builder.retryAfterMs;
+        this.traceId = builder.traceId != null && TRACE_ID.matcher(builder.traceId).matches() ? builder.traceId : "";
+        this.reason = builder.reason == null ? null : Text.cut(builder.reason, 128);
+        this.retryAfterMs = builder.retryAfterMs == null ? null : Math.max(0, Math.min(builder.retryAfterMs, MAX_SERVER_WAIT_MS));
     }
 
     /** Starts an error with a code and a safe message. */

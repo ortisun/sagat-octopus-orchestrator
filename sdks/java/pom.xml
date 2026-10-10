@@ -39,7 +39,7 @@
     <grpc.version>1.83.1</grpc.version>
     <!-- The version grpc-protobuf 1.83.1 depends on; protoc below must be the same release. -->
     <protobuf.version>3.25.9</protobuf.version>
-    <jackson.version>2.22.2</jackson.version>
+    <jackson.version>2.22.3</jackson.version>
     <junit.version>5.14.4</junit.version>
   </properties>
 

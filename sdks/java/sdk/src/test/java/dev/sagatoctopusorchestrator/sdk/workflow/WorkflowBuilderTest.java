@@ -213,4 +213,66 @@ class WorkflowBuilderTest {
         assertEquals("c", doc.get("nodes").get(0).get("next").textValue());
         assertEquals("act.c", tail.flatten().get(0).get("activity").textValue(), "the flow handed in is not changed");
     }
+
+    @Test
+    void aDuplicateNodeIdIsRaisedWhenTheNodeIsAddedNotWhenTheDocumentIsBuilt() {
+        WorkflowBuilder builder = workflow("dup-at-add").step("a", "x");
+        SagatException error = assertThrows(SagatException.class, () -> builder.step("a", "y"));
+        assertEquals(ErrorCode.VALIDATION_FAILED, error.code());
+        assertTrue(error.getMessage().contains("used twice"), error.getMessage());
+        // every primitive checks it
+        assertThrows(SagatException.class, () -> builder.sleepMs("a", 5));
+        assertThrows(SagatException.class, () -> builder.end("a"));
+        assertThrows(SagatException.class, () -> builder.condition("a", "true", "a", "a"));
+        assertThrows(SagatException.class, () -> builder.waitForEvent("a", WaitForEventOptions.of("e", "x", 1)));
+        assertThrows(SagatException.class, () -> builder.invokeChild("a", "child-flow"));
+        Flow flow = Flow.create().step("p", "x");
+        assertThrows(SagatException.class, () -> flow.step("p", "y"));
+        // the failed add did not leave a node behind
+        assertEquals(List.of("a"), builder.build().get("nodes").findValuesAsText("id"));
+    }
+
+    @Test
+    void aNodeIdIsUniqueAcrossNestedFlowsAtTheMomentTheyAreJoined() {
+        Flow branchOne = Flow.create().step("card", "pay.card");
+        Flow branchTwo = Flow.create().step("a", "x");
+        WorkflowBuilder builder = workflow("nested-dups").step("a", "act.a");
+        // a branch that holds an id the workflow already has
+        SagatException error = assertThrows(SagatException.class, () -> builder.parallel("split", Flow.Join.ALL, branchOne, branchTwo));
+        assertEquals(ErrorCode.VALIDATION_FAILED, error.code());
+        assertTrue(error.getMessage().contains("used twice"), error.getMessage());
+        // two branches that hold the same id
+        assertThrows(SagatException.class, () -> workflow("two-branches").parallel("split", Flow.Join.ALL, Flow.create().step("same", "x"), Flow.create().step("same", "y")));
+        // the id of the parallel node itself against its branches
+        assertThrows(SagatException.class, () -> workflow("self-clash").parallel("same", Flow.Join.ALL, Flow.create().step("same", "x"), Flow.create().step("b", "y")));
+        // a saga body against the workflow
+        assertThrows(SagatException.class, () -> workflow("saga-clash").step("a", "x").saga("tx", SagaOptions.create(), Flow.create().step("a", "y")));
+    }
+
+    @Test
+    void joiningAFlowTakesACopyOfItAndTheWorkflowIsCheckedAgainstTheIdsItNowHolds() {
+        Flow branch = Flow.create().step("card", "pay.card");
+        WorkflowBuilder builder = workflow("late-add").step("first", "x").parallel("split", Flow.Join.ALL, branch, Flow.create().step("stock", "y"));
+        assertThrows(SagatException.class, () -> builder.step("card", "z"), "the workflow cannot take a branch's id");
+        assertThrows(SagatException.class, () -> builder.step("stock", "z"));
+        assertThrows(SagatException.class, () -> builder.step("split", "z"));
+        // The branch handed in is the caller's own: changing it afterwards changes nothing in the workflow.
+        branch.step("first", "z");
+        assertEquals(List.of("first", "split", "card", "stock"), builder.build().get("nodes").findValuesAsText("id"));
+        // ... and it can be joined again, to another workflow, as it is now.
+        WorkflowBuilder other = workflow("second-use").parallel("fan", Flow.Join.ALL, branch, Flow.create().step("other", "w"));
+        assertEquals(List.of("fan", "card", "first", "other"), other.build().get("nodes").findValuesAsText("id"));
+    }
+
+    @Test
+    void aFlowAppendedToAWorkflowIsCheckedWhenItIsAppended() {
+        WorkflowBuilder builder = workflow("appended").step("a", "x");
+        assertThrows(SagatException.class, () -> builder.append(Flow.create().step("b", "y").step("a", "z")));
+        // a flow can be appended to several workflows: each takes a copy
+        Flow shared = Flow.create().step("s", "x");
+        workflow("one").append(shared);
+        WorkflowBuilder other = workflow("two").step("t", "x");
+        other.append(shared);
+        assertEquals(List.of("t", "s"), other.build().get("nodes").findValuesAsText("id"));
+    }
 }

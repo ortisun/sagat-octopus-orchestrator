@@ -10,13 +10,88 @@ public final class Endpoints {
 
     private Endpoints() {}
 
-    /** True for {@code localhost}, {@code 127.0.0.0/8} and {@code ::1}. */
+    /**
+     * True for {@code localhost}, an IPv4 literal in 127.0.0.0/8 and the IPv6 literal {@code ::1}. A name is not an
+     * address: {@code 127.attacker.example} and {@code 127.0.0.1.nip.io} are not loopback.
+     */
     public static boolean isLoopback(String host) {
-        if (host == null) {
+        if (host == null || host.isEmpty()) {
             return false;
         }
-        String h = host.toLowerCase(Locale.ROOT);
-        return h.equals("localhost") || h.equals("[::1]") || h.equals("::1") || h.startsWith("127.");
+        if (host.equalsIgnoreCase("localhost")) {
+            return true;
+        }
+        String h = host.startsWith("[") && host.endsWith("]") ? host.substring(1, host.length() - 1) : host;
+        if (h.indexOf(':') >= 0) {
+            return isIpv6Loopback(h);
+        }
+        return isIpv4Loopback(h);
+    }
+
+    private static boolean isIpv4Loopback(String h) {
+        String[] parts = h.split("\\.", -1);
+        if (parts.length != 4) {
+            return false;
+        }
+        int first = -1;
+        for (int i = 0; i < 4; i++) {
+            String part = parts[i];
+            if (part.isEmpty() || part.length() > 3 || (part.length() > 1 && part.charAt(0) == '0')) {
+                return false;
+            }
+            int value = 0;
+            for (int k = 0; k < part.length(); k++) {
+                char c = part.charAt(k);
+                if (c < '0' || c > '9') {
+                    return false;
+                }
+                value = value * 10 + (c - '0');
+            }
+            if (value > 255) {
+                return false;
+            }
+            if (i == 0) {
+                first = value;
+            }
+        }
+        return first == 127;
+    }
+
+    private static boolean isIpv6Loopback(String h) {
+        // Only the forms of ::1 itself: eight groups of hex digits, or the abbreviation. No name resolution happens here.
+        if (h.equals("::1")) {
+            return true;
+        }
+        String[] groups = h.split(":", -1);
+        if (groups.length != 8) {
+            return false;
+        }
+        for (int i = 0; i < 8; i++) {
+            String g = groups[i];
+            if (g.isEmpty() || g.length() > 4) {
+                return false;
+            }
+            for (int k = 0; k < g.length(); k++) {
+                if (Character.digit(g.charAt(k), 16) < 0) {
+                    return false;
+                }
+            }
+            int value = Integer.parseInt(g, 16);
+            if (i < 7 ? value != 0 : value != 1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The host of a URL, for a message or a string form: nothing else of it (it can carry a credential). */
+    public static String hostOf(String url) {
+        try {
+            String host = URI.create(url).getHost();
+            return host == null ? "?" : host;
+        } catch (IllegalArgumentException e) {
+            return "?";
+        }
     }
 
     /** Logs one warning when a plain-text URL is used outside loopback (SPEC section 1). */
@@ -29,7 +104,7 @@ public final class Endpoints {
         }
         // Only the host is named: a URL can carry a credential in its user info or its query.
         if ("http".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null && !isLoopback(uri.getHost())) {
-            logger.log(System.Logger.Level.WARNING, what + " uses plain text outside loopback (" + uri.getHost() + "): use https");
+            Hooks.log(logger, System.Logger.Level.WARNING, what + " uses plain text outside loopback (" + uri.getHost() + "): use https");
         }
     }
 

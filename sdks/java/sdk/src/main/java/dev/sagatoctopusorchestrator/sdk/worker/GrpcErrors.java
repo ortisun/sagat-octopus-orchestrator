@@ -71,20 +71,20 @@ final class GrpcErrors {
                         .grpcStatus(name)
                         .reason(reason)
                         .retryAfterMs(retryAfterMs)
-                        .cause(error)
                         .build();
             case CANCELLED:
-                return SagatException.builder(ErrorCode.CANCELLED, "the call was cancelled").grpcStatus(name).cause(error).build();
+                return SagatException.builder(ErrorCode.CANCELLED, "the call was cancelled").grpcStatus(name).build();
             default:
                 return safe(ErrorCode.INTERNAL, "the worker service failed", name, reason, retryAfterMs);
         }
     }
 
+    /** The milliseconds a trailer asks for; more digits than a long holds is a very long wait (capped like any other). */
     private static Long parse(String digits) {
         try {
             return Long.parseLong(digits.toLowerCase(Locale.ROOT));
         } catch (NumberFormatException e) {
-            return null;
+            return Long.MAX_VALUE;
         }
     }
 

@@ -29,6 +29,7 @@ public final class WorkerConfig {
     private final System.Logger logger;
     private final List<ClientInterceptor> interceptors;
     private final Consumer<WorkerEvent> onEvent;
+    private final Duration maxServerWait;
 
     private WorkerConfig(Builder b) {
         this.grpcUrl = b.grpcUrl;
@@ -46,6 +47,7 @@ public final class WorkerConfig {
         this.logger = b.logger;
         this.interceptors = List.copyOf(b.interceptors);
         this.onEvent = b.onEvent;
+        this.maxServerWait = b.maxServerWait;
     }
 
     public static Builder builder() {
@@ -121,6 +123,17 @@ public final class WorkerConfig {
         return onEvent;
     }
 
+    /** Never shows the token: only where the host connects and what it is called. */
+    @Override
+    public String toString() {
+        return "WorkerConfig[grpcUrl=" + dev.sagatoctopusorchestrator.sdk.Endpoints.hostOf(grpcUrl) + ", namespace=" + namespace + ", workerName=" + workerName + "]";
+    }
+
+    /** The longest the host waits because the server asked it to ({@code retry_after_ms}); 60 s by default. */
+    public Duration maxServerWait() {
+        return maxServerWait;
+    }
+
     /** Builds a {@link WorkerConfig}. */
     public static final class Builder {
         private String grpcUrl;
@@ -138,6 +151,7 @@ public final class WorkerConfig {
         private System.Logger logger = System.getLogger("dev.sagatoctopusorchestrator.sdk.worker");
         private final List<ClientInterceptor> interceptors = new ArrayList<>();
         private Consumer<WorkerEvent> onEvent;
+        private Duration maxServerWait = Duration.ofSeconds(60);
 
         private Builder() {}
 
@@ -223,6 +237,15 @@ public final class WorkerConfig {
             return this;
         }
 
+        /**
+         * The longest the host waits because the server asked it to (a {@code retry_after_ms} of a day is a minute); 60 s
+         * by default (SPEC section 6.2). Lower it for a short-lived tool.
+         */
+        public Builder maxServerWait(Duration value) {
+            this.maxServerWait = value;
+            return this;
+        }
+
         public WorkerConfig build() {
             if (grpcUrl == null || grpcUrl.isBlank()) {
                 throw SagatException.invalid("grpcUrl is required");
@@ -254,6 +277,16 @@ public final class WorkerConfig {
             Objects.requireNonNull(timeout, "timeout");
             Objects.requireNonNull(retry, "retry");
             Objects.requireNonNull(logger, "logger");
+            if (heartbeatInterval != null && heartbeatInterval.toMillis() < 1) {
+                // Clamped to a millisecond it would be a hot loop of heartbeats; a host that wants the default sets none.
+                throw SagatException.invalid("heartbeatInterval must be at least 1 ms");
+            }
+            if (maxServerWait == null || maxServerWait.toMillis() < 1) {
+                throw SagatException.invalid("maxServerWait must be at least 1 ms");
+            }
+            if (timeout.isZero() || timeout.isNegative()) {
+                throw SagatException.invalid("timeout must be positive");
+            }
             return new WorkerConfig(this);
         }
     }

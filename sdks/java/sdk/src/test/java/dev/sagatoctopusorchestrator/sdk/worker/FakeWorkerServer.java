@@ -59,6 +59,8 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     /** How long a poll takes to answer, and the wait the answer asks for when it brings no task. */
     volatile long pollDelayMs;
     volatile int pollRetryAfterMs = 50;
+    /** A misbehaving service: answers a poll with every task it has, whatever {@code max_tasks} says. */
+    volatile boolean ignoreMax;
     private final Server server;
 
     FakeWorkerServer() throws IOException {
@@ -113,6 +115,7 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         secrets = List.of();
         pollDelayMs = 0;
         pollRetryAfterMs = 50;
+        ignoreMax = false;
     }
 
     private <R> void answer(String method, Object request, StreamObserver<R> out, Function<Object, R> make) {
@@ -156,7 +159,7 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
             Worker.PollTasksResponse.Builder response = Worker.PollTasksResponse.newBuilder().setRetryAfterMs(pollRetryAfterMs);
             synchronized (this) {
                 // Like the real service: no more than were asked for.
-                for (int i = 0; i < request.getMaxTasks() && !leases.isEmpty(); i++) {
+                for (int i = 0; (ignoreMax || i < request.getMaxTasks()) && !leases.isEmpty(); i++) {
                     response.addTasks(leases.poll());
                 }
             }

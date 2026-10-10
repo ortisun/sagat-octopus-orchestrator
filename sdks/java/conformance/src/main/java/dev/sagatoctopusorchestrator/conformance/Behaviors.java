@@ -50,7 +50,16 @@ final class Behaviors {
                 if (behavior.path("hang").asBoolean(false)) {
                     ctx.cancellation().awaitCancelled();
                     outcome = "cancelled";
+                    // onCancel.raises: the handler ends by raising the SDK's cancellation error.
+                    if (behavior.path("onCancel").path("raises").asBoolean(false)) {
+                        ctx.cancellation().throwIfCancelled();
+                    }
                     return F.nullNode();
+                }
+                if (behavior.path("ignoresCancel").asBoolean(false)) {
+                    // A handler that never looks at its token: it runs to its end and what it returns is reported.
+                    Thread.sleep(behavior.path("sleepMs").asLong(0));
+                    return orNull(behavior.get("returns"));
                 }
                 if (behavior.has("sleepMs")) {
                     boolean cancelled = ctx.cancellation().await(Duration.ofMillis(behavior.get("sleepMs").asLong()));

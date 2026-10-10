@@ -48,7 +48,8 @@ public final class Json {
         try {
             return MAPPER.readTree(bytes);
         } catch (java.io.IOException e) {
-            throw SagatException.builder(ErrorCode.PROTOCOL, "the answer is not JSON").cause(e).build();
+            // The parser's message quotes the text it could not read: not kept, not even as a cause.
+            throw SagatException.of(ErrorCode.PROTOCOL, "the answer is not JSON");
         }
     }
 
@@ -57,7 +58,7 @@ public final class Json {
         try {
             return MAPPER.readTree(text);
         } catch (java.io.IOException e) {
-            throw SagatException.builder(ErrorCode.VALIDATION_FAILED, "the text is not JSON").cause(e).build();
+            throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the text is not JSON");
         }
     }
 
@@ -75,9 +76,8 @@ public final class Json {
         try {
             return MAPPER.valueToTree(value);
         } catch (IllegalArgumentException e) {
-            throw SagatException.builder(ErrorCode.VALIDATION_FAILED, "a value of type " + value.getClass().getSimpleName() + " cannot be written as JSON")
-                    .cause(e)
-                    .build();
+            // Jackson's message can quote the values it was writing: not kept.
+            throw SagatException.of(ErrorCode.VALIDATION_FAILED, "a value of type " + value.getClass().getSimpleName() + " cannot be written as JSON");
         }
     }
 
@@ -176,7 +176,7 @@ public final class Json {
         if (node.isIntegralNumber()) {
             out.append(node.bigIntegerValue().toString());
         } else if (node.isBigDecimal()) {
-            out.append(node.decimalValue().toPlainString());
+            out.append(decimal(node.decimalValue()));
         } else {
             double value = node.doubleValue();
             if (Double.isNaN(value) || Double.isInfinite(value)) {
@@ -186,6 +186,19 @@ public final class Json {
             BigDecimal exact = node.isFloat() ? new BigDecimal(Float.toString(node.floatValue())) : BigDecimal.valueOf(value);
             out.append(exact.toPlainString());
         }
+    }
+
+    /**
+     * A decimal as it was given: its digits in plain notation when that is short, and in the exponent form the number
+     * came in otherwise. An exponent is never expanded in memory: {@code 1e999999999} is a number of eighteen characters,
+     * not a billion digits (SPEC section 8).
+     */
+    private static String decimal(BigDecimal value) {
+        long adjusted = (long) value.precision() - value.scale() - 1;
+        if (value.scale() >= -64 && value.scale() <= 400 && adjusted <= 400 && adjusted >= -400) {
+            return value.toPlainString();
+        }
+        return value.toString();
     }
 
     private static final BigInteger MAX_SAFE = BigInteger.valueOf(9007199254740991L);
@@ -199,7 +212,19 @@ public final class Json {
             out.append(value.toString());
             return;
         }
-        double value = node.isBigDecimal() ? node.decimalValue().doubleValue() : node.doubleValue();
+        double value;
+        if (node.isBigDecimal()) {
+            BigDecimal decimal = node.decimalValue();
+            long adjusted = (long) decimal.precision() - decimal.scale() - 1;
+            // Out of the range of a double before any arithmetic is done on a huge exponent: too big is not a number the
+            // text can carry, too small is a double's zero (as JSON.parse reads it).
+            if (adjusted > 400) {
+                throw SagatException.invalid(path + " is not a finite number");
+            }
+            value = adjusted < -400 ? 0 : decimal.doubleValue();
+        } else {
+            value = node.doubleValue();
+        }
         if (Double.isNaN(value) || Double.isInfinite(value)) {
             throw SagatException.invalid(path + " is not a finite number");
         }

@@ -24,6 +24,85 @@ import javax.net.ssl.SSLContext;
 public final class JdkHttpTransport implements HttpTransport {
     private final HttpClient client;
 
+    /**
+     * The body, read up to {@link HttpTransport#MAX_RESPONSE_BYTES}: a longer one (declared, or found out while reading)
+     * cancels the stream and the connection and completes {@code tooLarge}, so that the call need not wait for a body
+     * that the headers already condemned.
+     */
+    private static final class BoundedHandler implements HttpResponse.BodyHandler<byte[]> {
+        final CompletableFuture<Void> tooLarge = new CompletableFuture<>();
+
+        @Override
+        public HttpResponse.BodySubscriber<byte[]> apply(HttpResponse.ResponseInfo info) {
+            long declared = info.headers().firstValueAsLong("content-length").orElse(-1);
+            if (declared > MAX_RESPONSE_BYTES) {
+                tooLarge.complete(null);
+            }
+            return new BoundedBody(tooLarge, declared > MAX_RESPONSE_BYTES);
+        }
+    }
+
+    private static final class BoundedBody implements HttpResponse.BodySubscriber<byte[]> {
+        private final CompletableFuture<byte[]> result = new CompletableFuture<>();
+        private final java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+        private final CompletableFuture<Void> tooLarge;
+        private final boolean refuse;
+        private java.util.concurrent.Flow.Subscription subscription;
+        private long total;
+
+        BoundedBody(CompletableFuture<Void> tooLarge, boolean refuse) {
+            this.tooLarge = tooLarge;
+            this.refuse = refuse;
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<byte[]> getBody() {
+            return result;
+        }
+
+        @Override
+        public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
+            this.subscription = subscription;
+            if (refuse) {
+                // The headers already say it is too large: the body is not read at all.
+                subscription.cancel();
+                result.completeExceptionally(new ResponseTooLargeException());
+                return;
+            }
+            subscription.request(1);
+        }
+
+        @Override
+        public void onNext(java.util.List<java.nio.ByteBuffer> items) {
+            if (result.isDone()) {
+                return;
+            }
+            for (java.nio.ByteBuffer item : items) {
+                total += item.remaining();
+                if (total > MAX_RESPONSE_BYTES) {
+                    subscription.cancel();
+                    tooLarge.complete(null);
+                    result.completeExceptionally(new ResponseTooLargeException());
+                    return;
+                }
+                byte[] chunk = new byte[item.remaining()];
+                item.get(chunk);
+                buffer.write(chunk, 0, chunk.length);
+            }
+            subscription.request(1);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            result.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            result.complete(buffer.toByteArray());
+        }
+    }
+
     private JdkHttpTransport(HttpClient client) {
         this.client = client;
     }
@@ -66,10 +145,16 @@ public final class JdkHttpTransport implements HttpTransport {
                 call.body() == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(call.body()));
         // The JDK's request timeout ends when the response headers arrive: a server that sends them and then stalls the body
         // would hold the call for ever. The deadline of the call (SPEC section 1) covers the whole exchange.
-        CompletableFuture<HttpResponse<byte[]>> pending = client.sendAsync(request.build(), HttpResponse.BodyHandlers.ofByteArray());
+        BoundedHandler handler = new BoundedHandler();
+        CompletableFuture<HttpResponse<byte[]>> pending = client.sendAsync(request.build(), handler);
         HttpResponse<byte[]> response;
         try {
-            response = pending.get(call.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            CompletableFuture.anyOf(pending, handler.tooLarge).get(call.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            if (handler.tooLarge.isDone()) {
+                pending.cancel(true);
+                throw new ResponseTooLargeException();
+            }
+            response = pending.get();
         } catch (TimeoutException e) {
             pending.cancel(true);
             throw new HttpTimeoutException("the request timed out");
@@ -78,6 +163,9 @@ public final class JdkHttpTransport implements HttpTransport {
             throw e;
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
+            while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
             if (cause instanceof IOException io) {
                 throw io;
             }

@@ -18,6 +18,7 @@ public final class ClientConfig {
     private final Supplier<String> traceContext;
     private final System.Logger logger;
     private final ExecutorService asyncExecutor;
+    private final Duration maxServerWait;
 
     private ClientConfig(Builder b) {
         this.apiUrl = b.apiUrl;
@@ -31,6 +32,7 @@ public final class ClientConfig {
         this.traceContext = b.traceContext;
         this.logger = b.logger;
         this.asyncExecutor = b.asyncExecutor;
+        this.maxServerWait = b.maxServerWait;
     }
 
     public static Builder builder() {
@@ -90,6 +92,17 @@ public final class ClientConfig {
         return asyncExecutor;
     }
 
+    /** Never shows the token: only where the client talks to. */
+    @Override
+    public String toString() {
+        return "ClientConfig[apiUrl=" + Endpoints.hostOf(apiUrl) + ", namespace=" + namespace + "]";
+    }
+
+    /** The longest the SDK waits because the server asked it to ({@code Retry-After}); 60 s by default. */
+    public Duration maxServerWait() {
+        return maxServerWait;
+    }
+
     /** Builds a {@link ClientConfig}. */
     public static final class Builder {
         private String apiUrl;
@@ -103,6 +116,7 @@ public final class ClientConfig {
         private Supplier<String> traceContext;
         private System.Logger logger = System.getLogger("dev.sagatoctopusorchestrator.sdk");
         private ExecutorService asyncExecutor;
+        private Duration maxServerWait = Duration.ofSeconds(60);
 
         private Builder() {}
 
@@ -189,6 +203,15 @@ public final class ClientConfig {
             }
         }
 
+        /**
+         * The longest the SDK waits because the server asked it to (a {@code Retry-After} of an hour is a minute); 60 s
+         * by default (SPEC section 6.2). Lower it for a short-lived tool.
+         */
+        public Builder maxServerWait(Duration value) {
+            this.maxServerWait = value;
+            return this;
+        }
+
         public ClientConfig build() {
             if (apiUrl == null || apiUrl.isBlank()) {
                 throw SagatException.invalid("apiUrl is required");
@@ -205,6 +228,9 @@ public final class ClientConfig {
             Objects.requireNonNull(logger, "logger");
             if (timeout.isZero() || timeout.isNegative()) {
                 throw SagatException.invalid("timeout must be positive");
+            }
+            if (maxServerWait == null || maxServerWait.toMillis() < 1) {
+                throw SagatException.invalid("maxServerWait must be at least 1 ms");
             }
             return new ClientConfig(this);
         }

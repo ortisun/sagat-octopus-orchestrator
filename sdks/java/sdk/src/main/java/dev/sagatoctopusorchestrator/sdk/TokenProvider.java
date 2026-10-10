@@ -40,23 +40,29 @@ public interface TokenProvider {
         };
     }
 
-    /** Calls the provider and turns its failure into the canonical error, without echoing its message. */
+    /**
+     * Calls the provider and turns its failure into the canonical error: {@code UNAUTHENTICATED} with the reason
+     * {@code TOKEN_PROVIDER_FAILED}. The provider's own exception is neither the cause nor part of the message, only its
+     * class name: what it says (and the stack trace it leaves) can carry what it was talking to, a client secret or a URL.
+     */
     static String resolve(TokenProvider provider) {
+        String token;
         try {
-            String token = provider.token();
-            if (token == null || token.isEmpty()) {
-                throw SagatException.builder(ErrorCode.UNAUTHENTICATED, "the token provider returned no token").build();
-            }
-            return token;
-        } catch (SagatException e) {
-            throw e;
+            token = provider.token();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw SagatException.builder(ErrorCode.CANCELLED, "interrupted while asking for a token").cause(e).build();
-        } catch (Exception e) {
+            throw SagatException.of(ErrorCode.CANCELLED, "interrupted while asking for a token");
+        } catch (Throwable e) {
+            if (!Hooks.survivable(e)) {
+                throw (VirtualMachineError) e;
+            }
             throw SagatException.builder(ErrorCode.UNAUTHENTICATED, "the token provider failed (" + e.getClass().getSimpleName() + ")")
-                    .cause(e)
+                    .reason("TOKEN_PROVIDER_FAILED")
                     .build();
         }
+        if (token == null || token.isEmpty()) {
+            throw SagatException.builder(ErrorCode.UNAUTHENTICATED, "the token provider returned no token").reason("TOKEN_PROVIDER_FAILED").build();
+        }
+        return token;
     }
 }
