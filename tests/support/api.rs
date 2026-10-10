@@ -62,6 +62,18 @@ pub struct TestApi {
     pub script_key: Vec<u8>,
     lookups: Arc<AtomicUsize>,
     pings: Arc<AtomicUsize>,
+    /// The REST and gRPC servers, which have nothing to make them stop: they end with the API.
+    servers: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for TestApi {
+    /// A suite that boots platform after platform in one process (the SDK conformance suite) would otherwise
+    /// keep every platform's servers, and the database pools they hold, until the process ends.
+    fn drop(&mut self) {
+        for server in &self.servers {
+            server.abort();
+        }
+    }
 }
 
 /// The store the API uses, counting the authentication lookups (tenant by slug, membership) and the
@@ -332,7 +344,7 @@ pub async fn start_with(options: Options) -> TestApi {
         .await
         .expect("bind grpc");
     let grpc_addr = grpc_listener.local_addr().expect("grpc addr");
-    tokio::spawn(async move {
+    let grpc_server = tokio::spawn(async move {
         let _ = serve_grpc(
             grpc_listener,
             worker_service(grpc),
@@ -348,7 +360,7 @@ pub async fn start_with(options: Options) -> TestApi {
         .expect("bind api");
     let addr = listener.local_addr().expect("addr");
     let server = options.server;
-    tokio::spawn(async move {
+    let http_server = tokio::spawn(async move {
         let _ = sagat_api_http::serve(listener, app, server, std::future::pending()).await;
     });
 
@@ -372,6 +384,7 @@ pub async fn start_with(options: Options) -> TestApi {
         script_key,
         lookups,
         pings,
+        servers: vec![grpc_server, http_server],
     }
 }
 
