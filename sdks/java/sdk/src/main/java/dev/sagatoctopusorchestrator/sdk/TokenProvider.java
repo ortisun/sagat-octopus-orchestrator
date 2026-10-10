@@ -53,15 +53,17 @@ public interface TokenProvider {
             Thread.currentThread().interrupt();
             throw SagatException.of(ErrorCode.CANCELLED, "interrupted while asking for a token");
         } catch (Throwable e) {
-            if (!Hooks.survivable(e)) {
-                throw (VirtualMachineError) e;
-            }
+            Hooks.rethrowIfFatal(e);
             throw SagatException.builder(ErrorCode.UNAUTHENTICATED, "the token provider failed (" + e.getClass().getSimpleName() + ")")
                     .reason("TOKEN_PROVIDER_FAILED")
+                    .tokenProviderFailure()
                     .build();
         }
         if (token == null || token.isEmpty()) {
-            throw SagatException.builder(ErrorCode.UNAUTHENTICATED, "the token provider returned no token").reason("TOKEN_PROVIDER_FAILED").build();
+            throw SagatException.builder(ErrorCode.UNAUTHENTICATED, "the token provider returned no token")
+                    .reason("TOKEN_PROVIDER_FAILED")
+                    .tokenProviderFailure()
+                    .build();
         }
         return token;
     }

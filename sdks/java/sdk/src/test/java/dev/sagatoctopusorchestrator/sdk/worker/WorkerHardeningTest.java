@@ -565,4 +565,224 @@ class WorkerHardeningTest {
             }
         }
     }
+
+    // ============================================================================== round 4
+
+    // ---------------------------------------------------------------- stop cancels tokens and nothing else
+
+    @Test
+    void stopNeverInterruptsAHandlerThatIgnoresItsToken() {
+        WorkerHost h = host(b -> {});
+        AtomicBoolean sawInterrupt = new AtomicBoolean();
+        AtomicBoolean finished = new AtomicBoolean();
+        CountDownLatch started = new CountDownLatch(1);
+        h.registerActivity("charge", (in, ctx) -> {
+            started.countDown();
+            long end = System.nanoTime() + Duration.ofMillis(3500).toNanos();
+            while (System.nanoTime() < end) { // never looks at its token
+                if (Thread.currentThread().isInterrupted()) {
+                    sawInterrupt.set(true);
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    sawInterrupt.set(true);
+                    Thread.currentThread().interrupt();
+                }
+            }
+            finished.set(true);
+            return Map.of("done", true);
+        });
+        fake.addLeases(lease("run-1/charge/1"));
+        h.start();
+        until(() -> started.getCount() == 0, "the task to start");
+        long began = System.nanoTime();
+        h.stop(Duration.ofMillis(100));
+        assertTrue(Duration.ofNanos(System.nanoTime() - began).toMillis() < 4000, "stop waited the grace period, not the handler");
+        until(finished::get, "the handler to finish its own work");
+        assertFalse(sawInterrupt.get(), "the host cancels the token and nothing else: it never interrupts a handler");
+    }
+
+    // ------------------------------------------------------------------ only OutOfMemoryError is fatal
+
+    @Test
+    void aLoggerThatOverflowsTheStackEndsNeitherTheHeartbeatNorThePoller() {
+        ThrowingLogger sink = new ThrowingLogger(StackOverflowError::new).armed(true);
+        WorkerHost h = host(b -> b.logger(sink).heartbeatInterval(Duration.ofMillis(100)));
+        AtomicInteger ran = new AtomicInteger();
+        h.registerActivity("slow", (in, ctx) -> {
+            Thread.sleep(1200);
+            return ran.incrementAndGet();
+        });
+        h.registerActivity("charge", (in, ctx) -> ran.incrementAndGet());
+        fake.failNext("Heartbeat", FakeWorkerServer.Failure.of(Status.Code.UNAVAILABLE));
+        fake.addLeases(lease("run-1/slow/1", b -> b.setActivityName("slow").setStepId("slow")));
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the slow task");
+        assertTrue(fake.of("Heartbeat").size() >= 5, fake.of("Heartbeat").size() + " heartbeats");
+        fake.failNext("PollTasks", FakeWorkerServer.Failure.of(Status.Code.UNAUTHENTICATED));
+        until(() -> fake.of("RegisterWorker").size() == 2, "the registration after the refused poll");
+        fake.addLeases(lease("run-2/charge/1", b -> b.setRunId("run-2")));
+        until(() -> fake.of("CompleteStep").size() == 2, "the next task");
+    }
+
+    private static int recurse(int n) {
+        return recurse(n + 1) + 1;
+    }
+
+    @Test
+    void anEventHookThatReallyOverflowsTheStackIsSurvived() {
+        WorkerHost h = host(b -> b.onEvent(e -> recurse(0)));
+        h.registerActivity("charge", (in, ctx) -> Map.of("ok", true));
+        fake.addLeases(lease("run-1/charge/1"));
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the task though every event overflows the stack");
+        fake.addLeases(lease("run-2/charge/1", b -> b.setRunId("run-2")));
+        until(() -> fake.of("CompleteStep").size() == 2, "and the next one");
+    }
+
+    // -------------------------------------------------- a token provider that fails is repeated, privately
+
+    @Test
+    void aTokenProviderHiccupAtReportTimeDoesNotDropTheResult() {
+        AtomicBoolean armed = new AtomicBoolean();
+        AtomicInteger asked = new AtomicInteger();
+        WorkerHost h = host(b -> b.heartbeatInterval(Duration.ofSeconds(30)).tokenProvider(() -> {
+            asked.incrementAndGet();
+            if (armed.compareAndSet(true, false)) {
+                throw new IOException("idp down for a moment");
+            }
+            return "tok";
+        }));
+        h.registerActivity("charge", (in, ctx) -> {
+            armed.set(true); // the next call that asks for a token is the report of this result
+            return Map.of("computed", true);
+        });
+        fake.addLeases(lease("run-1/charge/1"));
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the result, though the provider failed once while it was reported");
+        assertEquals("{\"computed\":true}", ((Worker.CompleteStepRequest) fake.of("CompleteStep").get(0).request()).getOutputJson());
+        assertEquals(0, fake.of("FailStep").size());
+    }
+
+    @Test
+    void aProviderThatFailsWhilePollingIsWaitedOutAndTheSessionIsNotRegisteredAgain() {
+        AtomicInteger failing = new AtomicInteger();
+        WorkerHost h = host(b -> b.tokenProvider(() -> {
+            if (failing.getAndDecrement() > 0) {
+                throw new IOException("idp down");
+            }
+            return "tok";
+        }));
+        h.registerActivity("charge", (in, ctx) -> 1);
+        h.start();
+        failing.set(3);
+        fake.addLeases(lease("run-1/charge/1"));
+        until(() -> fake.of("CompleteStep").size() == 1, "the task once the provider recovers");
+        assertEquals(1, fake.of("RegisterWorker").size(), "a provider that fails is not a session that is gone");
+    }
+
+    @Test
+    void aReasonNamedLikeTheProviderFailureInAServerAnswerNeverMakesAReportRepeatable() {
+        for (Status.Code code : new Status.Code[] {Status.Code.UNAUTHENTICATED, Status.Code.PERMISSION_DENIED, Status.Code.INVALID_ARGUMENT, Status.Code.ABORTED, Status.Code.FAILED_PRECONDITION}) {
+            fake.reset();
+            List<WorkerEvent> events = new CopyOnWriteArrayList<>();
+            WorkerHost h = host(b -> b.workerName("reason-" + code).onEvent(events::add));
+            h.registerActivity("charge", (in, ctx) -> 1);
+            fake.failNext("CompleteStep", many(10, FakeWorkerServer.Failure.of(code, "TOKEN_PROVIDER_FAILED")));
+            fake.addLeases(lease("run-1/charge/1"));
+            h.start();
+            until(() -> events.stream().anyMatch(e -> e instanceof WorkerEvent.TaskDropped || e instanceof WorkerEvent.TaskStale), "the end of the report for " + code);
+            sleep(150);
+            assertTrue(fake.of("CompleteStep").size() <= 1, code + ": " + fake.of("CompleteStep").size() + " attempts for a refusal that only the server's words call the provider");
+            h.stop(Duration.ofSeconds(1));
+        }
+    }
+
+    // ------------------------------------------------------------------ pauses: cap after jitter, no early end
+
+    @Test
+    void theJitterOfAPauseNeverTakesItPastTheCap() {
+        assertEquals(60_000, WorkerHost.jitteredWait(60_000, 0.999, 60_000), "the cap is applied after the jitter: 72 s before");
+        assertEquals(60_000, WorkerHost.jitteredWait(Integer.MAX_VALUE, 1.0, 60_000));
+        assertEquals(300, WorkerHost.jitteredWait(1000, 0.5, 300));
+        assertEquals(800, WorkerHost.jitteredWait(1000, 0.0, 60_000), "-20 %");
+        assertEquals(1200, WorkerHost.jitteredWait(1000, 1.0, 60_000), "+20 %");
+        assertEquals(1000, WorkerHost.jitteredWait(1000, 0.5, 60_000));
+    }
+
+    @Test
+    void noPollPauseIsEverLongerThanTheCapWhatEverTheJitter() {
+        fake.pollRetryAfterMs = Integer.MAX_VALUE;
+        WorkerHost h = host(b -> b.maxServerWait(Duration.ofMillis(200)));
+        h.registerActivity("charge", (in, ctx) -> 1);
+        h.start();
+        until(() -> fake.of("PollTasks").size() >= 15, "fifteen polls");
+        List<FakeWorkerServer.Call> polls = fake.of("PollTasks");
+        long longest = 0;
+        for (int i = 1; i < 15; i++) {
+            longest = Math.max(longest, Duration.ofNanos(polls.get(i).nanos() - polls.get(i - 1).nanos()).toMillis());
+        }
+        assertTrue(longest <= 200 + 40, "the longest pause between polls was " + longest + " ms with a cap of 200 ms");
+    }
+
+    @Test
+    void aBackoffAfterARefusedRegistrationIsNotCutShortByATaskThatFinishes() {
+        WorkerHost h = host(b -> b.retry(new RetryPolicy(4, Duration.ofSeconds(2), Duration.ofSeconds(10))));
+        CountDownLatch started = new CountDownLatch(1);
+        h.registerActivity("slow", (in, ctx) -> {
+            started.countDown();
+            Thread.sleep(600);
+            return 1;
+        });
+        fake.addLeases(lease("run-1/slow/1", b -> b.setActivityName("slow").setStepId("slow")));
+        h.start();
+        until(() -> started.getCount() == 0, "the task to start");
+        fake.failNext("PollTasks", many(2, FakeWorkerServer.Failure.of(Status.Code.UNAUTHENTICATED)));
+        until(() -> fake.of("RegisterWorker").size() == 2, "the first registration after a refusal (immediate)");
+        long second = System.nanoTime();
+        until(() -> fake.of("RegisterWorker").size() == 3, "the registration after the second refusal (backed off)");
+        long waited = Duration.ofNanos(System.nanoTime() - second).toMillis();
+        assertTrue(waited >= 900, "the backoff (1 to 2 s) lasted " + waited + " ms: the task that finished at 600 ms did not end it");
+    }
+
+    // ---------------------------------------------------------------- the session ends with the session
+
+    @Test
+    void theSessionTokenIsClearedWhenTheSessionEnds() throws Exception {
+        WorkerHost h = host(b -> {});
+        h.registerActivity("charge", (in, ctx) -> 1);
+        java.lang.reflect.Field session = WorkerHost.class.getDeclaredField("session");
+        java.lang.reflect.Field workerId = WorkerHost.class.getDeclaredField("workerId");
+        session.setAccessible(true);
+        workerId.setAccessible(true);
+        assertEquals("", session.get(h));
+        h.start();
+        assertEquals("session-1", session.get(h), "held while the session lives");
+        h.stop(Duration.ofSeconds(1));
+        assertEquals("", session.get(h), "gone with the session");
+        assertEquals("", workerId.get(h));
+        h.start();
+        assertEquals("session-1", session.get(h), "and a restart makes a new one");
+    }
+
+    @Test
+    void secretsOfAnAttemptThatEndedAreRefusedAsAValidationError() {
+        WorkerHost h = host(b -> {});
+        AtomicReference<Secrets> kept = new AtomicReference<>();
+        AtomicReference<ActivityContext> context = new AtomicReference<>();
+        h.registerActivity("pay", (in, ctx) -> {
+            kept.set(ctx.secrets());
+            context.set(ctx);
+            return 1;
+        });
+        fake.secrets = List.of(FakeWorkerServer.secret("db", "hunter2", 1));
+        fake.addLeases(lease("run-1/pay/1", b -> b.setActivityName("pay").setStepId("pay")));
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the completion");
+        assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(SagatException.class, () -> kept.get().get("db")).code());
+        assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(SagatException.class, () -> kept.get().text("db")).code());
+        assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(SagatException.class, () -> context.get().secrets()).code());
+        // a name the step never declared is still a plain NOT_FOUND while the attempt lives: not this case
+    }
 }

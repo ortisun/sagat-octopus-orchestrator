@@ -122,7 +122,13 @@ class CanonicalNumbersTest {
         for (String[] vector : VECTORS) {
             double value = Double.longBitsToDouble(Long.parseUnsignedLong(vector[0], 16));
             assertEquals(vector[1], Json.ecmaNumber(value), "bits 0x" + vector[0]);
-            assertEquals(vector[1], Json.canonical(JsonNodeFactory.instance.numberNode(value)), "as a node, bits 0x" + vector[0]);
+            boolean roundedInteger = value == Math.rint(value) && Math.abs(value) > 9007199254740991.0 && !vector[1].contains("e");
+            if (roundedInteger) {
+                // An integer beyond 2^53 - 1 that ECMAScript prints in digits was rounded on the way in: refused (SPEC section 8).
+                assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(SagatException.class, () -> Json.canonical(JsonNodeFactory.instance.numberNode(value))).code(), vector[1]);
+            } else {
+                assertEquals(vector[1], Json.canonical(JsonNodeFactory.instance.numberNode(value)), "as a node, bits 0x" + vector[0]);
+            }
         }
     }
 
@@ -153,13 +159,49 @@ class CanonicalNumbersTest {
     }
 
     @Test
-    void anIntegerBeyondTwoToThe53MinusOneIsRefusedNotRounded() {
-        SagatException big = assertThrows(SagatException.class, () -> Json.canonical(Json.parse("{\"id\":9007199254740993}")));
-        assertEquals(ErrorCode.VALIDATION_FAILED, big.code());
-        assertTrue(big.getMessage().contains("$.id"), big.getMessage());
-        assertThrows(SagatException.class, () -> Json.canonical(JsonNodeFactory.instance.numberNode(9223372036854775807L)));
-        assertThrows(SagatException.class, () -> Json.canonical(JsonNodeFactory.instance.numberNode(new BigInteger("123456789012345678901234567890"))));
-        assertThrows(SagatException.class, () -> Json.canonical(JsonNodeFactory.instance.numberNode(new BigDecimal("1e999"))));
+    void aWholeNumberBeyondTwoToThe53MinusOneThatEcmaScriptPrintsInDigitsIsRefusedWhateverWasWrittenAndWhateverTheType() {
+        // by value, not by how it was written (SPEC section 8): anything below 1e21
+        for (String refused : new String[] {
+            "1e20", "1e+20", "-1e20", "2.5e19", "9007199254740992.0", "9007199254740992", "9007199254740993", "-9007199254740993", "123456789012345678901.5",
+            "100000000000000000000", "999999999999999900000.0", "9223372036854775807", "-9223372036854775808", "18446744073709551615"}) {
+            SagatException error = assertThrows(SagatException.class, () -> Json.canonical(Json.parse("{\"n\":" + refused + "}")), refused);
+            assertEquals(ErrorCode.VALIDATION_FAILED, error.code(), refused);
+            assertTrue(error.getMessage().contains("$.n"), error.getMessage());
+        }
+        // the same by type: a BigDecimal, a double, a float, a long, a BigInteger
+        for (JsonNode node : new JsonNode[] {
+            JsonNodeFactory.instance.numberNode(new BigDecimal("1E+20")), JsonNodeFactory.instance.numberNode(new BigDecimal("9007199254740992.0")),
+            JsonNodeFactory.instance.numberNode(1.0E20), JsonNodeFactory.instance.numberNode(9007199254740993L), JsonNodeFactory.instance.numberNode(Long.MAX_VALUE),
+            JsonNodeFactory.instance.numberNode(new BigInteger("20000000000000000000")), JsonNodeFactory.instance.numberNode(1.0E19f)}) {
+            assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(SagatException.class, () -> Json.canonical(node), node.toString()).code(), node.toString());
+        }
+        // up to 2^53 - 1 is digits, exactly
+        assertEquals("{\"n\":9007199254740991}", Json.canonical(Json.parse("{\"n\":9007199254740991.0}")));
+        assertEquals("{\"n\":-9007199254740991}", Json.canonical(Json.parse("{\"n\":-9007199254740991}")));
+        assertEquals("{\"n\":600000}", Json.canonical(Json.parse("{\"n\":6e5}")));
+    }
+
+    @Test
+    void aNumberEcmaScriptPrintsWithAnExponentOrWithAFractionIsANumberAndIsWrittenAsRfc8785WritesIt() {
+        assertEquals("{\"n\":1e+21}", Json.canonical(Json.parse("{\"n\":1e21}")));
+        assertEquals("{\"n\":1e+21}", Json.canonical(Json.parse("{\"n\":1000000000000000000000}")), "an integer written as an integer, with the value 1e21");
+        assertEquals("{\"n\":1e+30}", Json.canonical(Json.parse("{\"n\":1E30}")));
+        assertEquals("{\"n\":1e+30}", Json.canonical(Json.parse("{\"n\":1000000000000000000000000000000}")), "by value, not by how it was written");
+        assertEquals("{\"n\":-1e+21}", Json.canonical(Json.parse("{\"n\":-1e21}")));
+        assertEquals("1.2345678901234568e+29", Json.canonical(JsonNodeFactory.instance.numberNode(new BigInteger("123456789012345678901234567890"))));
+        assertEquals("1e+21", Json.canonical(JsonNodeFactory.instance.numberNode(new BigDecimal("1E+21"))));
+        assertEquals("{\"n\":4.35}", Json.canonical(Json.parse("{\"n\":4.35}")));
+        assertEquals("{\"n\":0.000001}", Json.canonical(Json.parse("{\"n\":0.000001}")));
+        assertEquals("{\"n\":-1e-7}", Json.canonical(Json.parse("{\"n\":-1e-7}")));
+        assertEquals("{\"n\":12345.678}", Json.canonical(Json.parse("{\"n\":12345.678}")));
+        assertEquals("{\"n\":1.5}", Json.canonical(Json.parse("{\"n\":1.50}")));
+    }
+
+    @Test
+    void anIntegerTooBigForADoubleIsNotAFiniteNumber() {
+        assertEquals(ErrorCode.VALIDATION_FAILED, assertThrows(SagatException.class,
+                () -> Json.canonical(JsonNodeFactory.instance.numberNode(new BigInteger("1" + "0".repeat(400))))).code());
+        assertThrows(SagatException.class, () -> Json.canonical(JsonNodeFactory.instance.numberNode(new BigDecimal("1e999999999"))));
         assertThrows(SagatException.class, () -> Json.canonical(JsonNodeFactory.instance.numberNode(Double.NaN)));
         assertThrows(SagatException.class, () -> Json.canonical(JsonNodeFactory.instance.numberNode(Double.POSITIVE_INFINITY)));
     }

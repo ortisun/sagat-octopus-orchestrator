@@ -20,6 +20,9 @@ public class SagatException extends RuntimeException {
     private final String traceId;
     private final String reason;
     private final Long retryAfterMs;
+    // Known to the SDK alone: set by the SDK when the token provider failed before anything was sent, never read from an
+    // answer, never derived from a reason string (a server must not be able to make a call repeatable by naming it).
+    private final boolean tokenProviderFailure;
 
     /** The longest wait the SDK takes from what a server says ({@code Retry-After}, {@code retry-after-ms}). */
     public static final long MAX_SERVER_WAIT_MS = 60_000;
@@ -37,6 +40,7 @@ public class SagatException extends RuntimeException {
         this.traceId = builder.traceId != null && TRACE_ID.matcher(builder.traceId).matches() ? builder.traceId : "";
         this.reason = builder.reason == null ? null : Text.cut(builder.reason, 128);
         this.retryAfterMs = builder.retryAfterMs == null ? null : Math.max(0, Math.min(builder.retryAfterMs, MAX_SERVER_WAIT_MS));
+        this.tokenProviderFailure = builder.tokenProviderFailure;
     }
 
     /** Starts an error with a code and a safe message. */
@@ -82,10 +86,20 @@ public class SagatException extends RuntimeException {
     /**
      * Whether the SDK may repeat the call that raised this error (SPEC section 5): the error says it may be repeated
      * <em>and</em> it is one of {@code TRANSPORT}, {@code UNAVAILABLE}, {@code RATE_LIMITED} or {@code INTERNAL}. A
-     * {@code 4xx} other than {@code 429} is never repeated, whatever the body of the answer claims.
+     * {@code 4xx} other than {@code 408} and {@code 429} is never repeated, whatever the body of the answer claims.
      */
     public boolean isRetriable() {
-        return retryable && (code == ErrorCode.TRANSPORT || code == ErrorCode.UNAVAILABLE || code == ErrorCode.RATE_LIMITED || code == ErrorCode.INTERNAL);
+        // A token provider that failed is repeated too: nothing was sent, so repeating cannot do harm (SPEC section 5).
+        return tokenProviderFailure
+                || (retryable && (code == ErrorCode.TRANSPORT || code == ErrorCode.UNAVAILABLE || code == ErrorCode.RATE_LIMITED || code == ErrorCode.INTERNAL));
+    }
+
+    /**
+     * Whether the token provider failed before anything was sent. Only the SDK can make this true; a {@code reason}
+     * that says so in a server's answer does not.
+     */
+    public boolean isTokenProviderFailure() {
+        return tokenProviderFailure;
     }
 
     /** 32 lowercase hex characters from {@code X-Trace-Id} or the error envelope; empty when the server did not answer. */
@@ -129,6 +143,7 @@ public class SagatException extends RuntimeException {
         private String reason;
         private Long retryAfterMs;
         private Throwable cause;
+        private boolean tokenProviderFailure;
 
         private Builder(ErrorCode code, String message) {
             this.code = Objects.requireNonNull(code, "code");
@@ -174,6 +189,12 @@ public class SagatException extends RuntimeException {
         /** The underlying failure, for the stack trace only: it is never part of the message. */
         public Builder cause(Throwable value) {
             this.cause = value;
+            return this;
+        }
+
+        /** The token provider failed before anything was sent. Package-private: only the SDK says this. */
+        Builder tokenProviderFailure() {
+            this.tokenProviderFailure = true;
             return this;
         }
 

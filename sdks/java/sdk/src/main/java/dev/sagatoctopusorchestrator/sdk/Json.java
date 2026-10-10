@@ -95,8 +95,9 @@ public final class Json {
      * Canonical JSON (SPEC section 7, RFC 8785): UTF-8, object keys sorted at every depth by UTF-16 code unit, no
      * insignificant whitespace, strings escaped as {@code JSON.stringify} does and numbers as ECMAScript prints
      * them ({@code 1.0} is {@code 1}, {@code 600000} stays {@code 600000}, {@code 1e21} is {@code 1e+21}). A number is
-     * taken as its nearest IEEE double, as the RFC defines; an integer beyond 2^53 - 1 is refused (send it as a
-     * string) rather than rounded.
+     * taken as its nearest IEEE double, as the RFC defines; a whole number beyond 2^53 - 1 that ECMAScript prints in digits
+     * (anything below 1e21) is refused (send it as a string) rather than rounded, whatever type holds it and however it was
+     * written.
      */
     public static String canonical(JsonNode node) {
         StringBuilder out = new StringBuilder(256);
@@ -201,19 +202,27 @@ public final class Json {
         return value.toString();
     }
 
-    private static final BigInteger MAX_SAFE = BigInteger.valueOf(9007199254740991L);
+    private static final double MAX_SAFE_DOUBLE = 9007199254740991.0;
 
+    /**
+     * A number in the canonical text. The rule is on the <em>value</em>, not on how it was written or what type holds it
+     * (SPEC section 8): a whole number beyond 2^53 - 1 that ECMAScript prints in digits (anything below 1e21:
+     * {@code 9007199254740993}, {@code 9007199254740992.0}, {@code 1e20}, a {@code BigDecimal} {@code 1E+20}) was an integer
+     * that a double cannot hold exactly, and is refused so that the text is the same bytes in every language; one ECMAScript
+     * prints with an exponent ({@code 1e21} and above) or with a fraction is a number and is written as RFC 8785 writes it.
+     */
     private static void canonicalNumber(JsonNode node, StringBuilder out, String path) {
         if (node.isIntegralNumber()) {
-            BigInteger value = node.bigIntegerValue();
-            if (value.abs().compareTo(MAX_SAFE) > 0) {
-                throw SagatException.invalid(path + " is an integer beyond 2^53 - 1: send it as a string");
+            BigInteger whole = node.bigIntegerValue();
+            if (whole.abs().compareTo(BigInteger.valueOf(9007199254740991L)) <= 0) {
+                out.append(whole);
+                return;
             }
-            out.append(value.toString());
-            return;
         }
         double value;
-        if (node.isBigDecimal()) {
+        if (node.isIntegralNumber()) {
+            value = node.bigIntegerValue().doubleValue();
+        } else if (node.isBigDecimal()) {
             BigDecimal decimal = node.decimalValue();
             long adjusted = (long) decimal.precision() - decimal.scale() - 1;
             // Out of the range of a double before any arithmetic is done on a huge exponent: too big is not a number the
@@ -228,7 +237,11 @@ public final class Json {
         if (Double.isNaN(value) || Double.isInfinite(value)) {
             throw SagatException.invalid(path + " is not a finite number");
         }
-        out.append(ecmaNumber(value));
+        String text = ecmaNumber(value);
+        if (value == Math.rint(value) && Math.abs(value) > MAX_SAFE_DOUBLE && text.indexOf('e') < 0) {
+            throw SagatException.invalid(path + " is a whole number beyond 2^53 - 1: send it as a string");
+        }
+        out.append(text);
     }
 
     /**

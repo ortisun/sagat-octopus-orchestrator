@@ -39,9 +39,7 @@ final class CancellationSource implements CancellationSignal {
             listener.accept(why);
         } catch (Throwable t) {
             // A listener that fails must not stop the others, nor the host (only the VM's own failures are rethrown).
-            if (!dev.sagatoctopusorchestrator.sdk.Hooks.survivable(t)) {
-                throw (VirtualMachineError) t;
-            }
+            dev.sagatoctopusorchestrator.sdk.Hooks.rethrowIfFatal(t);
         }
     }
 

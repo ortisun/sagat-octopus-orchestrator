@@ -102,7 +102,9 @@ as `INPUT_INVALID`, not retried). A handler fails on purpose with `ActivityFailu
 `ActivityHandler.NO_RESULT` for no value at all.
 
 The host is the work to wait for: its polling and task threads are not daemons, so a process that started a host
-stays alive until `stop(Duration)` / `close()`. The host never interrupts an activity's thread; the activity
+stays alive until `stop(Duration)` / `close()`. The host never interrupts an activity's thread, `stop` included
+(it cancels the token with the reason `shutdown`, waits the grace period and returns; a handler that ignores its token runs to
+its end on its own thread, and its late report on the closed channel simply fails); the activity
 decides what to do with its cancellation signal (`await(Duration)` is the cancellable sleep). What the end of a
 cancelled activity means depends on why it was cancelled: `run-cancelled` and a cancellation error is reported as
 `CANCELLED` (not retried), `lease-lost` reports nothing, and `shutdown` with a cancellation error reports nothing
@@ -136,8 +138,10 @@ ObjectNode document = WorkflowBuilder.named("order-flow")
 The builders (`step`, `sleep`/`sleepMs`, `waitForEvent`, `invokeChild`, `condition`, `parallel`, `saga`, `end`) have no
 side effects and refuse what the server would refuse and they can see (a duplicate id, a dangling reference, a
 saga without a body), as `VALIDATION_FAILED`. A duplicate node id is raised when the node is added, across nested flows;
-joining a `Flow` to a workflow (`parallel`, `saga`, `append`) takes a copy of it as it is then, so a flow can be joined to
-more than one workflow and changing it afterwards changes none of them. `build()` returns the document; `toJson()` its canonical JSON (RFC 8785: no whitespace, keys sorted by UTF-16 code
+a `Flow` joined to a workflow (`parallel`, `saga`) is read when `build()` is called, so a step added to it after it was joined
+is part of the document (ids are checked again against the whole document each time a node is added, and by `build()`);
+a flow can be joined to more than one workflow and each reads it. `WorkflowBuilder.append(Flow)` is the exception: it adds a
+copy of the flow's nodes as they are then. `build()` returns the document; `toJson()` its canonical JSON (RFC 8785: no whitespace, keys sorted by UTF-16 code
 unit, numbers as ECMAScript prints them, so `1.0` is `1`), byte for byte what the other four SDKs write for the same
 program. Canonical text refuses an integer beyond 2^53 - 1 (send it as a string); the text sent on the wire does not
 round anything.
@@ -209,8 +213,8 @@ Not tested: TLS 1.2-only peers, client certificate chains longer than one certif
 
 What a server says is bounded (SPEC sections 6.2, 8 and 10), and each rule has a test that failed before it:
 
-* A wait taken from the server (`Retry-After`, `retry-after-ms`, `retry_after_ms`) is capped at 60 s whatever it says
-  (`maxServerWait` on both configs lowers the cap); a `Retry-After` is read in seconds only, an HTTP date is ignored.
+* A wait taken from the server (`Retry-After`, `retry-after-ms`, `retry_after_ms`) is capped at 60 s whatever it says, jitter
+  included (`maxServerWait` on both configs lowers the cap); a `Retry-After` is read in seconds only, an HTTP date is ignored.
 * A REST answer is read up to 32 MiB while it streams (a declared `Content-Length` over it is refused on the headers), then
   the call fails as `PROTOCOL`. The deadline of a call (`timeout`) covers the whole exchange, body included.
 * The `message` of an error is cut to 512 characters, its `reason` to 128, a `traceId` that is not 32 lower case hex
@@ -223,10 +227,14 @@ What a server says is bounded (SPEC sections 6.2, 8 and 10), and each rule has a
   2.22.2 spends seconds on a 40 000 character string given to a number field.
 * A run id must be a UUID and a signal name may not be empty, `.` or `..` (refused before anything is sent); other names
   are percent-encoded. A redirect is never followed.
-* A logger, a metrics callback, a trace hook or a token provider that throws, an `Error` included, does not stop the poll
-  loop, a heartbeat or a task in flight (only the virtual machine's own `VirtualMachineError` is rethrown). A token
-  provider that fails is `UNAUTHENTICATED` with the reason `TOKEN_PROVIDER_FAILED`, and neither its message nor its
-  exception is kept (its stack trace carries what it was talking to); the same goes for the text of malformed JSON.
+* A logger, a metrics callback, a trace hook or a token provider that throws, an `Error` included (a
+  `StackOverflowError` too), does not stop the poll loop, a heartbeat or a task in flight; only `OutOfMemoryError` is
+  rethrown. A token provider that fails is repeated like a failure to connect (nothing was sent, so repeating cannot do
+  harm), also when a result is reported, and once the attempts are used up it is `UNAUTHENTICATED` with the reason
+  `TOKEN_PROVIDER_FAILED`; that it was the provider is known to the SDK privately (a field only the SDK sets), so a `reason`
+  of that name in a server's answer never makes a call repeatable. Neither the provider's message nor its exception is kept
+  (its stack trace carries what it was talking to); the same goes for the text of malformed JSON. The session token is
+  cleared when the host stops.
 * A string form never shows a credential: `toString` of a config, a client, a host, a token provider and `TlsOptions` names
   only the host and namespace (a test builds each with a canary token and key and looks for it, also in their JSON and
   serialized forms; none is `Serializable`).
@@ -238,12 +246,24 @@ which includes the GitHub advisories): none has an advisory. The same query answ
 scanner: run OSV-Scanner or OWASP Dependency-Check in your pipeline. The Netty inside `grpc-netty-shaded` is shaded and is
 not seen by OSV as an artifact of its own; it is covered by the gRPC release.
 
-**Build supply chain.** `.mvn/maven.config` makes every build `--strict-checksums`: a download whose checksum does not match
-(or is missing) fails the build instead of warning. The build also downloads two native binaries from Maven Central,
-`protoc` 3.25.9 and `protoc-gen-grpc-java` 1.83.1 (the version of each is pinned in the poms); the protobuf Maven plugin
-has no setting for a checksum of its own, so their integrity rests on Central's checksums under that strict mode, and the
-Maven Wrapper pins the SHA-256 of the Maven distribution. A build from an empty local repository (511 files) was run under
-the strict mode and passed. Nothing is signed or reproducible beyond that.
+**Build supply chain.** `.mvn/maven.config` makes every build run with `--strict-checksums`. What that does was checked by
+running `scripts/verify-strict-checksums.sh` (a scratch repository serving one small artifact with a deliberately wrong
+checksum; it is not part of `verify`, it needs about 100 MB of copy of `~/.m2`):
+
+| An artifact being downloaded | with `--strict-checksums` | without it |
+|---|---|---|
+| its `.sha1` does not match | the build **fails** (`Checksum validation failed, expected ... but is actually ...`) and nothing is stored | a warning, the build passes and the corrupt file is stored |
+| it has no checksum file | the build **fails** (`no checksums available`) | the build passes |
+| its `.sha1` matches | passes | passes |
+
+What it does **not** protect: the checksum comes from the same repository as the file, so a repository (or a mirror) that is
+itself compromised serves a matching pair; there is no signature or pinned-hash verification of dependencies; an artifact
+already in `~/.m2` is not verified again (only downloads are); and Maven reads `.mvn/maven.config` only when it is started from
+`sdks/java` or below (`./mvnw` there; `mvn -f sdks/java/pom.xml` from the repository root does not apply it). The two native
+binaries the build downloads from Maven Central, `protoc` 3.25.9 and `protoc-gen-grpc-java` 1.83.1 (versions pinned in the
+poms), are covered by that same download check and by nothing stronger: the protobuf Maven plugin has no setting for a
+checksum of its own. The Maven distribution itself is the one thing pinned by a hash (the SHA-256 in the wrapper
+properties). A build from an empty local repository (511 files) was run with the flag and passed. Nothing is signed.
 
 ## Versions
 
@@ -260,8 +280,8 @@ repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automat
 
 | Runtime | Status |
 |---|---|
-| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (180 unit tests) and the conformance suite (14 scenarios) |
-| JDK 26.0.2.1 (Homebrew OpenJDK, macOS arm64) | **tested**: the 180 unit tests only (not the conformance suite). The JVM prints warnings from `protobuf-java` 3.25 (`sun.misc.Unsafe`) and Netty (`System::loadLibrary`) on 24+ |
+| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (202 unit tests) and the conformance suite (14 scenarios) |
+| JDK 26.0.2.1 (Homebrew OpenJDK, macOS arm64) | **tested**: the 202 unit tests only (not the conformance suite). The JVM prints warnings from `protobuf-java` 3.25 (`sun.misc.Unsafe`) and Netty (`System::loadLibrary`) on 24+ |
 | Java 17 and 21 | **declared (`--release 17`), not run here**. The library is compiled with `--release 17`, so it uses only Java 17 APIs, and every dependency's class files are Java 8 level (checked on the class files of the run-time classpath); no JDK 17 or 21 runtime was available |
 | Linux, Windows | not run. The `protoc` artifact is chosen by `os-maven-plugin` for the build machine |
 | Android, GraalVM native image | not supported / not tried |
@@ -276,7 +296,7 @@ version `grpc-protobuf` 1.83.1 depends on), Jackson 2.22.3, JUnit Jupiter 5.14.4
 ## Develop
 
 ```text
-./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 180 unit tests
+./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 202 unit tests
 scripts/sync-shared.sh                # copies worker.proto and error-catalog.json from the repository; SharedContractsTest fails when behind
 conformance/prepare.sh                # builds the runner (target/classpath.txt); conformance/run.sh build|run ... is what the harness calls
 cargo test -p sagat-tests --test sdk_conformance   # the conformance suite (needs Docker), from the repository root

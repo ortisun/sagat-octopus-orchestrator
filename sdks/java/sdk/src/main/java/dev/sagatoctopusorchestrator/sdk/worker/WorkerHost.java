@@ -271,13 +271,14 @@ public final class WorkerHost implements AutoCloseable {
             synchronized (lifecycle) {
                 running = false;
                 rpc = null;
+                // The session ends with the host: its token is not kept (a restart registers and gets a new one).
+                session = "";
+                workerId = "";
             }
             beatPool.shutdownNow();
+            // The host cancels the tokens of the tasks and nothing else (SPEC section 6.4): a handler that ignores its
+            // token runs to its end on its own thread, never interrupted, and its late report on the closed channel fails.
             taskPool.shutdown();
-            if (!inflight.isEmpty()) {
-                // A handler that ignored its cancellation: interrupt it, and let go of its lease.
-                taskPool.shutdownNow();
-            }
             channel.close();
         }
     }
@@ -328,7 +329,7 @@ public final class WorkerHost implements AutoCloseable {
                 return;
             } catch (SagatException error) {
                 // A token the provider can refresh gets one more chance (SPEC section 5).
-                if (error.code() == ErrorCode.UNAUTHENTICATED && !refreshed && config.tokenProvider().refreshable()) {
+                if (error.code() == ErrorCode.UNAUTHENTICATED && !error.isTokenProviderFailure() && !refreshed && config.tokenProvider().refreshable()) {
                     refreshed = true;
                     continue;
                 }
@@ -363,13 +364,15 @@ public final class WorkerHost implements AutoCloseable {
         }
     }
 
-    // The pause between polls. A host that is stopping does not pause: `stop` may have run while a poll was in
-    // flight, with nothing left to wake.
-    private void idle(long millis) {
-        long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+    // A wait of the loop. A host that is stopping does not wait: `stop` may have run while a poll was in flight, with
+    // nothing left to wake. Only the two waits that are about room for work may be ended early by a task that finishes
+    // (`wakeable`: the pause after an empty poll and the wait for a free slot, SPEC section 6.2); a backoff or a pause the
+    // server asked for is waited out whatever happens meanwhile.
+    private void idle(long millis, boolean wakeable) {
+        long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0, millis));
         synchronized (wakeLock) {
             try {
-                while (!wakeFlag && !stopping) {
+                while (!(wakeable && wakeFlag) && !stopping) {
                     long left = end - System.nanoTime();
                     if (left <= 0) {
                         break;
@@ -379,9 +382,20 @@ public final class WorkerHost implements AutoCloseable {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } finally {
-                wakeFlag = false;
+                if (wakeable) {
+                    wakeFlag = false;
+                }
             }
         }
+    }
+
+    private void idle(long millis) {
+        idle(millis, true);
+    }
+
+    /** A wait that a task finishing does not end. */
+    private void backoff(long millis) {
+        idle(millis, false);
     }
 
     private void run() {
@@ -414,20 +428,22 @@ public final class WorkerHost implements AutoCloseable {
                             "a poll answer carried " + leases.size() + " tasks, " + asked + " were asked for: the rest are left to lapse");
                 }
                 if (leases.isEmpty()) {
-                    long wait = serverWait(Math.max(50, response.getRetryAfterMs() > 0 ? response.getRetryAfterMs() : 1000));
-                    idle(Math.round(wait * (0.8 + ThreadLocalRandom.current().nextDouble() * 0.4)));
+                    long wait = Math.max(50, response.getRetryAfterMs() > 0 ? response.getRetryAfterMs() : 1000);
+                    idle(jitteredWait(wait, ThreadLocalRandom.current().nextDouble(), config.maxServerWait().toMillis()));
                 }
             } catch (SagatException error) {
                 if (stopping) {
                     return;
                 }
-                if (error.code() == ErrorCode.UNAUTHENTICATED) {
+                // A token provider that failed is not a session that is gone: nothing reached the service. It is waited out
+                // like an outage (below), and the session is not registered again for it.
+                if (error.code() == ErrorCode.UNAUTHENTICATED && !error.isTokenProviderFailure()) {
                     Hooks.log(log, System.Logger.Level.WARNING, "the session is gone: registering again worker=" + config.workerName());
                     emit(new WorkerEvent.Reconnect());
                     if (refused > 0) {
                         // The session registered a moment ago was refused at once: a server that does that is not to be
                         // hammered with registrations, so the next one waits (SPEC sections 5 and 6.2).
-                        idle(retry.withMaxDelay(Duration.ofSeconds(30)).backoffMillis(refused - 1, random()));
+                        backoff(retry.withMaxDelay(Duration.ofSeconds(30)).backoffMillis(refused - 1, random()));
                         if (stopping) {
                             return;
                         }
@@ -441,23 +457,21 @@ public final class WorkerHost implements AutoCloseable {
                     }
                 }
                 if (error.code() == ErrorCode.RATE_LIMITED) {
-                    idle(serverWait(Math.max(error.retryAfterMs().orElse(0L), 100)));
+                    backoff(serverWait(Math.max(error.retryAfterMs().orElse(0L), 100)));
                     continue;
                 }
                 emit(new WorkerEvent.Reconnect());
                 RetryPolicy slow = retry.withMaxDelay(Duration.ofSeconds(30));
-                idle(Math.min(30_000, Math.max(slow.backoffMillis(failures++, random()), serverWait(error.retryAfterMs().orElse(0L)))));
+                backoff(Math.min(30_000, Math.max(slow.backoffMillis(failures++, random()), serverWait(error.retryAfterMs().orElse(0L)))));
             } catch (Throwable error) {
                 // Whatever else goes wrong in the loop (an Error from a hook, a bug of ours) is logged and survived: a
                 // host that stops polling without a word is the worst failure it has. Only the VM's own are rethrown.
-                if (!Hooks.survivable(error)) {
-                    throw (VirtualMachineError) error;
-                }
+                Hooks.rethrowIfFatal(error);
                 if (stopping) {
                     return;
                 }
                 Hooks.log(log, System.Logger.Level.ERROR, "the poll loop failed (" + error.getClass().getSimpleName() + ")");
-                idle(1000);
+                backoff(1000);
             }
         }
     }
@@ -478,9 +492,7 @@ public final class WorkerHost implements AutoCloseable {
                     execute(channel, lease, task);
                 } catch (Throwable t) {
                     Hooks.log(log, System.Logger.Level.ERROR, "a task failed outside its handler task=" + lease.getTaskId() + " (" + t.getClass().getSimpleName() + ")");
-                    if (!Hooks.survivable(t)) {
-                        throw (VirtualMachineError) t;
-                    }
+                    Hooks.rethrowIfFatal(t);
                 } finally {
                     inflight.remove(lease.getTaskId());
                     task.done.complete(null);
@@ -491,6 +503,11 @@ public final class WorkerHost implements AutoCloseable {
             inflight.remove(lease.getTaskId());
             task.done.complete(null);
         }
+    }
+
+    /** A pause with a jitter of 20 % either way, never longer than the cap (applied after the jitter, not before it). */
+    static long jitteredWait(long wait, double random, long cap) {
+        return Math.min(cap, Math.round(wait * (0.8 + random * 0.4)));
     }
 
     /** One third of the time left on the lease (SPEC section 6.4), never under 500 ms and never over 10 s. */
@@ -747,7 +764,7 @@ public final class WorkerHost implements AutoCloseable {
         @Override
         public synchronized Secrets secrets() {
             if (dropped) {
-                throw SagatException.of(ErrorCode.NOT_FOUND, "the secrets of this attempt were dropped");
+                throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the secrets of this attempt were dropped");
             }
             if (secrets == null) {
                 secrets = resolveSecrets(channel, lease, minor);
@@ -861,9 +878,7 @@ public final class WorkerHost implements AutoCloseable {
             } catch (Throwable error) {
                 // A hook of the caller (a token provider, a logger, a metrics callback) or a bug of ours: the next beat
                 // tries again. A heartbeat that dies of it would let the lease lapse under a task that is still running.
-                if (!Hooks.survivable(error)) {
-                    throw (VirtualMachineError) error;
-                }
+                Hooks.rethrowIfFatal(error);
                 Hooks.log(log, System.Logger.Level.WARNING, "a heartbeat failed task=" + lease.getTaskId() + " (" + error.getClass().getSimpleName() + ")");
             }
             if (!stopped) {

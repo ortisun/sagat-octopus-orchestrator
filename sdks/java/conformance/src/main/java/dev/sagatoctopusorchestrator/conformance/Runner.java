@@ -276,7 +276,11 @@ public final class Runner {
             String contains = invalid.path("contains").asText("");
             ObjectNode result = F.objectNode();
             try {
-                builderOf(invalid.path("workflow")).build();
+                // "Building" a workflow is its document and its canonical text (SPEC sections 7 and 8): the text refuses an
+                // integer beyond 2^53 - 1, which the document alone does not.
+                WorkflowBuilder builder = builderOf(invalid.path("workflow"));
+                builder.build();
+                builder.toJson();
                 result.put("raised", false);
             } catch (SagatException error) {
                 result.put("raised", true);

@@ -250,18 +250,65 @@ class WorkflowBuilderTest {
     }
 
     @Test
-    void joiningAFlowTakesACopyOfItAndTheWorkflowIsCheckedAgainstTheIdsItNowHolds() {
+    void aFlowIsReadWhenBuildIsCalledSoAStepAddedAfterItWasJoinedIsPartOfTheDocument() {
         Flow branch = Flow.create().step("card", "pay.card");
         WorkflowBuilder builder = workflow("late-add").step("first", "x").parallel("split", Flow.Join.ALL, branch, Flow.create().step("stock", "y"));
+        branch.step("fraud", "pay.fraud"); // after the join
+        JsonNode doc = builder.build();
+        assertEquals(List.of("first", "split", "card", "fraud", "stock"), doc.get("nodes").findValuesAsText("id"), "four steps and the split: the late one is in");
+        assertEquals("fraud", doc.get("nodes").get(2).get("next").textValue(), "and the branch is linked through it");
+        assertFalse(doc.get("nodes").get(3).has("next"));
+        // the same for the body of a saga
+        Flow body = Flow.create().step("reserve", "a.reserve");
+        WorkflowBuilder sagas = workflow("late-saga").saga("tx", SagaOptions.create(), body).step("after", "z");
+        body.step("submit", "a.submit");
+        assertEquals(List.of("tx", "after", "reserve", "submit"), sagas.build().get("nodes").findValuesAsText("id"));
+        // and a flow that grows deeper after both joins
+        Flow inner = Flow.create().step("deep", "d");
+        Flow outer = Flow.create().step("outer", "o").parallel("fan", Flow.Join.ALL, inner, Flow.create().step("side", "s"));
+        WorkflowBuilder nested = workflow("late-nested").parallel("top", Flow.Join.ANY, outer, Flow.create().step("other", "w"));
+        inner.step("deeper", "dd");
+        assertTrue(nested.build().get("nodes").findValuesAsText("id").contains("deeper"));
+    }
+
+    @Test
+    void aStepAddedToAFlowAfterTheJoinIsCheckedAgainstTheWholeDocumentWhenItIsAdded() {
+        Flow branch = Flow.create().step("card", "pay.card");
+        Flow sibling = Flow.create().step("stock", "y");
+        WorkflowBuilder builder = workflow("late-dup").step("first", "x").parallel("split", Flow.Join.ALL, branch, sibling);
+        assertThrows(SagatException.class, () -> branch.step("first", "z"), "an id of the workflow");
+        assertThrows(SagatException.class, () -> branch.step("stock", "z"), "an id of the sibling branch");
+        assertThrows(SagatException.class, () -> branch.step("split", "z"), "the id of the parallel node");
+        assertThrows(SagatException.class, () -> sibling.step("card", "z"));
         assertThrows(SagatException.class, () -> builder.step("card", "z"), "the workflow cannot take a branch's id");
         assertThrows(SagatException.class, () -> builder.step("stock", "z"));
-        assertThrows(SagatException.class, () -> builder.step("split", "z"));
-        // The branch handed in is the caller's own: changing it afterwards changes nothing in the workflow.
-        branch.step("first", "z");
+        // nothing was left behind by the refusals
         assertEquals(List.of("first", "split", "card", "stock"), builder.build().get("nodes").findValuesAsText("id"));
-        // ... and it can be joined again, to another workflow, as it is now.
-        WorkflowBuilder other = workflow("second-use").parallel("fan", Flow.Join.ALL, branch, Flow.create().step("other", "w"));
-        assertEquals(List.of("fan", "card", "first", "other"), other.build().get("nodes").findValuesAsText("id"));
+        // a flow joined to two workflows is read by both
+        Flow shared = Flow.create().step("shared", "s");
+        WorkflowBuilder one = workflow("first-use").parallel("fan", Flow.Join.ALL, shared, Flow.create().step("a1", "x"));
+        WorkflowBuilder two = workflow("second-use").parallel("fan", Flow.Join.ALL, shared, Flow.create().step("a2", "x"));
+        shared.step("grown", "g");
+        assertTrue(one.build().get("nodes").findValuesAsText("id").contains("grown"));
+        assertTrue(two.build().get("nodes").findValuesAsText("id").contains("grown"));
+        // the id of a step added to the shared flow is checked against both documents
+        assertThrows(SagatException.class, () -> shared.step("a1", "z"));
+        assertThrows(SagatException.class, () -> shared.step("a2", "z"));
+    }
+
+    @Test
+    void buildChecksTheIdsOfTheWholeDocumentAgainAsASafetyNet() throws Exception {
+        Flow branch = Flow.create().step("card", "pay.card");
+        WorkflowBuilder builder = workflow("safety-net").step("first", "x").parallel("split", Flow.Join.ALL, branch, Flow.create().step("stock", "y"));
+        // a node that got in without the add-time check (here by reflection, as a bug in the SDK would let it)
+        java.lang.reflect.Field nodes = Flow.class.getDeclaredField("nodes");
+        nodes.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<com.fasterxml.jackson.databind.node.ObjectNode> inside = (List<com.fasterxml.jackson.databind.node.ObjectNode>) nodes.get(branch);
+        inside.add((com.fasterxml.jackson.databind.node.ObjectNode) json("{\"id\":\"first\",\"type\":\"activity\",\"activity\":\"x\"}"));
+        SagatException error = assertThrows(SagatException.class, builder::build);
+        assertEquals(ErrorCode.VALIDATION_FAILED, error.code());
+        assertTrue(error.getMessage().contains("used twice"), error.getMessage());
     }
 
     @Test
@@ -274,5 +321,20 @@ class WorkflowBuilderTest {
         WorkflowBuilder other = workflow("two").step("t", "x");
         other.append(shared);
         assertEquals(List.of("t", "s"), other.build().get("nodes").findValuesAsText("id"));
+    }
+
+    @Test
+    void theCanonicalTextRefusesAWholeNumberBeyondTwoToThe53MinusOneByValueAndTheDocumentStillBuilds() {
+        for (Object maximum : new Object[] {9007199254740993L, new java.math.BigDecimal("1E+20"), new java.math.BigDecimal("9007199254740992.0"), 2.5e19, 1e20}) {
+            WorkflowBuilder builder = workflow("unsafe-number").step("a", "x.y").inputSchema(Map.of("type", "object", "maximum", maximum));
+            assertEquals("object", builder.build().get("inputSchema").get("type").textValue(), "build() returns the document");
+            SagatException error = assertThrows(SagatException.class, builder::toJson, String.valueOf(maximum));
+            assertEquals(ErrorCode.VALIDATION_FAILED, error.code(), String.valueOf(maximum));
+            assertTrue(error.getMessage().contains("$.inputSchema.maximum"), error.getMessage());
+        }
+        for (Object maximum : new Object[] {new java.math.BigDecimal("1E+21"), 1e21, 4.35, 0.000001, new java.math.BigDecimal("12345.678")}) {
+            String text = workflow("safe-number").step("a", "x.y").inputSchema(Map.of("maximum", maximum)).toJson();
+            assertTrue(text.contains("\"maximum\":"), text);
+        }
     }
 }

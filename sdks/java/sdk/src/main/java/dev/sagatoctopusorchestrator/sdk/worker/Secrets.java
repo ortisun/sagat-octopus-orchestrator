@@ -28,11 +28,12 @@ public final class Secrets {
 
     /** The bytes of a secret (a copy). */
     public synchronized byte[] get(String name) {
+        if (dropped) {
+            throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the secrets of this attempt were dropped");
+        }
         byte[] value = values.get(name);
         if (value == null) {
-            throw SagatException.of(ErrorCode.NOT_FOUND, dropped
-                    ? "the secrets of this attempt were dropped"
-                    : "the step declares no secret named " + name);
+            throw SagatException.of(ErrorCode.NOT_FOUND, "the step declares no secret named " + name);
         }
         return value.clone();
     }

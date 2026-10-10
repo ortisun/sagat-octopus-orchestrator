@@ -482,4 +482,68 @@ class RestHardeningTest {
         }
         client.close();
     }
+
+    // ============================================================================== round 4
+
+    @Test
+    void aTokenProviderThatFailsAtFirstIsRepeatedBeforeAnythingIsSent() {
+        AtomicInteger asked = new AtomicInteger();
+        SagatClient c = client(b -> b.tokenProvider(() -> {
+            if (asked.incrementAndGet() <= 2) {
+                throw new IOException("idp down");
+            }
+            return "tok-" + asked.get();
+        }));
+        server.prepare((req, reply) -> reply.send(200, RUN_JSON));
+        assertEquals(RUN, c.get(RUN).runId());
+        assertEquals(3, asked.get(), "asked three times: two failures and the token");
+        assertEquals(1, server.seen.size(), "nothing was sent until there was a token");
+        assertEquals("Bearer tok-3", server.seen.get(0).header("authorization"));
+    }
+
+    @Test
+    void aTokenProviderThatNeverRecoversGivesUpAfterTheAttemptsWithTheReason() {
+        AtomicInteger asked = new AtomicInteger();
+        SagatClient c = client(b -> b.tokenProvider(() -> {
+            asked.incrementAndGet();
+            throw new IllegalStateException("client_secret=SECRET123");
+        }));
+        server.prepare((req, reply) -> reply.send(200, RUN_JSON));
+        SagatException error = assertThrows(SagatException.class, () -> c.get(RUN));
+        assertEquals(ErrorCode.UNAUTHENTICATED, error.code());
+        assertEquals("TOKEN_PROVIDER_FAILED", error.reason().orElseThrow());
+        assertEquals(4, asked.get(), "the attempts of the retry policy");
+        assertEquals(0, server.seen.size());
+        // a keyed POST is repeated too, with the same key (nothing was sent)
+        asked.set(0);
+        assertThrows(SagatException.class, () -> c.start(WORKFLOW_ID, Map.of(), StartOptions.create().idempotencyKey("key-12345678")));
+        assertEquals(4, asked.get());
+    }
+
+    private static final String WORKFLOW_ID = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+
+    @Test
+    void theProviderFailureIsAPrivateFactAServerCannotMakeUp() {
+        for (int status : new int[] {400, 401, 403, 404, 409, 422}) {
+            String code = switch (status) {
+                case 400 -> "BAD_REQUEST";
+                case 401 -> "UNAUTHENTICATED";
+                case 403 -> "FORBIDDEN";
+                case 404 -> "NOT_FOUND";
+                case 409 -> "CONFLICT";
+                default -> "VALIDATION_FAILED";
+            };
+            server.prepare((req, reply) -> reply.send(status,
+                    "{\"code\":\"" + code + "\",\"message\":\"x\",\"retryable\":true,\"details\":{\"reason\":\"TOKEN_PROVIDER_FAILED\"}}"));
+            SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
+            assertEquals("TOKEN_PROVIDER_FAILED", error.reason().orElseThrow(), "the server's words are kept as they are");
+            assertFalse(error.isTokenProviderFailure(), status + ": what the server says does not make it the provider's");
+            assertFalse(error.isRetriable(), String.valueOf(status));
+            assertEquals(1, server.seen.size(), status + " claiming to be the provider's failure is not repeated");
+        }
+        // nor can a caller of the public API make one
+        SagatException made = SagatException.builder(ErrorCode.UNAUTHENTICATED, "x").reason("TOKEN_PROVIDER_FAILED").retryable(true).build();
+        assertFalse(made.isTokenProviderFailure());
+        assertFalse(made.isRetriable());
+    }
 }

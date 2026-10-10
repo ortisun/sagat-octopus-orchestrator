@@ -89,9 +89,7 @@ public final class SagatClient implements AutoCloseable {
                 value = config.traceContext().get();
             } catch (Throwable t) {
                 // A tracer that fails is no reason to fail the call: no ambient context, the server makes a trace.
-                if (!Hooks.survivable(t)) {
-                    throw (VirtualMachineError) t;
-                }
+                Hooks.rethrowIfFatal(t);
                 Hooks.log(config.logger(), System.Logger.Level.WARNING, "the trace context hook failed (" + t.getClass().getSimpleName() + "): no traceparent is sent");
                 value = null;
             }

@@ -10,11 +10,19 @@ public final class Hooks {
     private Hooks() {}
 
     /**
-     * Whether a failure is one the SDK survives. Everything is, except what the virtual machine itself reports
-     * ({@link VirtualMachineError}: out of memory, stack overflow, internal error), which is rethrown.
+     * Whether a failure is one the SDK survives. Everything is, a {@link StackOverflowError} included (a logger or a
+     * callback that recurses must not end the poll loop), except {@link OutOfMemoryError}: with no memory left nothing
+     * the SDK would do next is trustworthy, so it is rethrown.
      */
     public static boolean survivable(Throwable t) {
-        return !(t instanceof VirtualMachineError);
+        return !(t instanceof OutOfMemoryError);
+    }
+
+    /** Rethrows a failure that is not survivable (an {@link OutOfMemoryError}); returns for any other. */
+    public static void rethrowIfFatal(Throwable t) {
+        if (t instanceof OutOfMemoryError oom) {
+            throw oom;
+        }
     }
 
     /** Writes a line to the logger of the caller; a logger that throws is ignored. */
@@ -22,9 +30,7 @@ public final class Hooks {
         try {
             logger.log(level, message);
         } catch (Throwable t) {
-            if (!survivable(t)) {
-                throw (VirtualMachineError) t;
-            }
+            rethrowIfFatal(t);
         }
     }
 
@@ -36,9 +42,7 @@ public final class Hooks {
         try {
             callback.accept(value);
         } catch (Throwable t) {
-            if (!survivable(t)) {
-                throw (VirtualMachineError) t;
-            }
+            rethrowIfFatal(t);
         }
     }
 }
