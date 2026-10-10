@@ -121,6 +121,14 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   components; Playwright journeys (US01..US04 and the whole of SC-007-001) played by a harness that boots the real
   platform and a TypeScript SDK worker, in the same way as the SDK conformance suite; axe-core in the journeys; a browser
   benchmark of a 1 000-node canvas and a 10 000-row list.
+- **D151 — The document carries no layout.** Positions are computed (dagre; a linear layered layout above 1 500 nodes) and
+  the positions a user dragged stay in the browser per workflow (G148). The document is what the platform stores, hashes and
+  compares; a move of a card is not a new version, and a diff shows changes of meaning only.
+- **D152 — Links are never typed.** A link between nodes is made on the canvas or chosen from a list of the nodes that exist, through
+  edits that refuse a cycle, a link to itself and a link the kind of node does not have; renaming a node follows every reference.
+  The document cannot be left pointing at a node that is not there by the Studio's own doing.
+- **D153 — The CSP allows inline styles and no inline script.** `style-src 'self' 'unsafe-inline'`: the code editor and the canvas
+  set styles from script, and CSS cannot run code; `script-src 'self'` has no `unsafe-inline`, no `unsafe-eval`, no remote origin.
 
 ## Gaps (feature 007: G142 onwards)
 
@@ -137,4 +145,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   AA is a target, not a claim.
 - **G147 — Human approval and foreach nodes cannot be published** (no engine, 002/003): the canvas draws them so a
   document that has them can be read, and says so.
+- **G148 — Manual positions are per browser.** A card a user moves is remembered in that browser only (not shared, not in the
+  document); another person, or the same one elsewhere, sees the computed layout.
+- **G149 — The browser sign-in with an identity provider (authorization code with PKCE) is built from the deployment's public
+  settings and tested against a stand-in provider; it has not been run against a real one.** The pasted token is the supported
+  development path (D144).
+- **G150 — The code editor offers syntax colouring and the language service the browser has** (TypeScript and JSON only); for
+  the other languages the platform checks the source when it builds it, and the page says so.
 
