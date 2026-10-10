@@ -1,6 +1,6 @@
 {
   "name": "cancellation",
-  "description": "US02: cancelling a run reaches the activity that is running through its cancellation signal (at the next heartbeat), the activity ends as it likes, and the run is CANCELLED. A cancel of a finished run is a canonical conflict.",
+  "description": "US02: cancelling a run reaches the activity that is running through its cancellation signal (at the next heartbeat), the activity ends as it likes, and the run is CANCELLED. A cancel of a finished run is a canonical conflict. A handler that never looks at its cancellation signal runs to its end: the host cancels the token and nothing else, and what the handler returned is what the platform is told.",
   "workflows": {
     "long": {
       "name": "long-flow",
@@ -19,6 +19,16 @@
           "op": "step",
           "id": "quick",
           "activity": "cancel.quick"
+        }
+      ]
+    },
+    "stubborn": {
+      "name": "stubborn-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "stubborn",
+          "activity": "cancel.stubborn"
         }
       ]
     }
@@ -46,6 +56,15 @@
           "behavior": {
             "returns": {
               "quick": true
+            }
+          }
+        },
+        "cancel.stubborn": {
+          "behavior": {
+            "sleepMs": 1500,
+            "ignoresCancel": true,
+            "returns": {
+              "finished": true
             }
           }
         }
@@ -85,6 +104,52 @@
       "id": "journal",
       "op": "events",
       "run": "long"
+    },
+    {
+      "id": "stubborn",
+      "op": "start",
+      "workflow": "stubborn",
+      "input": {
+        "n": 3
+      }
+    },
+    {
+      "id": "stubborn-running",
+      "op": "awaitJournal",
+      "run": "stubborn",
+      "eventType": "step.started",
+      "stepId": "stubborn",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "stubborn-cancel",
+      "op": "cancel",
+      "run": "stubborn",
+      "reason": "the customer changed their mind"
+    },
+    {
+      "id": "stubborn-finishes",
+      "op": "awaitWorkerLog",
+      "worker": "w1",
+      "count": 2,
+      "timeoutMs": 20000
+    },
+    {
+      "id": "stubborn-over",
+      "op": "awaitJournal",
+      "run": "stubborn",
+      "eventType": "run.finished",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "stubborn-state",
+      "op": "get",
+      "run": "stubborn"
+    },
+    {
+      "id": "stubborn-journal",
+      "op": "events",
+      "run": "stubborn"
     },
     {
       "id": "quick",

@@ -1,6 +1,6 @@
 {
   "name": "lost-responses",
-  "description": "FR-006-005: retries only when safe. A start whose first attempt never leaves is repeated (the SDK gave it a key) and there is one run. The answer to a keyed start is lost: the SDK repeats it with the same key and there is one run. A refused start (422) is answered once and not repeated. A GET that meets two 503 is repeated until it is served. The answer to a CompleteStep is lost: the worker repeats it with the same key and the step is completed once. `faultsApplied` says how many calls each fault answered, so a fault the SDK did not reach, or an SDK that repeated what it must not, is visible.",
+  "description": "FR-006-005: retries only when safe. A start whose first attempt never leaves is repeated (the SDK gave it a key) and there is one run. The answer to a keyed start is lost: the SDK repeats it with the same key and there is one run. A refused start (422) is answered once and not repeated. A GET that meets two 503 is repeated until it is served. The answer to a CompleteStep is lost: the worker repeats it with the same key and the step is completed once. `faultsApplied` says how many calls each fault answered, so a fault the SDK did not reach, or an SDK that repeated what it must not, is visible. A request timeout (408) is UNAVAILABLE and retryable: the poll that meets one is repeated and served.",
   "workflows": {
     "one": {
       "name": "lost-flow",
@@ -67,6 +67,14 @@
           "reason": "SCRIPTED"
         }
       }
+    },
+    {
+      "channel": "http",
+      "match": "GET /runs",
+      "action": "status",
+      "status": 408,
+      "after": 4,
+      "times": 1
     }
   ],
   "workers": {

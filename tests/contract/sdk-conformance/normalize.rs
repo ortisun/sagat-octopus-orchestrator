@@ -38,11 +38,21 @@ impl Normalizer {
             Value::String(text) => Value::String(self.text(text)),
             Value::Array(items) => Value::Array(items.iter().map(|v| self.value(v)).collect()),
             Value::Object(map) => {
+                // What is masked is masked where it is known to be the SDK's own: the words of an error (it
+                // carries a remediation), the journal counter of a Run. A `message` or a `version` in a payload
+                // the scenario sent is compared like any other value.
+                let is_error = map.contains_key("remediation");
+                let is_run = map.contains_key("runId") && map.contains_key("createdAt");
+                let deadline_after = if is_run {
+                    deadline_after_creation(map)
+                } else {
+                    None
+                };
                 let mut out = Map::new();
                 for (key, item) in map {
                     match key.as_str() {
                         // The SDK's own words: present, not compared.
-                        "message" => {
+                        "message" if is_error => {
                             let present = item.as_str().is_some_and(|m| !m.is_empty());
                             out.insert(
                                 key.clone(),
@@ -54,10 +64,20 @@ impl Normalizer {
                             );
                         }
                         // A journal counter: depends on when it was read.
-                        "version" if item.is_number() => {
+                        "version" if is_run && item.is_number() => {
                             out.insert(key.clone(), Value::String("<n>".into()));
                         }
-                        "sdkVersion" | "language" => {}
+                        // The deadline of a run is "so long after it was created": that is what an SDK that
+                        // sends it in the wrong unit would get wrong, so that is what is compared.
+                        "deadline" if deadline_after.is_some() => {
+                            out.insert(
+                                key.clone(),
+                                Value::String(format!(
+                                    "<createdAt+{}s>",
+                                    deadline_after.unwrap_or_default()
+                                )),
+                            );
+                        }
                         _ => {
                             out.insert(key.clone(), self.value(item));
                         }
@@ -109,6 +129,14 @@ impl Normalizer {
         }
         text
     }
+}
+
+/// Seconds between `createdAt` and `deadline` of a Run, rounded, if it has a deadline.
+fn deadline_after_creation(run: &Map<String, Value>) -> Option<i64> {
+    let created = chrono::DateTime::parse_from_rfc3339(run.get("createdAt")?.as_str()?).ok()?;
+    let deadline = chrono::DateTime::parse_from_rfc3339(run.get("deadline")?.as_str()?).ok()?;
+    let millis = (deadline - created).num_milliseconds();
+    Some((millis as f64 / 1000.0).round() as i64)
 }
 
 /// The part of a runner's output that is compared.

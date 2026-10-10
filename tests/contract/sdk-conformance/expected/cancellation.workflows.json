@@ -1,4 +1,9 @@
 {
+  "canonical": {
+    "long": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"slow\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"long-flow\"},\"nodes\":[{\"activity\":\"cancel.slow\",\"id\":\"slow\",\"type\":\"activity\"}]}",
+    "quick": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"quick\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"quick-flow\"},\"nodes\":[{\"activity\":\"cancel.quick\",\"id\":\"quick\",\"type\":\"activity\"}]}",
+    "stubborn": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"stubborn\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"stubborn-flow\"},\"nodes\":[{\"activity\":\"cancel.stubborn\",\"id\":\"stubborn\",\"type\":\"activity\"}]}"
+  },
   "workflows": {
     "long": {
       "apiVersion": "sagat-octopus-orchestrator.io/v1",
@@ -26,6 +31,21 @@
         {
           "activity": "cancel.quick",
           "id": "quick",
+          "type": "activity"
+        }
+      ]
+    },
+    "stubborn": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "stubborn",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "stubborn-flow"
+      },
+      "nodes": [
+        {
+          "activity": "cancel.stubborn",
+          "id": "stubborn",
           "type": "activity"
         }
       ]

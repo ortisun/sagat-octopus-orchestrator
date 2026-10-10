@@ -316,9 +316,298 @@
           }
         ]
       }
+    },
+    {
+      "id": "not-applied",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "not-applied-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "not-applied-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay2",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay2",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay2",
+            "type": "reconciliation.requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay2~r",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay2~r",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay2~r",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay2",
+            "type": "reconciliation.concluded"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay2~r",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay2",
+            "type": "step.retry_due"
+          },
+          {
+            "attempt": 2,
+            "stepId": "pay2",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 2,
+            "stepId": "pay2",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay2",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "undecided",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:11>",
+        "workflowId": "<uuid:12>"
+      }
+    },
+    {
+      "id": "undecided-asked",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "undecided-concluded",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "undecided-state",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "MANUAL_REVIEW",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:11>",
+        "workflowId": "<uuid:12>"
+      }
+    },
+    {
+      "id": "undecided-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay3",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay3",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay3",
+            "type": "reconciliation.requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay3~r",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay3~r",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "pay3~r",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay3",
+            "type": "reconciliation.concluded"
+          },
+          {
+            "attempt": null,
+            "stepId": "pay3~r",
+            "type": "step.routed"
+          }
+        ]
+      }
     }
   ],
   "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "RECONCILIATION_UNKNOWN",
+          "forward": null,
+          "id": "pay3",
+          "kind": "FORWARD",
+          "status": "WAITING",
+          "type": "activity",
+          "waitingOn": "operator"
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "pay3",
+          "id": "pay3~r",
+          "kind": "RECONCILIATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:10>",
+      "status": "MANUAL_REVIEW"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 2,
+          "cancelRequested": false,
+          "failureCode": "RECONCILED_NOT_APPLIED",
+          "forward": null,
+          "id": "pay2",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": "pay2",
+          "id": "pay2~r",
+          "kind": "RECONCILIATION",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "SUCCEEDED"
+    },
     {
       "nodes": [
         {
@@ -519,7 +808,7 @@
         "activity": "saga.refund",
         "attempt": 1,
         "deadlineAhead": true,
-        "idempotencyKey": "compensation:<uuid:7>:<uuid:1>",
+        "idempotencyKey": "compensation:<uuid:13>:<uuid:1>",
         "input": {
           "order": "o-1"
         },
@@ -545,7 +834,7 @@
         "activity": "saga.release",
         "attempt": 1,
         "deadlineAhead": true,
-        "idempotencyKey": "compensation:<uuid:8>:<uuid:1>",
+        "idempotencyKey": "compensation:<uuid:14>:<uuid:1>",
         "input": {
           "order": "o-1"
         },
@@ -625,6 +914,101 @@
         "targetNode": "",
         "taskKind": "FORWARD",
         "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.pay2",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:pay2",
+        "input": {
+          "order": "o-na"
+        },
+        "kind": "activity",
+        "node": "pay2",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.lookup-none",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "reconciliation:<uuid:7>:pay2",
+        "input": {
+          "order": "o-na"
+        },
+        "kind": "reconciler",
+        "node": "pay2~r",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "<uuid:7>:pay2",
+        "targetNode": "pay2",
+        "taskKind": "RECONCILIATION",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.pay2",
+        "attempt": 2,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:pay2",
+        "input": {
+          "order": "o-na"
+        },
+        "kind": "activity",
+        "node": "pay2",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.pay3",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:10>:pay3",
+        "input": {
+          "order": "o-un"
+        },
+        "kind": "activity",
+        "node": "pay3",
+        "outcome": "failed",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:4>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "saga.lookup-unknown",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "reconciliation:<uuid:10>:pay3",
+        "input": {
+          "order": "o-un"
+        },
+        "kind": "reconciler",
+        "node": "pay3~r",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "<uuid:10>:pay3",
+        "targetNode": "pay3",
+        "taskKind": "RECONCILIATION",
+        "traceId": "<trace:4>",
         "traceparentPresent": true
       }
     ]

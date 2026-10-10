@@ -83,6 +83,36 @@ fn a_saga_that_fails_is_compensated_in_reverse_order_and_an_unknown_outcome_is_r
                 .expect("the lookup ran");
             assert_eq!(lookup["activity"], "saga.lookup", "{language}");
             assert_eq!(lookup["targetNode"], "pay", "{language}");
+            // A reconciler that finds the effect did NOT happen: the platform tries the step again, and it succeeds.
+            assert_eq!(
+                observation(doc, "not-applied-done")["result"]["status"],
+                "SUCCEEDED",
+                "{language}"
+            );
+            assert_eq!(node(doc, "pay2")["attempt"], json!(2), "{language}");
+            assert_eq!(
+                node(doc, "pay2")["failureCode"],
+                "RECONCILED_NOT_APPLIED",
+                "{language}"
+            );
+            // A reconciler that cannot say: nothing is retried blindly, a person has to decide.
+            let undecided = observation(doc, "undecided-state")["result"].clone();
+            assert_eq!(
+                undecided["status"], "MANUAL_REVIEW",
+                "{language}: {undecided}"
+            );
+            assert_eq!(node(doc, "pay3")["status"], "WAITING", "{language}");
+            assert_eq!(node(doc, "pay3")["waitingOn"], "operator", "{language}");
+            assert_eq!(
+                node(doc, "pay3")["failureCode"],
+                "RECONCILIATION_UNKNOWN",
+                "{language}"
+            );
+            assert_eq!(
+                node(doc, "pay3")["attempt"],
+                json!(1),
+                "{language}: not tried again"
+            );
         }
     });
 }

@@ -21,7 +21,7 @@ SAGAT_SDK_REUSE=1 …                                                           
 | Script | Does |
 |---|---|
 | `prepare.sh` | installs dependencies and builds the SDK and its runner. Idempotent; exit 0 |
-| `run.sh build <scenario.json>` | prints `{"workflows": {"<key>": <IR>}}` on stdout: every workflow of the scenario built with **the SDK's builders** |
+| `run.sh build <scenario.json>` | prints `{"workflows": {"<key>": <IR>}, "canonical": {"<key>": "<text>"}}` on stdout: every workflow of the scenario built with **the SDK's builders**, and the **canonical text** (`toJson()`, RFC 8785, SPEC §7) of each, which the harness compares **byte for byte** across the five and with the golden file |
 | `run.sh run <scenario.json> <config.json> <out.json>` | plays the scenario against the platform and writes the observations to `<out.json>` |
 
 The runner is a small program in the language that uses **only the public API of the SDK** (plus a plain
@@ -114,6 +114,8 @@ A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` i
 | `{"outcomeUnknown": "text"}` | raises `ActivityFailure.outcomeUnknown` |
 | `{"sleepMs": N, "returns": V, "onCancel": {"returns": W}}` | waits `N` ms (or until cancelled: then returns `W`, or raises the SDK's cancellation error if `onCancel` is `{"raises": true}`) |
 | `{"hang": true}` | waits until cancelled or the host stops, then returns nothing useful |
+| `{"hang": true, "onCancel": {"raises": true}}` | the same, then ends by raising the SDK's cancellation error (what a handler does that is cancelled and says so) |
+| `{"sleepMs": N, "ignoresCancel": true, "returns": V}` | a handler that **never looks at its token**: it waits `N` ms whatever happens and returns `V`; the host must not interrupt it and what it returned is reported |
 | `{"verdict": "applied"\|"not_applied"\|"unknown", "output": V}` | for a reconciler |
 | `{"readsSecret": "name", "returns": V}` | resolves the step's secrets and checks the named one exists (length goes in the log) |
 
@@ -141,7 +143,8 @@ stop the scenario.
 | `events` | `run` | `events` | `{events: [{type, stepId, attempt}…]}` in order |
 | `sleep` | `ms` | — | none |
 | `control` | `action`, `run?`, `node?` | the control endpoint | none |
-| `startWorker` / `stopWorker` | `worker` | `start()` / `stop()` | `{protocolVersion}` for start |
+| `startWorker` / `stopWorker` | `worker` (stop: `timeoutMs?`) | `start()` / `stop(timeout)` | `{protocolVersion}` for start |
+| `restartWorker` | `worker`, `timeoutMs?` | `stop()` then `start()` **on the same host object** (the host is restartable, SPEC §6.8) | `{protocolVersion}` |
 | `probeWorker` | `protocolVersion`, `activities?` | a throw-away host registered with that offer | `{accepted}` or the error |
 | `awaitJournal` | `run`, `eventType`, `stepId?`, `timeoutMs` | polls `events` until the journal has an event of that type (for that step) | none |
 | `awaitWorkerLog` | `worker`, `count`, `timeoutMs` | waits until the worker's log has `count` entries | none |
@@ -178,9 +181,11 @@ call it must not (a refused request), shows in the golden file.
 
 The harness runs every script under `TZ=Asia/Kolkata` (UTC+5:30, so that local time cannot pass for UTC) and
 requires the instants of a Run (`createdAt`, `updatedAt`, `finishedAt`, `deadline`) to be strings ending in `Z`.
-It replaces ids, instants and trace ids by placeholders, drops `message` (the SDK's own words;
-it must be non-empty and free of tokens) and `version` (a journal counter), sorts nothing: **order is part of
-the result**. Where a scenario would be racy it is written so that it is not (a worker started after the
+It replaces ids, instants and trace ids by placeholders, masks `message` **of an error** (the SDK's own words;
+it must be non-empty and free of tokens) and `version` **of a Run** (a journal counter) — a `message` or a
+`version` in a payload the scenario sent is compared like any other value — and turns the `deadline` of a Run
+into `<createdAt+Ns>`, the seconds between its creation and its deadline (an SDK that sends the deadline in
+the wrong unit shows). It sorts nothing: **order is part of the result**. Where a scenario would be racy it is written so that it is not (a worker started after the
 run, a wait that nothing wakes, `control` to move time).
 
 ## Optional modes

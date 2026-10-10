@@ -8,7 +8,7 @@
       "result": {
         "correlationId": null,
         "createdAt": "<time>",
-        "deadline": "<time>",
+        "deadline": "<createdAt+3600s>",
         "depth": 0,
         "finishedAt": null,
         "parent": null,
@@ -38,7 +38,7 @@
       "result": {
         "correlationId": null,
         "createdAt": "<time>",
-        "deadline": "<time>",
+        "deadline": "<createdAt+3600s>",
         "depth": 0,
         "finishedAt": "<time>",
         "parent": null,

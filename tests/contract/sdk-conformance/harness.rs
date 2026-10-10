@@ -468,6 +468,25 @@ async fn play(
             Err(e) => failures.push(format!("{name}/{lang}: build failed: {e}")),
         }
     }
+    // The canonical text of every workflow is part of the build output and is compared byte for byte (SPEC §7).
+    for (lang, doc) in &built {
+        let has_workflows = doc["workflows"].as_object().is_some_and(|w| !w.is_empty());
+        if has_workflows
+            && doc["canonical"]
+                .as_object()
+                .is_none_or(|c| c.len() != doc["workflows"].as_object().map_or(0, Map::len))
+        {
+            failures.push(format!(
+                "{name}/{lang}: build printed no canonical text (toJson()) for every workflow"
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        return Outcome {
+            failures,
+            played: Vec::new(),
+        };
+    }
     let Some((first_lang, first)) = built.first().cloned() else {
         return Outcome {
             failures,
@@ -531,8 +550,11 @@ async fn play(
     let mut results: Vec<(&str, Value)> = Vec::new();
     for (lang, root) in langs {
         let (run, config, unique) = stage(&scenario, &first, lang).await;
-        let config_path = dir.join(format!("{lang}.config.json"));
-        let out_path = dir.join(format!("{lang}.out.json"));
+        // The process id is in the names: two plays of the suite at once (two people, a CI job and a
+        // developer) do not overwrite each other's configuration and output.
+        let pid = std::process::id();
+        let config_path = dir.join(format!("{lang}.{pid}.config.json"));
+        let out_path = dir.join(format!("{lang}.{pid}.out.json"));
         std::fs::write(
             &config_path,
             serde_json::to_vec_pretty(&config).expect("json"),
@@ -570,7 +592,7 @@ async fn play(
                     let mut normalizer = Normalizer::new(&unique, given_traces(&scenario));
                     let doc = compared(&out, &mut normalizer);
                     std::fs::write(
-                        dir.join(format!("{lang}.normalized.json")),
+                        dir.join(format!("{lang}.{pid}.normalized.json")),
                         serde_json::to_vec_pretty(&doc).expect("json"),
                     )
                     .expect("write");

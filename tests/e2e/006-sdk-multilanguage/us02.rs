@@ -30,13 +30,25 @@ fn a_worker_of_every_sdk_registers_receives_the_task_and_completes_the_step() {
                 "1.2",
                 "{language}"
             );
+            // Two attempts in its log: the run it served, and (after the restart below) a second one.
             let log = worker_log(doc, "bound");
-            assert_eq!(log.len(), 1, "{language}: {log:?}");
+            assert_eq!(log.len(), 2, "{language}: {log:?}");
             assert_eq!(log[0]["taskKind"], "FORWARD", "{language}");
             assert_eq!(log[0]["attempt"], json!(1), "{language}");
             assert_eq!(log[0]["outcome"], "returned", "{language}");
             assert_eq!(
                 observation(doc, "done")["result"]["status"],
+                "SUCCEEDED",
+                "{language}"
+            );
+            // The host is restartable: stopped and started again, it serves a second run.
+            assert_eq!(
+                observation(doc, "bound-restarts")["result"]["protocolVersion"],
+                "1.2",
+                "{language}"
+            );
+            assert_eq!(
+                observation(doc, "done-again")["result"]["status"],
                 "SUCCEEDED",
                 "{language}"
             );

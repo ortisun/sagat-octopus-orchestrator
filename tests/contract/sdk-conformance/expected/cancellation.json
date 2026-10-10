@@ -109,7 +109,7 @@
       }
     },
     {
-      "id": "quick",
+      "id": "stubborn",
       "ok": true,
       "op": "start",
       "result": {
@@ -131,6 +131,123 @@
       }
     },
     {
+      "id": "stubborn-running",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "stubborn-cancel",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLING"
+      }
+    },
+    {
+      "id": "stubborn-finishes",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "stubborn-over",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "stubborn-state",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "stubborn-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "stubborn",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "stubborn",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "stubborn",
+            "type": "step.started"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.stop_requested"
+          },
+          {
+            "attempt": null,
+            "stepId": "stubborn",
+            "type": "step.cancel_requested"
+          },
+          {
+            "attempt": 1,
+            "stepId": "stubborn",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "quick",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
       "id": "quick-done",
       "ok": true,
       "op": "waitForCompletion",
@@ -142,14 +259,14 @@
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,
-        "runId": "<uuid:4>",
+        "runId": "<uuid:7>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
-        "traceId": "<trace:2>",
+        "traceId": "<trace:3>",
         "updatedAt": "<time>",
         "version": "<n>",
-        "versionId": "<uuid:5>",
-        "workflowId": "<uuid:6>"
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
       }
     },
     {
@@ -161,7 +278,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
-        "traceId": "<trace:3>"
+        "traceId": "<trace:4>"
       },
       "id": "cancel-finished",
       "ok": false,
@@ -184,8 +301,26 @@
         }
       ],
       "paused": false,
-      "runId": "<uuid:4>",
+      "runId": "<uuid:7>",
       "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "stubborn",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "CANCELLED"
     },
     {
       "nodes": [
@@ -228,11 +363,30 @@
         "traceparentPresent": true
       },
       {
+        "abortedReason": "run-cancelled",
+        "activity": "cancel.stubborn",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:stubborn",
+        "input": {
+          "n": 3
+        },
+        "kind": "activity",
+        "node": "stubborn",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
         "abortedReason": null,
         "activity": "cancel.quick",
         "attempt": 1,
         "deadlineAhead": true,
-        "idempotencyKey": "<uuid:4>:quick",
+        "idempotencyKey": "<uuid:7>:quick",
         "input": {
           "n": 2
         },
@@ -243,7 +397,7 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:2>",
+        "traceId": "<trace:3>",
         "traceparentPresent": true
       }
     ]

@@ -1,46 +1,345 @@
 {
   "name": "builders",
   "description": "The builders of the five SDKs write the same workflow documents, and the server accepts them. Nothing is run: the result of the scenario is the documents (expected/builders.workflows.json) and the errors the builders raise.",
-  "secrets": {"payments-key": "sk_test_conformance_value"},
+  "secrets": {
+    "payments-key": "sk_test_conformance_value"
+  },
   "workflows": {
     "everything": {
       "name": "everything-flow",
       "description": "Every primitive of the builders in one document",
-      "labels": {"team": "payments", "tier": "gold"},
-      "triggers": [{"kind": "manual"}, {"kind": "event", "eventType": "order.created", "source": "api"}],
-      "inputSchema": {"type": "object", "required": ["orderId"], "properties": {"orderId": {"type": "string"}}},
-      "outputSchema": {"type": "object"},
+      "labels": {
+        "team": "payments",
+        "tier": "gold"
+      },
+      "triggers": [
+        {
+          "kind": "manual"
+        },
+        {
+          "kind": "event",
+          "eventType": "order.created",
+          "source": "api"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "orderId"
+        ],
+        "properties": {
+          "orderId": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object"
+      },
       "program": [
-        {"op": "step", "id": "validate", "activity": "order.validate", "options": {"retry": {"maxAttempts": 3, "initialDelayMs": 100, "maxDelayMs": 1000, "strategy": "exponential", "jitter": true}, "timeoutMs": 5000}},
-        {"op": "saga", "id": "settlement", "options": {"onCompensationFailure": "manual_review", "cancelPolicy": "compensate_completed"}, "body": [
-          {"op": "step", "id": "reserve", "activity": "limit.reserve", "options": {"compensateWith": "limit.release", "idempotencyTemplate": "reserve:${run.id}", "compensationRetry": {"maxAttempts": 5}, "compensationTimeoutMs": 10000, "secrets": ["payments-key"]}},
-          {"op": "step", "id": "submit", "activity": "payment.submit", "options": {"compensateWith": "payment.cancel", "reconcileWith": "payment.lookup", "highRisk": true}}
-        ]},
-        {"op": "parallel", "id": "fan", "join": "all", "branches": [
-          [{"op": "step", "id": "email", "activity": "notify.email"}, {"op": "sleep", "id": "email-pause", "durationMs": 250}],
-          [{"op": "step", "id": "sms", "activity": "notify.sms"}]
-        ]},
-        {"op": "waitForEvent", "id": "confirmed", "options": {"eventType": "payment.confirmed", "correlationExpr": "input.orderId", "timeoutMs": 60000, "onTimeout": "gave-up", "lookbackMs": 5000}},
-        {"op": "invokeChild", "id": "ship", "workflow": "shipping-flow", "options": {"version": 2, "cancelPolicy": "request_cancel", "input": "input.order"}},
-        {"op": "condition", "id": "big", "expression": "input.amount > 100", "ifTrue": "review", "ifFalse": "done"},
-        {"op": "step", "id": "review", "activity": "order.review", "options": {"onError": "done"}},
-        {"op": "step", "id": "gave-up", "activity": "order.give-up", "options": {"irreversible": true}},
-        {"op": "end", "id": "done", "options": {"outputExpr": "steps.ship.output"}}
+        {
+          "op": "step",
+          "id": "validate",
+          "activity": "order.validate",
+          "options": {
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 100,
+              "maxDelayMs": 1000,
+              "strategy": "exponential",
+              "jitter": true
+            },
+            "timeoutMs": 5000
+          }
+        },
+        {
+          "op": "saga",
+          "id": "settlement",
+          "options": {
+            "onCompensationFailure": "manual_review",
+            "cancelPolicy": "compensate_completed"
+          },
+          "body": [
+            {
+              "op": "step",
+              "id": "reserve",
+              "activity": "limit.reserve",
+              "options": {
+                "compensateWith": "limit.release",
+                "idempotencyTemplate": "reserve:${run.id}",
+                "compensationRetry": {
+                  "maxAttempts": 5
+                },
+                "compensationTimeoutMs": 10000,
+                "secrets": [
+                  "payments-key"
+                ]
+              }
+            },
+            {
+              "op": "step",
+              "id": "submit",
+              "activity": "payment.submit",
+              "options": {
+                "compensateWith": "payment.cancel",
+                "reconcileWith": "payment.lookup",
+                "highRisk": true
+              }
+            }
+          ]
+        },
+        {
+          "op": "parallel",
+          "id": "fan",
+          "join": "all",
+          "branches": [
+            [
+              {
+                "op": "step",
+                "id": "email",
+                "activity": "notify.email"
+              },
+              {
+                "op": "sleep",
+                "id": "email-pause",
+                "durationMs": 250
+              }
+            ],
+            [
+              {
+                "op": "step",
+                "id": "sms",
+                "activity": "notify.sms"
+              }
+            ]
+          ]
+        },
+        {
+          "op": "waitForEvent",
+          "id": "confirmed",
+          "options": {
+            "eventType": "payment.confirmed",
+            "correlationExpr": "input.orderId",
+            "timeoutMs": 60000,
+            "onTimeout": "gave-up",
+            "lookbackMs": 5000
+          }
+        },
+        {
+          "op": "invokeChild",
+          "id": "ship",
+          "workflow": "shipping-flow",
+          "options": {
+            "version": 2,
+            "cancelPolicy": "request_cancel",
+            "input": "input.order"
+          }
+        },
+        {
+          "op": "condition",
+          "id": "big",
+          "expression": "input.amount > 100",
+          "ifTrue": "review",
+          "ifFalse": "done"
+        },
+        {
+          "op": "step",
+          "id": "review",
+          "activity": "order.review",
+          "options": {
+            "onError": "done"
+          }
+        },
+        {
+          "op": "step",
+          "id": "gave-up",
+          "activity": "order.give-up",
+          "options": {
+            "irreversible": true
+          }
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.ship.output"
+          }
+        }
       ]
     },
     "minimal": {
       "name": "minimal-flow",
-      "program": [{"op": "step", "id": "only", "activity": "act.only"}]
+      "program": [
+        {
+          "op": "step",
+          "id": "only",
+          "activity": "act.only"
+        }
+      ]
+    },
+    "canonical-edges": {
+      "name": "canonical-edges",
+      "description": "The canonical text must be the same bytes in every language: keys that JavaScript would reorder (integer-like ones), keys above U+FFFF against keys at U+FF5E, and numbers as ECMAScript prints them.",
+      "program": [
+        {
+          "op": "step",
+          "id": "only",
+          "activity": "edges.only"
+        }
+      ],
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "10": {
+            "type": "integer",
+            "maximum": 600000
+          },
+          "9": {
+            "type": "number",
+            "multipleOf": 0.1,
+            "minimum": -1e-07,
+            "maximum": 1e+21
+          },
+          "a": {
+            "type": "number",
+            "exclusiveMinimum": 1e-06,
+            "exclusiveMaximum": 12345.678,
+            "default": 4.35
+          },
+          "😀": {
+            "type": "string",
+            "maxLength": 5
+          },
+          "～": {
+            "type": "string",
+            "minLength": 1
+          },
+          "z": {
+            "type": "array",
+            "items": {
+              "type": [
+                "null",
+                "boolean",
+                "string"
+              ]
+            },
+            "maxItems": 3
+          }
+        }
+      }
     }
   },
   "invalidWorkflows": {
-    "duplicate-id": {"contains": "used twice", "workflow": {"name": "dup-ids", "program": [{"op": "step", "id": "a", "activity": "x"}, {"op": "step", "id": "a", "activity": "y"}]}},
-    "one-branch": {"contains": "two branches", "workflow": {"name": "one-branch", "program": [{"op": "parallel", "id": "p", "join": "all", "branches": [[{"op": "step", "id": "a", "activity": "x"}]]}]}},
-    "empty-saga": {"contains": "empty body", "workflow": {"name": "empty-saga", "program": [{"op": "saga", "id": "s", "body": []}]}},
-    "irreversible-with-undo": {"contains": "irreversible", "workflow": {"name": "both-flags", "program": [{"op": "step", "id": "a", "activity": "x", "options": {"irreversible": true, "compensateWith": "undo"}}]}},
-    "bad-name": {"contains": "workflow name", "workflow": {"name": "Not A Name", "program": [{"op": "step", "id": "a", "activity": "x"}]}},
-    "dangling-reference": {"contains": "not a node", "workflow": {"name": "dangling", "program": [{"op": "condition", "id": "c", "expression": "true", "ifTrue": "nowhere", "ifFalse": "a"}, {"op": "step", "id": "a", "activity": "x"}]}},
-    "empty": {"contains": "at least one node", "workflow": {"name": "empty-flow", "program": []}}
+    "duplicate-id": {
+      "contains": "used twice",
+      "workflow": {
+        "name": "dup-ids",
+        "program": [
+          {
+            "op": "step",
+            "id": "a",
+            "activity": "x"
+          },
+          {
+            "op": "step",
+            "id": "a",
+            "activity": "y"
+          }
+        ]
+      }
+    },
+    "one-branch": {
+      "contains": "two branches",
+      "workflow": {
+        "name": "one-branch",
+        "program": [
+          {
+            "op": "parallel",
+            "id": "p",
+            "join": "all",
+            "branches": [
+              [
+                {
+                  "op": "step",
+                  "id": "a",
+                  "activity": "x"
+                }
+              ]
+            ]
+          }
+        ]
+      }
+    },
+    "empty-saga": {
+      "contains": "empty body",
+      "workflow": {
+        "name": "empty-saga",
+        "program": [
+          {
+            "op": "saga",
+            "id": "s",
+            "body": []
+          }
+        ]
+      }
+    },
+    "irreversible-with-undo": {
+      "contains": "irreversible",
+      "workflow": {
+        "name": "both-flags",
+        "program": [
+          {
+            "op": "step",
+            "id": "a",
+            "activity": "x",
+            "options": {
+              "irreversible": true,
+              "compensateWith": "undo"
+            }
+          }
+        ]
+      }
+    },
+    "bad-name": {
+      "contains": "workflow name",
+      "workflow": {
+        "name": "Not A Name",
+        "program": [
+          {
+            "op": "step",
+            "id": "a",
+            "activity": "x"
+          }
+        ]
+      }
+    },
+    "dangling-reference": {
+      "contains": "not a node",
+      "workflow": {
+        "name": "dangling",
+        "program": [
+          {
+            "op": "condition",
+            "id": "c",
+            "expression": "true",
+            "ifTrue": "nowhere",
+            "ifFalse": "a"
+          },
+          {
+            "op": "step",
+            "id": "a",
+            "activity": "x"
+          }
+        ]
+      }
+    },
+    "empty": {
+      "contains": "at least one node",
+      "workflow": {
+        "name": "empty-flow",
+        "program": []
+      }
+    }
   },
   "steps": []
 }

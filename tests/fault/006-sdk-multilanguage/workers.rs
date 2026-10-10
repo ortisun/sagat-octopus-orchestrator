@@ -108,3 +108,64 @@ fn a_cancelled_run_reaches_the_activity_and_a_wait_that_times_out_takes_its_bran
         }
     });
 }
+
+#[test]
+fn a_worker_that_is_stopped_while_it_works_does_not_fail_the_step_for_good() {
+    harness::block_on(async {
+        let suite = harness::conform(&Selection::scenarios(&["worker-shutdown"])).await;
+        suite.assert_conforms();
+        for language in suite.languages_of("worker-shutdown") {
+            let doc = suite.doc("worker-shutdown", language);
+            // The host cancelled the handler's token because it was stopping, the handler raised its cancellation
+            // and nothing was reported: the lease lapsed and the step went to the second worker.
+            let first = worker_log(doc, "w1");
+            assert_eq!(first.len(), 1, "{language}: {first:?}");
+            assert_eq!(first[0]["abortedReason"], "shutdown", "{language}");
+            assert_eq!(first[0]["outcome"], "cancelled", "{language}");
+            assert_eq!(worker_log(doc, "w2")[0]["attempt"], json!(2), "{language}");
+            let events = journal(doc, "journal");
+            assert!(
+                !events.contains(&"step.failed".to_owned()),
+                "{language}: {events:?}"
+            );
+            assert_eq!(
+                events.iter().filter(|e| *e == "step.completed").count(),
+                1,
+                "{language}: {events:?}"
+            );
+            assert_eq!(
+                observation(doc, "done")["result"]["status"],
+                "SUCCEEDED",
+                "{language}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_handler_that_ignores_its_cancellation_is_left_to_finish_and_what_it_returned_is_reported() {
+    harness::block_on(async {
+        let suite = harness::conform(&Selection::scenarios(&["cancellation"])).await;
+        suite.assert_conforms();
+        for language in suite.languages_of("cancellation") {
+            let doc = suite.doc("cancellation", language);
+            let stubborn = &worker_log(doc, "w1")[1];
+            assert_eq!(stubborn["activity"], "cancel.stubborn", "{language}");
+            assert_eq!(
+                stubborn["abortedReason"], "run-cancelled",
+                "{language}: the token was cancelled"
+            );
+            assert_eq!(
+                stubborn["outcome"], "returned",
+                "{language}: the handler was not interrupted"
+            );
+            // Its result reached the platform: the step is SUCCEEDED in a run that was cancelled.
+            assert_eq!(node(doc, "stubborn")["status"], "SUCCEEDED", "{language}");
+            assert_eq!(
+                observation(doc, "stubborn-state")["result"]["status"],
+                "CANCELLED",
+                "{language}"
+            );
+        }
+    });
+}

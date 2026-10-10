@@ -294,7 +294,10 @@ async fn probes_need_no_credentials_and_unknown_routes_use_the_envelope() {
     assert_eq!(wrong_method.status(), 405);
     let wrong_method = json_of(wrong_method).await;
     assert_eq!(wrong_method["code"], "BAD_REQUEST");
-    assert_eq!(wrong_method["details"]["reason"], "METHOD_NOT_ALLOWED", "{wrong_method}");
+    assert_eq!(
+        wrong_method["details"]["reason"], "METHOD_NOT_ALLOWED",
+        "{wrong_method}"
+    );
 }
 
 #[tokio::test]

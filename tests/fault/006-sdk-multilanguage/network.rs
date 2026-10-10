@@ -13,8 +13,13 @@ fn a_start_whose_answer_is_lost_or_that_never_left_is_one_run_and_a_refusal_is_n
         for language in suite.languages_of("lost-responses") {
             let doc = suite.doc("lost-responses", language);
             // 1 a start that never left, 1 a start whose answer was thrown away, 1 completion whose
-            // answer was thrown away, 2 refusals of a read, 1 refusal of a start (which is not repeated).
-            assert_eq!(doc["faultsApplied"], json!([1, 1, 1, 2, 1]), "{language}");
+            // answer was thrown away, 2 refusals of a read, 1 refusal of a start (which is not repeated),
+            // 1 request timeout (408) on a read, which is repeated.
+            assert_eq!(
+                doc["faultsApplied"],
+                json!([1, 1, 1, 2, 1, 1]),
+                "{language}"
+            );
             // Two starts, two runs: the repeats did not make a third.
             let runs = observation(doc, "runs")["result"]["items"]
                 .as_array()

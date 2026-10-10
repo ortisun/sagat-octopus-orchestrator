@@ -36,9 +36,16 @@ fn every_sdk_creates_the_run_with_its_idempotency_key_and_the_trace_context_it_w
             assert_eq!(changed["reason"], "IDEMPOTENCY_KEY_REUSED", "{language}");
             assert_eq!(changed["retryable"], json!(false), "{language}");
             // The deadline the caller gave is the run's.
+            // (the deadline is compared as "so long after the run was created": an hour, not a unit mistake)
             assert_eq!(
                 observation(doc, "with-deadline")["result"]["deadline"],
-                "<time>",
+                "<createdAt+3600s>",
+                "{language}"
+            );
+            // The list of the runs that wait is the same when it is read a page at a time.
+            assert_eq!(
+                observation(doc, "waiting-paged")["result"],
+                observation(doc, "waiting")["result"],
                 "{language}"
             );
             // The platform holds one run of the key: the run that finished is the one that was started.
