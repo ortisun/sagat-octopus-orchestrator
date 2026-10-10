@@ -1,5 +1,5 @@
-import { PROTOCOL_VERSION, silentLogger, type Logger, type TlsOptions, type TokenSource } from '../config.js';
-import { SagatError } from '../errors.js';
+import { PROTOCOL_VERSION, silentLogger, warnIfNotSecure, type Logger, type TlsOptions, type TokenSource } from '../config.js';
+import { SagatError, isRetriable } from '../errors.js';
 import { encodeJson } from '../json.js';
 import { DEFAULT_RETRY, backoffDelayMs, sleep, type RetryPolicy } from '../retry.js';
 import {
@@ -136,6 +136,7 @@ export class WorkerHost {
   async start(): Promise<void> {
     if (this.running) return;
     if (this.handlers.size === 0) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'register at least one activity before start' });
+    warnIfNotSecure(this.config.grpcUrl, this.log);
     await this.register();
     this.running = true;
     this.stopping = false;
@@ -198,7 +199,7 @@ export class WorkerHost {
           refreshed = true;
           continue;
         }
-        if (!error.retryable || n + 1 >= this.retry.maxAttempts) throw error;
+        if (!isRetriable(error) || n + 1 >= this.retry.maxAttempts) throw error;
         await sleep(Math.max(backoffDelayMs(this.retry, n), error.retryAfterMs ?? 0));
       }
     }
@@ -270,12 +271,26 @@ export class WorkerHost {
 
   private dispatch(lease: TaskLease): void {
     const abort = new AbortController();
-    const done = this.execute(lease, abort).finally(() => this.inflight.delete(lease.task_id));
+    const done = this.execute(lease, abort).finally(() => {
+      this.inflight.delete(lease.task_id);
+      // A task finished: there is room, so the pause after an empty poll ends (SPEC §6.2).
+      this.wake?.();
+    });
     this.inflight.set(lease.task_id, { abort, done });
     this.config.onEvent?.({ type: 'task.taken', taskId: lease.task_id, activity: lease.activity_name, attempt: lease.attempt });
   }
 
   private async execute(lease: TaskLease, abort: AbortController): Promise<void> {
+    // The heartbeat runs until the report is made, whatever way the task ends (SPEC §6.3).
+    const beats: { stop?: () => void } = {};
+    try {
+      await this.serve(lease, abort, beats);
+    } finally {
+      beats.stop?.();
+    }
+  }
+
+  private async serve(lease: TaskLease, abort: AbortController, beats: { stop?: () => void }): Promise<void> {
     const started = Date.now();
     const registered = this.handlers.get(lease.activity_name);
     const state = { deadline: lease.expires_at_epoch_ms, lost: false };
@@ -305,8 +320,8 @@ export class WorkerHost {
     const steps: Record<string, unknown> = {};
     for (const [node, value] of Object.entries(document.steps ?? {})) steps[node] = value?.output;
 
-    // The heartbeat starts before the handler and runs until the report is made.
-    const heartbeat = this.beat(lease, minor, abort, state);
+    // The heartbeat starts before the handler and runs until the report is made (`execute` stops it).
+    beats.stop = this.beat(lease, minor, abort, state).stop;
 
     let secretsCache: Promise<Secrets> | undefined;
     const context: ActivityContext = {
@@ -338,20 +353,26 @@ export class WorkerHost {
 
     let result: unknown;
     let failure: ActivityFailure | undefined;
+    let leftToLapse = false;
     try {
       result = await registered.handler(input, context);
     } catch (error) {
       if (error instanceof ActivityFailure) {
         failure = error;
       } else if (isCancellation(error) && abort.signal.aborted) {
-        failure = ActivityFailure.permanent('CANCELLED', 'the activity was cancelled');
+        // Cancelled by the platform: the step is told so. Cancelled because this host is stopping: the step
+        // is not failed for good by a deploy, its lease lapses and it is leased again (SPEC §6.4).
+        if (abort.signal.reason === 'shutdown') leftToLapse = true;
+        else failure = ActivityFailure.permanent('CANCELLED', 'the activity was cancelled');
       } else {
         failure = ActivityFailure.retryable('ACTIVITY_ERROR', error instanceof Error ? error.name : 'Error');
       }
-    } finally {
-      heartbeat.stop();
     }
 
+    if (leftToLapse) {
+      this.log.info('the host stopped: the cancelled activity is not reported, its lease will lapse', { task: lease.task_id });
+      return;
+    }
     if (state.lost) {
       this.config.onEvent?.({ type: 'task.stale', taskId: lease.task_id });
       this.log.warn('the lease was lost: the result is dropped', { task: lease.task_id });
@@ -454,7 +475,7 @@ export class WorkerHost {
       } catch (error) {
         if (error instanceof SagatError) {
           if (error.code === 'STALE_ATTEMPT') return 'stale';
-          if (error.retryable && n + 1 < attempts) {
+          if (isRetriable(error) && n + 1 < attempts) {
             await sleep(Math.max(backoffDelayMs(this.retry, n), error.retryAfterMs ?? 0));
             continue;
           }

@@ -1,6 +1,6 @@
 import type { ClientConfig, TokenSource } from './config.js';
 import { SDK_VERSION, silentLogger } from './config.js';
-import { SagatError, codeOfHttpStatus, type ErrorCode } from './errors.js';
+import { SagatError, codeOfHttpStatus, isRetriable, type ErrorCode } from './errors.js';
 import { encodeJson } from './json.js';
 import { DEFAULT_RETRY, delayAfter, sleep, type RetryPolicy } from './retry.js';
 
@@ -55,7 +55,7 @@ export class HttpTransport {
       } catch (error) {
         if (!(error instanceof SagatError)) throw error;
         last = error;
-        if (!error.retryable || n + 1 >= attempts) throw error;
+        if (!isRetriable(error) || n + 1 >= attempts) throw error;
         const wait = delayAfter(this.retry, n, error);
         this.logger.warn('retrying a request', { method: req.method, path: req.path, code: error.code, attempt: n + 1, waitMs: wait });
         await sleep(wait);
@@ -130,6 +130,18 @@ export class HttpTransport {
       /* an intermediary's page: classify by status */
     }
     const given = typeof envelope?.['code'] === 'string' && CODES.has(envelope['code']) ? (envelope['code'] as ErrorCode) : undefined;
+    // A call the server does not have: 501, or a 404 that is not the platform's own (it carries its envelope).
+    if (response.status === 501 || (response.status === 404 && given === undefined)) {
+      return new SagatError({
+        code: 'NOT_FOUND',
+        message: 'the server does not have this call',
+        status: response.status,
+        retryable: false,
+        traceId,
+        reason: 'UNSUPPORTED_BY_SERVER',
+        retryAfterMs: null,
+      });
+    }
     const code = given ?? codeOfHttpStatus(response.status);
     const details = envelope?.['details'] as Record<string, unknown> | undefined;
     const reason = typeof details?.['reason'] === 'string' ? details['reason'] : null;

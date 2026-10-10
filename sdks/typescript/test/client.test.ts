@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
-import { SagatClient, SagatError } from '../src/index.js';
+import { SagatClient, SagatError, warnIfNotSecure, type Logger } from '../src/index.js';
 
 interface Seen {
   method: string;
@@ -239,4 +239,47 @@ test('waiting for completion polls until the run is terminal', async () => {
   assert.equal(polls, 3);
   prepare((_req, res) => reply(res, 200, run()));
   await assert.rejects(client().waitForCompletion('r', { pollIntervalMs: 5, timeoutMs: 30 }), (e: unknown) => e instanceof SagatError && e.reason === 'WAIT_TIMEOUT');
+});
+
+test('a 4xx is not repeated whatever the body says about retrying, and a 5xx is only when the server says it may be', async () => {
+  let attempts = 0;
+  prepare((_req, res) => {
+    attempts++;
+    reply(res, 422, { code: 'VALIDATION_FAILED', message: 'bad', retryable: true, traceId: 'e'.repeat(32) });
+  });
+  await assert.rejects(client().get(run()['runId'] as string), (error: unknown) => error instanceof SagatError && error.code === 'VALIDATION_FAILED');
+  assert.equal(attempts, 1, 'a validation error that claims to be retryable is still not repeated');
+});
+
+test('a call the older server does not have is NOT_FOUND with the reason UNSUPPORTED_BY_SERVER, but a run that does not exist is not', async () => {
+  const id = run()['runId'] as string;
+  for (const answer of [
+    (res: ServerResponse) => reply(res, 501, ''),
+    (res: ServerResponse) => reply(res, 404, '<html>no route</html>', { 'content-type': 'text/html' }),
+  ]) {
+    prepare((_req, res) => answer(res));
+    await assert.rejects(client().get(id), (error: unknown) => {
+      assert.ok(error instanceof SagatError);
+      assert.equal(error.code, 'NOT_FOUND');
+      assert.equal(error.reason, 'UNSUPPORTED_BY_SERVER');
+      return true;
+    });
+  }
+  // The platform's own 404 carries its envelope: the run is not there, the call is known.
+  prepare((_req, res) => reply(res, 404, { code: 'NOT_FOUND', message: 'no such run', retryable: false, traceId: 'e'.repeat(32) }));
+  await assert.rejects(client().get(id), (error: unknown) => error instanceof SagatError && error.code === 'NOT_FOUND' && error.reason === null);
+});
+
+test('plain http outside loopback is accepted but warned about once; loopback and https are not', () => {
+  const warnings: string[] = [];
+  const logger: Logger = { debug() {}, info() {}, warn: (message) => void warnings.push(message), error() {} };
+  warnIfNotSecure('http://octopus.example.com/v1', logger);
+  warnIfNotSecure('https://octopus.example.com/v1', logger);
+  for (const local of ['http://127.0.0.1:8080/v1', 'http://localhost:8080/v1', 'http://[::1]:8080/v1', 'http://127.1.2.3/v1']) warnIfNotSecure(local, logger);
+  assert.equal(warnings.length, 1);
+  assert.ok(!warnings[0]?.includes('octopus.example.com/v1?') && !warnings[0]?.includes('tok'), 'the warning names no credential');
+  // The client says it when it is made.
+  const seenWarnings: string[] = [];
+  new SagatClient({ apiUrl: 'http://octopus.example.com/v1', namespace: 'payments', token: 'tok-1', logger: { ...logger, warn: (message) => void seenWarnings.push(message) } });
+  assert.equal(seenWarnings.length, 1);
 });

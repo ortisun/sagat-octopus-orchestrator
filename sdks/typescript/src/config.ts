@@ -44,3 +44,20 @@ export interface ClientConfig {
   traceContext?: () => string | undefined;
   logger?: Logger;
 }
+
+/**
+ * Accepts a plain `http://` URL anywhere but says once that it is not encrypted when the host is not
+ * loopback (SPEC §1). Only the host is named: a URL can carry a credential in its userinfo or query.
+ */
+export function warnIfNotSecure(url: string, logger: Logger): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== 'http:') return;
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  const loopback = host === 'localhost' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+  if (!loopback) logger.warn('the connection is not encrypted: use https outside loopback', { host });
+}

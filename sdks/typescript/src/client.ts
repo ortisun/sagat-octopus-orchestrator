@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ClientConfig } from './config.js';
+import { silentLogger, warnIfNotSecure, type ClientConfig } from './config.js';
 import { SagatError, invalid } from './errors.js';
 import { HttpTransport, type HttpResponse } from './http.js';
 import { instant } from './json.js';
@@ -177,6 +177,7 @@ export class SagatClient {
 
   constructor(private readonly config: ClientConfig) {
     if (!config.apiUrl || !config.namespace) throw invalid('apiUrl and namespace are required');
+    warnIfNotSecure(config.apiUrl, config.logger ?? silentLogger);
     this.http = new HttpTransport(config);
   }
 

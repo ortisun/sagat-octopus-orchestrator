@@ -432,3 +432,64 @@ test('registering twice or after the start is a mistake and says so', async () =
   assert.throws(() => host({ maxInflight: 0 }), (e: unknown) => e instanceof SagatError);
   await assert.rejects(host().start(), (e: unknown) => e instanceof SagatError && /at least one activity/.test(e.message));
 });
+
+test('the heartbeat goes on while the result is being reported, until the report is made', async () => {
+  fake.failures['completeStep'] = [{ code: 14 }, { code: 14 }, { code: 14 }];
+  fake.leases = [lease()];
+  const worker = host({ heartbeatIntervalMs: 10, retry: { initialDelayMs: 30, maxDelayMs: 60 } });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('completeStep').length >= 4, 'the report to go through after its retries');
+  const order = fake.calls.map((call) => call.method).filter((method) => method === 'heartbeat' || method === 'completeStep');
+  const first = order.indexOf('completeStep');
+  const last = order.lastIndexOf('completeStep');
+  assert.ok(order.slice(first, last).includes('heartbeat'), `a heartbeat between the first report and the last: ${order.join(',')}`);
+  const lastBeat = order.lastIndexOf('heartbeat');
+  assert.ok(lastBeat < last || order.slice(last).every((m) => m !== 'heartbeat'), 'none after the report that was made');
+});
+
+test('a handler that raises its cancellation after the host was stopped is not reported, and one cancelled by the run is', async () => {
+  // Cancelled by the host: the lease lapses and the step is leased again.
+  fake.leases = [lease()];
+  const stopping = host();
+  let entered = false;
+  stopping.registerActivity('charge', (_input, ctx) => new Promise((_resolve, reject) => {
+    entered = true;
+    ctx.signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')));
+  }));
+  await stopping.start();
+  await until(() => entered, 'the activity to start');
+  await stopping.stop(50);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(fake.of('failStep').length, 0, 'a deploy does not fail a step for good');
+  assert.equal(fake.of('completeStep').length, 0);
+
+  // Cancelled by the run: reported as CANCELLED, not retryable.
+  fake.reset();
+  fake.leases = [lease()];
+  fake.cancelRequested = true;
+  const cancelled = host({ heartbeatIntervalMs: 20 });
+  cancelled.registerActivity('charge', (_input, ctx) => new Promise((_resolve, reject) => {
+    ctx.signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')));
+  }));
+  await cancelled.start();
+  await until(() => fake.of('failStep').length === 1, 'the cancellation to be reported');
+  assert.equal(fake.of('failStep')[0]?.request['error_code'], 'CANCELLED');
+  assert.equal(fake.of('failStep')[0]?.request['retryable'], false);
+});
+
+test('a poll that found nothing is followed by another as soon as a task has finished, not after the whole pause', async () => {
+  fake.pollRetryAfterMs = 10_000;
+  fake.leases = [lease()];
+  const worker = host({ maxInflight: 2 });
+  worker.registerActivity('charge', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    return { ok: true };
+  });
+  await worker.start();
+  // The poll that found the room empty-handed, while the task is still running: the pause is now 10 s.
+  await until(() => fake.of('pollTasks').length >= 2, 'the empty poll');
+  const polls = fake.of('pollTasks').length;
+  assert.equal(fake.of('completeStep').length, 0, 'the task is still running');
+  await until(() => fake.of('pollTasks').length > polls, 'a poll after the task finished', 1500);
+});

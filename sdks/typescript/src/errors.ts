@@ -47,6 +47,14 @@ export function retryableByDefault(code: ErrorCode): boolean {
   return entries.get(code)?.retryable ?? false;
 }
 
+/** The errors a call may be repeated after (SPEC §5): never a 4xx other than 429, whatever its body claims. */
+const RETRIABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>(['TRANSPORT', 'UNAVAILABLE', 'RATE_LIMITED', 'INTERNAL']);
+
+/** Whether repeating the call that raised `error` is allowed: its code is retriable and it says it may be. */
+export function isRetriable(error: { code: ErrorCode; retryable: boolean }): boolean {
+  return error.retryable && RETRIABLE.has(error.code);
+}
+
 /** The code the catalog gives an HTTP status when the body carried no envelope. */
 export function codeOfHttpStatus(status: number): ErrorCode {
   for (const entry of CATALOG) {
