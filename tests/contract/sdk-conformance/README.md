@@ -91,9 +91,9 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `saga` | `id`, `options?`, `body` (op array) | `saga` |
 | `end` | `id`, `options?` | `end` |
 
-A scenario may also hold `"expectBuildError": {"program": [...], "contains": "…"}` entries under
-`"invalidWorkflows": { "<key>": … }`: the runner builds each and records the `SagatError` code and whether
-the message contains the text (`build` mode prints them under `"errors"`).
+A scenario may also hold `"invalidWorkflows": { "<key>": {"workflow": {"name": …, "program": […]}, "contains": "…"} }`:
+the runner builds each with the builders, expects the build to fail, and records under `"errors"` (in `build`
+mode) the `SagatError` code, whether the message contains the text, and that it was raised.
 
 ### Worker activities
 
