@@ -160,19 +160,21 @@ fn a_reserved_subject_violation_explains_itself() {
 
 // ------------------------------------------------------------------ RBAC
 
-const ALL_ROLES: [Role; 5] = [
+const ALL_ROLES: [Role; 6] = [
     Role::Admin,
     Role::Developer,
     Role::Operator,
     Role::Viewer,
     Role::Worker,
+    Role::Runner,
 ];
 
 /// The authoritative matrix, written out by hand (not derived from `Role::permissions`).
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
         DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
-        NamespaceRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart, SecretRead, SecretUse,
+        NamespaceRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart, ScriptBuild,
+        ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
         WorkerExecute, WorkspaceRead,
     };
     match role {
@@ -192,6 +194,9 @@ fn expected(role: Role) -> Vec<Permission> {
                 EventPublish,
                 EventRead,
                 EventManage,
+                ScriptRead,
+                ScriptWrite,
+                ScriptPublish,
             ]
         }
         Role::Operator => vec![
@@ -205,6 +210,7 @@ fn expected(role: Role) -> Vec<Permission> {
             QuotaRead,
             EventPublish,
             EventRead,
+            ScriptRead,
         ],
         Role::Viewer => vec![
             WorkspaceRead,
@@ -213,8 +219,10 @@ fn expected(role: Role) -> Vec<Permission> {
             RunRead,
             QuotaRead,
             EventRead,
+            ScriptRead,
         ],
         Role::Worker => vec![WorkerExecute],
+        Role::Runner => vec![WorkerExecute, ScriptBuild, ScriptExecute],
     }
 }
 
@@ -246,7 +254,13 @@ fn only_admin_can_create_scopes_manage_members_or_read_audit() {
         Permission::WorkerBind,
     ] {
         assert!(Role::Admin.grants(restricted));
-        for role in [Role::Developer, Role::Operator, Role::Viewer, Role::Worker] {
+        for role in [
+            Role::Developer,
+            Role::Operator,
+            Role::Viewer,
+            Role::Worker,
+            Role::Runner,
+        ] {
             assert!(
                 !role.grants(restricted),
                 "{role} must not hold {restricted}"
@@ -541,4 +555,35 @@ fn rejected_values_are_clipped_in_error_messages() {
         "root".parse::<Role>(),
         Err(IdentityError::UnknownRole("root".into()))
     );
+}
+
+#[test]
+fn only_the_runner_reads_the_source_of_every_script_or_fetches_artifacts() {
+    // The source of the tenant's scripts and the artifacts are for the sandbox's runner. A person
+    // who may write scripts, and a worker that serves activities, hold neither permission.
+    for permission in [Permission::ScriptBuild, Permission::ScriptExecute] {
+        assert!(Role::Admin.grants(permission) && Role::Runner.grants(permission));
+        for role in [Role::Developer, Role::Operator, Role::Viewer, Role::Worker] {
+            assert!(
+                !role.grants(permission),
+                "{role} must not hold {permission}"
+            );
+        }
+    }
+    // The runner serves tasks, builds and runs; it reads, writes and publishes nothing by itself.
+    for permission in [
+        Permission::ScriptRead,
+        Permission::ScriptWrite,
+        Permission::ScriptPublish,
+        Permission::SecretRead,
+        Permission::SecretUse,
+        Permission::DefinitionRead,
+        Permission::RunStart,
+    ] {
+        assert!(
+            !Role::Runner.grants(permission),
+            "runner must not hold {permission}"
+        );
+    }
+    assert_eq!("runner".parse::<Role>(), Ok(Role::Runner));
 }

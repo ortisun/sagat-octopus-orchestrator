@@ -3632,6 +3632,7 @@ name = "sagat-api-http"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "hyper",
  "hyper-util",
  "jsonwebtoken",
@@ -3658,6 +3659,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac 0.13.0",
  "metrics",
+ "ring",
  "sagat-domain",
  "sha2 0.11.0",
  "thiserror 2.0.21",
@@ -3672,11 +3674,13 @@ name = "sagat-control-plane"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "sagat-api-http",
  "sagat-application",
  "sagat-domain",
  "sagat-infra-ir",
  "sagat-infra-postgres",
+ "sagat-infra-schema",
  "sagat-infra-secrets",
  "sagat-telemetry",
  "thiserror 2.0.21",
@@ -3810,6 +3814,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-infra-sandbox"
+version = "0.1.0"
+dependencies = [
+ "bollard",
+ "futures-util",
+ "metrics",
+ "sagat-application",
+ "sagat-domain",
+ "sagat-infra-schema",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "sagat-infra-schema"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "sagat-application",
+ "sagat-domain",
+ "serde_json",
+]
+
+[[package]]
 name = "sagat-infra-secrets"
 version = "0.1.0"
 dependencies = [
@@ -3819,6 +3851,31 @@ dependencies = [
  "sagat-domain",
  "thiserror 2.0.21",
  "zeroize",
+]
+
+[[package]]
+name = "sagat-sandbox-runner"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "metrics",
+ "reqwest",
+ "sagat-api-grpc",
+ "sagat-api-http",
+ "sagat-application",
+ "sagat-control-plane",
+ "sagat-domain",
+ "sagat-infra-egress",
+ "sagat-infra-sandbox",
+ "sagat-telemetry",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tonic",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3875,7 +3932,10 @@ dependencies = [
  "sagat-infra-ir",
  "sagat-infra-nats",
  "sagat-infra-postgres",
+ "sagat-infra-sandbox",
+ "sagat-infra-schema",
  "sagat-infra-secrets",
+ "sagat-sandbox-runner",
  "sagat-scheduler",
  "sagat-telemetry",
  "serde_json",

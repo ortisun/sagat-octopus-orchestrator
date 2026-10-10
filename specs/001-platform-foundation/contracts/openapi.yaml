@@ -265,7 +265,7 @@ paths:
       summary: Publish an immutable workflow version and make it active
       tags: [Workflows]
       x-implemented: '002'
-      description: Validates the draft against the workflow schema, the graph rules and the expression subset. A document with no engine yet (saga, script, child, foreach, humanApproval) is refused with a reason. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
+      description: Validates the draft against the workflow schema, the graph rules and the expression subset. A document with no engine yet (foreach, humanApproval) is refused with a reason. A `script` node pins the digest of a ready script artifact of the tenant (`UNKNOWN_SCRIPT` otherwise) and runs as the activity `script.sha256-<hex>`. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
       parameters:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1401,21 +1401,551 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
-  /scripts/builds:
-    post:
-      operationId: buildInlineScript
-      summary: Build an inline script
+  /namespaces/{namespaceId}/scripts:
+    get:
+      operationId: listScripts
+      summary: List the scripts of a namespace
       tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:read`. Ordered by name; `after` is the last name of the page before.
       parameters:
-        - $ref: '#/components/parameters/Namespace'
-        - $ref: '#/components/parameters/IdempotencyKey'
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptAfter'}
+        - {$ref: '#/components/parameters/PageLimit'}
+      responses:
+        '200': {description: 'The scripts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createScript
+      summary: Write a script
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:write`. A script is a draft that can be tried (`createScriptTestRun`) and published (`publishScriptVersion`). TypeScript (`typescript`) and Python (`python`) are built; `csharp`, `go` and `java` are named by the workflow schema and refused with `details.reason` `LANGUAGE_NOT_BUILT`.
+        A TypeScript script exports a default function `(input, octopus) => result`; a Python script defines `run(input, octopus)`. `octopus.fetch(url, init)` asks the platform for an HTTP request (under the egress policy of the namespace, and only if the script's `policy.egress` is `namespace`), `octopus.secret(name)` asks for a secret the step declared, `octopus.log(...)` writes to the log. The script has no network of its own, no filesystem but a small scratch area, and no secrets it was not given.
+        In a workflow the script receives the step document (`{run, node, input, steps}`); a test run receives exactly the input it is given.
+        `inputSchema` and `outputSchema` are JSON Schemas (no references outside the document): the input is checked before the script runs and the result after. They are part of the artifact. Limits that are left out are the platform's defaults; asking for more than the platform allows is refused with `details.reason` `ABOVE_CEILING`. A `lockfile` that pins a package is refused when the version is built (installing packages is not available yet); one that pins nothing is part of the build.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/BuildRequest'}
+            schema: {$ref: '#/components/schemas/CreateScriptRequest'}
       responses:
-        '202': {description: Async isolated build accepted, content: {application/json: {schema: {$ref: '#/components/schemas/BuildStatus'}}}}
+        '201': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/scripts/{scriptId}:
+    get:
+      operationId: getScript
+      summary: Read a script and its draft
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+      responses:
+        '200': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    patch:
+      operationId: updateScript
+      summary: Change the draft of a script
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:write`. `revision` is the revision the editor read; a change made against an older one is refused with `409` and `details.currentRevision`, so two editors never silently overwrite each other. A field that is absent is left alone; `lockfile`, `inputSchema` and `outputSchema` set to `null` are removed. Versions already published are not touched.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateScriptRequest'}
+      responses:
+        '200': {description: 'The script now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteScript
+      summary: Delete a script that has no version
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:write`. A script with a published version is kept (`409`): a workflow may pin its artifact, and an artifact is never taken from under a workflow.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+      responses:
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/scripts/{scriptId}/versions:
+    get:
+      operationId: listScriptVersions
+      summary: List the versions of a script, newest first
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+        - {$ref: '#/components/parameters/VersionBefore'}
+        - {$ref: '#/components/parameters/PageLimit'}
+      responses:
+        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersionList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: publishScriptVersion
+      summary: Publish the draft as a version
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:publish`. The draft is frozen as the next numbered version and its build is queued: `202` with `status` `BUILDING`. A runner builds it in isolation; the version becomes `READY` with the `artifactDigest` that workflows pin (and the `activity` name a worker binding can name) or `FAILED` with the reason (`failure`) and the log of the build. Publishing a draft that is the same as the latest version is not another version (`200`, `created` `false`); a version whose build failed does not count, so the same source can be published again when the runner was the problem. An identical build (same source, lockfile, toolchain, limits and schemas) is never made twice: the version becomes `READY` at once with the artifact that exists. A version never changes after it is published.
+        At most 8 builds and test runs of a namespace may be unfinished at once (`429`, `QUOTA_EXCEEDED`).
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+      responses:
+        '202': {description: 'The version, building', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
+        '200': {description: 'The draft was already the latest version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/scripts/{scriptId}/versions/{versionNumber}:
+    get:
+      operationId: getScriptVersion
+      summary: Read a version
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:read`. Poll it to see a build end.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+        - {$ref: '#/components/parameters/VersionNumber'}
+      responses:
+        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersion'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/scripts/{scriptId}/test-runs:
+    get:
+      operationId: listScriptTestRuns
+      summary: List the test runs of a script, newest first
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:write`. How each went; `getScriptTestRun` has what it said and returned.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+        - {$ref: '#/components/parameters/PageLimit'}
+      responses:
+        '200': {description: 'The test runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRunList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createScriptTestRun
+      summary: Try the draft in the sandbox without publishing it
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:write`. The draft as it is now is built and run with `input` by a runner; the answer is `202` with `status` `QUEUED` and the test run is read back with `getScriptTestRun`. A test run has no secrets of the namespace: `octopus.secret` is always refused (and audited), so a production credential never reaches a script an author is still writing. It may reach the network only if the draft's policy and the namespace's egress policy both allow it. It has its own quota (builds and test runs in progress), and one that no runner takes within two minutes fails as `SCRIPT_SANDBOX_UNAVAILABLE`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TestRunRequest'}
+      responses:
+        '202': {description: 'The test run, queued', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/scripts/{scriptId}/test-runs/{testRunId}:
+    get:
+      operationId: getScriptTestRun
+      summary: Read a test run
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED` or `SCRIPT_SANDBOX_UNAVAILABLE`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScriptId'}
+        - {$ref: '#/components/parameters/TestRunId'}
+      responses:
+        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/script-executions:
+    get:
+      operationId: listScriptExecutions
+      summary: List what published scripts did, newest first
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:read`. One record per run, node and attempt, kept for the retention the script declared (14 days unless it says otherwise), what the script was refused and its numbers; the log is in `getScriptExecution`, so a page is always small. `before` is the id after which (older) the listing continues.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ExecutionDigest'}
+        - {$ref: '#/components/parameters/ExecutionBefore'}
+        - {$ref: '#/components/parameters/PageLimit'}
+      responses:
+        '200': {description: 'The executions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecutionList'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/script-executions/{executionId}:
+    get:
+      operationId: getScriptExecution
+      summary: Read what a published script did in one step attempt, with its log
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:read`. The log is redacted (what looks like a credential and every secret value the step was handed are replaced by `[REDACTED]`) and cut at the policy's output limit (`logTruncated`). Kept until `expiresAt`, the script's retention after the step ended.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ExecutionId'}
+      responses:
+        '200': {description: 'The execution', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecution'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-artifacts/{digest}:
+    get:
+      operationId: getScriptArtifact
+      summary: Read what makes an artifact trustworthy
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:read`. The artifact is identified by its digest and signed by the platform (Ed25519 over the tenant, the digest and the language); the response carries the signature, the id of the key, the toolchain that built it and its software bill of materials. The bytes are for the runner.
+      parameters:
+        - {$ref: '#/components/parameters/ArtifactDigest'}
+      responses:
+        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptArtifact'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/builds/claim:
+    post:
+      operationId: claimScriptBuild
+      summary: Take the oldest build of a language the runner has a toolchain for
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:build` (the `runner` role). The build is held under a lease of `leaseSeconds`; `leaseToken` is shown once and presented with every later call about it. A build whose key (source, lockfile, toolchain, limits and schemas) was built before is finished with the artifact that exists and never handed out. `204` when there is nothing to build.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClaimBuildRequest'}
+      responses:
+        '200': {description: 'The build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BuildAssignment'}}}}
+        '204': {description: 'Nothing to build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/builds/{jobId}/heartbeat:
+    post:
+      operationId: heartbeatScriptBuild
+      summary: Keep a build
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:build`. `409` with `details.reason` `STALE_ATTEMPT` when the runner no longer holds the build.
+      parameters:
+        - {$ref: '#/components/parameters/JobId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LeaseRequest'}
+      responses:
+        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/builds/{jobId}/complete:
+    post:
+      operationId: completeScriptBuild
+      summary: Say how a build ended
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:build`. `built` carries the artifact (base64), its bill of materials and the toolchain that made it; the control plane signs the digest and the version becomes `READY`. `failed` says why nothing was made (`rejected`, `lockfile`, `limit`, `unsupported`, `unavailable`); `unavailable` is tried again up to three times, each after a wait of 15 s times the attempts made. The control plane signs only an artifact that says what the version says (language, entry point, plain file names, the policy it was clamped to and its schemas): any other is `422` with reason `BUNDLE_MISMATCH` and the build is left to its lease. Repeating a completion the same holder already made is accepted; one from a runner that lost the lease is `409`. The body may be up to 4 MiB.
+      parameters:
+        - {$ref: '#/components/parameters/JobId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompleteBuildRequest'}
+      responses:
+        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/test-runs/claim:
+    post:
+      operationId: claimScriptTestRun
+      summary: Take the oldest test run of a language the runner can run
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:build`. The test run is held under a lease like a build is. `204` when there is none.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClaimTestRequest'}
+      responses:
+        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/TestAssignment'}}}}
+        '204': {description: 'Nothing to run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/test-runs/{testRunId}/heartbeat:
+    post:
+      operationId: heartbeatScriptTestRun
+      summary: Keep a test run
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:build`. `409` with `STALE_ATTEMPT` when the lease was lost.
+      parameters:
+        - {$ref: '#/components/parameters/TestRunId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LeaseRequest'}
+      responses:
+        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/test-runs/{testRunId}/complete:
+    post:
+      operationId: completeScriptTestRun
+      summary: Say how a test run ended
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:build`. Exactly one of `result` and `failure` (a `SCRIPT_*` code). A script that returns nothing has a `result` of `null`, which is a result; an absent `result` is not one.
+      parameters:
+        - {$ref: '#/components/parameters/TestRunId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompleteTestRequest'}
+      responses:
+        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/artifacts/{digest}:
+    get:
+      operationId: getRunnerArtifact
+      summary: Fetch an artifact to run it
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:execute`. The artifact (base64) with the signature to verify before running it, and the tenant it was signed for. Only the tenant's own artifacts; another tenant's digest is `404`.
+      parameters:
+        - {$ref: '#/components/parameters/ArtifactDigest'}
+      responses:
+        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerArtifact'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/signing-key:
+    get:
+      operationId: getScriptSigningKey
+      summary: Read the public key that signs artifacts
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:execute`. A runner that has not been given the key out of band asks for it (trust on first use).
+      responses:
+        '200': {description: 'The key', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SigningKey'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/namespaces/{namespaceId}/egress-policy:
+    get:
+      operationId: getRunnerEgressPolicy
+      summary: Read the egress policy a runner enforces
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:execute`; not `egress:manage`. The rules, ports and `allowHttp` of the namespace, as they are now.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerEgressPolicy'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/namespaces/{namespaceId}/pending-activities:
+    get:
+      operationId: listRunnerPendingActivities
+      summary: List the script activities that have a step ready
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:execute`. At most 256 names (`script.sha256-<hex>`): what a runner advertises in a worker session to be handed those steps.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The activities', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PendingActivities'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/executions:
+    post:
+      operationId: recordScriptExecution
+      summary: Keep the record of what a script did
+      tags: [Scripts]
+      x-implemented: '005'
+      description: |
+        Needs `script:execute`. Once per run, node and attempt (`recorded` is `false` for a repeat). What the script was refused (`denied`, at most ten entries, as `fetch <scheme>://<host>` or `secret <name>`) is audited once per script and kind, however often it asks. The log is cut at 1 MiB and redacted again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecordExecutionRequest'}
+      responses:
+        '201': {description: 'Recorded', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Recorded'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
@@ -1490,7 +2020,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
     WorkflowId:
       name: workflowId
       in: path
@@ -1505,6 +2035,56 @@ components:
       name: runId
       in: path
       required: true
+      schema: {type: string, format: uuid}
+    ScriptId:
+      name: scriptId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    TestRunId:
+      name: testRunId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ArtifactDigest:
+      name: digest
+      in: path
+      required: true
+      schema: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+    ScriptAfter:
+      name: after
+      in: query
+      required: false
+      schema: {type: string}
+    VersionBefore:
+      name: before
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1}
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 200}
+    ExecutionDigest:
+      name: digest
+      in: query
+      required: false
+      schema: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+    ExecutionId:
+      name: executionId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ExecutionBefore:
+      name: before
+      in: query
+      required: false
       schema: {type: string, format: uuid}
   schemas:
     JsonObject: {type: object, additionalProperties: true}
@@ -1863,7 +2443,7 @@ components:
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
@@ -2172,22 +2752,403 @@ components:
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/DeadLetter'}}
         nextCursor: {type: string}
-    BuildRequest:
+    ScriptPolicy:
       type: object
-      required: [language, source, lockfile]
+      additionalProperties: false
+      description: 'What a script is held to. Every field has a floor and a ceiling, and the platform has a ceiling of its own that a script cannot ask past.'
       properties:
-        language: {type: string, enum: [typescript, python, csharp, go, java]}
+        memoryMib: {type: integer, minimum: 16, maximum: 2048, description: 'Memory with swap off; the container is killed above it.'}
+        cpuMillis: {type: integer, minimum: 100, maximum: 4000}
+        timeoutMs: {type: integer, minimum: 1000, maximum: 900000, description: 'Wall clock; the container is killed after it.'}
+        processes: {type: integer, minimum: 8, maximum: 512}
+        outputBytes: {type: integer, minimum: 1024, maximum: 1048576, description: 'Log kept; more is cut and the script is stopped if it keeps writing.'}
+        scratchMib: {type: integer, minimum: 1, maximum: 512, description: 'Writable, not executable scratch space.'}
+        egress: {type: string, enum: [none, namespace], description: '`none`: no way out. `namespace`: requests through octopus.fetch, under the namespace''s egress policy.'}
+    ScriptPolicyView:
+      type: object
+      required: [memoryMib, cpuMillis, timeoutMs, processes, outputBytes, scratchMib, egress]
+      properties:
+        memoryMib: {type: integer}
+        cpuMillis: {type: integer}
+        timeoutMs: {type: integer}
+        processes: {type: integer}
+        outputBytes: {type: integer}
+        scratchMib: {type: integer}
+        egress: {type: string, enum: [none, namespace]}
+    Script:
+      type: object
+      required: [id, namespaceId, name, language, source, policy, retentionDays, revision, createdBy, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        language: {type: string, enum: [typescript, python]}
         source: {type: string}
         lockfile: {type: string}
-        toolchain: {type: string}
-    BuildStatus:
+        inputSchema: {type: object}
+        outputSchema: {type: object}
+        policy: {$ref: '#/components/schemas/ScriptPolicyView'}
+        retentionDays: {type: integer, minimum: 1, maximum: 365}
+        revision: {type: integer}
+        latestVersion: {type: integer}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ScriptSummary:
       type: object
-      required: [buildId, status]
+      required: [id, namespaceId, name, language, policy, retentionDays, revision, sourceBytes, createdBy, createdAt, updatedAt]
+      description: 'A script as a listing shows it: without its source, lockfile and schemas (up to 640 KiB a script). `getScript` has them.'
       properties:
-        buildId: {type: string, format: uuid}
-        status: {type: string, enum: [QUEUED, BUILDING, SUCCEEDED, FAILED, CANCELLED]}
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        language: {type: string, enum: [typescript, python]}
+        policy: {$ref: '#/components/schemas/ScriptPolicyView'}
+        retentionDays: {type: integer, minimum: 1, maximum: 365}
+        revision: {type: integer}
+        latestVersion: {type: integer}
+        sourceBytes: {type: integer, description: 'How big the source of the draft is.'}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ScriptList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ScriptSummary'}}
+    CreateScriptRequest:
+      type: object
+      additionalProperties: false
+      required: [name, language, source]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        language: {type: string, description: 'typescript or python; csharp, go and java are refused until they are built.'}
+        source: {type: string, minLength: 1, maxLength: 262144}
+        lockfile: {type: string, maxLength: 262144}
+        inputSchema: {type: object}
+        outputSchema: {type: object}
+        policy: {$ref: '#/components/schemas/ScriptPolicy'}
+        retentionDays: {type: integer, minimum: 1, maximum: 365, default: 14}
+    UpdateScriptRequest:
+      type: object
+      additionalProperties: false
+      required: [revision]
+      properties:
+        revision: {type: integer, minimum: 1}
+        source: {type: string, minLength: 1, maxLength: 262144}
+        lockfile: {type: [string, 'null']}
+        inputSchema: {type: [object, 'null']}
+        outputSchema: {type: [object, 'null']}
+        policy: {$ref: '#/components/schemas/ScriptPolicy'}
+        retentionDays: {type: integer, minimum: 1, maximum: 365}
+    ScriptVersion:
+      type: object
+      required: [id, scriptId, number, language, status, source, policy, retentionDays, contentDigest, createdBy, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        scriptId: {type: string, format: uuid}
+        number: {type: integer, minimum: 1}
+        language: {type: string, enum: [typescript, python]}
+        status: {type: string, enum: [BUILDING, READY, FAILED]}
+        source: {type: string}
+        lockfile: {type: string}
+        inputSchema: {type: object}
+        outputSchema: {type: object}
+        policy: {$ref: '#/components/schemas/ScriptPolicyView'}
+        retentionDays: {type: integer}
+        contentDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$', description: 'Of everything that defines the version: two publications with the same one are one version.'}
+        buildKey: {type: string, pattern: '^sha256:[0-9a-f]{64}$', description: 'Of what the build was made from: source, lockfile, toolchain, limits and schemas.'}
+        artifactDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$', description: 'What a workflow pins (`artifactDigest` of a `script` node).'}
+        activity: {type: string, description: 'The activity a `script` node of this artifact becomes.'}
+        keyId: {type: string}
+        toolchain: {type: string}
+        buildLog: {type: string}
+        failure: {type: string, description: 'Why the build made nothing: `rejected:`, `lockfile:`, `limit:`, `unsupported:` or `unavailable:` and the first message of the toolchain.'}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        builtAt: {type: string, format: date-time}
+    ScriptVersionSummary:
+      type: object
+      required: [id, scriptId, number, language, status, policy, retentionDays, contentDigest, createdBy, createdAt]
+      description: 'A version as a listing shows it: without its source, lockfile, schemas and build log. `getScriptVersion` has them.'
+      properties:
+        id: {type: string, format: uuid}
+        scriptId: {type: string, format: uuid}
+        number: {type: integer, minimum: 1}
+        language: {type: string, enum: [typescript, python]}
+        status: {type: string, enum: [BUILDING, READY, FAILED]}
+        policy: {$ref: '#/components/schemas/ScriptPolicyView'}
+        retentionDays: {type: integer}
+        contentDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        buildKey: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        artifactDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        activity: {type: string}
+        keyId: {type: string}
+        toolchain: {type: string}
+        failure: {type: string}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        builtAt: {type: string, format: date-time}
+    ScriptVersionList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ScriptVersionSummary'}}
+    PublishedScriptVersion:
+      type: object
+      required: [version, created]
+      properties:
+        version: {$ref: '#/components/schemas/ScriptVersion'}
+        created: {type: boolean}
+    ScriptArtifact:
+      type: object
+      required: [digest, language, size, keyId, signature, toolchain, createdAt]
+      properties:
+        digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        language: {type: string}
+        size: {type: integer}
+        keyId: {type: string}
+        signature: {type: string, description: 'Ed25519, base64, over the tenant, the digest and the language.'}
+        toolchain: {type: string}
+        sbom: {type: [object, 'null'], description: CycloneDX}
+        createdAt: {type: string, format: date-time}
+    TestRunRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        input: {description: 'Any JSON value; at most 240 KiB.'}
+    ScriptTestRun:
+      type: object
+      required: [id, scriptId, language, status, log, logTruncated, denied, createdBy, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        scriptId: {type: string, format: uuid}
+        language: {type: string}
+        status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED]}
+        input: {}
+        result: {}
+        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        retryable: {type: boolean}
+        log: {type: string}
+        logTruncated: {type: boolean}
+        denied: {type: array, items: {type: string}}
+        exitCode: {type: integer}
+        wallMs: {type: integer}
+        startMs: {type: integer}
+        memoryPeakBytes: {type: integer}
+        inferredInputSchema: {type: object}
+        inferredOutputSchema: {type: object}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+    ScriptTestRunSummary:
+      type: object
+      required: [id, scriptId, language, status, createdBy, createdAt]
+      description: 'A test run as a listing shows it: how it went. `getScriptTestRun` has what it said and returned.'
+      properties:
+        id: {type: string, format: uuid}
+        scriptId: {type: string, format: uuid}
+        language: {type: string}
+        status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED]}
+        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        wallMs: {type: integer}
+        startMs: {type: integer}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+    ScriptTestRunList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ScriptTestRunSummary'}}
+    ScriptExecution:
+      type: object
+      required: [id, artifactDigest, status, log, logTruncated, denied, wallMs, startMs, createdAt, expiresAt]
+      properties:
+        id: {type: string, format: uuid}
         artifactDigest: {type: string}
+        runId: {type: string, format: uuid}
+        node: {type: string}
+        attempt: {type: integer}
+        status: {type: string, enum: [SUCCEEDED, FAILED]}
+        failure: {type: string}
+        exitCode: {type: integer}
+        log: {type: string}
+        logTruncated: {type: boolean}
+        denied: {type: array, items: {type: string}}
+        wallMs: {type: integer}
+        startMs: {type: integer}
+        memoryPeakBytes: {type: integer}
+        traceId: {type: string}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+    ScriptExecutionSummary:
+      type: object
+      required: [id, artifactDigest, status, logTruncated, denied, wallMs, startMs, createdAt, expiresAt]
+      description: 'An execution as a listing shows it: without its log, which `getScriptExecution` has.'
+      properties:
+        id: {type: string, format: uuid}
+        artifactDigest: {type: string}
+        runId: {type: string, format: uuid}
+        node: {type: string}
+        attempt: {type: integer}
+        status: {type: string, enum: [SUCCEEDED, FAILED]}
+        failure: {type: string}
+        exitCode: {type: integer}
+        logTruncated: {type: boolean}
+        denied: {type: array, items: {type: string}}
+        wallMs: {type: integer}
+        startMs: {type: integer}
+        memoryPeakBytes: {type: integer}
+        traceId: {type: string}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+    ScriptExecutionList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ScriptExecutionSummary'}}
+    ClaimBuildRequest:
+      type: object
+      additionalProperties: false
+      required: [toolchains]
+      properties:
+        toolchains: {type: object, additionalProperties: {type: string, maxLength: 512}, description: 'Language to the identity of the toolchain that builds it (the digest of its image and the version of the runner''s shim).'}
+    BuildAssignment:
+      type: object
+      required: [jobId, leaseToken, leaseSeconds, versionId, scriptId, language, source, policy, buildKey]
+      properties:
+        jobId: {type: string, format: uuid}
+        leaseToken: {type: string}
+        leaseSeconds: {type: integer}
+        versionId: {type: string, format: uuid}
+        scriptId: {type: string, format: uuid}
+        language: {type: string}
+        source: {type: string}
+        lockfile: {type: string}
+        policy: {type: string, description: 'The limits as the platform writes them (`v1;memory=..`), to be built into the artifact.'}
+        inputSchema: {type: object}
+        outputSchema: {type: object}
+        buildKey: {type: string}
+    LeaseRequest:
+      type: object
+      additionalProperties: false
+      required: [leaseToken]
+      properties:
+        leaseToken: {type: string}
+    LeaseExtended:
+      type: object
+      required: [leaseSeconds]
+      properties:
+        leaseSeconds: {type: integer}
+    CompleteBuildRequest:
+      type: object
+      additionalProperties: false
+      required: [leaseToken, outcome]
+      properties:
+        leaseToken: {type: string}
+        outcome: {type: string, enum: [built, failed]}
+        artifact: {type: string, description: 'Base64; at most 2 MiB.'}
+        sbom: {type: object}
+        toolchain: {type: string}
+        log: {type: string}
+        kind: {type: string, enum: [rejected, lockfile, limit, unsupported, unavailable]}
+        message: {type: string}
+    ClaimTestRequest:
+      type: object
+      additionalProperties: false
+      required: [languages]
+      properties:
+        languages: {type: array, items: {type: string}}
+    TestAssignment:
+      type: object
+      required: [runId, leaseToken, leaseSeconds, scriptId, namespaceId, language, source, policy, input]
+      properties:
+        runId: {type: string, format: uuid}
+        leaseToken: {type: string}
+        leaseSeconds: {type: integer}
+        scriptId: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        language: {type: string}
+        source: {type: string}
+        lockfile: {type: string}
+        inputSchema: {type: object}
+        outputSchema: {type: object}
+        policy: {type: string}
+        input: {}
+    CompleteTestRequest:
+      type: object
+      additionalProperties: false
+      required: [leaseToken]
+      properties:
+        leaseToken: {type: string}
+        result: {}
+        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        log: {type: string}
+        logTruncated: {type: boolean}
+        denied: {type: array, items: {type: string}}
+        exitCode: {type: integer}
+        wallMs: {type: integer}
+        startMs: {type: integer}
+        memoryPeakBytes: {type: integer}
+        inferredInputSchema: {type: object}
+        inferredOutputSchema: {type: object}
+    RunnerArtifact:
+      type: object
+      required: [tenantId, digest, language, artifact, signature, keyId, toolchain]
+      properties:
+        tenantId: {type: string, format: uuid}
+        digest: {type: string}
+        language: {type: string}
+        artifact: {type: string, description: Base64}
+        signature: {type: string, description: Base64}
+        keyId: {type: string}
+        toolchain: {type: string}
+    SigningKey:
+      type: object
+      required: [keyId, publicKey]
+      properties:
+        keyId: {type: string}
+        publicKey: {type: string, description: 'Ed25519, base64.'}
+    RunnerEgressPolicy:
+      type: object
+      required: [rules, ports, allowHttp]
+      properties:
+        rules: {type: array, items: {type: string}}
+        ports: {type: array, items: {type: integer}}
+        allowHttp: {type: boolean}
+    PendingActivities:
+      type: object
+      required: [activities]
+      properties:
+        activities: {type: array, items: {type: string, pattern: '^script\.sha256-[0-9a-f]{64}$'}}
+    RecordExecutionRequest:
+      type: object
+      additionalProperties: false
+      required: [namespaceId, digest, status]
+      properties:
+        namespaceId: {type: string, format: uuid}
+        digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        runId: {type: string, format: uuid}
+        node: {type: string}
+        attempt: {type: integer, minimum: 0}
+        status: {type: string, enum: [SUCCEEDED, FAILED]}
+        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        exitCode: {type: integer}
+        log: {type: string}
+        logTruncated: {type: boolean}
+        denied: {type: array, items: {type: string}}
+        wallMs: {type: integer, minimum: 0}
+        startMs: {type: integer, minimum: 0}
+        memoryPeakBytes: {type: integer, minimum: 0}
+        traceId: {type: string}
+    Recorded:
+      type: object
+      required: [recorded]
+      properties:
+        recorded: {type: boolean}
   responses:
+    PayloadTooLarge: {description: 'The body is larger than this endpoint takes', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     BadRequest: {description: 'A required header is missing or the body is not valid JSON', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unauthorized: {description: Authentication failed, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Forbidden: {description: Permission denied, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

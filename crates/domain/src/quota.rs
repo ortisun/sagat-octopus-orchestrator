@@ -41,6 +41,11 @@ pub enum QuotaResource {
     WebhookSubscriptions,
     /// Connectors to message brokers in one namespace (feature 004).
     Connectors,
+    /// Scripts (not versions) in one namespace (feature 005).
+    Scripts,
+    /// Builds and test runs of one namespace that have not finished: the concurrent work the sandbox
+    /// is asked for on behalf of authors (feature 005).
+    ScriptJobs,
 }
 
 /// At which level a resource is counted.
@@ -53,7 +58,7 @@ pub enum QuotaScope {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -62,6 +67,8 @@ impl QuotaResource {
         Self::EventEndpoints,
         Self::WebhookSubscriptions,
         Self::Connectors,
+        Self::Scripts,
+        Self::ScriptJobs,
     ];
 
     #[must_use]
@@ -75,6 +82,8 @@ impl QuotaResource {
             Self::EventEndpoints => "event_endpoints",
             Self::WebhookSubscriptions => "webhook_subscriptions",
             Self::Connectors => "event_connectors",
+            Self::Scripts => "scripts",
+            Self::ScriptJobs => "script_jobs",
         }
     }
 
@@ -86,7 +95,9 @@ impl QuotaResource {
             | Self::Secrets
             | Self::EventEndpoints
             | Self::WebhookSubscriptions
-            | Self::Connectors => QuotaScope::Namespace,
+            | Self::Connectors
+            | Self::Scripts
+            | Self::ScriptJobs => QuotaScope::Namespace,
             Self::TenantActiveRuns | Self::WorkerSessions => QuotaScope::Tenant,
         }
     }
@@ -104,6 +115,8 @@ impl QuotaResource {
             Self::EventEndpoints => 100,
             Self::WebhookSubscriptions => 50,
             Self::Connectors => 20,
+            Self::Scripts => 500,
+            Self::ScriptJobs => 8,
         }
     }
 
@@ -119,6 +132,8 @@ impl QuotaResource {
             Self::EventEndpoints => "webhook endpoints in the namespace",
             Self::WebhookSubscriptions => "outbound webhook subscriptions in the namespace",
             Self::Connectors => "message connectors in the namespace",
+            Self::Scripts => "scripts in the namespace",
+            Self::ScriptJobs => "builds and test runs in progress in the namespace",
         }
     }
 }

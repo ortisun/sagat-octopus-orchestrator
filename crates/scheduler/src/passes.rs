@@ -192,6 +192,28 @@ where
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "could not purge worker sessions"),
         }
+        // The records scripts keep for a while (executions, test runs) end with their retention.
+        let mut scripts = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self.store.purge_script_records(PURGE_BATCH).await {
+                Ok(n) => {
+                    scripts += n;
+                    if n < u64::from(PURGE_BATCH) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge script records");
+                    break;
+                }
+            }
+        }
+        if scripts > 0 {
+            tracing::info!(
+                removed = scripts,
+                "purged script records past their retention"
+            );
+        }
         // One bounded statement at a time, so a backlog never holds a long one, repeated until the
         // backlog is gone (or this call has done its share): the purge must outrun what is written.
         let mut removed = 0u64;

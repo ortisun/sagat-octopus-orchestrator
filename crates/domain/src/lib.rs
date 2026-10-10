@@ -18,6 +18,7 @@ pub mod identity;
 pub mod outbound;
 pub mod quota;
 pub mod saga;
+pub mod scripts;
 pub mod secrets;
 pub mod triggers;
 pub mod workflow;

@@ -85,6 +85,17 @@ impl QuotaLookup for FakeStore {
     }
 }
 
+impl sagat_application::scripts::ScriptLookup for FakeStore {
+    async fn missing_artifacts(
+        &self,
+        _tenant: TenantId,
+        digests: &[sagat_domain::scripts::Digest],
+    ) -> Result<Vec<sagat_domain::scripts::Digest>, StoreError> {
+        // No script was built in this fake: every pinned artifact is missing.
+        Ok(digests.to_vec())
+    }
+}
+
 impl SecretAccessLookup for FakeStore {
     async fn secret_states(
         &self,

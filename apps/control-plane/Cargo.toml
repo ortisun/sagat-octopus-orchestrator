@@ -20,11 +20,13 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+base64 = "0.22"
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-postgres.workspace = true
+sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
 sagat-telemetry.workspace = true
 thiserror.workspace = true

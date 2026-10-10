@@ -497,7 +497,8 @@
             },
             "artifactDigest": {
               "type": "string",
-              "minLength": 12
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "The artifact a build made: the digest of a ready version of a script of the same tenant. The step runs exactly this code; publishing a newer version of the script changes nothing about a workflow that names this digest. Checked when the workflow is published."
             },
             "language": {
               "enum": [
@@ -506,13 +507,24 @@
                 "csharp",
                 "go",
                 "java"
-              ]
+              ],
+              "description": "Informational: the runner takes the language from the artifact."
             },
             "retry": {
               "$ref": "#/$defs/retry"
             },
             "compensateWith": {
               "type": "string"
+            },
+            "secrets": {
+              "type": "array",
+              "maxItems": 16,
+              "uniqueItems": true,
+              "description": "Names of the secrets of the namespace the script may ask for with octopus.secret while it holds a lease on this step. Names only: a value is never part of a definition. A script that asks for any other name is refused and audited.",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              }
             }
           }
         }

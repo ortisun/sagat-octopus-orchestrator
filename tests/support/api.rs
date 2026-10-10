@@ -25,6 +25,8 @@ use sagat_application::identity::{IdentityService, IdentityStore};
 use sagat_application::outbound::OutboundService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
+use sagat_application::script_signing::Signer;
+use sagat_application::scripts::{RunnerService, ScriptService};
 use sagat_application::secrets::SecretService;
 use sagat_application::worker::{WorkerService, WorkerSettings};
 use sagat_domain::audit::AuditRecord;
@@ -56,6 +58,8 @@ pub struct TestApi {
     pub keys: sagat_infra_secrets::SecretsConfig,
     /// The base64 material of key `k1`, so an engine started for this API can open its secrets.
     pub key_k1: String,
+    /// The public half of the key that signs the artifacts this API builds.
+    pub script_key: Vec<u8>,
     lookups: Arc<AtomicUsize>,
     pings: Arc<AtomicUsize>,
 }
@@ -184,6 +188,8 @@ pub struct Options {
     pub ping_delay: Duration,
     /// Lease and session timings of the worker protocol.
     pub worker: WorkerSettings,
+    /// The most any script may be given.
+    pub script_ceiling: sagat_domain::scripts::Policy,
 }
 
 impl Default for Options {
@@ -202,6 +208,7 @@ impl Default for Options {
             },
             ping_delay: Duration::ZERO,
             worker: WorkerSettings::default(),
+            script_ceiling: sagat_domain::scripts::Policy::default(),
         }
     }
 }
@@ -252,6 +259,9 @@ pub async fn start_with(options: Options) -> TestApi {
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
+    let signer =
+        Signer::from_pkcs8(&Signer::generate_pkcs8().expect("a signing key")).expect("a signer");
+    let script_key = signer.public_key();
     let governance = GovState::new(
         state.clone(),
         QuotaService::new(executions.clone(), SystemClock),
@@ -279,7 +289,23 @@ pub async fn start_with(options: Options) -> TestApi {
         SystemClock,
         EgressService::new(executions.clone(), SystemClock),
         Arc::new(JsonEvaluator),
-    ));
+    ))
+    .with_scripts(
+        ScriptService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_schema::Schemas,
+            options.script_ceiling,
+        ),
+        RunnerService::new(
+            executions.clone(),
+            SystemClock,
+            SystemEntropy,
+            signer,
+            sagat_infra_schema::bundle::Bundles,
+            options.script_ceiling,
+        ),
+    );
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
@@ -343,6 +369,7 @@ pub async fn start_with(options: Options) -> TestApi {
         grpc_url: format!("http://{grpc_addr}"),
         keys,
         key_k1,
+        script_key,
         lookups,
         pings,
     }

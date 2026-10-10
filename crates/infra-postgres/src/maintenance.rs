@@ -256,6 +256,10 @@ impl MaintenanceStore for PgRunStore {
         .map_err(store_error)
     }
 
+    async fn purge_script_records(&self, limit: u32) -> Result<u64, StoreError> {
+        self.purge_script_records_impl(limit).await
+    }
+
     async fn purge_sessions(&self) -> Result<u64, StoreError> {
         // Kept for an hour after expiry so a late report still finds its session's identity.
         sqlx::query(
@@ -265,6 +269,35 @@ impl MaintenanceStore for PgRunStore {
         .await
         .map(|r| r.rows_affected())
         .map_err(store_error)
+    }
+}
+
+impl PgRunStore {
+    /// Bounded by `limit` per table, so a backlog never holds a long statement.
+    pub(crate) async fn purge_script_records_impl(&self, limit: u32) -> Result<u64, StoreError> {
+        let executions = sqlx::query(
+            "DELETE FROM script_executions WHERE id IN ( \
+                 SELECT id FROM script_executions WHERE expires_at < clock_timestamp() \
+                 ORDER BY expires_at LIMIT $1)",
+        )
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        let test_runs = sqlx::query(
+            "DELETE FROM script_test_runs WHERE id IN ( \
+                 SELECT id FROM script_test_runs \
+                 WHERE finished_at IS NOT NULL \
+                   AND finished_at + make_interval(days => retention_days) < clock_timestamp() \
+                 ORDER BY finished_at LIMIT $1)",
+        )
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        Ok(executions + test_runs)
     }
 }
 

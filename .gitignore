@@ -5,6 +5,7 @@
 .env
 .env.*
 !.env.example
+/infra/docker/runner.token
 
 # Tooling state that is not part of the project
 /.agents/solomon/state/

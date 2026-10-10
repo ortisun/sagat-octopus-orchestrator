@@ -15,6 +15,8 @@ pub enum Command {
     ResealSecrets,
     /// Grant a tenant a quota ceiling, or withdraw it, then exit. Values are explicit.
     QuotaCeiling,
+    /// Print a new signing key for scripts (`SAGAT_SCRIPT_SIGNING_KEY`) and exit. Needs no database.
+    ScriptKey,
     /// Probe the local API's liveness endpoint; for container health checks.
     Healthcheck,
     Help,
@@ -38,6 +40,7 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
         Some("provision-tenant") => Command::ProvisionTenant,
         Some("reseal-secrets") => Command::ResealSecrets,
         Some("quota-ceiling") => Command::QuotaCeiling,
+        Some("script-key") => Command::ScriptKey,
         Some("healthcheck") => Command::Healthcheck,
         Some("help" | "--help" | "-h") => Command::Help,
         Some("version" | "--version" | "-V") => Command::Version,
@@ -62,6 +65,7 @@ COMMANDS:
     provision-tenant  Create a tenant and its first admin (any environment; values are explicit)
     reseal-secrets  Re-seal stored secrets under the active key of SAGAT_SECRETS_KEYS (after a key rotation)
     quota-ceiling  Grant a tenant a quota ceiling (SAGAT_CEILING_TENANT_ID, _RESOURCE, _VALUE; a number or default)
+    script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
     help          Print this message
@@ -100,6 +104,11 @@ ENVIRONMENT (serve):
     SAGAT_OIDC_REQUIRED_TYP           required JOSE typ; at+jwt and application/at+jwt are the
                                       same type, case-insensitive, whitespace trimmed [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
+    SAGAT_SCRIPT_SIGNING_KEY          Ed25519 key (PKCS#8, base64) that signs artifacts; without it the
+                                      script routes do not exist (make one with `script-key`)
+    SAGAT_SCRIPT_CEILING              the most any script may be given, as
+                                      v1;memory=<bytes>;cpu=<millis>;wall=<secs>;pids=<n>;output=<bytes>;scratch=<bytes>;egress=none|namespace
+                                      [v1;memory=268435456;cpu=1000;wall=30;pids=64;output=65536;scratch=33554432;egress=none]
 
 ENVIRONMENT (seed-dev):
     SAGAT_SEED_TENANT                 tenant slug                     [dev]

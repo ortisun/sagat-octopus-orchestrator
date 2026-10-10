@@ -36,6 +36,7 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             admin_addr: None,
             migrate_on_start: false,
             secrets: None,
+            scripts: None,
         },
     )
 }
