@@ -19,6 +19,11 @@ export interface TlsOptions {
   /** PEM client certificate and key, for mTLS. */
   cert?: string | Buffer;
   key?: string | Buffer;
+  /**
+   * The name the server certificate was issued for, when it is not the host of the URL. Required over TLS to a
+   * bare IP address (a TLS server name cannot be an IP address), where it is the DNS name in the certificate.
+   */
+  serverName?: string;
 }
 
 /** SDK version, sent in `User-Agent` and as the worker's SDK identity. */
@@ -38,6 +43,8 @@ export interface ClientConfig {
   retry?: Partial<RetryPolicy>;
   /** Appended to `sagat-sdk-typescript/<version>`. */
   userAgent?: string;
+  /** Trust roots and a client certificate (mTLS) for the REST API; the system roots by default. */
+  tls?: TlsOptions;
   /** The HTTP transport; the global `fetch` by default. The hook of the conformance suite and of tests. */
   fetch?: typeof fetch;
   /** The ambient trace context, called when a call has no explicit `traceparent`. */

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as grpc from '@grpc/grpc-js';
@@ -139,6 +140,10 @@ export class WorkerRpc {
   constructor(private readonly config: GrpcConfig) {
     const url = new URL(config.grpcUrl);
     const secure = url.protocol === 'https:';
+    // grpc-js sends the host as the TLS server name, and a server name cannot be an IP address.
+    if (secure && isIP(url.hostname.replace(/^\[|\]$/g, '')) !== 0 && !config.tls?.serverName) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'gRPC over TLS to an IP address needs tls.serverName, the name the server certificate was issued for' });
+    }
     const credentials = secure
       ? grpc.credentials.createSsl(
           config.tls?.ca ? Buffer.from(config.tls.ca) : undefined,
@@ -149,6 +154,7 @@ export class WorkerRpc {
     const Service = loadService();
     this.client = new Service(url.host, credentials, {
       interceptors: config.interceptors ?? [],
+      ...(secure && config.tls?.serverName ? { 'grpc.ssl_target_name_override': config.tls.serverName } : {}),
       'grpc.keepalive_time_ms': 120_000,
       'grpc.max_receive_message_length': 16 * 1024 * 1024,
     }) as unknown as WorkerServiceClient;

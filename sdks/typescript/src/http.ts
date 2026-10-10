@@ -2,6 +2,7 @@ import type { ClientConfig, TokenSource } from './config.js';
 import { SDK_VERSION, silentLogger } from './config.js';
 import { SagatError, codeOfHttpStatus, isRetriable, type ErrorCode } from './errors.js';
 import { encodeJson } from './json.js';
+import { tlsFetch } from './tlsfetch.js';
 import { DEFAULT_RETRY, delayAfter, sleep, type RetryPolicy } from './retry.js';
 
 const CODES = new Set<string>([
@@ -40,7 +41,7 @@ export class HttpTransport {
   private readonly logger;
 
   constructor(private readonly config: ClientConfig) {
-    this.fetchImpl = config.fetch ?? fetch;
+    this.fetchImpl = config.fetch ?? (config.tls ? tlsFetch(config.tls) : fetch);
     this.retry = { ...DEFAULT_RETRY, ...config.retry };
     this.timeoutMs = config.timeoutMs ?? 30_000;
     this.logger = config.logger ?? silentLogger;
@@ -89,6 +90,8 @@ export class HttpTransport {
         method: req.method,
         headers,
         body,
+        // A redirect would carry the credential to a place the caller did not name: it is never followed.
+        redirect: 'manual',
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
@@ -107,6 +110,9 @@ export class HttpTransport {
       text = await response.text();
     } catch {
       throw new SagatError({ code: 'TRANSPORT', message: 'the answer was cut off', status: response.status, traceId });
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'the server redirected the call; the SDK does not follow redirects', status: response.status, traceId });
     }
     if (response.status >= 200 && response.status < 300) {
       if (text === '') return { status: response.status, traceId, body: null };

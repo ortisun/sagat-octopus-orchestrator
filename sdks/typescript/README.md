@@ -72,6 +72,28 @@ a key that is the same on every retry. A handler fails on purpose with `Activity
 Platform guarantees stay at-least-once for external effects: the SDK gives you the idempotency key and the
 reconciliation hook, it cannot make a provider exactly-once.
 
+## TLS
+
+`https://` and `grpcs`-style (`https://`) URLs use the system trust roots and verify the server certificate;
+nothing in the library turns that off (a test fails if the source contains the code that would). Pass `tls`
+to the client or to the worker host for your own trust roots and for mTLS:
+
+```ts
+const tls = { ca: readFileSync('ca.pem'), cert: readFileSync('client.pem'), key: readFileSync('client.key') };
+new SagatClient({ apiUrl: 'https://octopus.internal/v1', namespace: 'payments', token, tls });
+new WorkerHost({ grpcUrl: 'https://octopus.internal:443', namespace: 'payments', token, workerName: 'w1', tls });
+```
+
+`tls.serverName` is the name the server certificate was issued for when it is not the host of the URL. **Over
+TLS to a bare IP address the worker host requires it**: `@grpc/grpc-js` sends the host as the TLS server name and
+Node does not accept an IP address as one (the SDK says so up front rather than failing as `UNAVAILABLE`). The
+name is verified, not skipped. Plain `http://` is accepted anywhere, with one warning (naming only the host)
+outside loopback. A redirect is never followed, so a credential cannot travel to a place you did not name.
+
+Tested with throw-away `openssl` certificates: an untrusted server is a `TRANSPORT` error; the configured trust
+root works; a server that requires a client certificate refuses a client without one and sees the one given; a
+wrong server name fails — for both the REST client and the worker host.
+
 ## Write a workflow
 
 [`examples/workflow.ts`](examples/workflow.ts)
