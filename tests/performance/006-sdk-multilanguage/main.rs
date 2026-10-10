@@ -72,6 +72,8 @@ fn seconds(d: Duration) -> f64 {
 #[ignore = "benchmark: run on purpose, in release mode"]
 fn benchmark() {
     harness::block_on(async {
+        // One PostgreSQL for the whole benchmark, not one per platform.
+        let _database = support::hold_server();
         let languages = harness::available_languages();
         assert!(!languages.is_empty(), "no SDK has a runner");
         let failures = harness::ensure_prepared(&languages).await;

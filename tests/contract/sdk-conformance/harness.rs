@@ -782,6 +782,7 @@ static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 
 pub async fn conform(selection: &Selection) -> Suite {
     let _alone = ONE_AT_A_TIME.lock().await;
+    let _database = crate::support::hold_server();
     let only: Option<Vec<&str>> = selection
         .languages
         .as_ref()
@@ -942,6 +943,7 @@ async fn grpc_counters(run: &Run) -> std::collections::BTreeMap<(String, String)
 /// measures it. Nothing is compared: this is for the benchmark.
 pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, String> {
     let _alone = ONE_AT_A_TIME.lock().await;
+    let _database = crate::support::hold_server();
     let (_, root) = languages(Some(&[language]))
         .into_iter()
         .next()
@@ -1027,6 +1029,7 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
 /// for the scenario file at `path`, and returns what the runner wrote.
 pub async fn run_mode(path: &Path, language: &'static str, mode: &str) -> Result<Value, String> {
     let _alone = ONE_AT_A_TIME.lock().await;
+    let _database = crate::support::hold_server();
     let (_, root) = languages(Some(&[language]))
         .into_iter()
         .next()
