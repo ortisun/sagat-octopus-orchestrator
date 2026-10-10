@@ -2591,7 +2591,7 @@ components:
       type: object
       required: [operationId, accepted]
       properties:
-        operationId: {type: string, format: uuid}
+        operationId: {type: string, format: uuid, description: 'Derived from the run and the Idempotency-Key: a request sent again with its key is answered with the same id. It names the request; it is not a stored record (the journal holds what was decided).'}
         accepted: {type: boolean}
         runStatus: {type: string}
         runVersion: {type: integer, format: int64}

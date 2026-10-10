@@ -1898,7 +1898,10 @@ export interface components {
             expectedRunVersion?: number;
         };
         OperationResult: {
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Derived from the run and the Idempotency-Key: a request sent again with its key is answered with the same id. It names the request; it is not a stored record (the journal holds what was decided).
+             */
             operationId: string;
             accepted: boolean;
             runStatus?: string;
