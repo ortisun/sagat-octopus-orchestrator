@@ -101,6 +101,32 @@ where
             }))
     }
 
+    /// The policy in force, for a runner of the sandbox that enforces it on the requests of a
+    /// script. Not `egress:manage`: a runner may read the rules it applies and nothing else.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `script:execute`; [`AppError::NotFound`].
+    pub async fn for_runner(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        ctx: &RequestContext,
+    ) -> Result<StoredPolicy, AppError> {
+        principal.authorize(Permission::ScriptExecute)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        Ok(self
+            .store
+            .egress_policy(principal.tenant_id(), namespace)
+            .await?
+            .unwrap_or_else(|| StoredPolicy {
+                rules: Vec::new(),
+                ports: Vec::new(),
+                allow_http: false,
+                updated_by: String::new(),
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+            }))
+    }
+
     /// Replaces the policy of a namespace.
     ///
     /// # Errors

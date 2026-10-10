@@ -92,12 +92,12 @@ fn line(value: &Value) -> Vec<u8> {
 /// here and not in the image or in a file put in the container, because the container's filesystem
 /// is read-only and nothing of the platform's is mounted into it.
 #[must_use]
-pub fn run_message(input: &Value, files: &[(String, String)]) -> Vec<u8> {
+pub fn run_message(input: &Value, files: &[(String, String)], key: Option<&str>) -> Vec<u8> {
     let files: serde_json::Map<String, Value> = files
         .iter()
         .map(|(k, v)| (k.clone(), Value::String(v.clone())))
         .collect();
-    line(&json!({"op": "run", "input": input, "files": files}))
+    line(&json!({"op": "run", "input": input, "files": files, "idempotencyKey": key}))
 }
 
 /// The first thing the supervisor says to a builder: build this source.
@@ -191,6 +191,7 @@ mod tests {
             run_message(
                 &json!({"a": "line\nbreak"}),
                 &[("main.py".to_owned(), "x = 1\n".to_owned())],
+                Some("done-1"),
             ),
             build_message("a\nb"),
             fetch_reply(

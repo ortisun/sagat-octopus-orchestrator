@@ -50,6 +50,11 @@ class _Response:
 
 
 class _Octopus:
+    def __init__(self, idempotency_key=None):
+        # The same on every attempt of the same step: put it in the request of an external effect so
+        # the receiver can tell a repeat from a new request.
+        self.idempotency_key = idempotency_key
+
     def fetch(self, url, method="GET", headers=None, body=None):
         reply = _call(
             {
@@ -88,7 +93,7 @@ def _main():
         entry = getattr(module, "run", None)
         if not callable(entry):
             raise RuntimeError("the script must define run(input, octopus)")
-        value = entry(message["input"], _Octopus())
+        value = entry(message["input"], _Octopus(message.get("idempotencyKey")))
         _write({"op": "result", "value": value})
     except BaseException as error:  # noqa: BLE001 - everything the script does ends here
         code = 1

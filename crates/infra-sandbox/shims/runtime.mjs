@@ -55,7 +55,7 @@ lines.on('line', (line) => {
     return;
   }
   if (message.op === 'run') {
-    start(message.input, message.files ?? {});
+    start(message.input, message.files ?? {}, message.idempotencyKey ?? null);
   } else if (message.id !== undefined) {
     const pending = waiting.get(message.id);
     if (pending) {
@@ -66,7 +66,7 @@ lines.on('line', (line) => {
   }
 });
 
-async function start(input, files) {
+async function start(input, files, idempotencyKey) {
   let code = 0;
   try {
     // The code arrives on the channel and is written where the script can read it but not run it
@@ -82,7 +82,9 @@ async function start(input, files) {
     if (typeof entry !== 'function') {
       throw new Error('the script must export a default function');
     }
-    const value = await entry(input, octopus);
+    // The same on every attempt of the same step: put it in the request of an external effect so
+    // the receiver can tell a repeat from a new request.
+    const value = await entry(input, Object.freeze({ ...octopus, idempotencyKey }));
     await write({ op: 'result', value: value === undefined ? null : value });
   } catch (error) {
     code = 1;

@@ -23,6 +23,10 @@ pub struct BuildRequest {
     /// Empty or absent: the script has no dependencies.
     pub lockfile: Option<Lockfile>,
     pub policy: Policy,
+    /// JSON Schemas the input and the result must satisfy. They are part of the artifact: what the
+    /// code is held to is as much a part of it as the limits it runs under.
+    pub input_schema: Option<Vec<u8>>,
+    pub output_schema: Option<Vec<u8>>,
 }
 
 /// What a build made.
@@ -108,6 +112,10 @@ pub struct RunRequest {
     pub policy: Policy,
     /// Values handed to this run, to be kept out of its logs and its result.
     pub secrets_to_hide: Vec<String>,
+    /// The same on every attempt of the same step: what a script puts in the request of an external
+    /// effect so the receiver can tell a repeat from a new request. A step may run more than once
+    /// (a lease lost, a timeout) and nothing here makes an external effect happen exactly once.
+    pub idempotency_key: Option<String>,
 }
 
 /// What a run did.
@@ -159,9 +167,17 @@ pub fn digest_of(bytes: &[u8]) -> Digest {
     Digest::from_bytes(Sha256::digest(bytes).into())
 }
 
-/// What makes two builds the same build: the source, the lockfile, the toolchain and the policy,
-/// each length-prefixed so no two different tuples hash alike. A build is reused only when every
-/// one of them is identical; a change of policy therefore invalidates the cache.
+/// The contract of a script: what its input and its result must satisfy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Contract<'a> {
+    pub input_schema: Option<&'a [u8]>,
+    pub output_schema: Option<&'a [u8]>,
+}
+
+/// What makes two builds the same build: the source, the lockfile, the toolchain, the policy and
+/// the contract, each length-prefixed so no two different tuples hash alike. A build is reused only
+/// when every one of them is identical; a change of policy (or of a schema) therefore invalidates
+/// the cache.
 #[must_use]
 pub fn build_key(
     language: Language,
@@ -169,6 +185,7 @@ pub fn build_key(
     lockfile: Option<&Lockfile>,
     toolchain: &str,
     policy: &Policy,
+    contract: Contract<'_>,
 ) -> Digest {
     let mut hash = Sha256::new();
     for part in [
@@ -178,6 +195,8 @@ pub fn build_key(
         lockfile.map_or("", Lockfile::as_str).as_bytes(),
         toolchain.as_bytes(),
         policy.canonical().as_bytes(),
+        contract.input_schema.unwrap_or_default(),
+        contract.output_schema.unwrap_or_default(),
     ] {
         hash.update((part.len() as u64).to_be_bytes());
         hash.update(part);
@@ -197,7 +216,36 @@ mod tests {
             lock.map(|l| Lockfile::parse(l).expect("lockfile")).as_ref(),
             toolchain,
             policy,
+            Contract::default(),
         )
+    }
+
+    #[test]
+    fn a_schema_is_part_of_the_build_and_cannot_be_shifted_into_the_other() {
+        let policy = Policy::default();
+        let source = Source::parse("export default () => 1").expect("source");
+        let with = |input: Option<&'static [u8]>, output: Option<&'static [u8]>| {
+            build_key(
+                Language::TypeScript,
+                &source,
+                None,
+                "t",
+                &policy,
+                Contract {
+                    input_schema: input,
+                    output_schema: output,
+                },
+            )
+        };
+        let none = with(None, None);
+        assert_ne!(none, with(Some(b"{}"), None));
+        assert_ne!(none, with(None, Some(b"{}")));
+        assert_ne!(
+            with(Some(b"{}"), None),
+            with(None, Some(b"{}")),
+            "input is not output"
+        );
+        assert_ne!(with(Some(b"ab"), Some(b"c")), with(Some(b"a"), Some(b"bc")));
     }
 
     #[test]

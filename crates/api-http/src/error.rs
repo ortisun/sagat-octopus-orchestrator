@@ -446,6 +446,9 @@ fn definition_details(error: &IrError) -> Value {
             json!({ "reason": "EXPRESSION", "node": node, "field": field })
         }
         IrError::NameMismatch { .. } => json!({ "reason": "NAME_MISMATCH" }),
+        IrError::UnknownScript { digest } => {
+            json!({ "reason": "UNKNOWN_SCRIPT", "artifactDigest": digest })
+        }
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
         IrError::Invalid(_) => json!({ "reason": "GRAPH" }),

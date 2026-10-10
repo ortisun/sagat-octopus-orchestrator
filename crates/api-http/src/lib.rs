@@ -24,6 +24,7 @@ mod dto;
 mod dto_events;
 mod dto_exec;
 mod dto_gov;
+mod dto_scripts;
 pub mod error;
 pub mod exec;
 mod extract;
@@ -255,6 +256,8 @@ where
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
         + sagat_application::connectors::ConnectorStore
+        + sagat_application::scripts::ScriptStore
+        + sagat_application::scripts::RunnerStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
@@ -279,6 +282,8 @@ where
         + sagat_application::events::EventStore
         + sagat_application::outbound::OutboundStore
         + sagat_application::connectors::ConnectorStore
+        + sagat_application::scripts::ScriptStore
+        + sagat_application::scripts::RunnerStore
         + 'static,
 {
     use routes::governance as gov;
@@ -288,6 +293,7 @@ where
     let serves_events = state.events().is_some();
     let serves_outbound = state.outbound().is_some();
     let serves_connectors = state.connectors().is_some();
+    let serves_scripts = state.scripts().is_some();
     let mut router = Router::new()
         .route("/quotas", get(gov::list_tenant_quotas::<B<S, C, G>>))
         .route(
@@ -437,6 +443,105 @@ where
                 .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)),
         );
     }
+    // Without a signing key an artifact cannot be trusted: the script routes do not exist.
+    if serves_scripts {
+        use axum::routing::{get as get_, post};
+        use routes::runner as rn;
+        use routes::scripts as sc;
+        router = router
+            .merge(
+                Router::new()
+                    .route(
+                        "/namespaces/{namespace_id}/scripts",
+                        get_(sc::list_scripts::<B<S, C, G>>).post(sc::create_script::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/namespaces/{namespace_id}/scripts/{script_id}",
+                        get_(sc::get_script::<B<S, C, G>>)
+                            .patch(sc::update_script::<B<S, C, G>>)
+                            .delete(sc::delete_script::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/namespaces/{namespace_id}/scripts/{script_id}/versions",
+                        get_(sc::list_versions::<B<S, C, G>>)
+                            .post(sc::publish_version::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/namespaces/{namespace_id}/scripts/{script_id}/versions/{number}",
+                        get_(sc::get_version::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/namespaces/{namespace_id}/scripts/{script_id}/test-runs",
+                        get_(sc::list_test_runs::<B<S, C, G>>)
+                            .post(sc::create_test_run::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/namespaces/{namespace_id}/scripts/{script_id}/test-runs/{run_id}",
+                        get_(sc::get_test_run::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/namespaces/{namespace_id}/script-executions",
+                        get_(sc::list_executions::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/namespaces/{namespace_id}/script-executions/{execution_id}",
+                        get_(sc::get_execution::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-artifacts/{digest}",
+                        get_(sc::get_artifact::<B<S, C, G>>),
+                    )
+                    .layer(RequestBodyLimitLayer::new(sc::SCRIPT_MAX_BODY_BYTES)),
+            )
+            .merge(
+                Router::new()
+                    .route(
+                        "/script-runner/builds/claim",
+                        post(rn::claim_build::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/builds/{job_id}/heartbeat",
+                        post(rn::heartbeat_build::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/builds/{job_id}/complete",
+                        post(rn::complete_build::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/test-runs/claim",
+                        post(rn::claim_test::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/test-runs/{run_id}/heartbeat",
+                        post(rn::heartbeat_test::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/test-runs/{run_id}/complete",
+                        post(rn::complete_test::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/artifacts/{digest}",
+                        get_(rn::get_artifact::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/signing-key",
+                        get_(rn::signing_key::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/namespaces/{namespace_id}/egress-policy",
+                        get_(rn::egress_policy::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/namespaces/{namespace_id}/pending-activities",
+                        get_(rn::pending_activities::<B<S, C, G>>),
+                    )
+                    .route(
+                        "/script-runner/executions",
+                        post(rn::record_execution::<B<S, C, G>>),
+                    )
+                    .layer(RequestBodyLimitLayer::new(rn::RUNNER_MAX_BODY_BYTES)),
+            );
+    }
     router
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(slots),
@@ -553,7 +658,10 @@ where
 
     // The outer limit must admit the largest route; each route then enforces its own.
     let outer = HttpLimits {
-        max_body_bytes: limits.max_body_bytes.max(EXEC_MAX_BODY_BYTES),
+        max_body_bytes: limits
+            .max_body_bytes
+            .max(EXEC_MAX_BODY_BYTES)
+            .max(routes::runner::RUNNER_MAX_BODY_BYTES),
         ..limits
     };
     protect(Router::new().nest("/v1", v1), outer)

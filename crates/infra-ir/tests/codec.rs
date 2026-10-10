@@ -376,11 +376,6 @@ fn a_timer_beyond_a_year_is_rejected() {
 fn node_kinds_without_an_engine_are_refused_with_the_reason() {
     let cases = [
         (
-            "script",
-            json!({"id": "c", "type": "script", "artifactDigest": "sha256:0123456789abcdef"}),
-            "feature 005",
-        ),
-        (
             "foreach",
             json!({"id": "c", "type": "foreach", "collectionExpr": "input.items", "itemKeyExpr": "item.id", "body": "x", "maxItems": 10}),
             "any planned feature",
@@ -404,6 +399,72 @@ fn node_kinds_without_an_engine_are_refused_with_the_reason() {
             other => panic!("{kind}: {other:?}"),
         }
     }
+}
+
+// ------------------------------------------------------------------ script nodes
+
+const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+#[test]
+fn a_script_node_runs_as_the_activity_named_after_its_digest() {
+    let doc = minimal(
+        json!([{
+            "id": "c", "type": "script", "artifactDigest": DIGEST, "language": "typescript",
+            "secrets": ["payments-api-key"], "compensateWith": "undo.charge",
+            "retry": {"maxAttempts": 2}, "timeoutMs": 5000, "next": "after"
+        }, activity("after")]),
+        "c",
+    );
+    let parsed = parse(&doc).expect("a script node is executable now");
+    let node = parsed
+        .definition
+        .node(&NodeId::parse("c").expect("id"))
+        .expect("node");
+    let NodeKind::Activity {
+        activity,
+        retry,
+        compensate_with,
+        secrets,
+        ..
+    } = node.kind()
+    else {
+        panic!("a script node is an activity");
+    };
+    assert_eq!(
+        activity.as_str(),
+        format!("script.sha256-{}", &DIGEST["sha256:".len()..])
+    );
+    assert_eq!(retry.max_attempts(), 2);
+    assert_eq!(compensate_with.as_ref().map(|a| a.as_str()), Some("undo.charge"));
+    assert_eq!(secrets.iter().map(|s| s.as_str()).collect::<Vec<_>>(), vec!["payments-api-key"]);
+    // What the definition pins, for the check a publication makes.
+    let pinned: Vec<_> = parsed.definition.script_digests().into_iter().collect();
+    assert_eq!(pinned.len(), 1);
+    assert_eq!(pinned[0].as_str(), DIGEST);
+}
+
+#[test]
+fn a_script_node_pins_a_digest_and_nothing_else() {
+    for bad in [
+        json!({"id": "c", "type": "script"}),
+        json!({"id": "c", "type": "script", "artifactDigest": "sha256:0123456789abcdef"}),
+        json!({"id": "c", "type": "script", "artifactDigest": DIGEST.to_uppercase()}),
+        json!({"id": "c", "type": "script", "artifactDigest": "latest"}),
+        json!({"id": "c", "type": "script", "artifactDigest": DIGEST, "language": "cobol"}),
+        json!({"id": "c", "type": "script", "artifactDigest": DIGEST, "secrets": ["Not A Name"]}),
+    ] {
+        assert!(
+            matches!(parse(&minimal(json!([bad.clone()]), "c")), Err(IrError::Schema(_))),
+            "{bad}"
+        );
+    }
+    // An ordinary activity that happens to be called like one is not a pinned script.
+    let doc = minimal(
+        json!([{"id": "c", "type": "activity", "activity": "script.run"}]),
+        "c",
+    );
+    let parsed = parse(&doc).expect("an activity");
+    assert!(parsed.definition.script_digests().is_empty());
 }
 
 // ------------------------------------------------------------------ child workflows

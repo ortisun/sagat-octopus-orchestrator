@@ -10,4 +10,4 @@ pub mod docker;
 pub mod lockfile;
 pub mod protocol;
 
-pub use docker::{DockerSandbox, Images};
+pub use docker::{DockerSandbox, Images, artifact_contract, artifact_policy};

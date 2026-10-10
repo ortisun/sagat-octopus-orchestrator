@@ -984,6 +984,20 @@ impl WorkflowDefinition {
         self.nodes().flat_map(|node| node.secrets()).collect()
     }
 
+    /// The artifact of every script any node runs, once each: the digest in the name of the
+    /// activity a `script` node becomes.
+    #[must_use]
+    pub fn script_digests(&self) -> BTreeSet<crate::scripts::Digest> {
+        self.nodes()
+            .filter_map(|node| match &node.kind {
+                NodeKind::Activity { activity, .. } => {
+                    crate::scripts::digest_of_activity(activity.as_str())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// How many nodes the author wrote.
     #[must_use]
     pub const fn len(&self) -> usize {

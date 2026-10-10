@@ -238,6 +238,7 @@ CREATE INDEX script_test_runs_claim_idx ON script_test_runs (tenant_id, created_
 CREATE INDEX script_test_runs_namespace_idx ON script_test_runs (tenant_id, namespace_id)
     WHERE status IN ('QUEUED', 'RUNNING');
 CREATE INDEX script_test_runs_listing_idx ON script_test_runs (tenant_id, script_id, id DESC);
+CREATE INDEX script_test_runs_purge_idx ON script_test_runs (finished_at) WHERE finished_at IS NOT NULL;
 
 -- What a published script did, once per run, node and attempt, kept until `expires_at`. The log is
 -- redacted and bounded; the result is the step's own output and is not copied here.

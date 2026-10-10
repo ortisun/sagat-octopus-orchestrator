@@ -140,6 +140,10 @@ pub trait MaintenanceStore: Send + Sync {
     /// Deletes expired worker sessions; returns how many.
     fn purge_sessions(&self) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
+    /// Deletes up to `limit` of the records scripts keep for a while — executions whose retention
+    /// ended, test runs finished longer ago than their script's retention — returns how many.
+    fn purge_script_records(&self, limit: u32) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// Deletes up to `limit` outbox messages delivered more than `older_than` ago; returns how
     /// many. Undelivered messages are never deleted.
     fn purge_outbox(

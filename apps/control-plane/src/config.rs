@@ -225,6 +225,84 @@ pub fn read_secrets(
     }
 }
 
+/// What serving scripts needs: the key that signs artifacts and the most a script may be given.
+#[derive(Clone)]
+pub struct ScriptsConfig {
+    /// The private key, PKCS#8. Never printed.
+    signing_key: Vec<u8>,
+    pub ceiling: sagat_domain::scripts::Policy,
+}
+
+impl ScriptsConfig {
+    #[must_use]
+    pub fn new(signing_key: Vec<u8>, ceiling: sagat_domain::scripts::Policy) -> Self {
+        Self {
+            signing_key,
+            ceiling,
+        }
+    }
+
+    /// The key that signs artifacts.
+    ///
+    /// # Errors
+    /// [`ConfigError::Invalid`] if the stored bytes are not a key (they were checked when read).
+    pub fn signer(&self) -> Result<sagat_application::script_signing::Signer, ConfigError> {
+        sagat_application::script_signing::Signer::from_pkcs8(&self.signing_key).map_err(|_| {
+            ConfigError::Invalid {
+                name: "SAGAT_SCRIPT_SIGNING_KEY",
+                reason: "not an Ed25519 key in PKCS#8 form".to_owned(),
+            }
+        })
+    }
+}
+
+impl std::fmt::Debug for ScriptsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The key is not shown, nor anything derived from it.
+        f.debug_struct("ScriptsConfig")
+            .field("ceiling", &self.ceiling)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The script settings, from `SAGAT_SCRIPT_SIGNING_KEY` and `SAGAT_SCRIPT_CEILING`. Absent key
+/// means scripts are off: without a signature an artifact cannot be trusted. The error never
+/// contains the value.
+///
+/// # Errors
+/// [`ConfigError::Invalid`] when the key or the ceiling is not usable.
+pub fn read_scripts(get: Lookup<'_>) -> Result<Option<ScriptsConfig>, ConfigError> {
+    use base64::Engine as _;
+    let ceiling = match get("SAGAT_SCRIPT_CEILING").map(|v| v.trim().to_owned()) {
+        None => sagat_domain::scripts::Policy::default(),
+        Some(text) if text.is_empty() => sagat_domain::scripts::Policy::default(),
+        Some(text) => sagat_domain::scripts::Policy::parse_canonical(&text).map_err(|e| {
+            ConfigError::Invalid {
+                name: "SAGAT_SCRIPT_CEILING",
+                reason: e.to_string(),
+            }
+        })?,
+    };
+    let Some(key) = get("SAGAT_SCRIPT_SIGNING_KEY")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(None);
+    };
+    let invalid = || ConfigError::Invalid {
+        name: "SAGAT_SCRIPT_SIGNING_KEY",
+        reason: "not an Ed25519 key in PKCS#8 form, base64 encoded".to_owned(),
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(key)
+        .map_err(|_| invalid())?;
+    sagat_application::script_signing::Signer::from_pkcs8(&bytes).map_err(|_| invalid())?;
+    Ok(Some(ScriptsConfig {
+        signing_key: bytes,
+        ceiling,
+    }))
+}
+
 /// How tokens are verified, from the `SAGAT_OIDC_*` variables. Every process that authenticates
 /// callers (the API and the worker protocol) reads it the same way.
 ///
@@ -265,6 +343,9 @@ pub struct ServeConfig {
     /// The key ring that seals secrets (`SAGAT_SECRETS_KEYS`); without it the secret routes do not
     /// exist.
     pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
+    /// The key that signs artifacts and the most a script may be given; without a key the script
+    /// routes do not exist.
+    pub scripts: Option<ScriptsConfig>,
 }
 
 impl ServeConfig {
@@ -404,6 +485,7 @@ impl ServeConfig {
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
             secrets,
+            scripts: read_scripts(get)?,
         })
     }
 }

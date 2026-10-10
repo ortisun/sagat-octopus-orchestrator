@@ -28,7 +28,7 @@ use sagat_application::sandbox::{
     BuildFailure, BuildRequest, Built, HostCalls, HttpRequest, MAX_RESULT_BYTES, Refusal,
     RunOutcome, RunRequest, Sandbox,
 };
-use sagat_domain::scripts::{Failure, Language, Limits, redact};
+use sagat_domain::scripts::{Failure, Language, Limits, Policy, redact};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::io::AsyncWriteExt as _;
@@ -67,6 +67,11 @@ const LOG_FLOOD_FACTOR: usize = 16;
 /// A line of the channel is at most the largest result plus its framing.
 const MAX_LINE: usize = MAX_RESULT_BYTES + 16 * 1024;
 const KILL_GRACE: Duration = Duration::from_secs(2);
+/// Requests and secrets a script may ask its supervisor for in one run. Past it every ask is refused:
+/// a script in a loop must not make the supervisor do the same work as many times as it can ask.
+const MAX_HOST_CALLS: usize = 100;
+/// Distinct refusals kept for the record of a run.
+const MAX_DENIED: usize = 32;
 /// How long the log is read after the script has said its last word: standard output and standard
 /// error reach the supervisor by separate paths, so the end of one can arrive before the end of the
 /// other. The shims exit right after their last message, so the stream normally ends at once.
@@ -287,6 +292,9 @@ impl DockerSandbox {
             driven.unavailable = true;
             return driven;
         }
+        // If this future is dropped (the step was cancelled, the runner is stopping) the container
+        // is still removed, in the background: a script never outlives the call that ran it.
+        let guard = Removal::new(self.docker.clone(), name.clone());
         let outcome = self
             .drive_created(&name, &job, host, began, &mut driven)
             .await;
@@ -294,6 +302,7 @@ impl DockerSandbox {
             driven.unavailable = true;
         }
         self.remove(&name).await;
+        guard.disarm();
         driven.wall = began.elapsed();
         driven
     }
@@ -335,6 +344,7 @@ impl DockerSandbox {
         let mut line: Vec<u8> = Vec::new();
         let mut secrets_handed: Vec<String> = Vec::new();
         let mut stderr_seen = 0_usize;
+        let mut host_calls = 0_usize;
         let mut drain_until: Option<tokio::time::Instant> = None;
         'read: loop {
             let limit = drain_until.map_or(deadline, |end| end.min(deadline));
@@ -378,6 +388,15 @@ impl DockerSandbox {
                         let parsed = protocol::parse(&line);
                         line.clear();
                         let Some(parsed) = parsed else { continue };
+                        if let Message::Fetch { id, .. } | Message::Secret { id, .. } = &parsed {
+                            host_calls += 1;
+                            if host_calls > MAX_HOST_CALLS {
+                                deny(&mut driven.denied, "host calls over the limit".to_owned());
+                                let _ = attached.input.write_all(&protocol::refusal(*id, "denied")).await;
+                                let _ = attached.input.flush().await;
+                                continue;
+                            }
+                        }
                         match parsed {
                             Message::Ready => {
                                 driven.start = began.elapsed();
@@ -399,7 +418,7 @@ impl DockerSandbox {
                             Message::Secret { id, name: secret } => {
                                 let reply = match host {
                                     None => {
-                                        driven.denied.push(format!("secret {secret}"));
+                                        deny(&mut driven.denied, format!("secret {secret}"));
                                         protocol::refusal(id, "denied")
                                     }
                                     Some(host) => match tokio::time::timeout_at(
@@ -417,7 +436,7 @@ impl DockerSandbox {
                                             protocol::secret_reply(id, &value)
                                         }
                                         Ok(Err(Refusal::Denied)) => {
-                                            driven.denied.push(format!("secret {secret}"));
+                                            deny(&mut driven.denied, format!("secret {secret}"));
                                             protocol::refusal(id, "denied")
                                         }
                                         Ok(Err(Refusal::Failed)) => {
@@ -481,14 +500,14 @@ impl DockerSandbox {
     ) -> Option<Vec<u8>> {
         let target = destination(&request.url);
         let Some(host) = host else {
-            driven.denied.push(format!("fetch {target}"));
+            deny(&mut driven.denied, format!("fetch {target}"));
             return Some(protocol::refusal(id, "denied"));
         };
         match tokio::time::timeout_at(deadline, host.fetch(request)).await {
             Err(_) => None,
             Ok(Ok(reply)) => Some(protocol::fetch_reply(id, &reply)),
             Ok(Err(Refusal::Denied)) => {
-                driven.denied.push(format!("fetch {target}"));
+                deny(&mut driven.denied, format!("fetch {target}"));
                 Some(protocol::refusal(id, "denied"))
             }
             Ok(Err(Refusal::Failed)) => Some(protocol::refusal(id, "unavailable")),
@@ -513,6 +532,45 @@ impl DockerSandbox {
     }
 }
 
+/// Removes a container when dropped, unless it was disarmed because the caller removed it.
+struct Removal {
+    docker: Docker,
+    name: String,
+    armed: bool,
+}
+
+impl Removal {
+    const fn new(docker: Docker, name: String) -> Self {
+        Self {
+            docker,
+            name,
+            armed: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Removal {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let (docker, name) = (self.docker.clone(), self.name.clone());
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let options = RemoveContainerOptionsBuilder::default()
+                    .force(true)
+                    .v(true)
+                    .build();
+                let _ = docker.remove_container(&name, Some(options)).await;
+            });
+        }
+    }
+}
+
 struct Sampler(tokio::task::JoinHandle<Option<u64>>);
 
 impl Sampler {
@@ -522,6 +580,13 @@ impl Sampler {
             Ok(Ok(peak)) => peak,
             _ => None,
         }
+    }
+}
+
+/// Notes what a script was refused, once.
+fn deny(denied: &mut Vec<String>, what: String) {
+    if denied.len() < MAX_DENIED && !denied.contains(&what) {
+        denied.push(what);
     }
 }
 
@@ -554,15 +619,53 @@ const RUNTIME_PY: &str = include_str!("../shims/runtime.py");
 const BUILD_MJS: &str = include_str!("../shims/build.mjs");
 const BUILD_PY: &str = include_str!("../shims/build.py");
 
-fn artifact_json(language: Language, entry: &str, files: &[(String, String)]) -> Vec<u8> {
+/// The artifact: the code to run and the rules it was built under. The rules are part of the bytes
+/// and so of the digest and the signature, which is what lets a digest decide what limits a script
+/// runs under: two builds of the same code under other limits are two artifacts.
+fn artifact_json(
+    language: Language,
+    policy: &Policy,
+    contract: (Option<&[u8]>, Option<&[u8]>),
+    entry: &str,
+    files: &[(String, String)],
+) -> Vec<u8> {
+    let schema = |bytes: Option<&[u8]>| bytes.and_then(|b| serde_json::from_slice::<Value>(b).ok());
     let files: std::collections::BTreeMap<&str, &str> = files
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    serde_json::to_vec(
-        &json!({"v": 1, "language": language.as_str(), "entry": entry, "files": files}),
-    )
+    serde_json::to_vec(&json!({
+        "v": 1,
+        "language": language.as_str(),
+        "policy": policy.canonical(),
+        "inputSchema": schema(contract.0),
+        "outputSchema": schema(contract.1),
+        "entry": entry,
+        "files": files,
+    }))
     .unwrap_or_default()
+}
+
+/// The schemas an artifact was built with: what its input and its result must satisfy.
+#[must_use]
+pub fn artifact_contract(artifact: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let Ok(value) = serde_json::from_slice::<Value>(artifact) else {
+        return (None, None);
+    };
+    let schema = |key: &str| {
+        value
+            .get(key)
+            .filter(|v| v.is_object())
+            .and_then(|v| serde_json::to_vec(v).ok())
+    };
+    (schema("inputSchema"), schema("outputSchema"))
+}
+
+/// The rules an artifact was built under.
+#[must_use]
+pub fn artifact_policy(artifact: &[u8]) -> Option<Policy> {
+    let value: Value = serde_json::from_slice(artifact).ok()?;
+    Policy::parse_canonical(value.get("policy")?.as_str()?).ok()
 }
 
 fn parse_artifact(bytes: &[u8], language: Language) -> Option<Vec<(String, String)>> {
@@ -634,7 +737,16 @@ impl Sandbox for DockerSandbox {
         let log = redact(&String::from_utf8_lossy(&driven.log), &[]);
         match driven.message {
             Some(Message::Built { entry, files }) => {
-                let artifact = artifact_json(language, &entry, &files);
+                let artifact = artifact_json(
+                    language,
+                    &request.policy,
+                    (
+                        request.input_schema.as_deref(),
+                        request.output_schema.as_deref(),
+                    ),
+                    &entry,
+                    &files,
+                );
                 let sbom = serde_json::to_vec(&json!({
                     "bomFormat": "CycloneDX", "specVersion": "1.5",
                     "metadata": {"component": {"type": "application", "name": "script", "version": "1"}},
@@ -718,7 +830,7 @@ impl Sandbox for DockerSandbox {
         let job = Job {
             image,
             command: command.map(str::to_owned).to_vec(),
-            first_message: protocol::run_message(&input, &files),
+            first_message: protocol::run_message(&input, &files, request.idempotency_key.as_deref()),
             limits: request.policy.limits,
         };
         let driven = self.drive(job, Some(host)).await;
@@ -870,10 +982,51 @@ mod tests {
     fn an_artifact_names_only_plain_files_and_only_its_own_language() {
         let ok = artifact_json(
             Language::TypeScript,
+            &Policy::default(),
+            (None, None),
             "main.mjs",
             &[("main.mjs".to_owned(), "1".to_owned())],
         );
         assert!(parse_artifact(&ok, Language::TypeScript).is_some());
+        assert_eq!(artifact_policy(&ok), Some(Policy::default()));
+        let tighter = Policy {
+            limits: Limits::new(
+                64 * 1024 * 1024,
+                500,
+                std::time::Duration::from_secs(5),
+                16,
+                4096,
+                1024 * 1024,
+            )
+            .expect("limits"),
+            ..Policy::default()
+        };
+        let other = artifact_json(
+            Language::TypeScript,
+            &tighter,
+            (Some(br#"{"type":"object"}"#), Some(br#"{"type":"string"}"#)),
+            "main.mjs",
+            &[("main.mjs".to_owned(), "1".to_owned())],
+        );
+        assert_ne!(
+            ok, other,
+            "the same code under other limits is another artifact"
+        );
+        assert_eq!(artifact_policy(&other), Some(tighter));
+        assert_eq!(
+            artifact_contract(&other),
+            (
+                Some(br#"{"type":"object"}"#.to_vec()),
+                Some(br#"{"type":"string"}"#.to_vec())
+            )
+        );
+        assert_eq!(artifact_contract(&ok), (None, None));
+        assert_eq!(artifact_policy(b"not json"), None);
+        assert_eq!(
+            artifact_policy(br#"{"v":1,"policy":"v1;memory=1"}"#),
+            None,
+            "a policy that does not hold is no policy"
+        );
         assert!(
             parse_artifact(&ok, Language::Python).is_none(),
             "another language's artifact"

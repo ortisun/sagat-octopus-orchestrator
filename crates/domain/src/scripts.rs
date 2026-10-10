@@ -679,6 +679,9 @@ pub enum Failure {
     Unavailable,
     /// A test run whose source does not build: the first message of the toolchain is the log.
     BuildRejected,
+    /// The artifact of a step is not one the platform signed (or it does not match its digest):
+    /// nothing was run.
+    Untrusted,
 }
 
 impl Failure {
@@ -694,6 +697,7 @@ impl Failure {
             Self::NoResult => "SCRIPT_NO_RESULT",
             Self::Unavailable => "SCRIPT_SANDBOX_UNAVAILABLE",
             Self::BuildRejected => "SCRIPT_BUILD_REJECTED",
+            Self::Untrusted => "SCRIPT_UNTRUSTED_ARTIFACT",
         }
     }
 
@@ -710,6 +714,7 @@ impl Failure {
             Self::NoResult,
             Self::Unavailable,
             Self::BuildRejected,
+            Self::Untrusted,
         ]
         .into_iter()
         .find(|failure| failure.code() == code)

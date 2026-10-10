@@ -9,6 +9,7 @@ use std::time::Duration;
 use sagat_application::definitions::{IrError, IrIssue};
 use sagat_domain::identity::Slug;
 use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, SagaCancelPolicy};
+use sagat_domain::scripts::{Digest, Language, activity_of};
 use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
 use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{
@@ -71,7 +72,6 @@ fn reference(node: &Map<String, Value>, field: &str, at: &str) -> Result<Option<
 /// Why a node kind that exists in the schema is not executed yet.
 fn unsupported(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "script" => "inline scripts arrive with feature 005",
         "foreach" => "bounded loops are not part of any planned feature yet",
         "humanApproval" => "human approval is not part of any planned feature yet",
         _ => return None,
@@ -212,6 +212,28 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
                 .transpose()?,
             secrets: secrets(node, at)?,
         },
+        "script" => {
+            // A script runs as an activity named after the digest of its artifact: the step names
+            // the exact code it runs, and a worker bound to `script.*` is the sandbox's runner.
+            let digest = Digest::parse(text(node, "artifactDigest", at)?)
+                .map_err(|e| issue(format!("{at}/artifactDigest"), e.to_string()))?;
+            if let Some(language) = optional_text(node, "language", at)? {
+                language
+                    .parse::<Language>()
+                    .map_err(|e| issue(format!("{at}/language"), e.to_string()))?;
+            }
+            NodeKind::Activity {
+                activity: ActivityName::parse(&activity_of(&digest)).map_err(IrError::Invalid)?,
+                retry: retry(node, at)?,
+                compensate_with: optional_text(node, "compensateWith", at)?
+                    .map(ActivityName::parse)
+                    .transpose()
+                    .map_err(IrError::Invalid)?,
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: secrets(node, at)?,
+            }
+        }
         "timer" => NodeKind::Timer {
             delay: millis(node, "durationMs", at)?,
         },

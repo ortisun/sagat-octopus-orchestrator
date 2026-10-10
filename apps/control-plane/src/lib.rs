@@ -15,6 +15,7 @@ use sagat_application::clock::SystemClock;
 use sagat_application::connectors::ConnectorService;
 use sagat_application::definitions::{DefinitionService, IrCodec};
 use sagat_application::egress::EgressService;
+use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::events::EventService;
 use sagat_application::execution::{DefinitionCache, Engine};
@@ -22,6 +23,7 @@ use sagat_application::identity::IdentityService;
 use sagat_application::outbound::OutboundService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
+use sagat_application::scripts::{RunnerService, ScriptService};
 use sagat_application::secrets::SecretService;
 use sagat_domain::identity::{Membership, Slug, Subject, Tenant, TenantId};
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
@@ -387,6 +389,24 @@ pub async fn serve_with_admin(
                 Arc::new(JsonEvaluator),
             ));
     }
+    // An artifact is only trusted if the platform signed it, so without a key there are no scripts.
+    if let Some(scripts) = &serve.scripts {
+        governance = governance.with_scripts(
+            ScriptService::new(
+                executions.clone(),
+                SystemClock,
+                sagat_infra_schema::Schemas,
+                scripts.ceiling,
+            ),
+            RunnerService::new(
+                executions.clone(),
+                SystemClock,
+                SystemEntropy,
+                scripts.signer()?,
+                scripts.ceiling,
+            ),
+        );
+    }
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
@@ -516,6 +536,17 @@ pub async fn shutdown_signal() {
         () = interrupt => {},
         () = terminate => {},
     }
+}
+
+/// A new key for `SAGAT_SCRIPT_SIGNING_KEY`: an Ed25519 key in PKCS#8 form, base64 encoded.
+///
+/// # Errors
+/// [`RunError::Refused`] if the system's randomness fails.
+pub fn new_script_key() -> Result<String, RunError> {
+    use base64::Engine as _;
+    let pkcs8 = sagat_application::script_signing::Signer::generate_pkcs8()
+        .map_err(|_| RunError::Refused("the system could not make a key"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(pkcs8))
 }
 
 /// Probes `GET /v1/health` on `addr` with a plain HTTP/1.1 request; used as the container health

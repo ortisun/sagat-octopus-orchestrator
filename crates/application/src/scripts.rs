@@ -9,6 +9,7 @@
 //! database. They meet in the records and in the leases that fence a job to one holder at a time.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -29,7 +30,7 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, ConflictKind, StoreError};
 use crate::identity::RequestContext;
 use crate::quotas::QuotaLookup;
-use crate::sandbox::{MAX_RESULT_BYTES, build_key, digest_of};
+use crate::sandbox::{Contract, MAX_RESULT_BYTES, build_key, digest_of};
 use crate::script_signing::Signer;
 
 /// Longest input a test run takes, in bytes: what a result may be, so a script can return its input.
@@ -173,6 +174,19 @@ pub struct ArtifactRecord {
     pub created_at: OffsetDateTime,
 }
 
+/// An artifact as an author sees it: what makes it trustworthy, not its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactSummary {
+    pub digest: Digest,
+    pub language: Language,
+    pub size: u64,
+    pub signature: Vec<u8>,
+    pub key_id: String,
+    pub sbom: Vec<u8>,
+    pub toolchain: String,
+    pub created_at: OffsetDateTime,
+}
+
 /// A trial of a draft in the sandbox, without publishing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestRunRecord {
@@ -200,6 +214,43 @@ pub struct TestRunRecord {
     pub created_by: String,
     pub created_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+}
+
+/// A test run as a listing shows it: how it went, not what it said or returned. The record has the
+/// rest, one at a time, so a page is always small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestRunSummary {
+    pub id: TestRunId,
+    pub script_id: ScriptId,
+    pub language: Language,
+    pub status: JobStatus,
+    pub failure: Option<Failure>,
+    pub wall_ms: Option<u64>,
+    pub start_ms: Option<u64>,
+    pub created_by: String,
+    pub created_at: OffsetDateTime,
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// An execution as a listing shows it: no log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionSummary {
+    pub id: Uuid,
+    pub digest: Digest,
+    pub run_id: Option<Uuid>,
+    pub node: Option<String>,
+    pub attempt: Option<u32>,
+    pub status: ExecutionStatus,
+    pub failure: Option<Failure>,
+    pub exit_code: Option<i64>,
+    pub log_truncated: bool,
+    pub denied: Vec<String>,
+    pub wall_ms: u64,
+    pub start_ms: u64,
+    pub memory_peak_bytes: Option<u64>,
+    pub trace_id: Option<String>,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
 }
 
 /// How an execution ended.
@@ -399,9 +450,19 @@ pub trait SchemaChecker: Send + Sync {
     fn check(&self, schema: &[u8]) -> Result<(), SchemaProblem>;
 }
 
+/// What a workflow that pins scripts is checked against when it is published.
+pub trait ScriptLookup: Send + Sync {
+    /// The digests among `digests` that no ready version of the tenant has built.
+    fn missing_artifacts(
+        &self,
+        tenant: TenantId,
+        digests: &[Digest],
+    ) -> impl Future<Output = Result<Vec<Digest>, StoreError>> + Send;
+}
+
 /// Storage port of the scripts, as the people who use them see them. Implemented by
 /// `sagat-infra-postgres`.
-pub trait ScriptStore: NamespaceDirectory + QuotaLookup {
+pub trait ScriptStore: NamespaceDirectory + QuotaLookup + ScriptLookup {
     /// Creates a script. The name is unique in the namespace, and the namespace holds at most
     /// `limit` scripts: both are decided in the same transaction as the insert.
     fn create_script(
@@ -496,9 +557,9 @@ pub trait ScriptStore: NamespaceDirectory + QuotaLookup {
         namespace: NamespaceId,
         script: ScriptId,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<TestRunRecord>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<TestRunSummary>, StoreError>> + Send;
 
-    /// What ran, newest first, optionally of one artifact.
+    /// What ran, newest first, optionally of one artifact. Without the logs.
     fn executions(
         &self,
         tenant: TenantId,
@@ -506,15 +567,21 @@ pub trait ScriptStore: NamespaceDirectory + QuotaLookup {
         digest: Option<&Digest>,
         before: Option<Uuid>,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<ExecutionRecord>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<ExecutionSummary>, StoreError>> + Send;
 
-    /// The digests among `digests` that no ready version of the tenant has built (for the check a
-    /// workflow makes when it is published).
-    fn missing_artifacts(
+    fn execution(
         &self,
         tenant: TenantId,
-        digests: &[Digest],
-    ) -> impl Future<Output = Result<Vec<Digest>, StoreError>> + Send;
+        namespace: NamespaceId,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<ExecutionRecord>, StoreError>> + Send;
+
+    /// What is known of an artifact, without its bytes.
+    fn artifact_summary(
+        &self,
+        tenant: TenantId,
+        digest: &Digest,
+    ) -> impl Future<Output = Result<Option<ArtifactSummary>, StoreError>> + Send;
 }
 
 /// Storage port of the runner's side. Implemented by `sagat-infra-postgres`. Every method is
@@ -619,6 +686,15 @@ pub trait RunnerStore: NamespaceDirectory {
         digest: &Digest,
     ) -> impl Future<Output = Result<Option<ArtifactRecord>, StoreError>> + Send;
 
+    /// The script activities that have a step ready to run in the namespace, oldest name first, at
+    /// most `limit`: what a runner must advertise to be handed those steps.
+    fn pending_activities(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
     /// How long the executions of the artifact are kept, by the newest version that built it.
     fn retention_of(
         &self,
@@ -717,26 +793,25 @@ pub struct Published {
 }
 
 /// The use cases of the people who write scripts.
-pub struct ScriptService<S, C, K> {
+pub struct ScriptService<S, C> {
     store: S,
     clock: C,
-    schemas: K,
+    schemas: Arc<dyn SchemaChecker>,
     ceiling: Policy,
 }
 
-impl<S, C, K> ScriptService<S, C, K>
+impl<S, C> ScriptService<S, C>
 where
     S: ScriptStore,
     C: Clock,
-    K: SchemaChecker,
 {
     /// `ceiling` is the most any script may be given: what the platform's sandbox can afford.
     #[must_use]
-    pub const fn new(store: S, clock: C, schemas: K, ceiling: Policy) -> Self {
+    pub fn new(store: S, clock: C, schemas: impl SchemaChecker + 'static, ceiling: Policy) -> Self {
         Self {
             store,
             clock,
-            schemas,
+            schemas: Arc::new(schemas),
             ceiling,
         }
     }
@@ -1179,7 +1254,7 @@ where
         id: ScriptId,
         limit: u32,
         ctx: &RequestContext,
-    ) -> Result<Vec<TestRunRecord>, AppError> {
+    ) -> Result<Vec<TestRunSummary>, AppError> {
         principal.authorize(Permission::ScriptWrite)?;
         self.load(principal, namespace, id, ctx).await?;
         Ok(self
@@ -1205,7 +1280,7 @@ where
         before: Option<Uuid>,
         limit: u32,
         ctx: &RequestContext,
-    ) -> Result<Vec<ExecutionRecord>, AppError> {
+    ) -> Result<Vec<ExecutionSummary>, AppError> {
         principal.authorize(Permission::ScriptRead)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         Ok(self
@@ -1220,17 +1295,39 @@ where
             .await?)
     }
 
-    /// The digests among `digests` that are not a ready artifact of the caller's tenant. What a
-    /// workflow that pins scripts is checked against when it is published.
+    /// One execution, with its log.
     ///
     /// # Errors
-    /// A store failure.
-    pub async fn missing(
+    /// [`AppError::Forbidden`] without `script:read`; [`AppError::NotFound`].
+    pub async fn execution(
         &self,
-        tenant: TenantId,
-        digests: &[Digest],
-    ) -> Result<Vec<Digest>, AppError> {
-        Ok(self.store.missing_artifacts(tenant, digests).await?)
+        principal: &Principal,
+        namespace: NamespaceId,
+        id: Uuid,
+        ctx: &RequestContext,
+    ) -> Result<ExecutionRecord, AppError> {
+        principal.authorize(Permission::ScriptRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        self.store
+            .execution(principal.tenant_id(), namespace, id)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
+
+    /// The signature, bill of materials and toolchain of an artifact of the tenant.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `script:read`; [`AppError::NotFound`].
+    pub async fn artifact(
+        &self,
+        principal: &Principal,
+        digest: &Digest,
+    ) -> Result<ArtifactSummary, AppError> {
+        principal.authorize(Permission::ScriptRead)?;
+        self.store
+            .artifact_summary(principal.tenant_id(), digest)
+            .await?
+            .ok_or(AppError::NotFound)
     }
 
     fn audit(
@@ -1272,6 +1369,8 @@ pub struct BuildAssignment {
     pub lockfile: Option<Lockfile>,
     /// What the build is held to: what the author asked, under the ceiling of the platform.
     pub policy: Policy,
+    pub input_schema: Option<Vec<u8>>,
+    pub output_schema: Option<Vec<u8>>,
     pub build_key: Digest,
 }
 
@@ -1290,26 +1389,31 @@ pub struct ArtifactView {
 }
 
 /// The use cases of the sandbox's runner.
-pub struct RunnerService<S, C, E> {
+pub struct RunnerService<S, C> {
     store: S,
     clock: C,
-    entropy: E,
+    entropy: Arc<dyn Entropy>,
     signer: Signer,
     ceiling: Policy,
 }
 
-impl<S, C, E> RunnerService<S, C, E>
+impl<S, C> RunnerService<S, C>
 where
     S: RunnerStore,
     C: Clock,
-    E: Entropy,
 {
     #[must_use]
-    pub const fn new(store: S, clock: C, entropy: E, signer: Signer, ceiling: Policy) -> Self {
+    pub fn new(
+        store: S,
+        clock: C,
+        entropy: impl Entropy + 'static,
+        signer: Signer,
+        ceiling: Policy,
+    ) -> Self {
         Self {
             store,
             clock,
-            entropy,
+            entropy: Arc::new(entropy),
             signer,
             ceiling,
         }
@@ -1364,6 +1468,7 @@ where
                 version.draft.lockfile.as_ref(),
                 toolchain,
                 &policy,
+                contract_of(&version.draft),
             );
             if let Some(artifact) = self.store.built_with(principal.tenant_id(), &key).await? {
                 let audit = self.built_audit(principal, version, &artifact, "reused", ctx);
@@ -1400,6 +1505,8 @@ where
                 source: version.draft.source.clone(),
                 lockfile: version.draft.lockfile.clone(),
                 policy,
+                input_schema: version.draft.input_schema.clone(),
+                output_schema: version.draft.output_schema.clone(),
                 build_key: key,
             }));
         }
@@ -1473,6 +1580,7 @@ where
                     version.draft.lockfile.as_ref(),
                     &toolchain,
                     &policy,
+                    contract_of(&version.draft),
                 );
                 let digest = digest_of(&artifact);
                 let signature = self.signer.sign(tenant, &digest, version.language);
@@ -1658,6 +1766,25 @@ where
         Ok(ArtifactView { artifact })
     }
 
+    /// The names of the script activities the namespace has steps ready for (at most 256, the most a
+    /// worker may advertise at once).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `script:execute`; [`AppError::NotFound`].
+    pub async fn pending_activities(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<String>, AppError> {
+        principal.authorize(Permission::ScriptExecute)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        Ok(self
+            .store
+            .pending_activities(principal.tenant_id(), namespace, 256)
+            .await?)
+    }
+
     /// Keeps the record of an execution, and audits what the script was refused (once per script,
     /// kind and destination in a window: a script in a loop cannot grow the trail).
     ///
@@ -1746,6 +1873,13 @@ where
             self.clock.now(),
         )
         .with_reason(format!("{how}: {artifact}"))
+    }
+}
+
+fn contract_of(draft: &Draft) -> Contract<'_> {
+    Contract {
+        input_schema: draft.input_schema.as_deref(),
+        output_schema: draft.output_schema.as_deref(),
     }
 }
 

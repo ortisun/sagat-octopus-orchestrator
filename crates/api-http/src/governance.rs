@@ -11,6 +11,7 @@ use sagat_application::events::{EventService, EventStore};
 use sagat_application::identity::IdentityStore;
 use sagat_application::outbound::{OutboundService, OutboundStore};
 use sagat_application::quotas::{QuotaService, QuotaStore};
+use sagat_application::scripts::{RunnerService, RunnerStore, ScriptService, ScriptStore};
 use sagat_application::secrets::{SecretService, SecretStore};
 
 use crate::concurrency::TenantConcurrency;
@@ -27,6 +28,8 @@ pub trait Governance: Core {
         + EventStore
         + OutboundStore
         + ConnectorStore
+        + ScriptStore
+        + RunnerStore
         + 'static;
     type Clock: Clock + 'static;
 
@@ -44,6 +47,11 @@ pub trait Governance: Core {
     /// `None` when the instance has no key ring (connectors read brokers with secrets): the
     /// connector routes are then not served at all.
     fn connectors(&self) -> Option<&ConnectorService<Self::Store, Self::Clock>>;
+    /// `None` when the instance has no signing key (an artifact cannot be trusted without one): the
+    /// script routes are then not served at all.
+    fn scripts(&self) -> Option<&ScriptService<Self::Store, Self::Clock>>;
+    /// `None` when the instance has no signing key: the runner routes are then not served at all.
+    fn runner(&self) -> Option<&RunnerService<Self::Store, Self::Clock>>;
 }
 
 /// The identity state plus the governance services, which share one store `G`.
@@ -56,6 +64,8 @@ pub struct GovState<S, C, G> {
     events: Option<Arc<EventService<G, C>>>,
     outbound: Option<Arc<OutboundService<G, C>>>,
     connectors: Option<Arc<ConnectorService<G, C>>>,
+    scripts: Option<Arc<ScriptService<G, C>>>,
+    runner: Option<Arc<RunnerService<G, C>>>,
 }
 
 impl<S, C, G> GovState<S, C, G> {
@@ -75,6 +85,8 @@ impl<S, C, G> GovState<S, C, G> {
             events: None,
             outbound: None,
             connectors: None,
+            scripts: None,
+            runner: None,
         }
     }
 
@@ -89,6 +101,19 @@ impl<S, C, G> GovState<S, C, G> {
     #[must_use]
     pub fn with_connectors(mut self, connectors: ConnectorService<G, C>) -> Self {
         self.connectors = Some(Arc::new(connectors));
+        self
+    }
+
+    /// Serves the script routes (drafts, versions, test runs, executions) and, with `runner`, the
+    /// routes of the sandbox's runner.
+    #[must_use]
+    pub fn with_scripts(
+        mut self,
+        scripts: ScriptService<G, C>,
+        runner: RunnerService<G, C>,
+    ) -> Self {
+        self.scripts = Some(Arc::new(scripts));
+        self.runner = Some(Arc::new(runner));
         self
     }
 
@@ -118,6 +143,8 @@ impl<S, C, G> Clone for GovState<S, C, G> {
             events: self.events.clone(),
             outbound: self.outbound.clone(),
             connectors: self.connectors.clone(),
+            scripts: self.scripts.clone(),
+            runner: self.runner.clone(),
         }
     }
 }
@@ -164,6 +191,8 @@ where
         + EventStore
         + OutboundStore
         + ConnectorStore
+        + ScriptStore
+        + RunnerStore
         + 'static,
 {
     type Store = G;
@@ -195,5 +224,13 @@ where
 
     fn connectors(&self) -> Option<&ConnectorService<G, C>> {
         self.connectors.as_deref()
+    }
+
+    fn scripts(&self) -> Option<&ScriptService<G, C>> {
+        self.scripts.as_deref()
+    }
+
+    fn runner(&self) -> Option<&RunnerService<G, C>> {
+        self.runner.as_deref()
     }
 }

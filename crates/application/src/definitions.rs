@@ -20,6 +20,7 @@ use crate::dispatch::{TriggerRegistration, triggers_of};
 use crate::error::{AppError, StoreError};
 use crate::identity::{Page, PageRequest, RequestContext};
 use crate::quotas::QuotaLookup;
+use crate::scripts::ScriptLookup;
 use crate::secrets::{SecretAccessLookup, SecretProblem, check_usable};
 use sagat_domain::quota::QuotaResource;
 
@@ -62,6 +63,9 @@ pub enum IrError {
     },
     #[error("the document names the workflow '{document}' but this workflow is '{workflow}'")]
     NameMismatch { document: String, workflow: String },
+    /// A `script` node pins an artifact that no ready version of the tenant built.
+    #[error("a script node pins the artifact {digest}, which was not built for this tenant")]
+    UnknownScript { digest: String },
 }
 
 /// A validated workflow document.
@@ -158,7 +162,7 @@ pub struct Published {
 /// Storage port for definitions. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + Send + Sync {
+pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Send + Sync {
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -494,6 +498,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
+        self.check_scripts(principal, &parsed.definition).await?;
         let now = self.clock.now();
         let version_id = WorkflowVersionId::generate();
         let audit = AuditRecord::by(
@@ -661,6 +666,32 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             });
         }
         Ok(())
+    }
+
+    /// A workflow that pins a script can be published only if the script was built for this tenant:
+    /// a digest nobody built (a typo, a build that failed, another tenant's artifact) is refused
+    /// now, and not when the first run reaches the step.
+    async fn check_scripts(
+        &self,
+        principal: &Principal,
+        definition: &sagat_domain::workflow::WorkflowDefinition,
+    ) -> Result<(), AppError> {
+        let pinned: Vec<_> = definition.script_digests().into_iter().collect();
+        if pinned.is_empty() {
+            return Ok(());
+        }
+        let missing = self
+            .store
+            .missing_artifacts(principal.tenant_id(), &pinned)
+            .await?;
+        match missing.first() {
+            None => Ok(()),
+            Some(digest) => Err(AppError::InvalidDefinition(Box::new(
+                IrError::UnknownScript {
+                    digest: digest.to_string(),
+                },
+            ))),
+        }
     }
 
     async fn missing(

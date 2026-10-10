@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::scripts::{
-    ArtifactRecord, BuildJobRecord, BuiltArtifact, ClaimedBuild, ClaimedTest, Deleted, Draft,
-    DraftUpdate, ExecutionRecord, ExecutionStatus, Finished, Hold, MAX_BUILD_ATTEMPTS,
-    NewExecution, NewVersion, RunnerStore, ScriptRecord, ScriptStore, TEST_QUEUE_WAIT, TestReport,
-    TestRunRecord, VersionRecord,
+    ArtifactRecord, ArtifactSummary, BuildJobRecord, BuiltArtifact, ClaimedBuild, ClaimedTest,
+    Deleted, Draft, DraftUpdate, ExecutionRecord, ExecutionStatus, ExecutionSummary, Finished, Hold,
+    MAX_BUILD_ATTEMPTS, NewExecution, NewVersion, RunnerStore, ScriptLookup, ScriptRecord,
+    ScriptStore, TEST_QUEUE_WAIT, TestReport, TestRunRecord, TestRunSummary, VersionRecord,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{NamespaceId, Slug, TenantId};
@@ -219,7 +219,55 @@ fn artifact_of(row: &PgRow) -> Result<ArtifactRecord, StoreError> {
     })
 }
 
+fn execution_summary_of(row: &PgRow) -> Result<ExecutionSummary, StoreError> {
+    let record = execution_of_columns(row, false)?;
+    let e = record.execution;
+    Ok(ExecutionSummary {
+        id: record.id,
+        digest: e.digest,
+        run_id: e.run_id,
+        node: e.node,
+        attempt: e.attempt,
+        status: e.status,
+        failure: e.failure,
+        exit_code: e.exit_code,
+        log_truncated: e.log_truncated,
+        denied: e.denied,
+        wall_ms: e.wall_ms,
+        start_ms: e.start_ms,
+        memory_peak_bytes: e.memory_peak_bytes,
+        trace_id: e.trace_id,
+        created_at: record.created_at,
+        expires_at: record.expires_at,
+    })
+}
+
+fn test_run_summary_of(row: &PgRow) -> Result<TestRunSummary, StoreError> {
+    let status: String = col(row, "status")?;
+    let failure: Option<String> = col(row, "failure")?;
+    Ok(TestRunSummary {
+        id: TestRunId::new(col::<Uuid>(row, "id")?),
+        script_id: ScriptId::new(col::<Uuid>(row, "script_id")?),
+        language: language_of(row)?,
+        status: status
+            .parse::<JobStatus>()
+            .map_err(|_| corrupt("test run status"))?,
+        failure: failure
+            .map(|code| Failure::from_code(&code).ok_or_else(|| corrupt("test run failure")))
+            .transpose()?,
+        wall_ms: count(col(row, "wall_ms")?),
+        start_ms: count(col(row, "start_ms")?),
+        created_by: col(row, "created_by")?,
+        created_at: col(row, "created_at")?,
+        finished_at: col(row, "finished_at")?,
+    })
+}
+
 fn execution_of(row: &PgRow) -> Result<ExecutionRecord, StoreError> {
+    execution_of_columns(row, true)
+}
+
+fn execution_of_columns(row: &PgRow, with_log: bool) -> Result<ExecutionRecord, StoreError> {
     let digest: String = col(row, "digest")?;
     let status: String = col(row, "status")?;
     let failure: Option<String> = col(row, "failure")?;
@@ -246,7 +294,7 @@ fn execution_of(row: &PgRow) -> Result<ExecutionRecord, StoreError> {
                 .map(|code| Failure::from_code(&code).ok_or_else(|| corrupt("execution failure")))
                 .transpose()?,
             exit_code: col(row, "exit_code")?,
-            log: col(row, "log")?,
+            log: if with_log { col(row, "log")? } else { String::new() },
             log_truncated: col(row, "log_truncated")?,
             denied: col(row, "denied")?,
             wall_ms: u64::try_from(wall).unwrap_or(0),
@@ -317,6 +365,49 @@ async fn held_build_in(
         },
         status.parse().map_err(|_| corrupt("build job status"))?,
     )))
+}
+
+async fn missing(
+    pool: &sqlx::PgPool,
+    tenant: TenantId,
+    digests: &[Digest],
+) -> Result<Vec<Digest>, StoreError> {
+    let wanted: Vec<&str> = digests.iter().map(Digest::as_str).collect();
+    let missing: Vec<String> = sqlx::query_scalar(
+        "SELECT wanted FROM unnest($2::text[]) AS wanted \
+         WHERE NOT EXISTS (SELECT 1 FROM script_versions v \
+                            WHERE v.tenant_id = $1 AND v.artifact_digest = wanted \
+                              AND v.status = 'READY')",
+    )
+    .bind(tenant.as_uuid())
+    .bind(&wanted)
+    .fetch_all(pool)
+    .await
+    .map_err(store_error)?;
+    missing
+        .iter()
+        .map(|text| digest_of(text, "script digest"))
+        .collect()
+}
+
+impl ScriptLookup for PgRunStore {
+    async fn missing_artifacts(
+        &self,
+        tenant: TenantId,
+        digests: &[Digest],
+    ) -> Result<Vec<Digest>, StoreError> {
+        missing(&self.pool, tenant, digests).await
+    }
+}
+
+impl ScriptLookup for crate::definitions::PgDefinitionStore {
+    async fn missing_artifacts(
+        &self,
+        tenant: TenantId,
+        digests: &[Digest],
+    ) -> Result<Vec<Digest>, StoreError> {
+        missing(self.pool(), tenant, digests).await
+    }
 }
 
 impl ScriptStore for PgRunStore {
@@ -751,11 +842,14 @@ impl ScriptStore for PgRunStore {
         namespace: NamespaceId,
         script: ScriptId,
         limit: u32,
-    ) -> Result<Vec<TestRunRecord>, StoreError> {
-        sqlx::query(select_tests!(
-            "WHERE tenant_id = $1 AND namespace_id = $2 AND script_id = $3 \
-             ORDER BY id DESC LIMIT $4"
-        ))
+    ) -> Result<Vec<TestRunSummary>, StoreError> {
+        sqlx::query(
+            "SELECT id, script_id, language, status, failure, wall_ms, start_ms, created_by, \
+                    created_at, finished_at \
+             FROM script_test_runs \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND script_id = $3 \
+             ORDER BY id DESC LIMIT $4",
+        )
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(script.as_uuid())
@@ -764,7 +858,7 @@ impl ScriptStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(test_run_of)
+        .map(test_run_summary_of)
         .collect()
     }
 
@@ -775,10 +869,10 @@ impl ScriptStore for PgRunStore {
         digest: Option<&Digest>,
         before: Option<Uuid>,
         limit: u32,
-    ) -> Result<Vec<ExecutionRecord>, StoreError> {
+    ) -> Result<Vec<ExecutionSummary>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, namespace_id, digest, run_id, node, attempt, status, failure, \
-                    exit_code, log, log_truncated, denied, wall_ms, start_ms, memory_peak_bytes, \
+                    exit_code, log_truncated, denied, wall_ms, start_ms, memory_peak_bytes, \
                     trace_id, created_at, expires_at \
              FROM script_executions \
              WHERE tenant_id = $1 AND namespace_id = $2 AND ($3::text IS NULL OR digest = $3) \
@@ -794,31 +888,63 @@ impl ScriptStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(execution_of)
+        .map(execution_summary_of)
         .collect()
     }
 
-    async fn missing_artifacts(
+    async fn execution(
         &self,
         tenant: TenantId,
-        digests: &[Digest],
-    ) -> Result<Vec<Digest>, StoreError> {
-        let wanted: Vec<&str> = digests.iter().map(Digest::as_str).collect();
-        let missing: Vec<String> = sqlx::query_scalar(
-            "SELECT wanted FROM unnest($2::text[]) AS wanted \
-             WHERE NOT EXISTS (SELECT 1 FROM script_versions v \
-                                WHERE v.tenant_id = $1 AND v.artifact_digest = wanted \
-                                  AND v.status = 'READY')",
+        namespace: NamespaceId,
+        id: Uuid,
+    ) -> Result<Option<ExecutionRecord>, StoreError> {
+        sqlx::query(
+            "SELECT id, tenant_id, namespace_id, digest, run_id, node, attempt, status, failure, \
+                    exit_code, log, log_truncated, denied, wall_ms, start_ms, memory_peak_bytes, \
+                    trace_id, created_at, expires_at \
+             FROM script_executions \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3",
         )
         .bind(tenant.as_uuid())
-        .bind(&wanted)
-        .fetch_all(&self.pool)
+        .bind(namespace.as_uuid())
+        .bind(id)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(store_error)?;
-        missing
-            .iter()
-            .map(|text| digest_of(text, "script digest"))
-            .collect()
+        .map_err(store_error)?
+        .map(|row| execution_of(&row))
+        .transpose()
+    }
+
+    async fn artifact_summary(
+        &self,
+        tenant: TenantId,
+        digest: &Digest,
+    ) -> Result<Option<ArtifactSummary>, StoreError> {
+        let Some(row) = sqlx::query(
+            "SELECT digest, language, octet_length(content) AS size, signature, key_id, sbom, \
+                    toolchain, created_at \
+             FROM script_artifacts WHERE tenant_id = $1 AND digest = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(digest.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        let size: i32 = col(&row, "size")?;
+        let found: String = col(&row, "digest")?;
+        Ok(Some(ArtifactSummary {
+            digest: digest_of(&found, "artifact digest")?,
+            language: language_of(&row)?,
+            size: u64::try_from(size).unwrap_or(0),
+            signature: col(&row, "signature")?,
+            key_id: col(&row, "key_id")?,
+            sbom: col(&row, "sbom")?,
+            toolchain: col(&row, "toolchain")?,
+            created_at: col(&row, "created_at")?,
+        }))
     }
 }
 
@@ -1308,6 +1434,27 @@ impl RunnerStore for PgRunStore {
         .map_err(store_error)?
         .map(|row| artifact_of(&row))
         .transpose()
+    }
+
+    async fn pending_activities(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        limit: u32,
+    ) -> Result<Vec<String>, StoreError> {
+        // `.` follows `-` in ASCII, so the range is exactly the names that start with the prefix.
+        sqlx::query_scalar(
+            "SELECT DISTINCT activity FROM steps \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND status = 'READY' \
+               AND activity >= 'script.sha256-' AND activity < 'script.sha256.' \
+             ORDER BY activity LIMIT $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)
     }
 
     async fn retention_of(

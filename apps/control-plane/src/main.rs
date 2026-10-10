@@ -41,6 +41,12 @@ async fn main() -> ExitCode {
 }
 
 async fn run(command: Command) -> Result<(), RunError> {
+    if command == Command::ScriptKey {
+        // The key goes to standard output and nowhere else: not to a log, not to the environment.
+        let key = sagat_control_plane::new_script_key()?;
+        println!("{key}");
+        return Ok(());
+    }
     if command == Command::Healthcheck {
         let addr =
             env_lookup("SAGAT_HEALTHCHECK_ADDR").unwrap_or_else(|| "127.0.0.1:8080".to_owned());
@@ -109,6 +115,6 @@ async fn run(command: Command) -> Result<(), RunError> {
             )
             .await
         }
-        Command::Help | Command::Version | Command::Healthcheck => Ok(()),
+        Command::Help | Command::Version | Command::Healthcheck | Command::ScriptKey => Ok(()),
     }
 }
