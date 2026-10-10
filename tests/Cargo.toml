@@ -92,6 +92,10 @@ name = "contract_grpc_002"
 path = "contract/002-durable-execution/grpc/main.rs"
 
 [[test]]
+name = "contract_grpc_006"
+path = "contract/006-sdk-multilanguage/grpc/main.rs"
+
+[[test]]
 name = "e2e_002"
 path = "e2e/002-durable-execution/main.rs"
 

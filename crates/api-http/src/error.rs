@@ -325,7 +325,13 @@ impl From<AppError> for ApiError {
                 e.parts.details = Some(definition_details(&error));
                 e
             }
-            AppError::NotAllowed(message) => Self::validation(message),
+            AppError::NotAllowed(message) => {
+                let mut e = Self::validation(message);
+                if message == sagat_application::worker::UNSUPPORTED_PROTOCOL {
+                    e.parts.details = Some(json!({ "reason": "UNSUPPORTED_PROTOCOL" }));
+                }
+                e
+            }
             AppError::StaleAttempt => {
                 let mut e = Self::new(
                     StatusCode::CONFLICT,

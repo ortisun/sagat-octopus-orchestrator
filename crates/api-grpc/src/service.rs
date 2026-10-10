@@ -160,7 +160,7 @@ where
             Ok(pb::RegisterWorkerResponse {
                 worker_id: registered.worker_id.to_string(),
                 session_token: registered.session_token.expose().to_owned(),
-                accepted_protocol_version: registered.accepted_protocol_version.to_owned(),
+                accepted_protocol_version: registered.accepted_protocol_version,
             })
         })
         .await

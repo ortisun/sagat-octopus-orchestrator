@@ -36,8 +36,40 @@ use sagat_domain::binding::ActivityPattern;
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_data};
 
-/// The only protocol version this server speaks.
-pub const PROTOCOL_VERSION: &str = "1";
+/// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
+/// and calls and removes none, so a worker of any minor version of protocol 1 can be served
+/// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
+/// `ResolveSecrets`.
+pub const PROTOCOL_MINOR: u32 = 2;
+
+/// What registration says when it refuses the protocol version (a stable reason for SDKs).
+pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
+
+/// What a worker offers is `1` or `1.<minor>`; what is agreed is the newest version both speak:
+/// the worker's own if it is not newer than the server's, the server's otherwise (so an SDK that
+/// is ahead of its server runs at the server's version and an SDK that is behind runs at its own).
+/// `None` for another major version and for anything that is not a version.
+#[must_use]
+pub fn negotiate_protocol(offered: &str) -> Option<String> {
+    let minor = match offered.split_once('.') {
+        None if offered == "1" => 0,
+        Some(("1", minor))
+            if !minor.is_empty()
+                && minor.len() <= 6
+                && minor.bytes().all(|b| b.is_ascii_digit())
+                && (minor == "0" || !minor.starts_with('0')) =>
+        {
+            minor.parse::<u32>().ok()?
+        }
+        _ => return None,
+    };
+    let agreed = minor.min(PROTOCOL_MINOR);
+    Some(if agreed == 0 {
+        "1".to_owned()
+    } else {
+        format!("1.{agreed}")
+    })
+}
 /// Most activities one worker may advertise.
 pub const MAX_ACTIVITIES: usize = 256;
 /// Most tasks one poll may claim.
@@ -182,7 +214,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
 pub struct Registered {
     pub worker_id: Uuid,
     pub session_token: Token,
-    pub accepted_protocol_version: &'static str,
+    pub accepted_protocol_version: String,
     pub expires_at: OffsetDateTime,
 }
 
@@ -389,9 +421,10 @@ where
         capabilities: &Capabilities,
     ) -> Result<Registered, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
-        if capabilities.protocol_version != PROTOCOL_VERSION {
-            return Err(AppError::NotAllowed("unsupported protocol version"));
-        }
+        let Some(accepted_protocol_version) = negotiate_protocol(&capabilities.protocol_version)
+        else {
+            return Err(AppError::NotAllowed(UNSUPPORTED_PROTOCOL));
+        };
         if capabilities.activities.is_empty() || capabilities.activities.len() > MAX_ACTIVITIES {
             return Err(AppError::NotAllowed(
                 "a worker must advertise between 1 and 256 activities",
@@ -518,7 +551,7 @@ where
         Ok(Registered {
             worker_id: id,
             session_token: token,
-            accepted_protocol_version: PROTOCOL_VERSION,
+            accepted_protocol_version,
             expires_at: self.clock.now() + ttl,
         })
     }
@@ -1534,7 +1567,29 @@ pub fn describe(events: &[RunEvent]) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::json_escaped;
+    use super::{PROTOCOL_MINOR, json_escaped, negotiate_protocol};
+
+    #[test]
+    fn the_newest_version_both_sides_speak_is_agreed() {
+        assert_eq!(negotiate_protocol("1").as_deref(), Some("1"));
+        assert_eq!(negotiate_protocol("1.0").as_deref(), Some("1"));
+        assert_eq!(negotiate_protocol("1.1").as_deref(), Some("1.1"));
+        let own = format!("1.{PROTOCOL_MINOR}");
+        assert_eq!(negotiate_protocol(&own).as_deref(), Some(own.as_str()));
+        // A worker that is ahead of the server runs at the server's version.
+        assert_eq!(negotiate_protocol("1.999").as_deref(), Some(own.as_str()));
+    }
+
+    #[test]
+    fn anything_else_is_not_a_version_this_server_speaks() {
+        for bad in [
+            "", "0", "2", "2.0", "1.", ".1", "1.x", "01", "1.01", "1.2.3", " 1", "1 ", "v1",
+            "1.-1", "1.+1", "1.1234567",
+        ] {
+            assert_eq!(negotiate_protocol(bad), None, "{bad:?}");
+        }
+    }
+
 
     #[test]
     fn a_value_is_searched_for_as_it_would_be_written_in_json() {
