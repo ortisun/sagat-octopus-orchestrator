@@ -51,8 +51,9 @@ put both behind one host.
 
 | Concern | What to look at |
 |---|---|
-| Open streams | `run_streams_open` (gauge) and `run_streams_refused_total` (counter, a stream was refused because the subject or the tenant is at its cap: 20 per subject, 200 per tenant). A client that is refused polls instead (`GET /runs/{id}/graph/changes`), which costs the platform less than a stream per tab. |
-| Cost of a stream | One small query per half second while a run moves, per second quietly, until the run ends, the token expires or 15 minutes pass (G143). Raising the caps raises database load roughly in proportion. |
+| Open streams | `run_streams_open` (gauge) and `run_streams_refused_total` (counter, a stream was refused because the subject, the tenant or the process is at its cap: 20 per subject, 200 per tenant, 2 000 in all) and `run_streams_tick_errors_total` (a tick could not read the database: the stream tries again at the next one). A client that is refused polls instead (`GET /runs/{id}/graph/changes`), which costs the platform less than a stream per tab. |
+| Cost of a stream | A read of the run's row every half second while the run moves and every two seconds once it has been still for half a minute (each with up to a quarter more), and a read of its whole graph only when it moved, until the run ends, the token expires or 15 minutes pass (G143). Every 30 seconds it asks again whether the subject is still a member who may read. Raising the caps raises database load roughly in proportion. |
+| A client that stops reading | The server gives up on any connection whose client takes no byte of a pending write for 30 seconds (`write_stall_timeout`), so a stalled reader frees its stream, its transfer and its connection. The Studio's files are streamed, at most 64 at a time (a 65th request is answered `503` with `Retry-After: 1`) and none for longer than a minute. |
 | A stream that "never connects" | A proxy that buffers or times out `text/event-stream`; the Studio falls back to polling after three failures, so it works but is less prompt. |
 | Sessions | A token's life is the platform's (at most one hour). When it ends the Studio says so and asks again; nothing is stored to refresh it. |
 | Audit | Reads are not audited; every decision on a run is, with the reason; publishing and draft changes are, as before. |

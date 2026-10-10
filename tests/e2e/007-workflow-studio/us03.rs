@@ -443,6 +443,90 @@ async fn us03_a_client_that_reconnects_with_the_last_event_id_misses_nothing() {
     assert_eq!(bad.err().map(|e| e.0), Some(400));
 }
 
+/// Scans of the table of steps so far (sequential and by index), as PostgreSQL counts them. The
+/// counters reach the statistics a moment after the work, so the reader waits for them.
+async fn step_scans(p: &crate::support::worker::Platform) -> i64 {
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(seq_scan, 0) + COALESCE(idx_scan, 0) FROM pg_stat_user_tables WHERE relname = 'steps'",
+    )
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the statistics of the steps table")
+}
+
+#[tokio::test]
+async fn us03_a_stream_of_a_quiet_run_costs_a_look_at_the_run_each_tick_and_not_a_read_of_its_graph()
+ {
+    let p = platform_with(Options {
+        streams: Some(StreamLimits {
+            poll_min: Duration::from_millis(50),
+            poll_max: Duration::from_millis(50),
+            ..StreamLimits::default()
+        }),
+        ..Options::default()
+    })
+    .await;
+    let wf = p.publish("order-flow", &chain("order-flow", 2)).await;
+    let run = p.start(&wf, &json!({})).await;
+    let mut stream = Stream::open_as_alice(&p, &run).await;
+    stream
+        .next(Duration::from_secs(5))
+        .await
+        .expect("the graph");
+
+    let before = step_scans(&p).await;
+    // A run nobody works on does not move: about eighty ticks of the stream go by.
+    assert!(
+        stream.next(Duration::from_secs(4)).await.is_none(),
+        "a quiet run sends nothing but pings"
+    );
+    let after = step_scans(&p).await;
+    // Each tick used to read every step of the run, so this would have been about eighty.
+    assert!(
+        after - before <= 5,
+        "{} scans of the steps table in four seconds of a stream of a run that did not move",
+        after - before
+    );
+}
+
+#[tokio::test]
+async fn us03_a_stream_ends_for_someone_who_is_no_longer_a_member_without_waiting_for_its_lifetime()
+{
+    let p = platform_with(Options {
+        streams: Some(StreamLimits {
+            poll_min: Duration::from_millis(50),
+            poll_max: Duration::from_millis(50),
+            recheck: Duration::from_millis(300),
+            ..StreamLimits::default()
+        }),
+        ..Options::default()
+    })
+    .await;
+    let wf = p.publish("order-flow", &chain("order-flow", 2)).await;
+    let run = p.start(&wf, &json!({})).await;
+    p.grant(p.tenant, "vera", sagat_domain::identity::Role::Viewer)
+        .await;
+    let mut stream = Stream::open(&p, &run, "vera", TENANT, None)
+        .await
+        .expect("a viewer may watch");
+    stream
+        .next(Duration::from_secs(5))
+        .await
+        .expect("the graph");
+
+    // An administrator removes her. Every ordinary request of hers is refused from now on.
+    sqlx::query("DELETE FROM memberships WHERE tenant_id = $1 AND subject = 'vera'")
+        .bind(p.tenant.as_uuid())
+        .execute(&p.api.db.pool)
+        .await
+        .expect("removing the member");
+
+    // The stream that was open does not go on telling her about the run for its fifteen minutes.
+    let ended = stream.until("end", Duration::from_secs(5)).await;
+    assert!(ended.is_some(), "the stream of a removed member went on");
+}
+
 #[tokio::test]
 async fn us03_streams_are_limited_per_subject_and_a_closed_stream_frees_its_place() {
     let p = platform_with(Options {

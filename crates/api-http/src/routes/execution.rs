@@ -495,16 +495,21 @@ pub async fn run_stream<B: Exec>(
         .map_err(|refused| {
             metrics::counter!("run_streams_refused_total").increment(1);
             ApiError::rate_limited(std::time::Duration::from_secs(5)).with_reason(match refused {
+                StreamRefused::GlobalAtCapacity => "STREAMS_GLOBAL",
                 StreamRefused::SubjectAtCapacity => "STREAMS_PER_SUBJECT",
                 StreamRefused::TenantAtCapacity => "STREAMS_PER_TENANT",
             })
         })?;
     let deadline = stream_deadline(caller.token_expires_at, limits.max_lifetime);
+    let who = Who {
+        tenant: caller.session.tenant.slug().as_str().to_owned(),
+        subject: principal.subject().as_str().to_owned(),
+    };
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<SseEvent, Infallible>>(8);
     metrics::gauge!("run_streams_open").increment(1.0);
     tokio::spawn(async move {
         let _slot = slot;
-        follow(state, principal, ctx, run, first, limits, deadline, tx).await;
+        follow(state, principal, who, ctx, run, first, limits, deadline, tx).await;
         metrics::gauge!("run_streams_open").decrement(1.0);
     });
     let mut response = Sse::new(ReceiverStream::new(rx))
@@ -542,12 +547,31 @@ fn graph_event(changes: &GraphChanges) -> SseEvent {
         .data(graph_changes_body(changes).to_string())
 }
 
+/// Who opened a stream, as the identity provider named them: what is asked again, every so often,
+/// to know whether they may still read.
+struct Who {
+    tenant: String,
+    subject: String,
+}
+
+/// `base` and up to a quarter more, so that the streams a database blip or a deploy cut at the same
+/// moment do not all come back at the same moment.
+fn jittered(base: std::time::Duration) -> std::time::Duration {
+    let unit = (uuid::Uuid::new_v4().as_u128() >> 64) as f64 / u64::MAX as f64;
+    base + base.mul_f64(unit * 0.25)
+}
+
 /// Sends the first changes, then follows the run until it ends, the deadline passes or the
 /// client leaves (the channel closes).
+///
+/// Each tick looks at the run's own row, which is one read of one row; only when its version moved
+/// is the graph read (a snapshot of every step of the run). A stream of a quiet run therefore costs
+/// the database what a `GET /runs/{id}` costs, a tick at a time.
 #[allow(clippy::too_many_arguments)]
 async fn follow<B: Exec>(
     state: B,
-    principal: sagat_domain::identity::Principal,
+    mut principal: sagat_domain::identity::Principal,
+    who: Who,
     ctx: sagat_application::identity::RequestContext,
     run: RunId,
     first: GraphChanges,
@@ -565,15 +589,49 @@ async fn follow<B: Exec>(
         return;
     }
     let mut last_change = tokio::time::Instant::now();
+    let mut next_recheck = last_change + limits.recheck;
     let mut pause = limits.poll_min;
     while !finished {
         tokio::select! {
-            () = tokio::time::sleep(pause) => {}
+            () = tokio::time::sleep(jittered(pause)) => {}
             () = tx.closed() => return,
         }
-        if tokio::time::Instant::now() >= deadline {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
             return;
+        }
+        // The role the stream opened with is not the role for fifteen minutes: whoever was removed
+        // or lowered since is asked again, and the stream ends for them.
+        if now >= next_recheck {
+            next_recheck = now + limits.recheck;
+            match state.authenticate(&who.tenant, &who.subject).await {
+                Ok(session) => principal = session.principal,
+                Err(
+                    AppError::Unauthenticated | AppError::NotFound | AppError::Forbidden { .. },
+                ) => {
+                    let _ = send(SseEvent::default().event("end").data("{}")).await;
+                    return;
+                }
+                Err(_) => {}
+            }
+        }
+        match state.runs().get(&principal, run, &ctx).await {
+            Ok(record) if record.version == cursor => {
+                if last_change.elapsed() >= limits.idle_after {
+                    pause = limits.poll_max;
+                }
+                continue;
+            }
+            Ok(_) => {}
+            Err(AppError::NotFound | AppError::Forbidden { .. }) => {
+                let _ = send(SseEvent::default().event("end").data("{}")).await;
+                return;
+            }
+            Err(_) => {
+                metrics::counter!("run_streams_tick_errors_total").increment(1);
+                continue;
+            }
         }
         match state
             .runs()
@@ -600,8 +658,11 @@ async fn follow<B: Exec>(
                 return;
             }
             // The database is unavailable for a moment: the next tick tries again, and the
-            // client does not see a gap because it resumes from the sequence it has.
-            Err(_) => {}
+            // client does not see a gap because it resumes from the sequence it has. It is
+            // counted, because a stream that cannot read says nothing about why.
+            Err(_) => {
+                metrics::counter!("run_streams_tick_errors_total").increment(1);
+            }
         }
     }
     let _ = send(SseEvent::default().event("end").data("{}")).await;

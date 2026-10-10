@@ -15,6 +15,9 @@ use sagat_domain::identity::TenantId;
 /// How streams are opened, polled and closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamLimits {
+    /// Open streams in the whole process: what all the tenants together may ask of the database
+    /// and the memory of one instance.
+    pub global: usize,
     /// Open streams per tenant.
     pub per_tenant: usize,
     /// Open streams per subject of a tenant.
@@ -28,11 +31,15 @@ pub struct StreamLimits {
     pub ping: Duration,
     /// The longest a stream stays open; the client reconnects and misses nothing.
     pub max_lifetime: Duration,
+    /// How often an open stream asks again whether its subject is still a member with the right to
+    /// read: a role taken away ends the stream within this time, not at the end of its lifetime.
+    pub recheck: Duration,
 }
 
 impl Default for StreamLimits {
     fn default() -> Self {
         Self {
+            global: 2000,
             per_tenant: 200,
             per_subject: 20,
             poll_min: Duration::from_millis(500),
@@ -40,6 +47,7 @@ impl Default for StreamLimits {
             idle_after: Duration::from_secs(30),
             ping: Duration::from_secs(15),
             max_lifetime: Duration::from_secs(15 * 60),
+            recheck: Duration::from_secs(30),
         }
     }
 }
@@ -60,6 +68,8 @@ struct Open {
 /// Why a stream could not be opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StreamRefused {
+    #[error("the platform already has its maximum number of streams open")]
+    GlobalAtCapacity,
     #[error("the subject already has its maximum number of streams open")]
     SubjectAtCapacity,
     #[error("the tenant already has its maximum number of streams open")]
@@ -80,6 +90,7 @@ impl StreamRegistry {
     pub fn new(limits: StreamLimits) -> Arc<Self> {
         Arc::new(Self {
             limits: StreamLimits {
+                global: limits.global.max(1),
                 per_tenant: limits.per_tenant.max(1),
                 per_subject: limits.per_subject.max(1),
                 ..limits
@@ -96,7 +107,7 @@ impl StreamRegistry {
     /// Takes a slot for `subject` of `tenant`.
     ///
     /// # Errors
-    /// [`StreamRefused`] when the subject or the tenant is at its cap.
+    /// [`StreamRefused`] when the platform, the subject or the tenant is at its cap.
     pub fn try_open(
         self: &Arc<Self>,
         tenant: TenantId,
@@ -104,6 +115,9 @@ impl StreamRegistry {
     ) -> Result<StreamSlot, StreamRefused> {
         let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
         let key = (tenant, subject.to_owned());
+        if open.tenants.values().sum::<usize>() >= self.limits.global {
+            return Err(StreamRefused::GlobalAtCapacity);
+        }
         if open.subjects.get(&key).copied().unwrap_or(0) >= self.limits.per_subject {
             return Err(StreamRefused::SubjectAtCapacity);
         }

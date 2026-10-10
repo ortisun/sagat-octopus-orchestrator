@@ -134,8 +134,13 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 
 - **G142 — Graph validation reports one graph error at a time.** The domain stops at the first rule broken (a cycle, an
   unreachable node); schema problems are all listed. The Studio shows the first and revalidates after each fix.
-- **G143 — Streams poll the database** (D142): every open stream costs one small query per tick, bounded per tenant and per
-  subject; a push from the engine (`LISTEN/NOTIFY` or NATS) belongs to feature 010 with the rest of the scale work.
+- **G143 — Streams poll the database** (D142): every open stream reads the run's own row at each tick (every 0.5 s while the
+  run moves, every 2 s once it has been still for half a minute, each with up to a quarter more so that streams do not wake in
+  step) and reads the graph, a snapshot of every step of the run, only when the row's version moved; a quiet stream costs what
+  `GET /runs/{id}` costs. Bounded per subject (20), per tenant (200) and in the process (2 000), and every 30 s each stream asks
+  again whether its subject is still a member with the right to read. Before the independent review each tick read the whole
+  graph (120 scans of the steps table in four seconds for one quiet stream). A push from the engine (`LISTEN/NOTIFY` or NATS)
+  belongs to feature 010 with the rest of the scale work.
 - **G144 — No payload is shown.** The journal and the graph carry no input, output or error text (a `payloadRef` digest
   and a `failureCode` only), so "redacted payload" holds by construction and the Studio cannot show a step's data. Showing
   it needs a redaction policy per payload class (feature 009's classification is not built, G37) and a read API.
