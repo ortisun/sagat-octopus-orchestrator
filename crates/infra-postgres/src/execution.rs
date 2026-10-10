@@ -442,7 +442,7 @@ impl RunStore for PgRunStore {
             return Ok(None);
         }
         let rows = sqlx::query(
-            "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, \
+            "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, detail, \
                     encode(payload_digest, 'hex') AS payload_ref \
              FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND seq > $3 \
              ORDER BY seq LIMIT $4",
@@ -458,10 +458,26 @@ impl RunStore for PgRunStore {
             .map(|row| {
                 let seq: i64 = col(row, "seq")?;
                 let attempt: Option<i32> = col(row, "attempt")?;
+                let event_type: String = col(row, "event_type")?;
+                let node: Option<String> = col(row, "node")?;
+                let detail: serde_json::Value = col(row, "detail")?;
+                // The steps the event changed, not only the one it names (an event that cannot be
+                // decoded names its own step, which is all that is known of it).
+                let touched = decode(&event_type, node.as_deref(), &detail).map_or_else(
+                    || node.iter().cloned().collect(),
+                    |event| {
+                        event
+                            .changed_nodes()
+                            .iter()
+                            .map(|n| n.as_str().to_owned())
+                            .collect()
+                    },
+                );
                 Ok(JournalEntry {
                     seq: u64::try_from(seq).map_err(|_| corrupt("sequence"))?,
-                    event_type: col(row, "event_type")?,
-                    node: col(row, "node")?,
+                    event_type,
+                    node,
+                    touched,
                     attempt: attempt.and_then(|a| u32::try_from(a).ok()),
                     actor: col(row, "actor")?,
                     trace_id: col(row, "trace_id")?,

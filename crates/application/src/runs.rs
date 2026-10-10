@@ -67,6 +67,10 @@ pub struct JournalEntry {
     pub occurred_at: OffsetDateTime,
     /// Digest of the payload the event refers to (a step output), hex.
     pub payload_ref: Option<String>,
+    /// Every step the event created or changed: the one it names and the ones it activated
+    /// (`RunEvent::changed_nodes`). The journal view shows `node` only; the changes of the graph
+    /// need all of them.
+    pub touched: Vec<String>,
 }
 
 /// One step as the runtime graph shows it.

@@ -626,6 +626,27 @@ impl RunEvent {
         }
     }
 
+    /// Every step this event creates or changes: the one it names and the ones it activates (the
+    /// next steps of a routing, the branches of a fork, the first step of a saga, the undo of each
+    /// planned entry, the lookup of a step that may have happened). The runtime graph a client holds
+    /// stays equal to the platform's only if a change is reported for each of them (D141).
+    #[must_use]
+    pub fn changed_nodes(&self) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = self.node().cloned().into_iter().collect();
+        match self {
+            Self::RunStarted { entrypoint } => nodes.push(entrypoint.clone()),
+            Self::StepRouted { activated, .. } => nodes.extend(activated.iter().cloned()),
+            Self::ParallelForked { branches, .. } => nodes.extend(branches.iter().cloned()),
+            Self::SagaEntered { begin, .. } => nodes.push(begin.clone()),
+            Self::CompensationPlanned { entries, .. } => {
+                nodes.extend(entries.iter().map(|entry| entry.node.compensation()));
+            }
+            Self::ReconciliationRequested { node, .. } => nodes.push(node.reconciliation()),
+            _ => {}
+        }
+        nodes
+    }
+
     /// The attempt number this event refers to, if it is attempt-bound.
     #[must_use]
     pub const fn attempt(&self) -> Option<u32> {

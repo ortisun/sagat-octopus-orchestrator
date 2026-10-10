@@ -443,17 +443,18 @@ fn runtime_edges(graph: &GraphSnapshot) -> Vec<Value> {
 }
 
 /// What changed in a run's graph since a journal sequence (D141): the events, and the nodes they
-/// touched. A node changes only through an event that names it: a cancel request is a
-/// `step.cancel_requested` of each step and the phases of a saga are events of the saga node
-/// (`crates/domain/src/execution/event.rs`, `RunEvent::node`); the events that name no node
-/// (`run.started`, `run.paused`, `run.resumed`, `run.stop_requested`, `run.finished`) change the
-/// run, whose `status` is always current. `reset` brings the whole graph.
+/// touched. A node changes only through an event that names it or activates it: a cancel request is
+/// a `step.cancel_requested` of each step, the phases of a saga are events of the saga node, and the
+/// events that create steps (a routing, a fork, a saga entered, a compensation plan, a lookup) carry
+/// the ones they create (`crates/domain/src/execution/event.rs`, `RunEvent::changed_nodes`); the
+/// events that name no node (`run.paused`, `run.resumed`, `run.stop_requested`, `run.finished`)
+/// change the run, whose `status` is always current. `reset` brings the whole graph.
 pub fn graph_changes_body(changes: &GraphChanges) -> Value {
     let graph = &changes.graph;
     let touched: std::collections::BTreeSet<&str> = changes
         .events
         .iter()
-        .filter_map(|e| e.node.as_deref())
+        .flat_map(|e| e.touched.iter().map(String::as_str))
         .collect();
     let any = !changes.events.is_empty();
     let nodes = if changes.reset {
