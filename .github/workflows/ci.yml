@@ -96,6 +96,43 @@ jobs:
       - name: conformance suite, user stories and faults, five languages
         run: cargo test -p sagat-tests --test sdk_conformance --test e2e_006 --test fault_006 --locked -- --ignored
 
+  studio:
+    name: studio (lint, types, unit tests, build, browser journeys)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      # The lockfile is the record: exact versions, no install scripts (frontend/.npmrc).
+      - name: dependencies
+        working-directory: frontend
+        run: npm ci
+      # Production and tooling both; a low advisory is recorded in research.md (G152), moderate and above fail the build.
+      - name: advisories
+        working-directory: frontend
+        run: npm audit --audit-level=moderate
+      - name: lint, types, unit tests, build, generated API types
+        working-directory: frontend
+        run: |
+          npm run lint
+          npm run typecheck
+          npm run typecheck --workspace @sagat/e2e
+          npm test
+          npm run build
+          npm run check:api
+      - name: Chromium for Playwright
+        working-directory: frontend/e2e
+        run: npx playwright install --with-deps chromium
+      # The journeys (US01..US04, SC-007-001, accessibility, security, sign-in) in a real browser against the real
+      # platform (PostgreSQL through Testcontainers, the API serving the Studio, the engine, a sandbox runner). They are
+      # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
+      - name: browser journeys
+        run: cargo test -p sagat-tests --test e2e_007 --locked -- --ignored journeys
+
   contracts:
     name: contracts (OpenAPI, protobuf, JSON Schema)
     runs-on: ubuntu-latest
