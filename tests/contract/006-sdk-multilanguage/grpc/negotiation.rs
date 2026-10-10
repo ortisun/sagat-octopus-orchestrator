@@ -62,7 +62,19 @@ async fn another_major_version_or_a_malformed_one_is_refused() {
     let p = platform().await;
     let mut w = p.worker("wendy").await;
     for bad in [
-        "", "2", "0", "2.0", "1.", "1.x", "01", "1.01", "1.2.3", " 1", "v1", "1,2", "1.-1",
+        "",
+        "2",
+        "0",
+        "2.0",
+        "1.",
+        "1.x",
+        "01",
+        "1.01",
+        "1.2.3",
+        " 1",
+        "v1",
+        "1,2",
+        "1.-1",
         "1.99999999999",
     ] {
         let mut message = Worker::register_message(&["act.a"], 10);

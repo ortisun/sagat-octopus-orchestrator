@@ -1583,13 +1583,26 @@ mod tests {
     #[test]
     fn anything_else_is_not_a_version_this_server_speaks() {
         for bad in [
-            "", "0", "2", "2.0", "1.", ".1", "1.x", "01", "1.01", "1.2.3", " 1", "1 ", "v1",
-            "1.-1", "1.+1", "1.1234567",
+            "",
+            "0",
+            "2",
+            "2.0",
+            "1.",
+            ".1",
+            "1.x",
+            "01",
+            "1.01",
+            "1.2.3",
+            " 1",
+            "1 ",
+            "v1",
+            "1.-1",
+            "1.+1",
+            "1.1234567",
         ] {
             assert_eq!(negotiate_protocol(bad), None, "{bad:?}");
         }
     }
-
 
     #[test]
     fn a_value_is_searched_for_as_it_would_be_written_in_json() {
