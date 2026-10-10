@@ -99,6 +99,10 @@ services:
       # is terminated in front of it, because it receives secret values.
       SAGAT_SECRETS_KEYS: ${SAGAT_SECRETS_KEYS:-}
       SAGAT_API_ALLOW_PLAINTEXT_SECRETS: ${SAGAT_API_ALLOW_PLAINTEXT_SECRETS:-false}
+      # The key that signs the artifacts of scripts (empty: the script routes do not exist). Make
+      # one with `docker run --rm sagat-octopus-orchestrator/control-plane:dev script-key`.
+      SAGAT_SCRIPT_SIGNING_KEY: ${SAGAT_SCRIPT_SIGNING_KEY:-}
+      SAGAT_SCRIPT_CEILING: ${SAGAT_SCRIPT_CEILING:-}
     ports:
       - "127.0.0.1:${SAGAT_API_PORT:-18080}:8080"
     depends_on:
@@ -140,6 +144,38 @@ services:
         condition: service_completed_successfully
       nats:
         condition: service_healthy
+    restart: unless-stopped
+
+  # The sandbox runner (profile `sandbox`, not started by default): it builds and runs scripts in
+  # containers of their own, through the engine's socket. THE SOCKET IS ROOT ON THE HOST THAT OWNS
+  # IT: this is a development convenience, not a deployment. Read docs/runbooks/scripts.md. It needs
+  # the token of a `runner` identity in infra/docker/runner.token and the group id of the socket.
+  sandbox-runner:
+    image: sagat-octopus-orchestrator/sandbox-runner:dev
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+      target: sandbox-runner
+    profiles: ["sandbox"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    group_add: ["${SAGAT_DOCKER_GID:?set SAGAT_DOCKER_GID (stat -c %g /var/run/docker.sock) in infra/docker/.env}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./runner.token:/run/secrets/runner.token:ro
+    environment:
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      SAGAT_RUNNER_API_URL: http://control-plane:8080/v1
+      SAGAT_RUNNER_GRPC_URL: http://execution-engine:9000
+      SAGAT_RUNNER_TOKEN_FILE: /run/secrets/runner.token
+      SAGAT_RUNNER_NAMESPACES: ${SAGAT_RUNNER_NAMESPACES:-}
+      SAGAT_RUNNER_TRUSTED_KEYS: ${SAGAT_RUNNER_TRUSTED_KEYS:-}
+    depends_on:
+      - control-plane
+      - execution-engine
     restart: unless-stopped
 
   # Development data: `docker compose --profile seed run --rm seed`. Idempotent.

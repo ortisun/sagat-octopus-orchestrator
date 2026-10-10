@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
-# Images of the two processes, built from one workspace. Build from the repository root:
+# Images of the three processes, built from one workspace. Build from the repository root:
 #   docker build -f infra/docker/Dockerfile --target control-plane   -t sagat-octopus-orchestrator/control-plane:dev .
 #   docker build -f infra/docker/Dockerfile --target execution-engine -t sagat-octopus-orchestrator/execution-engine:dev .
+#   docker build -f infra/docker/Dockerfile --target sandbox-runner   -t sagat-octopus-orchestrator/sandbox-runner:dev .
 # Without --target the last stage (the control plane) is built.
 
 ARG RUST_VERSION=1.98.0
@@ -28,7 +29,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked \
         -p sagat-control-plane --bin control-plane \
         -p sagat-execution-engine --bin execution-engine \
-    && cp target/release/control-plane target/release/execution-engine /
+        -p sagat-sandbox-runner --bin sandbox-runner \
+    && cp target/release/control-plane target/release/execution-engine target/release/sandbox-runner /
 
 FROM debian:bookworm-slim AS runtime
 # CA certificates are needed to reach the OIDC provider's JWKS endpoint over HTTPS.
@@ -47,6 +49,20 @@ EXPOSE 9000
 HEALTHCHECK --interval=10s --timeout=4s --start-period=10s --retries=3 \
     CMD ["/usr/local/bin/execution-engine", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/execution-engine"]
+CMD ["serve"]
+
+# The sandbox runner: builds and runs the scripts of one tenant in containers of its own. It needs
+# the container engine's socket, which makes it root-equivalent on its host: see
+# docs/runbooks/scripts.md before running it anywhere that holds anything else. It is not started
+# by default (compose profile `sandbox`).
+FROM runtime AS sandbox-runner
+COPY --from=builder /sandbox-runner /usr/local/bin/sandbox-runner
+# The socket belongs to the engine's group; the compose file adds that group to this user.
+USER 10001
+ENV SAGAT_ADMIN_ADDR=127.0.0.1:9092
+HEALTHCHECK --interval=10s --timeout=4s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/sandbox-runner", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/sandbox-runner"]
 CMD ["serve"]
 
 # The control plane (the default target: it is the last stage).
