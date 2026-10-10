@@ -49,12 +49,12 @@ func writeCanonical(out *bytes.Buffer, value any) error {
 	case string:
 		writeString(out, v)
 	case json.Number:
-		if integerBeyondExact(string(v)) {
-			return sagat.Invalid("an integer beyond 2^53 - 1 cannot be written in canonical text; send it as a string")
-		}
 		f, err := strconv.ParseFloat(string(v), 64)
 		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
 			return sagat.Invalid("a number is outside the range of a double")
+		}
+		if wholeBeyondExact(f) {
+			return sagat.Invalid("a whole number beyond 2^53 - 1 cannot be written in canonical text; send it as a string")
 		}
 		out.WriteString(ecmaNumber(f))
 	case []any:
@@ -175,20 +175,12 @@ func ecmaNumber(f float64) string {
 	return sign + digits[:1] + "." + digits[1:] + "e" + exponentSign + strconv.Itoa(e)
 }
 
-// maxExactInteger is 2^53 - 1: the largest integer every language can hold, and print, exactly.
-const maxExactInteger = 1<<53 - 1
-
-// integerBeyondExact reports whether a number literal is an integer (no fraction, no exponent) whose
-// magnitude is past 2^53 - 1. The digits are counted, never expanded: a literal with an exponent is a double
-// and is not asked.
-func integerBeyondExact(literal string) bool {
-	digits := strings.TrimPrefix(literal, "-")
-	if strings.ContainsAny(digits, ".eE") {
-		return false
-	}
-	if len(digits) > 16 {
-		return true // 2^53 - 1 has 16 digits, and JSON allows no leading zero
-	}
-	n, err := strconv.ParseUint(digits, 10, 64)
-	return err != nil || n > maxExactInteger
+// wholeBeyondExact reports whether a number is refused in canonical text (sdks/SPEC.md, section 8): a whole number
+// beyond 2^53 - 1 that ECMAScript prints in digits, that is, below 1e21. The rule is on the value, not on how it was
+// written: 9007199254740993, 9007199254740992.0 and 1e20 are all refused, because the text of a document must be the
+// same bytes in every language and no language but TypeScript's can print the nearest double and call it exact.
+// 1e21 and above, which ECMAScript prints with an exponent, and every number with a fraction, are numbers.
+func wholeBeyondExact(f float64) bool {
+	abs := math.Abs(f)
+	return abs >= 1<<53 && abs < 1e21 && abs == math.Trunc(abs)
 }

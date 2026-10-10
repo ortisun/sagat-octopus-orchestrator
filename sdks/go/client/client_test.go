@@ -847,3 +847,93 @@ func TestTheInstantsOfARunAreUTCWhateverTheZoneOfTheMachineAndTheServersOffset(t
 		t.Errorf("%v %v", got.CreatedAt, got.FinishedAt)
 	}
 }
+
+func TestAnEventGetsAnIDOfItsOwnPerCallAndTheOneTheCallerGaveIsSentAsItIs(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 202, map[string]any{"eventId": "e", "source": "api", "status": "ACCEPTED"})
+	})
+	c := newClient(t, f)
+	ids := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		if _, err := c.PublishEvent(context.Background(), client.Event{Type: "order.created"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range f.requests() {
+		id, _ := r.json(t)["eventId"].(string)
+		if !uuidText.MatchString(id) {
+			t.Fatalf("the generated id is a UUID: %q", id)
+		}
+		ids[id] = true
+	}
+	if len(ids) != 50 {
+		t.Errorf("50 events were published with %d different ids: two separate calls with no id are two events", len(ids))
+	}
+	// A second client generates its own: ids are not shared between clients.
+	other := newClient(t, f)
+	f.answer(f.handler)
+	if _, err := other.PublishEvent(context.Background(), client.Event{Type: "order.created"}); err != nil {
+		t.Fatal(err)
+	}
+	if id := f.requests()[0].json(t)["eventId"]; ids[id.(string)] {
+		t.Error("two clients generated the same id")
+	}
+
+	// The caller's id is sent as it is, on the first attempt and on every retry, and no Idempotency-Key is made up
+	// for an event: the event id is the key.
+	attempts := 0
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		attempts++
+		if attempts < 3 {
+			reply(w, 503, "down")
+			return
+		}
+		reply(w, 202, map[string]any{"eventId": "evt-mine-0001", "source": "api", "status": "DUPLICATE"})
+	})
+	receipt, err := c.PublishEvent(context.Background(), client.Event{ID: "evt-mine-0001", Type: "order.created"})
+	if err != nil || receipt.Status != client.EventDuplicate || receipt.EventID != "evt-mine-0001" {
+		t.Fatalf("%+v %v", receipt, err)
+	}
+	for i, r := range f.requests() {
+		if r.json(t)["eventId"] != "evt-mine-0001" {
+			t.Errorf("attempt %d sent the id %v", i+1, r.json(t)["eventId"])
+		}
+		if r.headers.Get("Idempotency-Key") != "" {
+			t.Errorf("attempt %d: an event is keyed by its id, not by a header", i+1)
+		}
+	}
+	if len(f.requests()) != 3 {
+		t.Errorf("%d attempts", len(f.requests()))
+	}
+}
+
+func TestTheFieldsOfAnEventAreSentAsTheAPINamesThemAndTheAbsentOnesAreLeftOut(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 202, map[string]any{"eventId": "e", "source": "api", "status": "ACCEPTED"})
+	})
+	c := newClient(t, f)
+	ist := time.FixedZone("IST", 5*3600+1800)
+	if _, err := c.PublishEvent(context.Background(), client.Event{
+		ID: "evt-full-0001", Type: "payment.confirmed", Data: map[string]any{"paid": "12.50"}, Subject: "order/o-1",
+		OccurredAt: time.Date(2026, 10, 10, 15, 30, 0, 123_000_000, ist), CorrelationKey: "ord-1", DedupeTTLSeconds: 600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	full := f.requests()[0].json(t)
+	want := map[string]any{
+		"eventId": "evt-full-0001", "type": "payment.confirmed", "data": map[string]any{"paid": "12.50"}, "subject": "order/o-1",
+		"occurredAt": "2026-10-10T10:00:00.123Z", "correlationKey": "ord-1", "dedupeTtlSeconds": float64(600),
+	}
+	if fmt.Sprint(full) != fmt.Sprint(want) {
+		t.Errorf("\n got %v\nwant %v", full, want)
+	}
+	f.answer(f.handler)
+	if _, err := c.PublishEvent(context.Background(), client.Event{ID: "evt-bare-0001", Type: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if bare := f.requests()[0].json(t); fmt.Sprint(bare) != "map[data:map[] eventId:evt-bare-0001 type:t]" {
+		t.Errorf("an event with only a type: %v", bare)
+	}
+}

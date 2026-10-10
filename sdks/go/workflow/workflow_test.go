@@ -447,3 +447,26 @@ func TestAnIDUsedTwiceInOneFlowIsRaisedWhenTheNodeIsAdded(t *testing.T) {
 		t.Error("the same in a nested flow")
 	}
 }
+
+func TestTheCanonicalTextRefusesAWholeNumberBeyond2To53MinusOneWhateverWayItWasWrittenAndBuildKeepsIt(t *testing.T) {
+	for name, value := range map[string]any{
+		"an integer": json.Number("9007199254740993"), "an integer written as a float": json.Number("9007199254740992.0"), "1e20": json.Number("1e20"),
+		"a float64 1e20": float64(1e20), "a float64 2^53": float64(9007199254740992), "an int64": int64(1) << 60,
+	} {
+		b := workflow.New("unsafe-flow").InputSchema(doc{"type": "object", "maximum": value}).Step("a", "x.y")
+		if _, err := b.Build(); err != nil {
+			t.Errorf("%s: Build keeps the document: %v", name, err)
+		}
+		if _, err := b.JSON(); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+			t.Errorf("%s: JSON wrote it: %v", name, err)
+		}
+	}
+	for name, value := range map[string]any{
+		"1e21": json.Number("1e21"), "a float64 1e21": float64(1e21), "a fraction": json.Number("0.5"), "the largest exact": json.Number("9007199254740991"),
+		"4.35": json.Number("4.35"), "a float64 4.35": 4.35,
+	} {
+		if _, err := workflow.New("safe-flow").InputSchema(doc{"type": "object", "maximum": value}).Step("a", "x.y").JSON(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

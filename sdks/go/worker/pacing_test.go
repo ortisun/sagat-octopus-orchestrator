@@ -216,3 +216,42 @@ func TestAStoppedHostClosesItsConnectionAndLeavesNoHeartbeatBehind(t *testing.T)
 	must(t, h.Stop(ctx))
 	until(t, "the second connection closed", func() bool { return clientConn() <= before })
 }
+
+// A task that will not end: its handler ignores the cancellation. The host is stopped, and what is the host's goes
+// with it: the heartbeat of that task does not outlive the host, though the handler's own goroutine (which no
+// runtime can kill) may.
+func TestTheHeartbeatOfATaskThatWillNotEndStopsWithTheHost(t *testing.T) {
+	f := newFakeService(t)
+	release := make(chan struct{})
+	var started atomic.Bool
+	h, err := worker.New(f.url(), "payments", "stubborn-worker", sagat.StaticToken("tok"), worker.WithHeartbeatInterval(10*time.Millisecond))
+	must(t, err)
+	must(t, h.RegisterActivity("charge", func(context.Context, json.RawMessage) (any, error) {
+		started.Store(true)
+		<-release // never looks at its context
+		return 1, nil
+	}))
+	t.Cleanup(func() { close(release) })
+	f.lease(lease())
+	must(t, h.Start(context.Background()))
+	until(t, "the task", func() bool { return started.Load() })
+	until(t, "heartbeats", func() bool { return len(f.of("Heartbeat")) >= 3 })
+	if count("(*Host).beat") == 0 {
+		t.Fatal("there is a heartbeat goroutine while the task runs")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	if err := h.Stop(ctx); err == nil {
+		t.Error("the task did not end within the grace: Stop says so")
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Errorf("stop took %v", took)
+	}
+	until(t, "no heartbeat goroutine of the stopped host", func() bool { return count("(*Host).beat") == 0 })
+	beats := len(f.of("Heartbeat"))
+	time.Sleep(150 * time.Millisecond)
+	if more := len(f.of("Heartbeat")) - beats; more != 0 {
+		t.Errorf("%d heartbeats after the host was stopped", more)
+	}
+}

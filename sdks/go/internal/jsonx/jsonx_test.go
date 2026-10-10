@@ -118,8 +118,8 @@ func TestCanonicalIsRFC8785(t *testing.T) {
 		t.Errorf("%s %v", got, err)
 	}
 	cases := map[string]string{
-		`1.0`: `1`, `600000`: `600000`, `6e5`: `600000`, `-0`: `0`, `0.1`: `0.1`, `1e21`: `1e+21`, `1e20`: `100000000000000000000`,
-		`1.2345678901234568e20`: `123456789012345680000`, `0.000001`: `0.000001`, `1e-7`: `1e-7`, `-1.5e-9`: `-1.5e-9`,
+		`1.0`: `1`, `600000`: `600000`, `6e5`: `600000`, `-0`: `0`, `0.1`: `0.1`, `1e21`: `1e+21`,
+		`1.2345678901234568e21`: `1.2345678901234568e+21`, `0.000001`: `0.000001`, `1e-7`: `1e-7`, `-1.5e-9`: `-1.5e-9`,
 		`1.7976931348623157e308`: `1.7976931348623157e+308`, `5e-324`: `5e-324`,
 		`100`: `100`, `1.25e2`: `125`, `12345.6789`: `12345.6789`,
 	}
@@ -172,12 +172,16 @@ func TestCanonicalEscapesAsJSONStringifyDoesAndKeepsNestingAndNulls(t *testing.T
 	}
 }
 
-// SPEC section 8: the canonical text refuses an integer beyond 2^53 - 1, in every SDK, because no language but
-// TypeScript's can print the nearest double and call it exact.
-func TestCanonicalRefusesAnIntegerBeyond2To53MinusOneAndNeverExpandsAnExponent(t *testing.T) {
+// SPEC section 8: the canonical text refuses a whole number beyond 2^53 - 1 that ECMAScript prints in digits (below
+// 1e21), whatever way it was written: no language but TypeScript's can print the nearest double and call it exact.
+// A number ECMAScript prints with an exponent (1e21 and above) and every number with a fraction is a number.
+func TestCanonicalRefusesAWholeNumberBeyond2To53MinusOneByValueAndNeverExpandsAnExponent(t *testing.T) {
 	for _, in := range []string{
 		"9007199254740992", "9007199254740993", "-9007199254740992", "-9007199254740993", "12345678901234567890", "-12345678901234567890",
-		"9223372036854775807", "99999999999999999999999999999999999999",
+		"9223372036854775807", "999999999999999868928",
+		// written as a float: the value is what counts
+		"9007199254740992.0", "9007199254740993.0", "-9007199254740992.0", "1e20", "1E20", "1.0e20", "2.5e19", "-2.5e19", "100000000000000000000.0",
+		"9.007199254740993e15", "9007199254740993e0", "90071992547409930e-1", "0.9007199254740993e16", "1e16", "9007199254740992e3",
 	} {
 		if _, err := Canonical(json.RawMessage(in)); !sagat.IsCode(err, sagat.CodeValidationFailed) {
 			t.Errorf("%s was written: %v", in, err)
@@ -187,9 +191,11 @@ func TestCanonicalRefusesAnIntegerBeyond2To53MinusOneAndNeverExpandsAnExponent(t
 		}
 	}
 	for in, want := range map[string]string{
-		"9007199254740991": "9007199254740991", "-9007199254740991": "-9007199254740991", "0": "0", "-0": "0",
-		// A literal with a fraction or an exponent is a double, as RFC 8785 says; it is not an integer literal.
-		"9007199254740993.0": "9007199254740992", "9.007199254740993e15": "9007199254740992", "1e22": "1e+22", "9223372036854775807e0": "9223372036854776000",
+		"9007199254740991": "9007199254740991", "-9007199254740991": "-9007199254740991", "0": "0", "-0": "0", "9007199254740991.0": "9007199254740991",
+		// ECMAScript prints these with an exponent, or they have a fraction: they are numbers
+		"1e21": "1e+21", "1E21": "1e+21", "1.5e21": "1.5e+21", "-1e21": "-1e+21", "1e22": "1e+22", "99999999999999999999999": "1e+23", "999999999999999999999": "1e+21",
+		"1e300": "1e+300", "4.35": "4.35", "0.1": "0.1", "12345.678": "12345.678", "-1e-7": "-1e-7", "1.5": "1.5", "4503599627370495.5": "4503599627370495.5",
+		"9007199254740990.0": "9007199254740990", "1e15": "1000000000000000", "123456789012345.6": "123456789012345.6",
 	} {
 		got, err := Canonical(json.RawMessage(in))
 		if err != nil || string(got) != want {
@@ -198,6 +204,16 @@ func TestCanonicalRefusesAnIntegerBeyond2To53MinusOneAndNeverExpandsAnExponent(t
 	}
 	if _, err := Canonical(map[string]any{"n": int64(1) << 60}); !sagat.IsCode(err, sagat.CodeValidationFailed) {
 		t.Errorf("an int64 beyond 2^53-1: %v", err)
+	}
+	for _, f := range []float64{1e20, 2.5e19, 9007199254740992, 9007199254740994, -1e20, 123456789012345678} {
+		if _, err := Canonical(map[string]any{"n": f}); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+			t.Errorf("the float64 %v was written: %v", f, err)
+		}
+	}
+	for f, want := range map[float64]string{1e21: `{"n":1e+21}`, 1.5: `{"n":1.5}`, 9007199254740991: `{"n":9007199254740991}`, 4.35: `{"n":4.35}`, 0.1: `{"n":0.1}`, 1e300: `{"n":1e+300}`} {
+		if got, err := Canonical(map[string]any{"n": f}); err != nil || string(got) != want {
+			t.Errorf("the float64 %v: %s %v", f, got, err)
+		}
 	}
 	if got, err := Canonical(map[string]any{"n": int64(1)<<53 - 1}); err != nil || string(got) != `{"n":9007199254740991}` {
 		t.Errorf("%s %v", got, err)
@@ -215,9 +231,13 @@ func TestCanonicalRefusesAnIntegerBeyond2To53MinusOneAndNeverExpandsAnExponent(t
 	if took := time.Since(began); took > time.Second {
 		t.Errorf("took %v: an exponent was expanded", took)
 	}
-	// A 100 000-digit integer is refused by its length, without being parsed as a number.
+	// A 100 000-digit integer is past a double: refused, and quickly.
+	began = time.Now()
 	if _, err := Canonical(json.RawMessage(strings.Repeat("9", 100_000))); !sagat.IsCode(err, sagat.CodeValidationFailed) {
 		t.Errorf("%v", err)
+	}
+	if took := time.Since(began); took > time.Second {
+		t.Errorf("took %v", took)
 	}
 }
 

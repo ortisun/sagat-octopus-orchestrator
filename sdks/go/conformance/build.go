@@ -266,7 +266,12 @@ func build(scenario object) (object, error) {
 	problems := object{}
 	for key, item := range asObject(scenario["invalidWorkflows"]) {
 		invalid := asObject(item)
-		_, err := builderOf(asObject(invalid["workflow"])).Build()
+		// Built with the builders and written as canonical text: the refusal may come from either.
+		builder := builderOf(asObject(invalid["workflow"]))
+		_, err := builder.Build()
+		if err == nil {
+			_, err = builder.JSON()
+		}
 		contains := asString(invalid["contains"])
 		var se *sagat.Error
 		switch {
