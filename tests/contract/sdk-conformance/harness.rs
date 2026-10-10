@@ -298,30 +298,66 @@ async fn server_state(run: &Run) -> Result<Value, String> {
 /// or a text the scenario marked `mustNotLeak` (a payload it sent, say). The message is not compared with
 /// the other SDKs', so this is where its content is held to the contract.
 fn leaks(out: &Value, config: &Value, scenario: &Value) -> Vec<String> {
-    let mut secrets: Vec<String> = ["clientToken", "workerToken", "otherTenantToken", "badToken"]
-        .iter()
-        .filter_map(|key| config[*key].as_str().map(str::to_owned))
+    // The tokens of the run appear nowhere in what a runner wrote (errors, observations, the worker log, ...).
+    let tokens: Vec<String> = [
+        "clientToken",
+        "workerToken",
+        "otherTenantToken",
+        "unboundWorkerToken",
+        "badToken",
+    ]
+    .iter()
+    .filter_map(|key| config[*key].as_str().map(str::to_owned))
+    .filter(|token| !token.is_empty())
+    .collect();
+    // A text the scenario marked (a payload it sent) must not come back in an error: it is legitimately in
+    // the worker's log, which handled it.
+    let markers: Vec<String> = scenario["mustNotLeak"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .filter(|marker| !marker.is_empty())
         .collect();
-    secrets.extend(
-        scenario["mustNotLeak"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(str::to_owned)),
-    );
+
+    fn walk(value: &Value, path: &str, found: &mut Vec<(String, String)>) {
+        match value {
+            Value::String(text) => found.push((path.to_owned(), text.clone())),
+            Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .for_each(|(i, v)| walk(v, &format!("{path}[{i}]"), found)),
+            Value::Object(map) => map
+                .iter()
+                .for_each(|(k, v)| walk(v, &format!("{path}.{k}"), found)),
+            _ => {}
+        }
+    }
     let mut found = Vec::new();
+    let mut everything = Vec::new();
+    walk(out, "$", &mut everything);
+    for (path, text) in &everything {
+        for token in &tokens {
+            if text.contains(token.as_str()) {
+                found.push(format!(
+                    "{path}: a token of the run is in the output (\"{}…\")",
+                    token.chars().take(8).collect::<String>()
+                ));
+            }
+        }
+    }
     for observation in out["observations"].as_array().into_iter().flatten() {
         let Some(error) = observation["error"].as_object() else {
             continue;
         };
         for (field, value) in error {
             let Some(text) = value.as_str() else { continue };
-            for secret in &secrets {
-                if !secret.is_empty() && text.contains(secret.as_str()) {
+            for marker in &markers {
+                if text.contains(marker.as_str()) {
                     found.push(format!(
                         "step {}: the error's {field} repeats \"{}…\"",
                         observation["id"],
-                        secret.chars().take(12).collect::<String>()
+                        marker.chars().take(12).collect::<String>()
                     ));
                 }
             }
@@ -378,6 +414,19 @@ fn given_traces(scenario: &Value) -> Vec<String> {
     }
     walk(&scenario["steps"], &mut found);
     found
+}
+
+/// Writes a file that only its owner may read: a config holds the tokens of the run.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)?.write_all(bytes)
 }
 
 /// A platform of its own for one scenario and one language, the workflows the scenario's builders wrote
@@ -555,9 +604,9 @@ async fn play(
         let pid = std::process::id();
         let config_path = dir.join(format!("{lang}.{pid}.config.json"));
         let out_path = dir.join(format!("{lang}.{pid}.out.json"));
-        std::fs::write(
+        write_private(
             &config_path,
-            serde_json::to_vec_pretty(&config).expect("json"),
+            &serde_json::to_vec_pretty(&config).expect("json"),
         )
         .expect("write config");
         let _ = std::fs::remove_file(&out_path);
@@ -998,9 +1047,9 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     let (run, config, _) = stage(&scenario, &built, language).await;
     let config_path = dir.join(format!("{language}.config.json"));
     let out_path = dir.join(format!("{language}.out.json"));
-    std::fs::write(
+    write_private(
         &config_path,
-        serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
+        &serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&out_path);
@@ -1085,9 +1134,9 @@ pub async fn run_mode(path: &Path, language: &'static str, mode: &str) -> Result
     let (run, config, _) = stage(&scenario, &built, language).await;
     let config_path = dir.join(format!("{language}.{mode}.config.json"));
     let out_path = dir.join(format!("{language}.{mode}.out.json"));
-    std::fs::write(
+    write_private(
         &config_path,
-        serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
+        &serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&out_path);
