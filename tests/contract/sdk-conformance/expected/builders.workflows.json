@@ -39,6 +39,16 @@
       "code": "VALIDATION_FAILED",
       "mentions": true,
       "raised": true
+    },
+    "unsafe-integer": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "unsafe-integer-written-as-a-float": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
     }
   },
   "workflows": {

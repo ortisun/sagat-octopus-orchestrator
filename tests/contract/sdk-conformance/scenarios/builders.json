@@ -339,6 +339,40 @@
         "name": "empty-flow",
         "program": []
       }
+    },
+    "unsafe-integer": {
+      "contains": "",
+      "workflow": {
+        "name": "unsafe-integer",
+        "program": [
+          {
+            "op": "step",
+            "id": "a",
+            "activity": "x.y"
+          }
+        ],
+        "inputSchema": {
+          "type": "object",
+          "maximum": 9007199254740993
+        }
+      }
+    },
+    "unsafe-integer-written-as-a-float": {
+      "contains": "",
+      "workflow": {
+        "name": "unsafe-float",
+        "program": [
+          {
+            "op": "step",
+            "id": "a",
+            "activity": "x.y"
+          }
+        ],
+        "inputSchema": {
+          "type": "object",
+          "maximum": 1e+20
+        }
+      }
     }
   },
   "steps": []
