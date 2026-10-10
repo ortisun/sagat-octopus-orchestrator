@@ -1,0 +1,47 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{csproj,props,targets,json,yml,yaml,xml,config}]
+indent_size = 2
+
+[*.sh]
+indent_size = 2
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_sort_system_directives_first = true
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = true:suggestion
+csharp_prefer_braces = true:warning
+csharp_new_line_before_open_brace = all
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+dotnet_style_qualification_for_field = false:warning
+dotnet_style_qualification_for_property = false:warning
+dotnet_style_qualification_for_method = false:warning
+dotnet_style_qualification_for_event = false:warning
+dotnet_diagnostic.IDE0005.severity = warning
+dotnet_diagnostic.IDE0130.severity = none
+
+# Public API: the catalog's names are the SPEC's, and the generated protocol code is not ours to reshape.
+[**/obj/**/*.cs]
+generated_code = true
+
+# The tests and the conformance runner are programs that exercise the SDK, not the SDK: the rules about the cost of logging,
+# about disposing fixtures of xUnit (IAsyncLifetime) and about ConfigureAwait in a test do not buy anything there.
+[{tests,conformance}/**/*.cs]
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1873.severity = none
+dotnet_diagnostic.CA1001.severity = none
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1861.severity = none
+dotnet_diagnostic.CA1812.severity = none
+dotnet_diagnostic.CA2000.severity = none

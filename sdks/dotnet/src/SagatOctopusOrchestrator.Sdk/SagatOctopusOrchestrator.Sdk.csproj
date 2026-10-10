@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <RootNamespace>SagatOctopusOrchestrator.Sdk</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>SagatOctopusOrchestrator.Sdk</AssemblyName>
+
+    <!-- NuGet package -->
+    <PackageId>SagatOctopusOrchestrator.Sdk</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Sagat Octopus Orchestrator</Authors>
+    <Description>C#/.NET SDK for the Sagat Octopus Orchestrator: a client for runs and events, a worker host for activities, sagas and reconciliations (gRPC), typed builders of the workflow IR, and Microsoft.Extensions.DependencyInjection / Hosting integration.</Description>
+    <PackageTags>workflow;saga;orchestration;durable;grpc;sdk</PackageTags>
+    <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/ortisun/sagat-octopus-orchestrator</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/ortisun/sagat-octopus-orchestrator/tree/main/sdks/dotnet</PackageProjectUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../LICENSE.txt" Pack="true" PackagePath="/" />
+    <EmbeddedResource Include="error-catalog.json" LogicalName="error-catalog.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The generated protocol types are an implementation detail of the SDK: internal. -->
+    <Protobuf Include="../../proto/worker.proto" ProtoRoot="../../proto" GrpcServices="Client" Access="Internal" Link="proto/worker.proto" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+
+</Project>
