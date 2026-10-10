@@ -208,9 +208,11 @@ A handler's input type that cannot be built from the document is not a crash: th
 
 ### 6.4 Heartbeat and cancellation
 
-- Interval: one third of the time left on the lease when the task is taken, never under 500 ms and never
-  over 10 s, measured on the SDK's monotonic clock from receipt (not from the server's clock, so a skew
-  cannot stretch it past the lease).
+- Interval: one third of the time left on the lease when the task is taken (the lease's `expires_at` minus the
+  SDK's clock at receipt: the lease carries no TTL), never under 500 ms and never over 10 s (a third of the
+  platform's default 30 s lease). A clock skewed by more than the lease's TTL distorts the interval, which is
+  why it is clamped; a host whose clock is not synchronized sets `heartbeatIntervalMs` explicitly. The
+  interval is then counted on the SDK's monotonic clock.
 - `Heartbeat` carries `task_id, worker_id, generation, lease_token, run_id, step_id, attempt` (the last
   three only from protocol 1.1). The answer's `lease_expires_at_epoch_ms` becomes the context's new deadline.
 - `cancel_requested = true` → the cancellation token of the activity is cancelled with the reason
