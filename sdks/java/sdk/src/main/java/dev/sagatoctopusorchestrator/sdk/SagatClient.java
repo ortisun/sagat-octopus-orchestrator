@@ -1,0 +1,506 @@
+package dev.sagatoctopusorchestrator.sdk;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
+
+/**
+ * The client of the REST API (sdks/SPEC.md section 3). Every call has a blocking form and an {@code ...Async} form
+ * that returns a {@link CompletableFuture}; the asynchronous form runs the blocking one on an executor, so cancelling
+ * the future interrupts a call that is waiting. A client is thread-safe; {@link #close()} releases the executor it
+ * owns.
+ */
+public final class SagatClient implements AutoCloseable {
+    private static final Pattern UUID_TEXT = Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern KEY = Pattern.compile("^[\\x21-\\x7e]{8,160}$");
+    private static final long NAME_CACHE_MILLIS = 60_000;
+
+    private final ClientConfig config;
+    private final RestClient http;
+    private final Map<String, CachedId> names = new ConcurrentHashMap<>();
+    private final ExecutorService executor;
+    private final boolean ownsExecutor;
+
+    private record CachedId(String id, long atNanos) {}
+
+    public SagatClient(ClientConfig config) {
+        this.config = config;
+        this.http = new RestClient(config);
+        if (config.asyncExecutor() != null) {
+            this.executor = config.asyncExecutor();
+            this.ownsExecutor = false;
+        } else {
+            AtomicInteger counter = new AtomicInteger();
+            this.executor = Executors.newCachedThreadPool(runnable -> {
+                Thread thread = new Thread(runnable, "sagat-client-" + counter.incrementAndGet());
+                thread.setDaemon(true);
+                return thread;
+            });
+            this.ownsExecutor = true;
+        }
+    }
+
+    /** Shortcut for {@code new SagatClient(config)}. */
+    public static SagatClient create(ClientConfig config) {
+        return new SagatClient(config);
+    }
+
+    @Override
+    public void close() {
+        if (ownsExecutor) {
+            executor.shutdownNow();
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ plumbing
+
+    private String trace(String explicit) {
+        String value = explicit;
+        if (value == null && config.traceContext() != null) {
+            value = config.traceContext().get();
+        }
+        return value == null ? null : Traceparents.check(value);
+    }
+
+    private static String key(String given) {
+        String key = given != null ? given : UUID.randomUUID().toString();
+        if (!KEY.matcher(key).matches()) {
+            throw SagatException.invalid("an idempotency key is 8 to 160 printable ASCII characters");
+        }
+        return key;
+    }
+
+    private <T> CompletableFuture<T> async(Callable<T> body) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        Future<?> task = executor.submit(() -> {
+            try {
+                future.complete(body.call());
+            } catch (Throwable t) {
+                future.completeExceptionally(t);
+            }
+        });
+        future.whenComplete((result, error) -> {
+            if (future.isCancelled()) {
+                task.cancel(true);
+            }
+        });
+        return future;
+    }
+
+    // ------------------------------------------------------------------------------------------ workflows
+
+    /** The id of a workflow given by id or by name (the active version of the workflow of that name). */
+    public String resolveWorkflow(String workflow) {
+        if (UUID_TEXT.matcher(workflow).matches()) {
+            return workflow.toLowerCase(Locale.ROOT);
+        }
+        CachedId cached = names.get(workflow);
+        if (cached != null && System.nanoTime() - cached.atNanos() < NAME_CACHE_MILLIS * 1_000_000L) {
+            return cached.id();
+        }
+        String cursor = null;
+        do {
+            Map<String, String> query = new LinkedHashMap<>();
+            query.put("limit", "200");
+            query.put("cursor", cursor);
+            RestClient.Response response = http.request(
+                    new RestClient.Request("GET", "/workflows", query, null, null, trace(null), true));
+            JsonNode page = object(response.body(), "a page");
+            for (JsonNode item : page.path("items")) {
+                JsonNode draft = object(item, "a workflow");
+                if (draft.path("name").isTextual() && draft.path("name").textValue().equals(workflow)) {
+                    String id = str(draft, "id");
+                    names.put(workflow, new CachedId(id, System.nanoTime()));
+                    return id;
+                }
+            }
+            cursor = optStr(page, "nextCursor");
+        } while (cursor != null && !cursor.isEmpty());
+        throw SagatException.builder(ErrorCode.NOT_FOUND, "no workflow is named \"" + workflow + "\" in this namespace")
+                .httpStatus(404)
+                .reason("WORKFLOW_NOT_FOUND")
+                .build();
+    }
+
+    // ------------------------------------------------------------------------------------------- runs
+
+    /** Starts a run of a published workflow, given by id or by name. {@code input} is any JSON value (an object by convention). */
+    public Run start(String workflow, Object input, StartOptions options) {
+        StartOptions opts = options == null ? StartOptions.create() : options;
+        String workflowId = resolveWorkflow(workflow);
+        Instant deadline = opts.deadline();
+        if (opts.deadlineIn() != null) {
+            deadline = Instant.now().plus(opts.deadlineIn());
+        }
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("workflowId", workflowId);
+        body.set("input", input == null ? JsonNodeFactory.instance.objectNode() : Json.toTree(input));
+        if (opts.versionId() != null && !opts.versionId().isEmpty()) {
+            body.put("versionId", opts.versionId());
+        }
+        if (opts.correlationId() != null) {
+            body.put("correlationId", opts.correlationId());
+        }
+        if (deadline != null) {
+            body.put("deadline", Json.instant(deadline));
+        }
+        RestClient.Response response = http.request(new RestClient.Request(
+                "POST", "/runs", null, body, key(opts.idempotencyKey()), trace(opts.traceparent()), true));
+        return toRun(response.body());
+    }
+
+    /** {@link #start(String, Object, StartOptions)} with the defaults. */
+    public Run start(String workflow, Object input) {
+        return start(workflow, input, null);
+    }
+
+    public CompletableFuture<Run> startAsync(String workflow, Object input, StartOptions options) {
+        return async(() -> start(workflow, input, options));
+    }
+
+    /** Reads a run. */
+    public Run get(String runId) {
+        RestClient.Response response = http.request(new RestClient.Request(
+                "GET", "/runs/" + Endpoints.encodeComponent(runId), null, null, null, trace(null), true));
+        return toRun(response.body());
+    }
+
+    public CompletableFuture<Run> getAsync(String runId) {
+        return async(() -> get(runId));
+    }
+
+    /** One page of runs, newest first. */
+    public RunPage list(ListOptions options) {
+        ListOptions opts = options == null ? ListOptions.create() : options;
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("workflowId", opts.workflowId());
+        query.put("status", opts.status() == null ? null : opts.status().name());
+        query.put("limit", opts.limit() == null ? null : Integer.toString(opts.limit()));
+        query.put("cursor", opts.cursor());
+        RestClient.Response response = http.request(new RestClient.Request("GET", "/runs", query, null, null, trace(null), true));
+        return toPage(response.body());
+    }
+
+    public CompletableFuture<RunPage> listAsync(ListOptions options) {
+        return async(() -> list(options));
+    }
+
+    /**
+     * Every run that matches, page after page, in the order the server gave them (newest first). The stream is lazy:
+     * a page is read when the previous one has been consumed. A failure while paging is raised from the stream.
+     */
+    public Stream<Run> listAll(ListOptions options) {
+        ListOptions first = options == null ? ListOptions.create() : options;
+        Iterator<Run> iterator = new Iterator<>() {
+            private Iterator<Run> page = List.<Run>of().iterator();
+            private String cursor = null;
+            private boolean started = false;
+            private boolean done = false;
+
+            private void fill() {
+                while (!page.hasNext() && !done) {
+                    ListOptions next = ListOptions.create()
+                            .workflowId(first.workflowId())
+                            .status(first.status())
+                            .limit(first.limit())
+                            .cursor(started ? cursor : null);
+                    RunPage result = list(next);
+                    started = true;
+                    cursor = result.nextCursor();
+                    page = result.items().iterator();
+                    if (cursor == null || cursor.isEmpty()) {
+                        done = true;
+                    }
+                }
+            }
+
+            @Override
+            public boolean hasNext() {
+                fill();
+                return page.hasNext();
+            }
+
+            @Override
+            public Run next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+                return page.next();
+            }
+        };
+        return StreamSupport.stream(java.util.Spliterators.spliteratorUnknownSize(iterator, java.util.Spliterator.ORDERED), false);
+    }
+
+    /** Every run that matches, collected. */
+    public CompletableFuture<List<Run>> listAllAsync(ListOptions options) {
+        return async(() -> {
+            try (Stream<Run> runs = listAll(options)) {
+                return runs.toList();
+            }
+        });
+    }
+
+    /** An operation on a run: pause, resume, cancel and the saga decisions. {@code reason} has 8 to 2000 characters. */
+    public OperationResult operate(String runId, OperateAction action, String reason, OperateOptions options) {
+        OperateOptions opts = options == null ? OperateOptions.create() : options;
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("action", action.name());
+        body.put("reason", reason);
+        if (opts.stepId() != null) {
+            body.put("stepId", opts.stepId());
+        }
+        if (opts.outcome() != null) {
+            body.put("outcome", opts.outcome().name());
+        }
+        if (opts.errorCode() != null) {
+            body.put("errorCode", opts.errorCode());
+        }
+        if (opts.expectedRunVersion() != null) {
+            body.put("expectedRunVersion", opts.expectedRunVersion().longValue());
+        }
+        RestClient.Response response = http.request(new RestClient.Request(
+                "POST",
+                "/runs/" + Endpoints.encodeComponent(runId) + "/operations",
+                null,
+                body,
+                key(opts.idempotencyKey()),
+                trace(opts.traceparent()),
+                true));
+        JsonNode raw = object(response.body(), "an operation result");
+        return new OperationResult(
+                str(raw, "operationId"),
+                raw.path("accepted").isBoolean() && raw.path("accepted").booleanValue(),
+                optStr(raw, "runStatus"),
+                raw.path("runVersion").isIntegralNumber() ? Long.valueOf(raw.path("runVersion").longValue()) : null,
+                raw);
+    }
+
+    public CompletableFuture<OperationResult> operateAsync(String runId, OperateAction action, String reason, OperateOptions options) {
+        return async(() -> operate(runId, action, reason, options));
+    }
+
+    /** Cancels a run. */
+    public OperationResult cancel(String runId, String reason, OperateOptions options) {
+        return operate(runId, OperateAction.CANCEL, reason, options);
+    }
+
+    public CompletableFuture<OperationResult> cancelAsync(String runId, String reason, OperateOptions options) {
+        return async(() -> cancel(runId, reason, options));
+    }
+
+    /** Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a {@code CONFLICT}. */
+    public SignalResult signal(String runId, String name, Object payload, CallOptions options) {
+        CallOptions opts = options == null ? CallOptions.create() : options;
+        JsonNode body = payload == null ? JsonNodeFactory.instance.objectNode() : Json.toTree(payload);
+        RestClient.Response response = http.request(new RestClient.Request(
+                "POST",
+                "/runs/" + Endpoints.encodeComponent(runId) + "/signals/" + Endpoints.encodeComponent(name),
+                null,
+                body,
+                key(opts.idempotencyKey()),
+                trace(opts.traceparent()),
+                true));
+        JsonNode raw = object(response.body(), "a signal result");
+        List<String> delivered = new ArrayList<>();
+        for (JsonNode item : raw.path("deliveredTo")) {
+            delivered.add(item.asText());
+        }
+        return new SignalResult(List.copyOf(delivered), raw);
+    }
+
+    public CompletableFuture<SignalResult> signalAsync(String runId, String name, Object payload, CallOptions options) {
+        return async(() -> signal(runId, name, payload, options));
+    }
+
+    // ------------------------------------------------------------------------------------------- events
+
+    /** Publishes an event to the inbox of the namespace, once per event id for the deduplication window. */
+    public EventAccepted publishEvent(EventInput event, CallOptions options) {
+        CallOptions opts = options == null ? CallOptions.create() : options;
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("eventId", event.eventId() != null ? event.eventId() : UUID.randomUUID().toString());
+        body.put("type", event.type());
+        body.set("data", event.data() == null ? JsonNodeFactory.instance.objectNode() : Json.toTree(event.data()));
+        if (event.subject() != null) {
+            body.put("subject", event.subject());
+        }
+        if (event.occurredAt() != null) {
+            body.put("occurredAt", Json.instant(event.occurredAt()));
+        }
+        if (event.correlationKey() != null) {
+            body.put("correlationKey", event.correlationKey());
+        }
+        if (event.dedupeTtlSeconds() != null) {
+            body.put("dedupeTtlSeconds", event.dedupeTtlSeconds().intValue());
+        }
+        // The event id is the key: the server answers a repetition DUPLICATE, so the call is safe to repeat.
+        RestClient.Response response = http.request(new RestClient.Request(
+                "POST", "/events", null, body, null, trace(opts.traceparent()), true));
+        JsonNode raw = object(response.body(), "an event answer");
+        String status = str(raw, "status");
+        EventAccepted.Status parsed;
+        try {
+            parsed = EventAccepted.Status.valueOf(status);
+        } catch (IllegalArgumentException e) {
+            parsed = EventAccepted.Status.UNKNOWN;
+        }
+        return new EventAccepted(str(raw, "eventId"), str(raw, "source"), parsed, status, raw);
+    }
+
+    public CompletableFuture<EventAccepted> publishEventAsync(EventInput event, CallOptions options) {
+        return async(() -> publishEvent(event, options));
+    }
+
+    /** The journal of a run, a page at a time. */
+    public JournalPage events(String runId, String cursor, Integer limit) {
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("cursor", cursor);
+        query.put("limit", limit == null ? null : Integer.toString(limit));
+        RestClient.Response response = http.request(new RestClient.Request(
+                "GET", "/runs/" + Endpoints.encodeComponent(runId) + "/events", query, null, null, trace(null), true));
+        JsonNode raw = object(response.body(), "a page");
+        List<JournalEvent> items = new ArrayList<>();
+        for (JsonNode item : raw.path("items")) {
+            items.add(new JournalEvent(object(item, "an event")));
+        }
+        return new JournalPage(List.copyOf(items), optStr(raw, "nextCursor"), raw);
+    }
+
+    public CompletableFuture<JournalPage> eventsAsync(String runId, String cursor, Integer limit) {
+        return async(() -> events(runId, cursor, limit));
+    }
+
+    // ----------------------------------------------------------------------------------------- waiting
+
+    /**
+     * Polls {@link #get} until the run is in a terminal status or the timeout passes (a {@code TRANSPORT} error
+     * with the reason {@code WAIT_TIMEOUT}). An interrupt of the waiting thread is a {@code CANCELLED} error.
+     */
+    public Run waitForCompletion(String runId, WaitOptions options) {
+        WaitOptions opts = options == null ? WaitOptions.create() : options;
+        long start = System.nanoTime();
+        long timeoutNanos = opts.timeout().toNanos();
+        long interval = opts.pollInterval().toMillis();
+        for (;;) {
+            Run run = get(runId);
+            if (run.isTerminal()) {
+                return run;
+            }
+            if (System.nanoTime() - start >= timeoutNanos) {
+                throw SagatException.builder(ErrorCode.TRANSPORT, "the run did not finish within " + opts.timeout().toMillis() + " ms")
+                        .reason("WAIT_TIMEOUT")
+                        .build();
+            }
+            RestClient.pause(Math.round(interval * (0.8 + ThreadLocalRandom.current().nextDouble() * 0.4)));
+        }
+    }
+
+    public CompletableFuture<Run> waitForCompletionAsync(String runId, WaitOptions options) {
+        return async(() -> waitForCompletion(runId, options));
+    }
+
+    // ------------------------------------------------------------------------------------------ parsing
+
+    private static JsonNode object(JsonNode value, String what) {
+        if (value == null || !value.isObject()) {
+            throw SagatException.of(ErrorCode.PROTOCOL, what + " is not an object");
+        }
+        return value;
+    }
+
+    private static String str(JsonNode raw, String key) {
+        JsonNode value = raw.path(key);
+        if (!value.isTextual()) {
+            throw SagatException.of(ErrorCode.PROTOCOL, key + " is missing from the answer");
+        }
+        return value.textValue();
+    }
+
+    private static String optStr(JsonNode raw, String key) {
+        JsonNode value = raw.path(key);
+        return value.isTextual() ? value.textValue() : null;
+    }
+
+    private static Instant optInstant(JsonNode raw, String key) {
+        JsonNode value = raw.path(key);
+        if (!value.isTextual()) {
+            return null;
+        }
+        try {
+            return OffsetDateTime.parse(value.textValue()).toInstant();
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
+    private static long num(JsonNode raw, String key, long fallback) {
+        JsonNode value = raw.path(key);
+        return value.isNumber() ? value.longValue() : fallback;
+    }
+
+    static Run toRun(JsonNode value) {
+        JsonNode raw = object(value, "a run");
+        Instant created = optInstant(raw, "createdAt");
+        if (created == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "createdAt is missing from the answer");
+        }
+        JsonNode parentNode = raw.path("parent");
+        Run.Parent parent = parentNode.isObject()
+                ? new Run.Parent(parentNode.path("runId").asText(""), parentNode.path("node").asText(""), parentNode.path("cancelPolicy").asText(""))
+                : null;
+        String status = str(raw, "status");
+        return new Run(
+                str(raw, "runId"),
+                str(raw, "workflowId"),
+                str(raw, "versionId"),
+                RunStatus.of(status),
+                status,
+                num(raw, "version", 0),
+                raw.path("paused").isBoolean() && raw.path("paused").booleanValue(),
+                optStr(raw, "startedBy"),
+                created,
+                optInstant(raw, "updatedAt"),
+                optInstant(raw, "finishedAt"),
+                optInstant(raw, "deadline"),
+                optStr(raw, "traceId"),
+                optStr(raw, "correlationId"),
+                (int) num(raw, "depth", 0),
+                parent,
+                raw);
+    }
+
+    private static RunPage toPage(JsonNode body) {
+        JsonNode raw = object(body, "a page");
+        JsonNode items = raw.path("items");
+        if (!items.isArray()) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "items is missing from the page");
+        }
+        List<Run> runs = new ArrayList<>();
+        for (JsonNode item : items) {
+            runs.add(toRun(item));
+        }
+        return new RunPage(List.copyOf(runs), optStr(raw, "nextCursor"), raw);
+    }
+}

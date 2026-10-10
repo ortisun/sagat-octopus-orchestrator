@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>dev.sagatoctopusorchestrator</groupId>
+    <artifactId>sagat-octopus-orchestrator-sdk-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+
+  <artifactId>sagat-octopus-orchestrator-sdk-conformance</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Sagat Octopus Orchestrator Java SDK conformance runner</name>
+  <description>The runner of the cross-SDK conformance suite (tests/contract/sdk-conformance). Not published: it is built and launched by conformance/prepare.sh and run.sh.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>dev.sagatoctopusorchestrator</groupId>
+      <artifactId>sagat-octopus-orchestrator-sdk</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <!-- Only the public API of the SDK is used, plus the gRPC interceptor API for the fault plan. -->
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-api</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Writes the runtime classpath that conformance/run.sh launches the runner with. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>runner-classpath</id>
+            <phase>package</phase>
+            <goals>
+              <goal>build-classpath</goal>
+            </goals>
+            <configuration>
+              <outputFile>${project.build.directory}/classpath.txt</outputFile>
+              <includeScope>runtime</includeScope>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
