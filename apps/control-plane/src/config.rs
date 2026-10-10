@@ -485,6 +485,7 @@ impl ServeConfig {
                 header_read_timeout: Duration::from_secs(header_secs),
                 max_connections,
                 shutdown_grace: Duration::from_secs(grace_secs),
+                ..ServerConfig::default()
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
             secrets,
@@ -569,6 +570,7 @@ fn read_studio(
     Ok(value("SAGAT_STUDIO_DIR").map(|dir| StudioConfig {
         dir: dir.into(),
         oidc,
+        limits: sagat_api_http::studio::StudioLimits::default(),
     }))
 }
 

@@ -5,9 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use sagat_api_http::studio::{StudioConfig, StudioOidc, studio_router};
+use sagat_api_http::studio::{StudioConfig, StudioLimits, StudioOidc, studio_router};
 use sagat_api_http::{ServerConfig, serve};
-use tokio::net::TcpListener;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 /// A directory shaped like a Vite build, and a secret next to it that must stay unreachable.
 fn site() -> (tempdir::Dir, PathBuf) {
@@ -57,9 +59,14 @@ mod tempdir {
 }
 
 async fn serve_studio(root: &Path, oidc: Option<StudioOidc>) -> String {
+    serve_studio_with(root, oidc, StudioLimits::default()).await
+}
+
+async fn serve_studio_with(root: &Path, oidc: Option<StudioOidc>, limits: StudioLimits) -> String {
     let app = studio_router(StudioConfig {
         dir: root.to_path_buf(),
         oidc,
+        limits,
     })
     .expect("a directory with an index.html");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -348,11 +355,181 @@ async fn a_directory_without_an_index_is_refused_at_start_up() {
     let refused = studio_router(StudioConfig {
         dir: dir.path().to_path_buf(),
         oidc: None,
+        limits: StudioLimits::default(),
     });
     assert!(refused.is_err());
     let missing = studio_router(StudioConfig {
         dir: dir.path().join("nope"),
         oidc: None,
+        limits: StudioLimits::default(),
     });
     assert!(missing.is_err());
+}
+
+// ------------------------------------------------------------- what serving files may cost
+
+/// A request written by hand, as a hostile client writes it: nothing tidies the path.
+async fn raw(addr: &str, request_target: &str) -> String {
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(
+            format!("GET {request_target} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .expect("request");
+    let mut answer = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+    String::from_utf8_lossy(&answer).into_owned()
+}
+
+fn authority(base: &str) -> String {
+    base.trim_start_matches("http://").to_owned()
+}
+
+#[tokio::test]
+async fn dot_segments_a_client_library_would_tidy_away_still_get_nothing_when_sent_as_they_are() {
+    let (_dir, root) = site();
+    let base = serve_studio(&root, None).await;
+    let addr = authority(&base);
+    for target in [
+        "/studio/assets/../../secret.txt",
+        "/studio/../secret.txt",
+        "/studio/assets/%2e%2e/%2e%2e/secret.txt",
+        "/studio/assets/..%2f..%2fsecret.txt",
+        "/studio/assets/%2e%2e%5c%2e%2e%5csecret.txt",
+        "/studio/assets/..\\..\\secret.txt",
+        "/studio/assets/link.txt",
+        "/studio/.env",
+        "/studio/assets/%00.js",
+    ] {
+        let answer = raw(&addr, target).await;
+        assert!(
+            !answer.contains("outside") && !answer.contains("hunter2"),
+            "{target} reached a file that is not the Studio's: {answer}"
+        );
+        assert!(
+            !answer.starts_with("HTTP/1.1 200"),
+            "{target} was answered 200: {answer}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_file_is_sent_with_its_length_and_a_head_says_the_same_without_the_body() {
+    let (_dir, root) = site();
+    let base = serve_studio(&root, None).await;
+    let url = format!("{base}/studio/assets/app.1a2b3c.js");
+    let get = client().get(&url).send().await.expect("get");
+    assert_eq!(header(&get, "content-length"), "21");
+    assert_eq!(get.text().await.expect("body"), "console.log('studio')");
+    let head = client().head(&url).send().await.expect("head");
+    assert_eq!(head.status(), 200);
+    assert_eq!(
+        header(&head, "content-length"),
+        "21",
+        "a HEAD reports the length of the file"
+    );
+    assert_eq!(
+        header(&head, "content-type"),
+        "text/javascript; charset=utf-8"
+    );
+    assert_eq!(head.bytes().await.expect("no body").len(), 0);
+}
+
+/// A file the kernel's buffers cannot swallow in one go.
+fn big_file(root: &Path) {
+    let file = std::fs::File::create(root.join("assets/big.1a2b3c.js")).expect("big");
+    file.set_len(24 * 1024 * 1024).expect("sparse");
+}
+
+#[tokio::test]
+async fn clients_that_read_nothing_cannot_hold_more_than_the_transfers_the_server_allows() {
+    let (_dir, root) = site();
+    big_file(&root);
+    let limits = StudioLimits {
+        max_transfers: 2,
+        max_transfer: Duration::from_secs(60),
+    };
+    let base = serve_studio_with(&root, None, limits).await;
+    let addr = authority(&base);
+
+    // Two clients ask for the big file and read none of it: both transfers are held.
+    let mut holders = Vec::new();
+    for _ in 0..2 {
+        let mut stream = TcpStream::connect(&addr).await.expect("connect");
+        stream
+            .write_all(b"GET /studio/assets/big.1a2b3c.js HTTP/1.1\r\nHost: test\r\n\r\n")
+            .await
+            .expect("request");
+        holders.push(stream);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // A third is told to come back, with the time to wait, instead of being queued behind them.
+    let refused = client()
+        .get(format!("{base}/studio/assets/app.1a2b3c.js"))
+        .send()
+        .await
+        .expect("third");
+    assert_eq!(refused.status(), 503);
+    assert_eq!(header(&refused, "retry-after"), "1");
+    assert_eq!(header(&refused, "cache-control"), "no-store");
+    // The page and the config are small and held in memory: they are not turned away.
+    let page = client()
+        .get(format!("{base}/studio/"))
+        .send()
+        .await
+        .expect("page");
+    assert_eq!(page.status(), 200);
+
+    // When the holders go, the places are free again.
+    drop(holders);
+    let mut served = false;
+    for _ in 0..50 {
+        let again = client()
+            .get(format!("{base}/studio/assets/app.1a2b3c.js"))
+            .send()
+            .await
+            .expect("again");
+        if again.status() == 200 {
+            served = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        served,
+        "the places of the clients that left were never freed"
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_takes_a_file_a_few_bytes_at_a_time_is_cut_after_the_longest_transfer() {
+    let (_dir, root) = site();
+    big_file(&root);
+    let limits = StudioLimits {
+        max_transfers: 4,
+        max_transfer: Duration::from_secs(1),
+    };
+    let base = serve_studio_with(&root, None, limits).await;
+    let mut slow = TcpStream::connect(authority(&base)).await.expect("connect");
+    slow.write_all(b"GET /studio/assets/big.1a2b3c.js HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .expect("request");
+    let mut total = 0usize;
+    let mut chunk = vec![0u8; 16 * 1024];
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(30) {
+        match tokio::time::timeout(Duration::from_secs(5), slow.read(&mut chunk)).await {
+            Ok(Ok(n)) if n > 0 => total += n,
+            _ => break,
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert!(
+        total < 24 * 1024 * 1024,
+        "a client that took the file in drops was served all of it ({total} bytes) in {:?}",
+        started.elapsed()
+    );
 }

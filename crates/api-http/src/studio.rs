@@ -10,19 +10,33 @@
 //! * a path with no file extension that matches no file is a route of the app and gets the page;
 //!   a missing *file* is a `404`, never the page (a script that fails to load must not be answered
 //!   with HTML);
+//! * a file is streamed, not read whole into memory; at most [`StudioLimits::max_transfers`] files
+//!   are in flight at once (another request is told to come back: `503` with `Retry-After`), and a
+//!   transfer that takes longer than [`StudioLimits::max_transfer`] is cut, so a client that opens
+//!   many connections and reads nothing cannot hold the memory or the connections of the platform;
 //! * every answer carries a content security policy that allows scripts, styles, images and
 //!   connections from the page's own origin only (and the issuer's, when one is configured, for
 //!   the sign-in), `nosniff`, no referrer and a same-origin opener policy; built assets are
 //!   `immutable`, the page is `no-store`.
 
+use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use axum::Router;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as UrlPath, State};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use serde_json::json;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::Sleep;
+use tokio_stream::Stream;
+use tokio_util::io::ReaderStream;
 
 /// The largest file served. The biggest thing in a build is an editor worker of a few megabytes.
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
@@ -34,6 +48,29 @@ pub struct StudioConfig {
     pub dir: PathBuf,
     /// The issuer the browser signs in with, when the deployment has one.
     pub oidc: Option<StudioOidc>,
+    /// How much of the platform the files may hold.
+    pub limits: StudioLimits,
+}
+
+/// What serving files may cost. The files are public (they are what a browser needs before anyone
+/// has signed in), so what keeps them from being a way to exhaust the platform is a bound, not a
+/// credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StudioLimits {
+    /// Files being sent at once. A page load asks for about twenty and the assets are cached for a
+    /// year; a request over the limit is answered `503` with `Retry-After: 1`.
+    pub max_transfers: usize,
+    /// The longest one file may take to be read by the client.
+    pub max_transfer: Duration,
+}
+
+impl Default for StudioLimits {
+    fn default() -> Self {
+        Self {
+            max_transfers: 64,
+            max_transfer: Duration::from_secs(60),
+        }
+    }
 }
 
 /// The public settings of the sign-in (nothing secret: a client id of a public client).
@@ -59,6 +96,8 @@ struct Site {
     index: Vec<u8>,
     config: Vec<u8>,
     csp: HeaderValue,
+    transfers: Arc<Semaphore>,
+    max_transfer: Duration,
 }
 
 /// The routes `/studio`, `/studio/` and `/studio/{*path}`.
@@ -88,6 +127,8 @@ pub fn studio_router(config: StudioConfig) -> Result<Router, StudioError> {
         .unwrap_or_default(),
         csp: HeaderValue::from_str(&policy(connect.as_deref()))
             .map_err(|_| StudioError::BadIssuer(String::new()))?,
+        transfers: Arc::new(Semaphore::new(config.limits.max_transfers.max(1))),
+        max_transfer: config.limits.max_transfer,
     };
     Ok(Router::new()
         .route("/studio", get(|| async { Redirect::permanent("/studio/") }))
@@ -197,25 +238,62 @@ async fn file(
     let Some(relative) = plain_path(&path) else {
         return hardened(&site, StatusCode::NOT_FOUND.into_response(), "no-store");
     };
-    if let Some(found) = read_inside(&site.root, &relative).await {
+    if let Some((file, length)) = open_inside(&site.root, &relative).await {
+        let Ok(permit) = Arc::clone(&site.transfers).try_acquire_owned() else {
+            let mut busy = StatusCode::SERVICE_UNAVAILABLE.into_response();
+            busy.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            return hardened(&site, busy, "no-store");
+        };
         let kind = content_type(&relative);
         let cache = if relative.starts_with("assets") {
             "public, max-age=31536000, immutable"
         } else {
             "no-cache"
         };
+        // A `HEAD` is answered with the headers of the `GET`, length included, and no body.
         let body = if method == Method::HEAD {
-            Vec::new()
+            Body::empty()
         } else {
-            found
+            Body::from_stream(Transfer {
+                inner: ReaderStream::with_capacity(file, 64 * 1024),
+                deadline: Box::pin(tokio::time::sleep(site.max_transfer)),
+                _permit: permit,
+            })
         };
-        return hardened(&site, typed(kind, body), cache);
+        let mut response = Response::new(body);
+        let headers = response.headers_mut();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+        return hardened(&site, response, cache);
     }
     // A route of the app has no extension; a missing file does, and is not the page.
     if relative.extension().is_none() {
         return html(&site, &method);
     }
     hardened(&site, StatusCode::NOT_FOUND.into_response(), "no-store")
+}
+
+/// The body of a file: it holds its place among the transfers in flight until it is dropped, and it
+/// ends in an error (so the connection is closed) when the client has not taken the file in time.
+struct Transfer<S> {
+    inner: S,
+    deadline: Pin<Box<Sleep>>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl<S: Stream<Item = io::Result<Bytes>> + Unpin> Stream for Transfer<S> {
+    type Item = io::Result<Bytes>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.deadline.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Some(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the client did not take the file in time",
+            ))));
+        }
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
 }
 
 /// A relative path of plain, visible segments, or `None`.
@@ -239,18 +317,19 @@ fn plain_path(url_path: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-/// The contents of `relative` under `root`, if it is a regular file whose real path is inside
-/// `root` (a link out of the directory is not followed).
-async fn read_inside(root: &Path, relative: &Path) -> Option<Vec<u8>> {
+/// The file `relative` under `root` and its length, if it is a regular file whose real path is
+/// inside `root` (a link out of the directory is not followed).
+async fn open_inside(root: &Path, relative: &Path) -> Option<(tokio::fs::File, u64)> {
     let real = tokio::fs::canonicalize(root.join(relative)).await.ok()?;
     if !real.starts_with(root) {
         return None;
     }
-    let metadata = tokio::fs::metadata(&real).await.ok()?;
+    let file = tokio::fs::File::open(&real).await.ok()?;
+    let metadata = file.metadata().await.ok()?;
     if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
         return None;
     }
-    tokio::fs::read(&real).await.ok()
+    Some((file, metadata.len()))
 }
 
 fn content_type(path: &Path) -> &'static str {

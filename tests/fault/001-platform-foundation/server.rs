@@ -11,6 +11,14 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+/// A body of `bytes` zeros produced as it is sent, so the server never holds it.
+fn body_of(bytes: usize) -> axum::body::Body {
+    let chunk = axum::body::Bytes::from(vec![0u8; 64 * 1024]);
+    axum::body::Body::from_stream(futures_util::stream::iter(
+        (0..bytes / chunk.len()).map(move |_| Ok::<_, std::convert::Infallible>(chunk.clone())),
+    ))
+}
+
 struct Server {
     addr: std::net::SocketAddr,
     stop: Option<oneshot::Sender<()>>,
@@ -20,7 +28,10 @@ struct Server {
 impl Server {
     async fn start(config: ServerConfig) -> Self {
         let app = protect(
-            Router::new().route("/ok", get(|| async { "ok" })),
+            Router::new()
+                .route("/ok", get(|| async { "ok" }))
+                .route("/big", get(|| async { body_of(128 * 1024 * 1024) }))
+                .route("/medium", get(|| async { body_of(4 * 1024 * 1024) })),
             HttpLimits::default(),
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -67,6 +78,7 @@ fn quick() -> ServerConfig {
         header_read_timeout: Duration::from_millis(500),
         max_connections: 64,
         shutdown_grace: Duration::from_secs(5),
+        ..ServerConfig::default()
     }
 }
 
@@ -143,6 +155,7 @@ async fn at_the_connection_cap_new_clients_wait_instead_of_exhausting_the_server
         header_read_timeout: Duration::from_secs(30), // the holders stay until we close them
         max_connections: 2,
         shutdown_grace: Duration::from_secs(5),
+        ..ServerConfig::default()
     };
     let server = Server::start(config).await;
     let holder_a = server.connect().await;
@@ -175,6 +188,7 @@ async fn shutdown_does_not_wait_forever_for_a_connection_that_never_completes() 
         header_read_timeout: Duration::from_secs(60), // would hold the connection for a minute
         max_connections: 8,
         shutdown_grace: Duration::from_millis(600),
+        ..ServerConfig::default()
     };
     let mut server = Server::start(config).await;
     let mut stuck = server.connect().await;
@@ -196,5 +210,66 @@ async fn shutdown_does_not_wait_forever_for_a_connection_that_never_completes() 
         started.elapsed() < Duration::from_secs(3),
         "took {:?}",
         started.elapsed()
+    );
+}
+
+/// Reads a response to its end as slowly as `pause` between reads, counting what arrives; the
+/// server closing the connection ends it early.
+async fn read_all_counting(stream: &mut TcpStream, pause: Duration, overall: Duration) -> usize {
+    let deadline = Instant::now() + overall;
+    let mut total = 0;
+    let mut chunk = vec![0u8; 64 * 1024];
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk)).await {
+            Ok(Ok(0) | Err(_)) | Err(_) => return total,
+            Ok(Ok(n)) => total += n,
+        }
+        tokio::time::sleep(pause).await;
+    }
+    total
+}
+
+#[tokio::test]
+async fn a_client_that_asks_for_a_large_body_and_reads_none_of_it_is_disconnected() {
+    let config = ServerConfig {
+        write_stall_timeout: Duration::from_millis(400),
+        ..quick()
+    };
+    let server = Server::start(config).await;
+    let mut stalled = server.connect().await;
+    stalled
+        .write_all(b"GET /big HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .expect("request");
+    // Nothing is read for longer than the server is willing to wait for the client to take bytes.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let total = read_all_counting(&mut stalled, Duration::ZERO, Duration::from_secs(20)).await;
+    assert!(
+        total < 128 * 1024 * 1024,
+        "the server went on serving a client that had stopped reading: {total} bytes arrived"
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_reads_slowly_but_keeps_reading_is_served_to_the_end() {
+    let config = ServerConfig {
+        write_stall_timeout: Duration::from_millis(600),
+        ..quick()
+    };
+    let server = Server::start(config).await;
+    let mut slow = server.connect().await;
+    slow.write_all(b"GET /medium HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .expect("request");
+    // 4 MiB at 64 KiB every 30 ms takes longer than the timeout, but each read is progress.
+    let total = read_all_counting(
+        &mut slow,
+        Duration::from_millis(30),
+        Duration::from_secs(60),
+    )
+    .await;
+    assert!(
+        total >= 4 * 1024 * 1024,
+        "a client that kept reading was cut at {total} bytes"
     );
 }
