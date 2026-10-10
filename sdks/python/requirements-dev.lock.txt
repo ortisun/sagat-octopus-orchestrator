@@ -1,0 +1,18 @@
+# Runtime pins plus the tools of the unit tests, the type check, the lint and the protobuf codegen.
+-r requirements.lock.txt
+ast_serialize==0.11.2
+grpcio-tools==1.84.0
+iniconfig==2.3.0
+librt==0.15.0
+mypy==2.3.1
+mypy_extensions==1.1.0
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.6.0
+Pygments==2.21.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.9
+setuptools==84.0.0
+types-grpcio==1.83.0.20260730
+types-protobuf==7.35.1.20260906

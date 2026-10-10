@@ -1,0 +1,3 @@
+include README.md
+include proto/worker.proto
+include requirements.lock.txt requirements-dev.lock.txt

@@ -1,0 +1,11 @@
+# Runtime dependencies at the exact versions this SDK was tested with (all released at least two weeks
+# before they were pinned). `conformance/prepare.sh` installs this file into `.venv`.
+anyio==4.15.1
+certifi==2026.7.22
+grpcio==1.84.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+protobuf==7.36.2
+typing_extensions==4.16.0
