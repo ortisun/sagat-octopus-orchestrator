@@ -77,7 +77,10 @@ function build(scenario: Obj): Obj {
   const errors: Record<string, Json> = {};
   for (const [key, invalid] of Object.entries<Obj>(scenario['invalidWorkflows'] ?? {})) {
     try {
-      builderOf(invalid['workflow']).build();
+      // Building it and writing its canonical text: what an SDK refuses may be refused by either (SPEC §7, §8).
+      const builder = builderOf(invalid['workflow']);
+      builder.build();
+      builder.toJson();
       errors[key] = { raised: false };
     } catch (error) {
       errors[key] = error instanceof SagatError

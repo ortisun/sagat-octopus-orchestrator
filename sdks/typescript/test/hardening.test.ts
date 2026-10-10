@@ -423,3 +423,28 @@ test('a token provider that fails once is repeated: a computed result is not los
     flaky.close();
   }
 });
+
+test('an unsafe integer in the output of another step fails nothing until the handler reads steps; one in the input fails the step', async () => {
+  const withBigStep = (n: number): Record<string, unknown> =>
+    lease(n, '{"run":{"id":"r"},"node":"charge","input":{"n":1},"steps":{"earlier":{"output":{"id":9007199254740993}}}}');
+  service.tasks = [withBigStep(20), withBigStep(21)];
+  const host = worker({ workerName: 'hardening-lazy', maxInflight: 2 });
+  const outcomes: string[] = [];
+  let calls = 0;
+  host.registerActivity('charge', (_input, ctx) => {
+    if (++calls === 1) {
+      outcomes.push('ran without reading steps');
+      return;
+    }
+    try {
+      void ctx.steps;
+      outcomes.push('read steps');
+    } catch (error) {
+      outcomes.push(error instanceof SagatError ? `raised ${error.code}` : 'other');
+    }
+  });
+  await host.start();
+  await until(() => outcomes.length === 2, 'both tasks');
+  await host.stop(300);
+  assert.deepEqual([...outcomes].sort(), ['raised PROTOCOL', 'ran without reading steps'].sort());
+});

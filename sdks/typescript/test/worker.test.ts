@@ -27,6 +27,7 @@ class FakeServer {
   secrets: Array<{ name: string; value: Buffer; version: number }> = [];
   /** How long a poll takes to answer, and the wait the answer asks for when it brings no task. */
   pollDelayMs = 0;
+  completeDelayMs = 0;
   pollRetryAfterMs = 50;
   private server = new grpc.Server();
   port = 0;
@@ -50,6 +51,10 @@ class FakeServer {
         }
         if (method === 'pollTasks' && this.pollDelayMs > 0) {
           setTimeout(() => callback(null, answer(call.request)), this.pollDelayMs);
+          return;
+        }
+        if (method === 'completeStep' && this.completeDelayMs > 0) {
+          setTimeout(() => callback(null, answer(call.request)), this.completeDelayMs);
           return;
         }
         callback(null, answer(call.request));
@@ -88,6 +93,7 @@ class FakeServer {
     this.heartbeatExpiresMs = Date.now() + 60_000;
     this.secrets = [];
     this.pollDelayMs = 0;
+    this.completeDelayMs = 0;
     this.pollRetryAfterMs = 50;
   }
 }
@@ -555,7 +561,7 @@ test('a failure while reporting is cut by code points, never inside a pair, and 
   await worker.start();
   await until(() => fake.of('failStep').length === 1, 'the failure');
   const message = String(fake.of('failStep')[0]!.request['safe_message']);
-  assert.ok(Array.from(message).length <= 512, `${Array.from(message).length} code points`);
+  assert.equal(Array.from(message).length, 512, 'exactly 512 code points: cut by code points, not by UTF-16 units (which would leave 256 emoji)');
   assert.equal(message, message.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '\ufffd'), 'no lone surrogate');
   await worker.stop(500);
 });
@@ -629,12 +635,38 @@ test('a static token is not asked for again when the registration is refused', a
 });
 
 test('the heartbeat interval is never under 500 ms unless the caller sets it', async () => {
-  fake.leases = [lease({ expires_at_epoch_ms: Date.now() + 900 })];
+  fake.leases = [lease({ expires_at_epoch_ms: Date.now() + 600 })];
   const worker = host();
   worker.registerActivity('charge', () => new Promise((resolve) => setTimeout(resolve, 1600)));
   await worker.start();
   await until(() => fake.of('heartbeat').length >= 1, 'a heartbeat', 3000);
   const times = fake.of('heartbeat').length;
-  assert.ok(times <= 4, `${times} heartbeats in 1.6 s with a lease of 0.9 s: at most one per 500 ms`);
+  assert.ok(times <= 4, `${times} heartbeats in 1.6 s with a lease of 0.6 s: a third of it is 200 ms, the floor makes it 500`);
   await worker.stop(2500);
+});
+
+test('stop and start back to back are in order: the host that was stopped is started again and serves', async () => {
+  const worker = host();
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  const stopping = worker.stop(500); // not awaited: a deploy hook
+  const starting = worker.start();
+  await Promise.all([stopping, starting]);
+  fake.leases = [lease({ task_id: 'run-1/charge/9', generation: 9 })];
+  await until(() => fake.of('completeStep').length === 1, 'a task served by the restarted host');
+  await worker.stop(500);
+});
+
+test('stop cancels the poll the server holds and nothing else: a report that is on its way arrives', async () => {
+  fake.leases = [lease()];
+  fake.completeDelayMs = 1500;
+  const events: string[] = [];
+  const worker = host({ onEvent: (event) => void events.push(event.type) });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 1, 'the report to be sent');
+  fake.pollDelayMs = 8000; // the next poll is held by the server
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await worker.stop(600); // the poll is cancelled at 600 ms; the report (answered at 1500 ms) must not be
+  await until(() => events.includes('task.completed'), 'the report to be acknowledged', 3000);
 });

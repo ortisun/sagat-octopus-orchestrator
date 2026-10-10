@@ -366,6 +366,9 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
 
 - JSON only. Integers up to 2^63-1 round-trip where the language can hold them; TypeScript holds up to
   2^53-1 and raises `PRECISION_LOSS`-style `VALIDATION_FAILED` on an unsafe integer instead of rounding.
+  For a worker, an unsafe integer in the handler's own `input` fails the step (`INPUT_INVALID`); one in the output of
+  an earlier step (`ctx.steps`) is raised when the handler *reads* `steps`, not before: a step that never reads it is
+  not failed by another step's 64-bit id.
 - Other numbers are not reformatted: `0.1` stays `0.1`. Amounts of money are strings (`"19.99"`) by
   convention of the platform's examples; the SDK has no decimal type of its own and never converts a
   string to a number.
@@ -375,7 +378,10 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
   are not produced.
 - The canonical text of a workflow (`toJson()`, §7) refuses an integer beyond 2^53 - 1 with `VALIDATION_FAILED`, in
   every SDK: the text must be the same bytes everywhere and no language but TypeScript's can print the nearest
-  double and call it exact. A number is written as RFC 8785 writes it; an exponent is never expanded in memory
+  double and call it exact. The rule is on the **value**, not on how it was written: a number that is a whole number
+  beyond 2^53 - 1 and that ECMAScript prints in digits (anything below 1e21: `9007199254740993`, `9007199254740992.0`,
+  `1e20`, `2.5e19`) is refused; one it prints with an exponent (`1e21` and above, and every number with a fraction)
+  is a number and is written as RFC 8785 writes it. A number is written as RFC 8785 writes it; an exponent is never expanded in memory
   (`1e999999999` is a number, not a billion digits).
 - A `Retry-After` is read in seconds only; an HTTP date is ignored (no wait).
 

@@ -187,6 +187,12 @@ export class WorkerRpc {
 
   /** Calls in flight: closing the channel does not end them, so they are cancelled with it. */
   readonly #calls = new Set<grpc.ClientUnaryCall>();
+  readonly #polls = new Set<grpc.ClientUnaryCall>();
+
+  /** Cancels the polls in flight and nothing else: a report that is on its way is left to arrive. */
+  cancelPolls(): void {
+    for (const call of this.#polls) call.cancel();
+  }
 
   close(): void {
     for (const call of this.#calls) call.cancel();
@@ -208,10 +214,12 @@ export class WorkerRpc {
     return new Promise<Res>((resolve, reject) => {
       const call = fn.call(this.client, request, metadata, { deadline }, (error, response) => {
         this.#calls.delete(call);
+        this.#polls.delete(call);
         if (error) reject(errorOfStatus(method, error));
         else resolve(response as Res);
       });
       this.#calls.add(call);
+      if (method === 'PollTasks') this.#polls.add(call);
     });
   }
 

@@ -349,3 +349,32 @@ test('the canonical text sorts integer-like keys as text, as the other SDKs do, 
   // 1e21 is written with an exponent by ECMAScript: it is a number, not an integer that was rounded.
   assert.match(workflow('canon-exp').step('a', 'x.y').inputSchema({ maximum: 1e21, minimum: -1e-7 }).toJson(), /"maximum":1e\+21/);
 });
+
+test('a call the server does not have is UNSUPPORTED_BY_SERVER by the reasons the server gives, and a missing run is not', async () => {
+  const id = '0190aaaa-0000-7000-8000-000000000001';
+  prepare((_req, res) => reply(res, 404, { code: 'NOT_FOUND', message: 'resource not found', retryable: false, traceId: 'a'.repeat(32), details: { reason: 'ROUTE_NOT_FOUND' } }));
+  await assert.rejects(client().get(id), (error: unknown) => error instanceof SagatError && error.code === 'NOT_FOUND' && error.reason === 'UNSUPPORTED_BY_SERVER');
+  prepare((_req, res) => reply(res, 405, { code: 'BAD_REQUEST', message: 'method not allowed', retryable: false, traceId: 'a'.repeat(32), details: { reason: 'METHOD_NOT_ALLOWED' } }));
+  await assert.rejects(client().get(id), (error: unknown) => error instanceof SagatError && error.code === 'NOT_FOUND' && error.reason === 'UNSUPPORTED_BY_SERVER');
+  prepare((_req, res) => reply(res, 405, { code: 'BAD_REQUEST', message: 'no', retryable: false, traceId: 'a'.repeat(32) }));
+  await assert.rejects(client().get(id), (error: unknown) => error instanceof SagatError && error.code === 'BAD_REQUEST' && error.reason === null);
+});
+
+test('a 408 with no body at all (a proxy) is UNAVAILABLE by the shared catalog and is repeated', async () => {
+  const id = '0190aaaa-0000-7000-8000-000000000001';
+  let attempts = 0;
+  prepare((_req, res) => (++attempts < 3 ? res.writeHead(408).end() : reply(res, 200, run())));
+  assert.equal((await client().get(id)).runId, id);
+  assert.equal(attempts, 3);
+});
+
+test('a number that is a whole number beyond 2^53 - 1 and is printed in digits is refused in the canonical text, one printed with an exponent is not', async () => {
+  const { workflow } = await import('../src/index.js');
+  const text = (value: number): string => workflow('canon-num').step('a', 'x.y').inputSchema({ maximum: value }).toJson();
+  for (const refused of [2 ** 53, 2 ** 60, 1e20, 2.5e19]) {
+    assert.throws(() => text(refused), (error: unknown) => error instanceof SagatError && error.code === 'VALIDATION_FAILED', String(refused));
+  }
+  assert.match(text(1e21), /"maximum":1e\+21/);
+  assert.match(text(9007199254740991), /"maximum":9007199254740991/);
+  assert.match(text(1.5), /"maximum":1.5/);
+});

@@ -147,8 +147,15 @@ export class HttpTransport {
       /* an intermediary's page: classify by status */
     }
     const given = typeof envelope?.['code'] === 'string' && CODES.has(envelope['code']) ? (envelope['code'] as ErrorCode) : undefined;
-    // A call the server does not have: 501, or a 404 that is not the platform's own (it carries its envelope).
-    if (response.status === 501 || (response.status === 404 && given === undefined)) {
+    // A call the server does not have (SPEC §9): 501; a 404 or a 405 whose envelope says so (the platform tells an
+    // unknown route and a wrong method apart from a run that does not exist); or a 404 that is not the platform's
+    // own envelope at all.
+    const said = typeof (envelope?.['details'] as Record<string, unknown> | undefined)?.['reason'] === 'string' ? ((envelope?.['details'] as Record<string, unknown>)['reason'] as string) : undefined;
+    if (
+      response.status === 501 ||
+      (response.status === 404 && (given === undefined || said === 'ROUTE_NOT_FOUND')) ||
+      (response.status === 405 && said === 'METHOD_NOT_ALLOWED')
+    ) {
       return new SagatError({
         code: 'NOT_FOUND',
         message: 'the server does not have this call',

@@ -1,6 +1,6 @@
 import { PROTOCOL_VERSION, safeLogger, silentLogger, warnIfNotSecure, type Logger, type TlsOptions, type TokenSource } from '../config.js';
 import { MAX_WAIT_MS, SagatError, isRetriable } from '../errors.js';
-import { encodeJson, parseJson } from '../json.js';
+import { encodeJson, parseStepDocument } from '../json.js';
 import { DEFAULT_RETRY, backoffDelayMs, sleep, type RetryPolicy } from '../retry.js';
 import {
   ActivityFailure,
@@ -75,6 +75,7 @@ export class WorkerHost {
   // Made on the first use and closed by `stop`: a stopped host can be started again (SPEC §6.8).
   #rpc: WorkerRpc | undefined;
   #starting: Promise<void> | undefined;
+  #stopped: Promise<void> | undefined;
   readonly #beats = new Set<() => void>();
   readonly #config: WorkerConfig;
   private readonly log: Logger;
@@ -153,8 +154,13 @@ export class WorkerHost {
 
   /** Registers with the server and starts the loop; resolves once registered. Two starts at once are one. */
   start(): Promise<void> {
-    if (this.running) return Promise.resolve();
-    this.#starting ??= this.#begin().finally(() => {
+    // A stop that is on its way is finished first: a deploy hook that calls `stop()` without waiting and then `start()`
+    // gets a host that ran its stop and is running again, not one that is stopped.
+    if (this.running && !this.stopping && !this.#stopped) return Promise.resolve();
+    this.#starting ??= (async () => {
+      if (this.#stopped) await this.#stopped.catch(() => undefined);
+      if (!this.running) await this.#begin();
+    })().finally(() => {
       this.#starting = undefined;
     });
     return this.#starting;
@@ -175,7 +181,14 @@ export class WorkerHost {
    * The whole of it is bounded by the timeout: a poll the server holds is cancelled, and the heartbeats of
    * a task that will not end stop with the host.
    */
-  async stop(timeoutMs = 30_000): Promise<void> {
+  stop(timeoutMs = 30_000): Promise<void> {
+    this.#stopped ??= this.#end(timeoutMs).finally(() => {
+      this.#stopped = undefined;
+    });
+    return this.#stopped;
+  }
+
+  async #end(timeoutMs: number): Promise<void> {
     if (this.#starting) await this.#starting.catch(() => undefined);
     if (!this.running) return;
     this.stopping = true;
@@ -192,7 +205,8 @@ export class WorkerHost {
     };
     // The poll in progress ends and no other starts; what it leased is in flight from here on.
     if (this.loop && (await within(this.loop, timeoutMs)) === 'late') {
-      this.#rpc?.close();
+      // Only the poll the server holds is cancelled: a report on its way may still arrive within the grace.
+      this.#rpc?.cancelPolls();
       await this.loop.catch(() => undefined);
     }
     const pending = Promise.all([...this.inflight.values()].map((task) => task.done));
@@ -359,9 +373,11 @@ export class WorkerHost {
     }
 
     let document: { node?: string; input?: unknown; steps?: Record<string, { output?: unknown }> };
+    let stepsUnsafe = false;
     try {
-      const parsed: unknown = lease.input_json === '' ? {} : parseJson(lease.input_json);
-      document = parsed !== null && typeof parsed === 'object' ? (parsed as typeof document) : {};
+      const parsed = lease.input_json === '' ? { value: {}, stepsUnsafe: false } : parseStepDocument(lease.input_json);
+      stepsUnsafe = parsed.stepsUnsafe;
+      document = parsed.value !== null && typeof parsed.value === 'object' ? (parsed.value as typeof document) : {};
     } catch (error) {
       // Not JSON, or an integer beyond 2^53 - 1 that a JavaScript number would round (SPEC §8).
       await this.fail(lease, 'INPUT_INVALID', error instanceof SagatError ? error.message : 'the step document is not JSON', false, started);
@@ -402,7 +418,13 @@ export class WorkerHost {
       taskKind: kind,
       targetNode: minor >= 2 ? lease.target_node : '',
       targetIdempotencyKey: minor >= 2 ? lease.target_idempotency_key : '',
-      steps,
+      // An unsafe integer in the output of another step is raised when the handler reads this, not before.
+      get steps() {
+        if (stepsUnsafe) {
+          throw new SagatError({ code: 'PROTOCOL', message: 'the output of an earlier step holds an integer beyond 2^53 - 1, which cannot be read without rounding it' });
+        }
+        return steps;
+      },
       get deadline() {
         return new Date(state.deadline);
       },

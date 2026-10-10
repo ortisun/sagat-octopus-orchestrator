@@ -69,35 +69,68 @@ const UNSAFE = /-?\d{16,}/;
  * nature and are parsed as they are.
  */
 export function parseJson(text: string): unknown {
-  if (UNSAFE.test(text)) assertSafeIntegers(text);
+  if (UNSAFE.test(text) && unsafeIntegerUnder(text) !== null) {
+    throw new SagatError({ code: 'PROTOCOL', message: 'the document holds an integer beyond 2^53 - 1, which cannot be read without rounding it' });
+  }
   return JSON.parse(text);
 }
 
-/** Walks the text outside its strings and refuses an integer literal beyond 2^53 - 1. */
-function assertSafeIntegers(text: string): void {
+/**
+ * The step document of a lease: an unsafe integer in the handler's own `input` (or anywhere but `steps`) is an error; one
+ * in `steps`, the outputs of other steps, is raised when the handler reads `ctx.steps` and not before, so a step
+ * that never reads it is not failed by another step's 64-bit id.
+ */
+export function parseStepDocument(text: string): { value: unknown; stepsUnsafe: boolean } {
+  const where = UNSAFE.test(text) ? unsafeIntegerUnder(text) : null;
+  if (where === 'elsewhere') {
+    throw new SagatError({ code: 'PROTOCOL', message: 'the step document holds an integer beyond 2^53 - 1, which cannot be read without rounding it' });
+  }
+  return { value: JSON.parse(text), stepsUnsafe: where === 'steps' };
+}
+
+/**
+ * Walks the text outside its strings looking for an integer literal beyond 2^53 - 1, and says whether it was under the
+ * top-level key `steps` or elsewhere (`null`: there is none; `elsewhere` wins over `steps`).
+ */
+function unsafeIntegerUnder(text: string): 'steps' | 'elsewhere' | null {
   const limit = BigInt(Number.MAX_SAFE_INTEGER);
+  let found: 'steps' | 'elsewhere' | null = null;
+  let depth = 0;
+  let topKey = '';
   let i = 0;
   while (i < text.length) {
     const c = text.charCodeAt(i);
     if (c === 0x22 /* " */) {
+      const start = i + 1;
       i++;
-      while (i < text.length && text.charCodeAt(i) !== 0x22) i += text.charCodeAt(i) === 0x5c /* \ */ ? 2 : 1;
+      while (i < text.length && text.charCodeAt(i) !== 0x22) i += text.charCodeAt(i) === 0x5c /* \\ */ ? 2 : 1;
+      // A string at depth 1 followed by a colon is a key of the document.
+      if (depth === 1) {
+        let k = i + 1;
+        while (k < text.length && /\s/.test(text[k]!)) k++;
+        if (text[k] === ':') topKey = text.slice(start, i);
+      }
+      i++;
+    } else if (c === 0x7b || c === 0x5b) {
+      depth++;
+      i++;
+    } else if (c === 0x7d || c === 0x5d) {
+      depth--;
       i++;
     } else if (c === 0x2d || (c >= 0x30 && c <= 0x39)) {
       let j = i + 1;
       while (j < text.length && /[0-9.eE+-]/.test(text[j]!)) j++;
       const token = text.slice(i, j);
-      if (/^-?\d+$/.test(token)) {
-        const magnitude = BigInt(token.replace('-', ''));
-        if (magnitude > limit) {
-          throw new SagatError({ code: 'PROTOCOL', message: 'the document holds an integer beyond 2^53 - 1, which cannot be read without rounding it' });
-        }
+      if (/^-?\d+$/.test(token) && BigInt(token.replace('-', '')) > limit) {
+        if (topKey === 'steps') found ??= 'steps';
+        else return 'elsewhere';
       }
       i = j;
     } else {
       i++;
     }
   }
+  return found;
 }
 
 /** An RFC 3339 instant in UTC with a `Z`, as the SDK writes every instant. */
