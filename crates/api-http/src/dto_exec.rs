@@ -88,6 +88,7 @@ pub fn diff_body(diff: &sagat_application::diff::DefinitionDiff) -> Value {
         "changes": d.changes.iter()
             .map(|c| json!({ "path": c.path, "change": c.change.as_str() }))
             .collect::<Vec<_>>(),
+        "changesOmitted": d.changes_omitted,
         "breaking": d.breaking.iter().map(finding_body).collect::<Vec<_>>(),
         "attention": d.attention.iter().map(finding_body).collect::<Vec<_>>(),
     })

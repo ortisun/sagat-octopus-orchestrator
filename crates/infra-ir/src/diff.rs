@@ -9,7 +9,7 @@
 //! secret, a script artifact the previous document did not run). Everything is sorted, so the
 //! same two documents always give the same answer.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use sagat_application::definitions::{IrError, MAX_IR_BYTES};
 use sagat_application::diff::{
@@ -19,6 +19,34 @@ use serde_json::{Map, Value};
 
 /// Longest name repeated in a message.
 const MAX_NAME: usize = 64;
+
+/// Differences outside the nodes that are listed; the rest are counted. A draft is stored after a
+/// size check only (a megabyte, which can be a hundred thousand array elements), and the answer is
+/// read by a person.
+const MAX_CHANGES: usize = 1_000;
+
+/// Findings of one kind that are listed; the rest are counted in a last finding.
+const MAX_FINDINGS: usize = 100;
+
+/// The differences outside the nodes: the first [`MAX_CHANGES`] and how many came after them.
+#[derive(Default)]
+struct Changes {
+    listed: Vec<DocumentChange>,
+    omitted: usize,
+}
+
+impl Changes {
+    fn push(&mut self, path: &str, change: Change) {
+        if self.listed.len() < MAX_CHANGES {
+            self.listed.push(DocumentChange {
+                path: path.to_owned(),
+                change,
+            });
+        } else {
+            self.omitted += 1;
+        }
+    }
+}
 
 pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
     let from = object(from)?;
@@ -54,7 +82,7 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
     let edges_added: Vec<DiffEdge> = edges_to.difference(&edges_from).cloned().collect();
     let edges_removed: Vec<DiffEdge> = edges_from.difference(&edges_to).cloned().collect();
 
-    let mut changes = Vec::new();
+    let mut changes = Changes::default();
     let keys: BTreeSet<&String> = from.keys().chain(to.keys()).collect();
     for key in keys.into_iter().filter(|k| k.as_str() != "nodes") {
         walk(
@@ -64,6 +92,10 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
             &mut changes,
         );
     }
+    let Changes {
+        listed: mut changes,
+        omitted: changes_omitted,
+    } = changes;
     changes.sort_by(|a, b| a.path.cmp(&b.path));
 
     // A workflow that was never published had no callers and no emitters: nothing to break.
@@ -80,13 +112,16 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
 
     sort_findings(&mut breaking);
     sort_findings(&mut attention);
+    cap_findings(&mut breaking);
+    cap_findings(&mut attention);
 
     let identical = nodes_added.is_empty()
         && nodes_removed.is_empty()
         && nodes_changed.is_empty()
         && edges_added.is_empty()
         && edges_removed.is_empty()
-        && changes.is_empty();
+        && changes.is_empty()
+        && changes_omitted == 0;
     Ok(DocumentDiff {
         identical,
         nodes_added,
@@ -95,6 +130,7 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
         edges_added,
         edges_removed,
         changes,
+        changes_omitted,
         breaking,
         attention,
     })
@@ -180,17 +216,11 @@ fn escape(segment: &str) -> String {
 }
 
 /// Records every leaf that differs between two values at `path`.
-fn walk(path: &str, before: Option<&Value>, after: Option<&Value>, out: &mut Vec<DocumentChange>) {
+fn walk(path: &str, before: Option<&Value>, after: Option<&Value>, out: &mut Changes) {
     match (before, after) {
         (None, None) => {}
-        (None, Some(_)) => out.push(DocumentChange {
-            path: path.to_owned(),
-            change: Change::Added,
-        }),
-        (Some(_), None) => out.push(DocumentChange {
-            path: path.to_owned(),
-            change: Change::Removed,
-        }),
+        (None, Some(_)) => out.push(path, Change::Added),
+        (Some(_), None) => out.push(path, Change::Removed),
         (Some(a), Some(b)) if a == b => {}
         (Some(Value::Object(a)), Some(Value::Object(b))) => {
             let keys: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
@@ -208,10 +238,7 @@ fn walk(path: &str, before: Option<&Value>, after: Option<&Value>, out: &mut Vec
                 walk(&format!("{path}/{index}"), a.get(index), b.get(index), out);
             }
         }
-        (Some(_), Some(_)) => out.push(DocumentChange {
-            path: path.to_owned(),
-            change: Change::Changed,
-        }),
+        (Some(_), Some(_)) => out.push(path, Change::Changed),
     }
 }
 
@@ -249,6 +276,20 @@ fn sort_findings(findings: &mut [DiffFinding]) {
     });
 }
 
+/// Lists the first [`MAX_FINDINGS`] findings and says how many were left out.
+fn cap_findings(findings: &mut Vec<DiffFinding>) {
+    if findings.len() > MAX_FINDINGS {
+        let omitted = findings.len() - MAX_FINDINGS;
+        findings.truncate(MAX_FINDINGS);
+        findings.push(finding(
+            "MORE_FINDINGS",
+            format!("{omitted} more findings of this kind are not listed"),
+            None,
+            None,
+        ));
+    }
+}
+
 // ------------------------------------------------------------------------------ the contract
 
 /// What starts a run, as far as another system can tell: the kind and the name it listens on.
@@ -280,7 +321,7 @@ fn describe_trigger((kind, key): &(String, String)) -> String {
 }
 
 fn triggers(from: &Map<String, Value>, to: &Map<String, Value>, out: &mut Vec<DiffFinding>) {
-    let list = |document: &Map<String, Value>| {
+    let list = |document: &Map<String, Value>| -> Vec<Value> {
         document
             .get("triggers")
             .and_then(Value::as_array)
@@ -288,13 +329,18 @@ fn triggers(from: &Map<String, Value>, to: &Map<String, Value>, out: &mut Vec<Di
             .unwrap_or_default()
     };
     let (before, after) = (list(from), list(to));
+    // Sets, not scans: a draft can hold a hundred thousand of them, and a comparison that is
+    // quadratic in that holds a thread of the platform for minutes. Values are compared by their
+    // canonical text (the keys of an object are sorted).
+    let kept: HashSet<String> = after.iter().map(Value::to_string).collect();
+    let identities: HashSet<(String, String)> = after.iter().map(trigger_identity).collect();
     for (index, trigger) in before.iter().enumerate() {
-        if after.contains(trigger) {
+        if kept.contains(&trigger.to_string()) {
             continue;
         }
         let identity = trigger_identity(trigger);
         let path = Some(format!("/triggers/{index}"));
-        if after.iter().any(|t| trigger_identity(t) == identity) {
+        if identities.contains(&identity) {
             out.push(finding(
                 "TRIGGER_CHANGED",
                 format!(

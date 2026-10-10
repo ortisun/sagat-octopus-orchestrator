@@ -81,6 +81,9 @@ pub struct DocumentDiff {
     pub edges_added: Vec<DiffEdge>,
     pub edges_removed: Vec<DiffEdge>,
     pub changes: Vec<DocumentChange>,
+    /// How many differences outside the nodes were left out of `changes` (it lists at most a
+    /// thousand: a document can be a megabyte of them, and the answer is read by a person).
+    pub changes_omitted: usize,
     /// What can make a caller or an emitter of the workflow's contract fail.
     pub breaking: Vec<DiffFinding>,
     /// What somebody must prepare before the new version can run: a worker bound to a new

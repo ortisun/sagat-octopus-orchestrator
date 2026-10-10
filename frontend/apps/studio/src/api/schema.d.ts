@@ -1763,7 +1763,11 @@ export interface components {
                 /** @enum {string} */
                 change: "added" | "removed" | "changed";
             }[];
+            /** @description How many differences outside the nodes are not in `changes`, which lists the first thousand. */
+            changesOmitted?: number;
+            /** @description At most a hundred; a last finding with the code `MORE_FINDINGS` says how many more there are. */
             breaking: components["schemas"]["DiffFinding"][];
+            /** @description At most a hundred; a last finding with the code `MORE_FINDINGS` says how many more there are. */
             attention: components["schemas"]["DiffFinding"][];
         };
         GraphEvent: {

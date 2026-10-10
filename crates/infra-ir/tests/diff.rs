@@ -440,3 +440,46 @@ proptest! {
         prop_assert_eq!(&forward.nodes_added, &sorted);
     }
 }
+
+// ------------------------------------------------------------------------- a hostile draft
+
+/// A draft is stored after a size check only (a published version is limited to sixteen triggers, a
+/// draft is not), so a megabyte of it can be a hundred thousand triggers. Comparing it with itself
+/// must cost what reading it costs, on a thread the whole platform shares.
+#[test]
+fn a_draft_full_of_triggers_is_compared_in_the_time_it_takes_to_read_it() {
+    let mut doc = base();
+    doc["triggers"] = Value::Array((0..40_000).map(|i| json!(i)).collect());
+    let started = std::time::Instant::now();
+    let d = diff(&doc, &doc);
+    let took = started.elapsed();
+    assert!(d.identical);
+    assert!(
+        took < std::time::Duration::from_millis(1500),
+        "comparing a document with itself took {took:?}"
+    );
+}
+
+/// The answer is read by a person on a page: what is not listed is counted, not sent.
+#[test]
+fn an_answer_about_tens_of_thousands_of_differences_is_bounded_and_says_how_many_it_left_out() {
+    let mut from = base();
+    from["triggers"] = Value::Array(
+        (0..15_000)
+            .map(|i| json!({"kind": "event", "eventType": format!("t{i}")}))
+            .collect(),
+    );
+    let mut to = base();
+    to["triggers"] = json!([]);
+    to["metadata"] = json!({"name": "demo-flow", "labels": Value::Array((0..5_000).map(|i| json!(i)).collect())});
+    let d = diff(&from, &to);
+    assert!(d.breaking.len() <= 101, "{} findings", d.breaking.len());
+    assert!(
+        d.breaking.iter().any(|f| f.code == "MORE_FINDINGS"),
+        "{:?}",
+        codes(&d.breaking)
+    );
+    assert!(d.changes.len() <= 1_000, "{} changes", d.changes.len());
+    assert!(d.changes_omitted > 3_000, "{}", d.changes_omitted);
+    assert!(d.attention.len() <= 101);
+}

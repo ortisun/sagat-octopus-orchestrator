@@ -1,7 +1,18 @@
 import type { DefinitionDiff, DiffFinding } from '../../api/types';
 import { clip } from './canvasModel';
 
-export type DiffLike = Pick<DefinitionDiff, 'identical' | 'nodes' | 'edges' | 'changes'> & Partial<Pick<DefinitionDiff, 'breaking' | 'attention' | 'from' | 'to'>>;
+export type DiffLike = Pick<DefinitionDiff, 'identical' | 'nodes' | 'edges' | 'changes'> & Partial<Pick<DefinitionDiff, 'breaking' | 'attention' | 'from' | 'to' | 'changesOmitted'>>;
+
+/** What is drawn of a list: the platform bounds what it sends, and a page of ten thousand lines helps nobody. */
+const SHOWN = 200;
+
+function More({ total, of = SHOWN }: { total: number; of?: number }) {
+  return total > of ? (
+    <li className="hint">
+      and {total - of} more, not shown here
+    </li>
+  ) : null;
+}
 
 function side(s: DefinitionDiff['from'] | undefined): string {
   if (!s) return '?';
@@ -13,7 +24,7 @@ function side(s: DefinitionDiff['from'] | undefined): string {
 function Findings({ items }: { items: readonly DiffFinding[] }) {
   return (
     <ul>
-      {items.map((f, i) => (
+      {items.slice(0, SHOWN).map((f, i) => (
         <li key={`${f.code}-${i}`}>
           {f.nodeId ? (
             <>
@@ -23,6 +34,7 @@ function Findings({ items }: { items: readonly DiffFinding[] }) {
           {clip(f.message, 300)} <span className="hint">({f.code})</span>
         </li>
       ))}
+      <More total={items.length} />
     </ul>
   );
 }
@@ -30,12 +42,13 @@ function Findings({ items }: { items: readonly DiffFinding[] }) {
 function Ids({ ids }: { ids: readonly string[] }) {
   return (
     <>
-      {ids.map((id, i) => (
+      {ids.slice(0, SHOWN).map((id, i) => (
         <span key={id}>
           {i > 0 ? ', ' : ''}
           <code>{clip(id, 64)}</code>
         </span>
       ))}
+      {ids.length > SHOWN ? <span className="hint"> and {ids.length - SHOWN} more</span> : null}
     </>
   );
 }
@@ -93,11 +106,12 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
                 Removed ({diff.nodes.removed.length}): <Ids ids={diff.nodes.removed} />
               </li>
             ) : null}
-            {diff.nodes.changed.map((c) => (
+            {diff.nodes.changed.slice(0, SHOWN).map((c) => (
               <li key={c.id}>
                 Changed: <code>{clip(c.id, 64)}</code> (<span>{c.fields.map((f) => clip(f, 40)).join(', ')}</span>)
               </li>
             ))}
+            <More total={diff.nodes.changed.length} />
           </ul>
         </section>
       ) : null}
@@ -105,16 +119,18 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
         <section aria-label="Link changes">
           <h3>Links</h3>
           <ul>
-            {diff.edges.added.map((e) => (
+            {diff.edges.added.slice(0, SHOWN).map((e) => (
               <li key={`a-${e.from}-${e.kind}-${e.to}`}>
                 Added: <code>{clip(e.from, 64)}</code> → <code>{clip(e.to, 64)}</code> ({clip(e.kind, 20)})
               </li>
             ))}
-            {diff.edges.removed.map((e) => (
+            <More total={diff.edges.added.length} />
+            {diff.edges.removed.slice(0, SHOWN).map((e) => (
               <li key={`r-${e.from}-${e.kind}-${e.to}`}>
                 Removed: <code>{clip(e.from, 64)}</code> → <code>{clip(e.to, 64)}</code> ({clip(e.kind, 20)})
               </li>
             ))}
+            <More total={diff.edges.removed.length} />
           </ul>
         </section>
       ) : null}
@@ -122,11 +138,13 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
         <section aria-label="Other changes">
           <h3>Other changes</h3>
           <ul>
-            {diff.changes.map((c) => (
+            {diff.changes.slice(0, SHOWN).map((c) => (
               <li key={c.path}>
                 <code>{clip(c.path, 80)}</code> {c.change}
               </li>
             ))}
+            <More total={diff.changes.length} />
+            {(diff.changesOmitted ?? 0) > 0 ? <li className="hint">and {diff.changesOmitted} more differences the platform did not list</li> : null}
           </ul>
         </section>
       ) : null}

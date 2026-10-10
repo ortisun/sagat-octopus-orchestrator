@@ -2485,8 +2485,9 @@ components:
             properties:
               path: {type: string}
               change: {type: string, enum: [added, removed, changed]}
-        breaking: {type: array, items: {$ref: '#/components/schemas/DiffFinding'}}
-        attention: {type: array, items: {$ref: '#/components/schemas/DiffFinding'}}
+        changesOmitted: {type: integer, minimum: 0, description: 'How many differences outside the nodes are not in `changes`, which lists the first thousand.'}
+        breaking: {type: array, description: 'At most a hundred; a last finding with the code `MORE_FINDINGS` says how many more there are.', items: {$ref: '#/components/schemas/DiffFinding'}}
+        attention: {type: array, description: 'At most a hundred; a last finding with the code `MORE_FINDINGS` says how many more there are.', items: {$ref: '#/components/schemas/DiffFinding'}}
     GraphEvent:
       type: object
       required: [seq, eventType, occurredAt]

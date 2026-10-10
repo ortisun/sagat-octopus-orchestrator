@@ -28,6 +28,34 @@ use sagat_domain::quota::QuotaResource;
 
 /// Largest accepted workflow document.
 pub const MAX_IR_BYTES: usize = 1024 * 1024;
+
+/// The problems of the nodes that pin an artifact in `missing`, found in one pass over the nodes
+/// (a document can pin thousands of distinct artifacts, and one pass per artifact would hold a
+/// thread of the platform for as long as it takes to compare every pair).
+#[must_use]
+pub fn unknown_script_problems(
+    definition: &sagat_domain::workflow::WorkflowDefinition,
+    missing: &[sagat_domain::scripts::Digest],
+) -> Vec<Problem> {
+    let missing: std::collections::BTreeSet<&sagat_domain::scripts::Digest> =
+        missing.iter().collect();
+    definition
+        .nodes()
+        .filter_map(|node| {
+            let NodeKind::Activity { activity, .. } = node.kind() else {
+                return None;
+            };
+            let digest = sagat_domain::scripts::digest_of_activity(activity.as_str())?;
+            missing.contains(&digest).then(|| {
+                Problem::error(
+                    "UNKNOWN_SCRIPT",
+                    format!("the script artifact {digest} was not built for this tenant"),
+                )
+                .at_node(node.id().as_str())
+            })
+        })
+        .collect()
+}
 /// Longest release note.
 pub const MAX_RELEASE_NOTES: usize = 2048;
 
@@ -891,24 +919,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             .store
             .missing_artifacts(principal.tenant_id(), &pinned)
             .await?;
-        let mut problems = Vec::new();
-        for digest in missing {
-            for node in definition.nodes() {
-                if let NodeKind::Activity { activity, .. } = node.kind()
-                    && sagat_domain::scripts::digest_of_activity(activity.as_str())
-                        == Some(digest.clone())
-                {
-                    problems.push(
-                        Problem::error(
-                            "UNKNOWN_SCRIPT",
-                            format!("the script artifact {digest} was not built for this tenant"),
-                        )
-                        .at_node(node.id().as_str()),
-                    );
-                }
-            }
-        }
-        Ok(problems)
+        Ok(unknown_script_problems(definition, &missing))
     }
 
     /// # Errors

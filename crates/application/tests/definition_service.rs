@@ -1849,3 +1849,57 @@ async fn diffing_needs_definition_read_and_a_workflow_of_the_callers_tenant() {
             .is_ok()
     );
 }
+
+// ------------------------------------------------------------------------- a hostile document
+
+/// A document can pin as many distinct artifacts as it has nodes (ten thousand). Naming the ones
+/// that were never built must cost one pass over the nodes, not one pass per artifact.
+#[test]
+fn eight_thousand_unknown_artifacts_are_found_in_one_pass() {
+    use sagat_application::definitions::unknown_script_problems;
+    use sagat_domain::scripts::{Digest as ScriptDigest, activity_of};
+
+    const N: usize = 8_000;
+    let digests: Vec<ScriptDigest> = (0..N)
+        .map(|i| ScriptDigest::parse(&format!("sha256:{i:064x}")).expect("a digest"))
+        .collect();
+    let nodes: Vec<Node> = digests
+        .iter()
+        .enumerate()
+        .map(|(i, digest)| {
+            let node = Node::new(
+                NodeId::parse(&format!("n{i}")).expect("id"),
+                NodeKind::Activity {
+                    activity: ActivityName::parse(&activity_of(digest)).expect("name"),
+                    retry: RetryPolicy::DEFAULT,
+                    compensate_with: None,
+                    reconcile_with: None,
+                    idempotency_template: None,
+                    secrets: Vec::new(),
+                },
+            );
+            if i + 1 < N {
+                node.with_next(NodeId::parse(&format!("n{}", i + 1)).expect("id"))
+            } else {
+                node
+            }
+        })
+        .collect();
+    let definition = WorkflowDefinition::new(
+        Slug::parse("many-scripts").expect("slug"),
+        NodeId::parse("n0").expect("id"),
+        nodes,
+    )
+    .expect("valid");
+    let started = std::time::Instant::now();
+    let problems = unknown_script_problems(&definition, &digests);
+    let took = started.elapsed();
+    assert_eq!(problems.len(), N);
+    assert!(problems.iter().all(|p| p.code == "UNKNOWN_SCRIPT"));
+    assert!(
+        took < std::time::Duration::from_secs(1),
+        "naming {N} unknown artifacts took {took:?}"
+    );
+    // What was built is not reported.
+    assert!(unknown_script_problems(&definition, &digests[..10]).len() == 10);
+}
