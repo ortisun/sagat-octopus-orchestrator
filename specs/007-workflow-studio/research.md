@@ -73,10 +73,12 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   its type changed; a `waitEvent` whose event type was removed or renamed (publishers keep sending the old one).
   **Attention** (not a contract break, but somebody must act): an activity name added or changed (a worker must serve it
   and be bound to it), a secret name added, a script digest changed. Everything else is a plain change.
-- **D141 — Live updates are journal-cursor deltas.** `GET /runs/{id}/graph?since=<seq>` returns the run status, the new
+- **D141 — Live updates are journal-cursor deltas.** `GET /runs/{id}/graph/changes?since=<seq>` returns the run status, the new
   `projectionSeq`, the journal events after `seq` (light: seq, type, step, attempt, time) and the **full objects of the
-  nodes those events name** (a node changes only through events that name it, and the equivalence of the deltas with
-  the whole graph is a test), not the whole graph; `reset: true` with the full graph
+  nodes those events name or create** (a node changes only through events that name it or that activate it: a routing, a fork,
+  a saga entered, a compensation plan, a lookup carry the steps they create, `RunEvent::changed_nodes`; the equivalence of the
+  deltas with the whole graph is a test, over a chain and over a saga whose undos wait for each other, and an invariant of the
+  domain's chaos test), not the whole graph; `reset: true` with the full graph
   when the cursor is ahead of the run or more than 500 events behind. `GET /runs/{id}/stream` is the same payload as
   `text/event-stream` (`id:` = the projection seq, `Last-Event-ID` and `?after=` resume) and the polling fallback is the
   delta endpoint, so a missed signal between two snapshots is impossible: every transition is a journal event with a
@@ -87,7 +89,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   Polling the database per stream is the honest first version; a push from the engine (`LISTEN/NOTIFY` or NATS) is
   feature 010's (G143).
 - **D143 — The control plane serves the Studio** under `/studio/` from `SAGAT_STUDIO_DIR` (off when unset), same origin as
-  the API, so no CORS is added. Headers: a CSP of `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; base-uri 'none';
+  the API, so no CORS is added. Headers: a CSP of `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; base-uri 'none';
   form-action 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   `Cross-Origin-Opener-Policy: same-origin`; hashed assets are `immutable`, `index.html` is `no-store`. A Studio on
   another origin is an ingress decision, not a feature of the API.
@@ -173,4 +175,21 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   `Idempotency-Key`, so an operation sent again because its answer was lost is answered with the same id (before, every answer
   carried a new random one, which made a replay look like a second operation). It names the request: there is no table of
   operations to look it up in, and the record of what was decided is the journal event (`step.retry_requested`, `saga.step_skipped`…).
+- **G154 — The run does not say whether a stop was asked for.** `status` shows `CANCELLING` for a run asked to stop, but a run
+  that compensates or waits for a person shows `COMPENSATING` or `MANUAL_REVIEW` whether or not it was, and the platform refuses
+  *pause* and *cancel* of a run that was (`409`). The Studio disables them only for `CANCELLING` and leaves the rest to the
+  platform, whose refusal it shows as it is. Exposing the stop (`stopReason`) in the run is a contract change for a later feature.
+- **G155 — The breaking-change classifier checks a set of kinds of change, not every change to a contract** (D140): a trigger gone
+  or changed, an input property gone, retyped or newly required, an output property gone or retyped, an awaited event type gone.
+  It does not judge an output property that stops being required, a type gained where there was none, a narrower `enum`, a new
+  `pattern` or limit, `additionalProperties: false`, the items of an array or a `oneOf`; the publish dialog says which kinds it
+  checked instead of saying there were no breaking changes.
+- **G156 — A trace is shown as an id to copy, not a link** (FR-007-005 "trace links"): the Studio does not know where a deployment
+  keeps its traces. Opening one in a tracing tool needs a configurable URL template (`SAGAT_STUDIO_TRACE_URL`), not built.
+- **G157 — The code of a script is edited on the Scripts page; a script node pins a build.** The node's inspector does not open the
+  editor (US02-AC01 says "edits code in a node"): what the user story needs, editing the code and having a workflow use the build,
+  is done in two places, with the picker between them (`ScriptPicker`); a link from the node to the editor is not built.
+- **G158 — The files of the Studio have no request metrics or trace context**: their router is merged after the API's protections
+  (D143), on purpose (no credentials, no tenant), and is bounded by its own limits (64 files in flight, a minute each, 30 s of
+  stall), but the platform's `http_requests` series does not count them.
 

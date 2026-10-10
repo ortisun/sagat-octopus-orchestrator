@@ -36,8 +36,8 @@ removed or retyped, an awaited event type that disappears) and what **somebody m
 a new secret, a different script artifact). Runs already started are pinned to their version and unaffected.
 
 **3. A live view follows the journal by sequence.** Every transition of a run is a journal event with a
-sequence, and a node changes only through events that name it. `GET /runs/{id}/graph/changes?since=N` returns
-the events after `N` and the **full objects of the nodes they name**, the new sequence, and `reset: true` with
+sequence, and a node changes only through events that name it or activate it. `GET /runs/{id}/graph/changes?since=N` returns
+the events after `N` and the **full objects of the nodes they name or create**, the new sequence, and `reset: true` with
 the whole graph when the client is ahead or more than 500 events behind. `GET /runs/{id}/stream` is the same
 payload as `text/event-stream`, resumable with `Last-Event-ID`; polling the changes endpoint is the fallback,
 so a client that moves between the two, or misses a connection, loses nothing. That applying every delta in

@@ -28,7 +28,7 @@ What the server does for the files (`crates/api-http/src/studio.rs`, tested in `
 a path with no extension that matches no file gets the page (the app's routes); a missing *file* is a `404`; dot segments, backslashes, NUL, hidden
 files and links that resolve outside the directory are not served; assets under `assets/` are `immutable`, the page is `no-store`; every answer carries
 `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'
-[+ the issuer's origin]; worker-src 'self' blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: no-referrer`,
+[+ the issuer's origin]; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: no-referrer`,
 `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Resource-Policy: same-origin`. Behind a reverse proxy: pass these headers through, and do not
 buffer `text/event-stream` (the stream sends `X-Accel-Buffering: no`). A Studio on another origin than the API is not supported by the API (it has no CORS);
 put both behind one host.

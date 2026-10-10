@@ -501,8 +501,8 @@ paths:
       x-implemented: '007'
       description: |
         The polling form of the live view. `since` is the `projectionSeq` the client last saw. The answer carries the journal
-        events after it (light: sequence, type, node, attempt, time), the full object of every node those events name (a node
-        changes only through events that name it) and the new `projectionSeq`, so a client updates a few nodes and does not reload the graph. Every
+        events after it (light: sequence, type, node, attempt, time), the full object of every node those events name or create (a node
+        changes only through events that name it or activate it: a routing, a fork, a saga entered, a compensation plan or a lookup carry the steps they create) and the new `projectionSeq`, so a client updates a few nodes and does not reload the graph. Every
         transition of a run is a journal event with a sequence, so nothing that happens between two reads is missed. `reset` is
         true, and `nodes` and `edges` are the whole graph, when `since` is ahead of the run or more than 500 events behind it. A
         `since` equal to the run's version answers with no events and no nodes. Needs `run:read`.

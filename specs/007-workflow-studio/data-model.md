@@ -19,8 +19,9 @@ in memory**. Behaviour and decisions: [`research.md`](./research.md) (D138–D15
 
 Invariants (tested in `tests/e2e/007-workflow-studio`):
 
-- A node changes only through a journal event that names it; therefore **applying every delta in order gives
-  exactly the graph the platform would send whole** (`us03_applying_every_change_in_order…`).
+- A node changes only through a journal event that names it or activates it (`RunEvent::changed_nodes`); therefore **applying
+  every delta in order gives exactly the graph the platform would send whole** (`us03_applying_every_change_in_order…`, and
+  `us03_the_deltas_still_equal_the_whole_graph_when_a_plan_activates_steps_that_wait_their_turn` for steps that wait their turn).
 - A delta never contains an event with a sequence above the graph it ships with.
 - Another tenant's workflow or run is `404` for all four, and a refusal never reveals whether it exists.
 - Nothing returned holds a payload, an input, an output or a secret: the journal carries a digest, the graph a
