@@ -44,6 +44,8 @@ put both behind one host.
 - **Act on a failure**: choose the step, *Retry*, *Retry compensation*, *Skip compensation* or *Resolve*; each asks for a reason, says what it will do, and is recorded with your name.
   Skipping or resolving needs the administrator permission `saga:override`.
 - **Everything the canvas does, the list view does** (*Canvas | List* toggle), for keyboard and screen-reader use.
+- **A reader** (`definition:read` without `definition:write`) can open every workflow but is not sent to the platform's checks, which answer only people who can change a workflow; the
+  validation panel says so. The same reader on a run sees every action, disabled, with the permission it needs.
 
 ## 4. Operating it
 
@@ -66,3 +68,13 @@ walkthrough in them; it has **not** been tested by people using a screen reader.
 Showing a step's input, output or error text (the journal carries none: G144); *retry run as new* and *mark manual review* (the API refuses them: G145); human approval and
 for-each nodes can be drawn but not published (G147); manual positions of cards are kept in the browser only (G148); pushing changes from the engine instead of polling
 the database (G143); a screen-reader test by a person (G146).
+
+## 7. Checking it
+
+| What | How |
+|---|---|
+| Lint, types, unit tests, build, generated API types | in `frontend/`: `npm run lint`, `npm run typecheck`, `npm run typecheck --workspace @sagat/e2e`, `npm test`, `npm run build`, `npm run check:api` |
+| The journeys (US01..US04, SC-007-001, accessibility, security, sign-in) | `cargo test -p sagat-tests --test e2e_007 -- --ignored journeys --nocapture`; needs Node, the frontend's dependencies (`npm ci` in `frontend/`), Chromium (`npx playwright install chromium` in `frontend/e2e/`) and Docker. `SAGAT_STUDIO_GREP="US04"` plays one; `SAGAT_STUDIO_REBUILD=0` reuses the build in `frontend/apps/studio/dist`. A failure leaves screenshots and traces in `frontend/e2e/test-results/`. |
+| The benchmark | `STUDIO_PERF=1 STUDIO_PERF_OUT=$PWD/frontend/e2e/perf-results/perf.json SAGAT_STUDIO_GREP=PERF cargo test -p sagat-tests --test e2e_007 -- --ignored journeys --nocapture`, then `node frontend/e2e/scripts/perf-report.mjs frontend/e2e/perf-results/perf.json tests/performance/reports/007-workflow-studio.md`. The floors it asserts are in `frontend/e2e/tests/perf.spec.ts`; the report says what it does not measure. |
+| Dependency advisories | `npm audit --audit-level=moderate` in `frontend/` (CI runs it; two low advisories are accepted: G152) |
+

@@ -157,3 +157,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   report (`tests/performance/reports/007-workflow-studio.md`) says which: headless Chromium on the machine it names. A low-end
   machine, Firefox and Safari are not measured, and the floors of the report ("usable": 30 frames per second, a few seconds to
   open) are this feature's reading of "usable", chosen before the measured rounds.
+- **G152 — Two low advisories remain in the Studio's production dependencies.** `monaco-editor` 0.57.0 bundles DOMPurify
+  `<=3.4.15` (GHSA-6688-9rhm-gjv2, an `IN_PLACE` sanitising case); npm's suggested fix is to go back to 0.56.0, which loses the
+  editor features the script page uses. The Studio does not hand the editor markup from outside (it shows the author's own
+  source and the platform's diagnostics as text), and the page's policy forbids inline script, so the advisory is accepted and
+  the CI job (`npm audit --audit-level=moderate`) lets lows through until Monaco ships a fixed bundle. The tooling advisories
+  that were open when the frontend was built (vitest's `tinypool`, `source-map-js`) are fixed by vitest 4.1.11 and a
+  lockfile update.
+
