@@ -46,6 +46,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         admin_addr: None,
         migrate_on_start: false,
         secrets: None,
+        scripts: None,
     }
 }
 

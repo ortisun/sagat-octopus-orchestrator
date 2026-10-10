@@ -56,8 +56,8 @@ pub type Egress = EgressService<PgRunStore, SystemClock>;
 pub type Events = EventService<PgRunStore, SystemClock>;
 pub type Outbound = OutboundService<PgRunStore, SystemClock>;
 pub type Connectors = ConnectorService<PgRunStore, SystemClock>;
-pub type Scripts = ScriptService<PgRunStore, SystemClock, Schemas>;
-pub type Runner = RunnerService<PgRunStore, SystemClock, SystemEntropy>;
+pub type Scripts = ScriptService<PgRunStore, SystemClock>;
+pub type Runner = RunnerService<PgRunStore, SystemClock>;
 pub type DeliveryLoop = DeliveryWorker<PgRunStore, super::receiver::LoopbackSender, SystemEntropy>;
 
 pub struct World {

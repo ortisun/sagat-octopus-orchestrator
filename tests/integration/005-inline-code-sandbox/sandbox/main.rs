@@ -83,6 +83,8 @@ pub async fn build(
             source: Source::parse(source).expect("source"),
             lockfile: None,
             policy: Policy::default(),
+            input_schema: None,
+            output_schema: None,
         })
         .await
 }
@@ -108,6 +110,7 @@ pub async fn run_with(
                 output_schema: None,
                 policy,
                 secrets_to_hide: Vec::new(),
+                idempotency_key: None,
             },
             host,
         )

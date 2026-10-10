@@ -39,6 +39,7 @@ sagat-infra-postgres.workspace = true
 sagat-infra-sandbox.workspace = true
 sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
+sagat-sandbox-runner.workspace = true
 sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
@@ -177,3 +178,19 @@ path = "integration/005-inline-code-sandbox/sandbox/main.rs"
 [[test]]
 name = "integration_005"
 path = "integration/005-inline-code-sandbox/registry/main.rs"
+
+[[test]]
+name = "e2e_005"
+path = "e2e/005-inline-code-sandbox/main.rs"
+
+[[test]]
+name = "contract_rest_005"
+path = "contract/005-inline-code-sandbox/rest/main.rs"
+
+[[test]]
+name = "fault_005"
+path = "fault/005-inline-code-sandbox/main.rs"
+
+[[test]]
+name = "perf_005"
+path = "performance/005-inline-code-sandbox/main.rs"

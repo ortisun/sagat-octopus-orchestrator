@@ -102,6 +102,7 @@ async fn a_secret_is_available_only_if_declared_and_never_reaches_the_log() {
                 output_schema: None,
                 policy: sagat_domain::scripts::Policy::default(),
                 secrets_to_hide: Vec::new(),
+                idempotency_key: None,
             },
             &host,
         )
@@ -298,5 +299,34 @@ async fn a_script_cannot_execute_from_the_scratch_area() {
         "{} / {}",
         result_of(&outcome),
         outcome.log
+    );
+}
+
+#[tokio::test]
+async fn a_script_in_a_loop_cannot_make_its_supervisor_work_without_end() {
+    let sandbox = sandbox();
+    let host = Host::default();
+    let outcome = run_with(
+        &sandbox,
+        Language::TypeScript,
+        "export default async function (_i: unknown, octopus: any) {\n  let refused = 0;\n  for (let i = 0; i < 300; i++) {\n    try { await octopus.fetch('https://api.example.test/' + i); } catch { refused++; }\n  }\n  return { refused };\n}\n",
+        "{}",
+        sagat_domain::scripts::Policy::default(),
+        &host,
+    )
+    .await;
+    assert_eq!(result_of(&outcome), r#"{"refused":300}"#, "{}", outcome.log);
+    let asked = host.fetched.lock().expect("lock").len();
+    assert!(
+        asked <= 100,
+        "the supervisor was asked {asked} times: past a hundred it refuses without working"
+    );
+    assert_eq!(
+        outcome.denied,
+        vec![
+            "fetch https://api.example.test".to_owned(),
+            "host calls over the limit".to_owned()
+        ],
+        "refusals are noted once each"
     );
 }
