@@ -165,6 +165,78 @@ async fn us03_applying_every_change_in_order_always_gives_the_graph_the_server_w
     );
 }
 
+/// Three steps of a saga, each undone by an activity of its own: when the third fails for good,
+/// the undo of the second runs first and the undo of the first waits for it.
+fn three_steps_with_undo() -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": "three-steps"}, "entrypoint": "tx",
+        "nodes": [
+            {"id": "tx", "type": "saga", "begin": "a", "next": "done",
+             "onCompensationFailure": "manual_review", "cancelPolicy": "compensate_completed"},
+            {"id": "a", "type": "activity", "activity": "act.a", "next": "b", "compensateWith": "undo.a"},
+            {"id": "b", "type": "activity", "activity": "act.b", "next": "c", "compensateWith": "undo.b"},
+            {"id": "c", "type": "activity", "activity": "act.c", "retry": {"maxAttempts": 1}},
+            {"id": "done", "type": "end"}
+        ]
+    })
+}
+
+#[tokio::test]
+async fn us03_the_deltas_still_equal_the_whole_graph_when_a_plan_activates_steps_that_wait_their_turn()
+ {
+    let p = platform().await;
+    let wf = p.publish("three-steps", &three_steps_with_undo()).await;
+    let run = p.start(&wf, &json!({})).await;
+    let mut w = p.worker("wendy").await;
+    w.register(&["act.a", "act.b", "act.c", "undo.a", "undo.b"])
+        .await;
+
+    let loaded = graph(&p, &run).await;
+    let mut model: BTreeMap<String, Value> = by_id(&loaded);
+    let mut seq = loaded["projectionSeq"].as_u64().expect("seq");
+    macro_rules! sync {
+        ($label:expr) => {{
+            let delta = changes(&p, &run, seq).await;
+            apply(&mut model, &mut seq, &delta);
+            let whole = graph(&p, &run).await;
+            assert_eq!(
+                model,
+                by_id(&whole),
+                "after {}: the deltas and the whole graph disagree",
+                $label
+            );
+        }};
+    }
+
+    for label in ["a", "b"] {
+        let task = w.one_task().await;
+        sync!(format!("{label} leased"));
+        w.complete(&task, &json!({})).await.expect("completes");
+        sync!(format!("{label} completed"));
+    }
+    let third = w.one_task().await;
+    w.fail(&third, false).await.expect("c is declined for good");
+    // The plan names the two undos; the first of them runs now and the other waits for it. A client
+    // that was told only about the steps the events name would still show the waiting undo as one
+    // the run has not reached.
+    sync!("the undo was planned");
+    assert_eq!(
+        model["a~c"]["status"], "PENDING",
+        "the undo of a waits for the undo of b: {}",
+        model["a~c"]
+    );
+    let undo_b = w.one_task().await;
+    sync!("the undo of b leased");
+    w.complete(&undo_b, &json!({})).await.expect("undo b");
+    sync!("the undo of b completed");
+    let undo_a = w.one_task().await;
+    w.complete(&undo_a, &json!({})).await.expect("undo a");
+    p.tick().await;
+    sync!("the saga was compensated");
+    assert_eq!(graph(&p, &run).await["status"], "COMPENSATED");
+}
+
 #[tokio::test]
 async fn us03_a_client_that_is_ahead_or_far_behind_is_given_the_whole_graph() {
     let p = platform().await;
