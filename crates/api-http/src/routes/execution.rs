@@ -64,6 +64,20 @@ fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
     Ok(key)
 }
 
+/// The id an operation is answered with. It is derived from the run and the `Idempotency-Key`, so a
+/// request sent again because its answer was lost is answered with the same id: it is the same
+/// operation. It names the request, it is not a stored record (the journal event the operation
+/// caused is the record: G153).
+fn operation_id(run: &str, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("operation/{run}/{key}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes).to_string()
+}
+
 fn parse_id<T: FromStr>(raw: &str) -> Result<T, ApiError> {
     raw.parse().map_err(|_| ApiError::not_found())
 }
@@ -647,7 +661,7 @@ pub async fn operate_run<B: Exec>(
     Ok((
         StatusCode::ACCEPTED,
         Json(OperationResultBody {
-            operation_id: Uuid::now_v7().to_string(),
+            operation_id: operation_id(&id, idempotency_key(&headers)?),
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,
@@ -720,7 +734,7 @@ async fn review_step<B: Exec>(
     Ok((
         StatusCode::ACCEPTED,
         Json(OperationResultBody {
-            operation_id: Uuid::now_v7().to_string(),
+            operation_id: operation_id(id, idempotency_key(headers)?),
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,
