@@ -6,8 +6,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use sagat_application::scripts::{
-    ArtifactRecord, ArtifactSummary, BuildAssignment, ExecutionRecord, ExecutionSummary, PolicyRequest, ScriptRecord,
-    TestAssignment, TestRunRecord, TestRunSummary, VersionRecord,
+    ArtifactRecord, ArtifactSummary, BuildAssignment, ExecutionRecord, ExecutionSummary,
+    PolicyRequest, ScriptRecord, TestAssignment, TestRunRecord, TestRunSummary, VersionRecord,
 };
 use sagat_domain::scripts::{Egress, Failure, Policy, activity_of};
 use serde::{Deserialize, Deserializer, Serialize};

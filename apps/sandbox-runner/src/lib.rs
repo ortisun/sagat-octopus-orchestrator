@@ -230,7 +230,9 @@ impl<S: Sandbox + 'static> Runner<S> {
                 Ok(toolchain) => {
                     toolchains.insert(language.as_str().to_owned(), toolchain);
                 }
-                Err(_) => tracing::warn!(%language, "the toolchain cannot be identified now; its builds are not claimed"),
+                Err(_) => {
+                    tracing::warn!(%language, "the toolchain cannot be identified now; its builds are not claimed")
+                }
             }
         }
         if toolchains.is_empty() {
@@ -922,7 +924,11 @@ impl<S: Sandbox + 'static> Runner<S> {
 
     /// `false` when the engine says the attempt is no longer this runner's (the lease was lost and
     /// the step went to someone else): what the script did is not reported.
-    async fn complete_step(&self, task: &StepTask, output_json: String) -> Result<bool, RunnerError> {
+    async fn complete_step(
+        &self,
+        task: &StepTask,
+        output_json: String,
+    ) -> Result<bool, RunnerError> {
         let lease = &task.lease;
         let request = self
             .authed(pb::CompleteStepRequest {

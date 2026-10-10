@@ -209,7 +209,10 @@ where
             }
         }
         if scripts > 0 {
-            tracing::info!(removed = scripts, "purged script records past their retention");
+            tracing::info!(
+                removed = scripts,
+                "purged script records past their retention"
+            );
         }
         // One bounded statement at a time, so a backlog never holds a long one, repeated until the
         // backlog is gone (or this call has done its share): the purge must outrun what is written.

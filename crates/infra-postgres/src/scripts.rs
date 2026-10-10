@@ -12,8 +12,8 @@ use std::time::Duration;
 use sagat_application::error::StoreError;
 use sagat_application::scripts::{
     ArtifactRecord, ArtifactSummary, BuildJobRecord, BuiltArtifact, ClaimedBuild, ClaimedTest,
-    Deleted, Draft, DraftUpdate, ExecutionRecord, ExecutionStatus, ExecutionSummary, Finished, Hold,
-    MAX_BUILD_ATTEMPTS, NewExecution, NewVersion, RunnerStore, ScriptLookup, ScriptRecord,
+    Deleted, Draft, DraftUpdate, ExecutionRecord, ExecutionStatus, ExecutionSummary, Finished,
+    Hold, MAX_BUILD_ATTEMPTS, NewExecution, NewVersion, RunnerStore, ScriptLookup, ScriptRecord,
     ScriptStore, TEST_QUEUE_WAIT, TestReport, TestRunRecord, TestRunSummary, VersionRecord,
 };
 use sagat_domain::audit::AuditRecord;
@@ -294,7 +294,11 @@ fn execution_of_columns(row: &PgRow, with_log: bool) -> Result<ExecutionRecord, 
                 .map(|code| Failure::from_code(&code).ok_or_else(|| corrupt("execution failure")))
                 .transpose()?,
             exit_code: col(row, "exit_code")?,
-            log: if with_log { col(row, "log")? } else { String::new() },
+            log: if with_log {
+                col(row, "log")?
+            } else {
+                String::new()
+            },
             log_truncated: col(row, "log_truncated")?,
             denied: col(row, "denied")?,
             wall_ms: u64::try_from(wall).unwrap_or(0),

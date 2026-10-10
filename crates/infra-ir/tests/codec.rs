@@ -435,8 +435,14 @@ fn a_script_node_runs_as_the_activity_named_after_its_digest() {
         format!("script.sha256-{}", &DIGEST["sha256:".len()..])
     );
     assert_eq!(retry.max_attempts(), 2);
-    assert_eq!(compensate_with.as_ref().map(|a| a.as_str()), Some("undo.charge"));
-    assert_eq!(secrets.iter().map(|s| s.as_str()).collect::<Vec<_>>(), vec!["payments-api-key"]);
+    assert_eq!(
+        compensate_with.as_ref().map(|a| a.as_str()),
+        Some("undo.charge")
+    );
+    assert_eq!(
+        secrets.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        vec!["payments-api-key"]
+    );
     // What the definition pins, for the check a publication makes.
     let pinned: Vec<_> = parsed.definition.script_digests().into_iter().collect();
     assert_eq!(pinned.len(), 1);
@@ -454,7 +460,10 @@ fn a_script_node_pins_a_digest_and_nothing_else() {
         json!({"id": "c", "type": "script", "artifactDigest": DIGEST, "secrets": ["Not A Name"]}),
     ] {
         assert!(
-            matches!(parse(&minimal(json!([bad.clone()]), "c")), Err(IrError::Schema(_))),
+            matches!(
+                parse(&minimal(json!([bad.clone()]), "c")),
+                Err(IrError::Schema(_))
+            ),
             "{bad}"
         );
     }

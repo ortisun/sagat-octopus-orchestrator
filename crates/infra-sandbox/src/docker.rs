@@ -392,7 +392,10 @@ impl DockerSandbox {
                             host_calls += 1;
                             if host_calls > MAX_HOST_CALLS {
                                 deny(&mut driven.denied, "host calls over the limit".to_owned());
-                                let _ = attached.input.write_all(&protocol::refusal(*id, "denied")).await;
+                                let _ = attached
+                                    .input
+                                    .write_all(&protocol::refusal(*id, "denied"))
+                                    .await;
                                 let _ = attached.input.flush().await;
                                 continue;
                             }
@@ -830,7 +833,11 @@ impl Sandbox for DockerSandbox {
         let job = Job {
             image,
             command: command.map(str::to_owned).to_vec(),
-            first_message: protocol::run_message(&input, &files, request.idempotency_key.as_deref()),
+            first_message: protocol::run_message(
+                &input,
+                &files,
+                request.idempotency_key.as_deref(),
+            ),
             limits: request.policy.limits,
         };
         let driven = self.drive(job, Some(host)).await;
