@@ -202,6 +202,8 @@ pub struct Options {
     pub worker: WorkerSettings,
     /// The most any script may be given.
     pub script_ceiling: sagat_domain::scripts::Policy,
+    /// Limits and pace of the server-sent streams; the defaults when `None`.
+    pub streams: Option<sagat_api_http::streams::StreamLimits>,
 }
 
 impl Default for Options {
@@ -221,6 +223,7 @@ impl Default for Options {
             ping_delay: Duration::ZERO,
             worker: WorkerSettings::default(),
             script_ceiling: sagat_domain::scripts::Policy::default(),
+            streams: None,
         }
     }
 }
@@ -318,7 +321,7 @@ pub async fn start_with(options: Options) -> TestApi {
             options.script_ceiling,
         ),
     );
-    let exec = ExecState::new(
+    let mut exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         RunService::new(
@@ -328,6 +331,9 @@ pub async fn start_with(options: Options) -> TestApi {
             cache,
         ),
     );
+    if let Some(limits) = options.streams {
+        exec = exec.with_stream_limits(limits);
+    }
     // The worker protocol shares the REST API's identity, budgets and database.
     let grpc = WorkerGrpc::new(
         exec.clone(),

@@ -97,6 +97,10 @@ name = "sdk_conformance"
 path = "contract/sdk-conformance/main.rs"
 
 [[test]]
+name = "contract_rest_007"
+path = "contract/007-workflow-studio/rest/main.rs"
+
+[[test]]
 name = "contract_grpc_006"
 path = "contract/006-sdk-multilanguage/grpc/main.rs"
 
@@ -207,6 +211,10 @@ path = "performance/005-inline-code-sandbox/main.rs"
 [[test]]
 name = "e2e_006"
 path = "e2e/006-sdk-multilanguage/main.rs"
+
+[[test]]
+name = "e2e_007"
+path = "e2e/007-workflow-studio/main.rs"
 
 [[test]]
 name = "fault_006"

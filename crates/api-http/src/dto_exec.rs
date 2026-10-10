@@ -2,7 +2,7 @@
 
 use sagat_application::definitions::{StoredPlan, VersionRecord, WorkflowRecord};
 use sagat_application::execution::RunRecord;
-use sagat_application::runs::{GraphSnapshot, JournalEntry};
+use sagat_application::runs::{GraphChanges, GraphSnapshot, JournalEntry};
 use sagat_domain::definition::WorkflowVersion;
 use sagat_domain::workflow::{Node, NodeKind};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,88 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 // ----------------------------------------------------------------------------- definitions
+
+// ------------------------------------------------------------------- validation and diff
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidateBody {
+    /// The document to check; absent, the stored draft.
+    #[serde(default)]
+    pub ir: Option<Value>,
+}
+
+fn problem_body(problem: &sagat_application::definitions::Problem) -> Value {
+    json!({
+        "severity": problem.severity.as_str(),
+        "code": problem.code,
+        "message": problem.message,
+        "nodeId": problem.node,
+        "path": problem.path,
+    })
+}
+
+/// What a dry-run validation found.
+pub fn validation_body(validation: &sagat_application::definitions::Validation) -> Value {
+    json!({
+        "valid": validation.is_valid(),
+        "digest": validation.digest,
+        "problems": validation.problems.iter().map(problem_body).collect::<Vec<_>>(),
+        "warnings": validation.warnings.iter().map(problem_body).collect::<Vec<_>>(),
+    })
+}
+
+fn diff_side(side: sagat_application::diff::DiffSide) -> Value {
+    use sagat_application::diff::DiffSide;
+    match side {
+        DiffSide::Version(number) => {
+            json!({ "kind": "version", "number": number, "revision": null })
+        }
+        DiffSide::Draft(revision) => {
+            json!({ "kind": "draft", "number": null, "revision": revision })
+        }
+        DiffSide::Empty => json!({ "kind": "empty", "number": null, "revision": null }),
+    }
+}
+
+fn finding_body(finding: &sagat_application::diff::DiffFinding) -> Value {
+    json!({
+        "code": finding.code,
+        "message": finding.message,
+        "nodeId": finding.node,
+        "path": finding.path,
+    })
+}
+
+fn edge_body(edge: &sagat_application::diff::DiffEdge) -> Value {
+    json!({ "from": edge.from, "to": edge.to, "kind": edge.kind })
+}
+
+/// The differences between two documents of a workflow.
+pub fn diff_body(diff: &sagat_application::diff::DefinitionDiff) -> Value {
+    let d = &diff.diff;
+    json!({
+        "from": diff_side(diff.from),
+        "to": diff_side(diff.to),
+        "identical": d.identical,
+        "nodes": {
+            "added": d.nodes_added,
+            "removed": d.nodes_removed,
+            "changed": d.nodes_changed.iter()
+                .map(|c| json!({ "id": c.id, "fields": c.fields }))
+                .collect::<Vec<_>>(),
+        },
+        "edges": {
+            "added": d.edges_added.iter().map(edge_body).collect::<Vec<_>>(),
+            "removed": d.edges_removed.iter().map(edge_body).collect::<Vec<_>>(),
+        },
+        "changes": d.changes.iter()
+            .map(|c| json!({ "path": c.path, "change": c.change.as_str() }))
+            .collect::<Vec<_>>(),
+        "breaking": d.breaking.iter().map(finding_body).collect::<Vec<_>>(),
+        "attention": d.attention.iter().map(finding_body).collect::<Vec<_>>(),
+    })
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,17 +347,32 @@ impl From<&JournalEntry> for JournalEventBody {
 /// The definition's graph overlaid with the run's step states. Nodes that did not start yet are
 /// `NOT_STARTED`; the editor can draw the planned graph and the runtime state in one picture.
 pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
+    json!({
+        "runId": graph.run.info.run_id.to_string(),
+        "status": graph.run.status.as_str(),
+        "projectionSeq": graph.run.version,
+        "projectionLagMs": 0,
+        "nodes": runtime_nodes(graph, |_| true),
+        "edges": runtime_edges(graph),
+    })
+}
+
+/// The nodes of the runtime graph that `wanted` accepts (by the node and the state of its step).
+fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) -> Vec<Value> {
     let steps: std::collections::BTreeMap<_, _> =
         graph.steps.iter().map(|s| (s.node.as_str(), s)).collect();
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
     let sagas: std::collections::BTreeMap<_, _> =
         graph.sagas.iter().map(|s| (s.node.as_str(), s)).collect();
+    let mut nodes = Vec::new();
     // Every node the engine can run: the compensations and lookups derived from the author's
     // nodes are steps of the run too, and the ones an operator is asked to decide on.
     for node in graph.definition.all_nodes() {
         let id = node.id().as_str();
         let step = steps.get(id);
+        let view = NodeView { id };
+        if !wanted(&view) {
+            continue;
+        }
         let origin = node.origin();
         nodes.push(json!({
             "id": id,
@@ -304,6 +401,18 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
             "waitingOn": step.and_then(|s| s.waiting_on),
             "childRunId": step.and_then(|s| s.child_run).map(|r| r.to_string()),
         }));
+    }
+    nodes
+}
+
+/// What a filter over the nodes of a runtime graph can look at.
+pub struct NodeView<'a> {
+    pub id: &'a str,
+}
+
+fn runtime_edges(graph: &GraphSnapshot) -> Vec<Value> {
+    let mut edges = Vec::new();
+    for node in graph.definition.all_nodes() {
         edges_of(node, &mut edges);
     }
     // The order of the compensations, and which node each lookup is about: a compensation runs
@@ -330,14 +439,50 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
             }));
         }
     }
-    json!({
+    edges
+}
+
+/// What changed in a run's graph since a journal sequence (D141): the events, and the nodes they
+/// touched. A node changes only through an event that names it: a cancel request is a
+/// `step.cancel_requested` of each step and the phases of a saga are events of the saga node
+/// (`crates/domain/src/execution/event.rs`, `RunEvent::node`); the events that name no node
+/// (`run.started`, `run.paused`, `run.resumed`, `run.stop_requested`, `run.finished`) change the
+/// run, whose `status` is always current. `reset` brings the whole graph.
+pub fn graph_changes_body(changes: &GraphChanges) -> Value {
+    let graph = &changes.graph;
+    let touched: std::collections::BTreeSet<&str> = changes
+        .events
+        .iter()
+        .filter_map(|e| e.node.as_deref())
+        .collect();
+    let any = !changes.events.is_empty();
+    let nodes = if changes.reset {
+        runtime_nodes(graph, |_| true)
+    } else if any {
+        runtime_nodes(graph, |n| touched.contains(n.id))
+    } else {
+        Vec::new()
+    };
+    let mut body = json!({
         "runId": graph.run.info.run_id.to_string(),
         "status": graph.run.status.as_str(),
+        // A reset is relative to nothing: the client replaces what it has.
+        "fromSeq": if changes.reset { 0 } else { changes.since },
         "projectionSeq": graph.run.version,
-        "projectionLagMs": 0,
+        "reset": changes.reset,
+        "events": changes.events.iter().map(|e| json!({
+            "seq": e.seq,
+            "eventType": e.event_type,
+            "occurredAt": rfc3339(e.occurred_at),
+            "stepId": e.node,
+            "attempt": e.attempt,
+        })).collect::<Vec<_>>(),
         "nodes": nodes,
-        "edges": edges,
-    })
+    });
+    if changes.reset {
+        body["edges"] = Value::Array(runtime_edges(graph));
+    }
+    body
 }
 
 fn rfc3339(at: OffsetDateTime) -> String {

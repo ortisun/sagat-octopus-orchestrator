@@ -1049,3 +1049,77 @@ fn a_compensation_outside_a_saga_is_a_warning() {
     assert_eq!(parsed.warnings.len(), 1);
     assert!(parsed.warnings[0].to_string().contains("saga"));
 }
+
+// ------------------------------------------------------------------ problems an author can act on
+
+#[test]
+fn a_node_that_fits_no_type_is_reported_against_the_type_it_says_it_is() {
+    // The generic answer of a `oneOf` ("is not valid under any of the schemas") tells an author
+    // nothing: the problem is reported against the node's own type, at the field that is wrong.
+    let doc = minimal(
+        json!([
+            {"id": "a", "type": "activity", "next": "s"},
+            {"id": "s", "type": "script", "artifactDigest": "not-a-digest"},
+            {"id": "t", "type": "timer"},
+            {"id": "e", "type": "end"}
+        ]),
+        "a",
+    );
+    let issues = issues_of(&doc);
+    let at = |path: &str| {
+        issues
+            .iter()
+            .find(|(p, _)| p == path)
+            .unwrap_or_else(|| panic!("no issue at {path} in {issues:#?}"))
+            .1
+            .clone()
+    };
+    assert!(at("/nodes/0").contains("activity"), "{issues:#?}");
+    assert!(
+        at("/nodes/1/artifactDigest").contains("sha256"),
+        "{issues:#?}"
+    );
+    assert!(at("/nodes/2").contains("durationMs"), "{issues:#?}");
+    assert!(
+        issues.iter().all(|(_, m)| !m.contains("oneOf")),
+        "no generic message is left: {issues:#?}"
+    );
+}
+
+#[test]
+fn a_node_with_an_unknown_or_missing_type_says_so_and_lists_the_types() {
+    let doc = minimal(
+        json!([
+            {"id": "a", "type": "teleport", "next": "b"},
+            {"id": "b", "next": "c"},
+            {"id": "c", "type": "end"}
+        ]),
+        "a",
+    );
+    let issues = issues_of(&doc);
+    let teleport = issues
+        .iter()
+        .find(|(p, _)| p == "/nodes/0/type")
+        .expect("the unknown type is located");
+    assert!(
+        teleport.1.contains("teleport") && teleport.1.contains("activity"),
+        "{teleport:?}"
+    );
+    assert!(
+        issues.iter().any(|(p, _)| p.starts_with("/nodes/1")),
+        "a node with no type is reported: {issues:#?}"
+    );
+}
+
+#[test]
+fn a_hostile_node_cannot_make_the_message_long() {
+    let long = "x".repeat(10_000);
+    let doc = minimal(json!([{"id": "a", "type": long}]), "a");
+    for (_, message) in issues_of(&doc) {
+        assert!(
+            message.chars().count() <= 400,
+            "{} chars",
+            message.chars().count()
+        );
+    }
+}

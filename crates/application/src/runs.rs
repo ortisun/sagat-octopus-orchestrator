@@ -108,6 +108,32 @@ pub struct GraphSnapshot {
     pub sagas: Vec<SagaView>,
 }
 
+/// Most journal events a [`GraphChanges`] carries; a client further behind than this is given the
+/// whole graph, which is cheaper than replaying a long history node by node.
+pub const MAX_CHANGE_EVENTS: u32 = 500;
+
+/// What happened to a run's graph after a journal sequence (the live view, D141): the graph as it
+/// is now, and the journal events that led from the client's sequence to it, so the client can
+/// update the nodes those events touched and keep the rest.
+#[derive(Debug, Clone)]
+pub struct GraphChanges {
+    pub graph: GraphSnapshot,
+    /// The sequence the client had.
+    pub since: u64,
+    /// The client must replace what it has with the whole graph.
+    pub reset: bool,
+    /// Events with `since < seq <= graph.run.version`, ascending; empty on a reset.
+    pub events: Vec<JournalEntry>,
+}
+
+impl GraphChanges {
+    /// The sequence the graph is at.
+    #[must_use]
+    pub fn projection_seq(&self) -> u64 {
+        self.graph.run.version
+    }
+}
+
 /// Filters of a run listing.
 #[derive(Debug, Clone, Default)]
 pub struct RunFilter {
@@ -541,6 +567,66 @@ where
             Some(graph) => Ok(graph),
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// What changed in the run's graph after journal sequence `since`.
+    ///
+    /// Every transition of a run is a journal event with a sequence, so a client that reads the
+    /// changes after the last sequence it saw misses nothing, however many snapshots it skipped.
+    /// A `since` ahead of the run, or more than [`MAX_CHANGE_EVENTS`] events behind it, is a
+    /// `reset`: the answer is the whole graph.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
+    pub async fn graph_changes(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        since: u64,
+        ctx: &RequestContext,
+    ) -> Result<GraphChanges, AppError> {
+        let graph = self.graph(principal, id, ctx).await?;
+        let projection = graph.run.version;
+        if since > projection {
+            return Ok(GraphChanges {
+                graph,
+                since,
+                reset: true,
+                events: Vec::new(),
+            });
+        }
+        if since == projection {
+            return Ok(GraphChanges {
+                graph,
+                since,
+                reset: false,
+                events: Vec::new(),
+            });
+        }
+        let Some(mut events) = self
+            .store
+            .journal(
+                principal.tenant_id(),
+                id,
+                Some(since),
+                MAX_CHANGE_EVENTS + 1,
+            )
+            .await?
+        else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        // What the snapshot already includes and no more: events after it are the next read's.
+        events.retain(|event| event.seq <= projection);
+        let reset = events.len() > MAX_CHANGE_EVENTS as usize;
+        if reset {
+            events.clear();
+        }
+        Ok(GraphChanges {
+            graph,
+            since,
+            reset,
+            events,
+        })
     }
 
     /// Cancels, pauses or resumes a run. `expected_version`, when given, must equal the run's

@@ -28,6 +28,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting", "parsing", "serde", "serde-well-known"] }
 tokio = { workspace = true, features = ["sync", "time", "rt", "net", "macros"] }
+tokio-stream.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 

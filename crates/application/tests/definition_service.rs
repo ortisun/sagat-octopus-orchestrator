@@ -69,6 +69,22 @@ impl FakeStore {
     fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         f(&mut self.0.lock().expect("lock"))
     }
+
+    /// What publishing does to the workflow: the version becomes the active one.
+    fn activate(state: &mut State, id: WorkflowId, version: WorkflowVersionId) {
+        if let Some((w, _)) = state.workflows.get_mut(&id) {
+            *w = Workflow::restore(
+                w.id(),
+                w.tenant_id(),
+                w.namespace_id(),
+                w.name().clone(),
+                w.draft_revision(),
+                Some(version),
+                w.created_at(),
+                w.updated_at(),
+            );
+        }
+    }
 }
 
 impl QuotaLookup for FakeStore {
@@ -337,7 +353,9 @@ impl DefinitionStore for FakeStore {
                 .iter()
                 .find(|(v, _)| v.workflow_id() == id && *v.digest() == digest)
             {
-                return Ok(Some(Applied::Done((existing.clone(), false))));
+                let existing = existing.clone();
+                Self::activate(s, id, existing.id());
+                return Ok(Some(Applied::Done((existing, false))));
             }
             let number = u32::try_from(
                 s.versions
@@ -352,6 +370,7 @@ impl DefinitionStore for FakeStore {
             s.idempotency
                 .insert(slot, (idempotency.fingerprint.clone(), number.to_string()));
             s.versions.push((version.clone(), document.to_vec()));
+            Self::activate(s, id, version_id);
             s.plans.insert(version_id, plans.to_vec());
             s.audits.push(audit.clone());
             Ok(Some(Applied::Done((version, true))))
@@ -490,6 +509,21 @@ impl IrCodec for FakeCodec {
         } else {
             Err(IrError::Malformed)
         }
+    }
+
+    fn diff(
+        &self,
+        from: &[u8],
+        to: &[u8],
+    ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
+        // Enough to see which documents the service handed over: the real comparison is the
+        // adapter's (crates/infra-ir/tests/diff.rs).
+        Ok(sagat_application::diff::DocumentDiff {
+            identical: from == to,
+            nodes_added: vec![String::from_utf8_lossy(from).into_owned()],
+            nodes_removed: vec![String::from_utf8_lossy(to).into_owned()],
+            ..Default::default()
+        })
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
@@ -1452,4 +1486,364 @@ async fn reading_plans_needs_definition_read_and_a_version_that_exists() {
         .compensation_plans(&stranger, w.workflow.id(), 1, &ctx())
         .await;
     assert!(matches!(hidden, Err(AppError::NotFound)), "{hidden:?}");
+}
+
+// ------------------------------------------------------------------ validating (dry run)
+
+use sagat_application::definitions::{DiffRef, Severity, problems_of};
+use sagat_application::diff::DiffSide;
+use sagat_domain::workflow::WorkflowError;
+
+#[tokio::test]
+async fn validating_needs_definition_write_and_asks_the_store_for_nothing_before() {
+    let f = fixture();
+    let w = create(&f, Role::Admin, "key-0000001")
+        .await
+        .expect("created");
+    f.store.with(|s| s.calls.clear());
+    let viewer = principal(f.tenant, Role::Viewer);
+    let result = f
+        .service
+        .validate(&viewer, w.workflow.id(), None, &ctx())
+        .await;
+    assert!(
+        matches!(result, Err(AppError::Forbidden { .. })),
+        "{result:?}"
+    );
+    assert!(f.store.with(|s| s.calls.is_empty()));
+}
+
+#[tokio::test]
+async fn a_document_that_does_not_validate_is_an_answer_with_problems_and_stores_nothing() {
+    let f = fixture_with(FakeCodec {
+        name: "invoice-flow",
+        outcome: Err(IrError::Invalid(WorkflowError::Cycle(
+            NodeId::parse("loop").expect("id"),
+        ))),
+        secrets: &[],
+        saga: false,
+    });
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let audits_before = f.store.with(|s| s.audits.len());
+    let validation = f
+        .service
+        .validate(&p, w.workflow.id(), Some(DRAFT), &ctx())
+        .await
+        .expect("an invalid document is not an error");
+    assert!(!validation.is_valid());
+    assert_eq!(validation.digest, None);
+    assert_eq!(validation.problems.len(), 1);
+    let problem = &validation.problems[0];
+    assert_eq!(
+        (problem.severity, problem.code, problem.node.as_deref()),
+        (Severity::Error, "CYCLE", Some("loop"))
+    );
+    // Nothing was written, nothing was audited, the draft is where it was.
+    assert_eq!(f.store.with(|s| s.audits.len()), audits_before);
+    assert!(f.store.with(|s| s.versions.is_empty()));
+    let draft = f
+        .service
+        .get_workflow(&p, w.workflow.id(), &ctx())
+        .await
+        .expect("read");
+    assert_eq!(draft.workflow.draft_revision(), 1);
+}
+
+#[tokio::test]
+async fn a_valid_document_gets_its_digest_and_the_warnings_publish_would_return() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let validation = f
+        .service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("validated");
+    assert!(validation.is_valid(), "{validation:?}");
+    assert_eq!(validation.problems, []);
+    assert!(validation.digest.is_some());
+}
+
+#[tokio::test]
+async fn a_document_that_names_another_workflow_is_a_problem() {
+    let f = fixture_with(FakeCodec {
+        name: "other-flow",
+        outcome: Ok(()),
+        secrets: &[],
+        saga: false,
+    });
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let validation = f
+        .service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("validated");
+    assert_eq!(
+        validation
+            .problems
+            .iter()
+            .map(|p| p.code)
+            .collect::<Vec<_>>(),
+        ["NAME_MISMATCH"]
+    );
+    assert_eq!(validation.digest, None);
+}
+
+#[tokio::test]
+async fn a_secret_the_author_may_not_use_is_a_problem_on_its_node_and_leaves_no_denial() {
+    let f = fixture_with(FakeCodec {
+        name: "invoice-flow",
+        outcome: Ok(()),
+        secrets: &["db-password"],
+        saga: false,
+    });
+    f.store.with(|s| {
+        s.secrets.insert("db-password".into(), false);
+    });
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let validation = f
+        .service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("validated");
+    assert_eq!(
+        validation
+            .problems
+            .iter()
+            .map(|p| (p.code, p.node.as_deref()))
+            .collect::<Vec<_>>(),
+        [("SECRET_UNAVAILABLE", Some("a"))]
+    );
+    // Publishing records a denial; a dry run does not.
+    assert!(f.store.with(|s| s.denials.is_empty()));
+}
+
+#[tokio::test]
+async fn validating_another_tenants_workflow_is_not_found() {
+    let f = fixture();
+    let w = create(&f, Role::Admin, "key-0000001")
+        .await
+        .expect("created");
+    let stranger = principal(TenantId::generate(), Role::Admin);
+    let result = f
+        .service
+        .validate(&stranger, w.workflow.id(), None, &ctx())
+        .await;
+    assert!(matches!(result, Err(AppError::NotFound)), "{result:?}");
+}
+
+#[test]
+fn every_error_of_the_codec_maps_to_a_stable_code_that_says_where() {
+    use sagat_application::definitions::IrIssue;
+    let id = |text: &str| NodeId::parse(text).expect("id");
+    let table: Vec<(IrError, Vec<(&str, Option<&str>, Option<&str>)>)> = vec![
+        (IrError::TooLarge, vec![("DOCUMENT_TOO_LARGE", None, None)]),
+        (IrError::Malformed, vec![("DOCUMENT_MALFORMED", None, None)]),
+        (
+            IrError::Schema(vec![
+                IrIssue {
+                    path: "/nodes/2/next".into(),
+                    message: "x".into(),
+                },
+                IrIssue {
+                    path: "".into(),
+                    message: "y".into(),
+                },
+            ]),
+            vec![
+                ("SCHEMA", None, Some("/nodes/2/next")),
+                ("SCHEMA", None, Some("")),
+            ],
+        ),
+        (
+            IrError::Unsupported {
+                node: "h".into(),
+                kind: "humanApproval".into(),
+                reason: "later",
+            },
+            vec![("UNSUPPORTED_NODE", Some("h"), None)],
+        ),
+        (
+            IrError::Expression {
+                node: "c".into(),
+                field: "expression",
+                message: "bad".into(),
+            },
+            vec![("EXPRESSION", Some("c"), Some("/expression"))],
+        ),
+        (
+            IrError::NameMismatch {
+                document: "a".into(),
+                workflow: "b".into(),
+            },
+            vec![("NAME_MISMATCH", None, None)],
+        ),
+        (
+            IrError::UnknownScript { digest: "d".into() },
+            vec![("UNKNOWN_SCRIPT", None, None)],
+        ),
+        (
+            IrError::Invalid(WorkflowError::UnknownTarget {
+                from: id("a"),
+                to: id("zzz"),
+            }),
+            vec![("UNKNOWN_TARGET", Some("a"), None)],
+        ),
+        (
+            IrError::Invalid(WorkflowError::Unreachable(id("orphan"))),
+            vec![("UNREACHABLE", Some("orphan"), None)],
+        ),
+        (
+            IrError::Invalid(WorkflowError::NoNodes),
+            vec![("NO_NODES", None, None)],
+        ),
+    ];
+    for (error, expected) in table {
+        let got: Vec<_> = problems_of(&error)
+            .iter()
+            .map(|p| (p.code, p.node.clone(), p.path.clone()))
+            .collect();
+        let want: Vec<_> = expected
+            .iter()
+            .map(|(c, n, p)| (*c, n.map(str::to_owned), p.map(str::to_owned)))
+            .collect();
+        assert_eq!(got, want, "{error:?}");
+        assert!(
+            problems_of(&error)
+                .iter()
+                .all(|p| p.severity == Severity::Error)
+        );
+    }
+}
+
+// ------------------------------------------------------------------ diffing
+
+async fn published_twice(f: &Fixture, p: &Principal) -> WorkflowId {
+    let w = create(f, Role::Admin, "key-0000001")
+        .await
+        .expect("created");
+    f.service
+        .publish(p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("v1");
+    f.service
+        .update_draft(
+            p,
+            w.workflow.id(),
+            1,
+            br#"{"kind":"Workflow","v":2}"#,
+            &ctx(),
+        )
+        .await
+        .expect("edit");
+    f.service
+        .publish(p, w.workflow.id(), 2, None, "pub-0000002", &ctx())
+        .await
+        .expect("v2");
+    f.service
+        .update_draft(
+            p,
+            w.workflow.id(),
+            2,
+            br#"{"kind":"Workflow","v":3}"#,
+            &ctx(),
+        )
+        .await
+        .expect("edit again");
+    w.workflow.id()
+}
+
+#[tokio::test]
+async fn by_default_the_active_version_is_compared_with_the_draft() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Admin);
+    let id = published_twice(&f, &p).await;
+    let d = f
+        .service
+        .diff(&p, id, None, None, &ctx())
+        .await
+        .expect("diff");
+    assert_eq!((d.from, d.to), (DiffSide::Version(2), DiffSide::Draft(3)));
+    // The documents handed to the adapter are the stored ones.
+    assert_eq!(d.diff.nodes_added, [r#"{"kind":"Workflow","v":2}"#]);
+    assert_eq!(d.diff.nodes_removed, [r#"{"kind":"Workflow","v":3}"#]);
+    assert!(!d.diff.identical);
+}
+
+#[tokio::test]
+async fn any_two_versions_and_the_draft_can_be_compared() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Admin);
+    let id = published_twice(&f, &p).await;
+    let d = f
+        .service
+        .diff(
+            &p,
+            id,
+            Some(DiffRef::Version(1)),
+            Some(DiffRef::Version(2)),
+            &ctx(),
+        )
+        .await
+        .expect("diff");
+    assert_eq!((d.from, d.to), (DiffSide::Version(1), DiffSide::Version(2)));
+    let same = f
+        .service
+        .diff(&p, id, Some(DiffRef::Draft), Some(DiffRef::Draft), &ctx())
+        .await
+        .expect("diff");
+    assert!(same.diff.identical);
+    let missing = f
+        .service
+        .diff(&p, id, Some(DiffRef::Version(9)), None, &ctx())
+        .await;
+    assert!(matches!(missing, Err(AppError::NotFound)), "{missing:?}");
+}
+
+#[tokio::test]
+async fn a_workflow_with_no_version_compares_nothing_with_its_draft() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Admin);
+    let w = create(&f, Role::Admin, "key-0000001")
+        .await
+        .expect("created");
+    let d = f
+        .service
+        .diff(&p, w.workflow.id(), None, None, &ctx())
+        .await
+        .expect("diff");
+    assert_eq!((d.from, d.to), (DiffSide::Empty, DiffSide::Draft(1)));
+}
+
+#[tokio::test]
+async fn diffing_needs_definition_read_and_a_workflow_of_the_callers_tenant() {
+    let f = fixture();
+    let w = create(&f, Role::Admin, "key-0000001")
+        .await
+        .expect("created");
+    let stranger = principal(TenantId::generate(), Role::Admin);
+    let result = f
+        .service
+        .diff(&stranger, w.workflow.id(), None, None, &ctx())
+        .await;
+    assert!(matches!(result, Err(AppError::NotFound)), "{result:?}");
+    // Reading is enough to compare (a viewer may), writing is not needed.
+    let viewer = principal(f.tenant, Role::Viewer);
+    assert!(
+        f.service
+            .diff(&viewer, w.workflow.id(), None, None, &ctx())
+            .await
+            .is_ok()
+    );
 }

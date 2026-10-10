@@ -8,6 +8,7 @@
 mod canonical;
 mod convert;
 pub mod cron;
+mod diff;
 mod evaluator;
 mod schema;
 
@@ -31,6 +32,14 @@ impl IrCodec for JsonIrCodec {
             Ok(Value::Object(_)) => Ok(()),
             _ => Err(IrError::Malformed),
         }
+    }
+
+    fn diff(
+        &self,
+        from: &[u8],
+        to: &[u8],
+    ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
+        diff::diff(from, to)
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {

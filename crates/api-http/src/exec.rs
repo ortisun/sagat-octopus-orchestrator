@@ -11,6 +11,7 @@ use sagat_application::runs::{RunService, RunStore};
 use crate::concurrency::TenantConcurrency;
 use crate::core::Core;
 use crate::limits::RateLimiter;
+use crate::streams::{StreamLimits, StreamRegistry};
 use crate::{AppState, TokenVerifier};
 
 /// Everything the definition and run handlers need, behind one type so handlers have one generic
@@ -23,6 +24,9 @@ pub trait Exec: Core {
 
     fn definitions(&self) -> &DefinitionService<Self::Store, Self::Clock, Self::Codec>;
     fn runs(&self) -> &RunService<Self::Store, Self::Clock, Self::Eval>;
+
+    /// The open server-sent streams (D142).
+    fn streams(&self) -> &Arc<StreamRegistry>;
 }
 
 /// The identity state plus the definition and run services.
@@ -30,6 +34,7 @@ pub struct ExecState<S, C, P, X, E> {
     pub core: AppState<S, C>,
     definitions: Arc<DefinitionService<P, C, X>>,
     runs: Arc<RunService<P, C, E>>,
+    streams: Arc<StreamRegistry>,
 }
 
 impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
@@ -43,7 +48,15 @@ impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
             core,
             definitions: Arc::new(definitions),
             runs: Arc::new(runs),
+            streams: StreamRegistry::new(StreamLimits::default()),
         }
+    }
+
+    /// Replaces the limits of server-sent streams (the defaults are in [`StreamLimits`]).
+    #[must_use]
+    pub fn with_stream_limits(mut self, limits: StreamLimits) -> Self {
+        self.streams = StreamRegistry::new(limits);
+        self
     }
 }
 
@@ -53,6 +66,7 @@ impl<S, C, P, X, E> Clone for ExecState<S, C, P, X, E> {
             core: self.core.clone(),
             definitions: Arc::clone(&self.definitions),
             runs: Arc::clone(&self.runs),
+            streams: Arc::clone(&self.streams),
         }
     }
 }
@@ -109,5 +123,9 @@ where
 
     fn runs(&self) -> &RunService<P, C, E> {
         &self.runs
+    }
+
+    fn streams(&self) -> &Arc<StreamRegistry> {
+        &self.streams
     }
 }

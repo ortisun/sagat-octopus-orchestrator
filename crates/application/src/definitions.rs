@@ -12,7 +12,9 @@ use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::saga::{SagaPlan, compensation_plans};
-use sagat_domain::workflow::{DefinitionWarning, Digest, WorkflowDefinition, WorkflowError};
+use sagat_domain::workflow::{
+    DefinitionWarning, Digest, NodeKind, WorkflowDefinition, WorkflowError,
+};
 use time::OffsetDateTime;
 
 use crate::clock::Clock;
@@ -68,6 +70,169 @@ pub enum IrError {
     UnknownScript { digest: String },
 }
 
+/// How serious something a dry-run validation found is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// The document cannot be published.
+    Error,
+    /// It can, and the author should know.
+    Warning,
+}
+
+impl Severity {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+}
+
+/// One thing a dry-run validation found in a document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    pub severity: Severity,
+    /// Stable, upper snake case; a client may branch on it.
+    pub code: &'static str,
+    /// Safe to show: never a value of the document beyond a clipped fragment.
+    pub message: String,
+    /// The node the problem is about, when a rule names one.
+    pub node: Option<String>,
+    /// A JSON pointer into the document, for a schema problem.
+    pub path: Option<String>,
+}
+
+impl Problem {
+    fn error(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Error,
+            code,
+            message: message.into(),
+            node: None,
+            path: None,
+        }
+    }
+
+    fn at_node(mut self, node: impl Into<String>) -> Self {
+        self.node = Some(node.into());
+        self
+    }
+
+    fn at_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+}
+
+/// What a dry-run validation found: every problem, and the digest of the canonical document when
+/// it is publishable.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Validation {
+    pub problems: Vec<Problem>,
+    pub warnings: Vec<Problem>,
+    pub digest: Option<String>,
+}
+
+impl Validation {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.problems.is_empty()
+    }
+}
+
+/// The problems that make `error` unpublishable, one per thing wrong that the codec found.
+#[must_use]
+pub fn problems_of(error: &IrError) -> Vec<Problem> {
+    match error {
+        IrError::TooLarge => vec![Problem::error("DOCUMENT_TOO_LARGE", error.to_string())],
+        IrError::Malformed => vec![Problem::error("DOCUMENT_MALFORMED", error.to_string())],
+        IrError::Schema(issues) => issues
+            .iter()
+            .map(|issue| {
+                Problem::error("SCHEMA", issue.message.clone()).at_path(issue.path.clone())
+            })
+            .collect(),
+        IrError::Unsupported { node, .. } => {
+            vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
+        }
+        IrError::Expression { node, field, .. } => vec![
+            Problem::error("EXPRESSION", error.to_string())
+                .at_node(node.clone())
+                .at_path(format!("/{field}")),
+        ],
+        IrError::NameMismatch { .. } => vec![Problem::error("NAME_MISMATCH", error.to_string())],
+        IrError::UnknownScript { .. } => vec![Problem::error("UNKNOWN_SCRIPT", error.to_string())],
+        IrError::Invalid(rule) => {
+            let (code, node) = graph_rule(rule);
+            let problem = Problem::error(code, rule.to_string());
+            vec![match node {
+                Some(node) => problem.at_node(node),
+                None => problem,
+            }]
+        }
+    }
+}
+
+/// The stable code of a graph rule and the node it names, if it names one.
+fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
+    use WorkflowError as E;
+    match error {
+        E::InvalidNodeId(id) => ("INVALID_NODE_ID", Some(id.clone())),
+        E::InvalidActivityName(_) => ("INVALID_ACTIVITY_NAME", None),
+        E::InvalidEventType(_) => ("INVALID_EVENT_TYPE", None),
+        E::InvalidExpression(_) => ("INVALID_EXPRESSION", None),
+        E::NoNodes => ("NO_NODES", None),
+        E::TooManyNodes(_) => ("TOO_MANY_NODES", None),
+        E::TooManyParallels(_) => ("TOO_MANY_PARALLELS", None),
+        E::TooManySecrets(_) => ("TOO_MANY_SECRETS", None),
+        E::DuplicateNode(node) => ("DUPLICATE_NODE", Some(node.to_string())),
+        E::UnknownEntrypoint(node) => ("UNKNOWN_ENTRYPOINT", Some(node.to_string())),
+        E::UnknownTarget { from, .. } => ("UNKNOWN_TARGET", Some(from.to_string())),
+        E::Cycle(node) => ("CYCLE", Some(node.to_string())),
+        E::Unreachable(node) => ("UNREACHABLE", Some(node.to_string())),
+        E::InvalidRetry(_) => ("INVALID_RETRY", None),
+        E::DurationOutOfRange { node, .. } => ("DURATION_OUT_OF_RANGE", Some(node.to_string())),
+        E::InvalidBranchCount(node) => ("INVALID_BRANCH_COUNT", Some(node.to_string())),
+        E::BranchOverlap { parallel, .. } => ("BRANCH_OVERLAP", Some(parallel.to_string())),
+        E::BranchBoundary { parallel, .. } => ("BRANCH_BOUNDARY", Some(parallel.to_string())),
+        E::EndInsideBranch { parallel, .. } => ("END_INSIDE_BRANCH", Some(parallel.to_string())),
+        E::SagaBoundary { saga, .. } => ("SAGA_BOUNDARY", Some(saga.to_string())),
+        E::EndInsideSaga { saga, .. } => ("END_INSIDE_SAGA", Some(saga.to_string())),
+        E::TooManySagas(_) => ("TOO_MANY_SAGAS", None),
+        E::IrreversibleWithCompensation(node) => {
+            ("IRREVERSIBLE_WITH_COMPENSATION", Some(node.to_string()))
+        }
+        E::EffectOnNonActivity(node) => ("EFFECT_ON_NON_ACTIVITY", Some(node.to_string())),
+        E::InvalidTrigger(_) => ("INVALID_TRIGGER", None),
+        E::TooManyTriggers(_) => ("TOO_MANY_TRIGGERS", None),
+        E::DuplicateTrigger => ("DUPLICATE_TRIGGER", None),
+    }
+}
+
+fn warning_problem(warning: &DefinitionWarning) -> Problem {
+    let (code, node) = match warning {
+        DefinitionWarning::CompensationOutsideSaga { node } => {
+            ("COMPENSATION_OUTSIDE_SAGA", node.to_string())
+        }
+        DefinitionWarning::RecursiveChild { node } => ("RECURSIVE_CHILD", node.to_string()),
+    };
+    Problem {
+        severity: Severity::Warning,
+        code,
+        message: warning.to_string(),
+        node: Some(node),
+        path: None,
+    }
+}
+
+/// One side of a comparison, as the caller named it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffRef {
+    Draft,
+    Version(u32),
+}
+
 /// A validated workflow document.
 #[derive(Debug, Clone)]
 pub struct ParsedDefinition {
@@ -90,6 +255,14 @@ pub trait IrCodec: Send + Sync {
     /// # Errors
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
+
+    /// What differs between two documents, compared as written (so a draft that does not
+    /// validate can be compared with the version it came from).
+    ///
+    /// # Errors
+    /// [`IrError::TooLarge`] or [`IrError::Malformed`] when a side is not a JSON object within
+    /// [`MAX_IR_BYTES`].
+    fn diff(&self, from: &[u8], to: &[u8]) -> Result<crate::diff::DocumentDiff, IrError>;
 }
 
 /// How an idempotent write is recognised: the key the client chose and the bytes that identify the
@@ -557,6 +730,185 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             }
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// A dry run of what [`Self::publish`] checks: the document given (or, with none, the stored
+    /// draft) against the schema, the graph rules, the expressions, the secrets the caller may use
+    /// and the scripts that were built. Nothing is stored, nothing is audited, and a document that
+    /// does not validate is an answer, not an error.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `definition:write`; [`AppError::NotFound`] for an unknown
+    /// workflow (another tenant's is also not found, and audited).
+    pub async fn validate(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        document: Option<&[u8]>,
+        ctx: &RequestContext,
+    ) -> Result<Validation, AppError> {
+        principal.authorize(Permission::DefinitionWrite)?;
+        let record = self.get_workflow(principal, id, ctx).await?;
+        let bytes = document.unwrap_or(&record.draft);
+        let parsed = match self.codec.parse(bytes) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                return Ok(Validation {
+                    problems: problems_of(&error),
+                    ..Validation::default()
+                });
+            }
+        };
+        let mut problems = Vec::new();
+        if parsed.definition.name() != record.workflow.name() {
+            problems.extend(problems_of(&IrError::NameMismatch {
+                document: parsed.definition.name().as_str().to_owned(),
+                workflow: record.workflow.name().as_str().to_owned(),
+            }));
+        }
+        problems.extend(
+            self.unusable_secrets(principal, &record, &parsed.definition)
+                .await?,
+        );
+        problems.extend(self.unknown_scripts(principal, &parsed.definition).await?);
+        let valid = problems.is_empty();
+        Ok(Validation {
+            problems,
+            warnings: parsed.warnings.iter().map(warning_problem).collect(),
+            digest: valid.then(|| parsed.digest.to_string()),
+        })
+    }
+
+    /// Compares two documents of a workflow, the draft or a published version each, so an author
+    /// sees what changed, what breaks callers and what somebody must prepare before publishing.
+    /// By default the active version is compared with the draft; a workflow that has no version
+    /// compares an empty document with its draft.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `definition:read`; [`AppError::NotFound`] for an unknown
+    /// workflow or version; [`AppError::InvalidDefinition`] when a side is not a JSON object.
+    pub async fn diff(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        from: Option<DiffRef>,
+        to: Option<DiffRef>,
+        ctx: &RequestContext,
+    ) -> Result<crate::diff::DefinitionDiff, AppError> {
+        use crate::diff::{DefinitionDiff, DiffSide};
+        principal.authorize(Permission::DefinitionRead)?;
+        let record = self.get_workflow(principal, id, ctx).await?;
+        let side = |reference: Option<DiffRef>, default: Option<DiffRef>| reference.or(default);
+        let default_from = record
+            .active
+            .as_ref()
+            .map(|version| DiffRef::Version(version.number()));
+        let from = side(from, default_from);
+        let to = side(to, Some(DiffRef::Draft));
+        let resolve = async |reference: Option<DiffRef>| -> Result<(DiffSide, Vec<u8>), AppError> {
+            match reference {
+                None => Ok((DiffSide::Empty, b"{}".to_vec())),
+                Some(DiffRef::Draft) => Ok((
+                    DiffSide::Draft(record.workflow.draft_revision()),
+                    record.draft.clone(),
+                )),
+                Some(DiffRef::Version(number)) => {
+                    let version = self
+                        .store
+                        .get_version(principal.tenant_id(), id, number)
+                        .await?
+                        .ok_or(AppError::NotFound)?;
+                    Ok((DiffSide::Version(number), version.document))
+                }
+            }
+        };
+        let (from_side, from_bytes) = resolve(from).await?;
+        let (to_side, to_bytes) = resolve(to).await?;
+        let diff = self
+            .codec
+            .diff(&from_bytes, &to_bytes)
+            .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
+        Ok(DefinitionDiff {
+            from: from_side,
+            to: to_side,
+            diff,
+        })
+    }
+
+    /// The declared secrets the caller may not use, as problems (the same answer for a secret
+    /// that does not exist). Quiet: a dry run records no denial.
+    async fn unusable_secrets(
+        &self,
+        principal: &Principal,
+        record: &WorkflowRecord,
+        definition: &WorkflowDefinition,
+    ) -> Result<Vec<Problem>, AppError> {
+        let declared: Vec<_> = definition.declared_secrets().into_iter().cloned().collect();
+        if declared.is_empty() {
+            return Ok(Vec::new());
+        }
+        let states = self
+            .store
+            .secret_states(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                &declared,
+                principal.subject().as_str(),
+            )
+            .await?;
+        let mut problems = Vec::new();
+        for (name, state) in states {
+            if check_usable(Some(principal.role()), &[(name.clone(), state)]).is_ok() {
+                continue;
+            }
+            for node in definition
+                .nodes()
+                .filter(|node| node.secrets().contains(&&name))
+            {
+                problems.push(
+                    Problem::error(
+                        "SECRET_UNAVAILABLE",
+                        format!("the secret '{name}' does not exist or you may not use it"),
+                    )
+                    .at_node(node.id().as_str()),
+                );
+            }
+        }
+        Ok(problems)
+    }
+
+    /// The nodes that pin an artifact no build of this tenant produced.
+    async fn unknown_scripts(
+        &self,
+        principal: &Principal,
+        definition: &WorkflowDefinition,
+    ) -> Result<Vec<Problem>, AppError> {
+        let pinned: Vec<_> = definition.script_digests().into_iter().collect();
+        if pinned.is_empty() {
+            return Ok(Vec::new());
+        }
+        let missing = self
+            .store
+            .missing_artifacts(principal.tenant_id(), &pinned)
+            .await?;
+        let mut problems = Vec::new();
+        for digest in missing {
+            for node in definition.nodes() {
+                if let NodeKind::Activity { activity, .. } = node.kind()
+                    && sagat_domain::scripts::digest_of_activity(activity.as_str())
+                        == Some(digest.clone())
+                {
+                    problems.push(
+                        Problem::error(
+                            "UNKNOWN_SCRIPT",
+                            format!("the script artifact {digest} was not built for this tenant"),
+                        )
+                        .at_node(node.id().as_str()),
+                    );
+                }
+            }
+        }
+        Ok(problems)
     }
 
     /// # Errors
