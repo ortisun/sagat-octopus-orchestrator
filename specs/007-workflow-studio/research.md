@@ -32,3 +32,109 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 
 - Latency and overhead benchmarks on the critical path defined for this feature.
 - Detail compliance and retention requirements according to the deployment environment.
+
+## What already exists (read on 2026-10-10, before deciding)
+
+- **REST**: `createWorkflowDraft`, `getWorkflow`, `updateWorkflowDraft` (compare-and-swap on `draftRevision`, `409` when
+  stale; the draft is checked only for being storable JSON of at most 1 MiB), `publishWorkflow` (validates the draft
+  against the schema, the graph rules and the expression subset; `422` with one message), `listWorkflowVersions`,
+  `getWorkflowVersion`, `listRuns`, `getRun`, `listRunJournalEvents` (cursor, **no payloads**: a `payloadRef` digest
+  only), `getRuntimeGraph` (the definition's graph overlaid with the state of every step, `projectionSeq` = the run's
+  version), `operateRun` (pause, resume, cancel, retry step, retry compensation, skip compensation, resolve step;
+  `RERUN_AS_NEW` and `MARK_MANUAL_REVIEW` are refused with `422`, G58), the scripts API of feature 005 (draft `PATCH`,
+  test runs, versions), `GET /auth/context`.
+- **Not there**: a dry-run validation with a list of problems; a diff of two documents; a way to read only what changed
+  in a run's graph; any push channel (no SSE, no WebSocket); serving of static files; CORS; a browser login (the API
+  verifies OIDC/JWT bearer tokens, there is no issuer in the repository and no dev token issuer, G10).
+- **The IR** (`workflow.schema.json`) has the node types `activity`, `timer`, `waitEvent`, `condition`, `parallel`,
+  `child`, `saga`, `script`, `foreach`, `humanApproval`, `end`; triggers are a list on the document, not nodes; a join is
+  the `next` of a `parallel`. `foreach` and `humanApproval` are accepted by the schema and refused at publish (no engine
+  yet). A definition may have 10 000 nodes (`MAX_NODES`); the compensation and reconciliation nodes the engine derives
+  are steps of the run too.
+
+## Decisions (feature 007: D138 onwards)
+
+- **D138 — The Studio is a separate frontend workspace** (`frontend/`, npm workspaces; `apps/studio`): React 19,
+  TypeScript `strict`, Vite, React Flow (`@xyflow/react`) for the canvas, Monaco bundled locally (no CDN: the CSP allows
+  only the platform's own origin and the editor must work offline). Dependencies are pinned by `package-lock.json`, each
+  at least two weeks old when chosen, installed with `npm ci --ignore-scripts`. No UI kit with its own theming: plain CSS
+  with design tokens, light, dark and forced-colors themes; accessible primitives from a small headless library only
+  where focus management is hard (dialogs, tabs).
+- **D139 — The server owns validation.** A new `POST /workflows/{id}/validate` runs the same codec as publish on a
+  document given in the body (or the stored draft) and answers **200** with a list of problems (`severity`, `code`,
+  `message`, `nodeId`, `path`) and the warnings of publish, valid or not. A draft is still saved when it is invalid (the
+  author is mid-edit); **publishing is what is gated**, in the server (`422`) and in the UI (the button explains why it
+  is disabled). Advisory lints the server does not know (a node with no timeout, a compensation nobody maps) are done in
+  the client, are labelled advisory, and never block.
+- **D140 — Diff and breaking-change classification live in `sagat-infra-ir`**, over two IR documents, and are served by
+  `GET /workflows/{id}/diff?from=&to=` (a version number or `draft`; default: active version to draft). The domain does
+  not change. **Breaking** (a caller or an emitter of the contract can fail): a trigger removed or changed; an
+  `inputSchema` property removed, its type changed or a `required` entry added; an `outputSchema` property removed or
+  its type changed; a `waitEvent` whose event type was removed or renamed (publishers keep sending the old one).
+  **Attention** (not a contract break, but somebody must act): an activity name added or changed (a worker must serve it
+  and be bound to it), a secret name added, a script digest changed. Everything else is a plain change.
+- **D141 — Live updates are journal-cursor deltas.** `GET /runs/{id}/graph?since=<seq>` returns the run status, the new
+  `projectionSeq`, the journal events after `seq` (light: seq, type, step, attempt, time) and the **full objects of the
+  nodes those events name** (a node changes only through events that name it, and the equivalence of the deltas with
+  the whole graph is a test), not the whole graph; `reset: true` with the full graph
+  when the cursor is ahead of the run or more than 500 events behind. `GET /runs/{id}/stream` is the same payload as
+  `text/event-stream` (`id:` = the projection seq, `Last-Event-ID` and `?after=` resume) and the polling fallback is the
+  delta endpoint, so a missed signal between two snapshots is impossible: every transition is a journal event with a
+  sequence. The browser reads the stream with `fetch` (an `EventSource` cannot send the `Authorization` header).
+- **D142 — A stream is bounded.** At most `N` per tenant and `M` per subject (`429` beyond), polled on the server every
+  500 ms and backing off to 2 s when nothing moved for 30 s, a comment line every 15 s, closed at the token's expiry and
+  after 15 minutes at the latest (`event: reconnect`), and closed when the run is finished and the last delta is sent.
+  Polling the database per stream is the honest first version; a push from the engine (`LISTEN/NOTIFY` or NATS) is
+  feature 010's (G143).
+- **D143 — The control plane serves the Studio** under `/studio/` from `SAGAT_STUDIO_DIR` (off when unset), same origin as
+  the API, so no CORS is added. Headers: a CSP of `default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr
+  'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; base-uri 'none';
+  form-action 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `Cross-Origin-Opener-Policy: same-origin`; hashed assets are `immutable`, `index.html` is `no-store`. A Studio on
+  another origin is an ingress decision, not a feature of the API.
+- **D144 — The browser holds its token in memory only.** Sign-in is a bearer token the user pastes (development and
+  automation) or, when the deployment configures an issuer in `/studio/config.json`, the OIDC authorization-code flow with
+  PKCE; the token is never written to `localStorage`, `sessionStorage`, a cookie or a URL, and it is dropped on reload.
+- **D145 — The node registry maps the IR, not the product words.** *Trigger* and *Webhook* are entries of `triggers[]`
+  drawn as start cards (an event/webhook/message/cron/manual trigger); *Step* is `activity` or `script`; *Wait* is
+  `waitEvent`; *Timer* is `timer`; *Join* is the `next` of a `parallel` (drawn as a join handle, not a node); *Saga*,
+  *Condition*, *Parallel*, *Child* and *End* are themselves. `foreach` and `humanApproval` are drawn, flagged "not run by
+  this engine yet", and cannot be published (the server says so).
+- **D146 — Two people editing the same draft** is a `409` on `draftRevision`. The Studio keeps the author's copy, shows
+  the server's, offers *reload theirs*, *keep mine and save over* (after a diff of the two) and *save mine as a copy*.
+  Nothing is overwritten without a diff on screen.
+- **D147 — Large graphs degrade by thresholds, not by freezing.** Up to 1 000 nodes the canvas is interactive
+  (`onlyRenderVisibleElements`, no per-node effects); above 1 000 it draws simplified nodes; above 10 000 (the
+  definition limit, with derived nodes more) it opens in the list view and offers the canvas on demand. Lists of
+  10 000+ rows (runs, journal, table view) are windowed.
+- **D148 — The alternative view is first class.** Every graph has a table/list view with the same data and actions (a
+  list of nodes with status, attempts, duration, failure, and the actions available), reachable by keyboard, and the
+  default for assistive technology users who ask for it (`prefers-reduced-motion` and a visible toggle). WCAG 2.2 AA is
+  a target checked by automated axe-core runs and a keyboard walkthrough in the journeys; a screen-reader test by a person
+  is not part of this feature (G146).
+- **D149 — Operational actions explain, then ask twice when it matters.** The confirmation says what the server will do
+  (which step, what stays in the journal, what a compensation or a skip means for the saga) in the words of the
+  operation's description, requires the reason the API requires (8 to 2 000 characters), and for the decisions that need
+  `saga:override` asks for the step id typed back. The server is the authority: the buttons shown follow `/auth/context`
+  and the node's state, and a `403`/`409` is shown as what it is.
+- **D150 — Evidence**: Rust contract, integration and fault tests for the new endpoints; Vitest for the logic and the
+  components; Playwright journeys (US01..US04 and the whole of SC-007-001) played by a harness that boots the real
+  platform and a TypeScript SDK worker, in the same way as the SDK conformance suite; axe-core in the journeys; a browser
+  benchmark of a 1 000-node canvas and a 10 000-row list.
+
+## Gaps (feature 007: G142 onwards)
+
+- **G142 — Graph validation reports one graph error at a time.** The domain stops at the first rule broken (a cycle, an
+  unreachable node); schema problems are all listed. The Studio shows the first and revalidates after each fix.
+- **G143 — Streams poll the database** (D142): every open stream costs one small query per tick, bounded per tenant and per
+  subject; a push from the engine (`LISTEN/NOTIFY` or NATS) belongs to feature 010 with the rest of the scale work.
+- **G144 — No payload is shown.** The journal and the graph carry no input, output or error text (a `payloadRef` digest
+  and a `failureCode` only), so "redacted payload" holds by construction and the Studio cannot show a step's data. Showing
+  it needs a redaction policy per payload class (feature 009's classification is not built, G37) and a read API.
+- **G145 — "Retry run as new" and "mark manual review" are not available** (`422` from the API, G58): the Studio shows
+  them disabled with the reason, it does not fake them.
+- **G146 — Accessibility is checked by tools and a keyboard walkthrough**, not by people using a screen reader; WCAG 2.2
+  AA is a target, not a claim.
+- **G147 — Human approval and foreach nodes cannot be published** (no engine, 002/003): the canvas draws them so a
+  document that has them can be read, and says so.
+
