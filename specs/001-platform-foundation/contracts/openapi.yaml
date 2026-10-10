@@ -2506,8 +2506,41 @@ components:
         projectionSeq: {type: integer, format: int64, minimum: 0}
         reset: {type: boolean, description: 'True when `nodes` and `edges` are the whole graph and the client must replace what it has.'}
         events: {type: array, items: {$ref: '#/components/schemas/GraphEvent'}}
-        nodes: {type: array, items: {type: object, additionalProperties: true, description: 'A node as in `RuntimeGraph`.'}}
-        edges: {type: array, items: {type: object, additionalProperties: true}, description: 'Only when `reset` is true.'}
+        nodes: {type: array, items: {$ref: '#/components/schemas/RuntimeNode'}}
+        edges: {type: array, items: {$ref: '#/components/schemas/RuntimeEdge'}, description: 'Only when `reset` is true.'}
+    RuntimeNode:
+      type: object
+      required: [id, type, status]
+      properties:
+        id: {type: string}
+        type: {type: string}
+        status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
+        attempt: {type: integer}
+        generation: {type: integer}
+        cancelRequested: {type: boolean}
+        failureCode: {type: [string, 'null']}
+        nextAttemptAt: {type: [string, 'null'], format: date-time}
+        dueAt: {type: [string, 'null'], format: date-time}
+        waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).'}
+        childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
+        kind: {type: string, enum: [FORWARD, COMPENSATION, RECONCILIATION], description: 'Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.'}
+        forward: {type: [string, 'null'], description: 'For a compensation or a reconciliation: the forward node it is about.'}
+        saga:
+          type: [object, 'null']
+          description: 'For a `saga` node: what the run knows about it.'
+          required: [phase, irreversible]
+          properties:
+            phase: {type: string, enum: [FORWARD, ABORTING, COMPENSATING, DONE]}
+            cause: {type: [string, 'null'], description: 'Why the saga compensates, or did.'}
+            outcome: {type: [string, 'null'], enum: [COMPENSATED, PARTIAL, COMPENSATION_FAILED, null]}
+            irreversible: {type: array, items: {type: string}, description: 'Completed steps whose effect could not be undone.'}
+    RuntimeEdge:
+      type: object
+      required: [from, to, kind]
+      properties:
+        from: {type: string}
+        to: {type: string}
+        kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout, compensation, reconcile], description: '`compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
     RuntimeGraph:
       type: object
       required: [runId, projectionSeq, nodes, edges]
@@ -2516,43 +2549,8 @@ components:
         status: {type: string}
         projectionSeq: {type: integer, format: int64}
         projectionLagMs: {type: integer, minimum: 0}
-        nodes:
-          type: array
-          items:
-            type: object
-            required: [id, type, status]
-            properties:
-              id: {type: string}
-              type: {type: string}
-              status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
-              attempt: {type: integer}
-              generation: {type: integer}
-              cancelRequested: {type: boolean}
-              failureCode: {type: [string, 'null']}
-              nextAttemptAt: {type: [string, 'null'], format: date-time}
-              dueAt: {type: [string, 'null'], format: date-time}
-              waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).'}
-              childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
-              kind: {type: string, enum: [FORWARD, COMPENSATION, RECONCILIATION], description: 'Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.'}
-              forward: {type: [string, 'null'], description: 'For a compensation or a reconciliation: the forward node it is about.'}
-              saga:
-                type: [object, 'null']
-                description: 'For a `saga` node: what the run knows about it.'
-                required: [phase, irreversible]
-                properties:
-                  phase: {type: string, enum: [FORWARD, ABORTING, COMPENSATING, DONE]}
-                  cause: {type: [string, 'null'], description: 'Why the saga compensates, or did.'}
-                  outcome: {type: [string, 'null'], enum: [COMPENSATED, PARTIAL, COMPENSATION_FAILED, null]}
-                  irreversible: {type: array, items: {type: string}, description: 'Completed steps whose effect could not be undone.'}
-        edges:
-          type: array
-          items:
-            type: object
-            required: [from, to, kind]
-            properties:
-              from: {type: string}
-              to: {type: string}
-              kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout, compensation, reconcile], description: '`compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
+        nodes: {type: array, items: {$ref: '#/components/schemas/RuntimeNode'}}
+        edges: {type: array, items: {$ref: '#/components/schemas/RuntimeEdge'}}
     CompensationPlans:
       type: object
       required: [sagas]
