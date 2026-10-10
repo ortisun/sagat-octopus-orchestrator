@@ -863,7 +863,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             }
             for node in definition
                 .nodes()
-                .filter(|node| node.secrets().contains(&&name))
+                .filter(|node| node.secrets().contains(&name))
             {
                 problems.push(
                     Problem::error(

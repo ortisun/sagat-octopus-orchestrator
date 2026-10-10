@@ -12,6 +12,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod studio_journeys;
 mod us01;
 mod us02;
 mod us03;

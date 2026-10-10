@@ -1647,7 +1647,9 @@ async fn validating_another_tenants_workflow_is_not_found() {
 fn every_error_of_the_codec_maps_to_a_stable_code_that_says_where() {
     use sagat_application::definitions::IrIssue;
     let id = |text: &str| NodeId::parse(text).expect("id");
-    let table: Vec<(IrError, Vec<(&str, Option<&str>, Option<&str>)>)> = vec![
+    // What each error should become: the code, the node, the path.
+    type Expected<'a> = Vec<(&'a str, Option<&'a str>, Option<&'a str>)>;
+    let table: Vec<(IrError, Expected)> = vec![
         (IrError::TooLarge, vec![("DOCUMENT_TOO_LARGE", None, None)]),
         (IrError::Malformed, vec![("DOCUMENT_MALFORMED", None, None)]),
         (

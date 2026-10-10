@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { endpoints } from '../api/endpoints';
 import { isApiError } from '../api/errors';
+import { startLogin } from '../auth/oidc';
+import type { OidcSettings } from '../auth/oidc';
 import { SessionStore } from '../auth/session';
 import { Banner } from '../ui/Banner';
 import { Button } from '../ui/Button';
@@ -57,7 +59,19 @@ export function SignIn() {
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>
       </form>
-      {settings.oidc ? <p>Single sign-on is configured for this deployment.</p> : null}
+      {settings.oidc ? (
+        <section aria-labelledby="sso">
+          <h2 id="sso">Or sign in with your organisation</h2>
+          <Button
+            onClick={() => {
+              setError(undefined);
+              void startLogin(settings.oidc as OidcSettings).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Sign-in failed.'));
+            }}
+          >
+            Sign in with your organisation
+          </Button>
+        </section>
+      ) : null}
     </main>
   );
 }

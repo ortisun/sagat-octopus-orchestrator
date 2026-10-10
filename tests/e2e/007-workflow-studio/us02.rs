@@ -86,5 +86,10 @@ async fn us02_a_script_document_that_is_malformed_is_a_schema_problem_on_the_nod
         )
         .await;
     assert_eq!(validation["valid"], false, "{validation}");
-    assert!(validation["problems"].as_array().expect("problems").len() >= 1);
+    assert!(
+        !validation["problems"]
+            .as_array()
+            .expect("problems")
+            .is_empty()
+    );
 }

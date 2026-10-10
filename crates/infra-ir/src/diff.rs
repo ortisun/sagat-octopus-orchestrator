@@ -467,7 +467,7 @@ fn strings<'a>(node: &'a Map<String, Value>, field: &str) -> Vec<&'a str> {
     }
 }
 
-fn activity_names<'a>(node: &'a Map<String, Value>) -> Vec<&'a str> {
+fn activity_names(node: &Map<String, Value>) -> Vec<&str> {
     ["activity", "compensateWith", "reconcileWith"]
         .iter()
         .flat_map(|field| strings(node, field))

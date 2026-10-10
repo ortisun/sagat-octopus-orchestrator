@@ -204,6 +204,8 @@ pub struct Options {
     pub script_ceiling: sagat_domain::scripts::Policy,
     /// Limits and pace of the server-sent streams; the defaults when `None`.
     pub streams: Option<sagat_api_http::streams::StreamLimits>,
+    /// Serve the Studio from this directory under `/studio/` (D143).
+    pub studio: Option<sagat_api_http::studio::StudioConfig>,
 }
 
 impl Default for Options {
@@ -224,6 +226,7 @@ impl Default for Options {
             worker: WorkerSettings::default(),
             script_ceiling: sagat_domain::scripts::Policy::default(),
             streams: None,
+            studio: None,
         }
     }
 }
@@ -359,7 +362,10 @@ pub async fn start_with(options: Options) -> TestApi {
         )
         .await;
     });
-    let app = router_with_governance(exec, governance, options.limits);
+    let mut app = router_with_governance(exec, governance, options.limits);
+    if let Some(studio) = options.studio {
+        app = app.merge(sagat_api_http::studio::studio_router(studio).expect("a Studio build"));
+    }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -408,6 +414,11 @@ impl TestApi {
     /// Creates a tenant and its first admin directly in the database.
     pub async fn tenant(&self, slug: &str, admin: &str) -> sagat_domain::identity::TenantId {
         provision(&self.owner_store, slug, admin).await.0.id()
+    }
+
+    /// `http://host:port`, where the API (`/v1`) and the Studio (`/studio/`) are served.
+    pub fn origin(&self) -> &str {
+        self.base.strip_suffix("/v1").unwrap_or(&self.base)
     }
 
     pub fn request(&self, method: Method, path: &str) -> RequestBuilder {
