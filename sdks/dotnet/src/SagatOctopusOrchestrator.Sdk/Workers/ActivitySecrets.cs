@@ -15,8 +15,11 @@ public sealed class ActivitySecrets : IDisposable
     /// <summary>The names of the secrets the step declares.</summary>
     public IReadOnlyCollection<string> Names => values.Keys;
 
-    /// <summary>The bytes of a secret. Raises <see cref="SagatErrorCode.NotFound"/> for a name the step does not declare.</summary>
-    public ReadOnlyMemory<byte> Get(string name) => Find(name);
+    /// <summary>
+    /// A copy of the bytes of a secret (the caller owns it and should clear it; the SDK's own buffer is never handed out). Raises
+    /// <see cref="SagatErrorCode.NotFound"/> for a name the step does not declare, or after the handler has returned.
+    /// </summary>
+    public byte[] Get(string name) => (byte[])Find(name).Clone();
 
     /// <summary>A secret as UTF-8 text.</summary>
     public string GetText(string name) => Encoding.UTF8.GetString(Find(name));

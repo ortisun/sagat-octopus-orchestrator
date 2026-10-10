@@ -115,7 +115,7 @@ public sealed class ClientTests : IAsyncLifetime
     public async Task TheUserAgentSuffixIsAppended()
     {
         server.Handler = _ => Reply(200, Run());
-        await NewClient(o => o.UserAgent = "my-service/2.1").GetAsync("r");
+        await NewClient(o => o.UserAgent = "my-service/2.1").GetAsync(Ids.Run);
         Assert.Equal($"sagat-sdk-csharp/{SdkInfo.Version} my-service/2.1", server.Requests[0].Header("user-agent"));
     }
 
@@ -157,12 +157,12 @@ public sealed class ClientTests : IAsyncLifetime
         server.Handler = _ => ++attempts == 1
             ? Reply(429, Envelope("RATE_LIMITED", "slow", retryable: true), new Dictionary<string, string> { ["retry-after"] = "0" })
             : Reply(200, Run());
-        var got = await NewClient().GetAsync("r-1");
+        var got = await NewClient().GetAsync(Ids.Run);
         Assert.Equal("0190aaaa-0000-7000-8000-000000000001", got.RunId);
         Assert.Equal(2, server.Requests.Count);
 
         server.Handler = _ => Reply(503, "<html>bad gateway</html>");
-        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync("r-1"));
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
         Assert.Equal(SagatErrorCode.Unavailable, error.Code);
         Assert.Equal(503, error.HttpStatus);
         Assert.Equal(6, server.Requests.Count);
@@ -176,7 +176,7 @@ public sealed class ClientTests : IAsyncLifetime
             ? Reply(429, Envelope("RATE_LIMITED", "slow", retryable: true), new Dictionary<string, string> { ["retry-after"] = "1" })
             : Reply(200, Run());
         var clock = Stopwatch.StartNew();
-        await NewClient().GetAsync("r-1");
+        await NewClient().GetAsync(Ids.Run);
         Assert.True(clock.ElapsedMilliseconds >= 900, $"waited {clock.ElapsedMilliseconds} ms");
     }
 
@@ -202,7 +202,7 @@ public sealed class ClientTests : IAsyncLifetime
     public async Task ARefusedTokenAMissingResourceAndAValidationErrorAreToldApart(int status, string wire, SagatErrorCode expected)
     {
         server.Handler = _ => Reply(status, Envelope(wire, "no", retryable: false, traceId: new string('b', 32)));
-        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync("x"));
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
         Assert.Equal(expected, error.Code);
         Assert.Equal(status, error.HttpStatus);
         Assert.Equal(new string('b', 32), error.TraceId);
@@ -213,7 +213,7 @@ public sealed class ClientTests : IAsyncLifetime
     public async Task AStatusWithoutAnEnvelopeIsClassifiedByTheCatalogAndTheTraceComesFromTheHeader()
     {
         server.Handler = _ => Reply(502, "<html>bad gateway</html>");
-        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient(o => o.Retry.MaxAttempts = 1).GetAsync("x"));
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient(o => o.Retry.MaxAttempts = 1).GetAsync(Ids.Run));
         Assert.Equal(SagatErrorCode.Unavailable, error.Code);
         Assert.Equal(new string('f', 32), error.TraceId);
         Assert.Equal("the server answered 502", error.Message);
@@ -223,17 +223,17 @@ public sealed class ClientTests : IAsyncLifetime
     public async Task ACallTheServerDoesNotHaveIsNotFoundWithTheReasonUnsupportedByServer()
     {
         server.Handler = _ => Reply(501, "not implemented");
-        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync("x"));
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
         Assert.Equal(SagatErrorCode.NotFound, error.Code);
         Assert.Equal("UNSUPPORTED_BY_SERVER", error.Reason);
         Assert.Single(server.Requests);
 
         server.Handler = _ => Reply(404, "<html>no route</html>");
-        error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync("x"));
+        error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
         Assert.Equal("UNSUPPORTED_BY_SERVER", error.Reason);
 
         server.Handler = _ => Reply(404, Envelope("NOT_FOUND", "no such run", retryable: false));
-        error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync("x"));
+        error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(Ids.Run));
         Assert.Null(error.Reason);
     }
 
@@ -247,8 +247,8 @@ public sealed class ClientTests : IAsyncLifetime
             o.Token = null;
             o.TokenProvider = _ => ValueTask.FromResult($"tok-{Interlocked.Increment(ref n)}");
         });
-        await client.GetAsync("a");
-        await client.GetAsync("b");
+        await client.GetAsync(Ids.Run);
+        await client.GetAsync(Ids.Run);
         Assert.Equal(["Bearer tok-1", "Bearer tok-2"], server.Requests.Select(r => r.Header("authorization")));
     }
 
@@ -306,7 +306,7 @@ public sealed class ClientTests : IAsyncLifetime
         server.Handler = _ => Reply(200, Run());
         using var ambient = new Activity("caller").SetIdFormat(ActivityIdFormat.W3C);
         ambient.Start();
-        await NewClient().GetAsync("r");
+        await NewClient().GetAsync(Ids.Run);
         Assert.Equal(ambient.Id, server.Requests[0].Header("traceparent"));
     }
 
@@ -318,15 +318,6 @@ public sealed class ClientTests : IAsyncLifetime
         ambient.Start();
         await NewClient().StartAsync(Workflow, new { }, new StartOptions { Traceparent = Trace });
         Assert.Equal(Trace, server.Requests[0].Header("traceparent"));
-    }
-
-    [Fact]
-    public async Task WithoutAnyTraceContextNoneIsSent()
-    {
-        server.Handler = _ => Reply(200, Run());
-        Activity.Current = null;
-        await NewClient().GetAsync("r");
-        Assert.Equal(string.Empty, server.Requests[0].Header("traceparent"));
     }
 
     [Fact]
@@ -384,7 +375,7 @@ public sealed class ClientTests : IAsyncLifetime
             Token = "t",
             Retry = { MaxAttempts = 2, InitialDelay = TimeSpan.FromMilliseconds(1), MaxDelay = TimeSpan.FromMilliseconds(2) },
         });
-        var error = await Assert.ThrowsAsync<SagatException>(() => client.GetAsync("x"));
+        var error = await Assert.ThrowsAsync<SagatException>(() => client.GetAsync(Ids.Run));
         Assert.Equal(SagatErrorCode.Transport, error.Code);
         Assert.True(error.Retryable);
         Assert.Null(error.HttpStatus);
@@ -402,7 +393,7 @@ public sealed class ClientTests : IAsyncLifetime
             o.Timeout = TimeSpan.FromMilliseconds(100);
             o.Retry.MaxAttempts = 2;
         });
-        var error = await Assert.ThrowsAsync<SagatException>(() => client.GetAsync("x"));
+        var error = await Assert.ThrowsAsync<SagatException>(() => client.GetAsync(Ids.Run));
         Assert.Equal(SagatErrorCode.Transport, error.Code);
         Assert.Equal("the request timed out", error.Message);
         await Eventually.UntilAsync(() => server.Requests.Count == 2, "two attempts");
@@ -413,8 +404,14 @@ public sealed class ClientTests : IAsyncLifetime
     {
         server.Delay = TimeSpan.FromSeconds(5);
         server.Handler = _ => Reply(200, Run());
-        using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => NewClient().GetAsync("x", cancel.Token));
+        using var cancel = new CancellationTokenSource();
+        var call = NewClient().GetAsync(Ids.Run, cancel.Token);
+
+        // The caller gives up once the request has reached the server.
+        await Eventually.UntilAsync(() => server.Requests.Count == 1, "the request");
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+        await Task.Delay(100);
         Assert.Single(server.Requests);
 
         using var already = new CancellationTokenSource();
@@ -429,14 +426,14 @@ public sealed class ClientTests : IAsyncLifetime
             ? Reply(202, new JsonObject { ["operationId"] = "op-1", ["accepted"] = true, ["runStatus"] = "CANCELLING", ["runVersion"] = 9 })
             : Reply(202, new JsonObject { ["deliveredTo"] = new JsonArray("wait") });
         var client = NewClient();
-        var cancelled = await client.CancelAsync("r-1", "no longer needed", new OperateOptions { ExpectedRunVersion = 3 });
+        var cancelled = await client.CancelAsync(Ids.Run, "no longer needed", new OperateOptions { ExpectedRunVersion = 3 });
         Assert.Equal(("op-1", true, "CANCELLING", 9L), (cancelled.OperationId, cancelled.Accepted, cancelled.RunStatus, cancelled.RunVersion));
         Assert.Equal("""{"action":"CANCEL","reason":"no longer needed","expectedRunVersion":3}""", server.Requests[0].BodyText);
         Assert.Matches("^[0-9a-f-]{36}$", server.Requests[0].Header("idempotency-key"));
 
-        var signalled = await client.SignalAsync("r-1", "payment-confirmed", new { paymentId = "p-1" });
+        var signalled = await client.SignalAsync(Ids.Run, "payment-confirmed", new { paymentId = "p-1" });
         Assert.Equal(["wait"], signalled.DeliveredTo);
-        Assert.Equal("/v1/runs/r-1/signals/payment-confirmed", server.Requests[1].PathAndQuery);
+        Assert.Equal($"/v1/runs/{Ids.Run}/signals/payment-confirmed", server.Requests[1].PathAndQuery);
         Assert.Equal("""{"paymentId":"p-1"}""", server.Requests[1].BodyText);
     }
 
@@ -445,8 +442,8 @@ public sealed class ClientTests : IAsyncLifetime
     {
         server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true });
         var client = NewClient();
-        await client.OperateAsync("r-1", RunAction.Pause, "maintenance window");
-        await client.OperateAsync("r-1", RunAction.ResolveStep, "fixed by hand", new OperateOptions { StepId = "charge", Outcome = StepOutcome.Failed, ErrorCode = "MANUAL" });
+        await client.OperateAsync(Ids.Run, RunAction.Pause, "maintenance window");
+        await client.OperateAsync(Ids.Run, RunAction.ResolveStep, "fixed by hand", new OperateOptions { StepId = "charge", Outcome = StepOutcome.Failed, ErrorCode = "MANUAL" });
         Assert.Equal("""{"action":"PAUSE","reason":"maintenance window"}""", server.Requests[0].BodyText);
         Assert.Equal("""{"action":"RESOLVE_STEP","reason":"fixed by hand","stepId":"charge","outcome":"FAILED","errorCode":"MANUAL"}""", server.Requests[1].BodyText);
     }
@@ -461,8 +458,8 @@ public sealed class ClientTests : IAsyncLifetime
                 new JsonObject { ["eventType"] = "step.leased", ["stepId"] = "charge", ["attempt"] = 2 }),
             ["nextCursor"] = "next",
         });
-        var page = await NewClient().EventsAsync("r-1", "c0", 50);
-        Assert.Equal("/v1/runs/r-1/events?cursor=c0&limit=50", server.Requests[0].PathAndQuery);
+        var page = await NewClient().EventsAsync(Ids.Run, "c0", 50);
+        Assert.Equal($"/v1/runs/{Ids.Run}/events?cursor=c0&limit=50", server.Requests[0].PathAndQuery);
         Assert.Equal("next", page.NextCursor);
         Assert.Equal(("run.started", null, null), (page.Items[0].Type, page.Items[0].StepId, page.Items[0].Attempt));
         Assert.Equal(("step.leased", "charge", 2), (page.Items[1].Type, page.Items[1].StepId, page.Items[1].Attempt));
@@ -473,13 +470,13 @@ public sealed class ClientTests : IAsyncLifetime
     {
         var polls = 0;
         server.Handler = _ => Reply(200, Run(r => r["status"] = ++polls < 3 ? "RUNNING" : "SUCCEEDED"));
-        var done = await NewClient().WaitForCompletionAsync("r", new WaitOptions { PollInterval = TimeSpan.FromMilliseconds(5), Timeout = TimeSpan.FromSeconds(5) });
+        var done = await NewClient().WaitForCompletionAsync(Ids.Run, new WaitOptions { PollInterval = TimeSpan.FromMilliseconds(5), Timeout = TimeSpan.FromSeconds(5) });
         Assert.Equal(RunStatuses.Succeeded, done.Status);
         Assert.True(done.IsTerminal);
         Assert.Equal(3, polls);
 
         server.Handler = _ => Reply(200, Run());
-        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().WaitForCompletionAsync("r", new WaitOptions { PollInterval = TimeSpan.FromMilliseconds(5), Timeout = TimeSpan.FromMilliseconds(30) }));
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().WaitForCompletionAsync(Ids.Run, new WaitOptions { PollInterval = TimeSpan.FromMilliseconds(5), Timeout = TimeSpan.FromMilliseconds(30) }));
         Assert.Equal("WAIT_TIMEOUT", error.Reason);
     }
 
@@ -489,7 +486,7 @@ public sealed class ClientTests : IAsyncLifetime
         server.Handler = _ => Reply(200, Run());
         using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            NewClient().WaitForCompletionAsync("r", new WaitOptions { PollInterval = TimeSpan.FromMilliseconds(20), Timeout = TimeSpan.FromSeconds(30) }, cancel.Token));
+            NewClient().WaitForCompletionAsync(Ids.Run, new WaitOptions { PollInterval = TimeSpan.FromMilliseconds(20), Timeout = TimeSpan.FromSeconds(30) }, cancel.Token));
     }
 
     [Fact]
@@ -503,7 +500,7 @@ public sealed class ClientTests : IAsyncLifetime
         Assert.DoesNotContain("4111111111111111-marker", everything, StringComparison.Ordinal);
 
         server.Handler = _ => Reply(500, "<html>oops 4111111111111111-marker tok-very-secret</html>");
-        var opaque = await Assert.ThrowsAsync<SagatException>(() => NewClient(o => o.Token = "tok-very-secret").GetAsync("x"));
+        var opaque = await Assert.ThrowsAsync<SagatException>(() => NewClient(o => o.Token = "tok-very-secret").GetAsync(Ids.Run));
         Assert.DoesNotContain("tok-very-secret", opaque.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("marker", opaque.ToString(), StringComparison.Ordinal);
     }

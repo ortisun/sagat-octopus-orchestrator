@@ -53,18 +53,18 @@ public sealed class TlsTests
         // A self-signed certificate is not in the system roots: refused, as a transport error.
         using (var system = new SagatClient(RestOptions(server, new SagatTlsOptions { ClientCertificate = client })))
         {
-            await AssertTransportAsync(() => system.GetAsync("r"));
+            await AssertTransportAsync(() => system.GetAsync(Ids.Run));
         }
 
         using (var noTls = new SagatClient(RestOptions(server, null)))
         {
-            await AssertTransportAsync(() => noTls.GetAsync("r"));
+            await AssertTransportAsync(() => noTls.GetAsync(Ids.Run));
         }
 
         // The root of another server does not make this one trusted.
         using (var wrongRoot = new SagatClient(RestOptions(server, new SagatTlsOptions { TrustedRoots = [other.Root], ClientCertificate = client })))
         {
-            await AssertTransportAsync(() => wrongRoot.GetAsync("r"));
+            await AssertTransportAsync(() => wrongRoot.GetAsync(Ids.Run));
         }
 
         Assert.Empty(server.Requests);
@@ -72,7 +72,7 @@ public sealed class TlsTests
         // The configured CA makes the same server work, and the server sees the client certificate.
         using (var good = new SagatClient(RestOptions(server, new SagatTlsOptions { TrustedRoots = [certificate.Root], ClientCertificate = client })))
         {
-            Assert.Equal("r", (await good.GetAsync("r")).RunId);
+            Assert.Equal("r", (await good.GetAsync(Ids.Run)).RunId);
         }
 
         Assert.Equal(client.Thumbprint, Assert.Single(server.Requests).ClientCertificate);
@@ -85,7 +85,7 @@ public sealed class TlsTests
         await using var server = await FakeRestServer.StartAsync(certificate, requireClientCertificate: true);
         server.Handler = _ => new FakeAnswer(200, Run);
         using var client = new SagatClient(RestOptions(server, new SagatTlsOptions { TrustedRoots = [certificate.Root] }));
-        await AssertTransportAsync(() => client.GetAsync("r"));
+        await AssertTransportAsync(() => client.GetAsync(Ids.Run));
         Assert.Empty(server.Requests);
     }
 
@@ -97,7 +97,7 @@ public sealed class TlsTests
         {
             server.Handler = _ => new FakeAnswer(200, Run);
             using var client = new SagatClient(RestOptions(server, new SagatTlsOptions { TrustedRoots = [expired.Root] }));
-            await AssertTransportAsync(() => client.GetAsync("r"));
+            await AssertTransportAsync(() => client.GetAsync(Ids.Run));
             Assert.Empty(server.Requests);
         }
 
@@ -106,7 +106,7 @@ public sealed class TlsTests
         {
             server.Handler = _ => new FakeAnswer(200, Run);
             using var client = new SagatClient(RestOptions(server, new SagatTlsOptions { TrustedRoots = [elsewhere.Root] }));
-            await AssertTransportAsync(() => client.GetAsync("r"));
+            await AssertTransportAsync(() => client.GetAsync(Ids.Run));
             Assert.Empty(server.Requests);
         }
     }
@@ -170,7 +170,7 @@ public sealed class TlsTests
         rest.Handler = _ => new FakeAnswer(200, Run);
         var options = RestOptions(rest, new SagatTlsOptions { TrustedRoots = [certificate.Root] });
         using var client = new SagatClient(options, factory.CreateLogger<SagatClient>());
-        await client.GetAsync("r");
+        await client.GetAsync(Ids.Run);
 
         await using var fake = await FakeWorkerServer.StartAsync(certificate);
         await using var worker = WorkerOf(fake, new SagatTlsOptions { TrustedRoots = [certificate.Root] }, factory);
@@ -196,19 +196,23 @@ public sealed class TlsTests
             "ServerCertificateCustomValidationCallback",
             "ServerCertificateValidationCallback",
             "CertificateValidationCallback",
-            "TargetHost",
             "SslPolicyErrors",
             "AllowAnyClientCertificate",
             "CheckCertificateRevocationList = false",
         ];
+        var targetHost = new List<string>();
         foreach (var file in files)
         {
             var text = File.ReadAllText(file);
+            targetHost.AddRange(text.Split('\n').Where(line => line.Contains("TargetHost", StringComparison.Ordinal) || line.Contains("Headers.Host", StringComparison.Ordinal)).Select(line => line.Trim()));
             foreach (var token in forbidden)
             {
                 Assert.False(text.Contains(token, StringComparison.Ordinal), $"{Path.GetFileName(file)} mentions {token}");
             }
         }
+
+        // The one place a host name is overridden is the server name the caller gave, which the platform's own validation then verifies.
+        Assert.Equal(["request.Headers.Host = serverName;"], targetHost);
     }
 
     [Theory]
@@ -226,7 +230,7 @@ public sealed class TlsTests
         using var client = new SagatClient(RestOptions(origin, null));
 
         var error = await Assert.ThrowsAsync<SagatException>(() => method == "GET"
-            ? client.GetAsync("r")
+            ? client.GetAsync(Ids.Run)
             : client.StartAsync("0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", new { }, new StartOptions { IdempotencyKey = "key-12345678" }));
 
         Assert.Equal(SagatErrorCode.Protocol, error.Code);
@@ -245,7 +249,7 @@ public sealed class TlsTests
         var options = RestOptions(origin, null);
         options.Retry.MaxAttempts = 4;
         using var client = new SagatClient(options);
-        await Assert.ThrowsAsync<SagatException>(() => client.GetAsync("r"));
+        await Assert.ThrowsAsync<SagatException>(() => client.GetAsync(Ids.Run));
         Assert.Single(origin.Requests);
     }
 
@@ -280,7 +284,7 @@ public sealed class TlsTests
             var options = RestOptions(origin, null);
             options.HttpMessageHandler = staying();
             using var client = new SagatClient(options);
-            Assert.Equal("r", (await client.GetAsync("r")).RunId);
+            Assert.Equal("r", (await client.GetAsync(Ids.Run)).RunId);
         }
     }
 

@@ -11,10 +11,12 @@ using SagatOctopusOrchestrator.Sdk.Internal;
 namespace SagatOctopusOrchestrator.Sdk;
 
 /// <summary>The client of the REST API (SPEC section 3). Thread-safe; create one and keep it (the dependency injection integration does).</summary>
+[System.Diagnostics.DebuggerDisplay("{ToString(),nq}")]
 public sealed partial class SagatClient : ISagatClient, IDisposable
 {
     private static readonly TimeSpan NameCacheLifetime = TimeSpan.FromSeconds(60);
 
+    [System.Diagnostics.DebuggerBrowsable(System.Diagnostics.DebuggerBrowsableState.Never)]
     private readonly SagatOptions options;
     private readonly HttpTransport transport;
     private readonly JsonSerializerOptions json;
@@ -32,22 +34,29 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         }
 
         json = Wire.OptionsOf(this.options);
-        transport = new HttpTransport(this.options, logger ?? (ILogger)NullLogger.Instance);
+        transport = new HttpTransport(this.options, SafeLogger.Of(logger ?? (ILogger)NullLogger.Instance));
     }
+
+    /// <summary>The settings of the client, without any credential.</summary>
+    public override string ToString() => $"SagatClient {{ ApiUrl = {SagatOptions.HostOf(options.ApiUrl)}, Namespace = {options.Namespace} }}";
 
     /// <inheritdoc/>
     public void Dispose() => transport.Dispose();
 
-    [GeneratedRegex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex UuidPattern();
 
-    [GeneratedRegex("^[\\x21-\\x7e]{8,160}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^[\\x21-\\x7e]{8,160}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex KeyPattern();
 
     /// <inheritdoc/>
     public async Task<string> ResolveWorkflowAsync(string workflow, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(workflow);
+        if (string.IsNullOrWhiteSpace(workflow))
+        {
+            throw SagatException.Invalid("a workflow is given by its id or by its name");
+        }
+
         if (UuidPattern().IsMatch(workflow))
         {
             return workflow.ToLowerInvariant();
@@ -141,7 +150,6 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     /// <inheritdoc/>
     public async Task<Run> GetAsync(string runId, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(runId);
         var answer = await transport.SendAsync(
             new HttpCall("get", HttpMethod.Get, RunPath(runId), "/runs/{runId}", [], null, null, null, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
@@ -205,7 +213,6 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     /// <inheritdoc/>
     public async Task<OperationResult> OperateAsync(string runId, RunAction action, string reason, OperateOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(runId);
         options ??= new OperateOptions();
         var traceparent = TraceOf(options.Traceparent);
         var key = KeyOf(options.IdempotencyKey);
@@ -255,14 +262,12 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     /// <inheritdoc/>
     public async Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(runId);
-        ArgumentException.ThrowIfNullOrEmpty(name);
         options ??= new RequestOptions();
         var traceparent = TraceOf(options.Traceparent);
         var key = KeyOf(options.IdempotencyKey);
         var body = Wire.Write(writer => WriteObjectOrEmpty(writer, payload));
         var answer = await transport.SendAsync(
-            new HttpCall("signal", HttpMethod.Post, RunPath(runId) + "/signals/" + Uri.EscapeDataString(name), "/runs/{runId}/signals/{name}", [], body, key, traceparent, SafeToRepeat: true),
+            new HttpCall("signal", HttpMethod.Post, RunPath(runId) + "/signals/" + Segment(name), "/runs/{runId}/signals/{name}", [], body, key, traceparent, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
         var raw = Object(answer.Body, "a signal result");
         var delivered = raw.TryGetProperty("deliveredTo", out var list) && list.ValueKind == JsonValueKind.Array
@@ -319,7 +324,6 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     /// <inheritdoc/>
     public async Task<JournalPage> EventsAsync(string runId, string? cursor = null, int? limit = null, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(runId);
         var query = new List<KeyValuePair<string, string>>();
         if (cursor is not null)
         {
@@ -369,7 +373,17 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
 
     // ------------------------------------------------------------------------------------------ helpers
 
-    private static string RunPath(string runId) => "/runs/" + Uri.EscapeDataString(runId);
+    /// <summary>The path of a run: its id is a UUID (SPEC section 10), so nothing in it can be a dot segment, a slash or a query.</summary>
+    private static string RunPath(string runId) =>
+        runId is not null && UuidPattern().IsMatch(runId)
+            ? "/runs/" + runId
+            : throw SagatException.Invalid("a run id is a UUID");
+
+    /// <summary>A name in a path (a signal's): percent-encoded, and never empty, <c>.</c> or <c>..</c>.</summary>
+    private static string Segment(string name) =>
+        string.IsNullOrEmpty(name) || name is "." or ".."
+            ? throw SagatException.Invalid("a name in a path is not empty, \".\" or \"..\"")
+            : Uri.EscapeDataString(name);
 
     private static string ActionName(RunAction action) => action switch
     {

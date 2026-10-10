@@ -20,7 +20,7 @@ public abstract partial class FlowBase<TSelf>
 
     internal IEnumerable<string> AllIds => ids;
 
-    [GeneratedRegex("^[a-z][a-z0-9._-]{0,63}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^[a-z][a-z0-9._-]{0,63}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex SecretPattern();
 
     /// <summary>Step.Run: an activity executed by a worker.</summary>
@@ -51,7 +51,7 @@ public abstract partial class FlowBase<TSelf>
             node["retry"] = RetryNode(retry);
         }
 
-        Set(node, "timeoutMs", Millis(options.Timeout, $"step {id} needs a timeout of at least 1 ms"));
+        Set(node, "timeoutMs", Millis(options.Timeout, $"step {id} timeout"));
         Set(node, "compensateWith", options.CompensateWith);
         Set(node, "reconcileWith", options.ReconcileWith);
         Set(node, "idempotencyTemplate", options.IdempotencyTemplate);
@@ -65,7 +65,7 @@ public abstract partial class FlowBase<TSelf>
             node["compensationRetry"] = RetryNode(compensationRetry);
         }
 
-        Set(node, "compensationTimeoutMs", Millis(options.CompensationTimeout, $"step {id} needs a compensation timeout of at least 1 ms"));
+        Set(node, "compensationTimeoutMs", Millis(options.CompensationTimeout, $"step {id} compensation timeout"));
         Set(node, "irreversible", options.Irreversible);
         Set(node, "highRisk", options.HighRisk);
         Set(node, "onError", options.OnError);
@@ -75,7 +75,7 @@ public abstract partial class FlowBase<TSelf>
     /// <summary>Sleep: waits for a duration. A timer, not a process: nothing is kept alive.</summary>
     public TSelf Sleep(string id, TimeSpan duration)
     {
-        var ms = Millis(duration, $"sleep {id} needs a duration of at least 1 ms");
+        var ms = Millis(duration, $"sleep {id} duration");
         return Push(new JsonObject { ["id"] = id, ["type"] = "timer", ["durationMs"] = ms });
     }
 
@@ -88,7 +88,7 @@ public abstract partial class FlowBase<TSelf>
             throw Invalid($"waitForEvent {id} needs an eventType and a correlationExpr");
         }
 
-        var timeout = Millis(options.Timeout, $"waitForEvent {id} needs a timeout of at least 1 ms");
+        var timeout = Millis(options.Timeout, $"waitForEvent {id} timeout");
         var node = new JsonObject
         {
             ["id"] = id,
@@ -100,7 +100,7 @@ public abstract partial class FlowBase<TSelf>
         Set(node, "onTimeout", options.OnTimeout);
         if (options.Lookback is { } lookback)
         {
-            node["lookbackMs"] = WholeMillis(lookback);
+            node["lookbackMs"] = WholeMillis(lookback, $"waitForEvent {id} lookback");
         }
 
         return Push(node);
@@ -309,20 +309,29 @@ public abstract partial class FlowBase<TSelf>
         }
     }
 
-    private static long WholeMillis(TimeSpan span) => span.Ticks / TimeSpan.TicksPerMillisecond;
+    /// <summary>A duration in milliseconds, which must be a whole number of them: the document has no fractions, and a fraction is never truncated.</summary>
+    private static long WholeMillis(TimeSpan span, string what)
+    {
+        if (span.Ticks % TimeSpan.TicksPerMillisecond != 0)
+        {
+            throw Invalid($"{what} must be a whole number of milliseconds");
+        }
 
-    private static long? Millis(TimeSpan? span, string message)
+        return span.Ticks / TimeSpan.TicksPerMillisecond;
+    }
+
+    private static long? Millis(TimeSpan? span, string subject)
     {
         if (span is null)
         {
             return null;
         }
 
-        var ms = WholeMillis(span.Value);
-        return ms >= 1 ? ms : throw Invalid(message);
+        var ms = WholeMillis(span.Value, subject);
+        return ms >= 1 ? ms : throw Invalid($"{subject} must be at least 1 ms");
     }
 
-    private static long Millis(TimeSpan span, string message) => Millis((TimeSpan?)span, message)!.Value;
+    private static long Millis(TimeSpan span, string subject) => Millis((TimeSpan?)span, subject)!.Value;
 
     private static JsonObject RetryNode(StepRetry retry)
     {
@@ -334,12 +343,12 @@ public abstract partial class FlowBase<TSelf>
 
         if (retry.InitialDelay is { } initial)
         {
-            node["initialDelayMs"] = WholeMillis(initial);
+            node["initialDelayMs"] = WholeMillis(initial, "a retry initial delay");
         }
 
         if (retry.MaxDelay is { } max)
         {
-            node["maxDelayMs"] = WholeMillis(max);
+            node["maxDelayMs"] = WholeMillis(max, "a retry maximum delay");
         }
 
         if (retry.Strategy is { } strategy)
@@ -384,7 +393,7 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         this.name = name!;
     }
 
-    [GeneratedRegex("^[a-z][a-z0-9-]{2,63}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^[a-z][a-z0-9-]{2,63}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex NamePattern();
 
     /// <summary>The description of the workflow.</summary>

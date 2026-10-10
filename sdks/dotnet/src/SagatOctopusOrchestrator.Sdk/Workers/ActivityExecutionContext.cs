@@ -111,7 +111,7 @@ public sealed class ActivityExecutionContext
     public IReadOnlyDictionary<string, JsonElement> Steps { get; }
 
     /// <summary>The end of the lease; moves forward with every heartbeat.</summary>
-    public DateTimeOffset Deadline => DateTimeOffset.FromUnixTimeMilliseconds(runtime.DeadlineEpochMs);
+    public DateTimeOffset Deadline => DateTimeOffset.FromUnixTimeMilliseconds(Math.Clamp(runtime.DeadlineEpochMs, -62_135_596_800_000L, 253_402_300_799_999L));
 
     /// <summary>Cancelled when the run is cancelled, the lease is lost or the host stops; <see cref="CancellationReason"/> says which.</summary>
     public CancellationToken CancellationToken => runtime.Abort.Token;

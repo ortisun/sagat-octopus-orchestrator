@@ -52,15 +52,6 @@ public sealed class JsonFidelityTests
         }
     }
 
-    /// <summary>What <c>JSON.stringify</c> prints for a number in the range the scenarios use (1e-6 up to 2^53): integers as digits, the rest as the shortest text that reads back.</summary>
-    private static string JavaScriptText(string token)
-    {
-        var value = double.Parse(token, CultureInfo.InvariantCulture);
-        Assert.InRange(Math.Abs(value), 0, 9007199254740992d);
-        Assert.True(value == 0 || Math.Abs(value) >= 1e-6, "outside the range where JavaScript and .NET agree on the format");
-        return value == Math.Floor(value) ? ((long)value).ToString(CultureInfo.InvariantCulture) : value.ToString("R", CultureInfo.InvariantCulture);
-    }
-
     [Fact]
     public void EveryNumberOfTheConformanceScenariosIsWrittenAsJavaScriptWritesIt()
     {
@@ -70,22 +61,41 @@ public sealed class JsonFidelityTests
         Assert.Contains("600000", tokens);
         Assert.Contains("9007199254740991", tokens);
         Assert.Contains("-42", tokens);
+        Assert.Contains("1e+21", tokens);
+        Assert.Contains("-1e-07", tokens);
         foreach (var token in tokens)
         {
-            // The scenario file is itself in the form JavaScript writes ...
-            Assert.Equal(token, JavaScriptText(token));
+            var parsed = JsonNode.Parse(token);
 
-            // ... a node read from it is written back unchanged ...
-            Assert.Equal(token, JsonNode.Parse(token)!.ToJsonString());
-            Assert.Equal(token, CanonicalJson.Write(JsonNode.Parse(token)));
+            // A node read from the file is written back unchanged (the SDK never reformats what it was given) ...
+            Assert.Equal(token, parsed!.ToJsonString());
+
+            // ... the canonical text is the same number, spelled as ECMAScript spells it: the token itself when it is already in that form ...
+            var canonical = Canonical(parsed);
+            Assert.Equal(double.Parse(token, CultureInfo.InvariantCulture), double.Parse(canonical, CultureInfo.InvariantCulture));
+            if (!token.Contains('e', StringComparison.Ordinal))
+            {
+                Assert.Equal(token, canonical);
+            }
 
             // ... and so is the same value held in a .NET number.
-            var typed = token.Contains('.', StringComparison.Ordinal)
-                ? JsonSerializer.Serialize(double.Parse(token, CultureInfo.InvariantCulture))
-                : JsonSerializer.Serialize(long.Parse(token, CultureInfo.InvariantCulture));
-            Assert.Equal(token, typed);
+            if (!token.Contains('e', StringComparison.Ordinal))
+            {
+                var typed = token.Contains('.', StringComparison.Ordinal)
+                    ? JsonSerializer.Serialize(double.Parse(token, CultureInfo.InvariantCulture))
+                    : JsonSerializer.Serialize(long.Parse(token, CultureInfo.InvariantCulture));
+                Assert.Equal(token, typed);
+            }
         }
+
+        // The exponent forms of the scenario files (written by Python) are spelled as JavaScript spells them in the canonical text.
+        Assert.Equal("1e+21", Canonical(JsonNode.Parse("1e+21")));
+        Assert.Equal("1e-7", Canonical(JsonNode.Parse("1e-07")));
+        Assert.Equal("0.000001", Canonical(JsonNode.Parse("1e-06")));
+        Assert.Equal("-1e-7", Canonical(JsonNode.Parse("-1e-07")));
     }
+
+    private static string Canonical(JsonNode? node) => CanonicalJson.Write(node);
 
     [Fact]
     public void ADoubleThatIsAWholeNumberIsWrittenWithoutAFractionAsJavaScriptDoes()
@@ -106,7 +116,7 @@ public sealed class JsonFidelityTests
             """{"ms":600000,"half":0.5,"tenth":0.1,"big":9007199254740993,"huge":12345678901234567890,"neg":-42,"money":"19.99","decimal":"12345678901234567890.123456789","text":"ação € 😀","esc":"q\" b\\ t\t n\n","nothing":null,"emptyObject":{},"emptyList":[],"list":[1,"two",null,{"deep":[true,false]}]}""");
         await client.StartAsync("0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", input);
         var sent = JsonNode.Parse(server.Requests[0].BodyText)!["input"]!;
-        Assert.Equal(CanonicalJson.Write(input), CanonicalJson.Write(sent));
+        Assert.Equal(input!.ToJsonString(), sent.ToJsonString());
         var text = server.Requests[0].BodyText;
         foreach (var literal in new[] { "\"ms\":600000", "\"half\":0.5", "\"tenth\":0.1", "\"big\":9007199254740993", "\"huge\":12345678901234567890", "\"neg\":-42", "\"money\":\"19.99\"", "\"decimal\":\"12345678901234567890.123456789\"" })
         {
@@ -136,7 +146,7 @@ public sealed class JsonFidelityTests
             ? new FakeAnswer(202, """{"eventId":"evt-12345678","source":"api","status":"ACCEPTED"}""")
             : new FakeAnswer(200, """{"runId":"r","workflowId":"w","versionId":"v","status":"RUNNING","createdAt":"2026-10-10T15:30:00.123456+05:30","updatedAt":"2026-10-10T10:00:00Z","deadline":"2026-10-10T12:00:00-03:00"}""");
         using var client = new SagatClient(new SagatOptions { ApiUrl = server.BaseUrl, Namespace = "p", Token = "t" });
-        var run = await client.GetAsync("r");
+        var run = await client.GetAsync(Ids.Run);
         Assert.Equal(new DateTimeOffset(2026, 10, 10, 10, 0, 0, TimeSpan.Zero).AddTicks(1234560), run.CreatedAt);
         Assert.Equal(TimeSpan.Zero, run.CreatedAt.Offset);
         Assert.Equal(TimeSpan.Zero, run.Deadline!.Value.Offset);

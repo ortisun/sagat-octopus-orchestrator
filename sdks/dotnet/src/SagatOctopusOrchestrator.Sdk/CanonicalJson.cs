@@ -80,7 +80,18 @@ public static class CanonicalJson
 
         if (value.GetValueKind() == JsonValueKind.Number)
         {
-            builder.Append(EcmaScriptNumber(double.Parse(value.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture)));
+            var number = double.Parse(value.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture);
+            var text = EcmaScriptNumber(number);
+
+            // An integer beyond 2^53 - 1 that ECMAScript prints in digits was rounded on the way in, and only TypeScript could print the nearest
+            // double and call it exact: it is refused, so that the text is the same bytes in every language. One printed with an exponent
+            // (1e21) is a number, not a rounded integer.
+            if (Math.Abs(number) > 9007199254740991d && !text.Contains('e', StringComparison.Ordinal))
+            {
+                throw SagatException.Invalid("the document holds an integer beyond 2^53 - 1: write it as a string");
+            }
+
+            builder.Append(text);
             return;
         }
 
@@ -188,8 +199,8 @@ public static class CanonicalJson
                     }
                     else if (char.IsSurrogate(c))
                     {
-                        // A lone surrogate is not text: JSON.stringify writes it escaped.
-                        builder.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                        // A lone surrogate is not text (SPEC section 8): it is refused, not written escaped.
+                        throw SagatException.Invalid("the document holds text that is not valid Unicode (a lone surrogate)");
                     }
                     else
                     {

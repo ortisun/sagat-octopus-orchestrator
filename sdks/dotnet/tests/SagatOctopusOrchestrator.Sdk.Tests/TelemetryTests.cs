@@ -7,6 +7,7 @@ using Xunit;
 namespace SagatOctopusOrchestrator.Sdk.Tests;
 
 /// <summary>The <see cref="ActivitySource"/> <c>SagatOctopusOrchestrator.Sdk</c>: its spans carry the W3C trace to the server and from a lease into the handler.</summary>
+[Collection("telemetry")]
 public sealed class TelemetryTests
 {
     private const string Token = "tok-for-telemetry";
@@ -31,7 +32,7 @@ public sealed class TelemetryTests
         using var client = ClientOf(server, space);
 
         using var caller = source.StartActivity("caller")!;
-        await client.GetAsync("r-1");
+        await client.GetAsync(Ids.Run);
 
         var sent = server.Requests[0].Header("traceparent");
         Assert.True(Traceparent.IsValid(sent));
@@ -46,7 +47,7 @@ public sealed class TelemetryTests
         Assert.Equal(200, span.GetTagItem("http.response.status_code"));
         Assert.Equal(space, span.GetTagItem("sagat.namespace"));
         Assert.DoesNotContain(span.TagObjects, tag => Convert.ToString(tag.Value, System.Globalization.CultureInfo.InvariantCulture)!.Contains(Token, StringComparison.Ordinal));
-        Assert.DoesNotContain("r-1", string.Concat(span.TagObjects.Select(t => t.Value)), StringComparison.Ordinal);
+        Assert.DoesNotContain(Ids.Run, string.Concat(span.TagObjects.Select(t => t.Value)), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -72,11 +73,11 @@ public sealed class TelemetryTests
         var space = Space();
         using var spans = new SpanCapture(span => Of(span, space), SdkInfo.ActivitySourceName);
         using var client = ClientOf(server, space);
-        await Assert.ThrowsAsync<SagatException>(() => client.StartAsync("0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", new { card = "4111" }));
+        await Assert.ThrowsAsync<SagatException>(() => client.StartAsync("0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", new { card = "canary-card-number" }));
         var span = Assert.Single(spans.Spans);
         Assert.Equal(ActivityStatusCode.Error, span.Status);
         Assert.Equal("VALIDATION_FAILED", span.GetTagItem("error.type"));
-        Assert.DoesNotContain("4111", string.Concat(span.TagObjects.Select(t => t.Value)) + span.StatusDescription, StringComparison.Ordinal);
+        Assert.DoesNotContain("canary-card-number", string.Concat(span.TagObjects.Select(t => t.Value)) + span.StatusDescription, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -96,7 +97,7 @@ public sealed class TelemetryTests
         host.RegisterActivity<JsonNode?, int>("charge", async (_, context, ct) =>
         {
             inside = Activity.Current;
-            await client.GetAsync("r-1", ct);
+            await client.GetAsync(Ids.Run, ct);
             Assert.Equal(Leases.Traceparent, context.Traceparent);
             return 1;
         });

@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Grpc.Core.Interceptors;
 
 namespace SagatOctopusOrchestrator.Sdk;
@@ -9,6 +11,7 @@ namespace SagatOctopusOrchestrator.Sdk;
 /// service that is both configures its endpoint, namespace and credentials once. It binds from configuration
 /// (<c>services.Configure&lt;SagatOptions&gt;(configuration.GetSection("Sagat"))</c>).
 /// </summary>
+[DebuggerDisplay("{ToString(),nq}")]
 public sealed class SagatOptions
 {
     /// <summary>Base URL of the REST API including <c>/v1</c>, e.g. <c>https://api.example/v1</c>. Required for a client.</summary>
@@ -20,10 +23,18 @@ public sealed class SagatOptions
     /// <summary>Slug of the namespace every call is made in. Required. The tenant is never configured: it is the token's.</summary>
     public string? Namespace { get; set; }
 
-    /// <summary>A bearer token. Either this or <see cref="TokenProvider"/> is required.</summary>
+    /// <summary>A bearer token. Either this or <see cref="TokenProvider"/> is required. Never printed, serialized or shown by the debugger.</summary>
+    [JsonIgnore]
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     public string? Token { get; set; }
 
-    /// <summary>A provider called before every request that returns a fresh token, so that a rotated one is used at once.</summary>
+    /// <summary>
+    /// A provider called before every request that returns a fresh token, so that a rotated one is used at once. When it throws, the call fails
+    /// as <see cref="SagatErrorCode.Unauthenticated"/> with the reason <c>TOKEN_PROVIDER_FAILED</c> (and is repeated like a transport failure);
+    /// the provider's own exception is not kept.
+    /// </summary>
+    [JsonIgnore]
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     public Func<CancellationToken, ValueTask<string>>? TokenProvider { get; set; }
 
     /// <summary>Deadline of one REST call or one unary RPC. 30 s by default.</summary>
@@ -35,13 +46,16 @@ public sealed class SagatOptions
     /// <summary>Appended to <c>sagat-sdk-csharp/&lt;version&gt;</c> in the <c>User-Agent</c>.</summary>
     public string? UserAgent { get; set; }
 
-    /// <summary>Trust roots and the client certificate (mTLS). The system roots when absent.</summary>
+    /// <summary>Trust roots, the server name and the client certificate (mTLS). The system roots when absent.</summary>
+    [JsonIgnore]
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     public SagatTlsOptions? Tls { get; set; }
 
     /// <summary>
     /// How the typed payloads (run input, signal payload, event data, activity input and output) are read and written.
     /// Camel-case, case-insensitive on read, by default.
     /// </summary>
+    [JsonIgnore]
     public JsonSerializerOptions? Json { get; set; }
 
     /// <summary>
@@ -51,10 +65,18 @@ public sealed class SagatOptions
     /// <c>AllowAutoRedirect = false</c>, and the client refuses a <see cref="HttpClientHandler"/> or <see cref="SocketsHttpHandler"/>
     /// (also inside <see cref="DelegatingHandler"/>s) that follows them.
     /// </summary>
+    [JsonIgnore]
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     public HttpMessageHandler? HttpMessageHandler { get; set; }
 
     /// <summary>The worker host settings; used only by <see cref="Workers.WorkerHost"/>.</summary>
     public WorkerOptions Worker { get; } = new();
+
+    /// <summary>The settings that are not a credential; a URL is shown by its host only (it can carry a credential in its user-info or query).</summary>
+    public override string ToString() =>
+        $"SagatOptions {{ ApiUrl = {HostOf(ApiUrl)}, GrpcUrl = {HostOf(GrpcUrl)}, Namespace = {Namespace}, Credential = {(Token is not null || TokenProvider is not null ? "set" : "none")}, Worker = {Worker.Name} }}";
+
+    internal static string HostOf(string? url) => url is not null && Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "(none)";
 
     internal SagatOptions Snapshot()
     {
@@ -80,13 +102,22 @@ public sealed class SagatOptions
     {
         if (TokenProvider is { } provider)
         {
-            var token = await provider(cancellationToken).ConfigureAwait(false);
-            if (string.IsNullOrEmpty(token))
+            string? token;
+#pragma warning disable CA1031 // The provider is the caller's code: whatever it raises is "the provider failed", and its exception is not kept.
+            try
             {
-                throw new SagatException(SagatErrorCode.Unauthenticated, "the token provider returned no token");
+                token = await provider(cancellationToken).ConfigureAwait(false);
             }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new SagatException(SagatErrorCode.Unauthenticated, "the token provider failed", reason: SagatException.TokenProviderFailed);
+            }
+#pragma warning restore CA1031
 
-            return token;
+            return string.IsNullOrEmpty(token)
+                ? throw new SagatException(SagatErrorCode.Unauthenticated, "the token provider returned no token", reason: SagatException.TokenProviderFailed)
+                : token;
         }
 
         return Token ?? throw new SagatException(SagatErrorCode.Unauthenticated, "no token is configured");
@@ -113,6 +144,13 @@ public sealed class SagatOptions
         {
             throw SagatException.Invalid("Retry.MaxAttempts must be at least 1");
         }
+
+        if (Retry.InitialDelay < TimeSpan.Zero || Retry.MaxDelay < TimeSpan.Zero)
+        {
+            throw SagatException.Invalid("Retry.InitialDelay and Retry.MaxDelay cannot be negative");
+        }
+
+        Internal.Tls.Validate(Tls);
     }
 }
 
@@ -141,6 +179,7 @@ public sealed class WorkerOptions
     public TimeSpan? HeartbeatInterval { get; set; }
 
     /// <summary>Interceptors of the gRPC channel: the hook of tests and of fault injection.</summary>
+    [JsonIgnore]
     public IList<Interceptor> Interceptors { get; } = [];
 
     internal void CopyFrom(WorkerOptions other)
@@ -166,14 +205,28 @@ public sealed class WorkerOptions
 }
 
 /// <summary>TLS settings of the REST client and of the worker channel.</summary>
+[DebuggerDisplay("{ToString(),nq}")]
 public sealed class SagatTlsOptions
 {
     /// <summary>
     /// Trust roots used instead of the system roots to validate the server's certificate. The chain, the validity dates and the host
-    /// name are still verified; there is no way to skip them.
+    /// name are still verified; there is no way to skip them. An empty collection is refused (it is not "the system roots": leave this null for those).
     /// </summary>
+    [JsonIgnore]
     public X509Certificate2Collection? TrustedRoots { get; set; }
 
     /// <summary>The client certificate (with its private key) presented to the server for mTLS.</summary>
+    [JsonIgnore]
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     public X509Certificate2? ClientCertificate { get; set; }
+
+    /// <summary>
+    /// The name the server's certificate is verified against (and sent as the server name indication), when it is not the host of the URL.
+    /// It is verified, never skipped: a certificate that does not carry the name is refused.
+    /// </summary>
+    public string? ServerName { get; set; }
+
+    /// <summary>The settings, without the certificates themselves.</summary>
+    public override string ToString() =>
+        $"SagatTlsOptions {{ TrustedRoots = {TrustedRoots?.Count ?? 0}, ClientCertificate = {(ClientCertificate is null ? "none" : "set")}, ServerName = {ServerName ?? "(the host of the URL)"} }}";
 }

@@ -11,7 +11,10 @@ internal sealed class TaskRuntime
     {
         Abort = new CancellationTokenSource();
         Interlocked.Exchange(ref deadlineEpochMs, expiresAtEpochMs);
-        HeartbeatInterval = WorkerHost.HeartbeatIntervalFor(TimeSpan.FromMilliseconds(expiresAtEpochMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+
+        // A lease that says anything (the past, the far future) gives an interval, not an exception.
+        var left = Math.Clamp(expiresAtEpochMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), 0, 3_600_000);
+        HeartbeatInterval = WorkerHost.HeartbeatIntervalFor(TimeSpan.FromMilliseconds(left));
     }
 
     /// <summary>

@@ -16,6 +16,7 @@ namespace SagatOctopusOrchestrator.Sdk.Tests;
 /// US01-AC01: given an ASP.NET Core service, when it registers a client via dependency injection and calls <c>StartAsync</c>, then a run is
 /// created with the idempotency key and the trace context propagated.
 /// </summary>
+[Collection("telemetry")]
 public sealed class AspNetCoreTests
 {
     private const string Workflow = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
@@ -120,7 +121,7 @@ public sealed class AspNetCoreTests
         await app.StartAsync();
         using var http = app.GetTestClient();
         using var abort = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => http.GetAsync("/runs/r-1", abort.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => http.GetAsync("/runs/0190aaaa-0000-7000-8000-000000000001", abort.Token));
         Assert.True(await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10)));
     }
 

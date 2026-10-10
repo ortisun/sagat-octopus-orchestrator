@@ -6,7 +6,7 @@ namespace SagatOctopusOrchestrator.Sdk;
 /// <summary>Helpers for the W3C <c>traceparent</c> header (<c>00-&lt;32 hex&gt;-&lt;16 hex&gt;-&lt;2 hex&gt;</c>).</summary>
 public static partial class Traceparent
 {
-    [GeneratedRegex("^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex Pattern();
 
     /// <summary>True for a version 00 trace context with a non-zero trace id and parent id.</summary>

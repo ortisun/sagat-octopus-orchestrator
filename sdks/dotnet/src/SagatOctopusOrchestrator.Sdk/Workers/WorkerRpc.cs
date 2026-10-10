@@ -20,7 +20,7 @@ internal sealed class WorkerRpc : IDisposable
         var url = new Uri(options.GrpcUrl!, UriKind.Absolute);
         if (Tls.IsPlainTextOutsideLoopback(url))
         {
-            Log.InsecureTransport(logger, url.GetLeftPart(UriPartial.Authority));
+            Log.InsecureTransport(logger, url.Host);
         }
 
         var handler = Tls.CreateHandler(options.Tls, options.Timeout);
@@ -28,7 +28,7 @@ internal sealed class WorkerRpc : IDisposable
         handler.KeepAlivePingTimeout = TimeSpan.FromSeconds(20);
         channel = GrpcChannel.ForAddress(url, new GrpcChannelOptions
         {
-            HttpHandler = handler,
+            HttpHandler = Tls.WithServerName(handler, options.Tls),
             DisposeHttpClient = true,
             MaxReceiveMessageSize = 16 * 1024 * 1024,
         });

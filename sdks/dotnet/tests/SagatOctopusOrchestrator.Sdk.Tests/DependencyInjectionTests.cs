@@ -82,7 +82,7 @@ public sealed class DependencyInjectionTests
         Assert.Empty(provider.GetServices<IHostedService>());
 
         rest.Handler = _ => new FakeAnswer(200, """{"runId":"r","workflowId":"w","versionId":"v","status":"RUNNING","createdAt":"2026-10-10T10:00:00Z"}""");
-        Assert.Equal("r", (await viaInterface.GetAsync("r")).RunId);
+        Assert.Equal("r", (await viaInterface.GetAsync(Ids.Run)).RunId);
     }
 
     [Fact]

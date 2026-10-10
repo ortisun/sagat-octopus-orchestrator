@@ -21,7 +21,11 @@ internal sealed record SeenRequest(string Method, string PathAndQuery, IReadOnly
 }
 
 /// <summary>What the fake server answers.</summary>
-internal sealed record FakeAnswer(int Status, string? Body = null, IReadOnlyDictionary<string, string>? Headers = null);
+internal sealed record FakeAnswer(int Status, string? Body = null, IReadOnlyDictionary<string, string>? Headers = null)
+{
+    /// <summary>Writes the body as a stream (for an answer too large to hold in a string).</summary>
+    internal Func<Stream, CancellationToken, Task>? Stream { get; init; }
+}
 
 /// <summary>An in-process HTTP server on a loopback port that records every request and answers as the test scripts it.</summary>
 internal sealed class FakeRestServer : IAsyncDisposable
@@ -95,7 +99,19 @@ internal sealed class FakeRestServer : IAsyncDisposable
                 context.Response.Headers[name] = value;
             }
 
-            if (answer.Body is not null)
+            if (answer.Stream is not null)
+            {
+                context.Response.ContentType = "application/json";
+                try
+                {
+                    await answer.Stream(context.Response.Body, context.RequestAborted);
+                }
+                catch (Exception error) when (error is IOException or OperationCanceledException or InvalidOperationException)
+                {
+                    // The client gave up on a body it will not read to the end.
+                }
+            }
+            else if (answer.Body is not null)
             {
                 context.Response.ContentType = "application/json";
                 await context.Response.WriteAsync(answer.Body);

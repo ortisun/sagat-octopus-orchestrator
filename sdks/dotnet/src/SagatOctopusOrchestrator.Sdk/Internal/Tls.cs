@@ -24,8 +24,39 @@ internal static class Tls
     /// Trust roots are a chain policy handed to the platform's own validation, which also checks the host name and the validity dates:
     /// the SDK has no certificate callback and no way to turn verification off.
     /// </summary>
+    /// <summary>
+    /// With a server name the request names that host: the platform's TLS stack takes its host name from there for the server name indication and
+    /// for verifying the certificate, so the certificate must carry the name (it is verified, never skipped). The connection still goes to the URL.
+    /// </summary>
+    internal static HttpMessageHandler WithServerName(HttpMessageHandler inner, SagatTlsOptions? tls) =>
+        tls?.ServerName is { } serverName ? new ServerNameHandler(serverName, inner) : inner;
+
+    private sealed class ServerNameHandler(string serverName, HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            request.Headers.Host = serverName;
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    internal static void Validate(SagatTlsOptions? tls)
+    {
+        if (tls?.TrustedRoots is { Count: 0 })
+        {
+            throw SagatException.Invalid("Tls.TrustedRoots is empty: leave it null for the system roots, or give the roots to trust");
+        }
+
+        if (tls?.ServerName is { } name && string.IsNullOrWhiteSpace(name))
+        {
+            throw SagatException.Invalid("Tls.ServerName is empty: leave it null for the host of the URL");
+        }
+    }
+
     internal static void Configure(SslClientAuthenticationOptions ssl, SagatTlsOptions? tls)
     {
+        Validate(tls);
+
         if (tls?.ClientCertificate is { } certificate)
         {
             ssl.ClientCertificates = [certificate];

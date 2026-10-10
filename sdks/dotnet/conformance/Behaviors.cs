@@ -76,6 +76,13 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
             }
 
             outcome("cancelled");
+
+            // A handler that is cancelled and says so ends by raising its cancellation error.
+            if ((bool?)behavior["onCancel"]?["raises"] == true)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
             return null;
         }
 
@@ -83,7 +90,8 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
         {
             try
             {
-                await Task.Delay((int)sleep, cancellationToken).ConfigureAwait(false);
+                // A handler that never looks at its token waits whatever happens, and what it returns is what is reported.
+                await Task.Delay((int)sleep, (bool?)behavior["ignoresCancel"] == true ? CancellationToken.None : cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {

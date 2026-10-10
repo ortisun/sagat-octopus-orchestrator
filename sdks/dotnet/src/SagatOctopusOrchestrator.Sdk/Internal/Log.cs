@@ -11,8 +11,11 @@ internal static partial class Log
     [LoggerMessage(EventId = 1, Level = LogLevel.Warning, Message = "Retrying {Method} {Path}: {Code}, attempt {Attempt}, waiting {WaitMs} ms")]
     internal static partial void RetryingRequest(ILogger logger, string method, string path, string code, int attempt, long waitMs);
 
-    [LoggerMessage(EventId = 2, Level = LogLevel.Warning, Message = "{Endpoint} is plain text outside loopback: the token and the payloads travel unencrypted")]
-    internal static partial void InsecureTransport(ILogger logger, string endpoint);
+    [LoggerMessage(EventId = 2, Level = LogLevel.Warning, Message = "The connection to {Host} is plain text outside loopback: the token and the payloads travel unencrypted")]
+    internal static partial void InsecureTransport(ILogger logger, string host);
+
+    [LoggerMessage(EventId = 29, Level = LogLevel.Warning, Message = "The poll answered {Got} tasks but the host asked for {Asked}: running the first {Asked} and leaving the {Ignored} others to lapse")]
+    internal static partial void TooManyTasks(ILogger logger, int got, int asked, int ignored);
 
     [LoggerMessage(EventId = 10, Level = LogLevel.Information, Message = "Worker {Worker} registered at protocol {Protocol}")]
     internal static partial void WorkerRegistered(ILogger logger, string worker, string protocol);

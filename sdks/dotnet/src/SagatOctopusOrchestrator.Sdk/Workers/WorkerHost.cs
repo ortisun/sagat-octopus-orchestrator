@@ -11,6 +11,7 @@ using SagatOctopusOrchestrator.Sdk.Internal;
 namespace SagatOctopusOrchestrator.Sdk.Workers;
 
 /// <summary>The worker host of the SDK (SPEC section 6).</summary>
+[DebuggerDisplay("{ToString(),nq}")]
 public sealed partial class WorkerHost : IWorkerHost
 {
     private const int MaxOutputBytes = 256 * 1024;
@@ -18,13 +19,14 @@ public sealed partial class WorkerHost : IWorkerHost
     private const int ReportAttempts = 5;
     private const int MaxMessage = 512;
 
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     private readonly SagatOptions options;
     private readonly ILoggerFactory loggerFactory;
     private readonly ILogger logger;
     private readonly JsonSerializerOptions json;
     private readonly int maxInflight;
     private readonly Dictionary<string, ActivityRegistration> handlers = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, InFlight> inflight = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<long, InFlight> inflight = new();
     private readonly SemaphoreSlim lifecycle = new(1, 1);
     private readonly object wakeGate = new();
     private readonly TagList tags;
@@ -39,6 +41,9 @@ public sealed partial class WorkerHost : IWorkerHost
     private Task loop = Task.CompletedTask;
     private CancellationTokenSource? loopCancel;
     private TaskCompletionSource? wake;
+    private TaskCompletionSource stopSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private bool wakePending;
+    private long sequence;
 
     /// <summary>Creates a host. <see cref="SagatOptions.GrpcUrl"/>, <see cref="SagatOptions.Namespace"/>, a token and <see cref="WorkerOptions.Name"/> are required to start it.</summary>
     public WorkerHost(SagatOptions options, ILoggerFactory? loggerFactory = null)
@@ -52,10 +57,15 @@ public sealed partial class WorkerHost : IWorkerHost
         }
 
         this.loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
-        logger = this.loggerFactory.CreateLogger<WorkerHost>();
+        ILogger created = NullLogger.Instance;
+        Safe.Run(() => created = this.loggerFactory.CreateLogger<WorkerHost>());
+        logger = SafeLogger.Of(created);
         json = Wire.OptionsOf(this.options);
         tags = new TagList { { "sagat.worker", this.options.Worker.Name ?? string.Empty } };
     }
+
+    /// <summary>The settings of the host, without any credential.</summary>
+    public override string ToString() => $"WorkerHost {{ GrpcUrl = {SagatOptions.HostOf(options.GrpcUrl)}, Namespace = {options.Namespace}, Worker = {options.Worker.Name}, Running = {running} }}";
 
     /// <inheritdoc/>
     public string ProtocolVersion => accepted;
@@ -63,10 +73,10 @@ public sealed partial class WorkerHost : IWorkerHost
     /// <inheritdoc/>
     public bool IsRunning => running;
 
-    [GeneratedRegex("^[A-Z0-9_]{1,64}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^[A-Z0-9_]{1,64}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex CodePattern();
 
-    [GeneratedRegex("^1(?:\\.(\\d+))?$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^1(?:\\.(\\d+))?\\z", RegexOptions.CultureInvariant)]
     private static partial Regex VersionPattern();
 
     // ------------------------------------------------------------------------------------ registration
@@ -141,6 +151,13 @@ public sealed partial class WorkerHost : IWorkerHost
 
             var started = new Session(channel);
             current = started;
+            lock (wakeGate)
+            {
+                stopSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                wakePending = false;
+                wake = null;
+            }
+
             stopping = false;
             loopCancel = new CancellationTokenSource();
             running = true;
@@ -170,7 +187,7 @@ public sealed partial class WorkerHost : IWorkerHost
             }
 
             stopping = true;
-            Wake();
+            WakeForStop();
 
             // The poll in progress ends and no other starts; what it leased is in flight from here on. Cancelling
             // the token ends the wait for that poll at once (the host is going away).
@@ -228,6 +245,11 @@ public sealed partial class WorkerHost : IWorkerHost
     private void Validate()
     {
         options.ValidateCommon();
+        if (options.Worker.HeartbeatInterval is { } beat && beat <= TimeSpan.Zero)
+        {
+            throw SagatException.Invalid("Worker.HeartbeatInterval must be positive (leave it null for a third of the lease)");
+        }
+
         if (string.IsNullOrWhiteSpace(options.Worker.Name))
         {
             throw SagatException.Invalid("Worker.Name is required");
@@ -311,37 +333,67 @@ public sealed partial class WorkerHost : IWorkerHost
 
     // ------------------------------------------------------------------------------------------- loop
 
+    /// <summary>A task finished (there is room again) or a task was released: the pause of the loop ends, or the next one is not taken.</summary>
     private void Wake()
     {
         TaskCompletionSource? waiting;
         lock (wakeGate)
         {
             waiting = wake;
+            if (waiting is null)
+            {
+                // The loop is not parked now (it may be in the middle of a poll): the next pause must not be taken.
+                wakePending = true;
+            }
         }
 
         waiting?.TrySetResult();
     }
 
-    // The pause between polls. A host that is stopping does not pause: `StopAsync` may have run while a poll was in
-    // flight, with nothing to wake. A task that finishes wakes the loop (there is room again).
-    private async Task IdleAsync(TimeSpan wait)
+    private void WakeForStop()
     {
-        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource signal;
         lock (wakeGate)
         {
-            wake = waiting;
+            signal = stopSignal;
         }
 
-        try
+        signal.TrySetResult();
+        Wake();
+    }
+
+    // The pause between polls, which is at most a minute whatever the server asked for. A host that is stopping does not pause. A task that
+    // finishes ends it (there is room again), also when it finished while the poll was in flight (`wakePending`); the pause of a backoff
+    // (`endsWithTask` false) is ended only by the stop.
+    private async Task IdleAsync(TimeSpan wait, bool endsWithTask = true)
+    {
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task stop;
+        lock (wakeGate)
         {
+            stop = stopSignal.Task;
             if (stopping)
             {
                 return;
             }
 
+            if (endsWithTask)
+            {
+                if (wakePending)
+                {
+                    wakePending = false;
+                    return;
+                }
+
+                wake = waiting;
+            }
+        }
+
+        try
+        {
             using var timer = new CancellationTokenSource();
-            var delay = Task.Delay(wait, timer.Token);
-            await Task.WhenAny(delay, waiting.Task).ConfigureAwait(false);
+            var delay = Task.Delay(Limits.Capped(wait), timer.Token);
+            await Task.WhenAny(delay, stop, waiting.Task).ConfigureAwait(false);
             await timer.CancelAsync().ConfigureAwait(false);
         }
         finally
@@ -352,6 +404,8 @@ public sealed partial class WorkerHost : IWorkerHost
                 {
                     wake = null;
                 }
+
+                wakePending = false;
             }
         }
     }
@@ -362,6 +416,7 @@ public sealed partial class WorkerHost : IWorkerHost
     private async Task RunLoopAsync(Session session, CancellationToken cancellationToken)
     {
         var failures = 0;
+        var refused = 0;
         var channel = session.Rpc;
         while (!stopping)
         {
@@ -374,17 +429,27 @@ public sealed partial class WorkerHost : IWorkerHost
                     continue;
                 }
 
+                var asked = Math.Min(free, MaxPoll);
                 var response = await channel.PollAsync(
-                    new PollTasksRequest { WorkerId = workerId, SessionToken = sessionToken, MaxTasks = Math.Min(free, MaxPoll) },
+                    new PollTasksRequest { WorkerId = workerId, SessionToken = sessionToken, MaxTasks = asked },
                     cancellationToken).ConfigureAwait(false);
                 failures = 0;
-                Telemetry.Polls.Add(1, tags);
-                foreach (var lease in response.Tasks)
+                refused = 0;
+                Safe.Add(Telemetry.Polls, tags);
+
+                // The host runs at most as many tasks as it asked for: the others keep a lease that lapses and is given again.
+                var got = response.Tasks.Count;
+                if (got > asked)
                 {
-                    Dispatch(lease, session);
+                    Log.TooManyTasks(logger, got, asked, got - asked);
                 }
 
-                if (response.Tasks.Count == 0)
+                for (var i = 0; i < Math.Min(got, asked); i++)
+                {
+                    Dispatch(response.Tasks[i], session);
+                }
+
+                if (got == 0)
                 {
                     var wait = Math.Max(50, response.RetryAfterMs > 0 ? response.RetryAfterMs : 1000);
                     await IdleAsync(Jitter(TimeSpan.FromMilliseconds(wait))).ConfigureAwait(false);
@@ -404,7 +469,20 @@ public sealed partial class WorkerHost : IWorkerHost
                 if (error.Code == SagatErrorCode.Unauthenticated)
                 {
                     Log.SessionGone(logger);
-                    Telemetry.Reconnects.Add(1, tags);
+                    Safe.Add(Telemetry.Reconnects, tags);
+
+                    // The session is gone: register again and go on. A server that registers the worker and refuses it at once must not be
+                    // hammered: from the second refusal in a row the registration waits with the backoff of section 5, until a poll succeeds.
+                    if (refused > 0)
+                    {
+                        await IdleAsync(ReconnectBackoff(refused - 1), endsWithTask: false).ConfigureAwait(false);
+                        if (stopping)
+                        {
+                            return;
+                        }
+                    }
+
+                    refused++;
                     try
                     {
                         await RegisterAsync(channel, cancellationToken).ConfigureAwait(false);
@@ -426,9 +504,8 @@ public sealed partial class WorkerHost : IWorkerHost
                     continue;
                 }
 
-                Telemetry.Reconnects.Add(1, tags);
-                var backoff = new RetryPolicy { InitialDelay = options.Retry.InitialDelay, MaxDelay = TimeSpan.FromSeconds(30) }.Backoff(failures++);
-                var pause = Min(TimeSpan.FromSeconds(30), Max(error.RetryAfter, backoff));
+                Safe.Add(Telemetry.Reconnects, tags);
+                var pause = Min(TimeSpan.FromSeconds(30), Max(error.RetryAfter, ReconnectBackoff(failures++)));
                 Log.PollFailed(logger, error.Code.ToWireName(), (long)pause.TotalMilliseconds);
                 await IdleAsync(pause).ConfigureAwait(false);
             }
@@ -446,6 +523,10 @@ public sealed partial class WorkerHost : IWorkerHost
             }
         }
     }
+
+    /// <summary>The backoff of section 5 for a host that reconnects: no limit on attempts, a cap of 30 s.</summary>
+    private TimeSpan ReconnectBackoff(int n) =>
+        new RetryPolicy { InitialDelay = options.Retry.InitialDelay, MaxDelay = TimeSpan.FromSeconds(30) }.Backoff(n);
 
     /// <summary>
     /// The heartbeat interval for a lease with <paramref name="timeLeft"/> on it when the task is taken (the lease's expiry minus the
@@ -467,29 +548,51 @@ public sealed partial class WorkerHost : IWorkerHost
 
     private void Dispatch(TaskLease lease, Session session)
     {
-        var entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
-        inflight[lease.TaskId] = entry;
-        Telemetry.TasksTaken.Add(1, tags);
-        Log.TaskTaken(logger, lease.TaskId, lease.ActivityName, lease.Attempt);
-        _ = Task.Run(async () =>
+        try
         {
+            var id = Interlocked.Increment(ref sequence);
+            var entry = new InFlight(new TaskRuntime(lease.ExpiresAtEpochMs));
+            inflight[id] = entry;
             try
             {
-                await ExecuteAsync(lease, entry.Runtime, session).ConfigureAwait(false);
-            }
+                Safe.Add(Telemetry.TasksTaken, tags);
+                Log.TaskTaken(logger, lease.TaskId, lease.ActivityName, lease.Attempt);
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await ExecuteAsync(lease, entry.Runtime, session).ConfigureAwait(false);
+                    }
 #pragma warning disable CA1031 // A bug in one task must not take the host down.
+                    catch (Exception error)
+#pragma warning restore CA1031
+                    {
+                        Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
+                    }
+                    finally
+                    {
+                        // Its own entry, whatever else was leased under the same task id.
+                        inflight.TryRemove(id, out _);
+                        entry.Completion.TrySetResult();
+                        Wake();
+                    }
+                });
+            }
+#pragma warning disable CA1031 // The task could not be started: it is not in flight, and its lease lapses and is given again.
             catch (Exception error)
 #pragma warning restore CA1031
             {
+                inflight.TryRemove(id, out _);
+                entry.Completion.TrySetResult();
                 Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
             }
-            finally
-            {
-                inflight.TryRemove(lease.TaskId, out _);
-                entry.Completion.TrySetResult();
-                Wake();
-            }
-        });
+        }
+#pragma warning disable CA1031 // One lease that cannot be dispatched must not cost the others of the same answer.
+        catch (Exception error)
+#pragma warning restore CA1031
+        {
+            Log.TaskCrashed(logger, lease.TaskId, error.GetType().Name);
+        }
     }
 
     private async Task ExecuteAsync(TaskLease lease, TaskRuntime runtime, Session session)
@@ -501,21 +604,35 @@ public sealed partial class WorkerHost : IWorkerHost
             handlers.TryGetValue(lease.ActivityName, out registered);
         }
 
-        var kind = lease.TaskKind switch
-        {
-            "COMPENSATION" => TaskKind.Compensation,
-            "RECONCILIATION" => TaskKind.Reconciliation,
-            _ => TaskKind.Forward,
-        };
+        // `task_kind` came with 1.2: against an older server every task is a forward one, whatever the field says.
+        var kind = minor < 2
+            ? TaskKind.Forward
+            : lease.TaskKind switch
+            {
+                "COMPENSATION" => TaskKind.Compensation,
+                "RECONCILIATION" => TaskKind.Reconciliation,
+                _ => TaskKind.Forward,
+            };
 
-        using var span = StartSpan(lease, kind);
+        var span = StartSpan(lease, kind);
         using var scope = logger.BeginScope(new Dictionary<string, object?>
         {
             ["sagat.task_id"] = lease.TaskId,
             ["sagat.run_id"] = lease.RunId,
             ["sagat.attempt"] = lease.Attempt,
         });
+        try
+        {
+            await ExecuteInAsync(lease, runtime, session, kind, started, registered, span).ConfigureAwait(false);
+        }
+        finally
+        {
+            Safe.Stop(span);
+        }
+    }
 
+    private async Task ExecuteInAsync(TaskLease lease, TaskRuntime runtime, Session session, TaskKind kind, long started, ActivityRegistration? registered, Activity? span)
+    {
         if (registered is null)
         {
             await FailAsync(session, lease, "NO_HANDLER", "no handler is registered for the activity", retryable: false, started, span).ConfigureAwait(false);
@@ -583,10 +700,10 @@ public sealed partial class WorkerHost : IWorkerHost
                 lease.TargetNode,
                 lease.TargetIdempotencyKey,
                 steps,
-                loggerFactory.CreateLogger("SagatOctopusOrchestrator.Activity." + lease.ActivityName),
+                ContextLogger(lease.ActivityName),
                 secretsLoader.GetAsync);
 
-            await RunAndReportAsync(session, lease, runtime, registered, typed, context, started, span).ConfigureAwait(false);
+            await RunAndReportAsync(session, lease, runtime, registered, typed, context, secretsLoader, started, span).ConfigureAwait(false);
         }
         finally
         {
@@ -605,6 +722,7 @@ public sealed partial class WorkerHost : IWorkerHost
         ActivityRegistration registered,
         object? typed,
         ActivityExecutionContext context,
+        SecretsLoader secretsLoader,
         long started,
         Activity? span)
     {
@@ -628,9 +746,9 @@ public sealed partial class WorkerHost : IWorkerHost
                 {
                     // The host is going away and the handler said it stopped: the step is not failed, its lease lapses and the
                     // server leases it again (SPEC section 6.4).
-                    Telemetry.TasksDropped.Add(1, tags);
+                    Safe.Add(Telemetry.TasksDropped, tags);
                     Log.ShutdownAbandoned(logger, lease.TaskId);
-                    span?.SetTag("sagat.outcome", "shutdown");
+                    Safe.Tag(span, "sagat.outcome", "shutdown");
                     return;
                 }
 
@@ -643,11 +761,14 @@ public sealed partial class WorkerHost : IWorkerHost
                 failure = ActivityFailure.Retryable("ACTIVITY_ERROR", TypeNameOf(error));
             }
 
+            // The secrets are credentials: gone when the handler is, before the result is reported.
+            secretsLoader.Close();
+
             if (runtime.Lost)
             {
-                Telemetry.TasksStale.Add(1, tags);
+                Safe.Add(Telemetry.TasksStale, tags);
                 Log.LeaseLost(logger, lease.TaskId);
-                span?.SetTag("sagat.outcome", "lease-lost");
+                Safe.Tag(span, "sagat.outcome", "lease-lost");
                 return;
             }
 
@@ -689,6 +810,13 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
+    private ILogger ContextLogger(string activity)
+    {
+        ILogger? created = null;
+        Safe.Run(() => created = loggerFactory.CreateLogger("SagatOctopusOrchestrator.Activity." + activity));
+        return SafeLogger.Of(created ?? NullLogger.Instance);
+    }
+
     private static bool IsCancellation(Exception error) =>
         error is OperationCanceledException || (error is SagatException { Code: SagatErrorCode.Cancelled });
 
@@ -705,28 +833,17 @@ public sealed partial class WorkerHost : IWorkerHost
     private Activity? StartSpan(TaskLease lease, TaskKind kind)
     {
         var name = "sagat activity " + lease.ActivityName;
-        Activity? span;
-        if (lease.Traceparent.Length > 0 && System.Diagnostics.ActivityContext.TryParse(lease.Traceparent, null, out var parent))
-        {
-            span = Telemetry.Source.StartActivity(name, ActivityKind.Consumer, parent);
-        }
-        else
-        {
-            span = Telemetry.Source.StartActivity(name, ActivityKind.Consumer, parentContext: default(System.Diagnostics.ActivityContext));
-        }
-
-        if (span is not null)
-        {
-            span.SetTag("sagat.worker", options.Worker.Name);
-            span.SetTag("sagat.namespace", options.Namespace);
-            span.SetTag("sagat.activity", lease.ActivityName);
-            span.SetTag("sagat.task.id", lease.TaskId);
-            span.SetTag("sagat.run.id", lease.RunId);
-            span.SetTag("sagat.step.id", lease.StepId);
-            span.SetTag("sagat.attempt", lease.Attempt);
-            span.SetTag("sagat.task.kind", kind.ToString());
-        }
-
+        var span = lease.Traceparent.Length > 0 && System.Diagnostics.ActivityContext.TryParse(lease.Traceparent, null, out var parent)
+            ? Safe.Start(name, ActivityKind.Consumer, parent)
+            : Safe.Start(name, ActivityKind.Consumer, default(System.Diagnostics.ActivityContext));
+        Safe.Tag(span, "sagat.worker", options.Worker.Name);
+        Safe.Tag(span, "sagat.namespace", options.Namespace);
+        Safe.Tag(span, "sagat.activity", lease.ActivityName);
+        Safe.Tag(span, "sagat.task.id", lease.TaskId);
+        Safe.Tag(span, "sagat.run.id", lease.RunId);
+        Safe.Tag(span, "sagat.step.id", lease.StepId);
+        Safe.Tag(span, "sagat.attempt", lease.Attempt);
+        Safe.Tag(span, "sagat.task.kind", kind.ToString());
         return span;
     }
 
@@ -762,7 +879,7 @@ public sealed partial class WorkerHost : IWorkerHost
                             },
                             lease.Traceparent.Length > 0 ? lease.Traceparent : null,
                             stop).ConfigureAwait(false);
-                        Telemetry.Heartbeats.Add(1, tags);
+                        Safe.Add(Telemetry.Heartbeats, tags);
                         if (answer.LeaseExpiresAtEpochMs > 0)
                         {
                             runtime.SetLease(answer.LeaseExpiresAtEpochMs);
@@ -787,6 +904,12 @@ public sealed partial class WorkerHost : IWorkerHost
                     {
                         // Anything else: the next beat tries again; the lease is ours until it runs out.
                         Log.HeartbeatFailed(logger, lease.TaskId, error.Code.ToWireName());
+                    }
+#pragma warning disable CA1031 // A beat must never be the last: whatever else went wrong, the next one tries again.
+                    catch (Exception error)
+#pragma warning restore CA1031
+                    {
+                        Log.HeartbeatFailed(logger, lease.TaskId, error.GetType().Name);
                     }
                 }
             },
@@ -848,21 +971,23 @@ public sealed partial class WorkerHost : IWorkerHost
                 token)).ConfigureAwait(false);
             if (!reported)
             {
-                Telemetry.TasksStale.Add(1, tags);
-                span?.SetTag("sagat.outcome", "stale");
+                Safe.Add(Telemetry.TasksStale, tags);
+                Safe.Tag(span, "sagat.outcome", "stale");
                 return;
             }
 
-            Telemetry.TasksCompleted.Add(1, tags);
-            Telemetry.ActivityDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, tags);
-            span?.SetTag("sagat.outcome", "completed");
+            Safe.Add(Telemetry.TasksCompleted, tags);
+            Safe.Record(Telemetry.ActivityDuration, Stopwatch.GetElapsedTime(started).TotalSeconds, tags);
+            Safe.Tag(span, "sagat.outcome", "completed");
             Log.TaskReported(logger, lease.TaskId, "completed");
         }
-        catch (Exception error) when (error is SagatException or OperationCanceledException)
+#pragma warning disable CA1031 // A report that cannot be made, for whatever reason, is a dropped task: it never takes the host down.
+        catch (Exception error)
+#pragma warning restore CA1031
         {
-            Telemetry.TasksDropped.Add(1, tags);
-            span?.SetStatus(ActivityStatusCode.Error);
-            Log.CompletionNotReported(logger, lease.TaskId, error is SagatException known ? known.Code.ToWireName() : "CANCELLED");
+            Safe.Add(Telemetry.TasksDropped, tags);
+            Safe.Fail(span);
+            Log.CompletionNotReported(logger, lease.TaskId, ReasonOf(error));
         }
     }
 
@@ -891,27 +1016,36 @@ public sealed partial class WorkerHost : IWorkerHost
                 token)).ConfigureAwait(false);
             if (!reported)
             {
-                Telemetry.TasksStale.Add(1, tags);
-                span?.SetTag("sagat.outcome", "stale");
+                Safe.Add(Telemetry.TasksStale, tags);
+                Safe.Tag(span, "sagat.outcome", "stale");
                 return;
             }
 
             var failed = tags;
             failed.Add("sagat.error.code", safeCode);
-            Telemetry.TasksFailed.Add(1, failed);
-            Telemetry.ActivityDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, tags);
-            span?.SetStatus(ActivityStatusCode.Error);
-            span?.SetTag("error.type", safeCode);
-            span?.SetTag("sagat.outcome", "failed");
+            Safe.Add(Telemetry.TasksFailed, failed);
+            Safe.Record(Telemetry.ActivityDuration, Stopwatch.GetElapsedTime(started).TotalSeconds, tags);
+            Safe.Fail(span);
+            Safe.Tag(span, "error.type", safeCode);
+            Safe.Tag(span, "sagat.outcome", "failed");
             Log.TaskReported(logger, lease.TaskId, "failed");
         }
-        catch (Exception error) when (error is SagatException or OperationCanceledException)
+#pragma warning disable CA1031 // A report that cannot be made, for whatever reason, is a dropped task: it never takes the host down.
+        catch (Exception error)
+#pragma warning restore CA1031
         {
-            Telemetry.TasksDropped.Add(1, tags);
-            span?.SetStatus(ActivityStatusCode.Error);
-            Log.FailureNotReported(logger, lease.TaskId, error is SagatException known ? known.Code.ToWireName() : "CANCELLED");
+            Safe.Add(Telemetry.TasksDropped, tags);
+            Safe.Fail(span);
+            Log.FailureNotReported(logger, lease.TaskId, ReasonOf(error));
         }
     }
+
+    private static string ReasonOf(Exception error) => error switch
+    {
+        SagatException known => known.Code.ToWireName(),
+        OperationCanceledException => "CANCELLED",
+        _ => error.GetType().Name,
+    };
 
     private static string Cut(string message)
     {
@@ -955,18 +1089,24 @@ public sealed partial class WorkerHost : IWorkerHost
         return new ActivitySecrets(values);
     }
 
-    /// <summary>Resolves the secrets of one attempt once, on first use, and clears them when the attempt is over.</summary>
+    /// <summary>
+    /// Resolves the secrets of one attempt once, on first use (a failed resolution is not remembered), and wipes them when the handler returns:
+    /// after that nothing can be asked for.
+    /// </summary>
     private sealed class SecretsLoader(WorkerHost host, TaskLease lease, Session session) : IDisposable
     {
         private readonly SemaphoreSlim gate = new(1, 1);
         private ActivitySecrets? loaded;
+        private bool closed;
 
         internal async Task<ActivitySecrets> GetAsync(CancellationToken cancellationToken)
         {
             await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                return loaded ??= await host.ResolveSecretsAsync(session, lease, cancellationToken).ConfigureAwait(false);
+                return Volatile.Read(ref closed)
+                    ? throw SagatException.Invalid("the secrets of an attempt are not available once its handler has returned")
+                    : loaded ??= await host.ResolveSecretsAsync(session, lease, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -974,11 +1114,15 @@ public sealed partial class WorkerHost : IWorkerHost
             }
         }
 
-        public void Dispose()
+        /// <summary>Wipes what was resolved and refuses any later request.</summary>
+        internal void Close()
         {
+            Volatile.Write(ref closed, true);
             loaded?.Dispose();
-            gate.Dispose();
         }
+
+        // The gate holds no handle that needs releasing, and the context of a finished task may still ask (and be refused).
+        public void Dispose() => Close();
     }
 
     /// <summary>The channel of one start and the token that ends the reports still running when it is closed.</summary>

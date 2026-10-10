@@ -1,7 +1,7 @@
-using System.Globalization;
 using System.Security.Authentication;
 using System.Text.RegularExpressions;
 using Grpc.Core;
+using SagatOctopusOrchestrator.Sdk.Internal;
 
 namespace SagatOctopusOrchestrator.Sdk.Workers;
 
@@ -14,9 +14,7 @@ internal static partial class GrpcErrors
     internal static SagatException Map(string method, RpcException error)
     {
         var reason = error.Trailers.GetValue("x-sagat-error");
-        TimeSpan? retryAfter = long.TryParse(error.Trailers.GetValue("retry-after-ms"), NumberStyles.None, CultureInfo.InvariantCulture, out var ms)
-            ? TimeSpan.FromMilliseconds(ms)
-            : null;
+        var retryAfter = Limits.MillisecondsOf(error.Trailers.GetValue("retry-after-ms"));
         var statusName = SagatErrorCodes.SnakeCase(error.StatusCode.ToString());
 
         SagatException Safe(SagatErrorCode code, string message) =>

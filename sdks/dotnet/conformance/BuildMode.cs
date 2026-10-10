@@ -9,9 +9,14 @@ internal static class BuildMode
     internal static JsonObject Build(JsonObject scenario)
     {
         var workflows = new JsonObject();
+        var canonical = new JsonObject();
         foreach (var (key, definition) in scenario["workflows"]?.AsObject() ?? [])
         {
-            workflows[key] = BuilderOf(definition!.AsObject()).Build();
+            var builder = BuilderOf(definition!.AsObject());
+            workflows[key] = builder.Build();
+
+            // The canonical text (RFC 8785, SPEC section 7): the harness compares it byte for byte across the SDKs and with the golden file.
+            canonical[key] = builder.ToJson();
         }
 
         var errors = new JsonObject();
@@ -34,7 +39,9 @@ internal static class BuildMode
             }
         }
 
-        return errors.Count > 0 ? new JsonObject { ["workflows"] = workflows, ["errors"] = errors } : new JsonObject { ["workflows"] = workflows };
+        return errors.Count > 0
+            ? new JsonObject { ["workflows"] = workflows, ["canonical"] = canonical, ["errors"] = errors }
+            : new JsonObject { ["workflows"] = workflows, ["canonical"] = canonical };
     }
 
     private static WorkflowBuilder BuilderOf(JsonObject definition)

@@ -98,8 +98,14 @@ Without the generic host: `new WorkerHost(options)`, then `RegisterActivity` / `
 - The heartbeat runs from before the handler until the report is made. Its interval is a third of the time left on the
   lease when the task is taken, between 0.5 s and 10 s (`Worker.HeartbeatInterval` overrides it).
 - `await context.GetSecretsAsync(ct)` resolves the secrets the step declares, once per attempt (protocol 1.2 or newer).
-  They are cleared when the handler returns. Never log them.
-- Against a server at protocol 1.0 or 1.1 the host runs at that version (`host.ProtocolVersion`).
+  `Get` hands out a copy (clear it when you are done); the SDK wipes its own buffer when the handler returns, before the result is reported, and a later
+  request raises. A failed resolution is not remembered for the rest of the attempt. Never log them.
+- Against a server at protocol 1.0 or 1.1 the host runs at that version (`host.ProtocolVersion`); against 1.0/1.1 it does not read `task_kind` (every
+  task is a forward one).
+- The host cancels the token and nothing else: it never interrupts a handler, and it does not fence the lease by its own clock (only a `STALE_ATTEMPT`
+  ends a task). The host is restartable (`StopAsync` then `StartAsync` on the same object); `StopAsync` also ends a pause the poll loop is parked in.
+- A session the server drops (`UNAUTHENTICATED` to a poll) is registered again at once; if the next poll is refused too, the registrations back off (SPEC
+  section 5) until a poll succeeds. The same task leased again while it runs is another task in flight (`StopAsync` waits for and cancels both).
 
 ## Build a workflow
 
@@ -137,9 +143,22 @@ Every failure of a call is a `SagatException` with `Code` (`SagatErrorCode`; `co
 sentence). `Message` is safe to log: it never holds a payload, a token or a secret. The one exception is **cancellation by the
 caller**: a call cancelled with the caller's own `CancellationToken` raises `OperationCanceledException`, as every .NET API does,
 and not a `SagatException` (SPEC section 2 lists `CANCELLED` as one error type; here it is the idiom of the platform that wins
-for the caller's own token). A `Retryable` error may be repeated; the SDK repeats a call itself only when that cannot do harm
-(SPEC section 5): `GET`s, and `POST`s that carry an idempotency key or an event id. A start without a key gets a generated one,
-the same on every retry of that call.
+for the caller's own token).
+
+**Retries are by code** (SPEC section 5): a call is repeated only when its code is `Transport`, `Unavailable`, `RateLimited` or
+`Internal` *and* the error says it may be (`Retryable`; `Internal` only when the server said so). A body that claims `retryable: true`
+on any other code (a 409, a 422, a 403, `QuotaExceeded`) is not believed. The server's `408` is `Unavailable`. Only calls that cannot do
+harm are repeated: `GET`s, and `POST`s that carry an idempotency key or an event id (a start without a key gets a generated one, the same
+on every retry of that call). A token provider that throws is `Unauthenticated` with the reason `TOKEN_PROVIDER_FAILED` (its own exception
+is not kept, and it is asked again like a transport failure). A call the server does not have (a `501`, a `404` whose envelope says
+`ROUTE_NOT_FOUND`, a `405` that says `METHOD_NOT_ALLOWED`, or a `404` that is not the platform's envelope) is `NotFound` with the reason
+`UNSUPPORTED_BY_SERVER`; a `404` envelope without those is a plain `NotFound`.
+
+**What the server says is bounded** (SPEC section 10): a wait it asks for (`Retry-After` in seconds, `retry-after-ms`, the pause after an
+empty poll) is honoured up to 60 s whatever it says (an HTTP date is ignored); a REST body is read up to 32 MiB and the call then fails as
+`Protocol`; a `Message` is cut to 512 characters and a `Reason` to 128; a `TraceId` that is not 32 lowercase hexadecimal characters is
+not repeated; a run id is a UUID and a name in a path is never empty, `.` or `..` (`ValidationFailed`, before anything is sent); a poll
+answer with more tasks than the host asked for runs the first ones and leaves the leases of the others to lapse.
 
 ## Configuration (`SagatOptions`)
 
@@ -152,10 +171,13 @@ the same on every retry of that call.
 | `Timeout` | deadline of one REST call or unary RPC | 30 s |
 | `Retry` | `MaxAttempts`, `InitialDelay`, `MaxDelay` | 4, 200 ms, 5 s |
 | `UserAgent` | suffix appended to `sagat-sdk-csharp/0.1.0` | none |
-| `Tls` | `TrustedRoots`, `ClientCertificate` | system roots, no client certificate |
+| `Tls` | `TrustedRoots`, `ServerName`, `ClientCertificate` | system roots, the host of the URL, no client certificate |
 | `Json` | `JsonSerializerOptions` for typed payloads | camel case, case-insensitive on read |
 | `HttpMessageHandler` | the transport of the client (a proxy, a test, fault injection); the caller owns it and must turn redirects off | a pooled `SocketsHttpHandler` |
-| `Worker.*` | `Name`, `MaxInflight` (10), `Languages`, `Pools`, `ShutdownTimeout` (30 s), `ProtocolVersion`, `HeartbeatInterval`, `Interceptors` | |
+| `Worker.*` | `Name`, `MaxInflight` (10), `Languages`, `Pools`, `ShutdownTimeout` (30 s), `ProtocolVersion`, `HeartbeatInterval` (positive), `Interceptors` | |
+
+`SagatOptions`, `SagatTlsOptions`, `SagatClient` and `WorkerHost` never show a credential: their `ToString()`, their JSON and the debugger show
+no bearer token, token provider or private key, and a URL is shown by its host only (a test builds each with a canary token and looks for it).
 
 `SagatOptions` binds from configuration (`services.Configure<SagatOptions>(configuration.GetSection("Sagat"))`). The tenant is
 never configured: it is the token's. `http://` (or a gRPC channel without TLS) outside loopback works but logs one warning at
@@ -163,13 +185,21 @@ start.
 
 ### TLS and redirects
 
-Two TLS options exist: `Tls.TrustedRoots` (an `X509Certificate2Collection` used instead of the system roots) and
-`Tls.ClientCertificate` (the certificate, with its private key, presented for mTLS). They apply to both channels (the
-`HttpClient` of the REST client and the gRPC channel of the worker host). The roots are handed to the platform's own validation
-as a chain policy (`SslClientAuthenticationOptions.CertificateChainPolicy`), so the chain, the validity dates and the host name
-are still verified. There is no option to skip verification and no certificate callback: a test reads `src/` and fails on
-`DangerousAcceptAnyServerCertificateValidator`, any `*CertificateValidationCallback`, `TargetHost` and the like. A server whose
-certificate is not trusted, is expired or names another host fails as `Transport`. Revocation is not checked.
+Three TLS options exist: `Tls.TrustedRoots` (an `X509Certificate2Collection` used instead of the system roots; an *empty* collection is refused,
+it is not "the system roots": leave it null for those), `Tls.ServerName` (the name the certificate is verified against, and the name sent for
+the server name indication, when it is not the host of the URL) and `Tls.ClientCertificate` (the certificate, with its private key, presented for
+mTLS). They apply to both channels (the `HttpClient` of the REST client and the gRPC channel of the worker host). The roots are handed to the
+platform's own validation as a chain policy (`SslClientAuthenticationOptions.CertificateChainPolicy`), so the chain, the validity dates and the
+host name are still verified. `ServerName` is verified too, never skipped: the request names that host (the `Host` header, which is where the
+platform's TLS stack takes its server name from), so the certificate must carry it. There is no option to skip verification and no certificate
+callback: a test reads `src/` and fails on `DangerousAcceptAnyServerCertificateValidator`, any `*CertificateValidationCallback` and any other
+override of the host name. A server whose certificate is not trusted, is expired or names another host fails as `Transport`. Revocation is not checked.
+
+**A transport you hand the SDK is your choice.** `SagatOptions.HttpMessageHandler` lets you supply the `HttpMessageHandler` of the REST client; what that
+object does about certificates, proxies and redirects is yours (the SDK never builds a handler with verification off, but it cannot see inside one it was
+given, so it checks only what it can: redirects, below). `Tls` (roots, server name, client certificate) applies to the transports the SDK builds, which are the
+worker channel (always) and the REST client when you do not supply a handler: with your own `HttpMessageHandler` the REST client's TLS is whatever you configured
+on it. `Worker.Interceptors` sees only calls.
 
 A redirect is **never followed**: it could carry the token to another host. The handler the SDK creates has
 `AllowAutoRedirect = false`; a 3xx is `SagatException` `Protocol` ("the server redirected the call"). A handler you supply with
@@ -181,13 +211,16 @@ Tested here, against in-process Kestrel servers with throw-away certificates, fo
 server certificate is refused (`Transport`), also with the root of another server configured; the configured root makes the same
 server work; with mTLS the server sees the client certificate, and a server that requires one refuses a client without it; REST
 also: an expired certificate and a certificate for another host are refused even when their root is trusted; no plain-text warning
-is logged for `https`; a 301/302/303/307/308 is `Protocol`, is not retried and the server it points to sees no request.
+is logged for `https`; a 301/302/303/307/308 is `Protocol`, is not retried and the server it points to sees no request; `ServerName` makes a certificate
+for another name work when it is the name given and fail when it is not (REST and gRPC).
 **Not tested:** certificate revocation, client certificates from a hardware store or with a password-protected key (the caller
 loads the `X509Certificate2`), a real CA chain with intermediates, TLS versions and ciphers (the platform's defaults), and `https`
 against a real platform (the conformance suite runs over loopback `http`).
 
 ## Observability
 
+- **Hooks that fail**: a logger, a metrics listener, a trace listener or a token provider of the application that throws never kills the heartbeat, the poll loop
+  or a task in flight (tests arm each of them).
 - **Logs**: `ILogger<SagatClient>` / the `ILoggerFactory` given to `WorkerHost`, with fixed templates and identifiers only (method,
   path template, code, task, run, attempt). Never a token, a lease token, a session token, a secret or a payload (tests capture
   every line to prove it). `context.Logger` is a logger for the handler with the task in its scope.
@@ -205,8 +238,9 @@ JSON only, `System.Text.Json`. A `JsonNode` / `JsonElement` keeps every number e
 `600000.0`, a 64-bit or bigger integer is never turned into a double, `"19.99"` stays a string). A .NET number is written as the
 shortest text that reads back, as JavaScript does. Instants the SDK writes are RFC 3339 in UTC with a `Z`; instants it reads may
 carry any offset and come back as UTC `DateTimeOffset`s (nothing depends on the time zone of the process). `NaN`, infinities and
-text that is not valid Unicode are `ValidationFailed` before anything is sent. An activity output over 256 KiB fails the step
-with `PAYLOAD_TOO_LARGE`.
+text that is not valid Unicode (a lone surrogate) are `ValidationFailed` before anything is sent. An activity output over 256 KiB fails the step
+with `PAYLOAD_TOO_LARGE`. The canonical text of a workflow (`ToJson()`) also refuses an integer beyond 2^53 - 1 (write it as a string) and a
+duration that is not a whole number of milliseconds (`TimeSpan.FromTicks(15_000)` is not 1 ms, and is never truncated to it).
 
 ## Versioning
 
@@ -219,15 +253,15 @@ server's version, an older SDK ignores fields it does not know). After 1.0 a bre
 
 What was **run** on 2026-10-10 on one machine (macOS 26, arm64), and what was not:
 
-| Target | Built | Unit tests | Conformance suite (13 scenarios) |
+| Target | Built | Unit tests | Conformance suite (14 scenarios) |
 |---|---|---|---|
-| `net10.0` (runtime 10.0.12, SDK 10.0.401) | yes | 239 passed | passed, three runs in a row |
+| `net10.0` (runtime 10.0.12, SDK 10.0.401) | yes | 367 passed | passed, three runs in a row |
 | `net8.0` (runtime 8.0.31, installed next to it) | yes (a `net8.0` asset in the package) | **not run**: the test project targets `net10.0` (ASP.NET Core `TestServer` of 10) | passed, one run |
 | .NET 9 | not built for; it uses the `net8.0` asset | **not run** | **not run** |
 | Windows, Linux, x64 | n/a | **not run** | **not run** |
 | .NET Framework, `netstandard`, Mono, AOT, trimming | not supported | n/a | n/a |
 
-The conformance suite (`tests/contract/sdk-conformance`, 13 scenarios, a real platform with PostgreSQL) runs the `net10.0`
+The conformance suite (`tests/contract/sdk-conformance`, 14 scenarios, a real platform with PostgreSQL) runs the `net10.0`
 runner by default. `SAGAT_DOTNET_TFM=net8.0 SAGAT_DOTNET=<a dotnet with the .NET 8 runtime> SAGAT_SDK_LANGS=dotnet …` runs the
 `net8.0` build of the SDK instead.
 
@@ -246,7 +280,7 @@ Options}` 10.0.11 (2026-08-11) for `net10.0` and 8.0.x for `net8.0`. Tests: `Mic
 
 ```text
 bash scripts/sync-shared.sh      # copies worker.proto and error-catalog.json from the repository (a test fails when a copy is behind)
-dotnet test                      # 239 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
+dotnet test                      # 367 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
 dotnet format --verify-no-changes
 bash conformance/prepare.sh      # builds the runner; the harness calls it, and conformance/run.sh
 ```

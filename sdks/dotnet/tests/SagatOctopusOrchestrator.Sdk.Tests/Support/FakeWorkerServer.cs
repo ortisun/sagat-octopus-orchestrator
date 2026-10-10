@@ -28,7 +28,25 @@ internal sealed class FakeWorkerState
     private readonly List<TaskLease> leases = [];
     private readonly Dictionary<string, Queue<Scripted>> failures = [];
 
+    private int polls;
+
     internal string AcceptedVersion { get; set; } = "1.2";
+
+    /// <summary>A server that hands out every lease it holds, whatever <c>max_tasks</c> says.</summary>
+    internal bool IgnoreMax { get; set; }
+
+    /// <summary>Called when a <c>CompleteStep</c> arrives, to play a platform that releases the next task at once.</summary>
+    internal Action? OnComplete { get; set; }
+
+    /// <summary>Takes the leases when a poll arrives and answers after <see cref="PollDelay"/>: a task released meanwhile is for the next poll.</summary>
+    internal bool TakeBeforeDelay { get; set; }
+
+    internal int Polls => Volatile.Read(ref polls);
+
+    internal void CountPoll() => Interlocked.Increment(ref polls);
+
+    /// <summary>The same error for the next <paramref name="times"/> calls of a method.</summary>
+    internal void FailAlways(string method, Scripted error, int times = 1_000_000) => Fail(method, Enumerable.Repeat(error, times).ToArray());
 
     internal bool CancelRequested { get; set; }
 
@@ -111,14 +129,17 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
     public override async Task<PollTasksResponse> PollTasks(PollTasksRequest request, ServerCallContext context)
     {
         state.Record("PollTasks", request, context.RequestHeaders, ClientCertificateOf(context));
+        state.CountPoll();
         Throw("PollTasks");
+        var max = state.IgnoreMax ? int.MaxValue : request.MaxTasks;
+        var early = state.TakeBeforeDelay ? state.Take(max) : null;
         if (state.PollDelay > TimeSpan.Zero)
         {
             await Task.Delay(state.PollDelay);
         }
 
         var answer = new PollTasksResponse { RetryAfterMs = state.PollRetryAfterMs };
-        answer.Tasks.AddRange(state.Take(request.MaxTasks));
+        answer.Tasks.AddRange(early ?? state.Take(max));
         return answer;
     }
 
@@ -126,7 +147,11 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
         Answer("Heartbeat", request, context, () => new HeartbeatResponse { LeaseExpiresAtEpochMs = state.HeartbeatExpiresMs, CancelRequested = state.CancelRequested });
 
     public override Task<StepCommandResponse> CompleteStep(CompleteStepRequest request, ServerCallContext context) =>
-        Answer("CompleteStep", request, context, () => new StepCommandResponse { CommandId = "c", StepStatus = "SUCCEEDED", RunStatus = "RUNNING" });
+        Answer("CompleteStep", request, context, () =>
+        {
+            state.OnComplete?.Invoke();
+            return new StepCommandResponse { CommandId = "c", StepStatus = "SUCCEEDED", RunStatus = "RUNNING" };
+        });
 
     public override Task<StepCommandResponse> FailStep(FailStepRequest request, ServerCallContext context) =>
         Answer("FailStep", request, context, () => new StepCommandResponse { CommandId = "c", StepStatus = "FAILED", RunStatus = "RUNNING" });

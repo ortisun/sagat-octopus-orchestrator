@@ -380,6 +380,15 @@ internal sealed class RunMode : IAsyncDisposable
                 }
 
                 return null;
+            case "restartWorker":
+                {
+                    // The host is restartable (SPEC section 6.8): stop, then start, on the same host object.
+                    var restarting = hosts[(string)step["worker"]!].Host ?? throw new InvalidOperationException("the worker was never started");
+                    await restarting.StopAsync(TimeSpan.FromMilliseconds((long?)step["timeoutMs"] ?? 5000), cancellationToken).ConfigureAwait(false);
+                    await restarting.StartAsync(cancellationToken).ConfigureAwait(false);
+                    return new JsonObject { ["protocolVersion"] = restarting.ProtocolVersion };
+                }
+
             case "probeWorker":
                 return await ProbeAsync(step, cancellationToken).ConfigureAwait(false);
             case "awaitJournal":
