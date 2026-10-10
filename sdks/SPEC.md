@@ -37,7 +37,13 @@ ADR-0002). The builders only write a document the server validates and versions.
   metric label.
 - The tenant is **never** configured: it is the token's (`tenant` claim). A tenant is never read from a
   header or a body (ADR-0005).
-- Plain `http://` and `grpc` without TLS outside loopback is accepted but logs one warning at start.
+- Plain `http://` and `grpc` without TLS outside loopback is accepted but logs one warning at start. The
+  warning names the host and nothing else (a URL can carry a credential in its userinfo or query).
+- **An HTTP redirect is never followed.** A `Location` can point anywhere, and the request carries a bearer
+  token, the namespace and an idempotency key; a `3xx` is raised as `PROTOCOL` ("the server redirected the
+  call"), whatever its target. A transport that follows redirects by default is configured not to.
+- The SDK has no setting, and no code, that turns certificate or host-name verification off. A server name
+  other than the URL's host can be given for verification (`tls.serverName`); it is verified, not skipped.
 
 ## 2. Canonical errors
 
