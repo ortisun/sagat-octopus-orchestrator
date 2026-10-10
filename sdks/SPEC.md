@@ -150,7 +150,12 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |
 | `RegisterWorker` | the same; on `UNAUTHENTICATED` once, with a fresh token |
 
-**Never** retried: any `4xx` other than `429`; `STALE_ATTEMPT` (stop: the lease is gone, do not retry
+The rule is by **code**, the same in every SDK: a call is repeated when the error's code is `TRANSPORT`,
+`UNAVAILABLE`, `RATE_LIMITED` or `INTERNAL` *and* it says it may be. The server's `408` is `UNAVAILABLE` (retryable),
+its `429` is `RATE_LIMITED` or, when a quota is exhausted, `QUOTA_EXCEEDED` (never repeated). A body that claims
+`retryable: true` on any other `4xx` is not believed.
+
+**Never** retried: any `4xx` other than `408` and `429`; `STALE_ATTEMPT` (stop: the lease is gone, do not retry
 the report); `IDEMPOTENCY_KEY_REUSED`; `VALIDATION_FAILED`; a call with no key and a non-idempotent
 effect. The SDK never retries a failure of *the user's activity code*; that is the server's retry
 policy (the node's `retry`).
@@ -171,7 +176,7 @@ pools, max_inflight, protocol_version}}`:
   speak (the worker's own if it is not newer than the server's, the server's otherwise). The host **MUST**
   use only the features of the accepted version: against `1` it sends `Heartbeat` without the step
   identity (`run_id`, `step_id`, `attempt`) and does not call `ResolveSecrets`; against `1.1` it does
-  not rely on `task_kind` (every task is a forward task). A major version other than `1` is refused by
+  not read `task_kind` at all (every task is a forward task). A major version other than `1` is refused by
   the server (`UNSUPPORTED_PROTOCOL`); the host does not retry it.
 - The host exposes the accepted version (`host.protocolVersion`).
 - There is one live session per worker name and identity: registering again replaces it (§6.2).
@@ -235,6 +240,13 @@ A handler's input type that cannot be built from the document is not a crash: th
   or raised (a handler that raises its cancellation error is reported as `FailStep(error_code =
   "CANCELLED", retryable = false)`). A compensation or reconciliation task is never cancelled by the
   server (it answers `false`).
+- **The host cancels the token and nothing else.** It never interrupts, aborts or kills a handler (in a runtime
+  where cancellation is delivered into the running code, such as Python's `asyncio`, the handler's own awaits are
+  not cancelled either: the SDK exposes the token and an awaitable on it). A handler that ignores the token runs
+  to its end and what it returned is reported as usual, unless the lease was lost.
+- **The lease is not fenced locally.** The SDK does not cancel a handler because the lease ran out by its own
+  clock (the clocks differ); only a `STALE_ATTEMPT` to a heartbeat or a report does. A worker cut off from the
+  platform keeps running its handler and its report is refused as stale; external effects stay at-least-once.
 - **What a cancelled handler's end means depends on why it was cancelled.** `run-cancelled`: the platform asked
   for it, so a handler that raises its cancellation error is reported as `CANCELLED` (above) and one that
   returns is reported as what it returned. `lease-lost`: nothing is reported. `shutdown` (the host is
@@ -258,7 +270,8 @@ A handler's input type that cannot be built from the document is not a crash: th
   (`OUTCOME_UNKNOWN`, non-retryable, reserved: the platform reconciles instead of retrying blindly).
   Any other raised error is reported as `error_code = "ACTIVITY_ERROR"`, `retryable = true`, and the
   `safe_message` is only its type name — never its text, which may hold the data it was handed.
-  `safe_message` is cut to 512 characters; a code that is not `[A-Z0-9_]{1,64}` is replaced by
+  `safe_message` is cut to 512 Unicode code points (never inside a surrogate pair, and a lone surrogate becomes
+  U+FFFD, so what is sent is always valid UTF-8); a code that is not `[A-Z0-9_]{1,64}` is replaced by
   `WORKER_ERROR`.
 - The report is retried per §5. `already_applied = true` in the answer is a success. The host never
   reports one attempt twice with different content.
@@ -348,7 +361,13 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
   string to a number.
 - Instants the SDK writes are RFC 3339 in UTC with a `Z`; instants it reads may carry any offset and are
   returned as the language's instant type, in UTC.
-- `NaN`, infinities, duplicate keys and invalid UTF-8 are errors on the way out and are not produced.
+- `NaN`, infinities, duplicate keys and invalid UTF-8 (a lone surrogate included) are errors on the way out and
+  are not produced.
+- The canonical text of a workflow (`toJson()`, §7) refuses an integer beyond 2^53 - 1 with `VALIDATION_FAILED`, in
+  every SDK: the text must be the same bytes everywhere and no language but TypeScript's can print the nearest
+  double and call it exact. A number is written as RFC 8785 writes it; an exponent is never expanded in memory
+  (`1e999999999` is a number, not a billion digits).
+- A `Retry-After` is read in seconds only; an HTTP date is ignored (no wait).
 
 ## 9. Versioning and compatibility
 
@@ -356,8 +375,10 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
   not move with it: REST is additive within `/v1`, the worker protocol is additive within `1.x`.
 - **Newer SDK, older server.** The registration negotiation (§6.1) runs the host at the server's version;
   REST answers missing a field the SDK knows are accepted (fields are optional unless the OpenAPI marks
-  them required); a call the older server does not have answers `404`/`501` and is raised as
-  `NOT_FOUND` with the reason `UNSUPPORTED_BY_SERVER`.
+  them required); a call the older server does not have is raised as
+  `NOT_FOUND` with the reason `UNSUPPORTED_BY_SERVER`: a `501`, a `404` whose envelope says
+  `details.reason = ROUTE_NOT_FOUND`, a `405` that says `METHOD_NOT_ALLOWED`, or a `404` that is not the
+  platform's envelope at all. (A `404` for a run that does not exist carries the envelope without that reason.)
 - **Older SDK, newer server.** Unknown fields are ignored; the worker is served at its own version.
 - Runtime matrix and package metadata: `sdks/README.md`.
 
@@ -373,8 +394,10 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
   and looks for it).
 - **What the server says is bounded.** A REST body is read up to 32 MiB, then the call fails as `PROTOCOL`; the
   `message` of a server error is cut to 512 characters; a `traceId` that is not 32 hexadecimal characters is not
-  repeated; the heartbeat and the host survive an exception of their own hooks (a token provider, an event or log
-  callback) instead of dying with it.
+  repeated; the heartbeat, the poll loop and a task in flight survive an exception of the caller's hooks and of the
+  runtime's observers (a token provider, a logger, an event or metrics callback, a trace listener) instead of dying
+  with it or dropping a leased task; a token provider that throws is `UNAUTHENTICATED` with a reason, never the
+  provider's own exception.
 - **Ids and names in a URL path** (run id, signal name, event type...) are percent-encoded; a run id is a UUID and
   a name of `.`, `..` or the empty string is refused as `VALIDATION_FAILED` before anything is sent.
 - Errors follow §2: a message that could carry a payload is replaced by its class.
