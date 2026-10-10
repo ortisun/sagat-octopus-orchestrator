@@ -175,7 +175,14 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
         }
       }
       if (behavior['readsSecret'] !== undefined) {
-        const secrets = await ctx.secrets();
+        let secrets;
+        try {
+          secrets = await ctx.secrets();
+        } catch (error) {
+          // `reportsSecretError`: the canonical code of the refusal is the output, so the scenario can compare it.
+          if (behavior['reportsSecretError'] && error instanceof SagatError) return { ...(behavior['returns'] ?? {}), secretError: error.code };
+          throw error;
+        }
         return { ...(behavior['returns'] ?? {}), secretLength: secrets.get(behavior['readsSecret']).length };
       }
       if (behavior['verdict'] !== undefined) {

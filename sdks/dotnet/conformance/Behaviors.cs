@@ -107,8 +107,19 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
 
         if (behavior["readsSecret"] is { } secretName)
         {
-            var secrets = await context.GetSecretsAsync(cancellationToken).ConfigureAwait(false);
             var answer = behavior["returns"] is JsonObject returns ? (JsonObject)returns.DeepClone() : [];
+            ActivitySecrets secrets;
+            try
+            {
+                secrets = await context.GetSecretsAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (SagatException refusal) when (behavior["reportsSecretError"] is not null)
+            {
+                // `reportsSecretError`: the canonical code of the refusal is the output, so the scenario can compare it.
+                answer["secretError"] = refusal.Code.ToWireName();
+                return answer;
+            }
+
             answer["secretLength"] = secrets.Get((string)secretName!).Length;
             return answer;
         }

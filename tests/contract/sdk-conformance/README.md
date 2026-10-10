@@ -117,7 +117,8 @@ A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` i
 | `{"hang": true, "onCancel": {"raises": true}}` | the same, then ends by raising the SDK's cancellation error (what a handler does that is cancelled and says so) |
 | `{"sleepMs": N, "ignoresCancel": true, "returns": V}` | a handler that **never looks at its token**: it waits `N` ms whatever happens and returns `V`; the host must not interrupt it and what it returned is reported |
 | `{"verdict": "applied"\|"not_applied"\|"unknown", "output": V}` | for a reconciler |
-| `{"readsSecret": "name", "returns": V}` | resolves the step's secrets and checks the named one exists (length goes in the log) |
+| `{"readsSecret": "name", "returns": V}` | resolves the step's secrets and returns `V` plus `secretLength`, the length of the named one (never the value) |
+| `{"readsSecret": "name", "reportsSecretError": true, "returns": V}` | the same, but if resolving raises a canonical error the output is `V` plus `secretError`, its code (a protocol-1 worker has no `ResolveSecrets`: `UNSUPPORTED_PROTOCOL`) |
 
 Every attempt appends an entry to the worker's `workerLog` **when the handler ends**:
 `{activity, kind, node, attempt, input, taskKind, targetNode, targetIdempotencyKey, idempotencyKey,

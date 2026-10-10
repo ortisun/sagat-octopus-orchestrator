@@ -3,9 +3,11 @@ package dev.sagatoctopusorchestrator.conformance;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.worker.ActivityContext;
 import dev.sagatoctopusorchestrator.sdk.worker.ActivityFailure;
 import dev.sagatoctopusorchestrator.sdk.worker.ActivityHandler;
+import dev.sagatoctopusorchestrator.sdk.worker.Secrets;
 import dev.sagatoctopusorchestrator.sdk.worker.Verdict;
 import java.time.Duration;
 import java.time.Instant;
@@ -76,7 +78,18 @@ final class Behaviors {
                     if (behavior.has("returns") && behavior.get("returns").isObject()) {
                         out.setAll((ObjectNode) behavior.get("returns").deepCopy());
                     }
-                    out.put("secretLength", ctx.secrets().get(behavior.get("readsSecret").asText()).length);
+                    final Secrets secrets;
+                    try {
+                        secrets = ctx.secrets();
+                    } catch (SagatException refusal) {
+                        // `reportsSecretError`: the canonical code of the refusal is the output, so the scenario can compare it.
+                        if (behavior.path("reportsSecretError").asBoolean(false)) {
+                            out.put("secretError", refusal.code().name());
+                            return out;
+                        }
+                        throw refusal;
+                    }
+                    out.put("secretLength", secrets.get(behavior.get("readsSecret").asText()).length);
                     return out;
                 }
                 if (behavior.has("verdict")) {

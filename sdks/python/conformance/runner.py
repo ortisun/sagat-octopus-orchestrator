@@ -220,7 +220,13 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj]) -> Any
                         raise asyncio.CancelledError
                     return (behavior.get("onCancel") or {}).get("returns")
             if behavior.get("readsSecret") is not None:
-                secrets = await ctx.secrets()
+                try:
+                    secrets = await ctx.secrets()
+                except SagatError as error:
+                    # `reportsSecretError`: the canonical code of the refusal is the output, so the scenario can compare it.
+                    if behavior.get("reportsSecretError"):
+                        return {**(behavior.get("returns") or {}), "secretError": error.code}
+                    raise
                 return {**(behavior.get("returns") or {}), "secretLength": len(secrets.get(behavior["readsSecret"]))}
             if behavior.get("verdict") is not None:
                 verdict = behavior["verdict"]

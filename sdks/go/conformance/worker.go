@@ -106,6 +106,16 @@ func behave(ctx context.Context, behavior object, input json.RawMessage, outcome
 	if name, ok := behavior["readsSecret"]; ok {
 		secrets, err := task.Secrets(ctx)
 		if err != nil {
+			// `reportsSecretError`: the canonical code of the refusal is the output, so the scenario can compare it.
+			var refusal *sagat.Error
+			if _, report := behavior["reportsSecretError"]; report && errors.As(err, &refusal) {
+				out := object{}
+				for key, item := range asObject(behavior["returns"]) {
+					out[key] = item
+				}
+				out["secretError"] = string(refusal.Code)
+				return out, verdict, nil
+			}
 			return nil, verdict, err
 		}
 		value, err := secrets.Bytes(asString(name))
