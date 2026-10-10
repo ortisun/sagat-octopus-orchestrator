@@ -237,7 +237,12 @@ fn a_required_input_added_to_a_workflow_that_took_anything_breaks_its_callers() 
     let mut from = base();
     from.as_object_mut().expect("object").remove("inputSchema");
     let d = diff(&from, &base());
-    assert_eq!(codes(&d.breaking), ["INPUT_REQUIRED_ADDED"], "{:?}", d.breaking);
+    assert_eq!(
+        codes(&d.breaking),
+        ["INPUT_REQUIRED_ADDED"],
+        "{:?}",
+        d.breaking
+    );
     // Describing an input without requiring anything breaks nobody.
     let mut loose = base();
     loose["inputSchema"] = json!({"type": "object", "properties": {"orderId": {"type": "string"}}});
@@ -246,8 +251,18 @@ fn a_required_input_added_to_a_workflow_that_took_anything_breaks_its_callers() 
     let mut none = base();
     none.as_object_mut().expect("object").remove("inputSchema");
     none.as_object_mut().expect("object").remove("outputSchema");
-    assert!(diff(&base(), &none).breaking.iter().all(|f| f.code.starts_with("OUTPUT")));
-    assert!(diff(&none, &base()).breaking.iter().all(|f| f.code != "OUTPUT_PROPERTY_REMOVED"));
+    assert!(
+        diff(&base(), &none)
+            .breaking
+            .iter()
+            .all(|f| f.code.starts_with("OUTPUT"))
+    );
+    assert!(
+        diff(&none, &base())
+            .breaking
+            .iter()
+            .all(|f| f.code != "OUTPUT_PROPERTY_REMOVED")
+    );
 }
 
 #[test]

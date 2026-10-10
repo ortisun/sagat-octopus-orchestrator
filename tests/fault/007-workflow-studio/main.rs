@@ -65,16 +65,15 @@ fn retry(reason: &str) -> Value {
     json!({"action": "RETRY_COMPENSATION", "stepId": "reserve~c", "reason": reason})
 }
 
-async fn decide(
-    p: &Platform,
-    sub: &str,
-    run: &str,
-    body: &Value,
-    key: &str,
-) -> (u16, Value) {
+async fn decide(p: &Platform, sub: &str, run: &str, body: &Value, key: &str) -> (u16, Value) {
     let response = p
         .api
-        .as_user(Method::POST, &format!("/runs/{run}/operations"), sub, TENANT)
+        .as_user(
+            Method::POST,
+            &format!("/runs/{run}/operations"),
+            sub,
+            TENANT,
+        )
         .header("x-octopus-namespace", NAMESPACE)
         .header("idempotency-key", key)
         .json(body)
@@ -118,7 +117,10 @@ async fn ended(p: &Platform, run: &str, status: &str) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("the run did not reach {status}: {}", graph(p, run).await["status"]);
+    panic!(
+        "the run did not reach {status}: {}",
+        graph(p, run).await["status"]
+    );
 }
 
 #[tokio::test]
@@ -219,13 +221,21 @@ async fn a_decision_made_on_a_view_that_went_stale_is_refused_and_changes_nothin
 }
 
 #[tokio::test]
-async fn a_compensation_that_fails_again_waits_for_a_person_again_and_the_journal_keeps_every_decision() {
+async fn a_compensation_that_fails_again_waits_for_a_person_again_and_the_journal_keeps_every_decision()
+ {
     let p = platform().await;
     let mut w = p.worker("wendy").await;
     let run = stuck(&p, &mut w).await;
     p.grant(p.tenant, "olivia", Role::Operator).await;
 
-    let (status, body) = decide(&p, "olivia", &run, &retry("the limit service is back"), "fault-007-again-1").await;
+    let (status, body) = decide(
+        &p,
+        "olivia",
+        &run,
+        &retry("the limit service is back"),
+        "fault-007-again-1",
+    )
+    .await;
     assert_eq!(status, 202, "{body}");
     let second = w.one_task().await;
     assert_eq!(second.attempt, 2);
@@ -245,7 +255,14 @@ async fn a_compensation_that_fails_again_waits_for_a_person_again_and_the_journa
     assert_eq!(node["attempt"], 2, "{node}");
 
     // A second decision, a second attempt, and this time it works.
-    let (status, body) = decide(&p, "olivia", &run, &retry("the provider confirmed it is up"), "fault-007-again-2").await;
+    let (status, body) = decide(
+        &p,
+        "olivia",
+        &run,
+        &retry("the provider confirmed it is up"),
+        "fault-007-again-2",
+    )
+    .await;
     assert_eq!(status, 202, "{body}");
     let third = w.one_task().await;
     assert_eq!(third.attempt, 3);
@@ -293,7 +310,10 @@ async fn a_person_of_another_tenant_cannot_decide_and_learns_nothing() {
         .expect("send")
         .status()
         .as_u16();
-    assert_eq!(foreign, missing, "a run of acme is as unknown to globex as one that does not exist");
+    assert_eq!(
+        foreign, missing,
+        "a run of acme is as unknown to globex as one that does not exist"
+    );
     assert!([403, 404].contains(&foreign), "{foreign}");
     assert_eq!(graph(&p, &run).await, before, "nothing moved");
     assert_eq!(

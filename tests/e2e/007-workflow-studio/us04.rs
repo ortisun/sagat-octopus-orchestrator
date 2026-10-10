@@ -71,9 +71,13 @@ async fn us04_a_decision_waiting_for_an_operator_and_the_operators_answer_both_a
     apply(&mut model, &mut seq, &first.data);
     assert_eq!(model["reserve~c"]["waitingOn"], "operator", "{first:?}");
     // The body of the saga hangs from the saga: without that link the picture falls into pieces.
-    let edges = first.data["edges"].as_array().expect("a reset carries the edges");
+    let edges = first.data["edges"]
+        .as_array()
+        .expect("a reset carries the edges");
     assert!(
-        edges.iter().any(|e| e["from"] == "settlement" && e["to"] == "reserve" && e["kind"] == "begin"),
+        edges
+            .iter()
+            .any(|e| e["from"] == "settlement" && e["to"] == "reserve" && e["kind"] == "begin"),
         "{edges:?}"
     );
     assert_eq!(model["reserve~c"]["failureCode"], "LIMIT_SERVICE_DOWN");
