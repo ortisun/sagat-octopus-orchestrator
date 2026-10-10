@@ -146,7 +146,7 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   DATA fragmentation, through `ResolveSecrets`) and `x/net` 0.49 (an infinite loop on a bad `SETTINGS_MAX_FRAME_SIZE`);
   the fixed versions need Go 1.25 (grpc 1.83.2, x/net 0.58.0).
 
-### Gaps after the reviews (G134–G140)
+### Gaps after the reviews (G134–G141)
 
 - **G134 — The lease is not fenced locally.** An SDK cannot cancel a handler when the lease ran out by its own clock
   (the clocks differ, and the lease carries no TTL); only a `STALE_ATTEMPT` does. A worker cut off from the platform
@@ -165,3 +165,14 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   than 1.25.14, Node other than 26.8.1, any OS but macOS arm64, Python 3.10 beyond the unit tests and one conformance run.
 - **G140 — The benchmark measures this machine in release mode** with the platform and the runner on the same host over
   loopback; it says what the SDKs do to the worker protocol (calls, pauses, backpressure), not what a network costs.
+- **G141 — A heartbeat due at the moment a step ends is answered `aborted`, and the platform counts it as an error.**
+  Found by the benchmark (backpressure scenario: steps of 2 s, 3 s lease, a beat about every second): TypeScript and Java
+  sent two beats per task and 14 and 23 of 32 tasks had one answered `aborted` because `CompleteStep` had already been
+  processed; Go and Python had none, C# one. SPEC §6.3/§6.4 keeps the heartbeat running until the report is made
+  (so that a report that needs retries does not lose its lease), which makes this race possible in every SDK. Nothing
+  is lost (all runs completed, the late beat is the lease protocol working), but `grpc_requests_total{status="aborted"}`
+  would read as failures in feature 008's alerts. Options, not decided: (a) the SDK sends no beat while the first
+  report attempt is in flight and resumes only if it fails; (b) the server answers a beat for an attempt that the same
+  worker already completed with a distinct, non-error status; (c) feature 008 excludes `Heartbeat:aborted` from error
+  rates. Why the SDKs differ (2.0 against 1.3 beats per task) was not investigated.
+
