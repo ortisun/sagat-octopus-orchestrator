@@ -7,6 +7,7 @@ import (
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	boff "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/tokenfail"
 	pb "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb"
 )
 
@@ -80,7 +81,8 @@ func (h *Host) pollFailed(ctx context.Context, l *link, err error, failures, ref
 		h.idle(ctx, time.Second)
 		return
 	}
-	if se.Code == sagat.CodeUnauthenticated {
+	// A token source that failed is not a session that is gone: the host waits, as for an outage, and goes on.
+	if se.Code == sagat.CodeUnauthenticated && !tokenfail.Is(se) {
 		// A server that registers a worker and refuses it at once must not be hammered: the first refusal
 		// registers again at once, and each one in a row after it waits for the backoff first. A poll that
 		// succeeds starts over.

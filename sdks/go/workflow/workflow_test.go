@@ -350,3 +350,100 @@ func TestTheCanonicalTextOfTheEdgesWorkflowIsTheGoldenText(t *testing.T) {
 		t.Errorf("\n got %s\nwant %s", text, want)
 	}
 }
+
+// SPEC section 7: a Flow is read when Build() is called, not when it is joined.
+func TestAStepAddedToAJoinedBranchOrSagaBodyAfterTheJoinIsPartOfTheDocument(t *testing.T) {
+	left := workflow.Flow().Step("card", "pay.card")
+	right := workflow.Flow().Step("stock", "stock.hold")
+	body := workflow.Flow().Step("reserve", "a.reserve")
+	inner := workflow.Flow().Step("inner-1", "x.one")
+	b := workflow.New("late-flow").
+		Parallel("split", workflow.JoinAll, left, right).
+		Saga("tx", body).
+		Step("done", "order.done")
+	// Added after the join, to a branch, to a body, and to a flow nested in a branch that was joined.
+	left.Step("card-2", "pay.card2")
+	body.Step("submit", "a.submit")
+	left.Saga("nested", inner)
+	inner.Step("inner-2", "x.two")
+	right.Step("late-right", "stock.late")
+
+	d, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := map[string]any{}
+	var ids []string
+	for _, n := range nodes(t, d) {
+		node := n.(doc)
+		id := node["id"].(string)
+		ids = append(ids, id)
+		next[id] = node["next"]
+	}
+	if fmt.Sprint(ids) != "[split tx done card card-2 nested inner-1 inner-2 stock late-right reserve submit]" {
+		t.Errorf("%v", ids)
+	}
+	for id, want := range map[string]any{"card": "card-2", "card-2": "nested", "nested": nil, "stock": "late-right", "late-right": nil,
+		"reserve": "submit", "submit": nil, "inner-1": "inner-2", "inner-2": nil, "split": "tx", "tx": "done"} {
+		if next[id] != want {
+			t.Errorf("next of %s is %v, want %v", id, next[id], want)
+		}
+	}
+	// The branches and the saga still begin where they began.
+	list := nodes(t, d)
+	same(t, list[0], doc{"id": "split", "type": "parallel", "branches": []string{"card", "stock"}, "join": "all", "next": "tx"})
+	same(t, list[1], doc{"id": "tx", "type": "saga", "begin": "reserve", "next": "done"})
+	// Built again after yet another step, it is read again.
+	right.Step("later-still", "stock.later")
+	again, err := b.Build()
+	if err != nil || len(nodes(t, again)) != len(list)+1 {
+		t.Errorf("%d nodes, %v", len(nodes(t, again)), err)
+	}
+}
+
+func TestAMistakeInAStepAddedToAJoinedFlowAfterTheJoinIsRaisedByBuild(t *testing.T) {
+	cases := map[string]func(branch, other *workflow.Builder){
+		"an id used in another flow":   func(branch, other *workflow.Builder) { branch.Step("stock", "x.dup") },
+		"an id used twice in its flow": func(branch, other *workflow.Builder) { branch.Step("card-2", "x.a").Step("card-2", "x.b") },
+		"a step with no activity":      func(branch, other *workflow.Builder) { branch.Step("card-2", "") },
+		"an irreversible compensation": func(branch, other *workflow.Builder) {
+			branch.Step("card-2", "x", workflow.Irreversible(true), workflow.CompensateWith("u"))
+		},
+		"a dangling reference": func(branch, other *workflow.Builder) { branch.Step("card-2", "x", workflow.OnError("nowhere")) },
+	}
+	for name, mistake := range cases {
+		t.Run(name, func(t *testing.T) {
+			branch := workflow.Flow().Step("card", "pay.card")
+			other := workflow.Flow().Step("stock", "stock.hold")
+			b := workflow.New("late-mistake").Parallel("split", workflow.JoinAll, branch, other)
+			if b.Err() != nil {
+				t.Fatalf("%v", b.Err())
+			}
+			mistake(branch, other)
+			if _, err := b.Build(); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+				t.Errorf("Build did not raise it: %v", err)
+			}
+			if _, err := b.JSON(); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+				t.Errorf("JSON did not raise it: %v", err)
+			}
+		})
+	}
+	// An end node added to the body of a saga after the join.
+	body := workflow.Flow().Step("a", "x")
+	b := workflow.New("late-end").Saga("s", body)
+	body.End("e")
+	if _, err := b.Build(); !sagat.IsCode(err, sagat.CodeValidationFailed) || !strings.Contains(err.Error(), "end node") {
+		t.Errorf("an end added to a saga body after the join: %v", err)
+	}
+}
+
+func TestAnIDUsedTwiceInOneFlowIsRaisedWhenTheNodeIsAdded(t *testing.T) {
+	b := workflow.New("dup-now").Step("a", "x").Step("a", "y")
+	if b.Err() == nil || !strings.Contains(b.Err().Error(), "used twice") {
+		t.Errorf("Err() is %v before Build", b.Err())
+	}
+	branch := workflow.Flow().Step("a", "x").Step("a", "y")
+	if branch.Err() == nil {
+		t.Error("the same in a nested flow")
+	}
+}

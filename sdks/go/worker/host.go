@@ -33,6 +33,7 @@ import (
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	boff "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/safelog"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/tokenfail"
 	pb "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb"
 )
 
@@ -511,7 +512,7 @@ func (h *Host) register(ctx context.Context, l *link) error {
 			return err
 		}
 		// A token the provider can refresh gets one more chance (sdks/SPEC.md, section 5).
-		if se.Code == sagat.CodeUnauthenticated && !refreshed && sagat.CanRefresh(h.token) {
+		if se.Code == sagat.CodeUnauthenticated && !refreshed && !tokenfail.Is(se) && sagat.CanRefresh(h.token) {
 			refreshed = true
 			continue
 		}

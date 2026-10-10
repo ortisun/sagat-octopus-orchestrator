@@ -194,7 +194,7 @@ func (t *Task) Secrets(ctx context.Context) (*Secrets, error) {
 	t.secretsMu.Lock()
 	defer t.secretsMu.Unlock()
 	if t.droppedAfter.Load() {
-		return nil, sagat.NewError(sagat.CodeCancelled, "the attempt is over: its secrets are gone")
+		return nil, errAttemptOver()
 	}
 	if t.secretsDone {
 		return t.secrets, nil
@@ -228,13 +228,23 @@ func TaskFrom(ctx context.Context) *Task {
 
 // Secrets is the read-only set of secrets of one attempt.
 type Secrets struct {
-	mu     sync.RWMutex
-	values map[string][]byte
+	mu      sync.RWMutex
+	values  map[string][]byte
+	dropped bool
+}
+
+// errAttemptOver is what a later access to the secrets of an attempt raises: the handler has returned and the
+// values are gone (SPEC section 6.7).
+func errAttemptOver() error {
+	return sagat.Invalid("the attempt is over: its secrets were dropped when the handler returned")
 }
 
 func (s *Secrets) lookup(name string) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.dropped {
+		return nil, errAttemptOver()
+	}
 	value, ok := s.values[name]
 	if !ok {
 		return nil, sagat.Errorf(sagat.CodeNotFound, "the step declares no secret named %s", name)
@@ -278,6 +288,7 @@ func (s *Secrets) LogValue() slog.Value { return slog.StringValue("<redacted>") 
 func (s *Secrets) wipe() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dropped = true
 	for name, value := range s.values {
 		clear(value)
 		delete(s.values, name)

@@ -252,3 +252,33 @@ func TestHooksThatPanicDoNotTakeTheHostWithIt(t *testing.T) {
 	must(t, h.Start(context.Background()))
 	until(t, "the completion", func() bool { return len(f.of("CompleteStep")) == 1 })
 }
+
+// SPEC section 6.7: a later access to the secrets after the handler returned raises VALIDATION_FAILED.
+func TestSecretsAccessedAfterTheHandlerReturnedAreAValidationError(t *testing.T) {
+	f := newFakeService(t)
+	h := newHost(t, f)
+	var kept *worker.Secrets
+	var task *worker.Task
+	must(t, h.RegisterActivity("pay", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		task = worker.TaskFrom(ctx)
+		var err error
+		kept, err = task.Secrets(ctx)
+		return 1, err
+	}))
+	f.set(func(f *fakeService) { f.secrets = []*pb.ResolvedSecret{{Name: "k", Value: []byte("v")}} })
+	f.lease(lease(forActivity("pay", "1")))
+	start(t, h)
+	until(t, "the completion", func() bool { return len(f.of("CompleteStep")) == 1 })
+	if _, err := task.Secrets(context.Background()); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+		t.Errorf("Task.Secrets after the handler: %v", err)
+	}
+	if _, err := kept.Bytes("k"); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+		t.Errorf("Bytes after the handler: %v", err)
+	}
+	if _, err := kept.Text("k"); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+		t.Errorf("Text after the handler: %v", err)
+	}
+	if len(kept.Names()) != 0 {
+		t.Error("the names are gone with the values")
+	}
+}

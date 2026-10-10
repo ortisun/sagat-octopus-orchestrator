@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/tokenfail"
 )
 
 // TokenSource supplies the bearer token of a call. It is asked before every request, so that a rotated
@@ -48,7 +50,8 @@ func CanRefresh(source TokenSource) bool {
 }
 
 // BearerToken asks the source for the token of one call. A provider that fails, or panics, is an
-// UNAUTHENTICATED error whose message does not repeat the provider's.
+// UNAUTHENTICATED error with the reason TOKEN_PROVIDER_FAILED whose message does not repeat the provider's;
+// the SDK repeats the call, because nothing was sent.
 func BearerToken(ctx context.Context, source TokenSource) (string, error) {
 	if source == nil {
 		return "", NewError(CodeUnauthenticated, "no token source is configured")
@@ -58,12 +61,14 @@ func BearerToken(ctx context.Context, source TokenSource) (string, error) {
 		if ctx.Err() != nil {
 			return "", NewError(CodeCancelled, "the call was cancelled").WithCause(ctx.Err())
 		}
+		// Nothing was sent: the SDK knows it, and keeps it privately (a reason a server sends never says so).
 		e := NewError(CodeUnauthenticated, "the token source failed")
-		e.Reason = "TOKEN_SOURCE_FAILED"
-		if _, panicked := err.(sourcePanic); panicked {
-			return "", e
+		e.Reason = "TOKEN_PROVIDER_FAILED"
+		failure := tokenfail.Failure{}
+		if _, panicked := err.(sourcePanic); !panicked {
+			failure.Cause = err
 		}
-		return "", e.WithCause(err)
+		return "", e.WithCause(failure)
 	}
 	return token, nil
 }

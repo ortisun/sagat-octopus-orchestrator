@@ -126,7 +126,7 @@ doc, err := workflow.New("order-flow").
 The first mistake the builder can see (bad name, duplicate id, a parallel with one branch...) is
 remembered and returned by `Build`, `JSON` and `Err` as a `*sagat.Error` with the code
 `VALIDATION_FAILED`; the calls after it do nothing. The canonical text is RFC 8785 and byte-identical to the one the other
-SDKs write for the same program (the `builders` scenario of the conformance suite checks it). `JSON()` refuses an integer beyond 2^53 - 1 (`VALIDATION_FAILED`: send it as a string), because no language but TypeScript's can print the nearest double and call it exact; `Build()` keeps it. A JSON text with a lone surrogate escape (`\ud800`) is refused on the way out, as invalid UTF-8 is.
+SDKs write for the same program (the `builders` scenario of the conformance suite checks it). `JSON()` refuses an integer beyond 2^53 - 1 (`VALIDATION_FAILED`: send it as a string), because no language but TypeScript's can print the nearest double and call it exact; `Build()` keeps it. A `Flow` is read when `Build()` is called, not when it is joined: a step added to a branch or to a saga body after it was joined is part of the document, and a mistake in it is raised by `Build()`; an id is checked when its node is added to its flow and again by `Build()` over the whole document. A JSON text with a lone surrogate escape (`\ud800`) is refused on the way out, as invalid UTF-8 is.
 
 ## Errors
 
@@ -142,6 +142,12 @@ body, when the error's code is `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED` or `IN
 that is a quota (`QUOTA_EXCEEDED`) never is; a body that claims `retryable: true` on any other code is not believed. The
 same function decides for the REST client, for the registration and for the reports of the worker host.
 
+**A token source that fails is repeated too**, because nothing was sent: in every call the SDK repeats, in the registration and in the
+report of a result (a result that was computed is not lost to a hiccup of the identity provider). When the attempts are
+used up the error is `UNAUTHENTICATED` with the reason `TOKEN_PROVIDER_FAILED`; its message never repeats what the source
+said, and `errors.Is` reaches what it returned. That it was the source is something the SDK keeps in a type of its own
+(`internal/tokenfail`): a `reason` in a server's answer, even that one, never makes a call repeatable.
+
 ## Safety
 
 * **No credential is printed.** A `sagat.StaticToken`, a `*client.Client`, a `*worker.Host` and a `*worker.Secrets` print as
@@ -154,6 +160,7 @@ same function decides for the REST client, for the registration and for the repo
   repeated; a poll answer with more tasks than the host asked for runs only the first ones and logs how many were
   left to lapse. A server that registers a worker and refuses it at once is not hammered: the second refusal in a
   row waits for the backoff first.
+* **Secrets end with the handler.** `Task.Secrets` and the methods of a `*Secrets` kept past the end of the handler return `VALIDATION_FAILED` ("the attempt is over"); the values are wiped.
 * **Ids and names in a URL path.** A run id is a UUID (`VALIDATION_FAILED` otherwise, before any request); a signal
   name of `""`, `"."` or `".."` is refused; any other name is percent-encoded (`/` is `%2F`).
 * A redirect is never followed (see Configuration).
@@ -227,7 +234,7 @@ Dependencies, all at least two weeks older than this release (checked against th
 v1.83.2 (2026-08-25), `google.golang.org/protobuf` v1.36.11, `golang.org/x/net` v0.58.0 (2026-08-12), `golang.org/x/sys`
 v0.47.0, `golang.org/x/text` v0.41.0, and what `go.sum` pins.
 
-### Known findings (`govulncheck ./...`, 2026-10-08 database)
+### Known findings (`govulncheck ./...`, database of 2026-10-08, re-run on 2026-10-10 with the same result)
 
 * **Nothing left from the advisories that an independent review found reachable on gRPC v1.80.0 and `x/net` v0.49.0**: GO-2026-6348 (heap
   exhaustion through HTTP/2 DATA fragmentation, reachable through `ResolveSecrets`) is fixed in gRPC 1.83.1,

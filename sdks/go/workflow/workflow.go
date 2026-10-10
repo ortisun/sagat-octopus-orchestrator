@@ -40,13 +40,17 @@ type Builder struct {
 
 	nodes    []node
 	embedded []*Builder
+	ids      map[string]struct{}
 	err      error
+
+	// sagaID is the id of the saga whose body this flow is, once it was joined as one.
+	sagaID string
 }
 
 // New starts a workflow definition. The name is lower case letters, digits and dashes, 3 to 64,
 // starting with a letter.
 func New(name string) *Builder {
-	b := &Builder{name: name, labels: map[string]string{}}
+	b := &Builder{name: name, labels: map[string]string{}, ids: map[string]struct{}{}}
 	if !namePattern.MatchString(name) {
 		b.fail(sagat.Invalid("a workflow name is lower case letters, digits and dashes, 3 to 64: %q", name))
 	}
@@ -55,7 +59,7 @@ func New(name string) *Builder {
 
 // Flow starts a nested flow: the body of a Saga or a branch of Parallel. It has no name and cannot
 // be built on its own.
-func Flow() *Builder { return &Builder{labels: map[string]string{}} }
+func Flow() *Builder { return &Builder{labels: map[string]string{}, ids: map[string]struct{}{}} }
 
 func (b *Builder) fail(err error) *Builder {
 	if b.err == nil {
@@ -71,9 +75,18 @@ func (b *Builder) push(n node) *Builder {
 	if b.err != nil {
 		return b
 	}
-	if id, _ := n["id"].(string); id == "" {
+	id, _ := n["id"].(string)
+	if id == "" {
 		return b.fail(sagat.Invalid("a node needs an id"))
 	}
+	// An id is checked when its node is added to its flow, and again by Build over the whole document.
+	if _, twice := b.ids[id]; twice {
+		return b.fail(sagat.Invalid("the node id %q is used twice", id))
+	}
+	if b.sagaID != "" && n["type"] == "end" {
+		return b.fail(sagat.Invalid("saga %s cannot hold an end node", b.sagaID))
+	}
+	b.ids[id] = struct{}{}
 	b.nodes = append(b.nodes, n)
 	return b
 }
@@ -250,6 +263,7 @@ func (b *Builder) Saga(id string, body *Builder, opts ...SagaOption) *Builder {
 	}
 	b.push(n)
 	if b.err == nil {
+		body.sagaID = id
 		b.embedded = append(b.embedded, body)
 	}
 	return b
@@ -297,6 +311,11 @@ func (b *Builder) flatten() []node {
 func (b *Builder) Build() (map[string]any, error) {
 	if b.err != nil {
 		return nil, b.err
+	}
+	// The flows inside are read now, not when they were joined: a step added to a branch or to a saga body
+	// after the join is part of the document, and a mistake in it is raised here.
+	if err := b.joinedErr(); err != nil {
+		return nil, err
 	}
 	if len(b.nodes) == 0 {
 		return nil, sagat.Invalid("a workflow needs at least one node")
@@ -373,6 +392,26 @@ func (b *Builder) Build() (map[string]any, error) {
 		return nil, err
 	}
 	return clone(document).(map[string]any), nil
+}
+
+// joinedErr is the first mistake in the flows joined to this one, at any depth, as they are now.
+func (b *Builder) joinedErr() error {
+	for _, inner := range b.embedded {
+		if inner.err != nil {
+			return inner.err
+		}
+		if inner.sagaID != "" {
+			for _, n := range inner.nodes {
+				if n["type"] == "end" {
+					return sagat.Invalid("saga %s cannot hold an end node", inner.sagaID)
+				}
+			}
+		}
+		if err := inner.joinedErr(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // clone copies the maps and slices of a document, so that the caller owns them. Values of other

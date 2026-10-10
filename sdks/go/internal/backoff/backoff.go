@@ -10,6 +10,7 @@ import (
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/bound"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/tokenfail"
 )
 
 // Delay is min(MaxDelay, InitialDelay*2^n) scaled by random() in [0.5, 1.0]; n is the attempt that
@@ -64,6 +65,11 @@ func CapServerWait(d time.Duration) time.Duration { return bound.Wait(d) }
 // says it may be (the server's own flag when it sent one, the catalog's default otherwise). A flag on any other
 // code is not believed: a 429 that is a quota is never repeated, and the server's 408 is UNAVAILABLE.
 func Retryable(err *sagat.Error) bool {
+	// A token source that failed: nothing was sent, so repeating cannot do harm. The marker is private to the
+	// SDK; a reason in a server's answer does not set it.
+	if tokenfail.Is(err) {
+		return true
+	}
 	switch err.Code {
 	case sagat.CodeTransport, sagat.CodeUnavailable, sagat.CodeRateLimited, sagat.CodeInternal:
 		return err.Retryable
