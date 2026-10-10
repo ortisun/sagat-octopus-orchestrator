@@ -32,7 +32,7 @@ async fn control(State(platform): State<Arc<Platform>>, Json(body): Json<Value>)
             .to_owned()
     };
     match field("action").as_str() {
-        "expireLease" => platform.expire_lease(&field("run"), &field("node")).await,
+        "expireLease" => expire_until_reclaimed(&platform, &field("run"), &field("node")).await,
         "elapseRetryDelay" => {
             platform
                 .elapse_retry_delay(&field("run"), &field("node"))
@@ -42,4 +42,25 @@ async fn control(State(platform): State<Arc<Platform>>, Json(body): Json<Value>)
         other => return Json(json!({"ok": false, "error": format!("unknown action {other}")})),
     }
     Json(json!({"ok": true}))
+}
+
+/// Back-dates the lease until the platform has taken it back. Back-dating it once is not enough: a worker whose
+/// heartbeat lands between the update and the scheduler's next look renews the lease, and nothing is lost.
+async fn expire_until_reclaimed(platform: &Platform, run: &str, node: &str) {
+    let run_id = uuid::Uuid::parse_str(run).expect("run id");
+    for _ in 0..250 {
+        platform.expire_lease(run, node).await;
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM steps WHERE run_id = $1 AND node = $2")
+                .bind(run_id)
+                .bind(node)
+                .fetch_optional(&platform.api.db.pool)
+                .await
+                .ok()
+                .flatten();
+        if !matches!(status.as_deref(), Some("LEASED" | "RUNNING")) {
+            return;
+        }
+    }
 }
