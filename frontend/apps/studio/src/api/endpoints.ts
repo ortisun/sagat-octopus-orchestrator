@@ -17,7 +17,7 @@ export function endpoints(api: ApiClient) {
 
     listWorkflows: (query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<Workflow>>('/workflows', { query, signal }),
     getWorkflow: (id: string, signal?: AbortSignal) => api.get<Workflow>(path`/workflows/${id}`, { signal }),
-    createWorkflow: (name: string, ir: Record<string, unknown>) => api.post<Workflow>('/workflows', { body: { name, ir } }),
+    createWorkflow: (name: string, ir: Record<string, unknown>, key?: string) => api.post<Workflow>('/workflows', { body: { name, ir }, ...(key ? { key } : {}) }),
     updateDraft: (id: string, draftRevision: number, ir: Record<string, unknown>, key?: string) => api.put<Workflow>(path`/workflows/${id}`, { body: { draftRevision, ir }, ...(key ? { key } : {}) }),
     validate: (id: string, ir: Record<string, unknown> | undefined, signal?: AbortSignal) => api.post<Validation>(path`/workflows/${id}/validate`, { body: ir ? { ir } : {}, signal }),
     diff: (id: string, from?: string, to?: string, signal?: AbortSignal) => api.get<DefinitionDiff>(path`/workflows/${id}/diff`, { query: { from, to }, signal }),

@@ -20,7 +20,21 @@ export function Dialog({ open, title, onClose, children }: { open: boolean; titl
     }
   }, [open]);
   return (
-    <dialog ref={ref} aria-labelledby={titleId} onClose={onClose} onCancel={onClose}>
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      // Escape: the owner decides (it sets `open` to false and the effect closes the dialog), so the
+      // browser must not close it behind the owner's back.
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      // The dialog closed itself (a form with method="dialog"): tell the owner, once. When the owner
+      // closed it through `open`, there is nothing to tell.
+      onClose={() => {
+        if (open) onClose();
+      }}
+    >
       <h2 id={titleId}>{title}</h2>
       {open ? children : null}
     </dialog>

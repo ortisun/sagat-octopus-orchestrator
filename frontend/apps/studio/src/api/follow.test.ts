@@ -72,7 +72,8 @@ describe('followRun', () => {
     expect(h.calls[0]!.url).toBe(`/v1/runs/${RUN}/stream`);
     expect(h.calls[0]!.headers['Last-Event-ID']).toBeUndefined();
     expect(h.calls[0]!.headers['Accept']).toBe('text/event-stream');
-    expect(h.states).toEqual(['connecting']);
+    // Live as soon as the stream is open, before anything arrives: a quiet run is not "connecting".
+    expect(h.states).toEqual(['connecting', 'live']);
     pipe.write(frame(5, { reset: true }));
     pipe.write(frame(7));
     await tick();
@@ -120,6 +121,20 @@ describe('followRun', () => {
     await tick();
     expect(h.delivered.map((c) => c.projectionSeq)).toEqual([3, 4]);
     expect(h.states.at(-1)).toBe('live');
+  });
+
+  it('does not hammer a server that hangs up at every connection: it waits, longer each time, and then polls', async () => {
+    const h = harness(() => new Response(new ReadableStream({ start: (c) => c.close() }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+    h.start({ streamFailuresBeforePolling: 3, pollIntervalMs: 60_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(h.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.calls.filter((c) => c.url.includes('/stream')).length).toBeLessThanOrEqual(4);
+    expect(h.states).toContain('polling');
   });
 
   it('comes back at once when the server says so (it closes a stream after 15 minutes)', async () => {

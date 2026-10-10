@@ -21,10 +21,10 @@ describe('OidcCallback', () => {
     sessionStorageStub(JSON.stringify({ state: 's1', verifier: 'v'.repeat(43) }));
     const p = platform();
     const idp = vi.fn((url: string | URL | Request, init?: RequestInit) => {
-      const target = String(url);
+      const target = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
       if (target.endsWith('/.well-known/openid-configuration')) return Promise.resolve(Response.json({ issuer: ISSUER, authorization_endpoint: `${ISSUER}/auth`, token_endpoint: `${ISSUER}/token` }));
       if (target === `${ISSUER}/token`) return Promise.resolve(Response.json({ access_token: TOKEN, token_type: 'Bearer' }));
-      return p.fetcher(String(url), init);
+      return p.fetcher(target, init);
     });
     vi.stubGlobal('fetch', idp);
     const { app } = renderApp(<OidcCallback search="?code=c&state=s1" />, { appOptions: { fetch: p.fetcher, settings: { oidc: { issuer: ISSUER, clientId: 'studio', scope: 'openid' } } } });

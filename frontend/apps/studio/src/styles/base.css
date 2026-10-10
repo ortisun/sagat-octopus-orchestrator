@@ -340,7 +340,7 @@ table.data td {
   vertical-align: top;
 }
 
-table.data th {
+table.data thead th {
   font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -422,6 +422,8 @@ dialog::backdrop {
 
 .shell > main {
   grid-area: main;
+  /* Hidden helpers are absolutely positioned: this keeps them (and their scroll) inside the page area. */
+  position: relative;
   overflow: auto;
   padding: 16px 20px;
   min-width: 0;
@@ -462,7 +464,15 @@ dialog::backdrop {
 }
 
 .signin {
+  position: relative;
   max-width: 560px;
   margin: 10vh auto;
   padding: 0 16px;
+}
+
+/* The selected tab is told by its look as well as by aria-selected. */
+[role='tab'][aria-selected='true'] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
 }

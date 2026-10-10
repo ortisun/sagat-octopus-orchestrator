@@ -95,7 +95,7 @@ export function followRun(options: FollowOptions): Follow {
     });
 
   /** One connection. Returns how it ended. */
-  async function stream(): Promise<'end' | 'reconnect' | 'closed' | 'unsupported'> {
+  async function stream(): Promise<'end' | 'reconnect' | 'dropped' | 'dropped-empty' | 'closed' | 'unsupported'> {
     const headers: Record<string, string> = { Accept: 'text/event-stream' };
     if (cursor !== undefined) headers['Last-Event-ID'] = String(cursor);
     const response = await client.open(path`/runs/${runId}/stream`, { headers, signal: stop.signal });
@@ -105,6 +105,8 @@ export function followRun(options: FollowOptions): Follow {
       void response.body?.cancel().catch(() => undefined);
       return 'unsupported';
     }
+    // The stream is open: changes will reach us as they happen, even if none has yet (a quiet run).
+    set('live');
     let delivered = false;
     for await (const message of readSse(response.body, stop.signal)) {
       if (message.event === 'graph') {
@@ -115,10 +117,7 @@ export function followRun(options: FollowOptions): Follow {
           continue;
         }
         if (!isChanges(data)) continue;
-        if (!delivered) {
-          delivered = true;
-          set('live');
-        }
+        delivered = true;
         deliver(data);
       } else if (message.event === 'end') {
         return 'end';
@@ -126,7 +125,9 @@ export function followRun(options: FollowOptions): Follow {
         return 'reconnect';
       }
     }
-    return stop.signal.aborted ? 'closed' : 'reconnect';
+    // Closed with no word: the network, a proxy or the server hanging up.
+    if (stop.signal.aborted) return 'closed';
+    return delivered ? 'dropped' : 'dropped-empty';
   }
 
   async function poll(): Promise<'ended' | 'continue'> {
@@ -146,12 +147,18 @@ export function followRun(options: FollowOptions): Follow {
         if (ended === 'end') return set('ended');
         if (ended === 'closed') return;
         if (ended === 'unsupported') failures = failuresBeforePolling;
-        else {
-          // A stream that delivered and then closed (or asked us to come back) is not a failure.
+        else if (ended === 'reconnect') {
+          // The server asked for it (it closes a stream after 15 minutes): come back at once.
           failures = 0;
           backoff = MIN_BACKOFF_MS;
           set('reconnecting');
-          if (ended === 'reconnect') continue;
+          continue;
+        } else {
+          // A stream that delivered and then closed is not a failure; one that never delivered is. Neither
+          // is tried again at once: a server that hangs up at every connection must not be hammered.
+          failures = ended === 'dropped' ? 0 : failures + 1;
+          if (ended === 'dropped') backoff = MIN_BACKOFF_MS;
+          set('reconnecting');
         }
       } catch (cause) {
         if (stop.signal.aborted) return;
