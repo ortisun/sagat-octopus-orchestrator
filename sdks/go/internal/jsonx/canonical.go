@@ -49,6 +49,9 @@ func writeCanonical(out *bytes.Buffer, value any) error {
 	case string:
 		writeString(out, v)
 	case json.Number:
+		if integerBeyondExact(string(v)) {
+			return sagat.Invalid("an integer beyond 2^53 - 1 cannot be written in canonical text; send it as a string")
+		}
 		f, err := strconv.ParseFloat(string(v), 64)
 		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
 			return sagat.Invalid("a number is outside the range of a double")
@@ -170,4 +173,22 @@ func ecmaNumber(f float64) string {
 		return sign + digits + "e" + exponentSign + strconv.Itoa(e)
 	}
 	return sign + digits[:1] + "." + digits[1:] + "e" + exponentSign + strconv.Itoa(e)
+}
+
+// maxExactInteger is 2^53 - 1: the largest integer every language can hold, and print, exactly.
+const maxExactInteger = 1<<53 - 1
+
+// integerBeyondExact reports whether a number literal is an integer (no fraction, no exponent) whose
+// magnitude is past 2^53 - 1. The digits are counted, never expanded: a literal with an exponent is a double
+// and is not asked.
+func integerBeyondExact(literal string) bool {
+	digits := strings.TrimPrefix(literal, "-")
+	if strings.ContainsAny(digits, ".eE") {
+		return false
+	}
+	if len(digits) > 16 {
+		return true // 2^53 - 1 has 16 digits, and JSON allows no leading zero
+	}
+	n, err := strconv.ParseUint(digits, 10, 64)
+	return err != nil || n > maxExactInteger
 }

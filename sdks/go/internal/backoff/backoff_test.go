@@ -66,3 +66,32 @@ func TestSleepEndsWithItsContext(t *testing.T) {
 		}
 	}
 }
+
+// The rule is by code (SPEC section 5): a call is repeated when the code is TRANSPORT, UNAVAILABLE, RATE_LIMITED or
+// INTERNAL and the error says it may be. A flag on any other code is not believed.
+func TestACallIsRepeatedByCodeAndOnlyWhenTheErrorSaysItMayBe(t *testing.T) {
+	retryable := []sagat.Code{sagat.CodeTransport, sagat.CodeUnavailable, sagat.CodeRateLimited, sagat.CodeInternal}
+	others := []sagat.Code{
+		sagat.CodeBadRequest, sagat.CodeUnauthenticated, sagat.CodeForbidden, sagat.CodeNotFound, sagat.CodeConflict, sagat.CodeValidationFailed,
+		sagat.CodeQuotaExceeded, sagat.CodeStaleAttempt, sagat.CodeIdempotencyKeyReused, sagat.CodeNotBound, sagat.CodeSecretNotUsable,
+		sagat.CodeUnsupportedProtocol, sagat.CodeCancelled, sagat.CodeProtocol, sagat.CodePayloadTooLarge,
+	}
+	for _, code := range retryable {
+		for _, flag := range []bool{true, false} {
+			e := sagat.NewError(code, "x")
+			e.Retryable = flag
+			if got := Retryable(e); got != flag {
+				t.Errorf("%s with retryable=%v: repeated=%v", code, flag, got)
+			}
+		}
+	}
+	for _, code := range others {
+		for _, flag := range []bool{true, false} {
+			e := sagat.NewError(code, "x")
+			e.Retryable = flag
+			if Retryable(e) {
+				t.Errorf("%s with retryable=%v was repeated", code, flag)
+			}
+		}
+	}
+}

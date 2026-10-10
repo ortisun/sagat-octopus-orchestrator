@@ -145,10 +145,78 @@ func checkRaw(raw []byte, path string) error {
 	if !json.Valid(raw) {
 		return sagat.Invalid("%s is not valid JSON", path)
 	}
+	if loneSurrogate(raw) {
+		return sagat.Invalid("%s has a lone surrogate (an unpaired \\uD800 to \\uDFFF escape)", path)
+	}
 	if err := noDuplicateKeys(raw); err != nil {
 		return sagat.Invalid("%s has a key twice in an object", path)
 	}
 	return nil
+}
+
+// loneSurrogate reports whether a JSON text, already known to be valid, has an escape of a surrogate that is
+// not one half of a pair: it is not text that can be written in UTF-8.
+func loneSurrogate(raw []byte) bool {
+	inString := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if !inString {
+			inString = c == '"'
+			continue
+		}
+		switch c {
+		case '"':
+			inString = false
+		case '\\':
+			if i+1 >= len(raw) {
+				return false
+			}
+			if raw[i+1] != 'u' {
+				i++ // the escaped character is not the start of anything
+				continue
+			}
+			unit, ok := hex4(raw, i+2)
+			if !ok {
+				return false
+			}
+			i += 5 // the last digit of the escape
+			switch {
+			case unit >= 0xDC00 && unit <= 0xDFFF:
+				return true
+			case unit >= 0xD800 && unit <= 0xDBFF:
+				if i+2 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+					return true
+				}
+				low, ok := hex4(raw, i+3)
+				if !ok || low < 0xDC00 || low > 0xDFFF {
+					return true
+				}
+				i += 6
+			}
+		}
+	}
+	return false
+}
+
+// hex4 reads four hexadecimal digits at raw[at:].
+func hex4(raw []byte, at int) (rune, bool) {
+	if at+4 > len(raw) {
+		return 0, false
+	}
+	var value rune
+	for _, c := range raw[at : at+4] {
+		switch {
+		case c >= '0' && c <= '9':
+			value = value<<4 | rune(c-'0')
+		case c >= 'a' && c <= 'f':
+			value = value<<4 | rune(c-'a'+10)
+		case c >= 'A' && c <= 'F':
+			value = value<<4 | rune(c-'A'+10)
+		default:
+			return 0, false
+		}
+	}
+	return value, true
 }
 
 var errDuplicate = errors.New("duplicate key")

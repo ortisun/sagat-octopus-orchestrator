@@ -304,3 +304,49 @@ func TestTheCanonicalTextIsRFC8785KeysByUTF16CodeUnitsAndNumbersAsECMAScriptPrin
 		}
 	}
 }
+
+func TestTheCanonicalTextRefusesAnIntegerBeyond2To53MinusOneAndBuildDoesNot(t *testing.T) {
+	b := workflow.New("big-flow").InputSchema(doc{"maximum": json.Number("9007199254740993")}).Step("a", "act.a")
+	if _, err := b.Build(); err != nil {
+		t.Errorf("Build keeps the document: %v", err)
+	}
+	if _, err := b.JSON(); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+		t.Errorf("JSON: %v", err)
+	}
+	if _, err := workflow.New("big-flow").InputSchema(doc{"maximum": int64(1) << 60}).Step("a", "act.a").JSON(); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+		t.Errorf("an int64 beyond 2^53-1: %v", err)
+	}
+	if _, err := workflow.New("fine-flow").InputSchema(doc{"maximum": json.Number("9007199254740991")}).Step("a", "act.a").JSON(); err != nil {
+		t.Errorf("%v", err)
+	}
+}
+
+// The workflow "canonical-edges" of the builders scenario, and the text the golden file holds for it
+// (tests/contract/sdk-conformance/expected/builders.workflows.json): the same bytes in every language.
+func TestTheCanonicalTextOfTheEdgesWorkflowIsTheGoldenText(t *testing.T) {
+	schema := `{"type": "object", "properties": {"10": {"type": "integer", "maximum": 600000},
+		"9": {"type": "number", "multipleOf": 0.1, "minimum": -1e-07, "maximum": 1e+21},
+		"a": {"type": "number", "exclusiveMinimum": 1e-06, "exclusiveMaximum": 12345.678, "default": 4.35},
+		"\ud83d\ude00": {"type": "string", "maxLength": 5}, "\uff5e": {"type": "string", "minLength": 1},
+		"z": {"type": "array", "items": {"type": ["null", "boolean", "string"]}, "maxItems": 3}}}`
+	decoder := json.NewDecoder(strings.NewReader(schema))
+	decoder.UseNumber()
+	var input map[string]any
+	if err := decoder.Decode(&input); err != nil {
+		t.Fatal(err)
+	}
+	text, err := workflow.New("canonical-edges").
+		Description("The canonical text must be the same bytes in every language: keys that JavaScript would reorder (integer-like ones), keys above U+FFFF against keys at U+FF5E, and numbers as ECMAScript prints them.").
+		InputSchema(input).Step("only", "edges.only").JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"apiVersion":"sagat-octopus-orchestrator.io/v1","entrypoint":"only","inputSchema":{"properties":{"10":{"maximum":600000,"type":"integer"},` +
+		`"9":{"maximum":1e+21,"minimum":-1e-7,"multipleOf":0.1,"type":"number"},"a":{"default":4.35,"exclusiveMaximum":12345.678,"exclusiveMinimum":0.000001,"type":"number"},` +
+		`"z":{"items":{"type":["null","boolean","string"]},"maxItems":3,"type":"array"},"😀":{"maxLength":5,"type":"string"},"～":{"minLength":1,"type":"string"}},"type":"object"},` +
+		`"kind":"Workflow","metadata":{"description":"The canonical text must be the same bytes in every language: keys that JavaScript would reorder (integer-like ones), keys above U+FFFF against keys at U+FF5E, and numbers as ECMAScript prints them.","name":"canonical-edges"},` +
+		`"nodes":[{"activity":"edges.only","id":"only","type":"activity"}]}`
+	if text != want {
+		t.Errorf("\n got %s\nwant %s", text, want)
+	}
+}

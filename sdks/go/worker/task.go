@@ -322,7 +322,7 @@ func (h *Host) report(l *link, call func(ctx context.Context) error) (stale bool
 			if se.Code == sagat.CodeStaleAttempt {
 				return true, nil
 			}
-			if se.Retryable && n+1 < reportAttempts {
+			if boff.Retryable(se) && n+1 < reportAttempts {
 				if sleepErr := boff.Sleep(l.life, boff.After(h.retry, n, se, nil)); sleepErr != nil {
 					return false, err
 				}

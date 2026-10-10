@@ -283,3 +283,20 @@ func TestAHookThatPanicsDoesNotTakeTheClientWithIt(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// SPEC section 8: a Retry-After is read in seconds only; an HTTP date is ignored (no wait).
+func TestARetryAfterThatIsAnHTTPDateIsIgnored(t *testing.T) {
+	f := newFake(t)
+	c := newClient(t, f, client.WithRetry(sagat.RetryPolicy{MaxAttempts: 1}))
+	for name, header := range map[string]string{
+		"an http date": "Wed, 21 Oct 2099 07:28:00 GMT", "a negative number": "-5", "a fraction": "1.5", "text": "soon", "a number and a unit": "5s",
+	} {
+		f.answer(func(_ seen, w http.ResponseWriter) {
+			reply(w, 503, map[string]any{"code": "UNAVAILABLE", "message": "down", "retryable": true}, "Retry-After", header)
+		})
+		_, err := c.Get(context.Background(), runUUID)
+		if se := asSagat(t, err); se.RetryAfter != nil {
+			t.Errorf("%s: %v", name, *se.RetryAfter)
+		}
+	}
+}

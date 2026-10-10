@@ -385,6 +385,25 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		}
 		stopWorker(entry, timeout)
 		return nil, nil
+	case "restartWorker":
+		// Stop, then start, on the same host object: the host is restartable (SPEC section 6.8).
+		entry, ok := hosts[asString(step["worker"])]
+		if !ok || entry.host == nil {
+			return nil, broken("worker %s was never started", asString(step["worker"]))
+		}
+		timeout := 5 * time.Second
+		if v, ok := step["timeoutMs"]; ok {
+			timeout = asMillis(v)
+		}
+		stopWorker(entry, timeout)
+		if err := entry.host.Start(ctx); err != nil {
+			var se *sagat.Error
+			if errors.As(err, &se) {
+				return nil, err
+			}
+			return nil, broken("%v", err)
+		}
+		return object{"protocolVersion": entry.host.ProtocolVersion()}, nil
 	case "probeWorker":
 		return probeWorker(ctx, config, unique, asString(step["protocolVersion"]))
 	case "awaitJournal":

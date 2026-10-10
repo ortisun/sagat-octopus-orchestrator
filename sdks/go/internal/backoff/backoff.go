@@ -58,3 +58,16 @@ func Sleep(ctx context.Context, d time.Duration) error {
 
 // CapServerWait caps a wait that came from the server at bound.MaxServerWait.
 func CapServerWait(d time.Duration) time.Duration { return bound.Wait(d) }
+
+// Retryable is the one rule of SPEC section 5 for whether a failed call may be repeated, the same in every
+// SDK and for both channels: the error's code is TRANSPORT, UNAVAILABLE, RATE_LIMITED or INTERNAL, and the error
+// says it may be (the server's own flag when it sent one, the catalog's default otherwise). A flag on any other
+// code is not believed: a 429 that is a quota is never repeated, and the server's 408 is UNAVAILABLE.
+func Retryable(err *sagat.Error) bool {
+	switch err.Code {
+	case sagat.CodeTransport, sagat.CodeUnavailable, sagat.CodeRateLimited, sagat.CodeInternal:
+		return err.Retryable
+	default:
+		return false
+	}
+}

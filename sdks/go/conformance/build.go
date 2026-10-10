@@ -247,15 +247,22 @@ func builderOf(definition object) *workflow.Builder {
 // build builds every workflow of the scenario with the SDK's builders, and records what the
 // builders raise for the invalid ones.
 func build(scenario object) (object, error) {
-	workflows := object{}
+	workflows, canonical := object{}, object{}
 	for key, definition := range asObject(scenario["workflows"]) {
-		document, err := builderOf(asObject(definition)).Build()
+		builder := builderOf(asObject(definition))
+		document, err := builder.Build()
 		if err != nil {
 			return nil, fmt.Errorf("workflow %s: %w", key, err)
 		}
 		workflows[key] = document
+		// The canonical text (toJson, RFC 8785): the harness compares these bytes across the SDKs.
+		text, err := builder.JSON()
+		if err != nil {
+			return nil, fmt.Errorf("workflow %s: canonical text: %w", key, err)
+		}
+		canonical[key] = text
 	}
-	out := object{"workflows": workflows}
+	out := object{"workflows": workflows, "canonical": canonical}
 	problems := object{}
 	for key, item := range asObject(scenario["invalidWorkflows"]) {
 		invalid := asObject(item)

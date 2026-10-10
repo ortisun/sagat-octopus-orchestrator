@@ -81,10 +81,17 @@ func behave(ctx context.Context, behavior object, input json.RawMessage, outcome
 	if hang, _ := behavior["hang"].(bool); hang {
 		waitOrCancelled(ctx, 0)
 		*outcome = "cancelled"
+		if raises, _ := asObject(behavior["onCancel"])["raises"].(bool); raises {
+			// A handler that is cancelled and says so: it ends by returning the error of its context.
+			return nil, verdict, ctx.Err()
+		}
 		return nil, verdict, nil
 	}
 	if ms, ok := behavior["sleepMs"]; ok {
-		if waitOrCancelled(ctx, asMillis(ms)) {
+		if ignores, _ := behavior["ignoresCancel"].(bool); ignores {
+			// A handler that never looks at its context: it waits whatever happens, and what it returns is reported.
+			time.Sleep(asMillis(ms))
+		} else if waitOrCancelled(ctx, asMillis(ms)) {
 			*outcome = "cancelled"
 			onCancel := asObject(behavior["onCancel"])
 			if raises, _ := onCancel["raises"].(bool); raises {

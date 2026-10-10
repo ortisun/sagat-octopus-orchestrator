@@ -65,7 +65,7 @@ func (c *Client) do(ctx context.Context, req request) (*response, error) {
 		}
 		last = err
 		var se *sagat.Error
-		if !errors.As(err, &se) || !retryable(se) || n+1 >= attempts {
+		if !errors.As(err, &se) || !backoff.Retryable(se) || n+1 >= attempts {
 			return nil, err
 		}
 		wait := backoff.After(c.retry, n, se, nil)
@@ -75,15 +75,6 @@ func (c *Client) do(ctx context.Context, req request) (*response, error) {
 		}
 	}
 	return nil, last
-}
-
-// retryable is the rule of SPEC section 5: what the server marked retryable, except that a 4xx other
-// than 429 is never repeated.
-func retryable(e *sagat.Error) bool {
-	if !e.Retryable || e.Code == sagat.CodeCancelled {
-		return false
-	}
-	return e.HTTPStatus < 400 || e.HTTPStatus >= 500 || e.HTTPStatus == http.StatusTooManyRequests
 }
 
 func (c *Client) once(ctx context.Context, req request, payload []byte) (*response, error) {
@@ -220,15 +211,17 @@ func errorOf(resp *http.Response, data []byte, traceID string) *sagat.Error {
 			e.Reason = bound.Text(reason, bound.MaxReason)
 		}
 	}
-	// A call the server does not have (an older server, sdks/SPEC.md section 9) is told from a
-	// resource that is missing by the lack of the platform's own error envelope.
-	if status == http.StatusNotImplemented || (status == http.StatusNotFound && given == "") {
+	// A call the server does not have (an older server, sdks/SPEC.md section 9) is told from a resource that is
+	// missing: a 501, a 404 that says ROUTE_NOT_FOUND, a 405 that says METHOD_NOT_ALLOWED, or a 404 that is not
+	// the platform's error envelope at all. A 404 for a run that does not exist has the envelope and no such
+	// reason, and stays a plain NOT_FOUND.
+	if status == http.StatusNotImplemented ||
+		(status == http.StatusNotFound && (given == "" || e.Reason == "ROUTE_NOT_FOUND")) ||
+		(status == http.StatusMethodNotAllowed && e.Reason == "METHOD_NOT_ALLOWED") {
 		e.Code = sagat.CodeNotFound
 		e.Retryable = sagat.RetryableByDefault(sagat.CodeNotFound)
 		e.Remediation = sagat.Remediation(sagat.CodeNotFound)
-		if e.Reason == "" {
-			e.Reason = "UNSUPPORTED_BY_SERVER"
-		}
+		e.Reason = "UNSUPPORTED_BY_SERVER"
 	}
 	return e
 }

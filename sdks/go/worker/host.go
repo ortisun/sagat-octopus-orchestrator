@@ -515,7 +515,7 @@ func (h *Host) register(ctx context.Context, l *link) error {
 			refreshed = true
 			continue
 		}
-		if !se.Retryable || n+1 >= h.retry.MaxAttempts {
+		if !boff.Retryable(se) || n+1 >= h.retry.MaxAttempts {
 			return err
 		}
 		if err := boff.Sleep(ctx, boff.After(h.retry, n, se, nil)); err != nil {

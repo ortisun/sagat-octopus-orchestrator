@@ -126,7 +126,7 @@ doc, err := workflow.New("order-flow").
 The first mistake the builder can see (bad name, duplicate id, a parallel with one branch...) is
 remembered and returned by `Build`, `JSON` and `Err` as a `*sagat.Error` with the code
 `VALIDATION_FAILED`; the calls after it do nothing. The canonical text is RFC 8785 and byte-identical to the one the other
-SDKs write for the same program (the `builders` scenario of the conformance suite checks it).
+SDKs write for the same program (the `builders` scenario of the conformance suite checks it). `JSON()` refuses an integer beyond 2^53 - 1 (`VALIDATION_FAILED`: send it as a string), because no language but TypeScript's can print the nearest double and call it exact; `Build()` keeps it. A JSON text with a lone surrogate escape (`\ud800`) is refused on the way out, as invalid UTF-8 is.
 
 ## Errors
 
@@ -135,6 +135,12 @@ Every failure is a `*sagat.Error`: `Code` (see `sdks/error-catalog.json`), `Mess
 `errors.As`, or `sagat.IsCode(err, sagat.CodeNotFound)`. A cancelled context is `CANCELLED` and wraps the
 context's error, so `errors.Is(err, context.Canceled)` works. No token, payload or secret is ever put in
 an error, a log or an event.
+
+**Retries are by code, the same in every SDK** (SPEC section 5): a call is repeated, with the same idempotency key and
+body, when the error's code is `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED` or `INTERNAL` *and* the error says it may be
+(the server's own `retryable`, else the catalog's default). The server's `408` is `UNAVAILABLE` and is repeated; a `429`
+that is a quota (`QUOTA_EXCEEDED`) never is; a body that claims `retryable: true` on any other code is not believed. The
+same function decides for the REST client, for the registration and for the reports of the worker host.
 
 ## Safety
 
@@ -200,7 +206,8 @@ development (any other scheme in `grpcURL` or `apiURL` is `VALIDATION_FAILED`, n
 The SDK follows [SemVer](https://semver.org). Before 1.0 a minor version may change the Go API; a patch
 version never does. The **wire** contract does not move with the SDK: REST is additive within `/v1`, the
 worker protocol is additive within `1.x`. A newer SDK against an older server runs the host at the
-server's protocol version and treats a call the server does not have as `NOT_FOUND` with the reason
+server's protocol version and treats a call the server does not have (a `501`, a `404` that says `ROUTE_NOT_FOUND`, a `405` that says
+`METHOD_NOT_ALLOWED`, or a `404` that is not the platform's error envelope) as `NOT_FOUND` with the reason
 `UNSUPPORTED_BY_SERVER`; an older SDK ignores the fields it does not know (`Run.Raw` keeps them).
 
 ## Runtime matrix
@@ -211,7 +218,7 @@ What was **actually run** for this release, and what was not:
 |---|---|---|
 | Go | **1.25.14** (`go test -race ./...`, `go vet`, `gofmt`, `govulncheck`, the conformance suite) | Every other Go: `go.mod` says `go 1.25.0` because gRPC v1.83 requires it, so **1.24 and older cannot build the module** (the first release of this SDK was run on 1.24.2, before that change); 1.26 was not run as the SDK's toolchain |
 | OS / arch | **macOS, Darwin 25.3.0, arm64** | Linux, Windows, amd64 |
-| Server | The platform at this commit (REST `/v1`, worker protocol 1.2), through the conformance suite, which plays 13 scenarios; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
+| Server | The platform at this commit (REST `/v1`, worker protocol 1.2), through the conformance suite, which plays 14 scenarios; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
 | TLS | Tested with throw-away certificates (ECDSA, generated in the tests) against an in-process TLS server, on both channels, on loopback: an untrusted server certificate is refused as `TRANSPORT` and never reaches the handler; a configured CA makes the same server work (a task goes through end to end on the worker channel); a certificate for another name is refused; with mTLS the server sees the client certificate, and refuses a client with none or with one of another authority; no warning is logged for `https://`. See "TLS" below for what is **not** covered | A trusted server certificate from the *system* roots (only the untrusted case is tested), revocation, TLS versions and cipher suites, certificate rotation on a running host |
 | Race detector | `-race` passes on the unit tests | -- |
 | Vulnerability scan | `govulncheck` v1.7.0 on `./...` with Go 1.25.14 and the vulnerability database of 2026-10-08: 9 reachable findings, all from 2026-10-08, and 4 in packages that are imported but not called | See "Known findings" below |
