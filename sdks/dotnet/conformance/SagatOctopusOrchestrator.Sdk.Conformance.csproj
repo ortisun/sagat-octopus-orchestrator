@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <RootNamespace>SagatOctopusOrchestrator.Sdk.Conformance</RootNamespace>
+    <AssemblyName>SagatOctopusOrchestrator.Sdk.Conformance</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The `aspnet` mode runs a minimal ASP.NET Core service. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj" />
+    <PackageReference Include="Grpc.Core.Api" />
+  </ItemGroup>
+
+</Project>

@@ -14,3 +14,15 @@
 
 # Isolated worktrees created by agents
 /.claude/worktrees/
+
+# SDK build output and toolchain state
+/sdks/*/node_modules/
+/sdks/*/dist/
+/sdks/python/.venv/
+/sdks/python/**/__pycache__/
+/sdks/python/*.egg-info/
+/sdks/go/bin/
+/sdks/dotnet/**/bin/
+/sdks/dotnet/**/obj/
+/sdks/java/**/target/
+/sdks/**/.conformance/

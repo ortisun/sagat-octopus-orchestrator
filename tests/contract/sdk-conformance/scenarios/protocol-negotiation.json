@@ -1,0 +1,29 @@
+{
+  "name": "protocol-negotiation",
+  "description": "US04: a worker offers the newest protocol minor it speaks and runs at the newest both sides speak. An older SDK (1) and a newer one (1.9) are both served, a different major or a malformed version is a canonical UNSUPPORTED_PROTOCOL, and a worker running at 1 keeps a task alive past the 3 s lease with heartbeats that carry no step identity (the task is attempt 1 when it ends, so the lease never lapsed).",
+  "server": {"leaseTtlSeconds": 3},
+  "workflows": {
+    "slow": {"name": "protocol-flow", "program": [{"op": "step", "id": "slow", "activity": "protocol.slow"}]}
+  },
+  "workers": {
+    "old": {"workerName": "protocol-old", "protocolVersion": "1", "maxInflight": 2, "autostart": false, "heartbeatIntervalMs": 200, "activities": {"protocol.slow": {"behavior": {"sleepMs": 4500, "returns": {"served": "at 1"}}}}},
+    "new": {"workerName": "protocol-new", "protocolVersion": "1.9", "maxInflight": 2, "autostart": false, "heartbeatIntervalMs": 200, "activities": {"protocol.slow": {"behavior": {"returns": {"served": "at the servers"}}}}}
+  },
+  "steps": [
+    {"id": "offer-1", "op": "probeWorker", "protocolVersion": "1"},
+    {"id": "offer-1.0", "op": "probeWorker", "protocolVersion": "1.0"},
+    {"id": "offer-1.1", "op": "probeWorker", "protocolVersion": "1.1"},
+    {"id": "offer-1.2", "op": "probeWorker", "protocolVersion": "1.2"},
+    {"id": "offer-1.9", "op": "probeWorker", "protocolVersion": "1.9"},
+    {"id": "offer-2", "op": "probeWorker", "protocolVersion": "2"},
+    {"id": "offer-0.9", "op": "probeWorker", "protocolVersion": "0.9"},
+    {"id": "offer-junk", "op": "probeWorker", "protocolVersion": "one"},
+    {"id": "start-old", "op": "startWorker", "worker": "old"},
+    {"id": "run-old", "op": "start", "workflow": "slow", "input": {"for": "old"}},
+    {"id": "done-old", "op": "waitForCompletion", "run": "run-old", "timeoutMs": 30000},
+    {"id": "stop-old", "op": "stopWorker", "worker": "old"},
+    {"id": "start-new", "op": "startWorker", "worker": "new"},
+    {"id": "run-new", "op": "start", "workflow": "slow", "input": {"for": "new"}},
+    {"id": "done-new", "op": "waitForCompletion", "run": "run-new", "timeoutMs": 30000}
+  ]
+}

@@ -1,0 +1,200 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "running",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "deploy",
+      "ok": true,
+      "op": "stopWorker"
+    },
+    {
+      "id": "w1-ended",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "lapse",
+      "ok": true,
+      "op": "control"
+    },
+    {
+      "id": "second",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.2"
+      }
+    },
+    {
+      "id": "done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.started"
+          },
+          {
+            "attempt": 1,
+            "stepId": "work",
+            "type": "step.retry_scheduled"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.retry_due"
+          },
+          {
+            "attempt": 2,
+            "stepId": "work",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 2,
+            "stepId": "work",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "work",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 2,
+          "cancelRequested": false,
+          "failureCode": "LEASE_EXPIRED",
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": "shutdown",
+        "activity": "shutdown.work",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:work",
+        "input": {
+          "n": 1
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "cancelled",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      }
+    ],
+    "w2": [
+      {
+        "abortedReason": null,
+        "activity": "shutdown.work",
+        "attempt": 2,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:work",
+        "input": {
+          "n": 1
+        },
+        "kind": "activity",
+        "node": "work",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,629 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "by-event",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "by-signal",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "by-timeout",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "settle",
+      "ok": true,
+      "op": "sleep"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "STATE_CONFLICT",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:4>"
+      },
+      "id": "nobody-waits-for-this",
+      "ok": false,
+      "op": "signal"
+    },
+    {
+      "id": "signal",
+      "ok": true,
+      "op": "signal",
+      "result": {
+        "deliveredTo": [
+          "paid"
+        ]
+      }
+    },
+    {
+      "id": "after-signal",
+      "ok": true,
+      "op": "sleep"
+    },
+    {
+      "id": "event",
+      "ok": true,
+      "op": "publishEvent",
+      "result": {
+        "eventId": "evt-{{unique}}-1",
+        "status": "ACCEPTED"
+      }
+    },
+    {
+      "id": "event-again",
+      "ok": true,
+      "op": "publishEvent",
+      "result": {
+        "eventId": "evt-{{unique}}-1",
+        "status": "DUPLICATE"
+      }
+    },
+    {
+      "id": "event-unwanted",
+      "ok": true,
+      "op": "publishEvent",
+      "result": {
+        "eventId": "evt-{{unique}}-2",
+        "status": "ACCEPTED"
+      }
+    },
+    {
+      "id": "after-event-unwanted",
+      "ok": true,
+      "op": "sleep"
+    },
+    {
+      "id": "timeout",
+      "ok": true,
+      "op": "control"
+    },
+    {
+      "id": "after-timeout",
+      "ok": true,
+      "op": "sleep"
+    },
+    {
+      "id": "worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.2"
+      }
+    },
+    {
+      "id": "event-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "signal-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "timeout-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "event-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.satisfied"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfil",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fulfil",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fulfil",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfil",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfilled",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "signal-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.satisfied"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfil",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fulfil",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "fulfil",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfil",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "fulfilled",
+            "type": "end.reached"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "timeout-journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "wait.timed_out"
+          },
+          {
+            "attempt": null,
+            "stepId": "paid",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "gave-up",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "gave-up",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "gave-up",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "gave-up",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfil",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfilled",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "gave-up",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:5>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfil",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfilled",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "gave-up",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfil",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "fulfilled",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "gave-up",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "paid",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "waitEvent",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "events.fulfil",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:fulfil",
+        "input": {
+          "orderId": "ord-signal-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "fulfil",
+        "outcome": "returned",
+        "steps": {
+          "paid": {
+            "paid": "12.50"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "events.fulfil",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:fulfil",
+        "input": {
+          "orderId": "ord-event-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "fulfil",
+        "outcome": "returned",
+        "steps": {
+          "paid": {
+            "data": {
+              "paid": "7.00"
+            },
+            "event": {
+              "correlationKey": "ord-event-{{unique}}",
+              "id": "evt-{{unique}}-1",
+              "occurredAt": null,
+              "receivedAt": "<time>",
+              "source": "api",
+              "subject": null,
+              "type": "payment.confirmed"
+            }
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "events.give-up",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:5>:gave-up",
+        "input": {
+          "orderId": "ord-timeout-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "gave-up",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

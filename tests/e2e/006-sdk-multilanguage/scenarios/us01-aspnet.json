@@ -1,0 +1,11 @@
+{
+  "name": "us01-aspnet",
+  "description": "US01-AC01: an ASP.NET Core service that registers the SDK through dependency injection and starts a run from a request handler. Not a conformance scenario: it is played by `run.sh aspnet` of the C# SDK only (see the conformance README, \"Optional modes\"); it has no steps.",
+  "workflows": {
+    "order": {
+      "name": "aspnet-order-flow",
+      "program": [{"op": "step", "id": "work", "activity": "aspnet.work"}]
+    }
+  },
+  "steps": []
+}

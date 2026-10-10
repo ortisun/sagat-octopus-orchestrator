@@ -1,0 +1,29 @@
+{
+  "canonical": {
+    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"shutdown-flow\"},\"nodes\":[{\"activity\":\"shutdown.work\",\"id\":\"work\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "work": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "shutdown-flow"
+      },
+      "nodes": [
+        {
+          "activity": "shutdown.work",
+          "id": "work",
+          "retry": {
+            "initialDelayMs": 50,
+            "jitter": false,
+            "maxAttempts": 3,
+            "maxDelayMs": 50,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

@@ -51,6 +51,16 @@ struct Server {
 /// Weak so the container's lifetime is owned by the tests that use it, not by the process.
 static SERVER: Mutex<Weak<Server>> = Mutex::new(Weak::new());
 
+/// Keeps the shared PostgreSQL server alive while it is held. A suite that boots many platforms one after
+/// another holds it for its whole play: without that the container is torn down between two platforms and
+/// another one started, seconds each time and a chance each time to meet a port that is not ready.
+pub struct HeldServer(#[allow(dead_code)] Arc<Server>);
+
+/// Starts the shared server if it is not running and holds it until the guard is dropped.
+pub fn hold_server() -> HeldServer {
+    HeldServer(server())
+}
+
 /// Returns the running server, starting one if no test currently holds it.
 fn server() -> Arc<Server> {
     let mut slot = SERVER.lock().expect("server lock");

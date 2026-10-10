@@ -1,0 +1,41 @@
+{
+  "canonical": {
+    "waiting": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"paid\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"waiting-flow\"},\"nodes\":[{\"correlationExpr\":\"input.orderId\",\"eventType\":\"payment.confirmed\",\"id\":\"paid\",\"next\":\"fulfil\",\"onTimeout\":\"gave-up\",\"timeoutMs\":600000,\"type\":\"waitEvent\"},{\"activity\":\"events.fulfil\",\"id\":\"fulfil\",\"next\":\"fulfilled\",\"type\":\"activity\"},{\"id\":\"fulfilled\",\"type\":\"end\"},{\"activity\":\"events.give-up\",\"id\":\"gave-up\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "waiting": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "paid",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "waiting-flow"
+      },
+      "nodes": [
+        {
+          "correlationExpr": "input.orderId",
+          "eventType": "payment.confirmed",
+          "id": "paid",
+          "next": "fulfil",
+          "onTimeout": "gave-up",
+          "timeoutMs": 600000,
+          "type": "waitEvent"
+        },
+        {
+          "activity": "events.fulfil",
+          "id": "fulfil",
+          "next": "fulfilled",
+          "type": "activity"
+        },
+        {
+          "id": "fulfilled",
+          "type": "end"
+        },
+        {
+          "activity": "events.give-up",
+          "id": "gave-up",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

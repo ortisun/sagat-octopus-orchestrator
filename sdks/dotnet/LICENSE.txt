@@ -1,0 +1,8 @@
+UNLICENSED
+
+Copyright (c) the authors of Sagat Octopus Orchestrator. All rights reserved.
+
+The repository this package is built from declares no open-source license (the Rust workspace has
+`publish = false` and no `license` field; the TypeScript SDK declares `UNLICENSED`). No right to use,
+copy, modify or distribute this software is granted by this file. The package therefore carries the
+same terms as the repository: none granted. Decide the license before publishing to a public feed.

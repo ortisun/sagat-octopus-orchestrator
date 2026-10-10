@@ -1,0 +1,282 @@
+{
+  "canonical": {
+    "canonical-edges": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"only\",\"inputSchema\":{\"properties\":{\"10\":{\"maximum\":600000,\"type\":\"integer\"},\"9\":{\"maximum\":1e+21,\"minimum\":-1e-7,\"multipleOf\":0.1,\"type\":\"number\"},\"a\":{\"default\":4.35,\"exclusiveMaximum\":12345.678,\"exclusiveMinimum\":0.000001,\"type\":\"number\"},\"z\":{\"items\":{\"type\":[\"null\",\"boolean\",\"string\"]},\"maxItems\":3,\"type\":\"array\"},\"😀\":{\"maxLength\":5,\"type\":\"string\"},\"～\":{\"minLength\":1,\"type\":\"string\"}},\"type\":\"object\"},\"kind\":\"Workflow\",\"metadata\":{\"description\":\"The canonical text must be the same bytes in every language: keys that JavaScript would reorder (integer-like ones), keys above U+FFFF against keys at U+FF5E, and numbers as ECMAScript prints them.\",\"name\":\"canonical-edges\"},\"nodes\":[{\"activity\":\"edges.only\",\"id\":\"only\",\"type\":\"activity\"}]}",
+    "everything": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"validate\",\"inputSchema\":{\"properties\":{\"orderId\":{\"type\":\"string\"}},\"required\":[\"orderId\"],\"type\":\"object\"},\"kind\":\"Workflow\",\"metadata\":{\"description\":\"Every primitive of the builders in one document\",\"labels\":{\"team\":\"payments\",\"tier\":\"gold\"},\"name\":\"everything-flow\"},\"nodes\":[{\"activity\":\"order.validate\",\"id\":\"validate\",\"next\":\"settlement\",\"retry\":{\"initialDelayMs\":100,\"jitter\":true,\"maxAttempts\":3,\"maxDelayMs\":1000,\"strategy\":\"exponential\"},\"timeoutMs\":5000,\"type\":\"activity\"},{\"begin\":\"reserve\",\"cancelPolicy\":\"compensate_completed\",\"id\":\"settlement\",\"next\":\"fan\",\"onCompensationFailure\":\"manual_review\",\"type\":\"saga\"},{\"branches\":[\"email\",\"sms\"],\"id\":\"fan\",\"join\":\"all\",\"next\":\"confirmed\",\"type\":\"parallel\"},{\"correlationExpr\":\"input.orderId\",\"eventType\":\"payment.confirmed\",\"id\":\"confirmed\",\"lookbackMs\":5000,\"next\":\"ship\",\"onTimeout\":\"gave-up\",\"timeoutMs\":60000,\"type\":\"waitEvent\"},{\"cancelPolicy\":\"request_cancel\",\"id\":\"ship\",\"input\":\"input.order\",\"next\":\"big\",\"type\":\"child\",\"version\":2,\"workflowId\":\"shipping-flow\"},{\"expression\":\"input.amount > 100\",\"id\":\"big\",\"ifFalse\":\"done\",\"ifTrue\":\"review\",\"type\":\"condition\"},{\"activity\":\"order.review\",\"id\":\"review\",\"next\":\"gave-up\",\"onError\":\"done\",\"type\":\"activity\"},{\"activity\":\"order.give-up\",\"id\":\"gave-up\",\"irreversible\":true,\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"outputExpr\":\"steps.ship.output\",\"type\":\"end\"},{\"activity\":\"limit.reserve\",\"compensateWith\":\"limit.release\",\"compensationRetry\":{\"maxAttempts\":5},\"compensationTimeoutMs\":10000,\"id\":\"reserve\",\"idempotencyTemplate\":\"reserve:${run.id}\",\"next\":\"submit\",\"secrets\":[\"payments-key\"],\"type\":\"activity\"},{\"activity\":\"payment.submit\",\"compensateWith\":\"payment.cancel\",\"highRisk\":true,\"id\":\"submit\",\"reconcileWith\":\"payment.lookup\",\"type\":\"activity\"},{\"activity\":\"notify.email\",\"id\":\"email\",\"next\":\"email-pause\",\"type\":\"activity\"},{\"durationMs\":250,\"id\":\"email-pause\",\"type\":\"timer\"},{\"activity\":\"notify.sms\",\"id\":\"sms\",\"type\":\"activity\"}],\"outputSchema\":{\"type\":\"object\"},\"triggers\":[{\"kind\":\"manual\"},{\"eventType\":\"order.created\",\"kind\":\"event\",\"source\":\"api\"}]}",
+    "minimal": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"only\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"minimal-flow\"},\"nodes\":[{\"activity\":\"act.only\",\"id\":\"only\",\"type\":\"activity\"}]}"
+  },
+  "errors": {
+    "bad-name": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "dangling-reference": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "duplicate-id": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "empty-saga": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "irreversible-with-undo": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "one-branch": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "unsafe-integer": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "unsafe-integer-written-as-a-float": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    }
+  },
+  "workflows": {
+    "canonical-edges": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "only",
+      "inputSchema": {
+        "properties": {
+          "10": {
+            "maximum": 600000,
+            "type": "integer"
+          },
+          "9": {
+            "maximum": 1e+21,
+            "minimum": -1e-7,
+            "multipleOf": 0.1,
+            "type": "number"
+          },
+          "a": {
+            "default": 4.35,
+            "exclusiveMaximum": 12345.678,
+            "exclusiveMinimum": 1e-6,
+            "type": "number"
+          },
+          "z": {
+            "items": {
+              "type": [
+                "null",
+                "boolean",
+                "string"
+              ]
+            },
+            "maxItems": 3,
+            "type": "array"
+          },
+          "～": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "😀": {
+            "maxLength": 5,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kind": "Workflow",
+      "metadata": {
+        "description": "The canonical text must be the same bytes in every language: keys that JavaScript would reorder (integer-like ones), keys above U+FFFF against keys at U+FF5E, and numbers as ECMAScript prints them.",
+        "name": "canonical-edges"
+      },
+      "nodes": [
+        {
+          "activity": "edges.only",
+          "id": "only",
+          "type": "activity"
+        }
+      ]
+    },
+    "everything": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "validate",
+      "inputSchema": {
+        "properties": {
+          "orderId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "orderId"
+        ],
+        "type": "object"
+      },
+      "kind": "Workflow",
+      "metadata": {
+        "description": "Every primitive of the builders in one document",
+        "labels": {
+          "team": "payments",
+          "tier": "gold"
+        },
+        "name": "everything-flow"
+      },
+      "nodes": [
+        {
+          "activity": "order.validate",
+          "id": "validate",
+          "next": "settlement",
+          "retry": {
+            "initialDelayMs": 100,
+            "jitter": true,
+            "maxAttempts": 3,
+            "maxDelayMs": 1000,
+            "strategy": "exponential"
+          },
+          "timeoutMs": 5000,
+          "type": "activity"
+        },
+        {
+          "begin": "reserve",
+          "cancelPolicy": "compensate_completed",
+          "id": "settlement",
+          "next": "fan",
+          "onCompensationFailure": "manual_review",
+          "type": "saga"
+        },
+        {
+          "branches": [
+            "email",
+            "sms"
+          ],
+          "id": "fan",
+          "join": "all",
+          "next": "confirmed",
+          "type": "parallel"
+        },
+        {
+          "correlationExpr": "input.orderId",
+          "eventType": "payment.confirmed",
+          "id": "confirmed",
+          "lookbackMs": 5000,
+          "next": "ship",
+          "onTimeout": "gave-up",
+          "timeoutMs": 60000,
+          "type": "waitEvent"
+        },
+        {
+          "cancelPolicy": "request_cancel",
+          "id": "ship",
+          "input": "input.order",
+          "next": "big",
+          "type": "child",
+          "version": 2,
+          "workflowId": "shipping-flow"
+        },
+        {
+          "expression": "input.amount > 100",
+          "id": "big",
+          "ifFalse": "done",
+          "ifTrue": "review",
+          "type": "condition"
+        },
+        {
+          "activity": "order.review",
+          "id": "review",
+          "next": "gave-up",
+          "onError": "done",
+          "type": "activity"
+        },
+        {
+          "activity": "order.give-up",
+          "id": "gave-up",
+          "irreversible": true,
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "outputExpr": "steps.ship.output",
+          "type": "end"
+        },
+        {
+          "activity": "limit.reserve",
+          "compensateWith": "limit.release",
+          "compensationRetry": {
+            "maxAttempts": 5
+          },
+          "compensationTimeoutMs": 10000,
+          "id": "reserve",
+          "idempotencyTemplate": "reserve:${run.id}",
+          "next": "submit",
+          "secrets": [
+            "payments-key"
+          ],
+          "type": "activity"
+        },
+        {
+          "activity": "payment.submit",
+          "compensateWith": "payment.cancel",
+          "highRisk": true,
+          "id": "submit",
+          "reconcileWith": "payment.lookup",
+          "type": "activity"
+        },
+        {
+          "activity": "notify.email",
+          "id": "email",
+          "next": "email-pause",
+          "type": "activity"
+        },
+        {
+          "durationMs": 250,
+          "id": "email-pause",
+          "type": "timer"
+        },
+        {
+          "activity": "notify.sms",
+          "id": "sms",
+          "type": "activity"
+        }
+      ],
+      "outputSchema": {
+        "type": "object"
+      },
+      "triggers": [
+        {
+          "kind": "manual"
+        },
+        {
+          "eventType": "order.created",
+          "kind": "event",
+          "source": "api"
+        }
+      ]
+    },
+    "minimal": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "only",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "minimal-flow"
+      },
+      "nodes": [
+        {
+          "activity": "act.only",
+          "id": "only",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

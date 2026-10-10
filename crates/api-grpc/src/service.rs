@@ -157,10 +157,17 @@ where
                 )
                 .await
                 .map_err(app)?;
+            // Which version workers are served at: the operator's answer to "can an old minor be dropped".
+            // The accepted version is one of the few the server speaks, so the label stays small.
+            metrics::counter!(
+                "worker_registrations_total",
+                "protocol" => registered.accepted_protocol_version.clone()
+            )
+            .increment(1);
             Ok(pb::RegisterWorkerResponse {
                 worker_id: registered.worker_id.to_string(),
                 session_token: registered.session_token.expose().to_owned(),
-                accepted_protocol_version: registered.accepted_protocol_version.to_owned(),
+                accepted_protocol_version: registered.accepted_protocol_version,
             })
         })
         .await
@@ -250,7 +257,7 @@ where
             if !message.worker_id.is_empty() {
                 worker_id(&message.worker_id)?;
             }
-            let attempt = Attempt::parse(
+            let attempt = Attempt::parse_heartbeat(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,

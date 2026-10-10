@@ -2099,7 +2099,15 @@ components:
         message: {type: string, description: "Safe, human-readable summary. Never contains secrets, payloads or other tenants' data."}
         retryable: {type: boolean}
         traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
-        details: {type: object, additionalProperties: true}
+        details:
+          type: object
+          additionalProperties: true
+          description: >-
+            Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example
+            `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the
+            reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path,
+            another method): an SDK newer than the server tells that from a resource that does not exist, which is
+            `NOT_FOUND` without those reasons.
     Health:
       type: object
       required: [status]

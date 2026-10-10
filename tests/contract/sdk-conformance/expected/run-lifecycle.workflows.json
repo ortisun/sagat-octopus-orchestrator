@@ -1,0 +1,44 @@
+{
+  "canonical": {
+    "idle": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"wait\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lifecycle-idle-flow\"},\"nodes\":[{\"activity\":\"lifecycle.nobody\",\"id\":\"wait\",\"type\":\"activity\"}]}",
+    "linear": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"first\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lifecycle-flow\"},\"nodes\":[{\"activity\":\"lifecycle.first\",\"id\":\"first\",\"next\":\"second\",\"type\":\"activity\"},{\"activity\":\"lifecycle.second\",\"id\":\"second\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "idle": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "wait",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lifecycle-idle-flow"
+      },
+      "nodes": [
+        {
+          "activity": "lifecycle.nobody",
+          "id": "wait",
+          "type": "activity"
+        }
+      ]
+    },
+    "linear": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "first",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lifecycle-flow"
+      },
+      "nodes": [
+        {
+          "activity": "lifecycle.first",
+          "id": "first",
+          "next": "second",
+          "type": "activity"
+        },
+        {
+          "activity": "lifecycle.second",
+          "id": "second",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}
