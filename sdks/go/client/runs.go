@@ -85,11 +85,12 @@ func WithOutcome(outcome string) CallOption { return func(o *callOptions) { o.ou
 // WithErrorCode is the error code a step is resolved as failed with (Operate).
 func WithErrorCode(code string) CallOption { return func(o *callOptions) { o.errorCode = code } }
 
-// trace returns the traceparent of a call: the explicit one, else the ambient one, validated.
+// trace returns the traceparent of a call: the explicit one, else the ambient one, validated. A trace
+// hook that panics sends no trace.
 func (c *Client) trace(ctx context.Context, explicit string) (string, error) {
 	value := explicit
 	if value == "" && c.traceContext != nil {
-		value = c.traceContext(ctx)
+		value = c.ambient(ctx)
 	}
 	if value == "" {
 		return "", nil
@@ -98,6 +99,34 @@ func (c *Client) trace(ctx context.Context, explicit string) (string, error) {
 		return "", err
 	}
 	return value, nil
+}
+
+func (c *Client) ambient(ctx context.Context) (value string) {
+	defer func() {
+		if recover() != nil {
+			c.logger.Warn("the trace context hook panicked: no trace is sent")
+			value = ""
+		}
+	}()
+	return c.traceContext(ctx)
+}
+
+// runPath is the path of a run: the id is a UUID, so that it can only name one segment of the path (a
+// ".." or a "/" in it would send the request somewhere else).
+func runPath(runID string) (string, error) {
+	if !uuidPattern.MatchString(runID) {
+		return "", sagat.Invalid("a run id is a UUID")
+	}
+	return "/runs/" + runID, nil
+}
+
+// segment is a name in a URL path (a signal name): percent-encoded, and never ".", ".." or empty, which
+// a server or a proxy would resolve as a path instead of a name.
+func segment(name string) (string, error) {
+	if name == "" || name == "." || name == ".." {
+		return "", sagat.Invalid("a name in a URL path is not empty, \".\" or \"..\"")
+	}
+	return url.PathEscape(name), nil
 }
 
 func key(given string) (string, error) {
@@ -223,11 +252,15 @@ func (c *Client) Start(ctx context.Context, workflow string, input any, opts ...
 
 // Get reads a run.
 func (c *Client) Get(ctx context.Context, runID string) (*Run, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return nil, err
+	}
 	traceparent, err := c.trace(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.do(ctx, request{method: "GET", path: "/runs/" + url.PathEscape(runID), repeatable: true, traceparent: traceparent})
+	resp, err := c.do(ctx, request{method: "GET", path: path, repeatable: true, traceparent: traceparent})
 	if err != nil {
 		return nil, err
 	}
@@ -312,6 +345,10 @@ const (
 // Operate applies an action to a run. reason has 8 to 2000 characters. Reads WithStepID,
 // WithOutcome, WithErrorCode, WithExpectedRunVersion, WithIdempotencyKey and WithTraceparent.
 func (c *Client) Operate(ctx context.Context, runID string, action Action, reason string, opts ...CallOption) (*OperationResult, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return nil, err
+	}
 	o := callOptionsOf(opts)
 	idempotencyKey, err := key(o.idempotencyKey)
 	if err != nil {
@@ -335,7 +372,7 @@ func (c *Client) Operate(ctx context.Context, runID string, action Action, reaso
 		body["expectedRunVersion"] = *o.expectedRunVersion
 	}
 	resp, err := c.do(ctx, request{
-		method: "POST", path: "/runs/" + url.PathEscape(runID) + "/operations", body: body, hasBody: true,
+		method: "POST", path: path + "/operations", body: body, hasBody: true,
 		idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true,
 	})
 	if err != nil {
@@ -365,6 +402,14 @@ func (c *Client) Cancel(ctx context.Context, runID, reason string, opts ...CallO
 // Signal sends a signal to the steps of a run that wait for it; a signal nobody waits for is a
 // CONFLICT. payload is encoded as a JSON object; nil is an empty object.
 func (c *Client) Signal(ctx context.Context, runID, name string, payload any, opts ...CallOption) (*SignalResult, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	encodedName, err := segment(name)
+	if err != nil {
+		return nil, err
+	}
 	o := callOptionsOf(opts)
 	idempotencyKey, err := key(o.idempotencyKey)
 	if err != nil {
@@ -378,7 +423,7 @@ func (c *Client) Signal(ctx context.Context, runID, name string, payload any, op
 		payload = map[string]any{}
 	}
 	resp, err := c.do(ctx, request{
-		method: "POST", path: "/runs/" + url.PathEscape(runID) + "/signals/" + url.PathEscape(name), body: payload, hasBody: true,
+		method: "POST", path: path + "/signals/" + encodedName, body: payload, hasBody: true,
 		idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true,
 	})
 	if err != nil {
@@ -475,6 +520,10 @@ type EventsOptions struct {
 
 // Events reads a page of the journal of a run.
 func (c *Client) Events(ctx context.Context, runID string, options EventsOptions) (*JournalPage, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return nil, err
+	}
 	traceparent, err := c.trace(ctx, "")
 	if err != nil {
 		return nil, err
@@ -486,7 +535,7 @@ func (c *Client) Events(ctx context.Context, runID string, options EventsOptions
 	if options.Limit > 0 {
 		query.Set("limit", strconv.Itoa(options.Limit))
 	}
-	resp, err := c.do(ctx, request{method: "GET", path: "/runs/" + url.PathEscape(runID) + "/events", query: query, repeatable: true, traceparent: traceparent})
+	resp, err := c.do(ctx, request{method: "GET", path: path + "/events", query: query, repeatable: true, traceparent: traceparent})
 	if err != nil {
 		return nil, err
 	}

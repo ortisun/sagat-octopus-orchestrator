@@ -36,7 +36,7 @@ func (h *Host) idle(ctx context.Context, d time.Duration) {
 // followed by a wait.
 func (h *Host) run(ctx context.Context, l *link) {
 	defer close(l.loopDone)
-	failures := 0
+	failures, refused := 0, 0
 	for !h.stopping.Load() {
 		free := h.cfg.maxInflight - h.inflight()
 		if free <= 0 {
@@ -51,25 +51,29 @@ func (h *Host) run(ctx context.Context, l *link) {
 			if h.stopping.Load() {
 				return
 			}
-			h.pollFailed(ctx, l, err, &failures)
+			h.pollFailed(ctx, l, err, &failures, &refused)
 			continue
 		}
-		failures = 0
-		h.emit(Event{Type: EventPoll, Tasks: len(response.GetTasks())})
-		for _, lease := range response.GetTasks() {
+		failures, refused = 0, 0
+		tasks := response.GetTasks()
+		// The host runs at most as many tasks as it asked for: a server that sends more is not obeyed. The
+		// leases of the rest lapse and the server leases them again.
+		if asked := min(free, maxPoll); len(tasks) > asked {
+			h.log.Warn("the server sent more tasks than were asked for: the rest are left to lapse",
+				"asked", asked, "received", len(tasks), "ignored", len(tasks)-asked)
+			tasks = tasks[:asked]
+		}
+		h.emit(Event{Type: EventPoll, Tasks: len(tasks)})
+		for _, lease := range tasks {
 			h.dispatch(l, lease)
 		}
-		if len(response.GetTasks()) == 0 {
-			wait := time.Duration(response.GetRetryAfterMs()) * time.Millisecond
-			if wait <= 0 {
-				wait = time.Second
-			}
-			h.idle(ctx, boff.Jitter(max(wait, 50*time.Millisecond)))
+		if len(tasks) == 0 {
+			h.idle(ctx, boff.Jitter(pollWait(response.GetRetryAfterMs())))
 		}
 	}
 }
 
-func (h *Host) pollFailed(ctx context.Context, l *link, err error, failures *int) {
+func (h *Host) pollFailed(ctx context.Context, l *link, err error, failures, refused *int) {
 	var se *sagat.Error
 	if !errors.As(err, &se) {
 		h.log.Error("the poll loop failed", "error", typeName(err))
@@ -77,6 +81,16 @@ func (h *Host) pollFailed(ctx context.Context, l *link, err error, failures *int
 		return
 	}
 	if se.Code == sagat.CodeUnauthenticated {
+		// A server that registers a worker and refuses it at once must not be hammered: the first refusal
+		// registers again at once, and each one in a row after it waits for the backoff first. A poll that
+		// succeeds starts over.
+		if *refused > 0 {
+			h.idle(ctx, boff.Delay(h.retry, *refused-1, nil))
+			if h.stopping.Load() {
+				return
+			}
+		}
+		*refused++
 		h.log.Warn("the session is gone: registering again")
 		h.emit(Event{Type: EventReconnect})
 		registerErr := h.register(ctx, l)
@@ -87,7 +101,7 @@ func (h *Host) pollFailed(ctx context.Context, l *link, err error, failures *int
 	}
 	var retryAfter time.Duration
 	if se.RetryAfter != nil {
-		retryAfter = *se.RetryAfter
+		retryAfter = boff.CapServerWait(*se.RetryAfter)
 	}
 	if se.Code == sagat.CodeRateLimited {
 		h.idle(ctx, max(retryAfter, 100*time.Millisecond))
@@ -99,4 +113,14 @@ func (h *Host) pollFailed(ctx context.Context, l *link, err error, failures *int
 	wait := max(boff.Delay(policy, *failures, nil), retryAfter)
 	*failures++
 	h.idle(ctx, min(30*time.Second, wait))
+}
+
+// pollWait is how long the host waits after an empty poll that asked for retryAfterMs: a second when it
+// asked for nothing, at least 50 ms, at most a minute whatever the server says.
+func pollWait(retryAfterMs int32) time.Duration {
+	wait := time.Duration(retryAfterMs) * time.Millisecond
+	if wait <= 0 {
+		wait = time.Second
+	}
+	return boff.CapServerWait(max(wait, 50*time.Millisecond))
 }

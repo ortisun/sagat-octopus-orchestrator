@@ -70,7 +70,7 @@ func once(t *testing.T, base string, opts ...client.Option) *client.Client {
 func TestHTTPSWithTheSystemRootsRefusesAServerCertificateNobodyTrusts(t *testing.T) {
 	authority := testpki.NewAuthority(t, "test authority")
 	f := newTLSFake(t, &tls.Config{Certificates: []tls.Certificate{authority.Server(t, "server", "127.0.0.1", "localhost")}})
-	_, err := once(t, f.base()).Get(context.Background(), "r")
+	_, err := once(t, f.base()).Get(context.Background(), runUUID)
 	se := asSagat(t, err)
 	if se.Code != sagat.CodeTransport || !se.Retryable {
 		t.Errorf("an untrusted certificate is a transport failure: %+v", se)
@@ -93,7 +93,7 @@ func TestTheConfiguredCAMakesTheSameServerWork(t *testing.T) {
 	authority := testpki.NewAuthority(t, "test authority")
 	f := newTLSFake(t, &tls.Config{Certificates: []tls.Certificate{authority.Server(t, "server", "127.0.0.1", "localhost")}})
 	c := once(t, f.base(), client.WithTLSConfig(&tls.Config{RootCAs: authority.Pool}))
-	got, err := c.Get(context.Background(), "r")
+	got, err := c.Get(context.Background(), runUUID)
 	if err != nil || got.Status != client.StatusRunning {
 		t.Fatalf("%v %v", got, err)
 	}
@@ -102,7 +102,7 @@ func TestTheConfiguredCAMakesTheSameServerWork(t *testing.T) {
 	}
 	// Another authority's roots do not trust it.
 	other := testpki.NewAuthority(t, "another authority")
-	_, err = once(t, f.base(), client.WithTLSConfig(&tls.Config{RootCAs: other.Pool})).Get(context.Background(), "r")
+	_, err = once(t, f.base(), client.WithTLSConfig(&tls.Config{RootCAs: other.Pool})).Get(context.Background(), runUUID)
 	if !sagat.IsCode(err, sagat.CodeTransport) {
 		t.Errorf("a CA that did not sign it: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestTheConfiguredCAMakesTheSameServerWork(t *testing.T) {
 func TestTheNameOfTheServerIsCheckedEvenWithATrustedCA(t *testing.T) {
 	authority := testpki.NewAuthority(t, "test authority")
 	f := newTLSFake(t, &tls.Config{Certificates: []tls.Certificate{authority.Server(t, "server", "some-other-host.example")}})
-	_, err := once(t, f.base(), client.WithTLSConfig(&tls.Config{RootCAs: authority.Pool})).Get(context.Background(), "r")
+	_, err := once(t, f.base(), client.WithTLSConfig(&tls.Config{RootCAs: authority.Pool})).Get(context.Background(), runUUID)
 	var wrongName x509.HostnameError
 	if !sagat.IsCode(err, sagat.CodeTransport) || !errors.As(err, &wrongName) {
 		t.Errorf("a certificate for another name is refused: %v", err)
@@ -121,7 +121,7 @@ func TestTheNameOfTheServerIsCheckedEvenWithATrustedCA(t *testing.T) {
 	}
 	// ServerName of the configuration is honoured: that is the name the certificate answers to.
 	named := &tls.Config{RootCAs: authority.Pool, ServerName: "some-other-host.example"}
-	if _, err := once(t, f.base(), client.WithTLSConfig(named)).Get(context.Background(), "r"); err != nil {
+	if _, err := once(t, f.base(), client.WithTLSConfig(named)).Get(context.Background(), runUUID); err != nil {
 		t.Errorf("%v", err)
 	}
 }
@@ -136,7 +136,7 @@ func TestMutualTLSTheServerSeesTheClientCertificateAndRefusesAClientWithoutOne(t
 	withCert := once(t, f.base(), client.WithTLSConfig(&tls.Config{
 		RootCAs: authority.Pool, Certificates: []tls.Certificate{authority.Client(t, "worker-client-1")},
 	}))
-	if _, err := withCert.Get(context.Background(), "r"); err != nil {
+	if _, err := withCert.Get(context.Background(), runUUID); err != nil {
 		t.Fatal(err)
 	}
 	if calls, peers := f.seen(); calls != 1 || peers[0] != "worker-client-1" {
@@ -144,7 +144,7 @@ func TestMutualTLSTheServerSeesTheClientCertificateAndRefusesAClientWithoutOne(t
 	}
 
 	without := once(t, f.base(), client.WithTLSConfig(&tls.Config{RootCAs: authority.Pool}))
-	_, err := without.Get(context.Background(), "r")
+	_, err := without.Get(context.Background(), runUUID)
 	if se := asSagat(t, err); se.Code != sagat.CodeTransport {
 		t.Errorf("a client with no certificate is refused at the handshake: %+v", se)
 	}
@@ -153,7 +153,7 @@ func TestMutualTLSTheServerSeesTheClientCertificateAndRefusesAClientWithoutOne(t
 	forged := once(t, f.base(), client.WithTLSConfig(&tls.Config{
 		RootCAs: authority.Pool, Certificates: []tls.Certificate{stranger.Client(t, "intruder")},
 	}))
-	if _, err := forged.Get(context.Background(), "r"); !sagat.IsCode(err, sagat.CodeTransport) {
+	if _, err := forged.Get(context.Background(), runUUID); !sagat.IsCode(err, sagat.CodeTransport) {
 		t.Errorf("a client certificate nobody trusts: %v", err)
 	}
 	if calls, _ := f.seen(); calls != 1 {
@@ -184,7 +184,7 @@ func TestTheTLSConfigurationIsCopiedSoLaterChangesToItDoNotReachTheClient(t *tes
 	config := &tls.Config{RootCAs: authority.Pool}
 	c := once(t, f.base(), client.WithTLSConfig(config))
 	config.RootCAs = x509.NewCertPool() // the application changes its mind: the client has its own copy
-	if _, err := c.Get(context.Background(), "r"); err != nil {
+	if _, err := c.Get(context.Background(), runUUID); err != nil {
 		t.Errorf("%v", err)
 	}
 }

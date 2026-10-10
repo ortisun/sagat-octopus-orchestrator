@@ -21,7 +21,7 @@ repository `https://github.com/ortisun/sagat-octopus-orchestrator`, directory `s
 
 ## Install
 
-Go 1.24 or newer.
+Go 1.25 or newer (gRPC v1.83 requires it).
 
 ```sh
 go get github.com/ortisun/sagat-octopus-orchestrator/sdks/go@latest
@@ -136,6 +136,22 @@ Every failure is a `*sagat.Error`: `Code` (see `sdks/error-catalog.json`), `Mess
 context's error, so `errors.Is(err, context.Canceled)` works. No token, payload or secret is ever put in
 an error, a log or an event.
 
+## Safety
+
+* **No credential is printed.** A `sagat.StaticToken`, a `*client.Client`, a `*worker.Host` and a `*worker.Secrets` print as
+  `<redacted>` (or as the host and the namespace only) with every `fmt` verb, as JSON and in `log/slog`; a URL's
+  userinfo and query are never printed. A panic in a token source, a logger, an event handler or a trace hook is
+  recovered and never repeated: the heartbeat and the host go on.
+* **What the server says is bounded.** An answer is read up to 32 MiB (then `PROTOCOL`); a wait the server asks for
+  (`Retry-After`, `retry-after-ms`, the pause after an empty poll) is capped at 60 s; the `message` of a server error
+  is cut to 512 characters and its `reason` to 128; a `traceId` that is not 32 hexadecimal characters is not
+  repeated; a poll answer with more tasks than the host asked for runs only the first ones and logs how many were
+  left to lapse. A server that registers a worker and refuses it at once is not hammered: the second refusal in a
+  row waits for the backoff first.
+* **Ids and names in a URL path.** A run id is a UUID (`VALIDATION_FAILED` otherwise, before any request); a signal
+  name of `""`, `"."` or `".."` is refused; any other name is percent-encoded (`/` is `%2F`).
+* A redirect is never followed (see Configuration).
+
 ## Configuration
 
 | Setting (SPEC section 1) | Go |
@@ -165,12 +181,19 @@ Plain `http://` outside loopback is accepted and logs one warning at start. A re
 | Anything else of `*tls.Config` (`MinVersion`, `GetClientCertificate`...) | passed through | passed through | no |
 | Your own `http.Client` / transport | `client.WithHTTPClient` (then `WithTLSConfig` is ignored) | n/a (`worker.WithDialOptions` for the channel) | no |
 
+**What you hand the SDK is yours.** `WithTLSConfig` and `WithHTTPClient` (and `worker.WithDialOptions`) give the SDK a
+`*tls.Config` / `*http.Client` / gRPC dial options that you built, so what they do with certificate and host-name
+verification is your choice, not the SDK's: the SDK never builds such an object with verification off, has no setting
+that turns it off, and does not look inside the ones you give it (a `*tls.Config{InsecureSkipVerify: true}` that you pass
+is honoured, as Go's own packages would). The only things the SDK adds to a client of yours are a copy of it and a
+`CheckRedirect` that never follows a redirect.
+
 The configuration is copied when the client or the host is made. Without one, the default is the system
 roots and TLS 1.2 or newer. **Certificate verification is never switched off**: there is no option for it, no
 `InsecureSkipVerify` anywhere in the library (a test keeps those words out of the sources), and a server
 certificate that is not trusted, or is for another name, is a `TRANSPORT` error (`errors.As` reaches a
 `*tls.CertificateVerificationError` or `x509.HostnameError` as the cause). Plain `http://` is accepted for
-development; outside loopback it logs one warning at start, and `https://` logs none.
+development (any other scheme in `grpcURL` or `apiURL` is `VALIDATION_FAILED`, never plaintext); outside loopback it logs one warning at start, and `https://` logs none.
 
 ## Versioning (SemVer)
 
@@ -186,15 +209,35 @@ What was **actually run** for this release, and what was not:
 
 | | Tested here | Not run |
 |---|---|---|
-| Go | **1.24.2** (`go test -race ./...`, `go vet`, the conformance suite) | 1.25 and later, and anything older than 1.24 (`go.mod` says `go 1.24.0` because gRPC v1.80.0 requires it, so older toolchains cannot build the module) |
+| Go | **1.25.14** (`go test -race ./...`, `go vet`, `gofmt`, `govulncheck`, the conformance suite) | Every other Go: `go.mod` says `go 1.25.0` because gRPC v1.83 requires it, so **1.24 and older cannot build the module** (the first release of this SDK was run on 1.24.2, before that change); 1.26 was not run as the SDK's toolchain |
 | OS / arch | **macOS, Darwin 25.3.0, arm64** | Linux, Windows, amd64 |
 | Server | The platform at this commit (REST `/v1`, worker protocol 1.2), through the conformance suite, which plays 13 scenarios; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
 | TLS | Tested with throw-away certificates (ECDSA, generated in the tests) against an in-process TLS server, on both channels, on loopback: an untrusted server certificate is refused as `TRANSPORT` and never reaches the handler; a configured CA makes the same server work (a task goes through end to end on the worker channel); a certificate for another name is refused; with mTLS the server sees the client certificate, and refuses a client with none or with one of another authority; no warning is logged for `https://`. See "TLS" below for what is **not** covered | A trusted server certificate from the *system* roots (only the untrusted case is tested), revocation, TLS versions and cipher suites, certificate rotation on a running host |
 | Race detector | `-race` passes on the unit tests | -- |
-| Vulnerability scan | Not run (`govulncheck` was not installed) | -- |
+| Vulnerability scan | `govulncheck` v1.7.0 on `./...` with Go 1.25.14 and the vulnerability database of 2026-10-08: 9 reachable findings, all from 2026-10-08, and 4 in packages that are imported but not called | See "Known findings" below |
 
-Dependencies, all at least two weeks older than this release: `google.golang.org/grpc` v1.80.0 (the
-newest that builds with Go 1.24), `google.golang.org/protobuf` v1.36.11, and what `go.sum` pins.
+Dependencies, all at least two weeks older than this release (checked against the proxy): `google.golang.org/grpc`
+v1.83.2 (2026-08-25), `google.golang.org/protobuf` v1.36.11, `golang.org/x/net` v0.58.0 (2026-08-12), `golang.org/x/sys`
+v0.47.0, `golang.org/x/text` v0.41.0, and what `go.sum` pins.
+
+### Known findings (`govulncheck ./...`, 2026-10-08 database)
+
+* **Nothing left from the advisories that an independent review found reachable on gRPC v1.80.0 and `x/net` v0.49.0**: GO-2026-6348 (heap
+  exhaustion through HTTP/2 DATA fragmentation, reachable through `ResolveSecrets`) is fixed in gRPC 1.83.1,
+  GO-2026-6061 in 1.82.1, GO-2026-4918 in `x/net` 0.53.0, GO-2026-6443 (server panic, not called) in 1.83.2.
+* **9 findings remain, all published on 2026-10-08, two days ago.** They are advisories of `net/http`, `crypto/tls` and
+  `net/textproto` of the Go standard library (fixed in Go 1.26.9, released 2026-10-02) and, for five of them
+  (GO-2026-6603, 6610, 6611, 6612, 6617), of the same HTTP/2 code in `golang.org/x/net` (fixed in v0.60.0, released
+  2026-10-08). Both fixes are younger than the two-week rule, and `x/net` v0.59.0 and later require Go 1.26, so
+  taking them would raise the minimum Go of the SDK for nothing `govulncheck` can see (v0.59.0 does not fix any of
+  these). The standard-library findings are those of the toolchain that compiled the SDK, not of the SDK: whoever
+  builds with Go 1.26.9 or newer does not have the standard-library ones. Judging by their titles, most concern HTTP/2 *servers* (HPACK encoder race, flow-control refund, Trailer memory,
+CONNECT desynchronization), which the SDK is not; 6605 (HTTP/1 client desynchronization after a CONNECT rejection), 6607
+(`crypto/tls` ECH), 6608 (MIME headers), 6610 (an HTTP/2 transport accepting malformed framing headers) and 6611
+(CPU from repeated initial window changes) can concern a client, and I did not establish whether the SDK is exposed to
+them. The call traces `govulncheck` prints go through interface dispatch (for example `rand.Read` to
+`http2.ConnectionError.Error`) and are not real call paths.
+* 4 more advisories are in packages the SDK imports but does not call (`html/template`, `os` on Windows, `net/http` Range headers).
 
 ## Development
 

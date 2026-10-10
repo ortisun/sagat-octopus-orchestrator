@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/url"
@@ -31,6 +32,7 @@ import (
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	boff "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/safelog"
 	pb "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb"
 )
 
@@ -214,9 +216,7 @@ func New(grpcURL, namespace, workerName string, token sagat.TokenSource, opts ..
 	if len(cfg.languages) == 0 {
 		cfg.languages = []string{sagat.Language}
 	}
-	if cfg.logger == nil {
-		cfg.logger = slog.New(slog.DiscardHandler)
-	}
+	cfg.logger = safelog.New(cfg.logger)
 	if cfg.timeout <= 0 {
 		cfg.timeout = 30 * time.Second
 	}
@@ -287,10 +287,43 @@ func (h *Host) RegisterReconciler(name string, handler ReconcilerHandler) error 
 	return h.add("reconciler", name, nil, handler)
 }
 
+// emit calls the event hook of the application; a hook that panics does not take the host with it.
 func (h *Host) emit(e Event) {
-	if h.cfg.onEvent != nil {
-		h.cfg.onEvent(e)
+	if h.cfg.onEvent == nil {
+		return
 	}
+	defer func() {
+		if recover() != nil {
+			h.log.Warn("the event handler panicked", "event", string(e.Type))
+		}
+	}()
+	h.cfg.onEvent(e)
+}
+
+// String describes the host without its credentials: the name, the namespace and the host of the
+// service, and nothing else (a URL can carry a credential in its userinfo or its query; the token, the
+// session token and the lease tokens are never printed).
+func (h *Host) String() string {
+	return fmt.Sprintf("worker.Host{name: %s, namespace: %s, host: %s}", h.name, h.namespace, h.target())
+}
+
+// GoString is String, for %#v.
+func (h *Host) GoString() string { return h.String() }
+
+// Format prints String whatever the verb: no way of printing a host shows a credential.
+func (h *Host) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, h.String()) }
+
+// LogValue is how log/slog shows a host.
+func (h *Host) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("name", h.name), slog.String("namespace", h.namespace), slog.String("host", h.target()))
+}
+
+func (h *Host) target() string {
+	target, _, err := targetOf(h.grpcURL)
+	if err != nil {
+		return ""
+	}
+	return target
 }
 
 // Start connects, registers with the server and begins the loop; it returns once registered. ctx

@@ -13,6 +13,7 @@ import (
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/bound"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx"
 )
 
@@ -123,8 +124,13 @@ func (c *Client) once(ctx context.Context, req request, payload []byte) (*respon
 		return nil, transportError(ctx, attemptCtx, err, "no answer from the server")
 	}
 	defer resp.Body.Close()
-	traceID := resp.Header.Get("X-Trace-Id")
+	traceID := bound.TraceID(resp.Header.Get("X-Trace-Id"))
 	data, err := readAll(resp.Body)
+	if errors.Is(err, errTooLarge) {
+		e := sagat.NewError(sagat.CodeProtocol, "the answer is too large")
+		e.HTTPStatus, e.TraceID = resp.StatusCode, traceID
+		return nil, e
+	}
 	if err != nil {
 		e := transportError(ctx, attemptCtx, err, "the answer was cut off")
 		var se *sagat.Error
@@ -169,8 +175,13 @@ func errorOf(resp *http.Response, data []byte, traceID string) *sagat.Error {
 	status := resp.StatusCode
 	var retryAfter *time.Duration
 	if header := resp.Header.Get("Retry-After"); header != "" {
-		if seconds, err := strconv.ParseUint(header, 10, 32); err == nil {
-			d := time.Duration(seconds) * time.Second
+		// A wait the server asks for is capped (a number too large to read is the longest there is).
+		seconds, err := strconv.ParseUint(header, 10, 64)
+		if err == nil || errors.Is(err, strconv.ErrRange) {
+			d := bound.MaxServerWait
+			if err == nil && seconds < uint64(bound.MaxServerWait/time.Second) {
+				d = time.Duration(seconds) * time.Second
+			}
 			retryAfter = &d
 		}
 	}
@@ -188,7 +199,7 @@ func errorOf(resp *http.Response, data []byte, traceID string) *sagat.Error {
 	message := "the server answered " + strconv.Itoa(status)
 	if given != "" {
 		if m, ok := jsonx.String(envelope, "message"); ok {
-			message = m
+			message = bound.Text(m, bound.MaxMessage)
 		}
 	}
 	e := sagat.NewError(code, message)
@@ -197,7 +208,7 @@ func errorOf(resp *http.Response, data []byte, traceID string) *sagat.Error {
 	e.TraceID = traceID
 	if envelopeErr == nil {
 		if id, ok := jsonx.String(envelope, "traceId"); ok {
-			e.TraceID = id
+			e.TraceID = bound.TraceID(id)
 		}
 		if given != "" {
 			if r, ok := jsonx.Bool(envelope, "retryable"); ok {
@@ -205,7 +216,8 @@ func errorOf(resp *http.Response, data []byte, traceID string) *sagat.Error {
 			}
 		}
 		if details, err := jsonx.Object(envelope["details"]); err == nil {
-			e.Reason, _ = jsonx.String(details, "reason")
+			reason, _ := jsonx.String(details, "reason")
+			e.Reason = bound.Text(reason, bound.MaxReason)
 		}
 	}
 	// A call the server does not have (an older server, sdks/SPEC.md section 9) is told from a

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,5 +126,38 @@ func TestTheSafeMessageIsValidUTF8AndAtMost512Characters(t *testing.T) {
 	}
 	if got := safeMessage(string(long)); len([]rune(got)) != 512 {
 		t.Errorf("%d", len([]rune(got)))
+	}
+}
+
+func TestAWaitTheServerAsksForIsCappedAt60Seconds(t *testing.T) {
+	for _, ms := range []string{"3600000", "4294967295", "60001"} {
+		trailer := metadata.Pairs("retry-after-ms", ms)
+		var se *sagat.Error
+		err := errorOfStatus(context.Background(), methodPoll, status.Error(codes.ResourceExhausted, ""), nil, trailer)
+		if !errors.As(err, &se) || se.RetryAfter == nil || *se.RetryAfter != time.Minute {
+			t.Errorf("%s: %v", ms, se.RetryAfter)
+		}
+	}
+	trailer := metadata.Pairs("retry-after-ms", "1500")
+	var se *sagat.Error
+	err := errorOfStatus(context.Background(), methodPoll, status.Error(codes.ResourceExhausted, ""), nil, trailer)
+	if !errors.As(err, &se) || *se.RetryAfter != 1500*time.Millisecond {
+		t.Errorf("a wait under the cap is kept: %v", se.RetryAfter)
+	}
+	// The pause after an empty poll.
+	for ms, want := range map[int32]time.Duration{0: time.Second, -5: time.Second, 10: 50 * time.Millisecond, 2000: 2 * time.Second,
+		60_000: time.Minute, 3_600_000: time.Minute, 2_147_483_647: time.Minute} {
+		if got := pollWait(ms); got != want {
+			t.Errorf("pollWait(%d) = %v, want %v", ms, got, want)
+		}
+	}
+}
+
+func TestTheMachineCodeOfAGRPCAnswerIsBounded(t *testing.T) {
+	trailer := metadata.Pairs("x-sagat-error", strings.Repeat("A", 100_000))
+	var se *sagat.Error
+	err := errorOfStatus(context.Background(), methodPoll, status.Error(codes.Aborted, ""), nil, trailer)
+	if !errors.As(err, &se) || len(se.Reason) > 128 {
+		t.Errorf("a reason of %d bytes", len(se.Reason))
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/bound"
 )
 
 // Delay is min(MaxDelay, InitialDelay*2^n) scaled by random() in [0.5, 1.0]; n is the attempt that
@@ -30,7 +31,7 @@ func Delay(policy sagat.RetryPolicy, n int, random func() float64) time.Duration
 func After(policy sagat.RetryPolicy, n int, err *sagat.Error, random func() float64) time.Duration {
 	d := Delay(policy, n, random)
 	if err != nil && err.RetryAfter != nil && *err.RetryAfter > d {
-		return *err.RetryAfter
+		return CapServerWait(*err.RetryAfter)
 	}
 	return d
 }
@@ -54,3 +55,6 @@ func Sleep(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	}
 }
+
+// CapServerWait caps a wait that came from the server at bound.MaxServerWait.
+func CapServerWait(d time.Duration) time.Duration { return bound.Wait(d) }

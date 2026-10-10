@@ -259,7 +259,7 @@ func TestGetIsRetriedOnUnavailabilityAndOnRateLimitingHonouringRetryAfterAndGive
 		reply(w, 200, run(nil))
 	})
 	c := newClient(t, f)
-	got, err := c.Get(context.Background(), "r-1")
+	got, err := c.Get(context.Background(), runUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestGetIsRetriedOnUnavailabilityAndOnRateLimitingHonouringRetryAfterAndGive
 	}
 
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 503, "<html>bad gateway</html>") })
-	_, err = c.Get(context.Background(), "r-1")
+	_, err = c.Get(context.Background(), runUUID)
 	se := asSagat(t, err)
 	if se.Code != sagat.CodeUnavailable || se.HTTPStatus != 503 || !se.Retryable {
 		t.Errorf("%+v", se)
@@ -290,7 +290,7 @@ func TestRetryAfterLongerThanTheBackoffIsWaitedFor(t *testing.T) {
 		reply(w, 200, run(nil))
 	})
 	began := time.Now()
-	if _, err := newClient(t, f).Get(context.Background(), "r-1"); err != nil {
+	if _, err := newClient(t, f).Get(context.Background(), runUUID); err != nil {
 		t.Fatal(err)
 	}
 	if waited := time.Since(began); waited < 900*time.Millisecond {
@@ -333,7 +333,7 @@ func TestARefusedTokenAMissingResourceAndAValidationErrorAreToldApart(t *testing
 		f.answer(func(_ seen, w http.ResponseWriter) {
 			reply(w, status, map[string]any{"code": string(code), "message": "no", "retryable": false, "traceId": strings.Repeat("b", 32)})
 		})
-		_, err := c.Get(context.Background(), "x")
+		_, err := c.Get(context.Background(), runUUID)
 		se := asSagat(t, err)
 		if se.Code != code || se.HTTPStatus != status {
 			t.Errorf("%d: %+v", status, se)
@@ -355,7 +355,7 @@ func TestTheTokenIsAskedForBeforeEveryRequestSoARotatedOneIsUsedAtOnce(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"a", "b"} {
+	for _, id := range []string{runUUID, runUUID} {
 		if _, err := c.Get(context.Background(), id); err != nil {
 			t.Fatal(err)
 		}
@@ -450,7 +450,7 @@ func TestTheAmbientTraceContextIsUsedWhenTheCallHasNone(t *testing.T) {
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
 	ambient := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 	c := newClient(t, f, client.WithTraceContext(func(context.Context) string { return ambient }))
-	if _, err := c.Get(context.Background(), "r"); err != nil {
+	if _, err := c.Get(context.Background(), runUUID); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.requests()[0].headers.Get("Traceparent"); got != ambient {
@@ -467,14 +467,14 @@ func TestTheAmbientTraceContextIsUsedWhenTheCallHasNone(t *testing.T) {
 	}
 	none := newClient(t, f, client.WithTraceContext(func(context.Context) string { return "" }))
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
-	if _, err := none.Get(context.Background(), "r"); err != nil {
+	if _, err := none.Get(context.Background(), runUUID); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.requests()[0].headers.Get("Traceparent"); got != "" {
 		t.Errorf("%q", got)
 	}
 	bad := newClient(t, f, client.WithTraceContext(func(context.Context) string { return "garbage" }))
-	if _, err := bad.Get(context.Background(), "r"); !sagat.IsCode(err, sagat.CodeBadRequest) {
+	if _, err := bad.Get(context.Background(), runUUID); !sagat.IsCode(err, sagat.CodeBadRequest) {
 		t.Errorf("%v", err)
 	}
 }
@@ -602,7 +602,7 @@ func TestNoAnswerAtAllIsARetryableTransportErrorAndALostAnswerIsRetriedOnlyBecau
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = dead.Get(context.Background(), "x")
+	_, err = dead.Get(context.Background(), runUUID)
 	if se := asSagat(t, err); se.Code != sagat.CodeTransport || !se.Retryable || se.HTTPStatus != 0 || se.GRPCStatus != "" {
 		t.Errorf("%+v", se)
 	}
@@ -618,7 +618,7 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 		reply(w, 202, map[string]any{"deliveredTo": []any{"wait"}})
 	})
 	c := newClient(t, f)
-	cancelled, err := c.Cancel(context.Background(), "r-1", "no longer needed", client.WithExpectedRunVersion(3))
+	cancelled, err := c.Cancel(context.Background(), runUUID, "no longer needed", client.WithExpectedRunVersion(3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,7 +628,7 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 	if body := f.requests()[0].json(t); fmt.Sprint(body) != "map[action:CANCEL expectedRunVersion:3 reason:no longer needed]" {
 		t.Errorf("%v", body)
 	}
-	signalled, err := c.Signal(context.Background(), "r-1", "payment-confirmed", map[string]any{"paymentId": "p-1"})
+	signalled, err := c.Signal(context.Background(), runUUID, "payment-confirmed", map[string]any{"paymentId": "p-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,14 +636,14 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 		t.Errorf("%v", signalled.DeliveredTo)
 	}
 	second := f.requests()[1]
-	if second.url != "/v1/runs/r-1/signals/payment-confirmed" || string(second.body) != `{"paymentId":"p-1"}` {
+	if second.url != "/v1/runs/"+runUUID+"/signals/payment-confirmed" || string(second.body) != `{"paymentId":"p-1"}` {
 		t.Errorf("%s %s", second.url, second.body)
 	}
 	if second.headers.Get("Idempotency-Key") == "" {
 		t.Error("a signal carries a key")
 	}
 	// Operate: the other actions and their options.
-	if _, err := c.Operate(context.Background(), "r-1", client.ActionResolveStep, "an operator decided", client.WithStepID("s"), client.WithOutcome("FAILED"), client.WithErrorCode("E_X")); err != nil {
+	if _, err := c.Operate(context.Background(), runUUID, client.ActionResolveStep, "an operator decided", client.WithStepID("s"), client.WithOutcome("FAILED"), client.WithErrorCode("E_X")); err != nil {
 		t.Fatal(err)
 	}
 	if body := f.requests()[2].json(t); fmt.Sprint(body) != "map[action:RESOLVE_STEP errorCode:E_X outcome:FAILED reason:an operator decided stepId:s]" {
@@ -663,12 +663,12 @@ func TestWaitingForCompletionPollsUntilTheRunIsTerminal(t *testing.T) {
 		reply(w, 200, run(map[string]any{"status": status}))
 	})
 	c := newClient(t, f)
-	done, err := c.WaitForCompletion(context.Background(), "r", client.PollInterval(5*time.Millisecond), client.WaitTimeout(5*time.Second))
+	done, err := c.WaitForCompletion(context.Background(), runUUID, client.PollInterval(5*time.Millisecond), client.WaitTimeout(5*time.Second))
 	if err != nil || done.Status != client.StatusSucceeded || polls != 3 {
 		t.Fatalf("%v %v after %d polls", done, err, polls)
 	}
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
-	_, err = c.WaitForCompletion(context.Background(), "r", client.PollInterval(5*time.Millisecond), client.WaitTimeout(30*time.Millisecond))
+	_, err = c.WaitForCompletion(context.Background(), runUUID, client.PollInterval(5*time.Millisecond), client.WaitTimeout(30*time.Millisecond))
 	if se := asSagat(t, err); se.Reason != "WAIT_TIMEOUT" {
 		t.Errorf("%+v", se)
 	}
@@ -698,7 +698,7 @@ func TestACancelledContextEndsTheCallWithCancelledThatWrapsTheContextsError(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-started; cancel() }()
 	began := time.Now()
-	_, err := newClient(t, f).Get(ctx, "r")
+	_, err := newClient(t, f).Get(ctx, runUUID)
 	se := asSagat(t, err)
 	if se.Code != sagat.CodeCancelled || !errors.Is(err, context.Canceled) || se.Retryable {
 		t.Errorf("%+v", se)
@@ -719,7 +719,7 @@ func TestACancelledContextEndsTheCallWithCancelledThatWrapsTheContextsError(t *t
 	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel2()
-	_, err = slow.Get(ctx2, "r")
+	_, err = slow.Get(ctx2, runUUID)
 	if !sagat.IsCode(err, sagat.CodeCancelled) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("%v", err)
 	}
@@ -729,7 +729,7 @@ func TestACallThatRunsOutOfTimeIsATransportErrorNotACancellation(t *testing.T) {
 	f := newFake(t)
 	f.answer(func(_ seen, w http.ResponseWriter) { time.Sleep(300 * time.Millisecond); reply(w, 200, run(nil)) })
 	c := newClient(t, f, client.WithTimeout(50*time.Millisecond), client.WithRetry(sagat.RetryPolicy{MaxAttempts: 1}))
-	_, err := c.Get(context.Background(), "r")
+	_, err := c.Get(context.Background(), runUUID)
 	if se := asSagat(t, err); se.Code != sagat.CodeTransport || !strings.Contains(se.Message, "timed out") {
 		t.Errorf("%+v", se)
 	}
@@ -738,12 +738,12 @@ func TestACallThatRunsOutOfTimeIsATransportErrorNotACancellation(t *testing.T) {
 func TestAServerThatDoesNotHaveTheCallIsToldFromAResourceThatIsMissing(t *testing.T) {
 	f := newFake(t)
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 404, "<html>no such route</html>") })
-	_, err := newClient(t, f).Get(context.Background(), "r")
+	_, err := newClient(t, f).Get(context.Background(), runUUID)
 	if se := asSagat(t, err); se.Code != sagat.CodeNotFound || se.Reason != "UNSUPPORTED_BY_SERVER" || se.Retryable {
 		t.Errorf("%+v", se)
 	}
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 501, nil) })
-	_, err = newClient(t, f).Get(context.Background(), "r")
+	_, err = newClient(t, f).Get(context.Background(), runUUID)
 	if se := asSagat(t, err); se.Code != sagat.CodeNotFound || se.Reason != "UNSUPPORTED_BY_SERVER" {
 		t.Errorf("%+v", se)
 	}
@@ -751,7 +751,7 @@ func TestAServerThatDoesNotHaveTheCallIsToldFromAResourceThatIsMissing(t *testin
 	f.answer(func(_ seen, w http.ResponseWriter) {
 		reply(w, 404, map[string]any{"code": "NOT_FOUND", "message": "no such run", "retryable": false})
 	})
-	_, err = newClient(t, f).Get(context.Background(), "r")
+	_, err = newClient(t, f).Get(context.Background(), runUUID)
 	if se := asSagat(t, err); se.Code != sagat.CodeNotFound || se.Reason != "" {
 		t.Errorf("%+v", se)
 	}
@@ -768,7 +768,7 @@ func TestAnAnswerThatIsNotWhatTheContractSaysIsAProtocolError(t *testing.T) {
 		"no creation time": `{"runId":"r","workflowId":"w","versionId":"v","status":"RUNNING"}`,
 	} {
 		f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, body) })
-		if _, err := c.Get(context.Background(), "r"); !sagat.IsCode(err, sagat.CodeProtocol) {
+		if _, err := c.Get(context.Background(), runUUID); !sagat.IsCode(err, sagat.CodeProtocol) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -786,11 +786,11 @@ func TestTheJournalOfARunIsReadAPageAtATime(t *testing.T) {
 			map[string]any{"eventType": "step.leased", "stepId": "work", "attempt": 2},
 		}, "nextCursor": "c9"})
 	})
-	page, err := newClient(t, f).Events(context.Background(), "r-1", client.EventsOptions{Limit: 200, Cursor: "c1"})
+	page, err := newClient(t, f).Events(context.Background(), runUUID, client.EventsOptions{Limit: 200, Cursor: "c1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if url := f.requests()[0].url; !strings.HasPrefix(url, "/v1/runs/r-1/events?") || !strings.Contains(url, "limit=200") || !strings.Contains(url, "cursor=c1") {
+	if url := f.requests()[0].url; !strings.HasPrefix(url, "/v1/runs/"+runUUID+"/events?") || !strings.Contains(url, "limit=200") || !strings.Contains(url, "cursor=c1") {
 		t.Errorf("%s", url)
 	}
 	if len(page.Items) != 2 || page.Items[0].Type != "run.started" || page.Items[0].Attempt != nil || page.Items[1].StepID != "work" || *page.Items[1].Attempt != 2 || page.NextCursor != "c9" {
@@ -826,7 +826,7 @@ func TestTheConfigurationIsCheckedAndAWarningIsLoggedForPlainHTTPOutsideLoopback
 	// The user agent takes a suffix.
 	f := newFake(t)
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
-	if _, err := newClient(t, f, client.WithUserAgent("my-app/2.0")).Get(context.Background(), "r"); err != nil {
+	if _, err := newClient(t, f, client.WithUserAgent("my-app/2.0")).Get(context.Background(), runUUID); err != nil {
 		t.Fatal(err)
 	}
 	if ua := f.requests()[0].headers.Get("User-Agent"); !strings.HasSuffix(ua, " my-app/2.0") || !strings.HasPrefix(ua, "sagat-sdk-go/") {
@@ -839,7 +839,7 @@ func TestTheInstantsOfARunAreUTCWhateverTheZoneOfTheMachineAndTheServersOffset(t
 	f.answer(func(_ seen, w http.ResponseWriter) {
 		reply(w, 200, run(map[string]any{"createdAt": "2026-10-10T15:30:00+05:30", "finishedAt": "2026-10-10T10:00:05.123456Z"}))
 	})
-	got, err := newClient(t, f).Get(context.Background(), "r")
+	got, err := newClient(t, f).Get(context.Background(), runUUID)
 	if err != nil {
 		t.Fatal(err)
 	}

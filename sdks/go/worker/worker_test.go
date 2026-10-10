@@ -1035,6 +1035,7 @@ func hostGoroutines() int {
 }
 
 func TestAStoppedHostLeavesNoGoroutineOrTimerOfItsOwnBehind(t *testing.T) {
+	before := hostGoroutines() // the hosts of other tests may still be winding down
 	f := newFakeService(t)
 	h := newHost(t, f, worker.WithHeartbeatInterval(10*time.Millisecond))
 	must(t, h.RegisterActivity("slow", func(ctx context.Context, _ json.RawMessage) (any, error) {
@@ -1050,7 +1051,7 @@ func TestAStoppedHostLeavesNoGoroutineOrTimerOfItsOwnBehind(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	must(t, h.Stop(ctx))
-	until(t, "no goroutine of the host", func() bool { return hostGoroutines() == 0 })
+	until(t, "no goroutine of the host", func() bool { return hostGoroutines() == before })
 }
 
 func TestTheHostCanBeStartedAgainAfterItWasStopped(t *testing.T) {

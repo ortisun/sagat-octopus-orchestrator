@@ -24,13 +24,13 @@ func TestARedirectIsNeverFollowedAndIsAProtocolError(t *testing.T) {
 			w.WriteHeader(status)
 		})
 		for name, call := range map[string]func(*client.Client) error{
-			"get": func(c *client.Client) error { _, err := c.Get(context.Background(), "r"); return err },
+			"get": func(c *client.Client) error { _, err := c.Get(context.Background(), runUUID); return err },
 			"start": func(c *client.Client) error {
 				_, err := c.Start(context.Background(), workflowID, map[string]any{"a": 1}, client.WithIdempotencyKey("key-12345678"))
 				return err
 			},
 			"signal": func(c *client.Client) error {
-				_, err := c.Signal(context.Background(), "r", "go", map[string]any{"a": 1})
+				_, err := c.Signal(context.Background(), runUUID, "go", map[string]any{"a": 1})
 				return err
 			},
 			"publish": func(c *client.Client) error {
@@ -68,7 +68,7 @@ func TestAClientTheCallerSuppliesDoesNotFollowRedirectsEitherAndIsLeftAsItWas(t 
 	followed := 0
 	theirs := &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { followed++; return nil }}
 	c := newClient(t, origin, client.WithHTTPClient(theirs))
-	_, err := c.Get(context.Background(), "r")
+	_, err := c.Get(context.Background(), runUUID)
 	if se := asSagat(t, err); se.Code != sagat.CodeProtocol || se.HTTPStatus != 302 {
 		t.Errorf("%+v", se)
 	}

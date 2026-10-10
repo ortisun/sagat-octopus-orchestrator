@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/bound"
 	pb "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb"
 )
 
@@ -97,13 +98,18 @@ func errorOfStatus(caller context.Context, method string, err error, header, tra
 	if reason == "" {
 		reason = first(header, "x-sagat-error")
 	}
+	reason = bound.Text(reason, bound.MaxReason)
 	var retryAfter *time.Duration
 	value := first(trailer, "retry-after-ms")
 	if value == "" {
 		value = first(header, "retry-after-ms")
 	}
-	if ms, parseErr := strconv.ParseUint(value, 10, 32); parseErr == nil {
-		d := time.Duration(ms) * time.Millisecond
+	// A wait the server asks for is capped (a number too large to read is the longest there is).
+	if ms, parseErr := strconv.ParseUint(value, 10, 64); parseErr == nil || errors.Is(parseErr, strconv.ErrRange) {
+		d := bound.MaxServerWait
+		if parseErr == nil && ms < uint64(bound.MaxServerWait/time.Millisecond) {
+			d = time.Duration(ms) * time.Millisecond
+		}
 		retryAfter = &d
 	}
 	fail := func(c sagat.Code, message string) *sagat.Error {

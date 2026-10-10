@@ -29,6 +29,7 @@ type call struct {
 	md      metadata.MD
 	// peer is the common name of the client certificate of the connection, "" when it sent none.
 	peer string
+	at   time.Time
 }
 
 // failure is an answer scripted in place of the success: a gRPC code, with the trailers the real
@@ -60,6 +61,11 @@ type fakeService struct {
 	pollDelay        time.Duration
 	pollRetryAfterMs int32
 	registrations    int
+	// always answers every call of a method with the failure, after the queued ones.
+	always map[string]failure
+	// overfill makes a poll answer with every queued lease, whatever max_tasks asked for: a server that
+	// does not keep to the protocol.
+	overfill bool
 }
 
 func newFakeService(t *testing.T) *fakeService { return newFakeServiceWith(t, nil) }
@@ -70,7 +76,7 @@ func newFakeTLSService(t *testing.T, serverTLS *tls.Config) *fakeService {
 }
 
 func newFakeServiceWith(t *testing.T, serverTLS *tls.Config) *fakeService {
-	f := &fakeService{t: t, scheme: "http", failures: map[string][]failure{}, accepted: "1.2", pollRetryAfterMs: 50, heartbeatExpires: time.Now().Add(time.Minute).UnixMilli()}
+	f := &fakeService{t: t, scheme: "http", failures: map[string][]failure{}, always: map[string]failure{}, accepted: "1.2", pollRetryAfterMs: 50, heartbeatExpires: time.Now().Add(time.Minute).UnixMilli()}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -101,13 +107,18 @@ func (f *fakeService) enter(ctx context.Context, method string, request proto.Me
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, call{method: method, request: proto.Clone(request), md: md, peer: peerName})
+	f.calls = append(f.calls, call{method: method, request: proto.Clone(request), md: md, peer: peerName, at: time.Now()})
 	queue := f.failures[method]
-	if len(queue) == 0 {
+	var next failure
+	switch always, forever := f.always[method]; {
+	case len(queue) > 0:
+		next = queue[0]
+		f.failures[method] = queue[1:]
+	case forever:
+		next = always
+	default:
 		return nil
 	}
-	next := queue[0]
-	f.failures[method] = queue[1:]
 	trailer := metadata.MD{}
 	if next.reason != "" {
 		trailer.Set("x-sagat-error", next.reason)
@@ -147,6 +158,9 @@ func (f *fakeService) PollTasks(ctx context.Context, r *pb.PollTasksRequest) (*p
 	defer f.mu.Unlock()
 	// Like the real service: no more than were asked for.
 	n := min(int(r.GetMaxTasks()), len(f.leases))
+	if f.overfill {
+		n = len(f.leases)
+	}
 	tasks := f.leases[:n]
 	f.leases = f.leases[n:]
 	return &pb.PollTasksResponse{Tasks: tasks, RetryAfterMs: f.pollRetryAfterMs}, nil

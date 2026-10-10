@@ -180,7 +180,6 @@ type Task struct {
 	secretsMu    sync.Mutex
 	secretsDone  bool
 	secrets      *Secrets
-	secretsErr   error
 	resolve      func(ctx context.Context) (*Secrets, error)
 	droppedAfter atomic.Bool
 }
@@ -198,14 +197,15 @@ func (t *Task) Secrets(ctx context.Context) (*Secrets, error) {
 		return nil, sagat.NewError(sagat.CodeCancelled, "the attempt is over: its secrets are gone")
 	}
 	if t.secretsDone {
-		return t.secrets, t.secretsErr
+		return t.secrets, nil
 	}
-	t.secrets, t.secretsErr = t.resolve(ctx)
-	// A call that was cut short is asked again; any other answer holds for the attempt.
-	if !sagat.IsCode(t.secretsErr, sagat.CodeCancelled) {
-		t.secretsDone = true
+	secrets, err := t.resolve(ctx)
+	if err != nil {
+		// A failed resolution is not kept for the rest of the attempt: the next call asks again.
+		return nil, err
 	}
-	return t.secrets, t.secretsErr
+	t.secrets, t.secretsDone = secrets, true
+	return t.secrets, nil
 }
 
 // dropSecrets wipes the values; the handler has returned.
@@ -262,6 +262,18 @@ func (s *Secrets) Names() []string {
 	sort.Strings(names)
 	return names
 }
+
+// Format prints <redacted> whatever the verb: no way of printing the set shows a value.
+func (s *Secrets) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, "<redacted>") }
+
+// String is <redacted>.
+func (s *Secrets) String() string { return "<redacted>" }
+
+// GoString is <redacted>.
+func (s *Secrets) GoString() string { return "<redacted>" }
+
+// LogValue is how log/slog shows the set.
+func (s *Secrets) LogValue() slog.Value { return slog.StringValue("<redacted>") }
 
 func (s *Secrets) wipe() {
 	s.mu.Lock()

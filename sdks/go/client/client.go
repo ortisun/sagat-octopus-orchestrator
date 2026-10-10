@@ -8,6 +8,8 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/safelog"
 )
 
 const defaultTimeout = 30 * time.Second
@@ -34,6 +37,7 @@ type Client struct {
 	userAgent    string
 	traceContext func(context.Context) string
 	logger       *slog.Logger
+	host         string
 
 	mu    sync.Mutex
 	names map[string]nameEntry
@@ -129,9 +133,7 @@ func New(apiURL, namespace string, token sagat.TokenSource, opts ...Option) (*Cl
 	if cfg.userAgent != "" {
 		c.userAgent += " " + cfg.userAgent
 	}
-	if c.logger == nil {
-		c.logger = slog.New(slog.DiscardHandler)
-	}
+	c.logger = safelog.New(c.logger)
 	// A redirect is never followed (sdks/SPEC.md, section 1): a Location can point anywhere, and the request
 	// carries a bearer token, the namespace and an idempotency key. A client the caller supplied is
 	// copied, so that theirs is not changed.
@@ -142,6 +144,7 @@ func New(apiURL, namespace string, token sagat.TokenSource, opts ...Option) (*Cl
 		c.http = &http.Client{Transport: defaultTransport(cfg.tlsConfig)}
 	}
 	c.http.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	c.host = parsed.Hostname()
 	if parsed.Scheme == "http" && !isLoopback(parsed.Hostname()) {
 		c.logger.Warn("the API is reached without TLS outside loopback", "host", parsed.Hostname())
 	}
@@ -177,6 +180,23 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// String describes the client without its credentials: the host and the namespace, and nothing else
+// (a URL can carry a credential in its userinfo or its query, and the token is never printed).
+func (c *Client) String() string {
+	return fmt.Sprintf("client.Client{host: %s, namespace: %s}", c.host, c.namespace)
+}
+
+// GoString is String, for %#v.
+func (c *Client) GoString() string { return c.String() }
+
+// Format prints String whatever the verb: no way of printing a client shows a credential.
+func (c *Client) Format(f fmt.State, _ rune) { _, _ = fmt.Fprint(f, c.String()) }
+
+// LogValue is how log/slog shows a client.
+func (c *Client) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("host", c.host), slog.String("namespace", c.namespace))
+}
+
 // Close releases the idle connections of the default HTTP client. It is optional.
 func (c *Client) Close() {
 	c.http.CloseIdleConnections()
@@ -187,13 +207,16 @@ var (
 	keyPattern  = regexp.MustCompile(`^[\x21-\x7e]{8,160}$`)
 )
 
-// maxAnswer bounds what the client reads of one answer.
-const maxAnswer = 32 << 20
+// maxAnswer bounds what the client reads of one answer (a variable only so that a test can lower it).
+var maxAnswer = 32 << 20
+
+// errTooLarge says an answer went past maxAnswer.
+var errTooLarge = errors.New("the answer is too large")
 
 func readAll(body io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(body, maxAnswer+1))
+	data, err := io.ReadAll(io.LimitReader(body, int64(maxAnswer)+1))
 	if err == nil && len(data) > maxAnswer {
-		return nil, io.ErrUnexpectedEOF
+		return nil, errTooLarge
 	}
 	return data, err
 }

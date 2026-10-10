@@ -131,7 +131,7 @@ func TestMutualTLSTheServiceSeesTheWorkersCertificateAndRefusesAWorkerWithoutOne
 	for _, method := range []string{"RegisterWorker", "PollTasks", "CompleteStep"} {
 		calls := f.of(method)
 		if len(calls) == 0 || calls[0].peer != "payments-worker-1" {
-			t.Errorf("%s: the service saw the client certificate %q", method, calls)
+			t.Errorf("%s: the service saw %d calls, the first with the client certificate %q", method, len(calls), firstPeer(calls))
 		}
 	}
 
@@ -168,4 +168,11 @@ func TestNoWarningIsLoggedForHTTPS(t *testing.T) {
 	if !strings.Contains(logged.String(), "worker registered") {
 		t.Errorf("the logger was used: %s", logged.String())
 	}
+}
+
+func firstPeer(calls []call) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	return calls[0].peer
 }
