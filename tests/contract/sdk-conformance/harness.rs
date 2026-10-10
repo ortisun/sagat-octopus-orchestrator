@@ -707,6 +707,47 @@ pub fn observation<'a>(doc: &'a Value, id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no observation {id}"))
 }
 
+/// The entries of a worker's log in a normalized result.
+pub fn worker_log<'a>(doc: &'a Value, worker: &str) -> &'a [Value] {
+    doc["workerLog"][worker]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+}
+
+/// A node of a run as the platform holds it (`serverState`), found by its id in any run of the result.
+pub fn node<'a>(doc: &'a Value, id: &str) -> &'a Value {
+    doc["serverState"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|run| run["nodes"].as_array().into_iter().flatten())
+        .find(|node| node["id"] == id)
+        .unwrap_or_else(|| panic!("no node {id} in the state of the platform"))
+}
+
+/// The status of the run whose observation is `step` (its `runId`), as the platform holds it.
+pub fn run_status<'a>(doc: &'a Value, step: &str) -> &'a Value {
+    let id = &observation(doc, step)["result"]["runId"];
+    doc["serverState"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|run| run["runId"] == *id)
+        .map(|run| &run["status"])
+        .unwrap_or_else(|| panic!("the run of {step} is not in the state of the platform"))
+}
+
+/// The types of the journal events an `events` step observed, in order.
+pub fn journal(doc: &Value, step: &str) -> Vec<String> {
+    observation(doc, step)["result"]["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| event["type"].as_str().map(str::to_owned))
+        .collect()
+}
+
 /// Runs `future` on a runtime that is given up a few seconds after the test ends: a runtime that is
 /// dropped after a failure waits for ever for the blocking threads of the platform it started.
 pub fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -728,7 +769,12 @@ pub fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 static PREPARED: tokio::sync::Mutex<std::collections::BTreeSet<&'static str>> =
     tokio::sync::Mutex::const_new(std::collections::BTreeSet::new());
 
+/// One play at a time in a process: scenarios space their actions in time, and two platforms booting and
+/// running side by side would perturb each other's timing (tests of a process run in parallel threads).
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn conform(selection: &Selection) -> Suite {
+    let _alone = ONE_AT_A_TIME.lock().await;
     let only: Option<Vec<&str>> = selection
         .languages
         .as_ref()
