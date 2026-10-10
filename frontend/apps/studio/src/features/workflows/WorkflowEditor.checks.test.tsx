@@ -35,6 +35,21 @@ describe('validation', () => {
     expect(summary()).toHaveTextContent('2 problems · 0 warnings');
   });
 
+  it('asks again about the same document when the person says so, because the answer also depends on what exists', async () => {
+    let n = 0;
+    const { user, platform } = await opened({
+      behaviour: { validate: () => (++n === 1 ? invalid(problem({ code: 'UNKNOWN_SCRIPT', message: 'the script artifact was not built for this tenant' })) : { valid: true, problems: [], warnings: [] }) },
+    });
+    await waitFor(() => expect(summary()).toHaveTextContent('1 problem'));
+    expect(screen.getByRole('button', { name: 'Publish…' })).toHaveAttribute('aria-disabled', 'true');
+    // The script is built meanwhile (somewhere else): the document is the same, and so is its key.
+    await user.click(screen.getByRole('button', { name: 'Check again' }));
+    await waitFor(() => expect(summary()).toHaveTextContent('0 problems'));
+    expect(validationsOf(platform)).toHaveLength(2);
+    expect(bodyOf(validationsOf(platform)[1]?.init)).toEqual(bodyOf(validationsOf(platform)[0]?.init));
+    expect(screen.getByRole('button', { name: 'Publish…' })).not.toHaveAttribute('aria-disabled');
+  });
+
   it('waits 600 ms of quiet after a change before it asks again', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { user, platform } = await opened({ fakeTimers: true, realTimings: true });

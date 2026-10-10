@@ -107,7 +107,10 @@ function RunDetail({ runId }: { runId: string }) {
     lastStatus.current = status;
   }, [status, queries, runId]);
 
-  const facts: RunFacts | undefined = useMemo(() => (status === undefined ? undefined : { status, paused: status === 'PAUSED' || run.data?.paused === true }), [status, run.data?.paused]);
+  const facts: RunFacts | undefined = useMemo(
+    () => (status === undefined ? undefined : { status, paused: status === 'PAUSED' || run.data?.paused === true, version: run.data?.version }),
+    [status, run.data?.paused, run.data?.version],
+  );
 
   const [tab, setTab] = useState<TabId | undefined>(undefined);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);

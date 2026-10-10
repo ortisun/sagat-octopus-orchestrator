@@ -1,13 +1,14 @@
 import type { IrDocument, IrNode } from './ir';
 import { linksOf } from './registry';
 import { orphans } from './edit';
+import { danglingReferences } from './references';
 
 /**
  * What the platform does not check and a careful author would want to know. Advice is computed
  * in the browser, shown apart from the platform's problems, and never stops a save or a publish.
  */
 export interface Advice {
-  code: 'NO_TIMEOUT' | 'NO_COMPENSATION' | 'IRREVERSIBLE_IN_SAGA' | 'WIDE_FORK' | 'UNREACHABLE' | 'NO_TRIGGER';
+  code: 'NO_TIMEOUT' | 'NO_COMPENSATION' | 'IRREVERSIBLE_IN_SAGA' | 'WIDE_FORK' | 'UNREACHABLE' | 'NO_TRIGGER' | 'UNKNOWN_STEP_REFERENCE';
   /** The node it is about, empty for the document. */
   nodeId: string;
   severity: 'advice';
@@ -58,6 +59,10 @@ export function advise(doc: IrDocument): Advice[] {
     if (node.type === 'parallel' && Array.isArray(node['branches']) && node['branches'].length > WIDE_FORK) {
       add('WIDE_FORK', node.id, `"${node.id}" starts ${node['branches'].length} branches at once. Make sure the workers can take that many, or split the fork.`);
     }
+  }
+
+  for (const { nodeId, field, id } of danglingReferences(doc.nodes)) {
+    add('UNKNOWN_STEP_REFERENCE', nodeId, `"${nodeId}" reads the output of "${id}" in its ${field}, and there is no step with that id: the expression will fail when a run reaches it.`);
   }
 
   for (const id of orphans(doc)) {

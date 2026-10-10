@@ -75,7 +75,7 @@ test('US01 an author builds a workflow without programming: the platform checks 
   const dialog = page.getByRole('dialog', { name: 'Publish workflow' });
   await expect(dialog).toContainText('Added (3):');
   await expect(dialog).toContainText('Needs preparation (2)');
-  await expect(dialog).toContainText('The platform found no breaking changes.');
+  await expect(dialog).toContainText('The platform found no breaking changes of the kinds it checks');
   await dialog.getByRole('textbox', { name: 'Release notes' }).fill('First version');
   await dialog.getByRole('button', { name: 'Publish', exact: true }).click();
   await expect(page.getByText('Published version 1.').first()).toBeVisible();

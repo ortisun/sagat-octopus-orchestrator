@@ -1,5 +1,6 @@
 import { NODE_ID } from './ir';
 import type { IrDocument, IrNode } from './ir';
+import { danglingReferences, expressionFields, renameStepReference } from './references';
 import { NODE_KINDS, kindOf, linksOf } from './registry';
 import type { Link } from './registry';
 
@@ -54,8 +55,12 @@ export function addNode(doc: IrDocument, type: string, id?: string): IrDocument 
   return { ...doc, entrypoint: doc.entrypoint === '' || !doc.nodes.some((n) => n.id === doc.entrypoint) ? chosen : doc.entrypoint, nodes: [...doc.nodes, spec.make(chosen)] };
 }
 
-/** Takes a node out, and every link that led to it. Returns the links it cleared. */
-export function removeNode(doc: IrDocument, id: string): { doc: IrDocument; cleared: Link[] } {
+/**
+ * Takes a node out, and every link that led to it. Returns the links it cleared, and the
+ * expressions that still read the output of the step (`steps.<id>`), which the Studio cannot
+ * rewrite into anything and says so.
+ */
+export function removeNode(doc: IrDocument, id: string): { doc: IrDocument; cleared: Link[]; dangling: Array<{ nodeId: string; field: string }> } {
   node(doc, id);
   const cleared: Link[] = [];
   const nodes: IrNode[] = [];
@@ -70,7 +75,10 @@ export function removeNode(doc: IrDocument, id: string): { doc: IrDocument; clea
     nodes.push(next);
   }
   const entrypoint = doc.entrypoint === id ? (nodes[0]?.id ?? '') : doc.entrypoint;
-  return { doc: { ...doc, entrypoint, nodes }, cleared };
+  const dangling = danglingReferences(nodes)
+    .filter((reference) => reference.id === id)
+    .map(({ nodeId, field }) => ({ nodeId, field }));
+  return { doc: { ...doc, entrypoint, nodes }, cleared, dangling };
 }
 
 /** The node without one of its properties. */
@@ -101,6 +109,11 @@ export function renameNode(doc: IrDocument, from: string, to: string): IrDocumen
       if (link.to !== from) continue;
       const value = next[link.field];
       next = { ...next, [link.field]: Array.isArray(value) ? value.map(rename) : to };
+    }
+    // The expressions that read the output of the step read the output of the renamed one.
+    for (const { field, template, value } of expressionFields(next)) {
+      const renamed = renameStepReference(value, from, to, template);
+      if (renamed !== value) next = { ...next, [field]: renamed };
     }
     return next;
   });

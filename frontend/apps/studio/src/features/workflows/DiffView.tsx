@@ -89,7 +89,10 @@ export function DiffView({ diff, classified, labels }: { diff: DiffLike; classif
           <Findings items={attention} />
         </section>
       ) : null}
-      {classified && breaking.length === 0 && !diff.identical ? <p>The platform found no breaking changes.</p> : null}
+      {classified && breaking.length === 0 && !diff.identical ? <p>
+          The platform found no breaking changes of the kinds it checks: a trigger gone or changed, an input property gone, retyped or newly required, an output property gone or retyped, an event type nobody awaits any more. It does not judge
+          other changes to the schemas (a narrower set of values, a new limit).
+        </p> : null}
       {!classified ? <p className="hint">This comparison lists what differs. Whether a change breaks callers is judged by the platform when the draft is published.</p> : null}
 
       {nodes > 0 ? (

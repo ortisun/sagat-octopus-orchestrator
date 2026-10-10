@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { EditError, addNode, connect, disconnect, orphans, removeNode, renameNode, setEntrypoint, setField, uniqueId, wouldCreateCycle } from './edit';
 import { emptyDocument, findNode, readDocument } from './ir';
 import type { IrDocument } from './ir';
+import { advise } from './advice';
+import { danglingReferences } from './references';
 import { linksOf } from './registry';
 
 function flow(): IrDocument {
@@ -190,5 +192,44 @@ describe('readDocument', () => {
     for (const value of [null, undefined, 3, 'x', [], {}]) {
       expect(readDocument(value).doc.nodes).toEqual([]);
     }
+  });
+});
+
+describe('expressions that read the output of a step follow its rename and are told of its removal', () => {
+  const doc: IrDocument = {
+    apiVersion: 'sagat-octopus-orchestrator.io/v1',
+    kind: 'Workflow',
+    metadata: { name: 'reads' },
+    entrypoint: 'charge',
+    nodes: [
+      { id: 'charge', type: 'activity', activity: 'pay.charge', idempotencyTemplate: 'k:${steps.charge.output.id}', next: 'check' },
+      { id: 'check', type: 'condition', expression: 'steps.charge.output.ok && steps["other-step"].output.ok', ifTrue: 'done', ifFalse: 'done' },
+      { id: 'done', type: 'end', outputExpr: 'steps.charge.output' },
+    ],
+  };
+
+  it('renames the reads in every expression field, with the links', () => {
+    const renamed = renameNode(doc, 'charge', 'payment');
+    expect(renamed.nodes.map((n) => n.id)).toEqual(['payment', 'check', 'done']);
+    expect(renamed.nodes[0]?.['idempotencyTemplate']).toBe('k:${steps.payment.output.id}');
+    expect(renamed.nodes[1]?.['expression']).toBe('steps.payment.output.ok && steps["other-step"].output.ok');
+    expect(renamed.nodes[2]?.['outputExpr']).toBe('steps.payment.output');
+    expect(danglingReferences(renamed.nodes).map((d) => d.id)).toEqual(['other-step']);
+  });
+
+  it('uses the index form when the new id is not a name', () => {
+    const renamed = renameNode(doc, 'charge', 'charge-card');
+    expect(renamed.nodes[2]?.['outputExpr']).toBe('steps["charge-card"].output');
+  });
+
+  it('says which expressions still read a step that was removed, and the advice names them', () => {
+    const removed = removeNode(doc, 'charge');
+    expect(removed.dangling).toEqual([
+      { nodeId: 'check', field: 'expression' },
+      { nodeId: 'done', field: 'outputExpr' },
+    ]);
+    const advice = advise(removed.doc).filter((a) => a.code === 'UNKNOWN_STEP_REFERENCE');
+    expect(advice.map((a) => a.nodeId)).toEqual(['check', 'check', 'done']);
+    expect(advice[0]?.message).toContain('there is no step with that id');
   });
 });

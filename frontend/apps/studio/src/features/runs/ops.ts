@@ -8,6 +8,8 @@ export interface RunFacts {
   status: string;
   /** The run is paused (it can be, and still show another status, such as needing a person). */
   paused: boolean;
+  /** The version of the run the page last read (the sequence of its journal), when it knows it. */
+  version?: number | undefined;
 }
 
 export type Permission = 'run:operate' | 'saga:override';
@@ -55,6 +57,11 @@ export function isCompensation(id: string): boolean {
   return id.endsWith('~c');
 }
 
+/** The step's last failure left it unknown whether its effect happened: another attempt may do it twice. */
+export function mayHaveHappened(node: RuntimeNode | undefined): boolean {
+  return node !== undefined && !isCompensation(node.id) && node.failureCode !== undefined && node.failureCode !== null && OUTCOME_UNKNOWN.has(node.failureCode);
+}
+
 function noPermission(permission: Permission): string {
   return `You need the ${permission} permission to do this.`;
 }
@@ -76,7 +83,9 @@ function op(action: Action, scope: Operation['scope'], needs: Permission | undef
  */
 export function runOperations(run: RunFacts, can: (permission: string) => boolean): Operation[] {
   const finished = isTerminal(run.status);
-  const stopping = run.status === 'CANCELLING' || run.status === 'COMPENSATING';
+  // Only `CANCELLING` says for certain that a stop was requested: a run that compensates or waits for a person may or
+  // may not have been asked to stop (the API does not say, G154), and the platform answers a 409 if it was.
+  const stopping = run.status === 'CANCELLING';
   const refuse = (action: Action): string | undefined => {
     if (!can('run:operate')) return noPermission('run:operate');
     if (finished) return 'The run is finished.';
@@ -109,7 +118,7 @@ export function stepOperations(node: RuntimeNode, run: RunFacts, can: (permissio
     if (action === 'RETRY_COMPENSATION' && !undo) return 'Only a compensation (an id ending in ~c) can be retried this way: use Retry step.';
     if (action === 'SKIP_COMPENSATION' && !undo) return 'Only a compensation can be skipped.';
     if (!waiting) return 'This step is not waiting for a decision.';
-    if (action === 'RETRY_STEP' && !can('saga:override') && node.failureCode !== undefined && node.failureCode !== null && OUTCOME_UNKNOWN.has(node.failureCode)) {
+    if (action === 'RETRY_STEP' && !can('saga:override') && mayHaveHappened(node)) {
       return `This step may already have happened (${node.failureCode}). Retrying it needs the saga:override permission.`;
     }
     return undefined;
@@ -121,7 +130,7 @@ export function stepOperations(node: RuntimeNode, run: RunFacts, can: (permissio
 }
 
 /** What the platform will do, in the words the confirmation shows (D149). */
-export function consequence(action: Action, step?: string): string {
+export function consequence(action: Action, step?: string, node?: RuntimeNode): string {
   const which = step === undefined ? 'the step' : `step ${step}`;
   switch (action) {
     case 'PAUSE':
@@ -131,6 +140,9 @@ export function consequence(action: Action, step?: string): string {
     case 'CANCEL':
       return 'Stops the run. Completed steps of a saga are compensated according to its cancel policy; the steps still running are asked to stop.';
     case 'RETRY_STEP':
+      if (mayHaveHappened(node)) {
+        return `Asks for another attempt of ${which}, which may already have happened (${node?.failureCode ?? 'outcome unknown'}): if it did, it will happen twice. Do this only if you know it did not, or that the effect can safely be repeated. The earlier attempts stay in the journal.`;
+      }
       return `Asks for another attempt of ${which}; the earlier attempts stay in the journal.`;
     case 'RETRY_COMPENSATION':
       return `Asks for another attempt at undoing ${which}; the earlier attempts stay in the journal.`;
@@ -144,9 +156,9 @@ export function consequence(action: Action, step?: string): string {
   }
 }
 
-/** The step decisions that ask for the step id to be typed back (D149). */
-export function asksForStepId(action: Action): boolean {
-  return action === 'SKIP_COMPENSATION' || action === 'RESOLVE_STEP';
+/** The step decisions that ask for the step id to be typed back (D149): the two that override, and a retry of a step that may already have happened. */
+export function asksForStepId(action: Action, node?: RuntimeNode): boolean {
+  return action === 'SKIP_COMPENSATION' || action === 'RESOLVE_STEP' || (action === 'RETRY_STEP' && mayHaveHappened(node));
 }
 
 export const MIN_REASON = 8;

@@ -1,5 +1,6 @@
 import { forwardRef, useImperativeHandle, useRef } from 'react';
 import type { Advice } from '../../model/advice';
+import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
 import { clip } from './canvasModel';
 import type { ValidationState } from './useValidation';
@@ -67,6 +68,14 @@ export const ValidationPanel = forwardRef<
     <section ref={root} tabIndex={-1} className="wf-validation" aria-label="Validation">
       <h2 className="wf-panel-title">Validation</h2>
       <p className="hint">{checkedSummary}</p>
+      {state.phase === 'off' ? null : (
+        <p>
+          <Button onClick={state.recheck} disabled={state.phase === 'checking'}>
+            Check again
+          </Button>{' '}
+          <span className="hint">The platform's answer also depends on what exists: a script built or a secret created since it answered is not in it.</span>
+        </p>
+      )}
       {state.phase === 'failed' ? <ErrorState error={state.error} what="Checking the workflow" /> : null}
       {view === undefined && state.phase === 'checking' ? <p>Checking with the platform…</p> : null}
       {view ? (

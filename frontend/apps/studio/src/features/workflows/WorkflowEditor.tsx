@@ -187,16 +187,19 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
     (id: string) => {
       const label = kindOf(store.doc().nodes.find((n) => n.id === id)?.type ?? '')?.label ?? 'node';
       let cleared = 0;
+      let reading = 0;
       const reason = apply(
         (d) => {
           const removed = removeNode(d, id);
           cleared = removed.cleared.length;
+          reading = removed.dangling.length;
           return removed.doc;
         },
         { select: null },
       );
       if (reason === undefined) {
-        say(`Deleted ${label} "${id}"${cleared > 0 ? ` and ${cleared} ${cleared === 1 ? 'link' : 'links'} to it` : ''}. Undo brings it back.`);
+        const readers = reading > 0 ? ` ${reading === 1 ? 'An expression still reads' : `${reading} expressions still read`} its output: see the advice.` : '';
+        say(`Deleted ${label} "${id}"${cleared > 0 ? ` and ${cleared} ${cleared === 1 ? 'link' : 'links'} to it` : ''}.${readers} Undo brings it back.`);
         if (showList) tableHeading.current?.focus();
       }
     },
@@ -214,7 +217,7 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
           next.delete(from);
           return next.set(to, at);
         });
-        say(`Renamed "${from}" to "${to}". The links to it follow.`);
+        say(`Renamed "${from}" to "${to}". The links to it, and the expressions that read its output, follow.`);
       }
       return reason;
     },

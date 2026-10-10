@@ -91,6 +91,10 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
   // The key goes with the exact request: sending the same thing again (after a timeout) keeps it, so the platform
   // does it once; changing anything makes a new one.
   const sent = useRef<{ print: string; key: string } | undefined>(undefined);
+  // The version of the run the decision is made against, taken when it is first sent and kept for sending it again: a
+  // request repeated after a lost answer must be the same request (same key) whatever the run did meanwhile; it is
+  // forgotten when the person looks at the new state and decides again.
+  const pinned = useRef<number | undefined>(undefined);
   const reasonRef = useRef<HTMLTextAreaElement>(null);
 
   const current = facts(decision, node, run);
@@ -100,20 +104,26 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
 
   const reasonCheck = checkReason(reason, scope);
   const reasonProblem = submitted ? reasonCheck.problem : undefined;
-  const idProblem = submitted && asksForStepId(action) && typed !== stepId ? 'Type the step id exactly as shown to confirm.' : undefined;
+  const idProblem = submitted && asksForStepId(action, node) && typed !== stepId ? 'Type the step id exactly as shown to confirm.' : undefined;
   const outcomeProblem = submitted && action === 'RESOLVE_STEP' && outcome === '' ? 'Choose what happened to the step.' : undefined;
   const codeProblem = action === 'RESOLVE_STEP' && outcome === 'FAILED' && errorCode !== '' && !ERROR_CODE.test(errorCode) ? 'Use letters, digits and _ . : - only, up to 64 characters.' : undefined;
 
-  const request = (): OperationRequest => ({
-    action,
-    ...(stepId === undefined ? {} : { stepId }),
-    ...(action === 'RESOLVE_STEP' && outcome !== '' ? { outcome, ...(outcome === 'FAILED' && errorCode !== '' ? { errorCode } : {}) } : {}),
-    reason: reason.trim(),
-    // The run as the person saw it, brought up to date only while the facts they decided on have not changed.
-    expectedRunVersion: snapshot.model?.projectionSeq ?? 0,
-  });
+  // The run as the person saw it: the graph they were reading, or else the run's header. Without either, nothing is claimed.
+  const seen = (): number | undefined => pinned.current ?? snapshot.model?.projectionSeq ?? run.version;
+
+  const request = (): OperationRequest => {
+    const version = seen();
+    return {
+      action,
+      ...(stepId === undefined ? {} : { stepId }),
+      ...(action === 'RESOLVE_STEP' && outcome !== '' ? { outcome, ...(outcome === 'FAILED' && errorCode !== '' ? { errorCode } : {}) } : {}),
+      reason: reason.trim(),
+      ...(version === undefined ? {} : { expectedRunVersion: version }),
+    };
+  };
 
   const send = async () => {
+    pinned.current ??= seen();
     const body = request();
     const print = JSON.stringify(body);
     if (sent.current?.print !== print) sent.current = { print, key: crypto.randomUUID() };
@@ -138,7 +148,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
       reasonRef.current?.focus();
       return;
     }
-    if (!available || (asksForStepId(action) && typed !== stepId) || (action === 'RESOLVE_STEP' && (outcome === '' || codeProblem !== undefined))) return;
+    if (!available || (asksForStepId(action, node) && typed !== stepId) || (action === 'RESOLVE_STEP' && (outcome === '' || codeProblem !== undefined))) return;
     void send();
   };
 
@@ -146,6 +156,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
     setRefreshing(true);
     try {
       await live.refresh();
+      pinned.current = undefined;
       void queries.invalidateQueries({ queryKey: ['run', runId] });
       const latest = live.getSnapshot().model;
       setBaseline(facts(decision, stepId === undefined ? undefined : latest?.nodes.get(stepId), run));
@@ -160,13 +171,20 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
 
   return (
     <form onSubmit={submit} noValidate className="rn-decision">
-      <p>{consequence(action, stepId === undefined ? undefined : clip(stepId, 60))}</p>
+      <p>{consequence(action, stepId === undefined ? undefined : clip(stepId, 60), node)}</p>
       <p className="rn-audit">This decision is recorded with your name and reason.</p>
 
       {moved ? (
         <Banner tone="warn" title="The run changed while you were deciding.">
           {stepId === undefined ? 'Its state is not what it was when you opened this.' : 'The step is not in the state it was in when you opened this.'} Look at the change, then confirm again.{' '}
-          <Button onClick={() => setBaseline(current)}>Review the change</Button>
+          <Button
+            onClick={() => {
+              pinned.current = undefined;
+              setBaseline(current);
+            }}
+          >
+            Review the change
+          </Button>
         </Banner>
       ) : null}
       {!moved && operation !== undefined && !operation.enabled ? (
@@ -201,7 +219,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
         <textarea ref={reasonRef} value={reason} rows={4} onChange={(event) => setReason(event.target.value)} />
       </Field>
 
-      {asksForStepId(action) && stepId !== undefined ? (
+      {asksForStepId(action, node) && stepId !== undefined ? (
         <Field label="Type the step id to confirm" hint={`The step is ${clip(stepId, 60)}.`} error={idProblem}>
           <input type="text" value={typed} autoComplete="off" spellCheck={false} onChange={(event) => setTyped(event.target.value)} />
         </Field>

@@ -37,11 +37,17 @@ describe('runOperations', () => {
     }
   });
 
-  it('does not offer pause or cancel to a run that is already being stopped', () => {
-    for (const status of ['CANCELLING', 'COMPENSATING']) {
+  it('does not offer pause or cancel to a run that is known to be stopping', () => {
+    const ops = runOperations(run({ status: 'CANCELLING' }), operator);
+    expect(by(ops, 'PAUSE')).toMatchObject({ enabled: false, reason: 'The run is already being stopped.' });
+    expect(by(ops, 'CANCEL')).toMatchObject({ enabled: false, reason: 'The run is already being stopped.' });
+  });
+
+  it('leaves to the platform what the status does not settle: a run that compensates or waits for a person may or may not have been asked to stop', () => {
+    for (const status of ['COMPENSATING', 'MANUAL_REVIEW']) {
       const ops = runOperations(run({ status }), operator);
-      expect(by(ops, 'PAUSE')).toMatchObject({ enabled: false, reason: 'The run is already being stopped.' });
-      expect(by(ops, 'CANCEL')).toMatchObject({ enabled: false, reason: 'The run is already being stopped.' });
+      expect(by(ops, 'PAUSE').enabled).toBe(true);
+      expect(by(ops, 'CANCEL').enabled).toBe(true);
     }
   });
 
@@ -125,10 +131,14 @@ describe('words', () => {
     expect(consequence('CANCEL')).toMatch(/compensated according to its cancel policy/);
   });
 
-  it('asks for the step id back only for the two decisions that override', () => {
+  it('asks for the step id back only for the decisions that override or may repeat an effect', () => {
     expect(asksForStepId('SKIP_COMPENSATION')).toBe(true);
     expect(asksForStepId('RESOLVE_STEP')).toBe(true);
     for (const action of ['RETRY_STEP', 'RETRY_COMPENSATION', 'PAUSE', 'RESUME', 'CANCEL'] as const) expect(asksForStepId(action)).toBe(false);
+    // A retry of a step whose effect may already have happened is such a decision: the platform asks for saga:override, and so does the page for the id.
+    expect(asksForStepId('RETRY_STEP', node({ failureCode: 'OUTCOME_UNKNOWN' }))).toBe(true);
+    expect(asksForStepId('RETRY_STEP', node({ failureCode: 'RECONCILED_NOT_APPLIED' }))).toBe(false);
+    expect(consequence('RETRY_STEP', 'pay', node({ failureCode: 'LEASE_EXPIRED' }))).toMatch(/may already have happened \(LEASE_EXPIRED\).*twice/);
   });
 });
 

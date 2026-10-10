@@ -216,6 +216,21 @@ describe('deciding', () => {
     expect(platform.operations[0]?.body).toEqual({ action: 'SKIP_COMPENSATION', stepId: 'reserve~c', reason: REASON, expectedRunVersion: 10 });
   });
 
+  it('warns that a step whose effect may already have happened will happen twice, and asks for its id to retry it', async () => {
+    const { panel, platform, user } = await panelOf('charge', ADMIN);
+    await user.click(actions(panel, 'charge').getByRole('button', { name: 'Retry step' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent(/may already have happened \(OUTCOME_UNKNOWN\): if it did, it will happen twice/);
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry step' }));
+    expect(within(dialog).getByText('Type the step id exactly as shown to confirm.')).toBeInTheDocument();
+    expect(platform.operations).toHaveLength(0);
+    await user.type(within(dialog).getByRole('textbox', { name: 'Type the step id to confirm' }), 'charge');
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry step' }));
+    await waitFor(() => expect(platform.operations).toHaveLength(1));
+    expect(platform.operations[0]?.body).toMatchObject({ action: 'RETRY_STEP', stepId: 'charge' });
+  });
+
   it('asks what happened to the step to resolve it, and the error code only if it did not happen', async () => {
     const { dialog, user, platform } = await dialogFor('Resolve step');
     await user.type(reasonBox(dialog), REASON);
@@ -393,6 +408,40 @@ describe('when the platform does not take the decision', () => {
     await waitFor(() => expect(view.platform.operations).toHaveLength(3));
     expect(view.platform.operations[2]?.key).not.toBe(view.platform.operations[0]?.key);
     expect(view.platform.operations[2]?.body).toMatchObject({ reason: `${REASON} and the queue is empty` });
+  });
+});
+
+describe('a decision that was not answered', () => {
+  it('is sent again as it was, the version of the run included, even if the run moved on meanwhile', async () => {
+    const view = await panelOf('reserve~c', ADMIN, {
+      operate: (() => {
+        let n = 0;
+        return () => {
+          n += 1;
+          return n === 1 ? failure(503, 'UNAVAILABLE', 'The platform is not available right now.') : jsonResponse({ operationId: '019b5d6e-0000-7000-8000-0000000000cc', accepted: true }, 202);
+        };
+      })(),
+    });
+    await view.user.click(actions(view.panel, 'reserve~c').getByRole('button', { name: 'Retry compensation' }));
+    const dialog = await screen.findByRole('dialog');
+    await view.user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await view.user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry compensation' }));
+    await within(dialog).findByRole('alert');
+    expect(view.platform.operations[0]?.body).toMatchObject({ expectedRunVersion: 10 });
+
+    // Something unrelated happens to the run: its version is now 13. The first request may have been done.
+    const pipe = await openStream(view.platform);
+    await act(async () => {
+      pipe.send(changesOf(10, 13, [node('notify', 'READY')]));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(within(card('notify')).getByText('Ready')).toBeInTheDocument());
+
+    await view.user.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(view.platform.operations).toHaveLength(2));
+    // The same request: the platform can answer it as it answered the first, instead of finding a conflict with itself.
+    expect(view.platform.operations[1]?.key).toBe(view.platform.operations[0]?.key);
+    expect(view.platform.operations[1]?.body).toEqual(view.platform.operations[0]?.body);
   });
 });
 

@@ -55,7 +55,7 @@ describe('publishing', () => {
     expect(dialog).toHaveTextContent('Added: pay → audit (next)');
     expect(dialog).toHaveTextContent('Removed: pay → legacy (next)');
     expect(dialog).toHaveTextContent('/metadata changed');
-    expect(dialog).toHaveTextContent('The platform found no breaking changes');
+    expect(dialog).toHaveTextContent('The platform found no breaking changes of the kinds it checks');
     expect(within(dialog).queryByRole('checkbox')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Publish' })).toBeEnabled();
     // The diff asks for the active version against the draft.
