@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
@@ -10,7 +11,9 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -24,6 +27,8 @@ type call struct {
 	method  string
 	request proto.Message
 	md      metadata.MD
+	// peer is the common name of the client certificate of the connection, "" when it sent none.
+	peer string
 }
 
 // failure is an answer scripted in place of the success: a gRPC code, with the trailers the real
@@ -41,6 +46,7 @@ type fakeService struct {
 	t      *testing.T
 	server *grpc.Server
 	port   int
+	scheme string
 
 	mu               sync.Mutex
 	calls            []call
@@ -56,28 +62,46 @@ type fakeService struct {
 	registrations    int
 }
 
-func newFakeService(t *testing.T) *fakeService {
-	f := &fakeService{t: t, failures: map[string][]failure{}, accepted: "1.2", pollRetryAfterMs: 50, heartbeatExpires: time.Now().Add(time.Minute).UnixMilli()}
+func newFakeService(t *testing.T) *fakeService { return newFakeServiceWith(t, nil) }
+
+// newFakeTLSService is a fake service that speaks gRPC over TLS with the given server configuration.
+func newFakeTLSService(t *testing.T, serverTLS *tls.Config) *fakeService {
+	return newFakeServiceWith(t, serverTLS)
+}
+
+func newFakeServiceWith(t *testing.T, serverTLS *tls.Config) *fakeService {
+	f := &fakeService{t: t, scheme: "http", failures: map[string][]failure{}, accepted: "1.2", pollRetryAfterMs: 50, heartbeatExpires: time.Now().Add(time.Minute).UnixMilli()}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.port = listener.Addr().(*net.TCPAddr).Port
-	f.server = grpc.NewServer()
+	var options []grpc.ServerOption
+	if serverTLS != nil {
+		f.scheme = "https"
+		options = append(options, grpc.Creds(credentials.NewTLS(serverTLS)))
+	}
+	f.server = grpc.NewServer(options...)
 	pb.RegisterWorkerServiceServer(f.server, f)
 	go func() { _ = f.server.Serve(listener) }()
 	t.Cleanup(f.server.Stop)
 	return f
 }
 
-func (f *fakeService) url() string { return fmt.Sprintf("http://127.0.0.1:%d", f.port) }
+func (f *fakeService) url() string { return fmt.Sprintf("%s://127.0.0.1:%d", f.scheme, f.port) }
 
 // enter records the call and returns the failure scripted for it, if any.
 func (f *fakeService) enter(ctx context.Context, method string, request proto.Message) error {
 	md, _ := metadata.FromIncomingContext(ctx)
+	peerName := ""
+	if p, ok := peer.FromContext(ctx); ok {
+		if info, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(info.State.PeerCertificates) > 0 {
+			peerName = info.State.PeerCertificates[0].Subject.CommonName
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, call{method: method, request: proto.Clone(request), md: md})
+	f.calls = append(f.calls, call{method: method, request: proto.Clone(request), md: md, peer: peerName})
 	queue := f.failures[method]
 	if len(queue) == 0 {
 		return nil

@@ -265,3 +265,41 @@ func TestVersionConstants(t *testing.T) {
 		t.Errorf("the catalog is version 1: %v %d", err, file.Version)
 	}
 }
+
+// Certificate verification is never switched off by the SDK: not for a test, not for development, not
+// by an option. A server certificate nobody trusts is a TRANSPORT failure (client/tls_test.go,
+// worker/tls_test.go); this keeps the words that would turn that off out of the library.
+func TestNoSDKCodeSkipsTheVerificationOfCertificates(t *testing.T) {
+	checked := 0
+	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == "bin" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		checked++
+		for _, forbidden := range []string{"InsecureSkipVerify", "VerifyPeerCertificate", "VerifyConnection"} {
+			if strings.Contains(string(source), forbidden) {
+				t.Errorf("%s mentions %s", path, forbidden)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked < 20 {
+		t.Errorf("only %d source files were looked at", checked)
+	}
+}

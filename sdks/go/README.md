@@ -154,6 +154,24 @@ an error, a log or an event.
 
 Plain `http://` outside loopback is accepted and logs one warning at start.
 
+## TLS
+
+| Option | Client | Worker host | Tested |
+|---|---|---|---|
+| `https://` with the system roots (the default) | yes | yes | only that an untrusted certificate is refused |
+| Trust roots of your own: `tls.Config{RootCAs: pool}` | `client.WithTLSConfig` | `worker.WithTLSConfig` | yes, both channels |
+| Client certificate (mTLS): `tls.Config{Certificates: ...}` | `client.WithTLSConfig` | `worker.WithTLSConfig` | yes, both channels; refusal without a certificate and with an unknown one |
+| Name to verify the server certificate against: `tls.Config{ServerName: ...}` | `client.WithTLSConfig` | `worker.WithTLSConfig` | yes, both channels |
+| Anything else of `*tls.Config` (`MinVersion`, `GetClientCertificate`...) | passed through | passed through | no |
+| Your own `http.Client` / transport | `client.WithHTTPClient` (then `WithTLSConfig` is ignored) | n/a (`worker.WithDialOptions` for the channel) | no |
+
+The configuration is copied when the client or the host is made. Without one, the default is the system
+roots and TLS 1.2 or newer. **Certificate verification is never switched off**: there is no option for it, no
+`InsecureSkipVerify` anywhere in the library (a test keeps those words out of the sources), and a server
+certificate that is not trusted, or is for another name, is a `TRANSPORT` error (`errors.As` reaches a
+`*tls.CertificateVerificationError` or `x509.HostnameError` as the cause). Plain `http://` is accepted for
+development; outside loopback it logs one warning at start, and `https://` logs none.
+
 ## Versioning (SemVer)
 
 The SDK follows [SemVer](https://semver.org). Before 1.0 a minor version may change the Go API; a patch
@@ -171,7 +189,7 @@ What was **actually run** for this release, and what was not:
 | Go | **1.24.2** (`go test -race ./...`, `go vet`, the conformance suite) | 1.25 and later, and anything older than 1.24 (`go.mod` says `go 1.24.0` because gRPC v1.80.0 requires it, so older toolchains cannot build the module) |
 | OS / arch | **macOS, Darwin 25.3.0, arm64** | Linux, Windows, amd64 |
 | Server | The platform at this commit (REST `/v1`, worker protocol 1.2), through the conformance suite, which plays 13 scenarios; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
-| TLS | Not run: every test and every scenario is plaintext on loopback; `https://` goes through `credentials.NewTLS` and `net/http` and is **not** covered by a test | mTLS, custom roots |
+| TLS | Tested with throw-away certificates (ECDSA, generated in the tests) against an in-process TLS server, on both channels, on loopback: an untrusted server certificate is refused as `TRANSPORT` and never reaches the handler; a configured CA makes the same server work (a task goes through end to end on the worker channel); a certificate for another name is refused; with mTLS the server sees the client certificate, and refuses a client with none or with one of another authority; no warning is logged for `https://`. See "TLS" below for what is **not** covered | A trusted server certificate from the *system* roots (only the untrusted case is tested), revocation, TLS versions and cipher suites, certificate rotation on a running host |
 | Race detector | `-race` passes on the unit tests | -- |
 | Vulnerability scan | Not run (`govulncheck` was not installed) | -- |
 
