@@ -12,7 +12,7 @@ import grpc.aio
 
 from .._proto import worker_pb2 as pb
 from .._proto import worker_pb2_grpc as pb_grpc
-from ..config import TlsOptions, TokenSource, resolve_token
+from ..config import Secret, TlsOptions, TokenSource, resolve_token
 from ..errors import ErrorCode, SagatError
 from ..retry import parse_ms
 from ..traceparent import is_traceparent
@@ -23,7 +23,7 @@ METHODS = ("RegisterWorker", "PollTasks", "Heartbeat", "CompleteStep", "FailStep
 @dataclass(frozen=True)
 class GrpcConfig:
     grpc_url: str
-    token: TokenSource = field(repr=False)
+    token: TokenSource | Secret = field(repr=False)
     tls: TlsOptions | None = None
     timeout: float = 30.0
     interceptors: Sequence[grpc.aio.ClientInterceptor] = ()
@@ -102,13 +102,19 @@ class WorkerRpc:
         if url.scheme not in ("http", "https") or not url.hostname or not url.port:
             raise SagatError("VALIDATION_FAILED", "grpc_url is http(s)://host:port")
         target = f"{url.hostname}:{url.port}" if ":" not in url.hostname else f"[{url.hostname}]:{url.port}"
-        options = [("grpc.keepalive_time_ms", 120_000), ("grpc.max_receive_message_length", 16 * 1024 * 1024)]
+        options: list[tuple[str, Any]] = [
+            ("grpc.keepalive_time_ms", 120_000),
+            ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+        ]
         interceptors = list(config.interceptors) or None
         if url.scheme == "https":
             tls = config.tls or TlsOptions()
+            if tls.server_name:
+                # The name the certificate is verified against instead of the URL's host: verified, not skipped.
+                options.append(("grpc.ssl_target_name_override", tls.server_name))
             credentials = grpc.ssl_channel_credentials(
                 root_certificates=TlsOptions.as_bytes(tls.ca),
-                private_key=TlsOptions.as_bytes(tls.key),
+                private_key=tls.key_bytes(),
                 certificate_chain=TlsOptions.as_bytes(tls.cert),
             )
             self._channel = grpc.aio.secure_channel(target, credentials, options=options, interceptors=interceptors)

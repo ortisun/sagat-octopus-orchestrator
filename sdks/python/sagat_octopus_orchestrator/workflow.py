@@ -8,7 +8,7 @@ The same program in the five SDKs gives byte-identical canonical text.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
@@ -67,16 +67,46 @@ class Flow:
     def __init__(self) -> None:
         self._nodes: list[Node] = []
         self._embedded: list[Flow] = []
+        self._ids: set[str] = set()  # the ids of this flow and of the flows joined to it when they were joined
 
     @property
     def nodes(self) -> tuple[Node, ...]:
         return tuple(self._nodes)
 
+    def _all_ids(self) -> set[str]:
+        """The ids of this flow and of every flow joined to it, as they are now (a flow is read when it is built)."""
+        found = {node["id"] for node in self._nodes}
+        for inner in self._embedded:
+            found |= inner._all_ids()
+        return found
+
+    def _claim(self, ids: Iterable[str]) -> None:
+        """Takes ids for this flow; one that is taken already is ``used twice`` (checked again by ``build()``)."""
+        taken = set(self._ids)
+        for node_id in ids:
+            if node_id in taken:
+                raise invalid(f"the node id {node_id!r} is used twice")
+            taken.add(node_id)
+        self._ids = taken
+
     def _push(self, node: Node) -> None:
         node_id = node.get("id")
         if not isinstance(node_id, str) or node_id == "":
             raise invalid("a node needs an id")
+        self._claim([node_id])
         self._nodes.append(node)
+
+    def _join(self, node: Node, inner: Sequence[Flow]) -> None:
+        """Adds a node that owns other flows (a parallel, a saga): the ids of all of them must be free."""
+        node_id = node.get("id")
+        if not isinstance(node_id, str) or node_id == "":
+            raise invalid("a node needs an id")
+        ids = [node_id]
+        for flow in inner:
+            ids.extend(sorted(flow._all_ids()))
+        self._claim(ids)
+        self._nodes.append(node)
+        self._embedded.extend(inner)
 
     def step(
         self: _F,
@@ -185,15 +215,15 @@ class Flow:
             raise invalid(f"parallel {node_id} needs at least two branches")
         if any(not branch._nodes for branch in branches):
             raise invalid(f"parallel {node_id} has an empty branch")
-        self._push(
+        self._join(
             {
                 "id": node_id,
                 "type": "parallel",
                 "branches": [branch._nodes[0]["id"] for branch in branches],
                 "join": join,
-            }
+            },
+            branches,
         )
-        self._embedded.extend(branches)
         return self
 
     def saga(
@@ -212,8 +242,7 @@ class Flow:
         if any(node["type"] == "end" for node in body._nodes):
             raise invalid(f"saga {node_id} cannot hold an end node")
         node: Node = {"id": node_id, "type": "saga", "begin": body._nodes[0]["id"]}
-        self._push(_add(node, onCompensationFailure=on_compensation_failure, cancelPolicy=cancel_policy))
-        self._embedded.append(body)
+        self._join(_add(node, onCompensationFailure=on_compensation_failure, cancelPolicy=cancel_policy), [body])
         return self
 
     def end(self: _F, node_id: str, *, output_expr: str | None = None) -> _F:

@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ._json import decode_json, encode_json
-from .config import SDK_VERSION, ClientConfig, log, resolve_token, warn_if_plaintext
+from .config import SDK_VERSION, ClientConfig, ProviderFailure, log, resolve_token, warn_if_plaintext
 from .errors import SagatError, code_of_http_status
 from .retry import delay_after, parse_ms
 
@@ -80,6 +80,10 @@ class HttpTransport:
             raise SagatError("VALIDATION_FAILED", "api_url is an http(s) URL including /v1")
         warn_if_plaintext(config.logger, config.api_url, "api_url")
         verify: Any = config.tls.ssl_context() if config.tls is not None else True
+        # The server name the certificate is verified against, when it is not the URL's host (verified, not skipped).
+        self._extensions: dict[str, Any] = (
+            {"sni_hostname": config.tls.server_name} if config.tls is not None and config.tls.server_name else {}
+        )
         self._client = httpx.AsyncClient(
             transport=config.transport,
             verify=verify,
@@ -92,14 +96,19 @@ class HttpTransport:
 
     async def request(self, req: HttpRequest) -> HttpResponse:
         policy = self._config.retry
-        attempts = max(1, policy.max_attempts) if req.safe_to_repeat else 1
+        most = max(1, policy.max_attempts)
+        attempts = most if req.safe_to_repeat else 1
         last: SagatError | None = None
-        for n in range(attempts):
+        for n in range(most):
             try:
                 return await self._once(req)
             except SagatError as error:
                 last = error
-                if not _may_repeat(error) or n + 1 >= attempts:
+                # A token provider that failed sent nothing, so repeating it cannot do harm, whatever the call is.
+                if isinstance(error, ProviderFailure):
+                    if n + 1 >= most:
+                        raise
+                elif not _may_repeat(error) or n + 1 >= attempts:
                     raise
                 wait = delay_after(policy, n, error)
                 log(
@@ -156,7 +165,12 @@ class HttpTransport:
 
         try:
             request = self._client.build_request(
-                req.method, self._base + req.path, params=params, headers=headers, content=content
+                req.method,
+                self._base + req.path,
+                params=params,
+                headers=headers,
+                content=content,
+                extensions=self._extensions,
             )
             response, body = await asyncio.wait_for(self._exchange(request), timeout=self._config.timeout)
         except asyncio.TimeoutError:

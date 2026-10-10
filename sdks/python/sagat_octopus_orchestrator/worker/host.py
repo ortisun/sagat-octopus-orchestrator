@@ -23,8 +23,11 @@ from .._proto import worker_pb2 as pb
 from ..config import (
     LOG,
     PROTOCOL_VERSION,
+    ProviderFailure,
+    Secret,
     TlsOptions,
     TokenSource,
+    is_provider,
     log,
     warn_if_plaintext,
 )
@@ -93,7 +96,8 @@ class WorkerConfig:
     grpc_url: str
     """``http://host:port`` or ``https://host:port`` of the worker service."""
     namespace: str
-    token: TokenSource = field(repr=False)
+    token: TokenSource | Secret = field(repr=False)
+    """A bearer token or a provider; held as a ``Secret``."""
     worker_name: str
     """One live session per name and identity: registering again under the same name replaces it."""
     max_inflight: int = 10
@@ -112,6 +116,10 @@ class WorkerConfig:
     interceptors: Sequence[grpc.aio.ClientInterceptor] = ()
     """Interceptors of the ``grpc.aio`` channel: the hook of the conformance suite and of tests."""
     on_event: Callable[[WorkerEvent], None] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, Secret):
+            object.__setattr__(self, "token", Secret(self.token))
 
 
 @dataclass
@@ -132,6 +140,7 @@ class _Task:
     lost: bool = False
     runner: asyncio.Task[None] | None = None
     beat: asyncio.Task[None] | None = None
+    lease_token: Secret = field(default_factory=lambda: Secret(""), repr=False)
     rpc: WorkerRpc | None = field(default=None, repr=False)
     """The connection the task was leased on: its reports go there, or nowhere if the host has stopped since."""
     secrets: Secrets | None = None
@@ -180,7 +189,7 @@ class WorkerHost:
         self._rpc: WorkerRpc | None = None
         self._executor: ThreadPoolExecutor | None = None
         self._worker_id = ""
-        self._session = ""
+        self._session = Secret("")
         self._accepted = ""
         self._running = False
         self._stopping = False
@@ -370,16 +379,24 @@ class WorkerHost:
                 response = await self._rpc.register_worker(request)
             except SagatError as error:
                 # A token the provider can refresh gets one more chance (SPEC section 5).
-                if error.code == "UNAUTHENTICATED" and not refreshed and callable(self._config.token):
+                provider_failed = isinstance(error, ProviderFailure)  # nothing was sent: repeating cannot do harm
+                if (
+                    error.code == "UNAUTHENTICATED"
+                    and not provider_failed
+                    and not refreshed
+                    and is_provider(self._config.token)
+                ):
                     refreshed = True
                     continue
-                if error.code not in _REPEATABLE or not error.retryable or n + 1 >= self._config.retry.max_attempts:
+                if not provider_failed and (error.code not in _REPEATABLE or not error.retryable):
+                    raise
+                if n + 1 >= self._config.retry.max_attempts:
                     raise
                 await asyncio.sleep(max(backoff_delay(self._config.retry, n), server_wait(error.retry_after_ms)))
                 n += 1
                 continue
             self._worker_id = response.worker_id
-            self._session = response.session_token
+            self._session = Secret(response.session_token)
             self._accepted = response.accepted_protocol_version
             log(self._log, logging.INFO, "worker registered", worker=self._config.worker_name, protocol=self._accepted)
             self._emit(WorkerEvent("registered", protocol_version=self._accepted))
@@ -410,7 +427,9 @@ class WorkerHost:
                     continue
                 asked = min(free, MAX_POLL)
                 response = await self._rpc.poll_tasks(
-                    pb.PollTasksRequest(worker_id=self._worker_id, session_token=self._session, max_tasks=asked)
+                    pb.PollTasksRequest(
+                        worker_id=self._worker_id, session_token=self._session.reveal(), max_tasks=asked
+                    )
                 )
                 failures = refusals = 0
                 leases = list(response.tasks)
@@ -434,6 +453,13 @@ class WorkerHost:
             except SagatError as error:
                 if self._stopping:
                     return
+                if isinstance(error, ProviderFailure):
+                    # The token provider failed before the poll was sent: the session is not in question.
+                    log(self._log, logging.WARNING, "the token provider failed: polling again after a pause")
+                    policy = RetryPolicy(self._config.retry.max_attempts, self._config.retry.initial_delay, 30.0)
+                    failures += 1
+                    await self._idle(min(30.0, backoff_delay(policy, failures - 1)))
+                    continue
                 if error.code == "UNAUTHENTICATED":
                     log(self._log, logging.WARNING, "the session is gone: registering again")
                     self._emit(WorkerEvent("reconnect"))
@@ -466,7 +492,8 @@ class WorkerHost:
     # ---------------------------------------------------------------------------------------------------- tasks
 
     def _dispatch(self, lease: pb.TaskLease) -> None:
-        task = _Task(lease, deadline_ms=lease.expires_at_epoch_ms, rpc=self._rpc)
+        task = _Task(lease, deadline_ms=lease.expires_at_epoch_ms, rpc=self._rpc, lease_token=Secret(lease.lease_token))
+        lease.lease_token = ""  # the task keeps it behind a Secret: a dump of the task or of its lease shows nothing
         self._inflight.add(task)
         runner = asyncio.create_task(self._execute(task), name=f"sagat-task-{lease.task_id}")
         task.runner = runner
@@ -667,7 +694,7 @@ class WorkerHost:
                         task_id=lease.task_id,
                         worker_id=self._worker_id,
                         generation=lease.generation,
-                        lease_token=lease.lease_token,
+                        lease_token=task.lease_token.reveal(),
                         # The step identity came with 1.1.
                         run_id=lease.run_id if minor >= 1 else "",
                         step_id=lease.step_id if minor >= 1 else "",
@@ -710,7 +737,10 @@ class WorkerHost:
             except SagatError as error:
                 if error.code == "STALE_ATTEMPT":
                     return "stale"
-                if error.code in _REPEATABLE and error.retryable and n + 1 < REPORT_ATTEMPTS:
+                # A result that was computed is not lost to a hiccup of the identity provider: the failure of the
+                # provider is known by its class, never by a reason a server could send (SPEC section 5).
+                repeatable = isinstance(error, ProviderFailure) or (error.code in _REPEATABLE and error.retryable)
+                if repeatable and n + 1 < REPORT_ATTEMPTS:
                     await asyncio.sleep(max(backoff_delay(self._config.retry, n), server_wait(error.retry_after_ms)))
                     n += 1
                     continue
@@ -726,7 +756,7 @@ class WorkerHost:
             step_id=lease.step_id,
             attempt=lease.attempt,
             generation=lease.generation,
-            lease_token=lease.lease_token,
+            lease_token=task.lease_token.reveal(),
             idempotency_key=f"done-{lease.task_id}",
             output_json=output,
             traceparent=lease.traceparent,
@@ -757,7 +787,7 @@ class WorkerHost:
             step_id=lease.step_id,
             attempt=lease.attempt,
             generation=lease.generation,
-            lease_token=lease.lease_token,
+            lease_token=task.lease_token.reveal(),
             idempotency_key=f"failed-{lease.task_id}",
             error_code=safe_code,
             safe_message=safe_message,
@@ -793,7 +823,15 @@ class WorkerHost:
                     "VALIDATION_FAILED", "the secrets of this attempt were dropped when the handler returned"
                 )
             if task.secrets is None:
-                task.secrets = await self._resolve_secrets(task, minor)
+                resolved = await self._resolve_secrets(task, minor)
+                if task.finished:
+                    # The handler returned while the call was in flight (a `ctx.secrets()` it scheduled and did
+                    # not await): nobody may read what came back.
+                    resolved._drop()
+                    raise SagatError(
+                        "VALIDATION_FAILED", "the secrets of this attempt were dropped when the handler returned"
+                    )
+                task.secrets = resolved
             return task.secrets
 
     async def _resolve_secrets(self, task: _Task, minor: int) -> Secrets:
@@ -810,7 +848,7 @@ class WorkerHost:
                 step_id=lease.step_id,
                 attempt=lease.attempt,
                 generation=lease.generation,
-                lease_token=lease.lease_token,
+                lease_token=task.lease_token.reveal(),
                 traceparent=lease.traceparent,
             ),
             lease.traceparent or None,

@@ -170,7 +170,8 @@ document = (
 )
 ```
 
-`build()` links node *i* to node *i + 1*, writes nested flows after the top flow and raises
+`build()` reads every `flow()` when it is called, not when it is joined: a step added to a branch or a saga body
+after `parallel(...)` or `saga(...)` is part of the document. `build()` links node *i* to node *i + 1*, writes nested flows after the top flow and raises
 `SagatError(VALIDATION_FAILED)` for what the server would refuse and the builder can see (a duplicate id, an empty
 saga, a dangling reference, an `irreversible` step with a compensation...). The canonical text (`to_json()`, RFC 8785: keys
 sorted at every depth by UTF-16 code units, not code points, so U+1F600 sorts before U+FF5E; numbers as ECMAScript
@@ -185,16 +186,28 @@ retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); ne
 redirect is never followed (it could carry the token to another host): a 3xx is a `PROTOCOL` error with the status
 kept. Certificate verification is never switched off (a test reads the source for it).
 
-What a hostile or broken server, or a careless caller, cannot make the SDK do (`sdks/SPEC.md` section 10): a config,
-a client or a host never prints a credential (`repr`, `str` and f-strings show no token, session token, lease token or
-TLS key); a REST body is read up to 32 MiB and then fails as `PROTOCOL`; a wait the server asks for
-(`Retry-After`, `retry-after-ms`) is capped at 60 s; a server `message` is cut to 512 characters and a `traceId` that is
-not 32 lowercase hex characters is not repeated; a run id is a UUID and a name of `''`, `'.'` or `'..'` is refused
-before anything is sent; a token provider that raises is one `SagatError` (`UNAUTHENTICATED`, reason
-`TOKEN_PROVIDER_FAILED`, the exception's class only) and never stops the heartbeat; the host runs no more tasks than
-it asked for and registers again with a backoff when its session keeps being refused. `ctx.secrets()` hands out
-copies, overwrites its own buffers when the handler returns, and raises afterwards. Python cannot wipe an immutable
-`bytes` or `str` you made from a secret: that copy is yours to drop.
+What a hostile or broken server, or a careless caller, cannot make the SDK do (`sdks/SPEC.md` section 10):
+
+* **No credential in any dump.** The token, the TLS private key, the session token and the lease token are held in a
+  small `Secret` wrapper: `repr`, `str`, f-strings, `vars()`, `dataclasses.asdict()` and `json.dumps(..., default=repr)`
+  of a config, a client or a host show `<redacted>`, and pickling one raises `TypeError`. `config.token.reveal()`
+  returns the token; the SDK calls `reveal()` only where it sends the credential.
+* **A body is bounded:** a REST body is read up to 32 MiB (decoded, streamed) and then fails as `PROTOCOL`; a wait the
+  server asks for (`Retry-After` in seconds, `retry-after-ms`) is capped at 60 s; a server `message` is cut to 512
+  characters; a `traceId` that is not 32 lowercase hex characters is not repeated.
+* **Names:** a run id is a UUID and a name of `''`, `'.'` or `'..'` is refused before anything is sent.
+* **A token provider that raises** is repeated before anything is sent, in every call the SDK repeats and in the
+  report of a result (a computed result is not lost to a hiccup of the identity provider); once the attempts are used
+  up it is one `SagatError` (`UNAUTHENTICATED`, reason `TOKEN_PROVIDER_FAILED`, the exception's class only). The SDK
+  knows it was the provider by a private class, never by the reason: a `TOKEN_PROVIDER_FAILED` in a server's answer
+  makes nothing repeatable. It never stops the heartbeat or the poll loop.
+* **The host** runs no more tasks than it asked for and registers again with a backoff when its session keeps being
+  refused. `ctx.secrets()` hands out copies, overwrites its own buffers when the handler returns, raises afterwards
+  (also for a call the handler scheduled and did not await), and a first call after the handler returned does not
+  call the server. Python cannot wipe an immutable `bytes` or `str` you made from a secret: that copy is yours to drop.
+* **TLS:** `TlsOptions(ca=..., cert=..., key=..., server_name=...)`. `server_name` is the name the server's
+  certificate is verified against when it is not the URL's host (SNI and verification both use it); it is verified,
+  never skipped, and a wrong one fails as `TRANSPORT`. There is no option, and no code, that turns verification off.
 
 ## Units and conventions
 
@@ -221,11 +234,11 @@ server ignores the fields it does not know.
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (172) | `mypy --strict` and `ruff` | Conformance suite (14 scenarios) |
+| Runtime | Unit tests (195) | `mypy --strict` and `ruff` | Conformance suite (14 scenarios) |
 |---|---|---|---|
 | CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
-| CPython 3.10.21 (uv build) | 171 passed and 1 skipped (the codegen check needs `grpcio-tools`, not installed there) | not run (type-checked against the 3.10 language level from 3.14) | passed, one run |
-| CPython 3.11.16, 3.12.14, 3.13.15 (uv builds) | 171 passed and 1 skipped each, as above | not run | not run |
+| CPython 3.10.21 (uv build) | 194 passed and 1 skipped (the codegen check needs `grpcio-tools`, not installed there) | not run (type-checked against the 3.10 language level from 3.14) | passed, one run |
+| CPython 3.11.16, 3.12.14, 3.13.15 (uv builds) | 194 passed and 1 skipped each, as above | not run | not run |
 | Linux, Windows, other architectures | not run | not run | not run |
 | Free-threaded builds, PyPy | not run | not run | not run |
 

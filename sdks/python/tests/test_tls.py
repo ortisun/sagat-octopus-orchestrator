@@ -35,12 +35,12 @@ class Pair:
     key: bytes
 
 
-def make_pair(directory: Path, name: str) -> Pair:
-    """A self-signed certificate for ``localhost`` and 127.0.0.1 that is its own trust root."""
+def make_pair(directory: Path, name: str, san: str = "DNS:localhost,IP:127.0.0.1") -> Pair:
+    """A self-signed certificate (for ``localhost`` and 127.0.0.1 unless ``san`` says otherwise) that is its own trust root."""
     key, cert, config = directory / f"{name}.key", directory / f"{name}.pem", directory / f"{name}.cnf"
     config.write_text(
         "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=localhost\n"
-        "[ext]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:TRUE\n"
+        f"[ext]\nsubjectAltName={san}\nbasicConstraints=CA:TRUE\n"
     )
     run = subprocess.run(
         [
@@ -154,7 +154,9 @@ async def test_the_rest_client_presents_its_certificate_for_mtls(
     await without.aclose()
 
 
-async def secure_grpc(service: FakeWorkerService, server_pair: Pair, trust: Pair | None) -> grpc.aio.Server:
+async def secure_grpc(
+    service: FakeWorkerService, server_pair: Pair, trust: Pair | None, bind: str = "localhost:0"
+) -> grpc.aio.Server:
     server = grpc.aio.server()
     from typing import cast
 
@@ -166,7 +168,7 @@ async def secure_grpc(service: FakeWorkerService, server_pair: Pair, trust: Pair
         root_certificates=trust.cert if trust else None,
         require_client_auth=trust is not None,
     )
-    service.port = server.add_secure_port("localhost:0", credentials)
+    service.port = server.add_secure_port(bind, credentials)
     await server.start()
     return server
 

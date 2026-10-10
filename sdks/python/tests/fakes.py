@@ -139,6 +139,8 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         self.failures: dict[str, list[Scripted]] = {}
         self.always: dict[str, Scripted] = {}
         self.ignore_max_tasks = False
+        self.session_token = "session-1"
+        self.resolve_delay = 0.0
         self.accepted_version = "1.2"
         self.cancel_requested = False
         self.heartbeat_expires_ms = int(time.time() * 1000) + 60_000
@@ -182,7 +184,7 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
     async def RegisterWorker(self, request: Any, context: Any) -> Any:
         await self._enter("RegisterWorker", request, context)
         return pb.RegisterWorkerResponse(
-            worker_id="w-1", session_token="session-1", accepted_protocol_version=self.accepted_version
+            worker_id="w-1", session_token=self.session_token, accepted_protocol_version=self.accepted_version
         )
 
     async def PollTasks(self, request: Any, context: Any) -> Any:
@@ -212,6 +214,8 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
 
     async def ResolveSecrets(self, request: Any, context: Any) -> Any:
         await self._enter("ResolveSecrets", request, context)
+        if self.resolve_delay > 0:
+            await asyncio.sleep(self.resolve_delay)
         return pb.ResolveSecretsResponse(secrets=self.secrets)
 
 
