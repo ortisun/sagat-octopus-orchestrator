@@ -31,13 +31,13 @@ export function useNow(): number {
   return useContext(NowContext);
 }
 
-/** A moment, relative to now in the text and absolute (UTC) in the tooltip. Nothing if it is not a date. */
-export function Relative({ at }: { at: string | null | undefined }) {
+/** A moment, relative to now in the text and absolute (UTC) in the tooltip. Nothing if it is not a date. `past`: it has already happened. */
+export function Relative({ at, past = false }: { at: string | null | undefined; past?: boolean }) {
   const now = useNow();
   if (parseTime(at) === undefined) return <span>unknown time</span>;
   return (
     <time dateTime={at ?? undefined} title={formatAbsolute(at)}>
-      {formatRelative(at, now)}
+      {formatRelative(at, now, past)}
     </time>
   );
 }

@@ -24,7 +24,8 @@ export interface SaveSnapshot {
 }
 
 /** `saved`: nothing is left unsaved. */
-export type SaveOutcome = 'saved' | 'conflict' | 'failed';
+/** `changing`: the document kept changing under the saves, so some of it is still not saved. */
+export type SaveOutcome = 'saved' | 'conflict' | 'failed' | 'changing';
 
 type SaveApi = Pick<Endpoints, 'updateDraft' | 'getWorkflow'>;
 
@@ -86,9 +87,10 @@ export class DraftSession {
   }
 
   /**
-   * Saves what is unsaved. Resolves when nothing is left unsaved, or the save cannot go on. Callers
-   * that come while a save is under way join it: there is one save at a time, and it looks again at
-   * the document after each, so what was typed meanwhile goes too.
+   * Saves what is unsaved. Resolves `saved` when nothing is left unsaved, or says why it cannot go on
+   * (`conflict`, `failed`, or `changing` when the document went on changing for four rounds of
+   * saves). Callers that come while a save is under way join it: there is one save at a time, and it
+   * looks again at the document after each, so what was typed meanwhile goes too.
    */
   save(): Promise<SaveOutcome> {
     if (this.#loop) return this.#loop;
@@ -107,8 +109,8 @@ export class DraftSession {
       const outcome = await this.#attemptSave();
       if (outcome !== 'saved') return outcome;
     }
-    // The author keeps typing: what is left goes with the next autosave.
-    return 'saved';
+    // The author keeps typing: what is left goes with the next autosave, and the caller is told it is not all saved.
+    return this.#snapshot.dirty ? 'changing' : 'saved';
   }
 
   async #attemptSave(): Promise<SaveOutcome> {

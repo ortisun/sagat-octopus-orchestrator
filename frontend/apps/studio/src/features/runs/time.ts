@@ -38,13 +38,16 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
 
-/** `in 12 s`, `5 min ago`, `now`: a moment relative to `nowMs`. */
-export function formatRelative(value: string | null | undefined, nowMs: number): string {
+/**
+ * `in 12 s`, `5 min ago`, `now`: a moment relative to `nowMs`. For something that has already happened (`past`) a moment
+ * ahead of the browser's clock is `now`, not `in 2 min`: the browser's clock may be behind the platform's.
+ */
+export function formatRelative(value: string | null | undefined, nowMs: number, past = false): string {
   const at = parseTime(value);
   if (at === undefined) return 'at an unknown time';
   const diff = at - nowMs;
   const abs = Math.abs(diff);
-  if (abs < 5000) return 'now';
+  if (abs < 5000 || (past && diff > 0)) return 'now';
   const text = unit(abs);
   return diff > 0 ? `in ${text}` : `${text} ago`;
 }

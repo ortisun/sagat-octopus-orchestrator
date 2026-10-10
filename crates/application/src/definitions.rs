@@ -184,11 +184,11 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         IrError::Unsupported { node, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
         }
-        IrError::Expression { node, field, .. } => vec![
-            Problem::error("EXPRESSION", error.to_string())
-                .at_node(node.clone())
-                .at_path(format!("/{field}")),
-        ],
+        // The message names the field: a `path` is a pointer into the document, and the codec knows the
+        // node by its id, not where it stands in the list.
+        IrError::Expression { node, .. } => {
+            vec![Problem::error("EXPRESSION", error.to_string()).at_node(node.clone())]
+        }
         IrError::NameMismatch { .. } => vec![Problem::error("NAME_MISMATCH", error.to_string())],
         IrError::UnknownScript { .. } => vec![Problem::error("UNKNOWN_SCRIPT", error.to_string())],
         IrError::Invalid(rule) => {

@@ -186,4 +186,18 @@ describe('DraftSession', () => {
     await pending;
     expect(session.getSnapshot().phase).toBe('idle');
   });
+
+  it('says so when the document keeps changing under the saves, instead of saying everything is saved', async () => {
+    const { session, updateDraft } = setup();
+    let n = 0;
+    updateDraft.mockImplementation(async () => {
+      n += 1;
+      session.update(doc(`typed-${n}`)); // the author types while the save is under way
+      return workflow(3 + n, doc(`saved-${n}`));
+    });
+    session.update(doc('v2'));
+    await expect(session.save()).resolves.toBe('changing');
+    expect(session.getSnapshot().dirty).toBe(true);
+    expect(updateDraft).toHaveBeenCalledTimes(4);
+  });
 });

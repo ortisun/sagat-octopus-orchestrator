@@ -255,7 +255,7 @@ function RunDetail({ runId }: { runId: string }) {
         {run.isError ? <ErrorState error={run.error} what="Refreshing the run" onRetry={() => void run.refetch()} /> : null}
         {finished ? (
           <p className="hint">
-            {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} />.</> : 'The run is over.'} Its graph and journal stay as they were.
+            {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
           </p>
         ) : null}
 

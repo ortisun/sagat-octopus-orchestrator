@@ -53,6 +53,10 @@ function PublishBody({ ep, workflowId, session, currentKey, onClose, onPublished
         setStage({ kind: 'failed', error: session.getSnapshot().error, what: 'Saving the draft' });
         return;
       }
+      if (outcome === 'changing') {
+        setStage({ kind: 'failed', error: undefined, what: 'Saving the draft, which kept changing,' });
+        return;
+      }
       try {
         const diff = await ep.diff(workflowId, undefined, undefined, controller.signal);
         if (!controller.signal.aborted) setStage((s) => ({ kind: 'review', diff, ...(s.kind === 'preparing' && s.note ? { note: s.note } : {}) }));

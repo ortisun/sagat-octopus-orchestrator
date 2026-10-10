@@ -1682,7 +1682,7 @@ fn every_error_of_the_codec_maps_to_a_stable_code_that_says_where() {
                 field: "expression",
                 message: "bad".into(),
             },
-            vec![("EXPRESSION", Some("c"), Some("/expression"))],
+            vec![("EXPRESSION", Some("c"), None)],
         ),
         (
             IrError::NameMismatch {

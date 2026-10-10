@@ -65,3 +65,12 @@ describe('clip', () => {
     expect(clip('abc', 4)).toBe('abc');
   });
 });
+
+describe('formatRelative of something that has already happened', () => {
+  it('is "now" when the browser clock is behind the platform\'s, not a moment in the future', () => {
+    const now = Date.parse('2026-10-10T20:00:00Z');
+    expect(formatRelative('2026-10-10T20:02:00Z', now)).toBe('in 2 min');
+    expect(formatRelative('2026-10-10T20:02:00Z', now, true)).toBe('now');
+    expect(formatRelative('2026-10-10T19:55:00Z', now, true)).toBe('5 min ago');
+  });
+});
