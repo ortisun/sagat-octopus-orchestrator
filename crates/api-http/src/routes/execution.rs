@@ -707,11 +707,12 @@ pub async fn operate_run<B: Exec>(
             "CANCEL, PAUSE and RESUME apply to the whole run",
         ));
     }
+    let run_id = parse_id::<RunId>(&id)?;
     let run = state
         .runs()
         .operate(
             &caller.session.principal,
-            parse_id::<RunId>(&id)?,
+            run_id,
             operation,
             &body.reason,
             body.expected_run_version,
@@ -722,7 +723,7 @@ pub async fn operate_run<B: Exec>(
     Ok((
         StatusCode::ACCEPTED,
         Json(OperationResultBody {
-            operation_id: operation_id(&id, idempotency_key(&headers)?),
+            operation_id: operation_id(&run_id.to_string(), idempotency_key(&headers)?),
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,
@@ -779,11 +780,12 @@ async fn review_step<B: Exec>(
             "outcome and errorCode only go with RESOLVE_STEP",
         ));
     }
+    let run_id = parse_id::<RunId>(id)?;
     let run = state
         .runs()
         .review(
             &caller.session.principal,
-            parse_id::<RunId>(id)?,
+            run_id,
             &node,
             action,
             &body.reason,
@@ -795,7 +797,7 @@ async fn review_step<B: Exec>(
     Ok((
         StatusCode::ACCEPTED,
         Json(OperationResultBody {
-            operation_id: operation_id(id, idempotency_key(headers)?),
+            operation_id: operation_id(&run_id.to_string(), idempotency_key(headers)?),
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,

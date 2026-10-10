@@ -40,8 +40,9 @@ export class ApiError extends Error {
     this.retryable = init.retryable ?? false;
     this.traceId = init.traceId;
     this.details = init.details;
+    // A stable name from a short list, shown to people: never more than a name's worth of what the server sent.
     const reason = init.details?.['reason'];
-    this.reason = typeof reason === 'string' ? reason : undefined;
+    this.reason = typeof reason === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(reason) ? reason : undefined;
     this.retryAfterMs = init.retryAfterMs;
   }
 }

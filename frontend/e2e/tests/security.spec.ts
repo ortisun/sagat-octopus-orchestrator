@@ -25,7 +25,7 @@ async function nothingRan(page: Page): Promise<void> {
   expect(await page.locator('script:not([src])').count()).toBe(0);
 }
 
-test('SEC text that comes from outside is shown as text and never runs: a description, a correlation id, a release note and a reason', async ({ page }) => {
+test('SEC text that comes from outside is shown as text and never runs: a description, a correlation id, a release note, and the id and activity of a node', async ({ page }) => {
   test.setTimeout(180_000);
   const problems = failOnBrowserErrors(page);
   const injected = watchForInjection(page);
@@ -42,14 +42,19 @@ test('SEC text that comes from outside is shown as text and never runs: a descri
   await admin.call('POST', `/workflows/${created.body.id}/publish`, { draftRevision: 1, releaseNotes: HOSTILE }, 201);
   const run = await admin.start(created.body.id, {}, { correlationId: HOSTILE });
 
-  await signIn(page, env.tokens.operator);
+  // A draft is saved whatever it holds, so the id of a node and the name of its activity can be anything.
+  const ids = await admin.call<{ id: string }>('POST', '/workflows', {
+    name: 'sec-ids',
+    ir: { ...IR_BASE, metadata: { name: 'sec-ids' }, entrypoint: HOSTILE, nodes: [{ id: HOSTILE, type: 'activity', activity: HOSTILE, timeoutMs: 1000 }] },
+  }, 201);
+
+  await signIn(page, env.tokens.developer);
   // The run: the correlation id is on the page, as the characters it is made of.
   await goTo(page, `/runs/${run}`);
   await expect(page.getByRole('heading', { level: 1 })).toContainText(run);
   await expect(page.getByText(HOSTILE, { exact: true }).first()).toBeVisible();
   await nothingRan(page);
 
-  // A decision's reason travels through the platform and comes back in the journal.
   await page.getByRole('tab', { name: 'Table' }).click();
   await page.getByRole('tab', { name: 'Timeline' }).click();
   await expect(page.getByText(/journal events are read/)).toBeVisible({ timeout: 20_000 });
@@ -64,6 +69,20 @@ test('SEC text that comes from outside is shown as text and never runs: a descri
   await expect(page.getByRole('textbox', { name: 'Description' })).toHaveValue(HOSTILE);
   await page.getByRole('tab', { name: 'Versions' }).click();
   await expect(page.getByText(HOSTILE, { exact: true }).first()).toBeVisible();
+  await nothingRan(page);
+
+  // A workflow whose node is called by the hostile text: the canvas, the list, the inspector and the platform's own
+  // problems about it (which quote the id) show it as text.
+  await goTo(page, `/workflows/${ids.body.id}`);
+  await expect(page.getByRole('heading', { name: 'sec-ids', level: 1 })).toBeVisible();
+  await expect(page.getByTestId('validation-summary')).toHaveText(/problem/, { timeout: 20_000 });
+  await nothingRan(page);
+  await page.getByRole('button', { name: 'List' }).click();
+  // The id is clipped (a name is not a paragraph), and what is shown of it is its characters.
+  await expect(page.getByText('<img src=x onerror="window.__pwned=1">', { exact: false }).first()).toBeVisible();
+  await nothingRan(page);
+  await page.getByRole('button', { name: /^Edit /, includeHidden: false }).first().click();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).toBeVisible();
   await nothingRan(page);
 
   expect(injected.dialogs).toEqual([]);

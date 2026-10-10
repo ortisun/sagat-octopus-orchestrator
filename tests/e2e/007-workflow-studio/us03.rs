@@ -327,6 +327,25 @@ async fn us03_the_changes_are_the_runs_own_and_need_run_read() {
         )
         .await;
     assert_eq!(status, 404);
+
+    // A machine identity that executes tasks may not read runs, and is refused the changes and the
+    // stream alike (a member of the tenant, so the refusal is about the permission and not the tenant).
+    p.grant(p.tenant, "wanda", sagat_domain::identity::Role::Worker)
+        .await;
+    let (status, body) = p
+        .rest_as(
+            "wanda",
+            Method::GET,
+            &format!("/runs/{run}/graph/changes?since=0"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 403, "{body}");
+    let (status, body) = Stream::open(&p, &run, "wanda", TENANT, None)
+        .await
+        .err()
+        .expect("a worker may not watch a run");
+    assert_eq!(status, 403, "{body}");
 }
 
 #[tokio::test]
@@ -569,6 +588,59 @@ async fn us03_streams_are_limited_per_subject_and_a_closed_stream_frees_its_plac
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(opened, "a stream that was closed still holds its place");
+}
+
+/// Opens streams as alice and olivia, and shows what a third subject (vera) is told.
+async fn third_stream_is_refused(limits: StreamLimits) -> (u16, Value) {
+    let p = platform_with(Options {
+        streams: Some(StreamLimits {
+            poll_min: Duration::from_millis(50),
+            poll_max: Duration::from_millis(100),
+            ..limits
+        }),
+        ..Options::default()
+    })
+    .await;
+    let wf = p.publish("order-flow", &chain("order-flow", 2)).await;
+    let run = p.start(&wf, &json!({})).await;
+    p.grant(p.tenant, "olivia", sagat_domain::identity::Role::Operator)
+        .await;
+    p.grant(p.tenant, "vera", sagat_domain::identity::Role::Viewer)
+        .await;
+    let _a = Stream::open_as_alice(&p, &run).await;
+    let _b = Stream::open(&p, &run, "olivia", TENANT, None)
+        .await
+        .expect("the second place");
+    Stream::open(&p, &run, "vera", TENANT, None)
+        .await
+        .err()
+        .expect("the third is refused")
+}
+
+#[tokio::test]
+async fn us03_the_tenant_may_not_hold_more_streams_than_its_cap_whoever_asks() {
+    let (status, body) = third_stream_is_refused(StreamLimits {
+        per_tenant: 2,
+        per_subject: 5,
+        ..StreamLimits::default()
+    })
+    .await;
+    assert_eq!(status, 429, "{body}");
+    assert_eq!(body["details"]["reason"], "STREAMS_PER_TENANT");
+    assert_eq!(body["retryable"], true);
+}
+
+#[tokio::test]
+async fn us03_the_platform_as_a_whole_may_not_hold_more_streams_than_its_cap() {
+    let (status, body) = third_stream_is_refused(StreamLimits {
+        global: 2,
+        per_tenant: 50,
+        per_subject: 5,
+        ..StreamLimits::default()
+    })
+    .await;
+    assert_eq!(status, 429, "{body}");
+    assert_eq!(body["details"]["reason"], "STREAMS_GLOBAL");
 }
 
 #[tokio::test]

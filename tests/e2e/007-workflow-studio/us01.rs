@@ -237,10 +237,10 @@ async fn us01_validating_needs_write_access_and_never_crosses_a_tenant() {
         .send()
         .await
         .expect("send");
-    assert!(
-        [403, 404].contains(&response.status().as_u16()),
-        "{}",
-        response.status()
+    assert_eq!(
+        response.status(),
+        404,
+        "another tenant's workflow does not exist for us"
     );
     let unauthenticated = p
         .api

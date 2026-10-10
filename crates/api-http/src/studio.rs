@@ -168,7 +168,7 @@ fn policy(issuer_origin: Option<&str>) -> String {
     let connect = issuer_origin.map_or_else(|| "'self'".to_owned(), |o| format!("'self' {o}"));
     format!(
         "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data:; font-src 'self'; connect-src {connect}; worker-src 'self' blob:; \
+         img-src 'self' data:; font-src 'self'; connect-src {connect}; worker-src 'self'; \
          base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )
 }

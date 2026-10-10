@@ -123,7 +123,7 @@ async fn the_app_is_served_with_the_headers_that_keep_foreign_scripts_out() {
         "default-src 'none'",
         "script-src 'self'",
         "connect-src 'self'",
-        "worker-src 'self' blob:",
+        "worker-src 'self';",
         "base-uri 'none'",
         "frame-ancestors 'none'",
         "form-action 'self'",

@@ -314,7 +314,7 @@ async fn a_person_of_another_tenant_cannot_decide_and_learns_nothing() {
         foreign, missing,
         "a run of acme is as unknown to globex as one that does not exist"
     );
-    assert!([403, 404].contains(&foreign), "{foreign}");
+    assert_eq!(foreign, 404, "the run of another tenant does not exist");
     assert_eq!(graph(&p, &run).await, before, "nothing moved");
     assert_eq!(
         count(&journal_types(&p, &run).await, "step.retry_requested"),
