@@ -48,6 +48,14 @@ def test_the_embedded_error_catalog_is_the_shared_one() -> None:
     assert embedded == shared["errors"], "run `python scripts/sync_shared.py`"
 
 
+def test_nothing_in_the_package_switches_certificate_verification_off() -> None:
+    forbidden = ("verify=False", "verify = False", "CERT_NONE", "check_hostname = False", "check_hostname=False")
+    for source in sorted((PACKAGE / "sagat_octopus_orchestrator").rglob("*.py")):
+        text = source.read_text(encoding="utf-8")
+        for pattern in forbidden:
+            assert pattern not in text, f"{source.relative_to(PACKAGE)} contains {pattern}"
+
+
 def test_the_catalog_module_is_what_the_sync_script_writes() -> None:
     from scripts.sync_shared import render_catalog
 

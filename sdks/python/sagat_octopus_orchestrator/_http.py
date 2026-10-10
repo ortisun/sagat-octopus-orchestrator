@@ -163,6 +163,11 @@ class HttpTransport:
                 raise SagatError(
                     "PROTOCOL", "the answer is not JSON", status=response.status_code, trace_id=trace_id
                 ) from None
+        if 300 <= response.status_code < 400:
+            # A redirect is never followed (it could carry the token to another host) and never retried.
+            raise SagatError(
+                "PROTOCOL", "the server redirected the call", status=response.status_code, trace_id=trace_id
+            )
         raise self._error_of(response, trace_id)
 
     @staticmethod

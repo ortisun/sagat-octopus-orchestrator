@@ -112,6 +112,25 @@ async def test_the_rest_client_trusts_the_roots_it_is_given_and_refuses_a_server
     await strict.aclose()
 
 
+async def test_a_redirect_is_not_followed_over_tls_either(
+    http: FakeHttpServer, secure_rest: str, server_pair: Pair
+) -> None:
+    elsewhere = FakeHttpServer()
+    try:
+        elsewhere.serve(lambda _seen: reply(200, run_body()))
+        http.serve(lambda _seen: reply(307, "", location=elsewhere.base + "/runs/r"))
+        client = SagatClient(
+            ClientConfig(api_url=secure_rest, namespace="p", token="t", tls=TlsOptions(ca=server_pair.cert))
+        )
+        with pytest.raises(SagatError) as caught:
+            await client.start("0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee", {})
+        assert (caught.value.code, caught.value.status) == ("PROTOCOL", 307)
+        assert len(http.seen) == 1 and elsewhere.seen == []
+        await client.aclose()
+    finally:
+        elsewhere.close()
+
+
 async def test_the_rest_client_presents_its_certificate_for_mtls(
     http: FakeHttpServer, server_pair: Pair, client_pair: Pair, tmp_path: Path
 ) -> None:

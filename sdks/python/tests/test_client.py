@@ -190,6 +190,25 @@ async def test_a_4xx_other_than_429_is_never_retried_and_keeps_what_the_server_s
     assert len(http.seen) == 1
 
 
+async def test_a_redirect_is_never_followed_and_is_a_protocol_error(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    elsewhere = FakeHttpServer()
+    try:
+        elsewhere.serve(lambda _seen: reply(200, run_body()))
+        http.serve(lambda _seen: reply(302, "", location=elsewhere.base + "/runs/r"))
+        client = make_client()
+        for call in (client.get("r"), client.start(WORKFLOW, {}), client.cancel("r", "no longer needed")):
+            with pytest.raises(SagatError) as caught:
+                await call
+            assert (caught.value.code, caught.value.status, caught.value.retryable) == ("PROTOCOL", 302, False)
+            assert caught.value.message == "the server redirected the call"
+        assert len(http.seen) == 3, "a redirect is not repeated"
+        assert elsewhere.seen == [], "and the other server never saw the call or the token"
+    finally:
+        elsewhere.close()
+
+
 async def test_a_call_the_server_does_not_have_is_told_from_a_resource_that_is_missing(
     http: FakeHttpServer, make_client: MakeClient
 ) -> None:

@@ -165,7 +165,9 @@ prints them; no whitespace) is byte-identical across the five SDKs.
 Every failure is one `SagatError` with `code`, `message` (safe to log: never a payload, a token or a secret),
 `status` (HTTP status, or the gRPC status name), `retryable`, `trace_id`, `reason`, `retry_after_ms` and
 `remediation`. The catalog (`sdks/error-catalog.json`) is embedded and a test proves the copy is current. The SDK
-retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); never a 4xx other than 429.
+retries only when repeating a call cannot do harm (`sdks/SPEC.md` section 5); never a 4xx other than 429. An HTTP redirect is never followed (it could carry the
+token to another host): a 3xx is a `PROTOCOL` error with the status kept. Certificate verification is never switched
+off (a test reads the source for it).
 
 ## Units and conventions
 
@@ -190,7 +192,7 @@ server ignores the fields it does not know.
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (95) | `mypy --strict` and `ruff` | Conformance suite (13 scenarios) |
+| Runtime | Unit tests (98) | `mypy --strict` and `ruff` | Conformance suite (13 scenarios) |
 |---|---|---|---|
 | CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
 | CPython 3.10.21 (uv build) | 93 passed and 1 skipped then (the codegen check needs `grpcio-tools`, not installed there) — **measured before the last change (UTF-16 key order); not re-run** | not run (type-checked against the 3.10 language level from 3.14) | passed — **before the same change; not re-run** |
