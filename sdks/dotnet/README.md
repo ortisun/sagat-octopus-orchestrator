@@ -263,15 +263,15 @@ server's version, an older SDK ignores fields it does not know). After 1.0 a bre
 
 What was **run** on 2026-10-10 on one machine (macOS 26, arm64), and what was not:
 
-| Target | Built | Unit tests | Conformance suite (14 scenarios) |
+| Target | Built | Unit tests | Conformance suite (15 scenarios) |
 |---|---|---|---|
 | `net10.0` (runtime 10.0.12, SDK 10.0.401) | yes | 410 passed | passed, three runs in a row |
-| `net8.0` (runtime 8.0.31, installed next to it) | yes (a `net8.0` asset in the package) | **not run**: the test project targets `net10.0` (ASP.NET Core `TestServer` of 10) | passed, one run |
+| `net8.0` (runtime 8.0.31, installed next to it) | yes (a `net8.0` asset in the package) | **not run**: the test project targets `net10.0` (ASP.NET Core `TestServer` of 10) | passed, one run, on an earlier revision of the SDK and of the suite |
 | .NET 9 | not built for; it uses the `net8.0` asset | **not run** | **not run** |
 | Windows, Linux, x64 | n/a | **not run** | **not run** |
 | .NET Framework, `netstandard`, Mono, AOT, trimming | not supported | n/a | n/a |
 
-The conformance suite (`tests/contract/sdk-conformance`, 14 scenarios, a real platform with PostgreSQL) runs the `net10.0`
+The conformance suite (`tests/contract/sdk-conformance`, 15 scenarios, a real platform with PostgreSQL) runs the `net10.0`
 runner by default. `SAGAT_DOTNET_TFM=net8.0 SAGAT_DOTNET=<a dotnet with the .NET 8 runtime> SAGAT_SDK_LANGS=dotnet …` runs the
 `net8.0` build of the SDK instead.
 

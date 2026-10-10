@@ -237,11 +237,11 @@ server ignores the fields it does not know.
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (226) | `mypy --strict` and `ruff` | Conformance suite (14 scenarios) |
+| Runtime | Unit tests (226) | `mypy --strict` and `ruff` | Conformance suite (15 scenarios) |
 |---|---|---|---|
 | CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
-| CPython 3.10.21 (uv build) | 194 passed and 1 skipped (the codegen check needs `grpcio-tools`, not installed there) | not run (type-checked against the 3.10 language level from 3.14) | passed, one run |
-| CPython 3.11.16, 3.12.14, 3.13.15 (uv builds) | 194 passed and 1 skipped each, as above | not run | not run |
+| CPython 3.10.21 (uv build) | 226 passed | not run (type-checked against the 3.10 language level from 3.14) | passed, one run, on an earlier revision of the SDK and of the suite |
+| CPython 3.11.15, 3.12.12, 3.13.9 (uv builds) | 226 passed each | not run | not run |
 | Linux, Windows, other architectures | not run | not run | not run |
 | Free-threaded builds, PyPy | not run | not run | not run |
 
@@ -274,4 +274,4 @@ The locks are made from `requirements.in` and `requirements-dev.in` with
 `scripts/sync_shared.py` copies `worker.proto` and `sdks/error-catalog.json` from the repository and regenerates
 the committed protobuf code; the unit tests fail when any of them is behind. The conformance suite
 (`tests/contract/sdk-conformance/`) runs from the repository root:
-`SAGAT_SDK_LANGS=python cargo test -p sagat-tests --test sdk_conformance -- --nocapture`.
+`SAGAT_SDK_LANGS=python cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture`.

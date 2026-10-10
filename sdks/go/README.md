@@ -225,7 +225,7 @@ What was **actually run** for this release, and what was not:
 |---|---|---|
 | Go | **1.25.14** (`go test -race ./...`, `go vet`, `gofmt`, `govulncheck`, the conformance suite) | Every other Go: `go.mod` says `go 1.25.0` because gRPC v1.83 requires it, so **1.24 and older cannot build the module** (the first release of this SDK was run on 1.24.2, before that change); 1.26 was not run as the SDK's toolchain |
 | OS / arch | **macOS, Darwin 25.3.0, arm64** | Linux, Windows, amd64 |
-| Server | The platform at this commit (REST `/v1`, worker protocol 1.2), through the conformance suite, which plays 14 scenarios; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
+| Server | The platform at this commit (REST `/v1`, worker protocol 1.2), through the conformance suite, which plays 15 scenarios; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
 | TLS | Tested with throw-away certificates (ECDSA, generated in the tests) against an in-process TLS server, on both channels, on loopback: an untrusted server certificate is refused as `TRANSPORT` and never reaches the handler; a configured CA makes the same server work (a task goes through end to end on the worker channel); a certificate for another name is refused; with mTLS the server sees the client certificate, and refuses a client with none or with one of another authority; no warning is logged for `https://`. See "TLS" below for what is **not** covered | A trusted server certificate from the *system* roots (only the untrusted case is tested), revocation, TLS versions and cipher suites, certificate rotation on a running host |
 | Race detector | `-race` passes on the unit tests | -- |
 | Vulnerability scan | `govulncheck` v1.7.0 on `./...` with Go 1.25.14 and the vulnerability database of 2026-10-08: 9 reachable findings, all from 2026-10-08, and 4 in packages that are imported but not called | See "Known findings" below |
@@ -270,4 +270,4 @@ conformance/prepare.sh      # builds bin/runner (git-ignored)
   it tries `GOPROXY=off` first and runs `go mod download` once only if a module is missing. There is no
   `vendor/` directory: it would put all of gRPC in the repository for one script.
 * The conformance suite is run from the repository root:
-  `SAGAT_SDK_LANGS=go cargo test -p sagat-tests --test sdk_conformance -- --nocapture`.
+  `SAGAT_SDK_LANGS=go cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture`.

@@ -126,7 +126,7 @@ serves it at that minor, a server of another major refuses with `UNSUPPORTED_PRO
 
 | Runtime | Status |
 |---|---|
-| Node.js 26.8.1 | **tested**: unit tests (46) and the conformance suite |
+| Node.js 26.8.1 | **tested**: unit tests (96) and the conformance suite |
 | Node.js 20, 22, 24 | declared (`engines.node >= 20`), **not run here** |
 | Browsers, Deno, Bun | not supported (the worker host uses `@grpc/grpc-js`; the client uses the global `fetch`) |
 
@@ -135,9 +135,9 @@ Dependencies: `@grpc/grpc-js`, `@grpc/proto-loader`. The package is ESM only.
 ## Develop
 
 ```text
-npm test                 # builds, then 46 unit tests against a fake HTTP server and a fake worker service
+npm test                 # builds, then 96 unit tests against a fake HTTP server and a fake worker service
 npm run sync             # copies worker.proto and the error catalog from the repository; npm test fails when behind
-cargo test -p sagat-tests --test sdk_conformance   # the conformance suite (needs Docker), from the repository root
+cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
 ```
 
 Licence: not yet declared by the repository (`UNLICENSED`); this is an owner decision recorded in

@@ -280,7 +280,7 @@ repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automat
 
 | Runtime | Status |
 |---|---|
-| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (202 unit tests) and the conformance suite (14 scenarios) |
+| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (202 unit tests) and the conformance suite (15 scenarios) |
 | JDK 26.0.2.1 (Homebrew OpenJDK, macOS arm64) | **tested**: the 202 unit tests only (not the conformance suite). The JVM prints warnings from `protobuf-java` 3.25 (`sun.misc.Unsafe`) and Netty (`System::loadLibrary`) on 24+ |
 | Java 17 and 21 | **declared (`--release 17`), not run here**. The library is compiled with `--release 17`, so it uses only Java 17 APIs, and every dependency's class files are Java 8 level (checked on the class files of the run-time classpath); no JDK 17 or 21 runtime was available |
 | Linux, Windows | not run. The `protoc` artifact is chosen by `os-maven-plugin` for the build machine |
@@ -299,7 +299,7 @@ version `grpc-protobuf` 1.83.1 depends on), Jackson 2.22.3, JUnit Jupiter 5.14.4
 ./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 202 unit tests
 scripts/sync-shared.sh                # copies worker.proto and error-catalog.json from the repository; SharedContractsTest fails when behind
 conformance/prepare.sh                # builds the runner (target/classpath.txt); conformance/run.sh build|run ... is what the harness calls
-cargo test -p sagat-tests --test sdk_conformance   # the conformance suite (needs Docker), from the repository root
+cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
 ```
 
 Layout: `sdk/` is the library (`dev.sagatoctopusorchestrator.sdk` for the client, errors and JSON,
