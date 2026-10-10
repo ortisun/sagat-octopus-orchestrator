@@ -153,8 +153,13 @@ export class WorkerHost {
     // The poll in progress ends and no other starts; what it leased is in flight from here on.
     await this.loop;
     const pending = Promise.all([...this.inflight.values()].map((task) => task.done));
-    const timer = new Promise<'late'>((resolve) => setTimeout(() => resolve('late'), timeoutMs).unref());
-    if ((await Promise.race([pending.then(() => 'done' as const), timer])) === 'late') {
+    let late: NodeJS.Timeout | undefined;
+    const timer = new Promise<'late'>((resolve) => {
+      late = setTimeout(() => resolve('late'), timeoutMs);
+    });
+    const outcome = await Promise.race([pending.then(() => 'done' as const), timer]);
+    clearTimeout(late);
+    if (outcome === 'late') {
       for (const task of this.inflight.values()) task.abort.abort('shutdown');
       await Promise.race([pending, sleep(2000).catch(() => undefined)]);
     }
@@ -201,10 +206,12 @@ export class WorkerHost {
 
   // ------------------------------------------------------------------------------------------- loop
 
+  // The pause between polls. It keeps the process alive (a host that is running is work to wait for), and a
+  // host that is stopping does not pause: `stop` may have run while a poll was in flight, with nothing to wake.
   private idle(ms: number): Promise<void> {
+    if (this.stopping) return Promise.resolve();
     return new Promise((resolve) => {
       const timer = setTimeout(done, ms);
-      timer.unref?.();
       const self = this;
       function done(): void {
         clearTimeout(timer);
@@ -280,7 +287,7 @@ export class WorkerHost {
       return;
     }
 
-    let document: { input?: unknown; steps?: Record<string, { output?: unknown }> };
+    let document: { node?: string; input?: unknown; steps?: Record<string, { output?: unknown }> };
     try {
       const parsed: unknown = lease.input_json === '' ? {} : JSON.parse(lease.input_json);
       document = parsed !== null && typeof parsed === 'object' ? (parsed as typeof document) : {};
@@ -306,7 +313,8 @@ export class WorkerHost {
       activityName: lease.activity_name,
       taskId: lease.task_id,
       runId: lease.run_id,
-      node: lease.step_id,
+      node: typeof document.node === 'string' && document.node !== '' ? document.node : lease.step_id,
+      stepId: lease.step_id,
       attempt: lease.attempt,
       generation: lease.generation,
       idempotencyKey: lease.idempotency_key,
@@ -425,11 +433,9 @@ export class WorkerHost {
       }
       if (!stopped) {
         timer = setTimeout(() => void tick(), interval());
-        timer.unref?.();
       }
     };
     timer = setTimeout(() => void tick(), interval());
-    timer.unref?.();
     return {
       stop: () => {
         stopped = true;

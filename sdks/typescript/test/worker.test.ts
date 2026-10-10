@@ -25,6 +25,9 @@ class FakeServer {
   cancelRequested = false;
   heartbeatExpiresMs = Date.now() + 60_000;
   secrets: Array<{ name: string; value: Buffer; version: number }> = [];
+  /** How long a poll takes to answer, and the wait the answer asks for when it brings no task. */
+  pollDelayMs = 0;
+  pollRetryAfterMs = 50;
   private server = new grpc.Server();
   port = 0;
 
@@ -45,6 +48,10 @@ class FakeServer {
           callback({ code: queued.code, details: 'scripted', metadata } as grpc.ServiceError);
           return;
         }
+        if (method === 'pollTasks' && this.pollDelayMs > 0) {
+          setTimeout(() => callback(null, answer(call.request)), this.pollDelayMs);
+          return;
+        }
         callback(null, answer(call.request));
       };
     };
@@ -52,7 +59,7 @@ class FakeServer {
     reply('pollTasks', (request: { max_tasks: number }) => {
       // Like the real service: no more than were asked for.
       const tasks = this.leases.splice(0, request.max_tasks);
-      return { tasks, retry_after_ms: 50 };
+      return { tasks, retry_after_ms: this.pollRetryAfterMs };
     });
     reply('heartbeat', () => ({ lease_expires_at_epoch_ms: this.heartbeatExpiresMs, cancel_requested: this.cancelRequested }));
     reply('completeStep', () => ({ command_id: 'c', already_applied: false, step_status: 'SUCCEEDED', run_status: 'RUNNING' }));
@@ -80,6 +87,8 @@ class FakeServer {
     this.cancelRequested = false;
     this.heartbeatExpiresMs = Date.now() + 60_000;
     this.secrets = [];
+    this.pollDelayMs = 0;
+    this.pollRetryAfterMs = 50;
   }
 }
 
@@ -150,6 +159,7 @@ test('a task is run with its context and completed once with a key that is the s
   assert.deepEqual(received, { amount: 5 });
   assert.equal(seen?.runId, 'run-1');
   assert.equal(seen?.node, 'charge');
+  assert.equal(seen?.stepId, 'charge');
   assert.equal(seen?.attempt, 1);
   assert.equal(seen?.idempotencyKey, 'run-1:charge');
   assert.equal(seen?.taskKind, 'FORWARD');
@@ -389,6 +399,18 @@ test('no more tasks are taken than the host has room for, and stop waits for the
   await h.stop(5000);
   assert.ok(peak <= 2);
   assert.equal(running, 0, 'nothing was left running');
+});
+
+test('stop while a poll is in flight does not wait out the pause an empty answer asks for', async () => {
+  fake.pollDelayMs = 150;
+  fake.pollRetryAfterMs = 10_000;
+  const worker = host();
+  worker.registerActivity('charge', () => 1);
+  await worker.start();
+  await until(() => fake.of('pollTasks').length === 1, 'the first poll');
+  const began = Date.now();
+  await worker.stop(1000);
+  assert.ok(Date.now() - began < 1500, `stop took ${Date.now() - began} ms`);
 });
 
 test('registration is refused clearly: an unsupported protocol, an unbound identity', async () => {
