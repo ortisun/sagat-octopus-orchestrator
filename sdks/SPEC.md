@@ -97,7 +97,7 @@ decisions, `events(runId, cursor)` for the journal. Terminal statuses: `SUCCEEDE
 
 Rules:
 
-- `Idempotency-Key` is 8 to 160 printable ASCII characters. The caller may give one; when it does not,
+- `Idempotency-Key` is 8 to 160 visible ASCII characters (0x21 to 0x7e: no space, no control character). The caller may give one; when it does not,
   the SDK generates a random one **per call** (UUID) and reuses it for every retry of that call. Two
   separate calls with no key are two runs.
 - `publishEvent`'s `eventId` works the same way: the caller's, or generated per call and kept across
@@ -218,6 +218,12 @@ A handler's input type that cannot be built from the document is not a crash: th
   or raised (a handler that raises its cancellation error is reported as `FailStep(error_code =
   "CANCELLED", retryable = false)`). A compensation or reconciliation task is never cancelled by the
   server (it answers `false`).
+- **What a cancelled handler's end means depends on why it was cancelled.** `run-cancelled`: the platform asked
+  for it, so a handler that raises its cancellation error is reported as `CANCELLED` (above) and one that
+  returns is reported as what it returned. `lease-lost`: nothing is reported. `shutdown` (the host is
+  stopping, §6.8): a handler that then raises its cancellation error is **not reported** — the lease lapses and
+  the platform leases the step again; failing a step for good because a deploy stopped its worker would be
+  wrong. A handler that returns a value, or fails with another error, after `shutdown` is reported as usual.
 - `ABORTED` (`STALE_ATTEMPT`) or `FAILED_PRECONDITION` from a heartbeat → the lease is lost: the token is
   cancelled with the reason `lease-lost` and the eventual result is dropped.
 - A heartbeat that fails with a transport error is retried on the next beat; the lease is still ours until
@@ -276,8 +282,11 @@ or the ecosystem's standard (C#: `System.Diagnostics.Metrics`).
 ## 7. Workflow builders
 
 Pure, deterministic constructors of the IR. `build()` returns the document (the language's JSON value)
-and `toJson()` the canonical text (UTF-8, keys sorted, no insignificant whitespace). The same program
-in the five languages **MUST** produce byte-identical canonical text.
+and `toJson()` the canonical text: **RFC 8785** (JSON Canonicalization Scheme) — UTF-8, no insignificant
+whitespace, the keys of every object sorted by their **UTF-16 code units**, numbers as ECMAScript prints them
+(`1.0` is `1`, `600000` stays `600000`, never `6e5`). The same program in the five languages **MUST** produce
+byte-identical canonical text. (Keys that differ only above U+FFFF sort differently by code point than by UTF-16
+code unit; the rule is the UTF-16 one.)
 
 ```text
 workflow(name).description(text).label(key, value)
