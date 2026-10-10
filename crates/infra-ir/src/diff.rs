@@ -66,11 +66,14 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
 
+    // A workflow that was never published had no callers and no emitters: nothing to break.
     let mut breaking = Vec::new();
-    triggers(&from, &to, &mut breaking);
-    schema(&from, &to, "inputSchema", Side::Input, &mut breaking);
-    schema(&from, &to, "outputSchema", Side::Output, &mut breaking);
-    removed_event_types(&from_nodes, &to_nodes, &mut breaking);
+    if !from.is_empty() {
+        triggers(&from, &to, &mut breaking);
+        schema(&from, &to, "inputSchema", Side::Input, &mut breaking);
+        schema(&from, &to, "outputSchema", Side::Output, &mut breaking);
+        removed_event_types(&from_nodes, &to_nodes, &mut breaking);
+    }
 
     let mut attention = Vec::new();
     needs_preparing(&from_nodes, &to_nodes, &mut attention);
@@ -328,10 +331,14 @@ fn schema(
     side: Side,
     out: &mut Vec<DiffFinding>,
 ) {
-    let Some(before) = from.get(field).and_then(Value::as_object) else {
-        return;
-    };
     let empty = Map::new();
+    // No input schema accepts anything, so a `required` entry added to one that had none breaks the
+    // callers that did not send it; no output schema promised nothing, so there is nothing to break.
+    let before = match (from.get(field).and_then(Value::as_object), side) {
+        (Some(before), _) => before,
+        (None, Side::Input) => &empty,
+        (None, Side::Output) => return,
+    };
     let after = to.get(field).and_then(Value::as_object);
     // An input schema that went away accepts anything; an output schema that went away promises
     // nothing, so every property it promised is gone.
