@@ -146,7 +146,7 @@ Gaps and decisions: `specs/004-events-webhooks-messaging/research.md` (G73–G95
 
 ## Evidence: 005 inline-code-sandbox
 
-Gaps and decisions: `specs/005-inline-code-sandbox/research.md` (G96–G120, D95–D117). Validation flow: `specs/005-inline-code-sandbox/quickstart.md`. Operating it: `docs/runbooks/scripts.md`. Design: ADR-0013.
+Gaps and decisions: `specs/005-inline-code-sandbox/research.md` (G96–G120, D95–D118). Validation flow: `specs/005-inline-code-sandbox/quickstart.md`. Operating it: `docs/runbooks/scripts.md`. Design: ADR-0013.
 
 | Requirement | State | Evidence |
 |---|---|---|
