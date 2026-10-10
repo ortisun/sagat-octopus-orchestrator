@@ -1022,3 +1022,65 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
         out,
     })
 }
+
+/// Plays an optional mode of a runner (`run.sh <mode> config out`, see the README) on a platform of its own,
+/// for the scenario file at `path`, and returns what the runner wrote.
+pub async fn run_mode(path: &Path, language: &'static str, mode: &str) -> Result<Value, String> {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    let (_, root) = languages(Some(&[language]))
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{language} is not a language of the suite"))?;
+    if !root.join("run.sh").exists() {
+        return Err(format!("{language} has no conformance runner"));
+    }
+    let scenario: Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let name = scenario["name"]
+        .as_str()
+        .ok_or("a scenario without a name")?
+        .to_owned();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("target")
+        .join("sdk-modes")
+        .join(&name);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // The workflows of the scenario, written by the language's own builders.
+    let path_arg = path.to_str().ok_or("path")?;
+    let (text, _) = script(
+        &root,
+        "run.sh",
+        &["build", path_arg],
+        Duration::from_secs(300),
+    )
+    .await?;
+    let built: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("build printed something that is not JSON: {e}"))?;
+    let (run, config, _) = stage(&scenario, &built, language).await;
+    let config_path = dir.join(format!("{language}.{mode}.config.json"));
+    let out_path = dir.join(format!("{language}.{mode}.out.json"));
+    std::fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&out_path);
+    let result = script(
+        &root,
+        "run.sh",
+        &[
+            mode,
+            config_path.to_str().ok_or("path")?,
+            out_path.to_str().ok_or("path")?,
+        ],
+        Duration::from_secs(300),
+    )
+    .await;
+    run.stop().await;
+    result?;
+    std::fs::read(&out_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| format!("{language} wrote no readable {}", out_path.display()))
+}

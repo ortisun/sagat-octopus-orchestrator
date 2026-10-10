@@ -183,6 +183,28 @@ it must be non-empty and free of tokens) and `version` (a journal counter), sort
 the result**. Where a scenario would be racy it is written so that it is not (a worker started after the
 run, a wait that nothing wakes, `control` to move time).
 
+## Optional modes
+
+`run.sh <mode> <config.json> <out.json>` with a mode other than `build` and `run` is an SDK's own acceptance
+test against the real platform. There is one, for `US01-AC01`:
+
+**`aspnet`** (C# only; `tests/e2e/006-sdk-multilanguage/scenarios/us01-aspnet.json` is its scenario, whose
+workflows are published as for any scenario and are in `config.json`). The runner starts a minimal ASP.NET Core
+service on a loopback port that registers the SDK with `AddSagatOctopusOrchestrator` (`apiUrl`, `namespace` and
+`clientToken` of the config) and has `POST /orders`, a handler that takes `ISagatClient` from dependency
+injection and calls `StartAsync` for `workflows.order`, with the request's `Idempotency-Key` header as the
+idempotency key and **no explicit trace**: the trace reaches the platform through the ambient `Activity` that
+ASP.NET Core made from the request's `traceparent`. The runner then calls its own service twice with the same
+`Idempotency-Key` and one `traceparent`, and writes
+
+```json
+{ "sent": {"idempotencyKey": "…", "traceparent": "00-…-…-01", "traceId": "…32 hex…"},
+  "first": {"status": 202, "run": <Run>}, "second": {"status": 202, "run": <Run>} }
+```
+
+where `run` is the Run of the SDK (the exact fields above) as the service returned it. The harness holds it to
+the acceptance scenario: both calls are the same run, and the run's `traceId` is the one sent.
+
 ## Golden files
 
 `expected/<scenario>.json` is the normalized result. It is reviewed by a person: a blessed file that is

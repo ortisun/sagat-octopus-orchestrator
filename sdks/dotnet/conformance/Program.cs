@@ -10,7 +10,21 @@ try
 {
     if (args.Length < 2)
     {
-        throw new ArgumentException("usage: runner build <scenario> | run <scenario> <config> <out>");
+        throw new ArgumentException("usage: runner build <scenario> | run <scenario> <config> <out> | aspnet <config> <out>");
+    }
+
+    if (args[0] == "aspnet")
+    {
+        // An optional mode (README, "Optional modes"): the acceptance scenario of US01 against the real platform.
+        if (args.Length < 3)
+        {
+            throw new ArgumentException("usage: runner aspnet <config> <out>");
+        }
+
+        using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        var result = await AspNetMode.PlayAsync(JsonNode.Parse(File.ReadAllText(args[1]))!.AsObject(), guard.Token).ConfigureAwait(false);
+        File.WriteAllText(args[2], result.ToJsonString(new JsonSerializerOptions { WriteIndented = true, TypeInfoResolver = new DefaultJsonTypeInfoResolver() }));
+        return 0;
     }
 
     var scenario = JsonNode.Parse(File.ReadAllText(args[1]))!.AsObject();

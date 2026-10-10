@@ -1,6 +1,8 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
@@ -120,5 +122,72 @@ public sealed class AspNetCoreTests
         using var abort = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => http.GetAsync("/runs/r-1", abort.Token));
         Assert.True(await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    /// <summary>The flow of the runner's <c>aspnet</c> mode, on a loopback port, against the fake server: the key of the request header, no explicit trace.</summary>
+    [Fact]
+    public async Task ARealListeningServiceStartsOneRunForTwoCallsWithTheSameKeyAndTheTraceOfTheRequestWithoutAnExplicitTrace()
+    {
+        await using var platform = await FakeRestServer.StartAsync();
+        var runs = new Dictionary<string, string>();
+        platform.Handler = request =>
+        {
+            if (request.Method != "POST" || !request.PathAndQuery.EndsWith("/runs", StringComparison.Ordinal))
+            {
+                return new FakeAnswer(404, "{}");
+            }
+
+            var key = request.Header("idempotency-key");
+            if (!runs.TryGetValue(key, out var run))
+            {
+                var traceId = Traceparent.TraceIdOf(request.Header("traceparent"));
+                run = $$"""{"runId":"0190aaaa-0000-7000-8000-00000000000{{runs.Count + 1}}","workflowId":"{{Workflow}}","versionId":"v","status":"RUNNING","createdAt":"2026-10-10T10:00:00Z","traceId":{{(traceId is null ? "null" : $"\"{traceId}\"")}}}""";
+                runs[key] = run;
+            }
+
+            return new FakeAnswer(202, run);
+        };
+        var sent = Traceparent.New();
+        var traceId = Traceparent.TraceIdOf(sent)!;
+        using var spans = new SpanCapture(span => span.TraceId.ToString() == traceId, "Microsoft.AspNetCore", SdkInfo.ActivitySourceName);
+
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.Logging.ClearProviders();
+        builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Loopback, 0));
+        builder.Services.AddSagatOctopusOrchestrator(options =>
+        {
+            options.ApiUrl = platform.BaseUrl;
+            options.Namespace = "payments";
+            options.Token = "tok-aspnet";
+        });
+        await using var app = builder.Build();
+        app.MapPost("/orders", async (HttpRequest request, System.Text.Json.Nodes.JsonObject order, ISagatClient sagat, CancellationToken aborted) =>
+        {
+            var run = await sagat.StartAsync(Workflow, order, new StartOptions { IdempotencyKey = request.Headers["Idempotency-Key"].ToString() }, aborted);
+            return Results.Text(run.Raw.GetRawText(), "application/json", statusCode: StatusCodes.Status202Accepted);
+        });
+        await app.StartAsync();
+        var address = app.Services.GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>().Features
+            .Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>()!.Addresses.First();
+
+        using var http = new HttpClient { BaseAddress = new Uri(address) };
+        var answers = new List<string>();
+        for (var i = 0; i < 2; i++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/orders") { Content = JsonContent.Create(new { orderId = "o-1" }) };
+            request.Headers.TryAddWithoutValidation("Idempotency-Key", "aspnet-loopback-1");
+            request.Headers.TryAddWithoutValidation("traceparent", sent);
+            using var response = await http.SendAsync(request);
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            answers.Add(await response.Content.ReadAsStringAsync());
+        }
+
+        Assert.Equal(answers[0], answers[1]);
+        using var run = JsonDocument.Parse(answers[0]);
+        Assert.Equal(traceId, run.RootElement.GetProperty("traceId").GetString());
+        Assert.Equal(["aspnet-loopback-1", "aspnet-loopback-1"], platform.Requests.Select(r => r.Header("idempotency-key")));
+        Assert.All(platform.Requests, r => Assert.Equal(traceId, Traceparent.TraceIdOf(r.Header("traceparent"))));
+        Assert.All(platform.Requests, r => Assert.NotEqual(sent, r.Header("traceparent")));
+        Assert.Equal(2, spans.Spans.Count(s => s.Source.Name == SdkInfo.ActivitySourceName));
     }
 }

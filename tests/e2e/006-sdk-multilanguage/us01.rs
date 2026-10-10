@@ -46,3 +46,51 @@ fn every_sdk_creates_the_run_with_its_idempotency_key_and_the_trace_context_it_w
         }
     });
 }
+
+/// US01-AC01 as it is worded: "Given an ASP.NET Core service; When it registers a client via DI and calls
+/// StartAsync; Then Run is created with idempotencyKey and trace context propagated." The service is the C# SDK
+/// runner's `aspnet` mode (see the conformance README); the platform is the real one.
+#[test]
+fn an_aspnet_core_service_registers_the_client_through_di_and_starts_a_run_with_its_key_and_the_trace()
+ {
+    if std::env::var("SAGAT_SDK_LANGS")
+        .is_ok_and(|langs| !langs.split(',').any(|l| l.trim() == "dotnet"))
+    {
+        eprintln!("skipped: SAGAT_SDK_LANGS leaves out dotnet");
+        return;
+    }
+    let scenario = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("e2e/006-sdk-multilanguage/scenarios/us01-aspnet.json");
+    harness::block_on(async {
+        let failures = harness::ensure_prepared(&["dotnet"]).await;
+        assert!(failures.is_empty(), "{failures:?}");
+        let out = harness::run_mode(&scenario, "dotnet", "aspnet")
+            .await
+            .expect("the aspnet mode of the C# runner");
+        let sent = &out["sent"];
+        let (first, second) = (&out["first"], &out["second"]);
+        assert_eq!(first["status"], json!(202), "{out}");
+        assert_eq!(second["status"], json!(202), "{out}");
+        // The idempotency key makes the second call the run of the first, not another run.
+        assert_eq!(first["run"]["runId"], second["run"]["runId"], "{out}");
+        assert!(
+            first["run"]["runId"]
+                .as_str()
+                .is_some_and(|id| id.len() == 36),
+            "{out}"
+        );
+        assert_eq!(first["run"]["status"], "RUNNING", "{out}");
+        // The trace the request came with is the trace of the run: the SDK took it from the ambient Activity.
+        let trace = sent["traceId"].as_str().expect("trace id");
+        assert_eq!(trace.len(), 32, "{out}");
+        assert_eq!(first["run"]["traceId"], trace, "{out}");
+        assert_eq!(second["run"]["traceId"], trace, "{out}");
+        assert!(
+            sent["traceparent"]
+                .as_str()
+                .expect("traceparent")
+                .contains(trace),
+            "{out}"
+        );
+    });
+}

@@ -471,7 +471,7 @@ internal sealed class RunMode : IAsyncDisposable
         _ => throw new InvalidOperationException($"unknown action {action}"),
     };
 
-    private static JsonObject RunJson(Run run) => new()
+    internal static JsonObject RunJson(Run run) => new()
     {
         ["runId"] = run.RunId,
         ["workflowId"] = run.WorkflowId,

@@ -221,7 +221,7 @@ What was **run** on 2026-10-10 on one machine (macOS 26, arm64), and what was no
 
 | Target | Built | Unit tests | Conformance suite (13 scenarios) |
 |---|---|---|---|
-| `net10.0` (runtime 10.0.12, SDK 10.0.401) | yes | 238 passed | passed, three runs in a row |
+| `net10.0` (runtime 10.0.12, SDK 10.0.401) | yes | 239 passed | passed, three runs in a row |
 | `net8.0` (runtime 8.0.31, installed next to it) | yes (a `net8.0` asset in the package) | **not run**: the test project targets `net10.0` (ASP.NET Core `TestServer` of 10) | passed, one run |
 | .NET 9 | not built for; it uses the `net8.0` asset | **not run** | **not run** |
 | Windows, Linux, x64 | n/a | **not run** | **not run** |
@@ -246,10 +246,19 @@ Options}` 10.0.11 (2026-08-11) for `net10.0` and 8.0.x for `net8.0`. Tests: `Mic
 
 ```text
 bash scripts/sync-shared.sh      # copies worker.proto and error-catalog.json from the repository (a test fails when a copy is behind)
-dotnet test                      # 238 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
+dotnet test                      # 239 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
 dotnet format --verify-no-changes
 bash conformance/prepare.sh      # builds the runner; the harness calls it, and conformance/run.sh
 ```
+
+The runner has one mode besides `build` and `run`: `conformance/run.sh aspnet <config.json> <out.json>`, the acceptance test of
+US01-AC01 against the real platform (`tests/e2e/006-sdk-multilanguage`, `an_aspnet_core_service…`). It starts a minimal ASP.NET Core
+service on a loopback port that registers the SDK with `AddSagatOctopusOrchestrator`, with `POST /orders` taking `ISagatClient` from
+dependency injection and calling `StartAsync` with the request's `Idempotency-Key` header and **no explicit trace**, calls it twice
+with the same key and one `traceparent`, and writes what came back. The trace reaches the platform through the ambient `Activity`
+that ASP.NET Core made from the request: it makes one only when something observes it (an OpenTelemetry SDK, which listens to
+`Microsoft.AspNetCore` and, with `AddSource("SagatOctopusOrchestrator.Sdk")`, to this SDK; the mode registers an `ActivityListener`
+that stands in for it). The runner needs the ASP.NET Core shared runtime (it is part of the .NET SDK).
 
 Layout: `src/SagatOctopusOrchestrator.Sdk` (the library), `tests/SagatOctopusOrchestrator.Sdk.Tests` (xUnit, with an in-process
 fake REST server and an in-process fake `WorkerService`), `conformance` (the runner, which uses only the public API of the SDK
