@@ -7,6 +7,14 @@
 - **Attempt:** physical attempt of a step with lease/fencing.
 - **Activity:** code executed by a customer worker (SDK / BYO worker).
 - **Inline Script:** code stored/published in the registry, automatically compiled or prepared, and executed in the platform sandbox.
+- **Script (draft):** the code an author edits in a namespace — source, lockfile, input and output JSON Schemas, limits, retention — with a revision that makes concurrent edits conflict instead of overwrite.
+- **Script version:** the draft frozen when it is published; numbered, immutable, `BUILDING` → `READY` (an artifact) or `FAILED` (a reason).
+- **Artifact (script):** what a build made: a canonical bundle of the code, the limits and the schemas it was built under, identified by its digest and signed by the control plane. A workflow pins the digest.
+- **Build key:** the hash of the source, lockfile, toolchain, limits and schemas of a build; an identical key is never built twice.
+- **Sandbox:** a container made for one build or one run — no network, read-only root, no capabilities, hard limits — whose only way out is its supervisor.
+- **Runner:** the process that holds the container engine and builds and runs scripts for one tenant; it has no database and is trusted only with what its token reaches.
+- **Test run:** a draft built and run with an input without publishing it; no secrets of the namespace, its own quota.
+- **Execution record:** what a published script did in one attempt of a step — the redacted log, what it was refused, the numbers — kept for the script's retention.
 - **Journal:** ordered append-only record of decisions/transitions.
 - **Outbox:** transactional queue for commands/events external to the DB.
 - **Inbox:** deduplication/durability of received external messages.
