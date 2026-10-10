@@ -509,6 +509,9 @@ fn edges_of(node: &Node, out: &mut Vec<Value>) {
             on_timeout: Some(target),
             ..
         } => edge(target.as_str(), "timeout"),
+        // The body of a saga starts where it says: without this edge the steps inside a saga look
+        // like separate graphs.
+        NodeKind::Saga { begin, .. } => edge(begin.as_str(), "begin"),
         _ => {}
     }
     if let Some(next) = node.next() {

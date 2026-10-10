@@ -1839,10 +1839,10 @@ export interface components {
             from: string;
             to: string;
             /**
-             * @description `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.
+             * @description `begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.
              * @enum {string}
              */
-            kind: "next" | "error" | "true" | "false" | "branch" | "timeout" | "compensation" | "reconcile";
+            kind: "next" | "error" | "true" | "false" | "branch" | "timeout" | "begin" | "compensation" | "reconcile";
         };
         RuntimeGraph: {
             /** Format: uuid */
