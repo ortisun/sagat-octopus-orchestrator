@@ -53,6 +53,9 @@ Three forces shape the design:
   Ed25519 key it alone holds (`SAGAT_SCRIPT_SIGNING_KEY`) and the runner verifies the digest of the
   bytes and the signature before it runs anything. A row planted in the database, or edited in
   place, does not verify (and a trigger refuses to update an artifact or a finished version at all).
+  The control plane signs only a bundle that says what the version says (its language, the policy it
+  was clamped to, its schemas, plain file names and an entry point among them), and the key it files
+  the build under is the one it handed out with the claim, not one worked out from the report.
   Because the policy and the schemas are part of the bytes, a digest decides what a script runs
   under, and the same code under other limits is another artifact.
 * **A build is reusable only if nothing that matters changed.** The build key is the SHA-256 of the
@@ -66,7 +69,9 @@ Three forces shape the design:
 * **The runner serves script steps by advertising what is ready.** A worker session advertises exact
   activity names (at most 256), and script activities are named by digest, so the runner asks the
   control plane which script activities have a step ready and registers a session for those. No change
-  to the worker protocol (G103 records the cost).
+  to the worker protocol (G103 records the cost). The engine keeps one session per identity and name,
+  so the runner keeps **one session per namespace** and registers it again, with the activities it
+  already advertised and the new ones, when something new is ready.
 * **Test runs are the same machinery without production's rights.** A test run builds the draft and
   runs it with the author's input; it has its own quota (shared with builds: work the sandbox does for
   authors), no secrets of the namespace — ever — and the network only if both the draft's policy and
@@ -100,7 +105,12 @@ Three forces shape the design:
 * Dependencies cannot be installed in v1: a lockfile that pins a package is refused with the reason,
   not ignored (G97). That keeps the supply chain closed instead of pretending to manage it.
 * Artifacts live in PostgreSQL (at most 2 MiB each). An object store is the answer if that is not
-  enough (G109).
+  enough (G109). What an author can leave behind is bounded by counts (500 versions per script, 100
+  finished test runs kept, 100 different refusals audited), not yet by bytes (G117).
+* A supervisor never waits on a script or on the engine without a deadline: writes to the script are
+  bounded by the run's wall clock, the channel by a number of lines, every engine call by 20 s and a
+  whole run by its wall clock plus 60 s (G119). A script that stops reading, or floods, ends its own
+  run.
 * C#, Go and Java are named by the workflow schema and refused with `LANGUAGE_NOT_BUILT` (G96).
 
 ## Review criteria

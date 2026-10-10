@@ -22,16 +22,31 @@ cargo test -p sagat-tests --test integration_005_sandbox
 # The user stories through the API, the worker protocol and the runner
 cargo test -p sagat-tests --test e2e_005          # US01, US02, US03 (the refusal), US04
 
-# Failure: runner dies mid-build and mid-step, restarts, engine down, cancelled run, room for one
+# Failure: runner dies mid-build and mid-step, restarts, engine down, cancelled run (the stop is reported), room for one, scripts that become ready at different times
 cargo test -p sagat-tests --test fault_005
 
-# The contract: every one of the 24 operations, normal and error paths
+# The contract: every one of the 25 operations, normal and error paths
 cargo test -p sagat-tests --test contract_rest_005
 
 # The benchmark (on purpose; release mode)
 SAGAT_PERF_REPORT=tests/performance/reports/005-inline-code-sandbox.md \
   cargo test -p sagat-tests --test perf_005 --release -- --ignored --nocapture
 ```
+
+### What the last run of each said (2026-10-10, this machine, Docker Desktop, PostgreSQL 16)
+
+| Suite | Result |
+|---|---|
+| `integration_005_sandbox` (real containers) | 23 passed |
+| `integration_005` (registry, PostgreSQL) | 41 passed |
+| `e2e_005` | 27 passed (three consecutive runs; one earlier run failed `us04::a_script_that_floods_its_output_is_cut_off` with `logTruncated` false and was not reproduced in the next five — the assertion now prints the stored record if it comes back) |
+| `fault_005` | 12 passed (twice in a row) |
+| `contract_rest_005` | 1 passed (25 operations) |
+| `cargo test --workspace` | 95 test binaries, 1328 passed, 0 failed, 6 ignored (the benchmarks) — **with `a_dispatcher_cut_off_at_any_await…` of feature 004 skipped**: it hangs in a large share of runs on `develop` as well (6 of 8 there), which is not this feature's (`research.md`, memory of the session) |
+
+### The reviews (T005-035)
+
+Two independent read-only reviews (security, correctness) of the whole feature produced 35 findings. Each was read against the code before anything changed; the table in `research.md` (D116) says what was done about each and which test shows it. Three kinds of evidence were used and are named as such there: a test that failed on the old code (the supervisor that wedged when a script stopped reading; the old runner that got one task for two ready scripts; five guards of the registry switched off to see five tests fail), a test written with the fix, and a fix with no test of its own (G120).
 
 ## By hand
 

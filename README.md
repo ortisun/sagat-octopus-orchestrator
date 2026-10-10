@@ -1,6 +1,6 @@
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
-> **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution), 003 (sagas and compensations, apart from the SDK DSL, Studio screens and dashboards, which belong to other features), 004 (triggers, webhooks and messaging, apart from OIDC/mTLS webhook profiles, outbound broker producers and Studio screens) and 009 (security and multi-tenant governance, apart from the sandbox and a Helm chart, which belong to other features) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
+> **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution), 003 (sagas and compensations, apart from the SDK DSL, Studio screens and dashboards, which belong to other features), 004 (triggers, webhooks and messaging, apart from OIDC/mTLS webhook profiles, outbound broker producers and Studio screens), 005 (inline TypeScript and Python scripts in a sandbox, apart from C#, dependency installation and the Studio editor) and 009 (security and multi-tenant governance, apart from a Helm chart, which belongs to another feature) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
 
 ## Mission
 
@@ -19,7 +19,7 @@ Inspired by **Temporal** (history and recovery), **Restate** (journal and durabl
 - **Security:** tenant/namespace isolation, RBAC, auditing and explicit egress/secrets policy.
 - **Observability:** OTel + auditable journal + execution timeline and DAG.
 
-## Build, test and run (features 001, 002, 003, 004 and 009)
+## Build, test and run (features 001, 002, 003, 004, 005 and 009)
 
 ```sh
 cargo test --workspace --locked          # needs Docker: integration tests start PostgreSQL 16
@@ -33,6 +33,8 @@ cargo test -p sagat-tests --test contract_rest_009 --test e2e_009 --test integra
 cargo test -p sagat-tests --test e2e_003 --test integration_003 --test contract_rest_003 --test contract_grpc_003 --test fault_003
 # events, webhooks and messaging (feature 004): signed webhooks, triggers and waits, cron, Kafka/SQS/NATS in containers, outbound deliveries:
 cargo test -p sagat-tests --test e2e_004 --test integration_004 --test contract_rest_004 --test contract_asyncapi_004 --test fault_004
+# inline scripts (feature 005): registry, signing and leases on PostgreSQL; the sandbox in real containers; the stories through the runner:
+cargo test -p sagat-tests --test integration_005 --test integration_005_sandbox --test e2e_005 --test contract_rest_005 --test fault_005
 ```
 
 The full procedure, the environment variables and what is not built yet are in
@@ -48,7 +50,7 @@ the validation flow and the security review of feature 009 are in
 [`docs/runbooks/sagas.md`](docs/runbooks/sagas.md); the validation flow and review of feature 003 are in
 [`specs/003-sagas-compensations/quickstart.md`](specs/003-sagas-compensations/quickstart.md); `examples/payment-saga.workflow.json` is a saga you can publish. Receiving and sending events (signed webhooks and how to sign them, triggers, waits for events, cron, Kafka/SQS/NATS connectors, outbound webhooks, dead letters and redrive) is in
 [`docs/runbooks/events.md`](docs/runbooks/events.md); the design is [ADR-0012](docs/adr/ADR-0012-events-pass-through-a-durable-inbox-and-delivery-table.md), the message policy [`docs/event-schema-evolution.md`](docs/event-schema-evolution.md), and the validation flow and review of feature 004 are in
-[`specs/004-events-webhooks-messaging/quickstart.md`](specs/004-events-webhooks-messaging/quickstart.md).
+[`specs/004-events-webhooks-messaging/quickstart.md`](specs/004-events-webhooks-messaging/quickstart.md). Writing, trying and publishing scripts, the sandbox runner and what a script can and cannot do is in [`docs/runbooks/scripts.md`](docs/runbooks/scripts.md); the design is [ADR-0013](docs/adr/ADR-0013-scripts-run-in-containers-the-control-plane-never-touches.md) and the validation flow and review of feature 005 are in [`specs/005-inline-code-sandbox/quickstart.md`](specs/005-inline-code-sandbox/quickstart.md).
 Workflow: Gitflow branches and Conventional Commits (see `AGENTS.md`).
 
 ## Folders
@@ -93,9 +95,11 @@ maintainers** (see the comment at the top of the file).
 - The graphical editor is a faithful representation of the **declarative** DSL/IR. Arbitrary imperative code is not always convertible to a static graph; Studio merges the planned graph and the actual execution.
 - Throughput and latency targets are **benchmark criteria to verify**, not commercial promises.
 - A saga undoes what it did by asking the provider to (a compensation), which is not a rollback: an effect that cannot be undone ends the run `PARTIAL`, and a compensation that keeps failing waits for a person instead of being assumed done. An attempt whose outcome is unknown is looked up before it is repeated. The platform asks at least once with stable keys; a provider that does not deduplicate by them can still do an effect twice. What is not built (the SDK DSL, Studio screens, dashboards) is in [`specs/003-sagas-compensations/research.md`](specs/003-sagas-compensations/research.md).
-- Tenant isolation, quotas, worker bindings, the secret store and the egress policy are enforced and tested (feature 009). **Not yet built:** running untrusted code in a sandbox, quotas for builds/storage/logs, a KMS behind the secret key ring, and a Helm chart with network policies. The list, with the reason for each, is in [`specs/009-security-multitenancy/research.md`](specs/009-security-multitenancy/research.md).
+- Tenant isolation, quotas, worker bindings, the secret store and the egress policy are enforced and tested (feature 009). **Not yet built:** quotas for storage/logs, a KMS behind the secret key ring, and a Helm chart with network policies. The list, with the reason for each, is in [`specs/009-security-multitenancy/research.md`](specs/009-security-multitenancy/research.md).
 
 - Events: an event the platform answered `202` for is durable and is deduplicated by tenant, namespace, source and id for a window; each run it starts and each wait it wakes is started or woken once per admission, however the dispatcher is interrupted. There is **no ordering** between events, and delivery to and from the outside is at-least-once: outgoing webhooks carry a stable delivery id and a receiver that keeps it can drop a repeat. A webhook is trusted by its signature, which covers the type, subject and correlation key as well as the payload. Not built: OIDC/mTLS webhook profiles, producers to customers' Kafka/SQS/NATS, a per-address ingress limit and an inbox size quota. The list, with the reasons, is in [`specs/004-events-webhooks-messaging/research.md`](specs/004-events-webhooks-messaging/research.md).
+
+- Scripts: a script runs in a container of its own (no network, read-only root, no capabilities, hard limits) started by a runner that holds the container engine and no database; what it builds is a signed, content-addressed artifact and a workflow pins its digest, so a newer version changes nothing for a run that pinned the old one. A step runs **at least once** (a lost lease runs it again elsewhere); the idempotency key a script is given is the same on every attempt. The sandbox is as strong as the runtime under it, and **the runner is a host that must hold nothing else** (it has the engine's socket). Not built: C#/Go/Java, installing dependencies (a lockfile that pins a package is refused), key rotation, a runner shared between tenants and the Studio editor. The list, with the reasons, is in [`specs/005-inline-code-sandbox/research.md`](specs/005-inline-code-sandbox/research.md).
 
 ## Reading order
 

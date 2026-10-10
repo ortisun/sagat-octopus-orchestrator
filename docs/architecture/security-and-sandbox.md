@@ -66,5 +66,10 @@ incorrect webhook signature and replay of financial requests join it with the fe
 | Use up to its memory, CPU, processes and time | Exceed them: the kernel ends it, and the step fails with a code |
 | Write a result up to 240 KiB | Forge another tenant's result, read the host's files, the engine's socket, the runner's environment, or run as root |
 | Run again after a lost lease (at least once) | Make an external effect exactly once: it is given a key that is the same on every attempt |
+| Ask its supervisor for things and be refused, any number of times | Hold the supervisor: every write to it is bounded by the run's deadline, the channel is cut after 400 lines, a hundred asks are served and the rest refused, and a run is given its wall clock plus a minute whatever the engine does |
+| Choose the words of a refusal (a secret name, a host) | Make them long, carry a credential in them, or grow the audit trail: 200 characters, 32 a run, 100 different ones a script, and the address is `scheme://host` |
+| Set headers on an allowed request | Set `Host`, framing or connection headers: routing is by the host of the URL |
+
+What the control plane does with what a runner says: it signs a build only if the bundle says what its version says (language, entry point, file names, the policy it was clamped to, its schemas) under the key it handed out at the claim. It cannot compare the built code with the source, so a stolen runner token can get arbitrary code signed for **its own tenant** (G118); it cannot get anything signed for another, change a policy, or read a secret.
 
 What stops it is the container, in the order in which a request for each of these meets a wall: the network namespace, the read-only mounts, the dropped capabilities and seccomp profile, the cgroup, the supervisor. A kernel or runtime vulnerability is an escape (G98); the mitigation is the runtime of the host, and that the runner is a host that holds nothing else.
