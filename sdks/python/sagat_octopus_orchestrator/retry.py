@@ -47,7 +47,8 @@ def backoff_delay(policy: RetryPolicy, n: int, rng: Callable[[], float] = random
 
     ``n`` is the attempt that just failed, counted from 0.
     """
-    ceiling = min(policy.max_delay, policy.initial_delay * 2.0**n)
+    # The exponent is capped: 2.0**1024 is an OverflowError, and a host in a long outage reaches it (~6.5 hours).
+    ceiling = min(policy.max_delay, policy.initial_delay * 2.0 ** min(max(n, 0), 1000))
     return ceiling * (0.5 + rng() * 0.5)
 
 

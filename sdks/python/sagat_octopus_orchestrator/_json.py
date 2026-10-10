@@ -19,6 +19,7 @@ from .errors import SagatError
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 _MAX_DEPTH = 200
+_MAX_SAFE = 2**53 - 1
 
 
 def utf16_key(text: str) -> bytes:
@@ -115,6 +116,9 @@ def _canonical(value: Any, out: list[str]) -> None:
     elif isinstance(value, str):
         out.append(json.dumps(value, ensure_ascii=False))
     elif isinstance(value, int):
+        if not -_MAX_SAFE <= value <= _MAX_SAFE:
+            # The text must be the same bytes in every SDK, and TypeScript's cannot hold this integer exactly.
+            raise _refuse("an integer beyond 2^53 - 1 has no canonical text: send it as a string")
         out.append(str(int(value)))
     elif isinstance(value, float):
         out.append(_es_number(value))

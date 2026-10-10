@@ -246,19 +246,15 @@ async def test_the_heartbeat_starts_before_the_handler_ends_carries_the_step_ide
     assert len(fake.of("Heartbeat")) == count, "no beat after the report"
 
 
-async def test_a_cancellation_reaches_the_activity_as_a_cancelled_error_and_on_its_token_and_it_ends_however_it_likes(
+async def test_a_cancellation_reaches_the_activity_on_its_token_and_it_ends_however_it_likes(
     fake: FakeWorkerService, make_host: MakeHost
 ) -> None:
     host = make_host(heartbeat_interval=0.02)
     seen: dict[str, Any] = {}
 
     async def long(_i: Any, ctx: ActivityContext) -> dict[str, bool]:
-        try:
-            await asyncio.sleep(60)
-        except asyncio.CancelledError as cancelled:
-            seen["error"] = cancelled.args
-            seen["reason"] = ctx.cancel_reason
-            seen["flag"] = ctx.cancellation.is_cancelled
+        seen["reason"] = await ctx.cancellation.wait()  # the awaitable on the token: the host sets it and does no more
+        seen["after"] = (ctx.cancel_reason, ctx.cancellation.is_cancelled)
         return {"stopped": True}
 
     host.register_activity("long", long)
@@ -266,35 +262,19 @@ async def test_a_cancellation_reaches_the_activity_as_a_cancelled_error_and_on_i
     fake.leases = [lease(activity_name="long", step_id="long", task_id="run-1/long/1")]
     await host.start()
     await until(lambda: len(fake.of("CompleteStep")) == 1, "the completion")
-    assert seen == {"error": ("run-cancelled",), "reason": "run-cancelled", "flag": True}
+    assert seen == {"reason": "run-cancelled", "after": ("run-cancelled", True)}
     assert fake.of("CompleteStep")[0].request.output_json == '{"stopped":true}'
 
 
-async def test_an_activity_that_waits_on_the_token_is_woken_by_it(fake: FakeWorkerService, make_host: MakeHost) -> None:
-    host = make_host(heartbeat_interval=0.02)
-
-    async def long(_i: Any, ctx: ActivityContext) -> str:
-        return await ctx.cancellation.wait()
-
-    host.register_activity("long", long)
-    fake.cancel_requested = True
-    fake.leases = [lease(activity_name="long", step_id="long", task_id="run-1/long/1")]
-    await host.start()
-    await until(lambda: len(fake.of("CompleteStep")) + len(fake.of("FailStep")) >= 1, "a report")
-    # Either the token or the cancelled task is seen first; the answer is a report all the same.
-    assert fake.of("CompleteStep") or fake.of("FailStep")[0].request.error_code == "CANCELLED"
-
-
-async def test_an_activity_that_lets_its_cancellation_through_is_failed_for_good_as_cancelled(
+async def test_an_activity_that_raises_the_cancellation_error_of_the_sdk_is_failed_for_good_as_cancelled(
     fake: FakeWorkerService, make_host: MakeHost
 ) -> None:
     host = make_host(heartbeat_interval=0.02)
-    host.register_activity("long", lambda _i, _c: asyncio.sleep(60))
     host.register_activity("raises", _raises_its_cancellation)
     fake.cancel_requested = True
-    fake.leases = named("long", "raises")
+    fake.leases = named("raises")
     await host.start()
-    await until(lambda: len(fake.of("FailStep")) == 2, "the failures")
+    await until(lambda: len(fake.of("FailStep")) == 1, "the failure")
     assert {(call.request.error_code, call.request.retryable) for call in fake.of("FailStep")} == {("CANCELLED", False)}
 
 
@@ -521,29 +501,6 @@ async def test_stop_while_a_poll_is_in_flight_does_not_wait_out_the_pause_an_emp
     began = time.monotonic()
     await host.stop(1)
     assert time.monotonic() - began < 1.5, f"stop took {time.monotonic() - began:.2f} s"
-
-
-async def test_a_task_that_outlives_the_stop_is_cancelled_with_shutdown_and_nothing_is_reported_for_it(
-    fake: FakeWorkerService, make_host: MakeHost
-) -> None:
-    events: list[WorkerEvent] = []
-    host = make_host(on_event=events.append)
-    reasons: list[str | None] = []
-
-    async def stuck(_i: Any, ctx: ActivityContext) -> None:
-        try:
-            await asyncio.sleep(60)
-        finally:
-            reasons.append(ctx.cancel_reason)
-
-    host.register_activity("stuck", stuck)
-    fake.leases = [lease(activity_name="stuck", step_id="stuck", task_id="run-1/stuck/1")]
-    await host.start()
-    await until(lambda: any(e.type == "task.taken" for e in events), "the task")
-    await host.stop(0.1)
-    assert reasons == ["shutdown"]
-    assert not fake.of("CompleteStep") and not fake.of("FailStep"), "its lease lapses and the server leases it again"
-    assert any(e.type == "task.dropped" and e.reason == "shutdown" for e in events)
 
 
 async def test_the_host_can_be_started_again_after_it_stopped(fake: FakeWorkerService, make_host: MakeHost) -> None:

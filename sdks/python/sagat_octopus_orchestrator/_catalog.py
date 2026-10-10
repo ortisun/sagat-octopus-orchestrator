@@ -84,7 +84,7 @@ CATALOG: Final[tuple[CatalogEntry, ...]] = (
     CatalogEntry(
         code='UNAVAILABLE',
         origin='rest',
-        http=(502, 503, 504),
+        http=(408, 502, 503, 504),
         grpc='UNAVAILABLE',
         retryable=True,
         remediation='The service could not serve the request now: retry with the same idempotency key after a short wait.',

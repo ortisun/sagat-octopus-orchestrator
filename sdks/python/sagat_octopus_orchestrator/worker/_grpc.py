@@ -97,6 +97,7 @@ class WorkerRpc:
 
     def __init__(self, config: GrpcConfig) -> None:
         self._config = config
+        self._closed = False
         url = urlsplit(config.grpc_url)
         if url.scheme not in ("http", "https") or not url.hostname or not url.port:
             raise SagatError("VALIDATION_FAILED", "grpc_url is http(s)://host:port")
@@ -116,9 +117,12 @@ class WorkerRpc:
         self._stub: Any = cast(Any, pb_grpc).WorkerServiceStub(self._channel)
 
     async def close(self) -> None:
+        self._closed = True
         await self._channel.close(grace=None)
 
     async def _call(self, method: str, request: Any, traceparent: str | None = None) -> Any:
+        if self._closed:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed")
         token = await resolve_token(self._config.token)
         metadata = [("authorization", f"Bearer {token}")]
         if traceparent and is_traceparent(traceparent):
@@ -129,6 +133,8 @@ class WorkerRpc:
             return await getattr(self._stub, method)(request, metadata=metadata, timeout=self._config.timeout)
         except grpc.aio.AioRpcError as error:
             raise error_of_status(method, error) from None
+        except grpc.aio.BaseError:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
 
     async def register_worker(self, request: pb.RegisterWorkerRequest) -> pb.RegisterWorkerResponse:
         response: pb.RegisterWorkerResponse = await self._call("RegisterWorker", request)

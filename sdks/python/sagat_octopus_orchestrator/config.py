@@ -43,9 +43,12 @@ def log(logger: logging.Logger, level: int, message: str, **fields: object) -> N
     The fields are identifiers (run id, task id, node, attempt, trace id, error code), never a payload, a
     token, a lease token or a secret.
     """
-    if logger.isEnabledFor(level):
-        text = " ".join(f"{key}={value}" for key, value in fields.items())
-        logger.log(level, "%s", f"{message} {text}".rstrip(), extra={"sagat": fields})
+    try:
+        if logger.isEnabledFor(level):
+            text = " ".join(f"{key}={value}" for key, value in fields.items())
+            logger.log(level, "%s", f"{message} {text}".rstrip(), extra={"sagat": fields})
+    except Exception:
+        pass
 
 
 async def resolve_token(token: TokenSource) -> str:

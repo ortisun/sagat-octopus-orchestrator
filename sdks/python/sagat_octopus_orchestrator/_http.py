@@ -6,8 +6,6 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -65,22 +63,12 @@ class HttpResponse:
 
 
 def retry_after_ms(value: str | None) -> int | None:
-    """``Retry-After`` as milliseconds: delta-seconds (ASCII digits) or an HTTP date. Capped where it is used."""
+    """``Retry-After`` as milliseconds: delta-seconds in ASCII digits only. An HTTP date, a fraction, a sign or
+    anything else is ignored (no wait). Capped where it is used."""
     if value is None:
         return None
-    value = value.strip(" \t")
-    seconds = parse_ms(value)
-    if seconds is not None:
-        return seconds * 1000
-    try:
-        moment = parsedate_to_datetime(value)
-    except (TypeError, ValueError, IndexError):
-        return None
-    if moment is None:
-        return None
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return max(0, int((moment - datetime.now(timezone.utc)).total_seconds() * 1000))
+    seconds = parse_ms(value.strip(" \t"))
+    return None if seconds is None else seconds * 1000
 
 
 class HttpTransport:
@@ -111,7 +99,7 @@ class HttpTransport:
                 return await self._once(req)
             except SagatError as error:
                 last = error
-                if error.code not in _REPEATABLE or not error.retryable or n + 1 >= attempts:
+                if not _may_repeat(error) or n + 1 >= attempts:
                     raise
                 wait = delay_after(policy, n, error)
                 log(
@@ -210,11 +198,15 @@ class HttpTransport:
         retryable = env.get("retryable")
         envelope_trace = env.get("traceId")
         reason = raw_reason if isinstance(raw_reason, str) else None
-        if status == 501 or (status == 404 and given is None):
-            # A call the server does not have (an older server, SPEC section 9) is told from a resource that is
-            # missing by the lack of the platform's own error envelope.
+        if (
+            status == 501
+            or (status == 404 and (given is None or reason == "ROUTE_NOT_FOUND"))
+            or (status == 405 and reason == "METHOD_NOT_ALLOWED")
+        ):
+            # A call the server does not have (SPEC section 9): a 501, a 404 for a route, a 405 for a method, or a 404
+            # that is not the platform's envelope at all. A 404 for a run that does not exist is a plain NOT_FOUND.
             code = "NOT_FOUND"
-            reason = reason or "UNSUPPORTED_BY_SERVER"
+            reason = "UNSUPPORTED_BY_SERVER"
             given = None
         return SagatError(
             code,
@@ -225,6 +217,15 @@ class HttpTransport:
             reason=reason,
             retry_after_ms=retry_after_ms(headers.get("retry-after")),
         )
+
+
+def _may_repeat(error: SagatError) -> bool:
+    """SPEC section 5: by code (TRANSPORT, UNAVAILABLE, RATE_LIMITED, INTERNAL) and only if the error says it may be
+    repeated; a body that claims so on a 4xx other than 408 and 429 is not believed."""
+    if error.code not in _REPEATABLE or not error.retryable:
+        return False
+    status = error.status
+    return not (isinstance(status, int) and 400 <= status < 500 and status not in (408, 429))
 
 
 def _valid_trace(value: str) -> str:

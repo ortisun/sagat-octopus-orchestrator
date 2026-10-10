@@ -117,19 +117,35 @@ its type name as the message, never its text, which may hold the data it was han
 
 ### Cancellation
 
-An activity is cancelled when the run is cancelled (`run-cancelled`), the lease is lost (`lease-lost`) or the
-host stops before it finishes (`shutdown`). For an `async def` handler this is **`asyncio.CancelledError` raised
-at its current `await`**, with the reason as its argument and in `ctx.cancel_reason`. The handler decides:
+Cancellation is **cooperative**: the host sets the activity's token and does nothing else. It never interrupts a
+handler or injects `asyncio.CancelledError` into its awaits. An activity is cancelled when the run is cancelled
+(`run-cancelled`), the lease is lost (`lease-lost`) or the host stops before it finishes (`shutdown`); the handler
+looks at `ctx.cancellation` (or `ctx.cancel_reason`) and decides:
 
-* let it through: a `run-cancelled` activity is reported as `CANCELLED` (not retried); after `lease-lost` or
-  `shutdown` nothing is reported (the lease is gone, or lapses and the server leases the step again);
-* catch it, clean up and return: the returned value is reported (unless the lease was lost).
+```python
+async def charge(order: dict, ctx: ActivityContext) -> dict:
+    done = asyncio.ensure_future(provider.charge(order, key=ctx.idempotency_key))
+    stop = asyncio.ensure_future(ctx.cancellation.wait())  # an awaitable on the token
+    await asyncio.wait({done, stop}, return_when=asyncio.FIRST_COMPLETED)
+    if not done.done():
+        raise asyncio.CancelledError  # "I was cancelled and I say so"
+    return await done
+```
 
-`ctx.cancellation` is the same fact as a token for code that cannot be cancelled that way: `is_cancelled`,
-`reason`, `await wait()`, `wait_blocking(timeout)` for a thread, `raise_if_cancelled()`.
+* a handler that ignores the token runs to its end, and what it returned is reported as usual (unless the lease
+  was lost: then nothing is reported);
+* a handler that **raises its cancellation error** (`asyncio.CancelledError`, or `SagatError(CANCELLED)` from
+  `ctx.cancellation.raise_if_cancelled()`) is read by the reason: after `run-cancelled` it is reported as
+  `CANCELLED` (not retried); after `lease-lost` nothing is reported; after `shutdown` nothing is reported either
+  (the lease lapses and the server leases the step again; a deploy must not fail a step for good);
+* `stop(timeout)` waits for the tasks in flight, then cancels the tokens of the ones left (`shutdown`), gives them a
+  moment (2 s) to react and be reported, closes the connection and returns. It never forces a handler.
 
-A plain `def` handler is run **in a thread** (it does not block the event loop) and can only be asked to stop
-through the token. Inside an `async def` handler, `await run_blocking(function, *args)` does the same for one call.
+The token has `is_cancelled`, `reason`, `await wait()`, `wait_blocking(timeout)` for a thread and
+`raise_if_cancelled()`. A plain `def` handler is run **in a thread** (it does not block the event loop) and sees the
+same token. Inside an `async def` handler, `await run_blocking(function, *args)` runs one blocking call in a thread.
+The SDK does not fence the lease by its own clock: only a `STALE_ATTEMPT` answer stops a handler's result from being
+reported, so external effects stay at-least-once.
 
 ## Workflows: build the document
 
@@ -189,6 +205,8 @@ copies, overwrites its own buffers when the handler returns, and raises afterwar
   Instants it reads are aware `datetime`s in UTC.
 * Integers beyond 64 bits, `NaN`, infinities, non-string keys and types JSON has no form for (`Decimal`,
   `datetime`, `bytes`...) are refused before anything is sent, never guessed.
+  The canonical text of a workflow (`to_json()`) also refuses an integer beyond 2^53 - 1 (it must be the same bytes
+  in every SDK): send it as a string.
 * Logging uses the standard `logging` module (`sagat_octopus_orchestrator` logger, a `NullHandler` by default);
   a log line holds identifiers and codes only. For tracing pass `trace_context=lambda: traceparent_or_None`.
 
@@ -203,11 +221,11 @@ server ignores the fields it does not know.
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (123) | `mypy --strict` and `ruff` | Conformance suite (13 scenarios) |
+| Runtime | Unit tests (172) | `mypy --strict` and `ruff` | Conformance suite (14 scenarios) |
 |---|---|---|---|
 | CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
-| CPython 3.10.21 (uv build) | 93 passed and 1 skipped then (the codegen check needs `grpcio-tools`, not installed there) — **measured before the last change (UTF-16 key order); not re-run** | not run (type-checked against the 3.10 language level from 3.14) | passed — **before the same change; not re-run** |
-| CPython 3.11.16, 3.12.14, 3.13.15 (uv builds) | 93 passed and 1 skipped then, as above — **before the same change; not re-run** | not run | not run |
+| CPython 3.10.21 (uv build) | 171 passed and 1 skipped (the codegen check needs `grpcio-tools`, not installed there) | not run (type-checked against the 3.10 language level from 3.14) | passed, one run |
+| CPython 3.11.16, 3.12.14, 3.13.15 (uv builds) | 171 passed and 1 skipped each, as above | not run | not run |
 | Linux, Windows, other architectures | not run | not run | not run |
 | Free-threaded builds, PyPy | not run | not run | not run |
 

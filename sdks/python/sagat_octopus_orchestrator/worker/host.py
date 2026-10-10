@@ -50,6 +50,10 @@ MAX_OUTPUT_BYTES = 256 * 1024
 MAX_POLL = 64
 REPORT_ATTEMPTS = 5
 _CODE = re.compile(r"[A-Z0-9_]{1,64}")
+_SURROGATES = re.compile(r"[\ud800-\udfff]")
+SHUTDOWN_GRACE = 2.0
+"""Seconds. After ``stop`` has cancelled the tokens of the tasks left, it waits this long for them to react and be
+reported before it closes the connection; it never interrupts a handler."""
 _VERSION = re.compile(r"1(?:\.([0-9]+))?")
 _REPEATABLE = frozenset({"TRANSPORT", "UNAVAILABLE", "RATE_LIMITED"})
 _TASK_KINDS: dict[str, TaskKind] = {"COMPENSATION": "COMPENSATION", "RECONCILIATION": "RECONCILIATION"}
@@ -127,9 +131,9 @@ class _Task:
     deadline_ms: int = 0
     lost: bool = False
     runner: asyncio.Task[None] | None = None
-    handler_task: asyncio.Future[Any] | None = None
-    in_thread: bool = False
-    """True while a blocking handler runs in its thread: it can only be asked to stop, through the token."""
+    beat: asyncio.Task[None] | None = None
+    rpc: WorkerRpc | None = field(default=None, repr=False)
+    """The connection the task was leased on: its reports go there, or nowhere if the host has stopped since."""
     secrets: Secrets | None = None
     finished: bool = False
     """True once the handler has returned: its secrets are gone and ``ctx.secrets()`` raises."""
@@ -183,6 +187,8 @@ class WorkerHost:
         self._loop_task: asyncio.Task[None] | None = None
         self._wake: asyncio.Event | None = None
         self._inflight: set[_Task] = set()
+        self._orphans: set[_Task] = set()
+        self._lifecycle = asyncio.Lock()
 
     @property
     def protocol_version(self) -> str:
@@ -253,7 +259,13 @@ class WorkerHost:
                 log(self._log, logging.ERROR, "the event hook raised", event=event.type)
 
     async def start(self) -> None:
-        """Opens the connection, registers with the server and starts the loop; returns once registered."""
+        """Opens the connection, registers with the server and starts the loop; returns once registered.
+
+        Calls to ``start`` and ``stop`` are serialized: two concurrent ``start`` calls register once."""
+        async with self._lifecycle:
+            await self._start()
+
+    async def _start(self) -> None:
         if self._running:
             return
         if not self._handlers:
@@ -286,15 +298,23 @@ class WorkerHost:
         self._loop_task = asyncio.create_task(self._run(), name=f"sagat-worker-{self._config.worker_name}")
 
     async def stop(self, timeout: float = 30.0) -> None:
-        """Stops polling, waits up to ``timeout`` seconds for the tasks in flight, then cancels the ones left
-        (reason ``shutdown``). A task that did not finish keeps its lease until it lapses: the server leases
-        it again. The host may be started again."""
+        """Stops polling, waits up to ``timeout`` seconds for the tasks in flight, then cancels the tokens of the
+        ones left (reason ``shutdown``) and returns. It never interrupts a handler: one that ignores its token runs
+        to its end, and is reported only if the connection is still open (it is closed a moment after the tokens are
+        cancelled). A task that did not finish keeps its lease until it lapses: the server leases it again. The host
+        may be started again."""
+        async with self._lifecycle:
+            await self._stop(timeout)
+
+    async def _stop(self, timeout: float) -> None:
         if not self._running:
             return
         self._stopping = True
         assert self._wake is not None
         assert self._loop_task is not None
         self._wake.set()
+        clock = asyncio.get_running_loop().time
+        grace_ends = clock() + timeout
         # The poll in progress ends and no other starts; what it leased is in flight from here on.
         await asyncio.wait({self._loop_task}, timeout=timeout)
         if not self._loop_task.done():
@@ -302,14 +322,17 @@ class WorkerHost:
             await asyncio.gather(self._loop_task, return_exceptions=True)
         pending = {task.runner for task in self._inflight if task.runner is not None}
         if pending:
-            _, late = await asyncio.wait(pending, timeout=timeout)
+            _, late = await asyncio.wait(pending, timeout=max(0.0, grace_ends - clock()))
             if late:
                 for task in list(self._inflight):
                     self._cancel_activity(task, "shutdown")
-                _, stuck = await asyncio.wait(late, timeout=2.0)
-                for runner in stuck:
-                    runner.cancel()
-                await asyncio.gather(*stuck, return_exceptions=True)
+                await asyncio.wait(late, timeout=SHUTDOWN_GRACE)  # they may react to the token and be reported
+        # Whatever is left keeps its lease until it lapses; its heartbeats end with the host.
+        for task in list(self._inflight):
+            if task.beat is not None:
+                task.beat.cancel()
+        self._orphans |= self._inflight
+        self._inflight = set()
         self._running = False
         rpc, self._rpc = self._rpc, None
         if rpc is not None:
@@ -443,7 +466,7 @@ class WorkerHost:
     # ---------------------------------------------------------------------------------------------------- tasks
 
     def _dispatch(self, lease: pb.TaskLease) -> None:
-        task = _Task(lease, deadline_ms=lease.expires_at_epoch_ms)
+        task = _Task(lease, deadline_ms=lease.expires_at_epoch_ms, rpc=self._rpc)
         self._inflight.add(task)
         runner = asyncio.create_task(self._execute(task), name=f"sagat-task-{lease.task_id}")
         task.runner = runner
@@ -454,6 +477,7 @@ class WorkerHost:
 
     def _finished(self, task: _Task, done: asyncio.Future[None]) -> None:
         self._inflight.discard(task)
+        self._orphans.discard(task)
         if not done.cancelled() and done.exception() is not None:  # a bug of ours: say so, once, without the text
             log(self._log, logging.ERROR, "a task ended with an unexpected error", task=task.lease.task_id,
                 error=type(done.exception()).__name__)  # fmt: skip
@@ -461,22 +485,22 @@ class WorkerHost:
             self._wake.set()
 
     def _cancel_activity(self, task: _Task, reason: CancelReason) -> None:
-        """Cancels the activity: the token first, then, for an ``async`` handler, its task (reason as message)."""
-        if not task.token.cancel(reason):
-            return
-        handler_task = task.handler_task
-        if handler_task is not None and not handler_task.done() and not task.in_thread:
-            handler_task.cancel(reason)
+        """Cancels the token of the activity and does nothing else: a handler is never interrupted (SPEC 6.4)."""
+        task.token.cancel(reason)
 
     async def _execute(self, task: _Task) -> None:
         lease = task.lease
         started = time.monotonic()
         registered = self._handlers.get(lease.activity_name)
-        kind: TaskKind = _TASK_KINDS.get(lease.task_kind, "FORWARD")
         minor = _minor_of(self._accepted)
+        # task_kind and the target fields came with 1.2: against an older server every task is a forward task and
+        # they are not read at all (SPEC 6.1).
+        kind: TaskKind = _TASK_KINDS.get(lease.task_kind, "FORWARD") if minor >= 2 else "FORWARD"
+        target_node = lease.target_node if minor >= 2 else ""
+        target_key = lease.target_idempotency_key if minor >= 2 else ""
 
         if registered is None:
-            await self._fail(lease, "NO_HANDLER", "no handler is registered for the activity", False, started)
+            await self._fail(task, "NO_HANDLER", "no handler is registered for the activity", False, started)
             return
 
         document: dict[str, Any] = {}
@@ -485,14 +509,14 @@ class WorkerHost:
             if isinstance(parsed, dict):
                 document = parsed
         except ValueError:
-            await self._fail(lease, "INPUT_INVALID", "the step document is not JSON", False, started)
+            await self._fail(task, "INPUT_INVALID", "the step document is not JSON", False, started)
             return
         run_input: Any = document.get("input")
         try:
             if registered.parse is not None:
                 run_input = registered.parse(run_input)
         except Exception:
-            await self._fail(lease, "INPUT_INVALID", "the input does not have the type of the handler", False, started)
+            await self._fail(task, "INPUT_INVALID", "the input does not have the type of the handler", False, started)
             return
         steps: dict[str, Any] = {}
         raw_steps = document.get("steps")
@@ -512,8 +536,8 @@ class WorkerHost:
             idempotency_key=lease.idempotency_key,
             traceparent=lease.traceparent,
             task_kind=kind,
-            target_node=lease.target_node,
-            target_idempotency_key=lease.target_idempotency_key,
+            target_node=target_node,
+            target_idempotency_key=target_key,
             steps=steps,
             cancellation=task.token,
             log=_TaskLog(
@@ -531,9 +555,9 @@ class WorkerHost:
 
         # The heartbeat starts before the handler and runs until the report is made.
         heartbeat = asyncio.create_task(self._beat(task, minor), name=f"sagat-heartbeat-{lease.task_id}")
+        task.beat = heartbeat
         try:
-            handler_task = asyncio.ensure_future(self._invoke(task, registered, run_input, context))
-            task.handler_task = handler_task
+            handler_task = asyncio.ensure_future(self._invoke(registered, run_input, context))
             try:
                 await asyncio.wait({handler_task})
             except asyncio.CancelledError:  # the runner itself is cancelled (a forced stop)
@@ -542,7 +566,7 @@ class WorkerHost:
             task.finished = True
             if task.secrets is not None:  # the values are dropped when the handler returns
                 task.secrets._drop()
-            await self._conclude(task, registered, handler_task, started)
+            await self._conclude(task, registered, kind, handler_task, started)
         finally:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -550,26 +574,20 @@ class WorkerHost:
             if task.secrets is not None:
                 task.secrets._drop()
 
-    async def _invoke(self, task: _Task, registered: _Registered, run_input: Any, context: ActivityContext) -> Any:
+    async def _invoke(self, registered: _Registered, run_input: Any, context: ActivityContext) -> Any:
         if registered.blocking:
             call = contextvars.copy_context()
-            task.in_thread = True
-            try:
-                result = await asyncio.get_running_loop().run_in_executor(
-                    self._executor, lambda: call.run(registered.handler, run_input, context)
-                )
-            finally:
-                task.in_thread = False
+            result = await asyncio.get_running_loop().run_in_executor(
+                self._executor, lambda: call.run(registered.handler, run_input, context)
+            )
         else:
             result = registered.handler(run_input, context)
         if inspect.isawaitable(result):
-            if task.token.is_cancelled and (current := asyncio.current_task()) is not None:
-                current.cancel(task.token.reason)  # cancelled while the thread ran: the awaitable never gets going
             result = await result
         return result
 
     async def _conclude(
-        self, task: _Task, registered: _Registered, handler_task: asyncio.Future[Any], started: float
+        self, task: _Task, registered: _Registered, kind: TaskKind, handler_task: asyncio.Future[Any], started: float
     ) -> None:
         """Turns what the handler did into the one report of the attempt (``sdks/SPEC.md`` section 6.5)."""
         lease = task.lease
@@ -594,23 +612,23 @@ class WorkerHost:
             )
             return
         if cancelled and task.token.reason == "run-cancelled":
-            await self._fail(lease, "CANCELLED", "the activity was cancelled", False, started)
+            await self._fail(task, "CANCELLED", "the activity was cancelled", False, started)
             return
         if handler_task.cancelled():
-            await self._fail(lease, "ACTIVITY_ERROR", "CancelledError", True, started)
+            await self._fail(task, "ACTIVITY_ERROR", "CancelledError", True, started)
             return
         if error is not None:
             if isinstance(error, ActivityFailure):
-                await self._fail(lease, error.code, error.message, error.is_retryable, started)
+                await self._fail(task, error.code, error.message, error.is_retryable, started)
             else:
                 # Only the type name: the text of an ordinary error may hold the data it was handed.
-                await self._fail(lease, "ACTIVITY_ERROR", type(error).__name__, True, started)
+                await self._fail(task, "ACTIVITY_ERROR", type(error).__name__, True, started)
             return
 
         result = handler_task.result()
-        if lease.task_kind == "RECONCILIATION" and registered.kind == "reconciler" and not isinstance(result, Verdict):
+        if kind == "RECONCILIATION" and registered.kind == "reconciler" and not isinstance(result, Verdict):
             await self._fail(
-                lease,
+                task,
                 "RECONCILIATION_ANSWER_INVALID",
                 "a reconciler answers applied, not_applied or unknown",
                 False,
@@ -622,12 +640,12 @@ class WorkerHost:
         try:
             output = encode_json(result)
         except SagatError as invalid:
-            await self._fail(lease, "OUTPUT_INVALID", invalid.message, False, started)
+            await self._fail(task, "OUTPUT_INVALID", invalid.message, False, started)
             return
         if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
-            await self._fail(lease, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", False, started)
+            await self._fail(task, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", False, started)
             return
-        await self._complete(lease, output, started)
+        await self._complete(task, output, started)
 
     # --------------------------------------------------------------------------------------------- heartbeat
 
@@ -638,12 +656,13 @@ class WorkerHost:
         return min(10.0, max(0.5, left / 3))
 
     async def _beat(self, task: _Task, minor: int) -> None:
-        assert self._rpc is not None
+        rpc = task.rpc
+        assert rpc is not None
         lease = task.lease
         while True:
             await asyncio.sleep(self._interval(task))
             try:
-                answer = await self._rpc.heartbeat(
+                answer = await rpc.heartbeat(
                     pb.HeartbeatRequest(
                         task_id=lease.task_id,
                         worker_id=self._worker_id,
@@ -664,9 +683,7 @@ class WorkerHost:
                 # Anything else: the next beat tries again; the lease is ours until it runs out.
                 log(self._log, logging.WARNING, "a heartbeat failed", task=lease.task_id, code=error.code)
                 continue
-            except (
-                Exception
-            ) as error:  # a hook of the caller (a token provider...) or a bug of ours: the next beat tries again
+            except Exception as error:  # a hook of the caller (a token provider...) or a bug of ours: beat again
                 # The class only: the text of an exception may carry the credential it was handling.
                 log(
                     self._log,
@@ -699,9 +716,10 @@ class WorkerHost:
                     continue
                 raise
 
-    async def _complete(self, lease: pb.TaskLease, output: str, started: float) -> None:
-        assert self._rpc is not None
-        rpc = self._rpc
+    async def _complete(self, task: _Task, output: str, started: float) -> None:
+        lease = task.lease
+        rpc = task.rpc
+        assert rpc is not None
         request = pb.CompleteStepRequest(
             task_id=lease.task_id,
             run_id=lease.run_id,
@@ -726,10 +744,13 @@ class WorkerHost:
             WorkerEvent("task.completed", task_id=lease.task_id, duration_ms=round((time.monotonic() - started) * 1000))
         )
 
-    async def _fail(self, lease: pb.TaskLease, code: str, message: str, retryable: bool, started: float) -> None:
-        assert self._rpc is not None
-        rpc = self._rpc
+    async def _fail(self, task: _Task, code: str, message: str, retryable: bool, started: float) -> None:
+        lease = task.lease
+        rpc = task.rpc
+        assert rpc is not None
         safe_code = code if _CODE.fullmatch(code) else "WORKER_ERROR"
+        # 512 code points, never inside a character; a lone surrogate (which no UTF-8 can carry) becomes U+FFFD.
+        safe_message = _SURROGATES.sub("\ufffd", str(message))[:512]
         request = pb.FailStepRequest(
             task_id=lease.task_id,
             run_id=lease.run_id,
@@ -739,7 +760,7 @@ class WorkerHost:
             lease_token=lease.lease_token,
             idempotency_key=f"failed-{lease.task_id}",
             error_code=safe_code,
-            safe_message=message[:512],
+            safe_message=safe_message,
             retryable=retryable,
             traceparent=lease.traceparent,
         )
@@ -772,16 +793,17 @@ class WorkerHost:
                     "VALIDATION_FAILED", "the secrets of this attempt were dropped when the handler returned"
                 )
             if task.secrets is None:
-                task.secrets = await self._resolve_secrets(task.lease, minor)
+                task.secrets = await self._resolve_secrets(task, minor)
             return task.secrets
 
-    async def _resolve_secrets(self, lease: pb.TaskLease, minor: int) -> Secrets:
+    async def _resolve_secrets(self, task: _Task, minor: int) -> Secrets:
+        lease = task.lease
         if minor < 2:
             raise SagatError(
                 "UNSUPPORTED_PROTOCOL", "the server speaks a protocol older than 1.2, which has no ResolveSecrets"
             )
-        assert self._rpc is not None
-        answer = await self._rpc.resolve_secrets(
+        assert task.rpc is not None
+        answer = await task.rpc.resolve_secrets(
             pb.ResolveSecretsRequest(
                 task_id=lease.task_id,
                 run_id=lease.run_id,

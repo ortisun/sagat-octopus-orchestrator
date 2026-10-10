@@ -13,7 +13,6 @@ is written only on success.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import re
 import sys
@@ -123,8 +122,11 @@ def builder_of(definition: Obj) -> Any:
 
 def build(scenario: Obj) -> Obj:
     workflows: Obj = {}
+    canonical: Obj = {}
     for key, definition in (scenario.get("workflows") or {}).items():
-        workflows[key] = builder_of(definition).build()
+        builder = builder_of(definition)
+        workflows[key] = builder.build()
+        canonical[key] = builder.to_json()  # RFC 8785 text, compared byte for byte
     errors: Obj = {}
     for key, invalid in (scenario.get("invalidWorkflows") or {}).items():
         contains = str(invalid.get("contains") or "")
@@ -135,7 +137,10 @@ def build(scenario: Obj) -> Obj:
             errors[key] = {"raised": True, "code": error.code, "mentions": contains == "" or contains in error.message}
         except Exception:
             errors[key] = {"raised": True, "code": "UNEXPECTED", "mentions": False}
-    return {"workflows": workflows, "errors": errors} if errors else {"workflows": workflows}
+    built: Obj = {"workflows": workflows, "canonical": canonical}
+    if errors:
+        built["errors"] = errors
+    return built
 
 
 # --------------------------------------------------------------------------------------- observations
@@ -195,17 +200,22 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj]) -> Any
                 outcome = "failed"
                 raise ActivityFailure.outcome_unknown(str(behavior["outcomeUnknown"]))
             if behavior.get("hang"):
-                with contextlib.suppress(asyncio.CancelledError):
-                    await ctx.cancellation.wait()
+                await ctx.cancellation.wait()  # the host sets the token and does no more
                 outcome = "cancelled"
+                if (behavior.get("onCancel") or {}).get("raises"):
+                    raise asyncio.CancelledError  # the handler's own cancellation error
                 return None
-            if behavior.get("sleepMs") is not None:
+            if behavior.get("sleepMs") is not None and behavior.get("ignoresCancel"):
+                await asyncio.sleep(behavior["sleepMs"] / 1000)  # never looks at its token
+            elif behavior.get("sleepMs") is not None:
                 try:
-                    await asyncio.sleep(behavior["sleepMs"] / 1000)
-                except asyncio.CancelledError:
+                    await asyncio.wait_for(ctx.cancellation.wait(), timeout=behavior["sleepMs"] / 1000)
+                except asyncio.TimeoutError:
+                    pass  # the sleep ran its course
+                else:
                     outcome = "cancelled"
                     if (behavior.get("onCancel") or {}).get("raises"):
-                        raise
+                        raise asyncio.CancelledError
                     return (behavior.get("onCancel") or {}).get("returns")
             if behavior.get("readsSecret") is not None:
                 secrets = await ctx.secrets()
@@ -434,6 +444,11 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                 elif op == "stopWorker":
                     for host in hosts[step["worker"]][1]:
                         await host.stop(step.get("timeoutMs", 5000) / 1000)
+                elif op == "restartWorker":
+                    host = hosts[step["worker"]][1][-1]  # the same host object, stopped and started again
+                    await host.stop(step.get("timeoutMs", 5000) / 1000)
+                    await host.start()
+                    result = {"protocolVersion": host.protocol_version}
                 elif op == "probeWorker":
                     probe = WorkerHost(
                         WorkerConfig(
@@ -521,7 +536,10 @@ def main(argv: list[str]) -> int:
     mode, scenario_path = argv[0], argv[1]
     raw = read(scenario_path)
     if mode == "build":
-        sys.stdout.write(json.dumps(build(raw), ensure_ascii=False))
+        sys.stdout.flush()
+        sys.stdout.buffer.write(
+            json.dumps(build(raw), ensure_ascii=False).encode("utf-8")
+        )  # UTF-8, whatever the locale
         return 0
     if len(argv) != 4:
         sys.stderr.write("usage: runner run <scenario> <config> <out>\n")
