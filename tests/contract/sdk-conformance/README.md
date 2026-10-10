@@ -43,6 +43,7 @@ the result. A scenario is `ok` when all five are equal to each other and to `exp
   "apiUrl": "http://127.0.0.1:41000/v1", "grpcUrl": "http://127.0.0.1:41001", "namespace": "payments",
   "clientToken": "<jwt of an admin>", "workerToken": "<jwt of a worker bound to every activity>",
   "otherTenantToken": "<jwt of an admin of another tenant>", "badToken": "not-a-jwt",
+  "unboundWorkerToken": "<jwt of a worker identity with no binding>",
   "controlUrl": "http://127.0.0.1:41002", "unique": "go-7f3a9c",
   "workflows": { "<key>": { "workflowId": "<uuid>", "versionId": "<uuid>", "name": "<name>" } },
   "leaseTtlSeconds": 3
@@ -96,6 +97,8 @@ the message contains the text (`build` mode prints them under `"errors"`).
 
 ### Worker activities
 
+A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` instead of `workerToken`.
+
 `activities.<name>` = `{ "as": "activity" | "compensation" | "reconciler", "behavior": {…} }`, registered with
 `registerActivity` / `registerCompensation` / `registerReconciler`. A behavior is evaluated per attempt:
 
@@ -103,6 +106,8 @@ the message contains the text (`build` mode prints them under `"errors"`).
 |---|---|
 | `{"returns": V}` | returns `V` |
 | `{"echo": true}` | returns `{"input": <the input>, "steps": <ctx.steps>}` |
+| `{"echoInput": true}` | returns the input itself, unchanged |
+| `{"returnsText": N}` | returns a string of `N` times the letter `x` |
 | `{"fails": {"code","message","retryable"}}` | raises an `ActivityFailure` |
 | `{"failsUntilAttempt": N, "fails": {…}, "returns": V}` | fails while `attempt < N`, then returns `V` |
 | `{"throws": "text"}` | raises an ordinary error of the language (reported as `ACTIVITY_ERROR`) |
@@ -171,7 +176,9 @@ call it must not (a refused request), shows in the golden file.
   "workerLog": { "w1": [ … ] } }
 ```
 
-The harness replaces ids, instants and trace ids by placeholders, drops `message` (the SDK's own words;
+The harness runs every script under `TZ=Asia/Kolkata` (UTC+5:30, so that local time cannot pass for UTC) and
+requires the instants of a Run (`createdAt`, `updatedAt`, `finishedAt`, `deadline`) to be strings ending in `Z`.
+It replaces ids, instants and trace ids by placeholders, drops `message` (the SDK's own words;
 it must be non-empty and free of tokens) and `version` (a journal counter), sorts nothing: **order is part of
 the result**. Where a scenario would be racy it is written so that it is not (a worker started after the
 run, a wait that nothing wakes, `control` to move time).

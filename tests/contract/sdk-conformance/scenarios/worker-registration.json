@@ -1,0 +1,80 @@
+{
+  "name": "worker-registration",
+  "description": "US02: a worker registers the activities it can run and the server validates the capabilities: an identity with no binding for the activity is refused with the canonical NOT_BOUND (not retried, and it takes no task), a worker whose identity is bound registers at the protocol the server agrees to and serves the run to the end through the common protocol.",
+  "workflows": {
+    "one": {
+      "name": "registration-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "reg.work"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "bound": {
+      "workerName": "reg-bound",
+      "maxInflight": 2,
+      "autostart": false,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "reg.work": {
+          "behavior": {
+            "returns": {
+              "by": "bound"
+            }
+          }
+        }
+      }
+    },
+    "unbound": {
+      "workerName": "reg-unbound",
+      "token": "unbound",
+      "maxInflight": 2,
+      "autostart": false,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "reg.work": {
+          "behavior": {
+            "returns": {
+              "by": "unbound"
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "unbound-refused",
+      "op": "startWorker",
+      "worker": "unbound"
+    },
+    {
+      "id": "run",
+      "op": "start",
+      "workflow": "one",
+      "input": {
+        "n": 1
+      }
+    },
+    {
+      "id": "still-waiting",
+      "op": "sleep",
+      "ms": 600
+    },
+    {
+      "id": "bound-registers",
+      "op": "startWorker",
+      "worker": "bound"
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "run",
+      "timeoutMs": 30000
+    }
+  ]
+}

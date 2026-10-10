@@ -169,6 +169,8 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
         return behavior['verdict'] === 'applied' ? reconcile.applied(output) : behavior['verdict'] === 'not_applied' ? reconcile.notApplied() : reconcile.unknown();
       }
       if (behavior['echo']) return { input, steps: ctx.steps };
+      if (behavior['echoInput']) return input;
+      if (behavior['returnsText'] !== undefined) return 'x'.repeat(behavior['returnsText']);
       return behavior['returns'] ?? null;
     } finally {
       log.push({
@@ -194,7 +196,7 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
 
 function hostOf(def: WorkerDef, config: Obj, plan: FaultPlan, log: Obj[]): WorkerHost {
   const host = new WorkerHost({
-    grpcUrl: config['grpcUrl'], namespace: config['namespace'], token: config['workerToken'], workerName: def.workerName,
+    grpcUrl: config['grpcUrl'], namespace: config['namespace'], token: def['token'] === 'unbound' ? config['unboundWorkerToken'] : config['workerToken'], workerName: def.workerName,
     maxInflight: def['maxInflight'] ?? 4, protocolVersion: def['protocolVersion'], heartbeatIntervalMs: def['heartbeatIntervalMs'],
     interceptors: plan.interceptors(), retry: { initialDelayMs: 20, maxDelayMs: 200 },
   });

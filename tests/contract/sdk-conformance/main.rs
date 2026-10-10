@@ -77,6 +77,9 @@ async fn script(
         .arg(&path)
         .args(args)
         .current_dir(dir)
+        // Not UTC, and not the zone of any CI machine: an SDK that formats or parses an instant in local
+        // time shows here.
+        .env("TZ", "Asia/Kolkata")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -132,6 +135,8 @@ struct Run {
     client_token: String,
     worker_token: String,
     other_token: String,
+    /// A worker identity with no binding: the platform refuses to register its activities.
+    unbound_token: String,
     /// The control endpoint, which holds the platform until it is stopped.
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -174,6 +179,9 @@ async fn boot(scenario: &Value) -> Run {
         .grant(platform.tenant, "conformance-worker", Role::Worker)
         .await;
     platform.bind_everything("conformance-worker").await;
+    platform
+        .grant(platform.tenant, "conformance-unbound", Role::Worker)
+        .await;
     // The engine the worker protocol is served by: timers, retries, leases that ran out and the wake-ups
     // (also the events that release a wait) are its loops, as in production.
     let ring = format!("k1:{}", platform.api.key_k1);
@@ -195,6 +203,7 @@ async fn boot(scenario: &Value) -> Run {
         client_token: token(&platform, HUMAN, TENANT),
         worker_token: token(&platform, "conformance-worker", TENANT),
         other_token: token(&platform, "bob", "globex"),
+        unbound_token: token(&platform, "conformance-unbound", TENANT),
         control: format!("http://{control}"),
         platform,
         engine,
@@ -315,6 +324,35 @@ fn leaks(out: &Value, config: &Value, scenario: &Value) -> Vec<String> {
                 }
             }
         }
+    }
+    found
+}
+
+/// The instants of a Run an SDK hands back must be UTC with a `Z`, whatever the zone it runs in.
+fn instants_not_utc(out: &Value) -> Vec<String> {
+    fn walk(id: &Value, value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, item) in map {
+                    if matches!(
+                        key.as_str(),
+                        "createdAt" | "updatedAt" | "finishedAt" | "deadline"
+                    ) && let Some(text) = item.as_str()
+                        && !text.ends_with('Z')
+                    {
+                        found.push(format!("step {id}: {key} is \"{text}\", not UTC with a Z"));
+                    } else {
+                        walk(id, item, found);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(id, item, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for observation in out["observations"].as_array().into_iter().flatten() {
+        walk(&observation["id"], &observation["result"], &mut found);
     }
     found
 }
@@ -467,7 +505,7 @@ async fn play(
         let config = json!({
             "apiUrl": run.platform.api.base, "grpcUrl": run.engine.grpc_url, "namespace": NAMESPACE,
             "clientToken": run.client_token, "workerToken": run.worker_token, "otherTenantToken": run.other_token,
-            "badToken": "not-a-jwt", "controlUrl": run.control, "unique": unique, "workflows": workflows,
+            "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt", "controlUrl": run.control, "unique": unique, "workflows": workflows,
             "leaseTtlSeconds": scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30),
         });
         let config_path = dir.join(format!("{lang}.config.json"));
@@ -496,7 +534,10 @@ async fn play(
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             {
                 Some(mut out) => {
-                    for leak in leaks(&out, &config, &scenario) {
+                    for leak in leaks(&out, &config, &scenario)
+                        .into_iter()
+                        .chain(instants_not_utc(&out))
+                    {
                         failures.push(format!("{name}/{lang}: {leak}"));
                     }
                     match server_state(&run).await {
