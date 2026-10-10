@@ -212,7 +212,9 @@ public sealed class TlsTests
         }
 
         // The one place a host name is overridden is the server name the caller gave, which the platform's own validation then verifies.
-        Assert.Equal(["request.Headers.Host = serverName;"], targetHost);
+        var single = Assert.Single(targetHost);
+        Assert.StartsWith("request.Headers.Host = ", single, StringComparison.Ordinal);
+        Assert.Contains("serverName", single, StringComparison.Ordinal);
     }
 
     [Theory]

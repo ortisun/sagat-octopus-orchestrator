@@ -283,7 +283,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(20));
         host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
         {
-            await Task.Delay(300, ct);
+            await Task.Delay(900, ct);
             return 1;
         });
         State.Fail("Heartbeat", new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Unavailable), new Scripted(StatusCode.Internal));

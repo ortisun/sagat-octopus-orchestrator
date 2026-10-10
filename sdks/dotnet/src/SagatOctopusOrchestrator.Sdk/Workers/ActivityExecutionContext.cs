@@ -95,7 +95,11 @@ public sealed class ActivityExecutionContext
     /// <summary>Stable across the attempts of the step: send it to the provider of an external effect.</summary>
     public string IdempotencyKey { get; }
 
-    /// <summary>The W3C trace context of the run (may be empty); <see cref="System.Diagnostics.Activity.Current"/> is a child of it inside the handler.</summary>
+    /// <summary>
+    /// The W3C trace context of the run (may be empty). When it is valid, <see cref="System.Diagnostics.Activity.Current"/> inside the handler is a
+    /// child of it, whether or not anything listens to the SDK's <c>ActivitySource</c> (without a listener the SDK starts a plain, unsampled-by-source
+    /// activity just so the requests of the handler carry the trace); when it is empty or invalid the SDK sets no activity.
+    /// </summary>
     public string Traceparent { get; }
 
     /// <summary>What kind of task this is.</summary>

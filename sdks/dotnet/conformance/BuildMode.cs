@@ -25,7 +25,10 @@ internal static class BuildMode
             var contains = (string?)invalid!["contains"] ?? string.Empty;
             try
             {
-                BuilderOf(invalid["workflow"]!.AsObject()).Build();
+                // The canonical text is part of what the builders write (an integer the other SDKs cannot hold is refused when it is written).
+                var builder = BuilderOf(invalid["workflow"]!.AsObject());
+                builder.Build();
+                builder.ToJson();
                 errors[key] = new JsonObject { ["raised"] = false };
             }
             catch (SagatException error)

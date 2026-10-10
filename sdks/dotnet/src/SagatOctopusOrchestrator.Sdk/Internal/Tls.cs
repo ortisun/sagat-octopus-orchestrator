@@ -35,7 +35,9 @@ internal static class Tls
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            request.Headers.Host = serverName;
+            // The name verified, and the port of the URL (the connection still goes where the URL says).
+            var uri = request.RequestUri;
+            request.Headers.Host = uri is null || uri.IsDefaultPort ? serverName : $"{serverName}:{uri.Port}";
             return base.SendAsync(request, cancellationToken);
         }
     }
@@ -47,9 +49,27 @@ internal static class Tls
             throw SagatException.Invalid("Tls.TrustedRoots is empty: leave it null for the system roots, or give the roots to trust");
         }
 
-        if (tls?.ServerName is { } name && string.IsNullOrWhiteSpace(name))
+        if (tls?.ServerName is { } name)
         {
-            throw SagatException.Invalid("Tls.ServerName is empty: leave it null for the host of the URL");
+            // A host name or an address and nothing else (no port, no user-info, no path, no space, no line break): what the request will name.
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                throw SagatException.Invalid("Tls.ServerName is empty: leave it null for the host of the URL");
+            }
+
+            if (Uri.CheckHostName(name) == UriHostNameType.Unknown)
+            {
+                throw SagatException.Invalid("Tls.ServerName is not a host name or an address (no port, no user-info, no path)");
+            }
+        }
+    }
+
+    /// <summary>A server name is verified against the certificate of a TLS connection: with a plain-text URL there is nothing to verify, and it would only rename the host of the request.</summary>
+    internal static void RequireTlsForServerName(SagatTlsOptions? tls, Uri url)
+    {
+        if (tls?.ServerName is not null && url.Scheme != Uri.UriSchemeHttps)
+        {
+            throw SagatException.Invalid("Tls.ServerName needs an https URL: there is no certificate to verify over http");
         }
     }
 

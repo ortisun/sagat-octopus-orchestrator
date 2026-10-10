@@ -80,4 +80,52 @@ public sealed class TraceListenerTests
         Assert.True(host.IsRunning);
         Assert.NotEmpty(fake.State.Of("Heartbeat"));
     }
+
+    [Fact]
+    public async Task InsideAHandlerTheCurrentActivityIsInTheTraceOfTheRunWhetherOrNotAnythingListensToTheSdk()
+    {
+        // No listener of the SDK's source is active (this collection runs one test at a time): the SDK has no span of its own to make, and the
+        // documented behaviour still holds.
+        await using var fake = await FakeWorkerServer.StartAsync();
+        await using var rest = await FakeRestServer.StartAsync();
+        rest.Handler = _ => new FakeAnswer(200, Run);
+        using var client = new SagatClient(new SagatOptions { ApiUrl = rest.BaseUrl, Namespace = "p", Token = "t" });
+        var options = new SagatOptions { GrpcUrl = fake.Url, Namespace = "p", Token = "t" };
+        options.Worker.Name = "ambient-" + Guid.NewGuid().ToString("N");
+        await using var host = new Workers.WorkerHost(options);
+        Activity? inside = null;
+        host.RegisterActivity<System.Text.Json.Nodes.JsonNode?, int>("charge", async (_, _, ct) =>
+        {
+            inside = Activity.Current;
+            await client.GetAsync(Ids.Run, ct);
+            return 1;
+        });
+        fake.State.Lease(Leases.Lease());
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => fake.State.Of("CompleteStep").Count == 1, "the completion");
+
+        Assert.NotNull(inside);
+        Assert.Equal("0af7651916cd43dd8448eb211c80319c", inside.TraceId.ToString());
+        Assert.Equal("b7ad6b7169203331", inside.ParentSpanId.ToString());
+        Assert.Equal("0af7651916cd43dd8448eb211c80319c", Traceparent.TraceIdOf(rest.Requests[0].Header("traceparent")));
+        Assert.Null(Activity.Current);
+    }
+
+    [Fact]
+    public async Task ALeaseWithNoTraceLeavesTheCurrentActivityAloneWhenNothingListens()
+    {
+        await using var fake = await FakeWorkerServer.StartAsync();
+        var options = new SagatOptions { GrpcUrl = fake.Url, Namespace = "p", Token = "t" };
+        options.Worker.Name = "ambient-" + Guid.NewGuid().ToString("N");
+        await using var host = new Workers.WorkerHost(options);
+        var seen = new TaskCompletionSource<Activity?>();
+        host.RegisterActivity<System.Text.Json.Nodes.JsonNode?, int>("charge", (_, _, _) =>
+        {
+            seen.SetResult(Activity.Current);
+            return Task.FromResult(1);
+        });
+        fake.State.Lease(Leases.Lease(l => l.Traceparent = string.Empty));
+        await host.StartAsync();
+        Assert.Null(await seen.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
 }

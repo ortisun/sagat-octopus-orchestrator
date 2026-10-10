@@ -408,4 +408,72 @@ public sealed class ClientHardeningTests : IAsyncLifetime
         Assert.NotEqual("UNSUPPORTED_BY_SERVER", error.Reason);
         Assert.Equal(405, error.HttpStatus);
     }
+
+    // ------------------------------------------------------------ round 4: the sentinel of a provider that failed is private
+
+    [Theory]
+    [InlineData(400, "BAD_REQUEST")]
+    [InlineData(401, "UNAUTHENTICATED")]
+    [InlineData(403, "FORBIDDEN")]
+    [InlineData(409, "CONFLICT")]
+    [InlineData(422, "VALIDATION_FAILED")]
+    public async Task AServerThatSaysTokenProviderFailedDoesNotMakeACallRepeatable(int status, string code)
+    {
+        server.Handler = _ => new FakeAnswer(status, $$$"""{"code":"{{{code}}}","message":"x","retryable":true,"details":{"reason":"TOKEN_PROVIDER_FAILED"}}""");
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().GetAsync(RunId));
+        Assert.Single(server.Requests);
+        Assert.False(error.Retryable);
+        Assert.Equal("TOKEN_PROVIDER_FAILED", error.Reason);
+    }
+
+    [Fact]
+    public async Task ATokenProviderThatFailsIsRepeatedBeforeAnythingIsSentAndTheErrorSaysWhoFailedOnceTheAttemptsAreUsed()
+    {
+        server.Handler = _ => new FakeAnswer(200, Run);
+        var calls = 0;
+        using var once = NewClient(o =>
+        {
+            o.Token = null;
+            o.TokenProvider = _ => Interlocked.Increment(ref calls) == 1 ? throw new HttpRequestException("the identity provider hiccuped") : ValueTask.FromResult("tok");
+        });
+        Assert.Equal("RUNNING", (await once.GetAsync(RunId)).Status);
+        Assert.Equal(2, calls);
+        Assert.Single(server.Requests);
+
+        var always = 0;
+        using var broken = NewClient(o =>
+        {
+            o.Token = null;
+            o.TokenProvider = _ => Interlocked.Increment(ref always) > 0 ? throw new HttpRequestException("secret-canary") : ValueTask.FromResult("tok");
+        });
+        var error = await Assert.ThrowsAsync<SagatException>(() => broken.GetAsync(RunId));
+        Assert.Equal(3, always);
+        Assert.Equal(SagatErrorCode.Unauthenticated, error.Code);
+        Assert.Equal("TOKEN_PROVIDER_FAILED", error.Reason);
+        Assert.Null(error.InnerException);
+        Assert.DoesNotContain("secret-canary", error.ToString(), StringComparison.Ordinal);
+        Assert.Single(server.Requests);
+    }
+
+    [Theory]
+    [InlineData(StatusCode.InvalidArgument)]
+    [InlineData(StatusCode.PermissionDenied)]
+    [InlineData(StatusCode.Unauthenticated)]
+    [InlineData(StatusCode.NotFound)]
+    public async Task AGrpcTrailerThatSaysTokenProviderFailedDoesNotMakeAReportRepeatable(StatusCode code)
+    {
+        await using var fake = await FakeWorkerServer.StartAsync();
+        fake.State.FailAlways("CompleteStep", new Scripted(code, "TOKEN_PROVIDER_FAILED"));
+        var options = new SagatOptions { GrpcUrl = fake.Url, Namespace = "p", Token = "t" };
+        options.Retry.InitialDelay = TimeSpan.FromMilliseconds(2);
+        options.Retry.MaxDelay = TimeSpan.FromMilliseconds(5);
+        options.Worker.Name = "sentinel-" + Guid.NewGuid().ToString("N");
+        await using var host = new WorkerHost(options);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+        fake.State.Lease(Leases.Lease());
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => fake.State.Of("CompleteStep").Count >= 1, "the report");
+        await Task.Delay(300);
+        Assert.Single(fake.State.Of("CompleteStep"));
+    }
 }

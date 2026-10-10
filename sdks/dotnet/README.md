@@ -96,7 +96,10 @@ Without the generic host: `new WorkerHost(options)`, then `RegisterActivity` / `
   cancellation error is not reported and the lease lapses; the step is leased again). `context.Deadline` is the end of
   the lease and moves with every heartbeat.
 - The heartbeat runs from before the handler until the report is made. Its interval is a third of the time left on the
-  lease when the task is taken, between 0.5 s and 10 s (`Worker.HeartbeatInterval` overrides it).
+  lease when the task is taken, between 0.5 s and 10 s (`Worker.HeartbeatInterval` overrides it: more than 0 and at most one hour, else
+  `ValidationFailed` when the host is created). A beat that fails, whatever the failure, pauses 100 ms before the next one, so the loop cannot spin.
+- A failure message the handler reports is cut at 512 Unicode code points (never inside a surrogate pair; a lone surrogate becomes U+FFFD). The
+  `task_kind`, `target_node` and `target_idempotency_key` of a lease are read from protocol 1.2 only.
 - `await context.GetSecretsAsync(ct)` resolves the secrets the step declares, once per attempt (protocol 1.2 or newer).
   `Get` hands out a copy (clear it when you are done); the SDK wipes its own buffer when the handler returns, before the result is reported, and a later
   request raises. A failed resolution is not remembered for the rest of the attempt. Never log them.
@@ -134,7 +137,9 @@ The builders are pure: no I/O, no clock, no randomness. `ToJson()` is the canoni
 code unit, numbers as ECMAScript writes them, no whitespace), byte-identical to the one the other four SDKs write for the same
 program. What the builder can see the server would refuse (a duplicate id, a `Parallel` with fewer than two branches, an empty
 `Saga`, `Irreversible` with `CompensateWith`, a bad name, a reference to a node that does not exist) is a
-`SagatException` with `ValidationFailed` when the node is added (or at `Build()` for a reference).
+`SagatException` with `ValidationFailed` when the node is added (or at `Build()` for a reference). A flow joined into another (a `Parallel`
+branch, the body of a `Saga`) is read at `Build()`, not when it was joined: a step added to it afterwards is in the document, and an `End` added to
+a saga body afterwards is refused at `Build()`.
 
 ## Errors
 
@@ -150,7 +155,8 @@ for the caller's own token).
 on any other code (a 409, a 422, a 403, `QuotaExceeded`) is not believed. The server's `408` is `Unavailable`. Only calls that cannot do
 harm are repeated: `GET`s, and `POST`s that carry an idempotency key or an event id (a start without a key gets a generated one, the same
 on every retry of that call). A token provider that throws is `Unauthenticated` with the reason `TOKEN_PROVIDER_FAILED` (its own exception
-is not kept, and it is asked again like a transport failure). A call the server does not have (a `501`, a `404` whose envelope says
+is not kept, and it is asked again like a transport failure, because nothing was sent). That is the SDK's own knowledge, not a reason string: a
+server that answers with that reason on a 400, 401, 403 or 409, or in a gRPC trailer, is not believed and the call is not repeated. A call the server does not have (a `501`, a `404` whose envelope says
 `ROUTE_NOT_FOUND`, a `405` that says `METHOD_NOT_ALLOWED`, or a `404` that is not the platform's envelope) is `NotFound` with the reason
 `UNSUPPORTED_BY_SERVER`; a `404` envelope without those is a plain `NotFound`.
 
@@ -177,7 +183,9 @@ answer with more tasks than the host asked for runs the first ones and leaves th
 | `Worker.*` | `Name`, `MaxInflight` (10), `Languages`, `Pools`, `ShutdownTimeout` (30 s), `ProtocolVersion`, `HeartbeatInterval` (positive), `Interceptors` | |
 
 `SagatOptions`, `SagatTlsOptions`, `SagatClient` and `WorkerHost` never show a credential: their `ToString()`, their JSON and the debugger show
-no bearer token, token provider or private key, and a URL is shown by its host only (a test builds each with a canary token and looks for it).
+no bearer token, token provider or private key, and a URL is shown by its host only (`ToString()`) or not at all (JSON: the URLs can carry user-info or a
+query, so they are not serialized). The session token of a `WorkerHost` is hidden from the debugger and dropped when the host stops. A test builds each
+with a canary token and looks for it.
 
 `SagatOptions` binds from configuration (`services.Configure<SagatOptions>(configuration.GetSection("Sagat"))`). The tenant is
 never configured: it is the token's. `http://` (or a gRPC channel without TLS) outside loopback works but logs one warning at
@@ -187,7 +195,8 @@ start.
 
 Three TLS options exist: `Tls.TrustedRoots` (an `X509Certificate2Collection` used instead of the system roots; an *empty* collection is refused,
 it is not "the system roots": leave it null for those), `Tls.ServerName` (the name the certificate is verified against, and the name sent for
-the server name indication, when it is not the host of the URL) and `Tls.ClientCertificate` (the certificate, with its private key, presented for
+the server name indication, when it is not the host of the URL; it must be a bare host name: a space, a control character, a port, a path or
+user-info is `ValidationFailed` when the client or host is created, and so is a `ServerName` with an `http://` URL; the port of the URL stays in the `Host` header) and `Tls.ClientCertificate` (the certificate, with its private key, presented for
 mTLS). They apply to both channels (the `HttpClient` of the REST client and the gRPC channel of the worker host). The roots are handed to the
 platform's own validation as a chain policy (`SslClientAuthenticationOptions.CertificateChainPolicy`), so the chain, the validity dates and the
 host name are still verified. `ServerName` is verified too, never skipped: the request names that host (the `Host` header, which is where the
@@ -227,7 +236,8 @@ against a real platform (the conformance suite runs over loopback `http`).
 - **Traces**: an `ActivitySource` named `SagatOctopusOrchestrator.Sdk`. A client call is a `Client` span (a child of
   `Activity.Current`) whose `traceparent` is sent to the server; an explicit `Traceparent` option wins. A lease's `traceparent` is
   the parent of a `Consumer` span around the handler, so `Activity.Current` inside the handler is in the run's trace and the
-  requests the handler makes carry it. Tags carry identifiers only.
+  requests the handler makes carry it; with no listener on the SDK's source it is a plain `Activity` with the same parent (the trace
+  still reaches the handler), and with an empty or invalid `traceparent` the SDK sets none. Tags carry identifiers only.
 - **Metrics**: a `Meter` named `SagatOctopusOrchestrator.Sdk`: `sagat.worker.tasks.taken`, `.completed`, `.failed`, `.stale`,
   `.dropped`, `sagat.worker.heartbeats`, `.polls`, `.reconnects` (counters) and `sagat.worker.activity.duration` (histogram, s),
   tagged with `sagat.worker`.
@@ -255,7 +265,7 @@ What was **run** on 2026-10-10 on one machine (macOS 26, arm64), and what was no
 
 | Target | Built | Unit tests | Conformance suite (14 scenarios) |
 |---|---|---|---|
-| `net10.0` (runtime 10.0.12, SDK 10.0.401) | yes | 367 passed | passed, three runs in a row |
+| `net10.0` (runtime 10.0.12, SDK 10.0.401) | yes | 410 passed | passed, three runs in a row |
 | `net8.0` (runtime 8.0.31, installed next to it) | yes (a `net8.0` asset in the package) | **not run**: the test project targets `net10.0` (ASP.NET Core `TestServer` of 10) | passed, one run |
 | .NET 9 | not built for; it uses the `net8.0` asset | **not run** | **not run** |
 | Windows, Linux, x64 | n/a | **not run** | **not run** |
@@ -280,7 +290,7 @@ Options}` 10.0.11 (2026-08-11) for `net10.0` and 8.0.x for `net8.0`. Tests: `Mic
 
 ```text
 bash scripts/sync-shared.sh      # copies worker.proto and error-catalog.json from the repository (a test fails when a copy is behind)
-dotnet test                      # 367 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
+dotnet test                      # 410 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
 dotnet format --verify-no-changes
 bash conformance/prepare.sh      # builds the runner; the harness calls it, and conformance/run.sh
 ```

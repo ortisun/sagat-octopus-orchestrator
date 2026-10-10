@@ -33,6 +33,7 @@ public sealed partial class WorkerHost : IWorkerHost
 
     private Session? current;
     private string workerId = string.Empty;
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     private string sessionToken = string.Empty;
     private string accepted = string.Empty;
     private int minor;
@@ -228,6 +229,9 @@ public sealed partial class WorkerHost : IWorkerHost
             running = false;
             current?.Close();
             current = null;
+
+            // The session ends with the host: its token is not kept (a restart registers again and gets another).
+            sessionToken = string.Empty;
         }
         finally
         {
@@ -245,9 +249,9 @@ public sealed partial class WorkerHost : IWorkerHost
     private void Validate()
     {
         options.ValidateCommon();
-        if (options.Worker.HeartbeatInterval is { } beat && beat <= TimeSpan.Zero)
+        if (options.Worker.HeartbeatInterval is { } beat && (beat <= TimeSpan.Zero || beat > TimeSpan.FromHours(1)))
         {
-            throw SagatException.Invalid("Worker.HeartbeatInterval must be positive (leave it null for a third of the lease)");
+            throw SagatException.Invalid("Worker.HeartbeatInterval is between 0 and an hour (leave it null for a third of the lease)");
         }
 
         if (string.IsNullOrWhiteSpace(options.Worker.Name))
@@ -259,6 +263,8 @@ public sealed partial class WorkerHost : IWorkerHost
         {
             throw SagatException.Invalid("GrpcUrl is required and is an http or https URL");
         }
+
+        Internal.Tls.RequireTlsForServerName(options.Tls, url);
 
         lock (handlers)
         {
@@ -697,8 +703,8 @@ public sealed partial class WorkerHost : IWorkerHost
                 lease.IdempotencyKey,
                 lease.Traceparent,
                 kind,
-                lease.TargetNode,
-                lease.TargetIdempotencyKey,
+                minor >= 2 ? lease.TargetNode : string.Empty,
+                minor >= 2 ? lease.TargetIdempotencyKey : string.Empty,
                 steps,
                 ContextLogger(lease.ActivityName),
                 secretsLoader.GetAsync);
@@ -833,9 +839,14 @@ public sealed partial class WorkerHost : IWorkerHost
     private Activity? StartSpan(TaskLease lease, TaskKind kind)
     {
         var name = "sagat activity " + lease.ActivityName;
-        var span = lease.Traceparent.Length > 0 && System.Diagnostics.ActivityContext.TryParse(lease.Traceparent, null, out var parent)
+        var parented = lease.Traceparent.Length > 0 && System.Diagnostics.ActivityContext.TryParse(lease.Traceparent, null, out var parent);
+        var span = parented
             ? Safe.Start(name, ActivityKind.Consumer, parent)
             : Safe.Start(name, ActivityKind.Consumer, default(System.Diagnostics.ActivityContext));
+
+        // Nobody listens to the SDK's source (no span of its own), but the handler is still in the trace of the run: the requests it makes carry it
+        // (`Activity.Current` is what the SDK's client and every other instrumented client propagate).
+        span ??= parented ? Safe.StartDetached(name, lease.Traceparent) : null;
         Safe.Tag(span, "sagat.worker", options.Worker.Name);
         Safe.Tag(span, "sagat.namespace", options.Namespace);
         Safe.Tag(span, "sagat.activity", lease.ActivityName);
@@ -904,16 +915,31 @@ public sealed partial class WorkerHost : IWorkerHost
                     {
                         // Anything else: the next beat tries again; the lease is ours until it runs out.
                         Log.HeartbeatFailed(logger, lease.TaskId, error.Code.ToWireName());
+                        await Breathe(stop).ConfigureAwait(false);
                     }
 #pragma warning disable CA1031 // A beat must never be the last: whatever else went wrong, the next one tries again.
                     catch (Exception error)
 #pragma warning restore CA1031
                     {
                         Log.HeartbeatFailed(logger, lease.TaskId, error.GetType().Name);
+                        await Breathe(stop).ConfigureAwait(false);
                     }
                 }
             },
             CancellationToken.None);
+    }
+
+    /// <summary>A short pause inside a failure handler of a loop: whatever raised, even before the interval was waited for, the loop cannot spin.</summary>
+    private static async Task Breathe(CancellationToken stop)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(100), stop).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Stopping: the loop ends at its next check.
+        }
     }
 
     // ------------------------------------------------------------------------------------ reporting
@@ -1047,15 +1073,25 @@ public sealed partial class WorkerHost : IWorkerHost
         _ => error.GetType().Name,
     };
 
+    /// <summary>
+    /// At most <see cref="MaxMessage"/> Unicode code points (SPEC section 6.5), never inside a surrogate pair; a lone surrogate becomes U+FFFD,
+    /// so that what is sent is always valid UTF-8.
+    /// </summary>
     private static string Cut(string message)
     {
-        if (message.Length <= MaxMessage)
+        var builder = new StringBuilder(Math.Min(message.Length, MaxMessage * 2));
+        var count = 0;
+        foreach (var rune in message.EnumerateRunes())
         {
-            return message;
+            if (count++ == MaxMessage)
+            {
+                break;
+            }
+
+            builder.Append(rune.ToString());
         }
 
-        var cut = message[..MaxMessage];
-        return char.IsHighSurrogate(cut[^1]) ? cut[..^1] : cut;
+        return builder.ToString();
     }
 
     // --------------------------------------------------------------------------------------- secrets

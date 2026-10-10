@@ -63,12 +63,24 @@ public sealed class JsonFidelityTests
         Assert.Contains("-42", tokens);
         Assert.Contains("1e+21", tokens);
         Assert.Contains("-1e-07", tokens);
+        Assert.Contains("9007199254740993", tokens);
+        Assert.Contains("1e+20", tokens);
         foreach (var token in tokens)
         {
             var parsed = JsonNode.Parse(token);
 
             // A node read from the file is written back unchanged (the SDK never reformats what it was given) ...
             Assert.Equal(token, parsed!.ToJsonString());
+
+            // ... except that the canonical text refuses a number it would have to spell as an integer beyond 2^53 - 1 (the scenarios of
+            // `invalidWorkflows` hold two: 9007199254740993 and 1e+20, which JavaScript spells 100000000000000000000).
+            var magnitude = Math.Abs(double.Parse(token, CultureInfo.InvariantCulture));
+            if (magnitude > 9007199254740991d && magnitude < 1e21)
+            {
+                var refused = Assert.Throws<SagatException>(() => Canonical(parsed));
+                Assert.Equal(SagatErrorCode.ValidationFailed, refused.Code);
+                continue;
+            }
 
             // ... the canonical text is the same number, spelled as ECMAScript spells it: the token itself when it is already in that form ...
             var canonical = Canonical(parsed);

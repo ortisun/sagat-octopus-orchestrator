@@ -247,4 +247,94 @@ public sealed class CredentialTests
         Assert.DoesNotContain("RemoteCertificateValidationCallback", text, StringComparison.Ordinal);
         Assert.Equal(typeof(string), typeof(SagatTlsOptions).GetProperty(nameof(SagatTlsOptions.ServerName))!.PropertyType);
     }
+
+    // ------------------------------------------------------------------------------------- round 4: URLs and server names
+
+    [Fact]
+    public void TheJsonOfTheOptionsShowsNoUserInfoNoQueryAndNoPathOfAUrl()
+    {
+        var options = new SagatOptions
+        {
+            ApiUrl = "https://alice:S3CR3T-canary@api.example.test:8443/v1/secret-path?apikey=Q123-canary",
+            GrpcUrl = "https://bob:W0RKER-canary@worker.example.test:50051/?token=abc-canary",
+            Namespace = "payments",
+            Token = Canary,
+        };
+        var json = JsonSerializer.Serialize(options);
+        foreach (var leak in new[] { "alice", "S3CR3T", "bob", "W0RKER", "canary", "apikey", "Q123", "secret-path", "token=abc", Canary })
+        {
+            Assert.DoesNotContain(leak, json, StringComparison.Ordinal);
+            Assert.DoesNotContain(leak, options.ToString(), StringComparison.Ordinal);
+        }
+
+        Assert.Contains("api.example.test:8443", options.ToString(), StringComparison.Ordinal);
+        Assert.Contains("worker.example.test:50051", options.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("bad\r\nname")]
+    [InlineData("a b")]
+    [InlineData("host:99999")]
+    [InlineData("host:80")]
+    [InlineData("user@host")]
+    [InlineData("host/..")]
+    [InlineData("host/path")]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("-bad-.example")]
+    public async Task AServerNameThatIsNotAHostNameIsRefusedWhenTheClientAndTheHostAreCreatedAndNotOnTheFirstRequest(string serverName)
+    {
+        var tls = new SagatTlsOptions { ServerName = serverName };
+        var client = Assert.Throws<SagatException>(() => new SagatClient(new SagatOptions { ApiUrl = "https://api.example.test/v1", Namespace = "p", Token = "t", Tls = tls }));
+        Assert.Equal(SagatErrorCode.ValidationFailed, client.Code);
+        Assert.Contains("ServerName", client.Message, StringComparison.Ordinal);
+
+        var options = new SagatOptions { GrpcUrl = "https://worker.example.test", Namespace = "p", Token = "t", Tls = tls };
+        options.Worker.Name = "n";
+        await using var host = new WorkerHost(options);
+        host.RegisterActivity<JsonNode?, int>("a", (_, _, _) => Task.FromResult(1));
+        var error = await Assert.ThrowsAsync<SagatException>(() => host.StartAsync());
+        Assert.Equal(SagatErrorCode.ValidationFailed, error.Code);
+        Assert.Contains("ServerName", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("worker.example.test")]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.1")]
+    [InlineData("[::1]")]
+    [InlineData("a.b-c.example")]
+    public void AHostNameOrAnAddressIsAcceptedAsAServerName(string serverName)
+    {
+        using var client = new SagatClient(new SagatOptions { ApiUrl = "https://api.example.test/v1", Namespace = "p", Token = "t", Tls = new SagatTlsOptions { ServerName = serverName } });
+        Assert.NotNull(client);
+    }
+
+    [Fact]
+    public async Task AServerNameWithAnHttpUrlIsRefusedBecauseThereIsNothingToVerify()
+    {
+        var tls = new SagatTlsOptions { ServerName = "api.example.test" };
+        var client = Assert.Throws<SagatException>(() => new SagatClient(new SagatOptions { ApiUrl = "http://127.0.0.1:8080/v1", Namespace = "p", Token = "t", Tls = tls }));
+        Assert.Equal(SagatErrorCode.ValidationFailed, client.Code);
+        Assert.Contains("https", client.Message, StringComparison.Ordinal);
+
+        var options = new SagatOptions { GrpcUrl = "http://127.0.0.1:50051", Namespace = "p", Token = "t", Tls = tls };
+        options.Worker.Name = "n";
+        await using var host = new WorkerHost(options);
+        host.RegisterActivity<JsonNode?, int>("a", (_, _, _) => Task.FromResult(1));
+        var error = await Assert.ThrowsAsync<SagatException>(() => host.StartAsync());
+        Assert.Contains("https", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheHostHeaderOfARequestWithAServerNameKeepsThePortOfTheUrl()
+    {
+        var certificate = TestCertificate.CreateServer("by-name", forOtherHost: true);
+        await using var server = await FakeRestServer.StartAsync(certificate);
+        server.Handler = _ => new FakeAnswer(200, Run);
+        using var client = new SagatClient(new SagatOptions { ApiUrl = server.BaseUrl, Namespace = "p", Token = "t", Retry = { MaxAttempts = 1 }, Tls = Trusting(certificate, "other-host.example.test") });
+        await client.GetAsync("0190aaaa-0000-7000-8000-000000000001");
+        var port = new Uri(server.BaseUrl).Port;
+        Assert.Equal($"other-host.example.test:{port}", server.Requests[0].Header("host"));
+    }
 }

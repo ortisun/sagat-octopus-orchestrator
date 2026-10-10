@@ -44,6 +44,19 @@ internal static class Safe
         return span;
     }
 
+    /// <summary>An activity that belongs to no source, a child of <paramref name="traceparent"/>, so that <see cref="Activity.Current"/> is in that trace.</summary>
+    internal static Activity? StartDetached(string name, string traceparent)
+    {
+        Activity? span = null;
+        Run(() =>
+        {
+            var created = new Activity(name);
+            created.SetParentId(traceparent);
+            span = created.Start();
+        });
+        return span;
+    }
+
     internal static void Tag(Activity? span, string key, object? value)
     {
         if (span is not null)

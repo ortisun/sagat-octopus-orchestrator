@@ -34,17 +34,24 @@ public sealed class SagatException : Exception
         Reason = reason is null ? null : Limits.Cut(reason, Limits.MaxReason);
 
         // The rule is by code (SPEC section 5): only these four are ever repeated, and only when they say they may be. A body that claims
-        // `retryable: true` on any other code is not believed. (A token provider that failed is the one exception: it is asked again.)
-        var eligible = code is SagatErrorCode.Transport or SagatErrorCode.Unavailable or SagatErrorCode.RateLimited or SagatErrorCode.Internal
-            || Reason == TokenProviderFailed;
-        Retryable = eligible && (Reason == TokenProviderFailed || (retryable ?? code.RetryableByDefault()));
+        // `retryable: true` on any other code is not believed, and neither is one that carries any `reason`.
+        var eligible = code is SagatErrorCode.Transport or SagatErrorCode.Unavailable or SagatErrorCode.RateLimited or SagatErrorCode.Internal;
+        Retryable = eligible && (retryable ?? code.RetryableByDefault());
         TraceId = Limits.TraceId(traceId);
         RetryAfter = retryAfter is { } wait ? Limits.Capped(wait) : null;
         Remediation = code.Remediation();
     }
 
-    /// <summary>The reason of the error raised when the token provider of the caller fails.</summary>
+    /// <summary>The reason shown by the error raised when the token provider of the caller fails.</summary>
     internal const string TokenProviderFailed = "TOKEN_PROVIDER_FAILED";
+
+    /// <summary>
+    /// The provider of the caller failed before anything was sent, so the call may be repeated (SPEC section 5). That it is the provider is a fact only
+    /// the SDK can state: this flag is set here and nowhere else, and no answer of a server can set it (the <see cref="Reason"/> a server sends is
+    /// only text).
+    /// </summary>
+    internal static SagatException TokenProviderFailure(string message) =>
+        new(SagatErrorCode.Unauthenticated, message, reason: TokenProviderFailed) { Retryable = true };
 
     /// <summary>A stable machine code from the catalog.</summary>
     public SagatErrorCode Code { get; }
@@ -59,7 +66,7 @@ public sealed class SagatException : Exception
     /// Whether the same call may be made again as it is: only <c>TRANSPORT</c>, <c>UNAVAILABLE</c>, <c>RATE_LIMITED</c> and <c>INTERNAL</c> ever are, and
     /// <c>INTERNAL</c> only when the server said so.
     /// </summary>
-    public bool Retryable { get; }
+    public bool Retryable { get; private init; }
 
     /// <summary>32 lowercase hex characters from <c>X-Trace-Id</c> / the error envelope; empty when the server did not answer.</summary>
     public string TraceId { get; }

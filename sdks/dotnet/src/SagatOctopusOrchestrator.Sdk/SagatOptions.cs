@@ -15,9 +15,11 @@ namespace SagatOctopusOrchestrator.Sdk;
 public sealed class SagatOptions
 {
     /// <summary>Base URL of the REST API including <c>/v1</c>, e.g. <c>https://api.example/v1</c>. Required for a client.</summary>
+    [JsonIgnore]
     public string? ApiUrl { get; set; }
 
     /// <summary>URL of the worker service, <c>https://host:port</c> (<c>http://</c> only for loopback or development). Required for a worker.</summary>
+    [JsonIgnore]
     public string? GrpcUrl { get; set; }
 
     /// <summary>Slug of the namespace every call is made in. Required. The tenant is never configured: it is the token's.</summary>
@@ -76,7 +78,9 @@ public sealed class SagatOptions
     public override string ToString() =>
         $"SagatOptions {{ ApiUrl = {HostOf(ApiUrl)}, GrpcUrl = {HostOf(GrpcUrl)}, Namespace = {Namespace}, Credential = {(Token is not null || TokenProvider is not null ? "set" : "none")}, Worker = {Worker.Name} }}";
 
-    internal static string HostOf(string? url) => url is not null && Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "(none)";
+    /// <summary>host[:port] of a URL and nothing else (user-info, path and query can carry a credential).</summary>
+    internal static string HostOf(string? url) =>
+        url is not null && Uri.TryCreate(url, UriKind.Absolute, out var uri) ? (uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}") : "(none)";
 
     internal SagatOptions Snapshot()
     {
@@ -111,12 +115,12 @@ public sealed class SagatOptions
             catch (Exception error) when (error is not OutOfMemoryException)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                throw new SagatException(SagatErrorCode.Unauthenticated, "the token provider failed", reason: SagatException.TokenProviderFailed);
+                throw SagatException.TokenProviderFailure("the token provider failed");
             }
 #pragma warning restore CA1031
 
             return string.IsNullOrEmpty(token)
-                ? throw new SagatException(SagatErrorCode.Unauthenticated, "the token provider returned no token", reason: SagatException.TokenProviderFailed)
+                ? throw SagatException.TokenProviderFailure("the token provider returned no token")
                 : token;
         }
 

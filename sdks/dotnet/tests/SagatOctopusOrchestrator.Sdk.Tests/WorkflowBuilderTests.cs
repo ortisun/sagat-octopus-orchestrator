@@ -272,4 +272,46 @@ public class WorkflowBuilderTests
             Canon(node));
         Assert.Throws<SagatException>(() => Canon(JsonValue.Create("\ud800")));
     }
+
+    // ---------------------------------------------------------------------------- a flow is read when Build() is called (SPEC section 7)
+
+    [Fact]
+    public void AStepAddedToABranchAfterItWasJoinedIsPartOfTheDocument()
+    {
+        var left = Workflow.Flow().Step("card", "pay.card");
+        var right = Workflow.Flow().Step("stock", "stock.hold");
+        var builder = Workflow.Create("late-flow").Parallel("split", JoinMode.All, left, right).Step("done", "order.done");
+
+        left.Step("card-2", "pay.card2");
+        right.Sleep("wait", TimeSpan.FromMilliseconds(50));
+        var document = builder.Build();
+
+        Assert.Equal(
+            """[{"branches":["card","stock"],"id":"split","join":"all","next":"done","type":"parallel"},{"activity":"order.done","id":"done","type":"activity"},{"activity":"pay.card","id":"card","next":"card-2","type":"activity"},{"activity":"pay.card2","id":"card-2","type":"activity"},{"activity":"stock.hold","id":"stock","next":"wait","type":"activity"},{"durationMs":50,"id":"wait","type":"timer"}]""",
+            Canon(document["nodes"]));
+    }
+
+    [Fact]
+    public void AStepAddedToASagaBodyAfterItWasJoinedIsPartOfTheDocumentAndALateEndOrAClashIsRefusedByBuild()
+    {
+        var body = Workflow.Flow().Step("reserve", "a.reserve", new StepOptions { CompensateWith = "a.release" });
+        var builder = Workflow.Create("late-saga").Saga("tx", null, body).Step("notify", "a.notify");
+        body.Step("submit", "a.submit");
+        var nodes = builder.Build()["nodes"]!.AsArray();
+        Assert.Equal(["tx", "notify", "reserve", "submit"], nodes.Select(n => (string?)n!["id"]));
+        Assert.Equal("submit", (string?)nodes[2]!["next"]);
+        Assert.Null(nodes[3]!["next"]);
+        Assert.Equal("reserve", (string?)nodes[0]!["begin"]);
+
+        body.End("late-end");
+        var end = Assert.Throws<SagatException>(() => builder.Build());
+        Assert.Equal(SagatErrorCode.ValidationFailed, end.Code);
+        Assert.Contains("end node", end.Message, StringComparison.Ordinal);
+
+        var clash = Workflow.Flow().Step("a", "x");
+        var other = Workflow.Create("late-clash").Parallel("p", JoinMode.Any, clash, Workflow.Flow().Step("b", "y"));
+        clash.Step("p", "z");
+        var error = Assert.Throws<SagatException>(() => other.Build());
+        Assert.Contains("used twice", error.Message, StringComparison.Ordinal);
+    }
 }

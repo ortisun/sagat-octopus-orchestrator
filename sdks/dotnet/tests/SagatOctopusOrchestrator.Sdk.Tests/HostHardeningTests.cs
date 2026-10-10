@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text.Json.Nodes;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Microsoft.Extensions.Logging;
 using SagatOctopusOrchestrator.Protocol.V1;
 using SagatOctopusOrchestrator.Sdk.Tests.Support;
@@ -519,5 +520,222 @@ public sealed class HostHardeningTests : IAsyncLifetime
         await host.StartAsync();
         await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == Steps, "the chain", 60_000);
         Assert.True(clock.ElapsedMilliseconds < 4000, $"{Steps} chained quick steps took {clock.ElapsedMilliseconds} ms (a lost wake costs a second each)");
+    }
+
+    // -------------------------------------------------------------- round 4: the heartbeat, the message, the session, the kind
+
+    [Theory]
+    [InlineData(100)]
+    [InlineData(60 * 24 * 60 * 60 * 1000L)]
+    public async Task AHeartbeatIntervalAboveAnHourIsRefusedAndAnHourIsNot(long milliseconds)
+    {
+        var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(milliseconds));
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+        if (milliseconds <= 3_600_000)
+        {
+            await host.StartAsync();
+            return;
+        }
+
+        var error = await Assert.ThrowsAsync<SagatException>(() => host.StartAsync());
+        Assert.Equal(SagatErrorCode.ValidationFailed, error.Code);
+        Assert.Contains("HeartbeatInterval", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, State.Registrations);
+    }
+
+    [Fact]
+    public async Task AHeartbeatIntervalOfExactlyAnHourIsAccepted()
+    {
+        var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromHours(1));
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+        await host.StartAsync();
+        Assert.True(host.IsRunning);
+    }
+
+    private sealed class FailingInterceptor(string method, int times) : Interceptor
+    {
+        private int seen;
+
+        internal int Calls => Volatile.Read(ref seen);
+
+        public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(
+            TRequest request,
+            ClientInterceptorContext<TRequest, TResponse> context,
+            AsyncUnaryCallContinuation<TRequest, TResponse> continuation)
+        {
+            if (context.Method.Name == method && Interlocked.Increment(ref seen) <= times)
+            {
+                throw new InvalidOperationException("a hook of the application raised inside the beat");
+            }
+
+            return continuation(request, context);
+        }
+    }
+
+    [Fact]
+    public async Task ABeatThatRaisesSomethingThatIsNotASagatExceptionIsTriedAgainOnTheNextBeatAndDoesNotSpin()
+    {
+        var interceptor = new FailingInterceptor("Heartbeat", 2);
+        var host = Host(o =>
+        {
+            o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(100);
+            o.Worker.Interceptors.Add(interceptor);
+        });
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+        {
+            await Task.Delay(700, ct);
+            return 1;
+        });
+        State.Lease(LeaseFor("slow"));
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+
+        // The two raised beats reached no server; the ones after them did (the loop did not die), and none came faster than the interval.
+        Assert.True(interceptor.Calls >= 3, $"{interceptor.Calls} beats were tried");
+        Assert.True(State.Of("Heartbeat").Count >= 1, "a beat after the failed ones reached the server");
+        Assert.True(interceptor.Calls <= 12, $"{interceptor.Calls} beats in 700 ms: the loop spins");
+        Assert.Empty(State.Of("FailStep"));
+    }
+
+    [Fact]
+    public async Task ABeatThatRaisesSomethingThatIsNotASagatExceptionPausesBeforeTheNextOneEvenWhenTheIntervalIsTiny()
+    {
+        // An interval of one tick waits for nothing: only the pause inside the failure handler keeps the loop from spinning (mutant N04).
+        var interceptor = new FailingInterceptor("Heartbeat", int.MaxValue);
+        var host = Host(o =>
+        {
+            o.Worker.HeartbeatInterval = TimeSpan.FromTicks(1);
+            o.Worker.Interceptors.Add(interceptor);
+        });
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+        {
+            await Task.Delay(700, ct);
+            return 1;
+        });
+        State.Lease(LeaseFor("slow"));
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+
+        Assert.InRange(interceptor.Calls, 2, 12);
+        Assert.Empty(State.Of("FailStep"));
+    }
+
+    [Fact]
+    public async Task ABeatThatFailsWithASagatExceptionPausesBeforeTheNextOneEvenWhenTheIntervalIsTiny()
+    {
+        var host = Host(o => o.Worker.HeartbeatInterval = TimeSpan.FromTicks(1));
+        host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
+        {
+            await Task.Delay(700, ct);
+            return 1;
+        });
+        State.FailAlways("Heartbeat", new Scripted(StatusCode.Unavailable));
+        State.Lease(LeaseFor("slow"));
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+
+        Assert.InRange(State.Of("Heartbeat").Count, 2, 12);
+        Assert.Empty(State.Of("FailStep"));
+    }
+
+    [Fact]
+    public async Task AMessageIsCutByCodePointsNeverInsideASurrogatePairAndAlwaysValidUtf8()
+    {
+        var host = Host();
+        host.RegisterActivity<JsonNode?, int>("emoji", (_, _, _) => throw ActivityFailure.Permanent("TOO_LONG", string.Concat(Enumerable.Repeat("\U0001F600", 600))));
+        host.RegisterActivity<JsonNode?, int>("odd", (_, _, _) => throw ActivityFailure.Permanent("ODD", string.Concat(Enumerable.Repeat("x", 511)) + "\U0001F600tail"));
+        host.RegisterActivity<JsonNode?, int>("lone", (_, _, _) => throw ActivityFailure.Permanent("LONE", "a\ud800b\udc00c"));
+        host.RegisterActivity<JsonNode?, int>("short", (_, _, _) => throw ActivityFailure.Permanent("SHORT", "ação \U0001F600"));
+        State.Lease(LeaseFor("emoji"), LeaseFor("odd"), LeaseFor("lone"), LeaseFor("short"));
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("FailStep").Count == 4, "four failures");
+        string Message(string step) => State.Of("FailStep").Select(c => (FailStepRequest)c.Request).First(r => r.StepId == step).SafeMessage;
+
+        var emoji = Message("emoji");
+        Assert.Equal(512, emoji.EnumerateRunes().Count());
+        Assert.Equal(1024, emoji.Length);
+        Assert.All(emoji.EnumerateRunes(), rune => Assert.Equal(0x1F600, rune.Value));
+
+        // 511 letters and an emoji: 512 code points, the emoji whole (512 UTF-16 units would have cut it in two).
+        var odd = Message("odd");
+        Assert.Equal(512, odd.EnumerateRunes().Count());
+        Assert.EndsWith("\U0001F600", odd, StringComparison.Ordinal);
+        Assert.DoesNotContain("tail", odd, StringComparison.Ordinal);
+
+        // A lone surrogate is not text: it becomes U+FFFD, so that what is sent is valid UTF-8.
+        Assert.Equal("a\ufffdb\ufffdc", Message("lone"));
+        Assert.Equal("ação \U0001F600", Message("short"));
+        foreach (var step in new[] { "emoji", "odd", "lone", "short" })
+        {
+            var text = Message(step);
+            Assert.Equal(text, new System.Text.UTF8Encoding(false, true).GetString(new System.Text.UTF8Encoding(false, true).GetBytes(text)));
+        }
+    }
+
+    [Fact]
+    public async Task TheSessionTokenIsHiddenFromTheDebuggerAndGoneWhenTheHostStops()
+    {
+        var field = typeof(WorkerHost).GetField("sessionToken", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var browsable = field.GetCustomAttributes(typeof(DebuggerBrowsableAttribute), inherit: false).Cast<DebuggerBrowsableAttribute>().SingleOrDefault();
+        Assert.True(browsable is { State: DebuggerBrowsableState.Never }, "the session token is shown by the debugger");
+
+        var host = Host();
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+        await host.StartAsync();
+        Assert.Equal("session-1", (string?)field.GetValue(host));
+        Assert.DoesNotContain("session-1", host.ToString(), StringComparison.Ordinal);
+        await host.StopAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(string.Empty, (string?)field.GetValue(host));
+
+        // A restart registers again and has a session once more.
+        await host.StartAsync();
+        Assert.Equal("session-1", (string?)field.GetValue(host));
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("1.1")]
+    public async Task TheKindAndTheTargetOfATaskAreNotReadBelowProtocol12(string accepted)
+    {
+        State.AcceptedVersion = accepted;
+        var host = Host();
+        ActivityExecutionContext? seen = null;
+        host.RegisterCompensation<JsonNode?, int>("limit.release", (_, context, _) =>
+        {
+            seen = context;
+            return Task.FromResult(1);
+        });
+        State.Lease(LeaseFor("limit.release", l =>
+        {
+            l.TaskKind = "COMPENSATION";
+            l.TargetNode = "reserve";
+            l.TargetIdempotencyKey = "run-1:reserve";
+        }));
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+        Assert.Equal(TaskKind.Forward, seen!.TaskKind);
+        Assert.Equal(string.Empty, seen.TargetNode);
+        Assert.Equal(string.Empty, seen.TargetIdempotencyKey);
+    }
+
+    [Fact]
+    public async Task TheKindAndTheTargetOfATaskAreReadAtProtocol12()
+    {
+        var host = Host();
+        ActivityExecutionContext? seen = null;
+        host.RegisterCompensation<JsonNode?, int>("limit.release", (_, context, _) =>
+        {
+            seen = context;
+            return Task.FromResult(1);
+        });
+        State.Lease(LeaseFor("limit.release", l =>
+        {
+            l.TaskKind = "COMPENSATION";
+            l.TargetNode = "reserve";
+            l.TargetIdempotencyKey = "run-1:reserve";
+        }));
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+        Assert.Equal((TaskKind.Compensation, "reserve", "run-1:reserve"), (seen!.TaskKind, seen.TargetNode, seen.TargetIdempotencyKey));
     }
 }

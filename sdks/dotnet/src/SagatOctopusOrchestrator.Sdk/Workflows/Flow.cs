@@ -13,7 +13,7 @@ public abstract partial class FlowBase<TSelf>
     where TSelf : FlowBase<TSelf>
 {
     private readonly List<JsonObject> nodes = [];
-    private readonly List<Flow> embedded = [];
+    private readonly List<(Flow Flow, string? SagaId)> embedded = [];
     private readonly HashSet<string> ids = new(StringComparer.Ordinal);
 
     internal IReadOnlyList<JsonObject> Nodes => nodes;
@@ -211,7 +211,7 @@ public abstract partial class FlowBase<TSelf>
         }
 
         Push(node);
-        Embed(body);
+        Embed(body, id);
         return (TSelf)this;
     }
 
@@ -242,9 +242,16 @@ public abstract partial class FlowBase<TSelf>
             output.Add(linked);
         }
 
-        foreach (var inner in embedded)
+        foreach (var (inner, sagaId) in embedded)
         {
-            output.AddRange(inner.Flatten());
+            // A flow is read now, not when it was joined: what was added to the body of a saga since may not be an end node.
+            var flat = inner.Flatten();
+            if (sagaId is not null && flat.Any(node => (string?)node["type"] == "end"))
+            {
+                throw Invalid($"saga {sagaId} cannot hold an end node");
+            }
+
+            output.AddRange(flat);
         }
 
         return output;
@@ -265,14 +272,14 @@ public abstract partial class FlowBase<TSelf>
         return (TSelf)this;
     }
 
-    private void Embed(Flow flow)
+    private void Embed(Flow flow, string? sagaId = null)
     {
         foreach (var id in flow.AllIds)
         {
             Claim(id);
         }
 
-        embedded.Add(flow);
+        embedded.Add((flow, sagaId));
     }
 
     private void Claim(string id)

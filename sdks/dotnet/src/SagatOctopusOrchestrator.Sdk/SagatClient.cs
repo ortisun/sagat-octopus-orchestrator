@@ -33,6 +33,8 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             throw SagatException.Invalid("ApiUrl is required and is an http or https URL");
         }
 
+        Internal.Tls.RequireTlsForServerName(this.options.Tls, url);
+
         json = Wire.OptionsOf(this.options);
         transport = new HttpTransport(this.options, SafeLogger.Of(logger ?? (ILogger)NullLogger.Instance));
     }
