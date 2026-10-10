@@ -2,7 +2,7 @@
 // runs the default export of the script and writes the result back. Whatever the script prints goes to
 // standard error (the log); standard output is the platform's channel. The script has no network and
 // no secrets: `octopus.fetch` and `octopus.secret` ask the platform, which may refuse.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, writeSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
@@ -10,10 +10,26 @@ import { inspect } from 'node:util';
 const write = (message) =>
   new Promise((resolve) => process.stdout.write(JSON.stringify(message) + '\n', resolve));
 
-const log = (...args) =>
-  process.stderr.write(
+// The log is written to the descriptor itself and not through `process.stderr`: that stream queues
+// what the pipe will not take and drops what is still queued when the process exits, so a script
+// that wrote faster than it was read lost its log and nothing slowed it down. A write to the pipe
+// waits until the supervisor has read, which is the backpressure that lets the supervisor stop a
+// script that floods its log, and every line written before the script ends is delivered.
+const log = (...args) => {
+  const data = Buffer.from(
     args.map((a) => (typeof a === 'string' ? a : inspect(a, { depth: 4 }))).join(' ') + '\n',
   );
+  let at = 0;
+  while (at < data.length) {
+    try {
+      at += writeSync(2, data, at);
+    } catch (error) {
+      // Not ready: wait a moment without spending CPU. Anything else (the reader is gone): drop it.
+      if (error?.code !== 'EAGAIN') return;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+    }
+  }
+};
 console.log = console.info = console.debug = console.warn = console.error = log;
 
 let nextId = 1;

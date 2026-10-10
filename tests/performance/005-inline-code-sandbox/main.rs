@@ -433,9 +433,9 @@ async fn script_sandbox_benchmark() {
         .expect("limits"),
         ..Policy::default()
     };
-    // The flood is about the log and not about memory: a Node process does not fit its own start in
-    // 64 MiB with room to write, so it runs with twice as much (the first version of this benchmark
-    // gave it 64 MiB and the kernel ended it before the supervisor did: `SCRIPT_OUT_OF_MEMORY`).
+    // The flood is about the log and not about memory, so it runs with 128 MiB (the first version of
+    // this benchmark gave it 64 MiB, and the kernel ended the process before the supervisor cut it
+    // off: `SCRIPT_OUT_OF_MEMORY`; the cause was the shim, see below).
     let roomy = Policy {
         limits: Limits::new(
             128 * 1024 * 1024,
@@ -520,7 +520,7 @@ async fn script_sandbox_benchmark() {
         "CPU burner: time past its 3 s limit until it is gone",
         overshoots,
     );
-    report.push_str("\n## Holding a script to its limits\n\nA hostile script run on the sandbox with a 3 second limit and 64 MiB of memory (128 MiB for the log flood): how long until it is gone. *The first run of this benchmark gave the flood 64 MiB too and stopped there: the kernel ended the Node process (`SCRIPT_OUT_OF_MEMORY`) before the supervisor had read enough of its log to cut it off. The flood is about the log, not about memory, so it got more room; the memory bomb keeps 64 MiB.*\n\n| What | Samples | p50 | p95 | p99 | max |\n|---|---|---|---|---|---|\n");
+    report.push_str("\n## Holding a script to its limits\n\nA hostile script run on the sandbox with a 3 second limit and 64 MiB of memory (128 MiB for the log flood): how long until it is gone. *The first runs of this benchmark ended the flood with `SCRIPT_OUT_OF_MEMORY` (64 and 128 MiB) and, once the cause was looked for, sometimes with a normal `null` result. The cause was the Node shim, which wrote the log through `process.stderr`: that stream queues what the pipe will not take and drops what is still queued when the process exits. A script that wrote faster than it was read filled its memory with the queue or lost almost all of its output, and in the second case the supervisor never saw the megabyte it needs to cut the script off (a plain `docker run` of the same script delivers 0.4 to 0.9 MB of 2 GB to a fast reader). The shim now writes the descriptor itself, so a flood meets the pipe's backpressure; a run the supervisor stopped for its output is reported as that even if the kernel ended it a moment later.*\n\n| What | Samples | p50 | p95 | p99 | max |\n|---|---|---|---|---|---|\n");
     report.push_str(&kill_line);
     report.push_str(
         &row(

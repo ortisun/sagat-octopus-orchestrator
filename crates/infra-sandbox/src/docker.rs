@@ -590,6 +590,18 @@ impl DockerSandbox {
         if driven.message.is_none() && driven.exit_code == Some(152) {
             driven.timed_out = true;
         }
+        tracing::debug!(
+            stderr_seen,
+            lines,
+            flooded = driven.flooded,
+            timed_out = driven.timed_out,
+            oom = driven.oom,
+            exit_code = ?driven.exit_code,
+            answered = driven.message.is_some(),
+            log_len = driven.log.len(),
+            log_truncated = driven.log_truncated,
+            "a sandbox run ended"
+        );
         driven.handed = secrets_handed;
         Ok(())
     }
@@ -944,10 +956,12 @@ impl Sandbox for DockerSandbox {
             Err(Failure::Unavailable)
         } else if driven.timed_out {
             Err(Failure::Timeout)
+        } else if driven.flooded {
+            // The supervisor stopped the script for what it wrote; that the kernel ended it a moment
+            // later, for the memory its unread output took, is not the reason it was stopped.
+            Err(Failure::OutputLimit)
         } else if driven.oom {
             Err(Failure::OutOfMemory)
-        } else if driven.flooded {
-            Err(Failure::OutputLimit)
         } else {
             match &driven.message {
                 Some(Message::Result(value)) => {

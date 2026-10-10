@@ -256,7 +256,8 @@ async fn a_log_flood_is_cut_and_the_run_ends_instead_of_filling_the_supervisor()
         outcome.log.len()
     );
     assert!(outcome.log_truncated);
-    assert!(outcome.result.is_err());
+    // It was stopped for what it wrote, and says so, even if the kernel ended it a moment later.
+    assert_eq!(result_of(&outcome), "FAILED SCRIPT_OUTPUT_LIMIT");
 }
 
 #[tokio::test]
