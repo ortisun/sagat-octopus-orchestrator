@@ -4,6 +4,7 @@
 //! run transaction ([`RunTx::secret_inputs`](sagat_application::execution::RunTx::secret_inputs)),
 //! so the audit record of a resolution commits with the read.
 
+use crate::pool::BeginSafely;
 use sagat_application::error::StoreError;
 use sagat_application::secrets::{
     NewVersion, SecretAccessLookup, SecretInput, SecretInputs, SecretState, SecretStore,
@@ -259,7 +260,7 @@ impl SecretStore for PgRunStore {
         secrets_limit: u64,
         audit: &AuditRecord,
     ) -> Result<SecretMeta, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // The lock comes first, so two creators of one name, or a creator and a rotation, are
         // serialised before either looks at what exists.
         lock_secrets(&mut tx, tenant, namespace).await?;
@@ -361,7 +362,7 @@ impl SecretStore for PgRunStore {
         name: &SecretName,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         lock_secrets(&mut tx, tenant, namespace).await?;
         let removed = sqlx::query(
             "DELETE FROM secrets WHERE tenant_id = $1 AND namespace_id = $2 AND name = $3",
@@ -390,7 +391,7 @@ impl SecretStore for PgRunStore {
         granted_by: &str,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let id: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM secrets WHERE tenant_id = $1 AND namespace_id = $2 AND name = $3",
         )
@@ -427,7 +428,7 @@ impl SecretStore for PgRunStore {
         subject: &str,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let removed = sqlx::query(
             "DELETE FROM secret_access a USING secrets s \
              WHERE a.secret_id = s.id AND s.tenant_id = $1 AND s.namespace_id = $2 \
@@ -526,7 +527,7 @@ impl SecretStore for PgRunStore {
         sealed: &SealedSecret,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let replaced = sqlx::query(
             "UPDATE secret_versions SET key_id = $3, nonce = $4, ciphertext = $5 \
              WHERE id = $1 AND key_id = $2",

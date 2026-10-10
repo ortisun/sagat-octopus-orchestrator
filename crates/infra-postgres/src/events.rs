@@ -5,6 +5,7 @@
 //! the id for something else is decided by comparing the digest of the content, in the same
 //! transaction.
 
+use crate::pool::BeginSafely;
 use std::time::Duration;
 
 use sagat_application::definitions::DefinitionStore;
@@ -119,7 +120,7 @@ impl EventStore for PgRunStore {
         limit: u64,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         lock_event_endpoints(&mut tx, endpoint.tenant_id, endpoint.namespace_id).await?;
         lock_event_sources(&mut tx, endpoint.tenant_id, endpoint.namespace_id).await?;
         // A slug names one source of events in a namespace: an endpoint or a connector.
@@ -171,7 +172,7 @@ impl EventStore for PgRunStore {
         endpoint: &EndpointRecord,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let changed = sqlx::query(
             "UPDATE event_endpoints SET secret_name = $3, default_event_type = $4, \
                  dedupe_ttl_seconds = $5, skew_seconds = $6, max_body_bytes = $7, \
@@ -206,7 +207,7 @@ impl EventStore for PgRunStore {
         id: EndpointId,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let removed = sqlx::query("DELETE FROM event_endpoints WHERE tenant_id = $1 AND id = $2")
             .bind(tenant.as_uuid())
             .bind(id.as_uuid())
@@ -282,7 +283,7 @@ impl EventStore for PgRunStore {
         backlog_limit: u64,
         audit: Option<&AuditRecord>,
     ) -> Result<Admission, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let admission = admit_within(&mut tx, event, backlog_limit).await?;
         if admission == Admission::Accepted {
             if let Some(audit) = audit {

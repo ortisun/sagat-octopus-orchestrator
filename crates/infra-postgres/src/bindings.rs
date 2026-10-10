@@ -1,5 +1,6 @@
 //! Worker bindings in PostgreSQL (FR-009-002, gap G31).
 
+use crate::pool::BeginSafely;
 use sagat_application::bindings::{BindingStore, Revoked, StoredBinding};
 use sagat_application::error::StoreError;
 use sagat_domain::audit::AuditRecord;
@@ -47,7 +48,7 @@ impl BindingStore for PgRunStore {
             .map_err(|_| StoreError::Internal {
                 detail: "a binding pattern does not parse".into(),
             })?;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // One change at a time per identity and namespace, so two administrators cannot interleave
         // a replace with a revocation.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")

@@ -1,5 +1,6 @@
 //! The egress policy in PostgreSQL (FR-009-008).
 
+use crate::pool::BeginSafely;
 use sagat_application::egress::{EgressStore, StoredPolicy};
 use sagat_application::error::StoreError;
 use sagat_domain::audit::AuditRecord;
@@ -47,7 +48,7 @@ impl EgressStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let ports: Vec<i32> = policy.ports.iter().map(|p| i32::from(*p)).collect();
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         sqlx::query(
             "INSERT INTO egress_policies \
              (tenant_id, namespace_id, rules, ports, allow_http, updated_by, updated_at) \
@@ -75,7 +76,7 @@ impl EgressStore for PgRunStore {
         namespace: NamespaceId,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let removed =
             sqlx::query("DELETE FROM egress_policies WHERE tenant_id = $1 AND namespace_id = $2")
                 .bind(tenant.as_uuid())

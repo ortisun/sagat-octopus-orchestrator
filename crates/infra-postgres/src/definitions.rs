@@ -5,6 +5,7 @@
 //! numbering of versions are single statements or row-locked sequences, never read-modify-write
 //! across round trips.
 
+use crate::pool::BeginSafely;
 use sagat_application::definitions::{
     Applied, DefinitionStore, Idempotency, StoredPlan, StoredPlanEntry, VersionRecord,
     WorkflowRecord,
@@ -144,7 +145,7 @@ impl DefinitionStore for PgDefinitionStore {
         // Two attempts: the second only runs when a concurrent request with the same key committed
         // between our lookup and our insert, in which case the lookup now finds it.
         for _ in 0..2 {
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
+            let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             if let Some(resource) =
                 replay(&mut tx, workflow.tenant_id(), idempotency, &hash).await?
             {
@@ -256,7 +257,7 @@ impl DefinitionStore for PgDefinitionStore {
         now: OffsetDateTime,
     ) -> Result<Option<WorkflowRecord>, StoreError> {
         let draft = parse_json(draft)?;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // The check and the write are one statement: no other editor can slip in between.
         let updated = sqlx::query(
             "UPDATE workflows SET draft = $4, draft_revision = draft_revision + 1, updated_at = $5 \
@@ -311,7 +312,7 @@ impl DefinitionStore for PgDefinitionStore {
         let tenant = principal.tenant_id();
         let hash = hash(&idempotency.fingerprint);
         for _ in 0..2 {
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
+            let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             if let Some(resource) = replay(&mut tx, tenant, idempotency, &hash).await? {
                 return Ok(Some(Applied::Replayed(resource)));
             }

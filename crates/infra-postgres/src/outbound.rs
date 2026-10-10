@@ -7,6 +7,7 @@
 //! enforced here, across replicas: a claim moves the subscription's `next_slot_at`, and a
 //! subscription whose slot is in the future is not offered to anybody.
 
+use crate::pool::BeginSafely;
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
@@ -247,7 +248,7 @@ impl OutboundStore for PgRunStore {
         limit: u64,
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         lock_subscriptions(&mut tx, subscription.tenant_id, subscription.namespace_id).await?;
         ensure_room_for_subscription(
             &mut tx,
@@ -286,7 +287,7 @@ impl OutboundStore for PgRunStore {
         subscription: &SubscriptionRecord,
         audit: &AuditRecord,
     ) -> Result<Option<u64>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // The status it had is what decides whether this is a subscription being turned back on.
         let before = sqlx::query_scalar::<_, String>(
             "SELECT status FROM webhook_subscriptions WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
@@ -344,7 +345,7 @@ impl OutboundStore for PgRunStore {
         id: SubscriptionId,
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let removed =
             sqlx::query("DELETE FROM webhook_subscriptions WHERE tenant_id = $1 AND id = $2")
                 .bind(tenant.as_uuid())
@@ -479,7 +480,7 @@ impl OutboundStore for PgRunStore {
         limit: u32,
         audit: &AuditRecord,
     ) -> Result<u64, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let count = requeue_dead(&mut tx, tenant, subscription, delivery, limit).await?;
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
@@ -521,7 +522,7 @@ impl DeliveryStore for PgRunStore {
         limit: u32,
         lease: Duration,
     ) -> Result<Vec<DueDelivery>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // Subscriptions whose slot has come and that have something due; taking the slot is what
         // limits the rate, across replicas, because nobody else is offered the subscription.
         let slots = sqlx::query(
@@ -606,7 +607,7 @@ impl DeliveryStore for PgRunStore {
         switched_off: Option<&sagat_domain::audit::AuditRecord>,
     ) -> Result<bool, StoreError> {
         let d = &due.delivery;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let (status, delay) = match next {
             Next::Delivered => ("DELIVERED", 0.0),
             Next::Retry { delay } => ("PENDING", delay.as_secs_f64()),

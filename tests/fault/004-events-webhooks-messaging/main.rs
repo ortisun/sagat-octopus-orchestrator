@@ -8,6 +8,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod cancellation;
 mod deliveries;
 mod dispatch;
 mod ingress;

@@ -1,5 +1,6 @@
 //! Worker sessions and the index queries behind task claiming.
 
+use crate::pool::BeginSafely;
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
@@ -78,7 +79,7 @@ impl WorkerStore for PgRunStore {
         // One session per (identity, worker name): registering again replaces the token (and keeps
         // the id). A new name is refused once the identity holds the maximum of live sessions; the
         // count is not serialised, so racing registrations can overshoot it by their own number.
-        let mut tx = self.pool().begin().await.map_err(store_error)?;
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
         // The lock that replacing a binding takes, then the binding itself: either this session is
         // stored before the replacement (which then finds it and closes it if it is no longer
         // covered) or it is judged against the new binding. Taken before the quota lock below, like
