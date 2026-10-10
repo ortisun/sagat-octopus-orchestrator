@@ -1,0 +1,242 @@
+import { strict as assert } from 'node:assert';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { after, before, test } from 'node:test';
+import { SagatClient, SagatError } from '../src/index.js';
+
+interface Seen {
+  method: string;
+  url: string;
+  headers: IncomingMessage['headers'];
+  body: unknown;
+}
+
+const WORKFLOW = '0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee';
+const run = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  runId: '0190aaaa-0000-7000-8000-000000000001', workflowId: WORKFLOW, versionId: '0190aaaa-0000-7000-8000-000000000002',
+  status: 'RUNNING', version: 3, paused: false, startedBy: 'alice', createdAt: '2026-10-10T10:00:00Z', updatedAt: '2026-10-10T10:00:01Z',
+  finishedAt: null, deadline: null, traceId: 'abcdefabcdefabcdefabcdefabcdefab', correlationId: null, depth: 0, parent: null, futureField: 7,
+  ...overrides,
+});
+
+let server: Server;
+let base = '';
+let seen: Seen[] = [];
+let handler: (req: Seen, res: ServerResponse) => void = () => undefined;
+
+before(async () => {
+  server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      const entry: Seen = { method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: text ? JSON.parse(text) : undefined };
+      seen.push(entry);
+      handler(entry, res);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+});
+after(() => server.close());
+
+const reply = (res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void => {
+  res.writeHead(status, { 'content-type': 'application/json', 'x-trace-id': 'f'.repeat(32), ...headers });
+  res.end(body === undefined ? '' : typeof body === 'string' ? body : JSON.stringify(body));
+};
+
+const client = (extra: Record<string, unknown> = {}): SagatClient =>
+  new SagatClient({ apiUrl: base, namespace: 'payments', token: 'tok-1', retry: { initialDelayMs: 5, maxDelayMs: 20 }, ...extra });
+
+function prepare(next: (req: Seen, res: ServerResponse) => void): void {
+  seen = [];
+  handler = next;
+}
+
+test('a start sends the headers and the body the API expects and returns a typed run that keeps the raw answer', async () => {
+  prepare((_req, res) => reply(res, 202, run()));
+  const result = await client().start(WORKFLOW, { orderId: 'o-1' }, {
+    idempotencyKey: 'key-12345678', correlationId: 'corr-1', traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+    deadline: new Date('2030-01-01T00:00:00.000Z'),
+  });
+  const [request] = seen;
+  assert.ok(request);
+  assert.equal(request.method, 'POST');
+  assert.equal(request.url, '/v1/runs');
+  assert.equal(request.headers['authorization'], 'Bearer tok-1');
+  assert.equal(request.headers['x-octopus-namespace'], 'payments');
+  assert.equal(request.headers['idempotency-key'], 'key-12345678');
+  assert.equal(request.headers['traceparent'], '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01');
+  assert.match(String(request.headers['user-agent']), /^sagat-sdk-typescript\/\d+\.\d+\.\d+/);
+  assert.deepEqual(request.body, { workflowId: WORKFLOW, input: { orderId: 'o-1' }, correlationId: 'corr-1', deadline: '2030-01-01T00:00:00.000Z' });
+  assert.equal(result.status, 'RUNNING');
+  assert.equal(result.createdAt.toISOString(), '2026-10-10T10:00:00.000Z');
+  assert.equal(result.raw['futureField'], 7, 'a field of a newer server is reachable');
+});
+
+test('a call without a key gets a fresh one per call and keeps it across its retries', async () => {
+  let attempts = 0;
+  prepare((_req, res) => (++attempts < 3 ? reply(res, 503, { code: 'UNAVAILABLE', message: 'busy', retryable: true, traceId: 'e'.repeat(32) }) : reply(res, 202, run())));
+  await client().start(WORKFLOW, {});
+  assert.equal(seen.length, 3);
+  const keys = new Set(seen.map((s) => s.headers['idempotency-key']));
+  assert.equal(keys.size, 1, 'the same key on every attempt');
+  const [key] = keys;
+  assert.match(String(key), /^[0-9a-f-]{36}$/);
+  attempts = 0;
+  seen = [];
+  await client().start(WORKFLOW, {});
+  assert.notEqual(seen[0]?.headers['idempotency-key'], key, 'another call, another key');
+});
+
+test('an event without an id gets one per call, kept across retries, so a repetition is a duplicate and not a second event', async () => {
+  let attempts = 0;
+  prepare((_req, res) => (++attempts < 2 ? reply(res, 503, 'upstream down') : reply(res, 202, { eventId: 'e', source: 'api', status: 'ACCEPTED' })));
+  const accepted = await client().publishEvent({ type: 'order.created', data: { id: 1 } });
+  assert.equal(accepted.status, 'ACCEPTED');
+  assert.equal(seen.length, 2);
+  const ids = seen.map((s) => (s.body as { eventId: string }).eventId);
+  assert.equal(ids[0], ids[1]);
+  assert.match(ids[0] ?? '', /^[0-9a-f-]{36}$/);
+});
+
+test('GET is retried on unavailability and on rate limiting, honouring Retry-After, and gives up after the attempts', async () => {
+  let attempts = 0;
+  prepare((_req, res) => {
+    attempts++;
+    if (attempts === 1) reply(res, 429, { code: 'RATE_LIMITED', message: 'slow', retryable: true, traceId: 'a'.repeat(32) }, { 'retry-after': '0' });
+    else reply(res, 200, run());
+  });
+  const got = await client().get('r-1');
+  assert.equal(got.runId, '0190aaaa-0000-7000-8000-000000000001');
+  assert.equal(seen.length, 2);
+
+  prepare((_req, res) => reply(res, 503, '<html>bad gateway</html>'));
+  await assert.rejects(client().get('r-1'), (error: unknown) => {
+    assert.ok(error instanceof SagatError);
+    assert.equal(error.code, 'UNAVAILABLE');
+    assert.equal(error.status, 503);
+    return true;
+  });
+  assert.equal(seen.length, 4, 'four attempts in all');
+});
+
+test('a 4xx other than 429 is never retried and keeps what the server said', async () => {
+  prepare((_req, res) => reply(res, 409, { code: 'CONFLICT', message: 'the idempotency key was used for another request', retryable: false, traceId: 'c'.repeat(32), details: { reason: 'IDEMPOTENCY_KEY_REUSED' } }));
+  await assert.rejects(client().start(WORKFLOW, {}, { idempotencyKey: 'key-12345678' }), (error: unknown) => {
+    assert.ok(error instanceof SagatError);
+    assert.equal(error.code, 'CONFLICT');
+    assert.equal(error.reason, 'IDEMPOTENCY_KEY_REUSED');
+    assert.equal(error.traceId, 'c'.repeat(32));
+    assert.equal(error.retryable, false);
+    assert.ok(error.remediation.length > 0);
+    return true;
+  });
+  assert.equal(seen.length, 1);
+});
+
+test('a refused token, a missing resource and a validation error are told apart', async () => {
+  for (const [status, code] of [[401, 'UNAUTHENTICATED'], [403, 'FORBIDDEN'], [404, 'NOT_FOUND'], [422, 'VALIDATION_FAILED']] as const) {
+    prepare((_req, res) => reply(res, status, { code, message: 'no', retryable: false, traceId: 'b'.repeat(32) }));
+    await assert.rejects(client().get('x'), (error: unknown) => error instanceof SagatError && error.code === code && error.status === status);
+    assert.equal(seen.length, 1, String(status));
+  }
+});
+
+test('the token is asked for before every request, so a rotated one is used at once', async () => {
+  let n = 0;
+  prepare((_req, res) => reply(res, 200, run()));
+  const c = client({ token: () => `tok-${++n}` });
+  await c.get('a');
+  await c.get('b');
+  assert.deepEqual(seen.map((s) => s.headers['authorization']), ['Bearer tok-1', 'Bearer tok-2']);
+});
+
+test('a name is resolved to the id of its workflow, through every page, and remembered', async () => {
+  prepare((req, res) => {
+    if (req.url.startsWith('/v1/workflows')) {
+      const second = req.url.includes('cursor=c2');
+      reply(res, 200, second ? { items: [{ id: WORKFLOW, name: 'order-flow' }], nextCursor: null } : { items: [{ id: '0190aaaa-0000-7000-8000-00000000ffff', name: 'other' }], nextCursor: 'c2' });
+    } else reply(res, 202, run());
+  });
+  const c = client();
+  await c.start('order-flow', {});
+  await c.start('order-flow', {});
+  const lookups = seen.filter((s) => s.url.startsWith('/v1/workflows'));
+  assert.equal(lookups.length, 2, 'two pages, once');
+  assert.equal((seen.find((s) => s.method === 'POST')?.body as { workflowId: string }).workflowId, WORKFLOW);
+  prepare((_req, res) => reply(res, 200, { items: [], nextCursor: null }));
+  await assert.rejects(client().start('nothing-here', {}), (error: unknown) => error instanceof SagatError && error.code === 'NOT_FOUND' && error.reason === 'WORKFLOW_NOT_FOUND');
+});
+
+test('a malformed traceparent or key is refused before anything is sent', async () => {
+  prepare((_req, res) => reply(res, 202, run()));
+  await assert.rejects(client().start(WORKFLOW, {}, { traceparent: 'not-a-trace' }), (e: unknown) => e instanceof SagatError && e.code === 'BAD_REQUEST');
+  await assert.rejects(client().start(WORKFLOW, {}, { idempotencyKey: 'short' }), (e: unknown) => e instanceof SagatError && e.code === 'VALIDATION_FAILED');
+  assert.equal(seen.length, 0);
+});
+
+test('the ambient trace context is used when the call has none', async () => {
+  prepare((_req, res) => reply(res, 200, run()));
+  await client({ traceContext: () => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01' }).get('r');
+  assert.equal(seen[0]?.headers['traceparent'], '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01');
+});
+
+test('a list follows its cursor, a deadline given as a duration is computed once, and an unsafe integer is refused', async () => {
+  prepare((req, res) => reply(res, 200, req.url.includes('cursor=n2') ? { items: [run({ runId: 'r-2' })], nextCursor: null } : { items: [run({ runId: 'r-1' })], nextCursor: 'n2' }));
+  const ids: string[] = [];
+  for await (const item of client().listAll({ status: 'RUNNING', limit: 1 })) ids.push(item.runId);
+  assert.deepEqual(ids, ['r-1', 'r-2']);
+  assert.ok(seen[0]?.url.includes('status=RUNNING') && seen[0]?.url.includes('limit=1'));
+
+  prepare((_req, res) => reply(res, 202, run()));
+  const before = Date.now();
+  await client().start(WORKFLOW, {}, { deadlineInMs: 60_000 });
+  const sent = Date.parse((seen[0]?.body as { deadline: string }).deadline);
+  assert.ok(sent >= before + 60_000 && sent < before + 61_000);
+
+  await assert.rejects(client().start(WORKFLOW, { big: 9007199254740993 }), (e: unknown) => e instanceof SagatError && e.code === 'VALIDATION_FAILED');
+  await assert.rejects(client().start(WORKFLOW, { nan: Number.NaN }), (e: unknown) => e instanceof SagatError && e.code === 'VALIDATION_FAILED');
+});
+
+test('no answer at all is a retryable transport error, and a lost answer is retried only because the call carries a key', async () => {
+  let calls = 0;
+  const lossy: typeof fetch = async (input, init) => {
+    calls++;
+    if (calls === 1) {
+      // The request reached the server (it is recorded) and the answer was lost.
+      await fetch(input, init);
+      throw new TypeError('fetch failed');
+    }
+    return fetch(input, init);
+  };
+  prepare((_req, res) => reply(res, 202, run()));
+  const result = await client({ fetch: lossy }).start(WORKFLOW, {}, { idempotencyKey: 'key-12345678' });
+  assert.equal(result.status, 'RUNNING');
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0]?.headers['idempotency-key'], seen[1]?.headers['idempotency-key']);
+
+  const dead = new SagatClient({ apiUrl: 'http://127.0.0.1:1/v1', namespace: 'p', token: 't', retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 2 } });
+  await assert.rejects(dead.get('x'), (e: unknown) => e instanceof SagatError && e.code === 'TRANSPORT' && e.retryable && e.status === null);
+});
+
+test('cancel and signal are operations with a reason and a payload and the result is typed', async () => {
+  prepare((req, res) => (req.url.endsWith('/operations') ? reply(res, 202, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9 }) : reply(res, 202, { deliveredTo: ['wait'] })));
+  const cancelled = await client().cancel('r-1', 'no longer needed', { expectedRunVersion: 3 });
+  assert.deepEqual({ ...cancelled, raw: undefined }, { operationId: 'op-1', accepted: true, runStatus: 'CANCELLING', runVersion: 9, raw: undefined });
+  assert.deepEqual(seen[0]?.body, { action: 'CANCEL', reason: 'no longer needed', expectedRunVersion: 3 });
+  const signalled = await client().signal('r-1', 'payment-confirmed', { paymentId: 'p-1' });
+  assert.deepEqual(signalled.deliveredTo, ['wait']);
+  assert.equal(seen[1]?.url, '/v1/runs/r-1/signals/payment-confirmed');
+  assert.deepEqual(seen[1]?.body, { paymentId: 'p-1' });
+});
+
+test('waiting for completion polls until the run is terminal', async () => {
+  let polls = 0;
+  prepare((_req, res) => reply(res, 200, run({ status: ++polls < 3 ? 'RUNNING' : 'SUCCEEDED' })));
+  const done = await client().waitForCompletion('r', { pollIntervalMs: 5, timeoutMs: 5000 });
+  assert.equal(done.status, 'SUCCEEDED');
+  assert.equal(polls, 3);
+  prepare((_req, res) => reply(res, 200, run()));
+  await assert.rejects(client().waitForCompletion('r', { pollIntervalMs: 5, timeoutMs: 30 }), (e: unknown) => e instanceof SagatError && e.reason === 'WAIT_TIMEOUT');
+});
