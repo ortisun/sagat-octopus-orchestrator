@@ -3,7 +3,7 @@ export type {
   CallOptions, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, Run, RunPage,
   RunStatus, SignalResult, StartOptions, WaitOptions,
 } from './client.js';
-export { PROTOCOL_VERSION, SDK_VERSION, silentLogger, warnIfNotSecure } from './config.js';
+export { PROTOCOL_VERSION, SDK_VERSION, safeLogger, silentLogger, warnIfNotSecure } from './config.js';
 export type { ClientConfig, Logger, TlsOptions, TokenSource } from './config.js';
 export { MAX_WAIT_MS, SagatError, codeOfHttpStatus, isRetriable, remediationOf, retryableByDefault } from './errors.js';
 export type { ErrorCode, SagatErrorInit } from './errors.js';

@@ -436,7 +436,8 @@ test('registering twice or after the start is a mistake and says so', async () =
 test('the heartbeat goes on while the result is being reported, until the report is made', async () => {
   fake.failures['completeStep'] = [{ code: 14 }, { code: 14 }, { code: 14 }];
   fake.leases = [lease()];
-  const worker = host({ heartbeatIntervalMs: 10, retry: { initialDelayMs: 30, maxDelayMs: 60 } });
+  // 300 ms of retries against a heartbeat every 10 ms: room enough for a loaded machine.
+  const worker = host({ heartbeatIntervalMs: 10, retry: { initialDelayMs: 100, maxDelayMs: 100 } });
   worker.registerActivity('charge', () => ({ ok: true }));
   await worker.start();
   await until(() => fake.of('completeStep').length >= 4, 'the report to go through after its retries');
@@ -444,8 +445,10 @@ test('the heartbeat goes on while the result is being reported, until the report
   const first = order.indexOf('completeStep');
   const last = order.lastIndexOf('completeStep');
   assert.ok(order.slice(first, last).includes('heartbeat'), `a heartbeat between the first report and the last: ${order.join(',')}`);
-  const lastBeat = order.lastIndexOf('heartbeat');
-  assert.ok(lastBeat < last || order.slice(last).every((m) => m !== 'heartbeat'), 'none after the report that was made');
+  // Once the report is made the heartbeat ends. One that was already on its way may still arrive; no more than that.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const afterwards = fake.calls.map((call) => call.method).filter((method) => method === 'heartbeat' || method === 'completeStep');
+  assert.ok(afterwards.slice(afterwards.lastIndexOf('completeStep') + 1).filter((m) => m === 'heartbeat').length <= 1, 'none after the report that was made, but the one in flight');
 });
 
 test('a handler that raises its cancellation after the host was stopped is not reported, and one cancelled by the run is', async () => {

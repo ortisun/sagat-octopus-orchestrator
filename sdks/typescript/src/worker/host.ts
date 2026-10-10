@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, silentLogger, warnIfNotSecure, type Logger, type TlsOptions, type TokenSource } from '../config.js';
+import { PROTOCOL_VERSION, safeLogger, silentLogger, warnIfNotSecure, type Logger, type TlsOptions, type TokenSource } from '../config.js';
 import { MAX_WAIT_MS, SagatError, isRetriable } from '../errors.js';
 import { encodeJson, parseJson } from '../json.js';
 import { DEFAULT_RETRY, backoffDelayMs, sleep, type RetryPolicy } from '../retry.js';
@@ -95,7 +95,7 @@ export class WorkerHost {
     if (!Number.isInteger(this.maxInflight) || this.maxInflight < 1 || this.maxInflight > 1000) {
       throw new SagatError({ code: 'VALIDATION_FAILED', message: 'maxInflight is between 1 and 1000' });
     }
-    this.log = config.logger ?? silentLogger;
+    this.log = safeLogger(config.logger ?? silentLogger);
     this.retry = { ...DEFAULT_RETRY, ...config.retry };
     // A mistake in the URL is told here, not at the first poll.
     checkGrpcConfig(this.#grpcConfig());
@@ -386,7 +386,7 @@ export class WorkerHost {
     });
 
     let secretsCache: Promise<Secrets> | undefined;
-    const secretsHolder: { dispose?: () => void } = {};
+    const secretsHolder: { dispose?: () => void; finished?: boolean } = {};
     // The secrets are wiped and refused when the handler is done, however it ended.
     cleanup.push(() => secretsHolder.dispose?.());
     const context: ActivityContext = {
@@ -414,6 +414,10 @@ export class WorkerHost {
         error: (message, fields) => this.log.error(message, { ...fields, task: lease.task_id }),
       },
       secrets: () => {
+        // Asked for by code the handler left behind, after it returned: refused, and nothing is fetched.
+        if (secretsHolder.finished) {
+          return Promise.reject(new SagatError({ code: 'VALIDATION_FAILED', message: 'the secrets of an attempt are only valid while its handler runs' }));
+        }
         if (!secretsCache) {
           const pending = this.resolveSecrets(lease, minor, secretsHolder);
           secretsCache = pending;
@@ -443,6 +447,10 @@ export class WorkerHost {
         failure = ActivityFailure.retryable('ACTIVITY_ERROR', error instanceof Error ? error.name : 'Error');
       }
     }
+
+    // The handler is done: what it was given is wiped now, not when the report is made (SPEC §6.7).
+    secretsHolder.finished = true;
+    secretsHolder.dispose?.();
 
     if (leftToLapse) {
       this.log.info('the host stopped: the cancelled activity is not reported, its lease will lapse', { task: lease.task_id });
@@ -625,7 +633,7 @@ export class WorkerHost {
 
   // --------------------------------------------------------------------------------------- secrets
 
-  private async resolveSecrets(lease: TaskLease, minor: number, holder: { dispose?: () => void }): Promise<Secrets> {
+  private async resolveSecrets(lease: TaskLease, minor: number, holder: { dispose?: () => void; finished?: boolean }): Promise<Secrets> {
     if (minor < 2) {
       throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: 'the server speaks a protocol older than 1.2, which has no ResolveSecrets' });
     }
@@ -641,6 +649,11 @@ export class WorkerHost {
       },
       lease.traceparent || undefined,
     );
+    // The handler returned while this was on its way: nothing of it is kept.
+    if (holder.finished) {
+      for (const secret of answer.secrets) Buffer.from(secret.value).fill(0);
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'the secrets of an attempt are only valid while its handler runs' });
+    }
     const values = new Map(answer.secrets.map((secret) => [secret.name, Buffer.from(secret.value)]));
     let disposed = false;
     const alive = (): void => {

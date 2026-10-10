@@ -13,6 +13,21 @@ export interface Logger {
 
 export const silentLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
+/**
+ * The caller's logger, made harmless: a logger that throws (a full disk, a closed stream) must not end a heartbeat,
+ * the poll loop, a report or a retry (SPEC §10), so every call is guarded.
+ */
+export function safeLogger(logger: Logger): Logger {
+  const guard = (method: Logger['debug']): Logger['debug'] => (message, fields) => {
+    try {
+      method.call(logger, message, fields);
+    } catch {
+      /* a broken logger costs nothing */
+    }
+  };
+  return { debug: guard(logger.debug), info: guard(logger.info), warn: guard(logger.warn), error: guard(logger.error) };
+}
+
 export interface TlsOptions {
   /** PEM trust roots; the system roots when absent. */
   ca?: string | Buffer;

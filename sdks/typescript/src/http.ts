@@ -1,5 +1,5 @@
 import type { ClientConfig, TokenSource } from './config.js';
-import { SDK_VERSION, silentLogger } from './config.js';
+import { SDK_VERSION, safeLogger, silentLogger } from './config.js';
 import { SagatError, codeOfHttpStatus, isRetriable, type ErrorCode } from './errors.js';
 import { encodeJson, parseJson } from './json.js';
 import { tlsFetch } from './tlsfetch.js';
@@ -53,7 +53,7 @@ export class HttpTransport {
     this.fetchImpl = config.fetch ?? (config.tls ? tlsFetch(config.tls) : fetch);
     this.retry = { ...DEFAULT_RETRY, ...config.retry };
     this.timeoutMs = config.timeoutMs ?? 30_000;
-    this.logger = config.logger ?? silentLogger;
+    this.logger = safeLogger(config.logger ?? silentLogger);
   }
 
   async request(req: HttpRequest): Promise<HttpResponse> {

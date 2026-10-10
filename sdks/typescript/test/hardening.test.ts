@@ -288,3 +288,87 @@ test('a key called __proto__ is kept in the canonical text, as in the other SDKs
   const document = workflow('proto-check').step('a', 'x.y').inputSchema(schema).toJson();
   assert.ok(document.includes('"__proto__"'));
 });
+
+// ------------------------------------------------------------- from the follow-up security review
+
+test('a logger that throws costs the host nothing: the heartbeat, the poll loop and the report go on', async () => {
+  const exploding = {
+    debug() { throw new Error('the logger broke'); },
+    info() { throw new Error('the logger broke'); },
+    warn() { throw new Error('the logger broke'); },
+    error() { throw new Error('the logger broke'); },
+  };
+  service.tasks = [lease(7)];
+  const host = worker({ workerName: 'hardening-logger', logger: exploding, heartbeatIntervalMs: 30 });
+  let ran = 0;
+  host.registerActivity('charge', async () => {
+    ran++;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  });
+  const before = service.counts['completeStep'] ?? 0;
+  await host.start();
+  await until(() => (service.counts['completeStep'] ?? 0) > before, 'the report with a broken logger');
+  assert.equal(ran, 1);
+  await host.stop(300);
+  // The client logs too (a retry): a broken logger does not turn a retry into a failure.
+  let attempts = 0;
+  const server = createServer((_req, res) => {
+    attempts++;
+    if (attempts === 1) res.writeHead(503, { 'content-type': 'application/json' }).end(JSON.stringify({ code: 'UNAVAILABLE', message: 'busy', retryable: true, traceId: 'a'.repeat(32) }));
+    else res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ runId: RUN_ID, workflowId: RUN_ID, versionId: RUN_ID, status: 'RUNNING', version: 1, paused: false, startedBy: 'a', createdAt: '2026-10-10T10:00:00Z', updatedAt: '2026-10-10T10:00:00Z', finishedAt: null, deadline: null, traceId: 'a'.repeat(32), correlationId: null, depth: 0, parent: null }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = new SagatClient({ apiUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, namespace: 'payments', token: 't', logger: exploding, retry: { initialDelayMs: 1, maxDelayMs: 2 } });
+    assert.equal((await client.get(RUN_ID)).runId, RUN_ID);
+  } finally {
+    server.close();
+  }
+});
+
+test('the secrets of an attempt are refused from the moment its handler returned, also to a late first call', async () => {
+  service.tasks = [lease(8)];
+  const host = worker({ workerName: 'hardening-late-secrets' });
+  let late: Promise<unknown> | undefined;
+  let kept: { text(n: string): string } | undefined;
+  host.registerActivity('charge', async (_input, ctx) => {
+    kept = await ctx.secrets();
+    // Asked after the handler is done: this call is made by code the handler left behind.
+    setTimeout(() => { late = ctx.secrets().then(() => 'resolved', (error: unknown) => (error instanceof SagatError ? error.code : 'other')); }, 150);
+  });
+  const resolvesBefore = service.counts['resolveSecrets'] ?? 0;
+  await host.start();
+  await until(() => late !== undefined, 'the late call');
+  assert.equal(await late, 'VALIDATION_FAILED', 'refused');
+  assert.equal((service.counts['resolveSecrets'] ?? 0) - resolvesBefore, 1, 'no second ResolveSecrets was made for a finished attempt');
+  assert.throws(() => kept?.text('api'), (error: unknown) => error instanceof SagatError, 'what the handler kept is wiped as soon as it returned');
+  await host.stop(300);
+});
+
+test('the 32 MiB cap holds with a tls option too: the body is streamed, not buffered first', async () => {
+  let sent = 0;
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    const chunk = Buffer.alloc(1024 * 1024, 0x20);
+    const push = (): void => {
+      while (sent < 400 && !res.destroyed) {
+        sent++;
+        if (!res.write(chunk)) {
+          res.once('drain', push);
+          return;
+        }
+      }
+      res.end();
+    };
+    push();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = new SagatClient({ apiUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, namespace: 'payments', token: 't', retry: { maxAttempts: 1 }, timeoutMs: 20_000, tls: {} });
+    await assert.rejects(client.get(RUN_ID), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL' && /larger/.test(error.message));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(sent < 200, `${sent} MiB were pushed through the tls transport`);
+  } finally {
+    server.close();
+  }
+});

@@ -1,4 +1,5 @@
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { Readable } from 'node:stream';
 import { Agent, request as httpsRequest } from 'node:https';
 import type { TlsOptions } from './config.js';
 
@@ -27,19 +28,18 @@ export function tlsFetch(tls: TlsOptions): typeof fetch {
         headers[key] = value;
       });
       const options = { method: init?.method ?? 'GET', headers, signal: init?.signal ?? undefined };
-      const handle = (response: import('node:http').IncomingMessage): void => {
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer) => chunks.push(chunk));
-        response.on('error', reject);
-        response.on('end', () => {
-          const answer = new Headers();
-          for (const [name, value] of Object.entries(response.headers)) {
-            if (Array.isArray(value)) for (const one of value) answer.append(name, one);
-            else if (value !== undefined) answer.set(name, value);
-          }
-          const status = response.statusCode ?? 0;
-          resolve(new Response(NO_BODY.has(status) ? null : Buffer.concat(chunks), { status, headers: answer }));
-        });
+      const handle = (response: IncomingMessage): void => {
+        const answer = new Headers();
+        for (const [name, value] of Object.entries(response.headers)) {
+          if (Array.isArray(value)) for (const one of value) answer.append(name, one);
+          else if (value !== undefined) answer.set(name, value);
+        }
+        const status = response.statusCode ?? 0;
+        // The body is handed over as a stream, not collected first: the caller stops reading at its cap, and
+        // cancelling the stream ends the request.
+        const body = NO_BODY.has(status) ? null : (Readable.toWeb(response) as unknown as ReadableStream<Uint8Array>);
+        if (body === null) response.resume();
+        resolve(new Response(body, { status, headers: answer }));
       };
       const outgoing = secure
         ? httpsRequest(url, { ...options, agent }, handle)
