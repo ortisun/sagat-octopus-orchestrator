@@ -178,3 +178,60 @@ async fn a_heartbeat_of_1_0_is_held_to_the_lease_token_and_the_generation_all_th
         .await
         .expect("the holder's heartbeat of 1.1");
 }
+
+/// The value of `worker_registrations_total{protocol="…"}` on the engine's admin listener.
+async fn registrations_at(engine: &crate::support::worker::RunningEngine, protocol: &str) -> u64 {
+    let text = engine.body("/metrics").await;
+    let wanted = format!("worker_registrations_total{{protocol=\"{protocol}\"}} ");
+    text.lines()
+        .find_map(|line| line.strip_prefix(&wanted))
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .map_or(0, |value| value as u64)
+}
+
+#[tokio::test]
+async fn the_versions_workers_were_served_at_are_counted_so_an_operator_knows_who_still_runs_an_old_one()
+ {
+    use crate::support::worker::{RunningEngine, engine_env};
+    let p = platform().await;
+    let engine = RunningEngine::start(engine_env(&p.api.db, &p.api.idp, &[])).await;
+    let mut w = p.worker_at(&engine.grpc_url, "wendy").await;
+    let (before_old, before_own) = (
+        registrations_at(&engine, "1.1").await,
+        registrations_at(&engine, &version(SERVER_MINOR)).await,
+    );
+
+    for (offered, accepted) in [("1.1", "1.1".to_owned()), ("1.99", version(SERVER_MINOR))] {
+        let mut message = Worker::register_message(&["act.a"], 10);
+        message
+            .capabilities
+            .as_mut()
+            .expect("capabilities")
+            .protocol_version = offered.into();
+        let answer = w
+            .client
+            .register_worker(w.req(message))
+            .await
+            .expect(offered)
+            .into_inner();
+        assert_eq!(answer.accepted_protocol_version, accepted);
+    }
+    // A refusal is not a registration: it is in grpc_requests_total with its code.
+    let mut refused = Worker::register_message(&["act.a"], 10);
+    refused
+        .capabilities
+        .as_mut()
+        .expect("capabilities")
+        .protocol_version = "2".into();
+    w.client
+        .register_worker(w.req(refused))
+        .await
+        .expect_err("major 2");
+
+    assert_eq!(registrations_at(&engine, "1.1").await, before_old + 1);
+    assert_eq!(
+        registrations_at(&engine, &version(SERVER_MINOR)).await,
+        before_own + 1
+    );
+    assert_eq!(registrations_at(&engine, "2").await, 0);
+}
