@@ -797,3 +797,99 @@ fn a_wait_that_starts_in_one_batch_and_is_satisfied_in_a_later_one_gets_its_span
             .collect::<Vec<_>>()
     );
 }
+
+// ------------------------------------------------------------------ a journal read in batches
+
+use sagat_application::error::StoreError;
+use sagat_application::telemetry::{
+    Backlog, Pending, RunTelemetry, TelemetryStore, ToProject, all_attempts,
+};
+
+/// A store that gives a run's journal a few entries at a time, as the real one does at 5 000.
+struct Paged {
+    facts: RunFacts,
+    journal: Vec<JournalEntry>,
+    page: usize,
+}
+
+impl TelemetryStore for Paged {
+    async fn acquire_projector(&self) -> Result<bool, StoreError> {
+        Ok(true)
+    }
+
+    async fn pending_runs(&self, _limit: u32) -> Result<Vec<Pending>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_for_projection(
+        &self,
+        pending: &Pending,
+    ) -> Result<Option<ToProject>, StoreError> {
+        let new: Vec<JournalEntry> = self
+            .journal
+            .iter()
+            .filter(|e| e.seq > pending.applied_seq)
+            .take(self.page)
+            .cloned()
+            .collect();
+        let head = new.last().map_or(pending.applied_seq, |e| e.seq);
+        // What a batch is given of the part already taken: the events that close an attempt.
+        let mut entries: Vec<JournalEntry> = self
+            .journal
+            .iter()
+            .filter(|e| e.seq <= pending.applied_seq && CONTEXT_EVENTS.contains(&e.event.name()))
+            .cloned()
+            .collect();
+        entries.extend(new);
+        Ok(Some(ToProject {
+            facts: self.facts.clone(),
+            entries,
+            head_seq: head,
+            applied_seq: pending.applied_seq,
+        }))
+    }
+
+    async fn mark_projected(&self, _pending: &Pending, _upto: u64) -> Result<bool, StoreError> {
+        Ok(true)
+    }
+
+    async fn run_telemetry(
+        &self,
+        _tenant: TenantId,
+        _run: RunId,
+    ) -> Result<Option<RunTelemetry>, StoreError> {
+        Ok(None)
+    }
+
+    async fn backlog(&self) -> Result<Backlog, StoreError> {
+        Ok(Backlog {
+            runs: 0,
+            oldest_seconds: 0.0,
+        })
+    }
+}
+
+#[tokio::test]
+async fn the_attempts_of_a_journal_longer_than_a_batch_are_all_there_and_all_closed() {
+    let facts = facts(&["charge"]);
+    let journal = three_attempts().entries;
+    let whole = attempts(&facts, &journal);
+    assert_eq!(whole.len(), 3);
+    for page in [1, 2, 3, 5, journal.len()] {
+        let store = Paged {
+            facts: facts.clone(),
+            journal: journal.clone(),
+            page,
+        };
+        let read = all_attempts(
+            &store,
+            facts.tenant_id,
+            facts.run_id,
+            OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time"),
+        )
+        .await
+        .expect("read")
+        .expect("the run exists");
+        assert_eq!(read, whole, "batches of {page}");
+    }
+}

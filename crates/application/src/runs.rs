@@ -732,8 +732,8 @@ where
     }
 
     /// The attempts of the run's steps as the journal tells them (FR-008-002): when each was
-    /// leased, how it ended and why, the span a trace backend shows it as. At most the first
-    /// attempts the journal's batch holds.
+    /// leased, how it ended and why, the span a trace backend shows it as. A journal longer than
+    /// the store gives in one batch is read in as many as it takes.
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
@@ -744,15 +744,15 @@ where
         ctx: &RequestContext,
     ) -> Result<Vec<crate::telemetry::Attempt>, AppError> {
         principal.authorize(Permission::RunRead)?;
-        let note = crate::telemetry::Pending {
-            tenant_id: principal.tenant_id(),
-            run_id: id,
-            head_seq: u64::MAX,
-            applied_seq: 0,
-            behind_since: self.clock.now(),
-        };
-        match self.store.load_for_projection(&note).await? {
-            Some(project) => Ok(crate::telemetry::attempts(&project.facts, &project.entries)),
+        match crate::telemetry::all_attempts(
+            &self.store,
+            principal.tenant_id(),
+            id,
+            self.clock.now(),
+        )
+        .await?
+        {
+            Some(attempts) => Ok(attempts),
             None => {
                 // No trace to derive from (or no run): a run the caller may see has no attempts to
                 // show, a run they may not is a 404.

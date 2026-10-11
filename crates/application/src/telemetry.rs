@@ -285,6 +285,49 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
     done
 }
 
+/// Most batches [`all_attempts`] reads: a million entries at the store's size of a batch.
+pub const MAX_ATTEMPT_BATCHES: usize = 200;
+
+/// Every attempt of a run, reading its journal in as many batches as it takes, so that a run with
+/// more history than one batch still has each attempt closed by the event that ended it. `None`
+/// when the run has no trace to derive from, or does not exist.
+///
+/// # Errors
+/// [`StoreError`] from the store, or when the journal is longer than [`MAX_ATTEMPT_BATCHES`].
+pub async fn all_attempts<S: TelemetryStore>(
+    store: &S,
+    tenant: TenantId,
+    run: RunId,
+    now: OffsetDateTime,
+) -> Result<Option<Vec<Attempt>>, StoreError> {
+    let mut applied = 0u64;
+    let mut collected: std::collections::BTreeMap<u64, JournalEntry> =
+        std::collections::BTreeMap::new();
+    for _ in 0..MAX_ATTEMPT_BATCHES {
+        let note = Pending {
+            tenant_id: tenant,
+            run_id: run,
+            head_seq: u64::MAX,
+            applied_seq: applied,
+            behind_since: now,
+        };
+        let Some(batch) = store.load_for_projection(&note).await? else {
+            return Ok(None);
+        };
+        for entry in batch.entries {
+            collected.insert(entry.seq, entry);
+        }
+        if batch.head_seq <= applied {
+            let entries: Vec<JournalEntry> = collected.into_values().collect();
+            return Ok(Some(attempts(&batch.facts, &entries)));
+        }
+        applied = batch.head_seq;
+    }
+    Err(StoreError::Internal {
+        detail: "the journal of the run is longer than the attempts are read from".to_owned(),
+    })
+}
+
 /// The event types [`derive`] needs from the part of the journal that was projected already: the
 /// ones that close an attempt leased in an earlier batch, and the starts of the timers and waits
 /// that end in this one.
