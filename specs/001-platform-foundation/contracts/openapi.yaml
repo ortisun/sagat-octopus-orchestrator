@@ -3605,7 +3605,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         source: {type: string}
         lockfile: {type: string}
         inputSchema: {type: object}
@@ -3625,7 +3625,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer, minimum: 1, maximum: 365}
         revision: {type: integer}
@@ -3671,7 +3671,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         source: {type: string}
         lockfile: {type: string}
@@ -3698,7 +3698,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer}

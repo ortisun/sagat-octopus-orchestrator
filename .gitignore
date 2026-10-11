@@ -26,3 +26,7 @@
 /sdks/dotnet/**/obj/
 /sdks/java/**/target/
 /sdks/**/.conformance/
+
+# Isolated .NET runner build output
+/runners/dotnet/**/bin/
+/runners/dotnet/**/obj/

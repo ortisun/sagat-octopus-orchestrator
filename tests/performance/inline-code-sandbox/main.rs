@@ -23,6 +23,8 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod csharp;
+
 use std::time::{Duration, Instant};
 
 use reqwest::Method;

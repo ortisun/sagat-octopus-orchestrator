@@ -1,6 +1,6 @@
 /**
  * The languages a script can be written in. The workflow schema names five; the platform builds and
- * runs two (G96 in `specs/005-inline-code-sandbox/research.md`): the others are refused when a
+ * runs TypeScript, Python and C#; Go and Java are refused when a
  * script is written, with `details.reason` `LANGUAGE_NOT_BUILT`. The Studio shows them, disabled
  * and saying so, instead of hiding what the platform will one day do or pretending it does it now.
  */
@@ -36,7 +36,7 @@ export const LANGUAGES: readonly LanguageInfo[] = [
     lint: false,
     checks: 'Syntax highlighting only; the platform checks the source when it builds.',
   },
-  { id: 'csharp', label: 'C#', built: false, monaco: 'csharp', lint: false, checks: 'Syntax highlighting only; the platform checks the source when it builds.' },
+  { id: 'csharp', label: 'C#', built: true, monaco: 'csharp', lint: false, checks: 'Syntax highlighting only; the platform checks the source when it builds.' },
   { id: 'go', label: 'Go', built: false, monaco: 'go', lint: false, checks: 'Syntax highlighting only; the platform checks the source when it builds.' },
   { id: 'java', label: 'Java', built: false, monaco: 'java', lint: false, checks: 'Syntax highlighting only; the platform checks the source when it builds.' },
 ];
@@ -65,7 +65,7 @@ export function monacoLanguage(id: string): string {
  * What a new script starts with: the shape the runner expects (`export default function (input,
  * octopus)` / `def run(input, octopus)`), using only what the runner provides.
  */
-export const SAMPLE_SOURCE: Readonly<Record<'typescript' | 'python', string>> = {
+export const SAMPLE_SOURCE: Readonly<Record<'typescript' | 'python' | 'csharp', string>> = {
   typescript: `// The platform calls the default export with the input and the \`octopus\` object, and
 // takes what it returns as the result. console.log and octopus.log write to the log.
 export default async function (input: { n?: number }, octopus: Octopus) {
@@ -79,9 +79,26 @@ def run(input, octopus):
     octopus.log("n =", input.get("n"))
     return {"double": input.get("n", 0) * 2}
 `,
+  csharp: `using System.Threading;
+using System.Threading.Tasks;
+using System.Text.Json;
+using Sagat.ScriptContract;
+
+public sealed class Script : IInlineScript
+{
+    public ValueTask<JsonElement> RunAsync(
+        JsonElement input, IOctopus octopus, CancellationToken cancellationToken)
+    {
+        var n = input.TryGetProperty("n", out var value) ? value.GetInt32() : 0;
+        octopus.Log("n =", n);
+        return ValueTask.FromResult(JsonSerializer.SerializeToElement(new { @double = n * 2 }));
+    }
+}
+`,
 };
 
 export function sampleSource(language: string): string {
+  if (language === 'csharp') return SAMPLE_SOURCE.csharp;
   return language === 'python' ? SAMPLE_SOURCE.python : SAMPLE_SOURCE.typescript;
 }
 

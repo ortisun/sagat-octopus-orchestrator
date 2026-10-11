@@ -15,7 +15,7 @@ import { LANGUAGES, NOT_BUILT, SCRIPT_NAME, sampleSource } from './languages';
 function refusal(error: unknown): { name?: string; language?: string; other?: unknown } {
   if (!isApiError(error)) return { other: error };
   if (error.status === 409 && error.details?.['field'] === 'name') return { name: 'A script with this name already exists in this namespace.' };
-  if (error.reason === 'LANGUAGE_NOT_BUILT') return { language: `This language is ${NOT_BUILT}: only TypeScript and Python can be built and run today.` };
+  if (error.reason === 'LANGUAGE_NOT_BUILT') return { language: `This language is ${NOT_BUILT}.` };
   if (error.status === 422 && error.reason === 'IDENTIFIER') return { name: error.message };
   if (error.status === 422 && error.message.toLowerCase().includes('slug')) return { name: error.message };
   return { other: error };
@@ -64,7 +64,7 @@ function CreateForm({ api, onClose }: { api: ScriptsApi; onClose: () => void }) 
       <Field label="Name" hint="3 to 63 characters: lower-case letters, digits and hyphens, starting with a letter." error={problem.name ?? (nameInvalid ? 'Use lower-case letters, digits and hyphens, starting with a letter and not ending with a hyphen.' : undefined)}>
         <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" spellCheck={false} maxLength={63} required />
       </Field>
-      <Field label="Language" hint="The platform builds and runs TypeScript and Python today." error={problem.language}>
+      <Field label="Language" hint="The platform builds and runs TypeScript, Python and C#." error={problem.language}>
         <select value={language} onChange={(event) => setLanguage(event.target.value)}>
           {LANGUAGES.map((option) => (
             <option key={option.id} value={option.id} disabled={!option.built}>
