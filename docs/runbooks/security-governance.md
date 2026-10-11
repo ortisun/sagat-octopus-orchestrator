@@ -216,31 +216,29 @@ sustained rate is an incident; any increase of `secret_output_detected_total` me
 returning a credential; `quota_exceeded_total` rising for one limit on a quiet system means a limit
 is too low or a client is looping.
 
-Feature 009 prepares role-scoped egress policies on top of the committed Feature 010 chart baseline.
+Feature 009 reuses the published Feature 010 chart and adds role-scoped egress policies to it.
 The control plane gets DNS, PostgreSQL and OIDC; the engine adds NATS only when configured; workers
 get DNS plus the control-plane API and engine gRPC. Each worker pool starts with denied ingress and
 may add validated, pool-local rules. Empty peers, global CIDRs, missing ports and empty ingress
-sources fail Helm rendering. Reproduce the G45 gate on an explicit disposable Cilium cluster after
-copying the two Feature 009 templates into the chart being tested:
+sources fail Helm rendering. Reproduce the G45 verification on an explicit disposable Cilium cluster:
 
 ```sh
 KUBECONFIG=/path/to/disposable-kubeconfig \
   CHART_DIR=infra/helm tests/security/sandbox/kubernetes-network-policy.sh
 ```
 
-The verifier rejects unsafe values before cluster creation, validates every rendered workload against
-restricted Pod Security admission, and uses controlled TCP listeners for PostgreSQL, NATS, OIDC,
-control-plane and engine traffic. It proves declared traffic works, undeclared Kubernetes API and
-cross-role traffic fails, identical labels in another namespace do not grant ingress, and one worker
-pool cannot inherit another pool's overrides. This matrix passed on Cilium against a temporary copy of
-Feature 010 commit `9092aa1`. T009-031 remains open because the prepared templates are not part of a
-deployable integrated chart yet; the Feature 010 values, examples and contract fixtures must adopt the
-new required destinations and the integrated chart must repeat this command.
+The verifier rejects unsafe values before cluster creation, applies the rendered policies and service
+accounts, validates PodSpecs derived from every workload template against restricted Pod Security
+admission, and uses controlled TCP listeners for PostgreSQL, NATS, OIDC, control-plane and engine
+ports. It proves declared TCP paths work, undeclared Kubernetes API and cross-role paths fail,
+identical labels in another namespace do not grant ingress, and one worker pool cannot inherit
+another pool's overrides. The integrated chart passed this matrix on Cilium. This is a network and
+admission proof: it does not install the product Deployments or KEDA objects and does not exercise
+real PostgreSQL, NATS or OIDC protocols. `contract_scalability_ha` separately verifies the complete
+render and the exact role, port, peer, optional-NATS, pool-override and disabled-policy contracts.
 
 ## 7. Not covered
 
 - Webhook signature, replay and inbound SSRF controls: feature 004 (G36).
 - Quotas for builds, storage, logs, retention and event rate (G37); default values per tier (G42).
 - A KMS or HSM behind the key ring (G43); binding a client certificate to a token subject (G44).
-- Integrate the prepared Helm egress policies, values and contract fixtures into the released chart,
-  then repeat the declared-dependency/ingress canaries (G45).
