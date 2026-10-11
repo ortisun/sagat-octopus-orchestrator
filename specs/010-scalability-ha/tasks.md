@@ -4,7 +4,7 @@
 **Format:** `[ID] [P?] [US?] Description with exact paths`. Run each phase's gates sequentially.
 
 ## Phase 1: Setup / contracts
-- [x] T010-001 Check FR-010-001..FR-010-007, SCs and ADRs; record gaps in `specs/010-scalability-ha/research.md`. — `research.md`: decisions D229–D253 and gaps G239–G264; ADR-0020.
+- [x] T010-001 Check FR-010-001..FR-010-007, SCs and ADRs; record gaps in `specs/010-scalability-ha/research.md`. — `research.md`: decisions D229–D260 and gaps G239–G270; ADR-0020.
 - [x] T010-002 [P] Define fixtures and contract validation in `tests/contract/scalability-ha/fixtures/`. — `tests/contract/scalability-ha/fixtures/` (`base.yaml`, `refused.yaml`) and `infra/helm/examples/ha.yaml`, read by `contract_scalability_ha` (12 tests, which render the chart with `helm template`).
 - [x] T010-003 [P] Document types, transitions and invariants in `specs/010-scalability-ha/data-model.md`. — `data-model.md`: the lease table and its transitions, the members, the weights, the counters of active runs, the indexes, the in-memory types, the invariants, the migrations.
 
@@ -12,7 +12,7 @@
 - [x] T010-004 Create the necessary domain contracts/interfaces in `crates/scheduler/src/shards.rs` and invariant tests. — `crates/domain/src/sharding.rs` (shard, set, fair share, `plan`; `crates/domain/tests/sharding.rs`: 7 tests incl. a property test) and `crates/scheduler/src/shards.rs` (keeper, placement, snapshot; 9 tests with a store that has a clock the test moves).
 - [x] T010-005 Implement ports/use cases in the appropriate module based on `specs/010-scalability-ha/plan.md`. — `crates/application/src/{shards,maintenance}.rs` (the `ShardStore` port, `Window`, `RunTx::holds_shard`, the outbox's `due_outbox`/`claim_outbox_ids`), `crates/scheduler/src/{passes,fairness,outbox}.rs`.
 - [x] T010-006 Write additive migrations and rollback/forward tests in `crates/infra-postgres/migrations/`. — `migrations/20261017000000_scheduler_shards` and `20261017000100_active_run_counts`, additive, each with a `.down.sql`; `integration platform-foundation migrations.rs` rolls back to empty and forward again (29 tables, both functions gone after the rollback).
-- [x] T010-007 Create PostgreSQL integration and per-tenant isolation tests in `tests/integration/scalability-ha/`. — `tests/integration/scalability-ha/` (39 tests): leases, the fence, failover, fairness, the outbox, the lag gauges, the operator's weights, the counters, every pass divided between two replicas; tenant isolation in `fairness.rs` and `shards.rs`.
+- [x] T010-007 Create PostgreSQL integration and per-tenant isolation tests in `tests/integration/scalability-ha/`. — `tests/integration/scalability-ha/` (44 tests): leases, the fence, failover, fairness, the outbox, the lag gauges, the operator's weights, the counters, every pass divided between two replicas; tenant isolation in `fairness.rs` and `shards.rs`.
 
 ## Phase 3: US01 — Scale workers horizontally (P1)
 **Independent test:** Given the queue grows and quota allows; When worker pools scale; Then throughput increases and no invalid claim exists.
@@ -49,16 +49,16 @@
 ## Phase: Engineering design details (story-linked hardening)
 
 - [x] T010-028 [US01] Implement scheduler owner leasing with generation in `crates/scheduler/src/shards.rs`. — `crates/scheduler/src/shards.rs`, `crates/infra-postgres/src/partitioning.rs`.
-- [ ] T010-029 [US01] Create a 1M WAITING synthetic load and p50/p95/p99 collection in `tests/performance/scenarios/`.
+- [x] T010-029 [US01] Create a 1M WAITING synthetic load and p50/p95/p99 collection in `tests/performance/scenarios/`. — `tests/performance/scalability-ha/main.rs` and `run.sh` (the path of the task was a placeholder; the harness sits with the feature's other tests): 10 000, 100 000 and 1 000 000 suspended runs made through the platform's services, start and idle-tick p50/p95/p99, bytes per wait; the result is in `tests/performance/reports/scalability-ha.md`.
 - [x] T010-030 [US01] Validate DB/broker/shard failover under chaos in `tests/fault/failover/`. — `tests/fault/failover/` (database connections killed over and over under load; the database cut off; a crash mid-pass; a replica held past its lease; the broker down with a dispatcher change; three workers in ten lost). The target is `fault_failover` (25 s).
-- [ ] T010-031 [US01] Run PITR restore and journal integrity hash verification, documented in `docs/runbooks/`.
+- [x] T010-031 [US01] Run PITR restore and journal integrity hash verification, documented in `docs/runbooks/`. — `infra/dr/drill.sh` and `infra/dr/journal_digest.sql` (counts and sha256 of the journal and of the audit trail before and after, and a replay of every run against its projections), `docs/runbooks/disaster-recovery.md`, and the drill's report `tests/performance/reports/disaster-recovery.md` (restored to a named point in 0.9 s, digests equal, 6 000 runs replayed).
 
 ## Final Phase: Hardening / rollout
 - [x] T010-032 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/scalability-ha/`. — no REST, gRPC or AsyncAPI change: the contract of this feature is the chart, the configuration and the metrics, checked by `contract_scalability_ha` (12) and `contract_observability_operations` (alerts and dashboards name only metrics the code emits).
 - [x] T010-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — clippy with `-D warnings`, fmt, `scripts/check-architecture.py` (21 crates, no cycles).
-- [ ] T010-034 Run the benchmark defined in `specs/010-scalability-ha/plan.md` and publish the report in `tests/performance/reports/scalability-ha.md`.
-- [ ] T010-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/010-scalability-ha/quickstart.md`.
-- [ ] T010-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`.
+- [x] T010-034 Run the benchmark defined in `specs/010-scalability-ha/plan.md` and publish the report in `tests/performance/reports/scalability-ha.md`. — `tests/performance/reports/scalability-ha.md`: four scenarios with hardware, configuration, load average and commit, and a section that reads them (what grows with what, what was not reached: 5 000 transitions per second, G270). The benchmark found three defects of the platform or of the harness that were fixed and re-measured (D247, D249/D260 and the dead index entries between policies).
+- [x] T010-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/010-scalability-ha/quickstart.md`. — two rounds of two independent reviews (security and correctness), recorded in `quickstart.md` with what each finding became; the second round found a high one (the counters' `SECURITY DEFINER` function could be hijacked through a temporary table) and the control-plane probes that would have kept the chart's pods from starting.
+- [x] T010-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — `docs/traceability.md`, "Evidence: 010 scalability-ha": each FR, NFR and SC with its state and its tests; FR-010-003 and FR-010-006 are partial and say why.
 
 ## Dependencies & independent delivery
 
