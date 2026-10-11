@@ -341,6 +341,28 @@ fn scripts_workers_doctor_and_templates_have_their_commands() {
         }
     );
     assert_eq!(
+        parse(&argv("dev token")).expect("parses").command,
+        Command::DevToken {
+            idp: None,
+            subject: "dev-admin".into(),
+            tenant: "dev".into(),
+            ttl: None,
+            out: None
+        }
+    );
+    assert_eq!(
+        parse(&argv("dev token --idp http://127.0.0.1:18090 --subject alice --tenant acme --ttl 600 --out t.txt"))
+            .expect("parses")
+            .command,
+        Command::DevToken {
+            idp: Some("http://127.0.0.1:18090".into()),
+            subject: "alice".into(),
+            tenant: "acme".into(),
+            ttl: Some(600),
+            out: Some("t.txt".into())
+        }
+    );
+    assert_eq!(
         parse(&argv("worker bind payments.charge"))
             .expect("parses")
             .command,
@@ -413,6 +435,13 @@ fn the_new_commands_name_what_is_wrong() {
         ("worker dev", "--mocks is required"),
         ("worker nap", "'worker nap' is not a command"),
         ("worker bind", "worker bind needs a --workflow or the names"),
+        ("dev", "dev needs a command"),
+        ("dev login", "'dev login' is not a command"),
+        (
+            "dev token --ttl 0",
+            "--ttl is a number of seconds from 1 to 3600",
+        ),
+        ("dev token extra", "unexpected argument 'extra'"),
         ("new", "a template is required"),
         ("doctor extra", "unexpected argument 'extra'"),
         ("validate extra", "unexpected argument 'extra'"),
@@ -437,6 +466,7 @@ fn the_usage_names_every_command_the_parser_takes() {
         "script publish",
         "worker dev",
         "worker bind",
+        "dev token",
         "validate",
         "diff",
         "export",

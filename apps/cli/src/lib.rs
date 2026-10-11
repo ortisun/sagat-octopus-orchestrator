@@ -12,6 +12,7 @@
 
 pub mod args;
 pub mod client;
+mod dev;
 pub mod diagnostics;
 pub mod doctor;
 mod export;
@@ -379,6 +380,26 @@ pub async fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn 
                     idle_exit,
                     max_tasks,
                     show_payloads,
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::DevToken {
+            idp,
+            subject,
+            tenant,
+            ttl,
+            out,
+        } => {
+            dev::token(
+                env,
+                &dev::Ask {
+                    idp: idp.as_deref(),
+                    subject: &subject,
+                    tenant: &tenant,
+                    ttl,
+                    out: out.as_deref(),
                 },
                 &mut io,
             )

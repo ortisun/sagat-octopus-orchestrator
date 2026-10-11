@@ -30,6 +30,7 @@ sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-cli.workspace = true
+sagat-dev-idp.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
 sagat-execution-engine.workspace = true

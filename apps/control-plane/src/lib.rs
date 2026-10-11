@@ -45,8 +45,8 @@ pub mod config;
 const DEFINITION_CACHE_ENTRIES: usize = 256;
 
 use config::{
-    CeilingConfig, Config, ConfigError, DatabaseConfig, Environment, ProvisionConfig, SeedConfig,
-    ServeConfig,
+    CeilingConfig, Config, ConfigError, DatabaseConfig, Environment, NamespaceSeed,
+    ProvisionConfig, SeedConfig, ServeConfig,
 };
 
 /// A command failed. `exit_code` follows the convention: 2 for a problem the operator must fix in
@@ -174,6 +174,89 @@ pub async fn seed_dev(config: &Config, seed: &SeedConfig) -> Result<SeedOutcome,
     };
     pool.close().await;
     Ok(outcome)
+}
+
+/// Leaves a workspace and a namespace for the tenant `seed-dev` made, as its administrator would
+/// (so it is audited like any other creation). Idempotent: what exists is kept. Run it after
+/// [`seed_dev`].
+///
+/// # Errors
+/// [`RunError::Refused`] unless `SAGAT_ENV=dev` and when the tenant or its administrator is not
+/// there; [`RunError::Config`] for a slug or environment that is not valid.
+pub async fn seed_dev_namespace(
+    config: &Config,
+    seed: &SeedConfig,
+    wanted: &NamespaceSeed,
+) -> Result<SeedOutcome, RunError> {
+    use sagat_application::identity::{PageRequest, RequestContext};
+    if config.environment != Environment::Dev {
+        return Err(RunError::Refused("seed-dev only runs when SAGAT_ENV=dev"));
+    }
+    let invalid = |name: &'static str, reason: String| ConfigError::Invalid { name, reason };
+    let workspace_slug = Slug::parse(&wanted.workspace_slug)
+        .map_err(|e| invalid("SAGAT_SEED_WORKSPACE", e.to_string()))?;
+    let namespace_slug = Slug::parse(&wanted.namespace_slug)
+        .map_err(|e| invalid("SAGAT_SEED_NAMESPACE", e.to_string()))?;
+
+    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
+    let result = async {
+        let session = service
+            .authenticate(&seed.tenant_slug, &seed.admin_subject)
+            .await
+            .map_err(|_| {
+                RunError::Refused("run seed-dev first: the tenant has no such administrator")
+            })?;
+        let principal = session.principal;
+        let context = RequestContext::default();
+        let page = PageRequest {
+            limit: Some(200),
+            cursor: None,
+        };
+        let database = |e: sagat_application::error::AppError| RunError::Database(e.to_string());
+        let namespaces = service
+            .list_namespaces(&principal, &page)
+            .await
+            .map_err(database)?;
+        if namespaces.items.iter().any(|n| n.slug() == &namespace_slug) {
+            return Ok(SeedOutcome::AlreadyPresent);
+        }
+        let workspaces = service
+            .list_workspaces(&principal, &page)
+            .await
+            .map_err(database)?;
+        let workspace = match workspaces
+            .items
+            .into_iter()
+            .find(|w| w.slug() == &workspace_slug)
+        {
+            Some(existing) => existing,
+            None => service
+                .create_workspace(&principal, workspace_slug.as_str(), &context)
+                .await
+                .map_err(database)?,
+        };
+        service
+            .create_namespace(
+                &principal,
+                workspace.id(),
+                namespace_slug.as_str(),
+                &wanted.environment,
+                &context,
+            )
+            .await
+            .map_err(|e| match e {
+                sagat_application::error::AppError::Invalid(_) => RunError::Config(invalid(
+                    "SAGAT_SEED_ENVIRONMENT",
+                    "not an environment (dev, staging or prod)".to_owned(),
+                )),
+                other => database(other),
+            })?;
+        Ok(SeedOutcome::Created)
+    }
+    .await;
+    pool.close().await;
+    result
 }
 
 /// Creates a tenant and its first administrator in any environment. Audited atomically with the

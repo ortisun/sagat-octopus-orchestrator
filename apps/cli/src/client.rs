@@ -310,6 +310,31 @@ impl Client {
         ))
     }
 
+    /// A POST that carries no credentials (the development identity provider's `/token`). Any
+    /// status is an answer.
+    ///
+    /// # Errors
+    /// [`CallError::Transport`] when there is no answer.
+    pub async fn post_public(&self, path: &str, body: &Value) -> Result<(u16, Value), CallError> {
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(body).map_err(|e| CallError::Transport(e.to_string()))?)
+            .send()
+            .await
+            .map_err(|e| CallError::Transport(describe(&e)))?;
+        let status = response.status().as_u16();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
+    }
+
     /// The address the platform was given, without a trailing slash (`doctor` shows it).
     #[must_use]
     pub fn base(&self) -> &str {

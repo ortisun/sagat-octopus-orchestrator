@@ -3,7 +3,9 @@
 use std::process::ExitCode;
 
 use sagat_control_plane::cli::{self, Command, USAGE, UsageError};
-use sagat_control_plane::config::{Config, ProvisionConfig, SeedConfig, ServeConfig};
+use sagat_control_plane::config::{
+    Config, NamespaceSeed, ProvisionConfig, SeedConfig, ServeConfig,
+};
 use sagat_control_plane::{RunError, SeedOutcome};
 
 fn env_lookup(name: &str) -> Option<String> {
@@ -80,6 +82,16 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
                 }
                 SeedOutcome::AlreadyPresent => {
                     tracing::info!(tenant = %seed.tenant_slug, "development tenant already present");
+                }
+            }
+            if let Some(wanted) = NamespaceSeed::from_lookup(&env_lookup)? {
+                match sagat_control_plane::seed_dev_namespace(config, &seed, &wanted).await? {
+                    SeedOutcome::Created => {
+                        tracing::info!(namespace = %wanted.namespace_slug, "development namespace created");
+                    }
+                    SeedOutcome::AlreadyPresent => {
+                        tracing::info!(namespace = %wanted.namespace_slug, "development namespace already present");
+                    }
                 }
             }
             Ok(())

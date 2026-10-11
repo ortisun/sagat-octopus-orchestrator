@@ -32,6 +32,10 @@ ONE WORKFLOW:
     script publish <FILE> [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
     worker dev --mocks <FILE> [--workflow <FILE>] [--bind] [--show-payloads] [--idle-exit <SECONDS>] [--max-tasks <N>]
                           serve the activities of a workflow from a file of canned answers and failures
+    dev token [--idp <URL>] [--subject <SUBJECT>] [--tenant <SLUG>] [--ttl <SECONDS>] [--out <FILE>]
+                          a token from the local stack's development identity provider (dev-admin of
+                          tenant dev unless said otherwise); only the token is printed, or written
+                          with --out for --token-file
     worker bind [--workflow <FILE>] [<ACTIVITY>...]
                           let the identity of the token serve those activities (and the ones the workflow
                           names), so that an SDK worker can; it replaces what the identity served there
@@ -172,6 +176,13 @@ pub enum Command {
         workflow: Option<PathBuf>,
         activities: Vec<String>,
     },
+    DevToken {
+        idp: Option<String>,
+        subject: String,
+        tenant: String,
+        ttl: Option<u64>,
+        out: Option<PathBuf>,
+    },
 }
 
 /// What was asked: the common flags and the command.
@@ -226,7 +237,7 @@ impl Flags {
 }
 
 /// Flags that take a value; every other `--flag` is a switch.
-const WITH_VALUE: [&str; 24] = [
+const WITH_VALUE: [&str; 28] = [
     "--server",
     "--token-file",
     "--namespace",
@@ -251,6 +262,10 @@ const WITH_VALUE: [&str; 24] = [
     "--nats",
     "--idle-exit",
     "--max-tasks",
+    "--idp",
+    "--subject",
+    "--tenant",
+    "--ttl",
 ];
 
 fn split(args: &[String]) -> Result<(Vec<String>, Flags), UsageError> {
@@ -597,6 +612,31 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 )));
             }
             None => return Err(UsageError("worker needs a command (dev, bind)".to_owned())),
+        },
+        Some("dev") => match rest.split_first() {
+            Some((sub, tail)) if sub == "token" => {
+                nothing(tail)?;
+                Command::DevToken {
+                    idp: flags.take_value(&["--idp"]),
+                    subject: flags
+                        .take_value(&["--subject"])
+                        .unwrap_or_else(|| "dev-admin".to_owned()),
+                    tenant: flags
+                        .take_value(&["--tenant"])
+                        .unwrap_or_else(|| "dev".to_owned()),
+                    ttl: flags
+                        .take_value(&["--ttl"])
+                        .map(|v| seconds(&v, "--ttl", 3600))
+                        .transpose()?,
+                    out: flags.take_value(&["--out"]).map(PathBuf::from),
+                }
+            }
+            Some((other, _)) => {
+                return Err(UsageError(format!(
+                    "'dev {other}' is not a command (token)"
+                )));
+            }
+            None => return Err(UsageError("dev needs a command (token)".to_owned())),
         },
         Some(other) => return Err(UsageError(format!("'{other}' is not a command"))),
     };

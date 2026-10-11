@@ -7,6 +7,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod dev_environment;
 mod diagnostics;
 mod doctor;
 mod stories;
