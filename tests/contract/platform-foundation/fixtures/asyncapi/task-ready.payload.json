@@ -1,0 +1,8 @@
+{
+  "tenantId": "018f47c0-1111-7000-8000-000000000001",
+  "namespaceId": "018f47c0-1111-7000-8000-000000000002",
+  "runId": "018f47c0-1111-7000-8000-000000000003",
+  "node": "charge",
+  "activity": "payments.charge",
+  "traceId": "0123456789abcdef0123456789abcdef"
+}

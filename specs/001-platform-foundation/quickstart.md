@@ -9,7 +9,9 @@
 - Rust toolchain: `rustup` reads `rust-toolchain.toml` and installs the pinned compiler.
 - Docker (the integration tests start PostgreSQL 16 with Testcontainers; the local environment uses
   Docker Compose).
-- Node.js 22 (only for the contract checks: OpenAPI lint and JSON Schema validation).
+- Node.js 22 (only for the contract checks: OpenAPI, AsyncAPI and JSON Schema validation).
+- `protoc` for the standalone Protobuf compilation check. The Rust build uses `protox` and does not
+  need `protoc`.
 - An OIDC provider for real tokens. For the local stack, feature 012 ships a development identity
   provider (gap G10, closed): `sagat dev token` asks it (see `docs/quickstarts/README.md`). A shared
   environment uses its own provider.
@@ -23,6 +25,10 @@ cargo test --workspace --locked                      # unit, contract, integrati
 python3 scripts/check-architecture.py                # layering and domain-purity rules
 python3 -m unittest discover -s scripts/tests        # tests of that checker
 npx --yes @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml
+protoc --proto_path=specs/001-platform-foundation/contracts --descriptor_set_out=/tmp/worker.pb \
+  specs/001-platform-foundation/contracts/worker.proto
+npx --yes --ignore-scripts @asyncapi/cli@3.6.0 validate \
+  specs/001-platform-foundation/contracts/events.asyncapi.yaml
 cargo install cargo-audit --locked && cargo audit --deny warnings   # dependency advisories
 ```
 
@@ -102,6 +108,27 @@ every request, so removing one takes effect immediately.
 | US02 | A client with a valid tenant token lists namespaces and gets only its own, plus a trace id | `…/us02.rs` |
 | US03 | Migrate (twice), seed, start; API and database are healthy | `…/us03.rs`, `scripts/smoke-compose.sh` |
 | US04 | A tenant A user asks for tenant B's resource: nothing is revealed, the attempt is audited | `…/us04.rs` |
+
+## Contract completion evidence (T001-002, T001-030, T001-031)
+
+Run on 2026-10-11 with the pinned Rust toolchain and a local PostgreSQL 16 server; the Cargo
+commands used `CARGO_INCREMENTAL=0` and an isolated target directory:
+
+| Gate | Command | Result |
+|---|---|---|
+| Static fixtures and authentication | `cargo test -p sagat-tests --test contract_platform_foundation --locked` | 27 passed |
+| Live REST/OpenAPI conformance | `cargo test -p sagat-tests --test contract_rest_platform_foundation --locked` | 3 passed |
+| Protobuf compatibility | `cargo test -p sagat-api-grpc --test compatibility --locked` | 2 passed; published baseline unchanged |
+| AsyncAPI compatibility and live conformance | `cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging --locked` | 4 passed; published baseline unchanged |
+| Migration idempotency | `cargo test -p sagat-tests --test integration_platform_foundation --locked migrations::applying_migrations_twice_is_a_no_op` | 1 passed against PostgreSQL |
+| Rust lint for the new fixture suite | `cargo clippy -p sagat-tests --test contract_platform_foundation --locked -- -D warnings` | passed |
+| Contract syntax | Redocly 1, `protoc`, AsyncAPI CLI 3.6.0 | 0 errors; Redocly reported 9 non-blocking style warnings and AsyncAPI reported one version information item |
+
+The static fixture test binds each REST example to its exact operation request or response schema,
+and the event header/payload examples to the `TaskReady` message. It also proves the validators are
+active by rejecting a workspace request that supplies `tenantId` and a task-ready payload without
+`tenantId`. CI runs the same Rust gates through its workspace test job and the three standalone
+contract syntax checks through its contracts job.
 
 ## Gates
 

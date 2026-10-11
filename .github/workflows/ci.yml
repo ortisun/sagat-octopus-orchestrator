@@ -28,6 +28,8 @@ jobs:
           docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
           docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
       # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
+      # The workspace also verifies worker/event compatibility baselines and that applying
+      # platform migrations twice is a no-op (T001-030/031).
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
       - run: cargo test --workspace --locked --no-fail-fast
 
@@ -156,7 +158,7 @@ jobs:
           cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored onboarding_browser::
 
   contracts:
-    name: contracts (OpenAPI, protobuf, JSON Schema)
+    name: contracts (OpenAPI, protobuf, AsyncAPI, JSON Schema)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
