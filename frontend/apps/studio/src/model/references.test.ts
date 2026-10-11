@@ -38,6 +38,13 @@ describe('renaming a step in the expressions that read it', () => {
     expect(renameStepReference('steps . charge . output', 'charge', 'a.b')).toBe('steps ["a.b"] . output');
   });
 
+  it('uses the index form for an id that is a word of the language, and reads an index only when the string is all of it', () => {
+    expect(renameStepReference('steps.charge.output', 'charge', 'null')).toBe('steps["null"].output');
+    expect(renameStepReference('steps.charge.output', 'charge', 'in')).toBe('steps["in"].output');
+    expect(stepReferences('steps["a" + x].output')).toEqual([]);
+    expect(stepReferences('steps[ "a" ].output').map((r) => r.id)).toEqual(['a']);
+  });
+
   it('leaves strings and members alone, and renames inside a template', () => {
     expect(renameStepReference('"steps.charge" == x.steps.charge', 'charge', 'p')).toBe('"steps.charge" == x.steps.charge');
     expect(renameStepReference('pay:${steps.charge.output.id}:steps.charge', 'charge', 'p', true)).toBe('pay:${steps.p.output.id}:steps.charge');

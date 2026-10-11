@@ -17,7 +17,8 @@ type Stage =
   | { kind: 'preparing'; note?: string }
   | { kind: 'review'; diff: DefinitionDiff; note?: string }
   | { kind: 'publishing'; diff: DefinitionDiff }
-  | { kind: 'failed'; error: unknown; what: string; diff?: DefinitionDiff };
+  | { kind: 'failed'; error: unknown; what: string; diff?: DefinitionDiff }
+  | { kind: 'changing' };
 
 interface BodyProps {
   ep: Pick<Endpoints, 'diff' | 'publish' | 'getWorkflow'>;
@@ -54,7 +55,7 @@ function PublishBody({ ep, workflowId, session, currentKey, onClose, onPublished
         return;
       }
       if (outcome === 'changing') {
-        setStage({ kind: 'failed', error: undefined, what: 'Saving the draft, which kept changing,' });
+        setStage({ kind: 'changing' });
         return;
       }
       try {
@@ -121,6 +122,11 @@ function PublishBody({ ep, workflowId, session, currentKey, onClose, onPublished
           ) : null}
         </>
       ) : null}
+      {stage.kind === 'changing' ? (
+        <Banner tone="warn" title="The draft kept changing while it was being saved.">
+          Not all of it is saved yet, so it is not compared or published. Leave it alone for a moment and try again: nothing you wrote is lost.
+        </Banner>
+      ) : null}
       {stage.kind === 'review' && stage.note ? <Banner tone="info">{stage.note}</Banner> : null}
       {diff ? <DiffView diff={diff} classified /> : null}
 
@@ -144,7 +150,7 @@ function PublishBody({ ep, workflowId, session, currentKey, onClose, onPublished
         <Button onClick={onClose} disabled={stage.kind === 'publishing'}>
           Cancel
         </Button>
-        {stage.kind === 'failed' && diff === undefined ? (
+        {(stage.kind === 'failed' && diff === undefined) || stage.kind === 'changing' ? (
           <Button
             onClick={() => {
               setStage({ kind: 'preparing' });

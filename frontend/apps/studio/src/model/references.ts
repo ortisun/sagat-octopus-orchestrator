@@ -92,9 +92,14 @@ export function stepReferences(source: string, template = false): StepReference[
             let close = k + 1;
             while (close < to && source[close] !== quote) close += source[close] === '\\' ? 2 : 1;
             if (close < to) {
-              found.push({ id: source.slice(k + 1, close), start: k, end: close + 1, form: 'index', quote });
-              i = close + 1;
-              continue;
+              // `steps["a"]` and not `steps["a" + x]`: the string must be all there is between the brackets.
+              let after = close + 1;
+              while (after < to && /\s/.test(source[after] as string)) after++;
+              if (source[after] === ']') {
+                found.push({ id: source.slice(k + 1, close), start: k, end: close + 1, form: 'index', quote });
+                i = after + 1;
+                continue;
+              }
             }
           }
         }
@@ -105,23 +110,28 @@ export function stepReferences(source: string, template = false): StepReference[
   return found;
 }
 
+/** The words of the expression language that are not names: `steps.true` does not parse, `steps["true"]` does. */
+const KEYWORDS = new Set(['true', 'false', 'null', 'in']);
+
 /** `source` with every read of the output of step `from` reading the output of step `to`. */
 export function renameStepReference(source: string, from: string, to: string, template = false): string {
-  let out = source;
-  // From the end, so that the positions of the ones before stay right.
-  for (const ref of stepReferences(source, template).filter((r) => r.id === from).reverse()) {
-    let text: string;
-    let start = ref.start;
-    if (ref.form === 'index') text = `${ref.quote}${to}${ref.quote}`;
-    else if (NAME.test(to)) text = to;
-    else {
+  const dotted = NAME.test(to) && !KEYWORDS.has(to);
+  let out = '';
+  let copied = 0;
+  // One pass, left to right: a long expression with many reads is not copied once per read.
+  for (const ref of stepReferences(source, template)) {
+    if (ref.id !== from) continue;
+    if (ref.form === 'index') {
+      out += source.slice(copied, ref.start) + `${ref.quote}${to}${ref.quote}`;
+    } else if (dotted) {
+      out += source.slice(copied, ref.start) + to;
+    } else {
       // `steps.old` becomes `steps["new-id"]`: the dot goes, the index takes its place.
-      start = out.lastIndexOf('.', ref.start);
-      text = `["${to}"]`;
+      out += source.slice(copied, source.lastIndexOf('.', ref.start)) + `["${to}"]`;
     }
-    out = out.slice(0, start) + text + out.slice(ref.end);
+    copied = ref.end;
   }
-  return out;
+  return out + source.slice(copied);
 }
 
 /** The fields of a node that hold an expression, with whether each is a template. */

@@ -50,6 +50,31 @@ describe('validation', () => {
     expect(screen.getByRole('button', { name: 'Publish…' })).not.toHaveAttribute('aria-disabled');
   });
 
+  it('asks again, once, when the person comes back to the window after a while, because the platform may know more by now', async () => {
+    const { platform } = await opened();
+    await waitFor(() => expect(validationsOf(platform)).toHaveLength(1));
+    // Not yet: the answer is fresh.
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(validationsOf(platform)).toHaveLength(1);
+    // A minute later the window comes back: it gains focus and becomes visible, which is one reason to ask, not two.
+    const later = Date.now() + 60_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(later);
+    try {
+      act(() => {
+        window.dispatchEvent(new Event('focus'));
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await waitFor(() => expect(validationsOf(platform)).toHaveLength(2));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(validationsOf(platform)).toHaveLength(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('waits 600 ms of quiet after a change before it asks again', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { user, platform } = await opened({ fakeTimers: true, realTimings: true });

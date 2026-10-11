@@ -265,6 +265,7 @@ export function WorkflowEditor({ workflow }: { workflow: Workflow }) {
     const now = draft.getSnapshot();
     if (outcome === 'saved') announce(`Saved. Revision ${now.revision}.`);
     else if (outcome === 'failed') announce(`The draft could not be saved. ${errorText(now.error)}`);
+    else if (outcome === 'changing') announce('The draft kept changing while it was saved: the rest is saved with the next save.');
   }, [announce, canWrite, draft]);
 
   useEffect(() => {

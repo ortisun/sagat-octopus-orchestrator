@@ -44,6 +44,8 @@ export function useValidation(ep: Pick<Endpoints, 'validate'>, workflowId: strin
   const immediate = useRef(false);
   const [again, setAgain] = useState(0);
   const recheck = useCallback(() => {
+    // Asked now: the events of coming back to a window (it gains focus and becomes visible) ask once, not twice.
+    answeredAt.current = Date.now();
     answeredKey.current = undefined;
     immediate.current = true;
     setAnswer((a) => ({ ...a, forKey: undefined, failedKey: undefined }));
