@@ -84,6 +84,10 @@ fn body_of(operation: &str) -> Option<Value> {
         "recordScriptExecution" => {
             json!({"namespaceId": "{namespaceId}", "digest": format!("sha256:{}", "ab".repeat(32)), "status": "FAILED", "denied": ["attacker"]})
         }
+        // Feature 008: an administrator of another tenant draining the victim's worker.
+        "drainWorker" | "undrainWorker" => {
+            json!({"reason": "cross-tenant battery probe"})
+        }
         _ => return None,
     })
 }

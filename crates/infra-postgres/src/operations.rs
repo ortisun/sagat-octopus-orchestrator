@@ -569,6 +569,7 @@ impl AuditStore for PgRunStore {
                AND ($6::timestamptz IS NULL OR created_at >= $6) \
                AND ($7::timestamptz IS NULL OR created_at < $7) \
                AND ($8::uuid IS NULL OR id < $8) \
+               AND NOT (action = ANY($10)) \
              ORDER BY id DESC LIMIT $9",
         )
         .bind(tenant.as_uuid())
@@ -580,6 +581,12 @@ impl AuditStore for PgRunStore {
         .bind(filter.to)
         .bind(before)
         .bind(i64::from(limit))
+        .bind(
+            sagat_domain::audit::AuditAction::WITHHELD_FROM_TENANT
+                .iter()
+                .map(|action| action.as_str())
+                .collect::<Vec<_>>(),
+        )
         .fetch_all(&mut *tx)
         .await
         .map_err(store_error)?;

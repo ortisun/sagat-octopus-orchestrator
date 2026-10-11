@@ -114,6 +114,12 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
+    /// Actions that are kept for whoever runs the platform and never read back by the tenant they
+    /// are written on. A denial is recorded only when the resource exists in another tenant, so a
+    /// trail that listed it would tell anyone who can read it whether an identifier they tried
+    /// exists elsewhere, which the `404` is careful not to say.
+    pub const WITHHELD_FROM_TENANT: &'static [Self] = &[Self::CrossTenantAccessDenied];
+
     /// Whether doing the same thing again, to the same resource and for the same stated reason, adds
     /// nothing to the trail. These events are driven by a caller who can repeat them as often as
     /// they like (a worker asking again for the secrets of the attempt it holds), so the trail keeps

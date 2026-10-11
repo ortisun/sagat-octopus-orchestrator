@@ -5,6 +5,7 @@
 use reqwest::Method;
 use sagat_domain::identity::Role;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::support::worker::{Platform, platform, single_ir};
 
@@ -638,6 +639,76 @@ async fn us04_the_audit_trail_shows_what_was_done_scrubs_what_looks_like_a_crede
         .expect("send");
     assert_eq!(bob.status().as_u16(), 200);
     let body: Value = bob.json().await.expect("json");
+    assert!(
+        body["items"].as_array().expect("items").is_empty(),
+        "{body}"
+    );
+}
+
+/// A denial is recorded only when the resource exists in another tenant, so a trail that listed it
+/// would answer "does this id exist elsewhere?" for anyone who could read it. The record stays for
+/// whoever runs the platform; the tenant does not get it back through the API.
+#[tokio::test]
+async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probed_exists_elsewhere()
+{
+    let p = platform().await;
+    let ns = p.namespace_id().await;
+
+    // Another tenant's administrator asks for a namespace that is not theirs: indistinguishable from
+    // one that does not exist.
+    let ghost = Uuid::now_v7().to_string();
+    for id in [&ns, &ghost] {
+        let bob = p
+            .api
+            .as_user(
+                Method::GET,
+                &format!("/namespaces/{id}/workers"),
+                "bob",
+                "globex",
+            )
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(bob.status().as_u16(), 404);
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' \
+             AND resource_id = $1",
+        )
+        .bind(&ns)
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("count"),
+        1,
+        "the platform keeps the denial"
+    );
+
+    let read = p
+        .api
+        .as_user(Method::GET, "/audit?limit=200", "bob", "globex")
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(read.status().as_u16(), 200);
+    let body: Value = read.json().await.expect("json");
+    let text = body.to_string();
+    assert!(!text.contains(&ns), "{text}");
+    assert!(!text.contains("access.denied.cross_tenant"), "{text}");
+
+    // Asking for them by name gets nothing either.
+    let by_name = p
+        .api
+        .as_user(
+            Method::GET,
+            "/audit?action=access.denied.cross_tenant",
+            "bob",
+            "globex",
+        )
+        .send()
+        .await
+        .expect("send");
+    let body: Value = by_name.json().await.expect("json");
     assert!(
         body["items"].as_array().expect("items").is_empty(),
         "{body}"
