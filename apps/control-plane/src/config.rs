@@ -349,6 +349,8 @@ pub struct ServeConfig {
     /// The directory of the Studio build and how the browser signs in; without a directory the
     /// Studio is not served (`SAGAT_STUDIO_DIR`).
     pub studio: Option<sagat_api_http::studio::StudioConfig>,
+    /// How many server-sent streams may be open (`SAGAT_STREAMS_*`).
+    pub streams: sagat_api_http::streams::StreamLimits,
 }
 
 impl ServeConfig {
@@ -452,9 +454,15 @@ impl ServeConfig {
             "SAGAT_SHUTDOWN_GRACE_SECS",
             server_defaults.shutdown_grace.as_secs(),
         )?;
+        let stall_secs: u64 = optional(
+            get,
+            "SAGAT_WRITE_STALL_TIMEOUT_SECS",
+            server_defaults.write_stall_timeout.as_secs(),
+        )?;
         for (name, value) in [
             ("SAGAT_HEADER_READ_TIMEOUT_SECS", header_secs),
             ("SAGAT_SHUTDOWN_GRACE_SECS", grace_secs),
+            ("SAGAT_WRITE_STALL_TIMEOUT_SECS", stall_secs),
             ("SAGAT_MAX_CONNECTIONS", max_connections as u64),
         ] {
             if value == 0 {
@@ -464,6 +472,7 @@ impl ServeConfig {
                 });
             }
         }
+        let streams = read_streams(get, max_connections)?;
         Ok(Self {
             bind_addr: optional(
                 get,
@@ -485,14 +494,55 @@ impl ServeConfig {
                 header_read_timeout: Duration::from_secs(header_secs),
                 max_connections,
                 shutdown_grace: Duration::from_secs(grace_secs),
-                ..ServerConfig::default()
+                write_stall_timeout: Duration::from_secs(stall_secs),
             },
             migrate_on_start: flag(get, "SAGAT_MIGRATE_ON_START")?,
             secrets,
             scripts: read_scripts(get)?,
             studio: read_studio(get)?,
+            streams,
         })
     }
+}
+
+/// The limits of server-sent streams. A stream holds its connection for as long as it lives (fifteen
+/// minutes at most), so the platform as a whole may not hold more of them than half of the connections
+/// it accepts: the rest is for the API, the health probe and the Studio's files.
+fn read_streams(
+    get: &dyn Fn(&str) -> Option<String>,
+    max_connections: usize,
+) -> Result<sagat_api_http::streams::StreamLimits, ConfigError> {
+    let defaults = sagat_api_http::streams::StreamLimits::default();
+    let ceiling = (max_connections / 2).max(1);
+    let global: usize = optional(get, "SAGAT_STREAMS_MAX", defaults.global.min(ceiling))?;
+    let per_tenant: usize = optional(get, "SAGAT_STREAMS_PER_TENANT", defaults.per_tenant)?;
+    let per_subject: usize = optional(get, "SAGAT_STREAMS_PER_SUBJECT", defaults.per_subject)?;
+    for (name, value) in [
+        ("SAGAT_STREAMS_MAX", global),
+        ("SAGAT_STREAMS_PER_TENANT", per_tenant),
+        ("SAGAT_STREAMS_PER_SUBJECT", per_subject),
+    ] {
+        if value == 0 {
+            return Err(ConfigError::Invalid {
+                name,
+                reason: "must be greater than zero".to_owned(),
+            });
+        }
+    }
+    if global > ceiling {
+        return Err(ConfigError::Invalid {
+            name: "SAGAT_STREAMS_MAX",
+            reason: format!(
+                "at most half of SAGAT_MAX_CONNECTIONS ({ceiling}): an open stream holds its connection, and the API, the health probe and the Studio's files need the rest"
+            ),
+        });
+    }
+    Ok(sagat_api_http::streams::StreamLimits {
+        global,
+        per_tenant,
+        per_subject,
+        ..defaults
+    })
 }
 
 /// The Studio, from `SAGAT_STUDIO_DIR` and, for the browser sign-in, `SAGAT_STUDIO_OIDC_ISSUER`,

@@ -450,6 +450,7 @@ async fn clients_that_read_nothing_cannot_hold_more_than_the_transfers_the_serve
     let limits = StudioLimits {
         max_transfers: 2,
         max_transfer: Duration::from_secs(60),
+        wait: Duration::from_millis(300),
     };
     let base = serve_studio_with(&root, None, limits).await;
     let addr = authority(&base);
@@ -511,6 +512,7 @@ async fn a_client_that_takes_a_file_a_few_bytes_at_a_time_is_cut_after_the_longe
     let limits = StudioLimits {
         max_transfers: 4,
         max_transfer: Duration::from_secs(1),
+        wait: Duration::from_millis(300),
     };
     let base = serve_studio_with(&root, None, limits).await;
     let mut slow = TcpStream::connect(authority(&base)).await.expect("connect");
@@ -519,17 +521,37 @@ async fn a_client_that_takes_a_file_a_few_bytes_at_a_time_is_cut_after_the_longe
         .expect("request");
     let mut total = 0usize;
     let mut chunk = vec![0u8; 16 * 1024];
+    // For longer than the longest transfer the client takes the file in drops (it is making progress, so the
+    // server's guard against a client that takes nothing does not apply)...
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_secs(30) {
-        match tokio::time::timeout(Duration::from_secs(5), slow.read(&mut chunk)).await {
-            Ok(Ok(n)) if n > 0 => total += n,
-            _ => break,
+    while started.elapsed() < Duration::from_millis(2500) {
+        if let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(5), slow.read(&mut chunk)).await
+        {
+            total += n;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+    // ...and then takes what is left as fast as it comes: the server cut the transfer, so the connection ends
+    // before the file does. Without the cut the whole of it arrives.
+    let mut ended = false;
+    let mut fast = vec![0u8; 256 * 1024];
+    let drain_until = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < drain_until {
+        match tokio::time::timeout(Duration::from_secs(5), slow.read(&mut fast)).await {
+            Ok(Ok(0) | Err(_)) => {
+                ended = true;
+                break;
+            }
+            Ok(Ok(n)) => total += n,
+            Err(_) => break,
+        }
+    }
+    assert!(
+        ended,
+        "the connection of a client that took the file in drops was never closed"
+    );
     assert!(
         total < 24 * 1024 * 1024,
-        "a client that took the file in drops was served all of it ({total} bytes) in {:?}",
-        started.elapsed()
+        "a client that took the file in drops was served all of it ({total} bytes)"
     );
 }

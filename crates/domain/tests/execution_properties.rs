@@ -737,8 +737,6 @@ fn finish(h: &mut Harness) {
     panic!("the run did not finish in 2000 actions: {:?}", h.state);
 }
 
-/// Applies `picks` (each selects one currently enabled action), checking every invariant after
-/// each step, then lets the run finish. Panics with the offending action on any violation.
 /// The graph a client holds is kept equal to the platform's by the steps the events report as
 /// changed (`RunEvent::changed_nodes`, D141): no step may change, or appear, in an action that
 /// journaled no event reporting it.
@@ -766,6 +764,8 @@ fn changes_are_reported(
     }
 }
 
+/// Applies `picks` (each selects one currently enabled action), checking every invariant after
+/// each step, then lets the run finish. Panics with the offending action on any violation.
 fn drive(shape: usize, picks: &[u16]) -> Harness {
     let def = shapes().swap_remove(shape);
     let mut h = Harness::start(def);

@@ -179,6 +179,11 @@ impl<S> StallGuard<S> {
         }
         if self.stalled.as_mut().poll(cx).is_ready() {
             self.waiting = false;
+            metrics::counter!("http_write_stalls_total").increment(1);
+            tracing::warn!(
+                timeout_secs = self.timeout.as_secs(),
+                "a client took no bytes of a response in time; the connection is closed"
+            );
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "the client took no bytes of the response in time",

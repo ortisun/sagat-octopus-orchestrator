@@ -139,7 +139,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **G143 — Streams poll the database** (D142): every open stream reads the run's own row at each tick (every 0.5 s while the
   run moves, every 2 s once it has been still for half a minute, each with up to a quarter more so that streams do not wake in
   step) and reads the graph, a snapshot of every step of the run, only when the row's version moved; a quiet stream costs what
-  `GET /runs/{id}` costs. Bounded per subject (20), per tenant (200) and in the process (2 000), and every 30 s each stream asks
+  `GET /runs/{id}` costs. Bounded per subject (20), per tenant (200) and in the process (`SAGAT_STREAMS_MAX`: at most half of the connections the server accepts, because an open stream holds its connection), and every 30 s each stream asks
   again whether its subject is still a member with the right to read. Before the independent review each tick read the whole
   graph (120 scans of the steps table in four seconds for one quiet stream). A push from the engine (`LISTEN/NOTIFY` or NATS)
   belongs to feature 010 with the rest of the scale work.
@@ -190,6 +190,13 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   editor (US02-AC01 says "edits code in a node"): what the user story needs, editing the code and having a workflow use the build,
   is done in two places, with the picker between them (`ScriptPicker`); a link from the node to the editor is not built.
 - **G158 — The files of the Studio have no request metrics or trace context**: their router is merged after the API's protections
-  (D143), on purpose (no credentials, no tenant), and is bounded by its own limits (64 files in flight, a minute each, 30 s of
-  stall), but the platform's `http_requests` series does not count them.
+  (D143), on purpose (no credentials, no tenant), and is bounded by its own limits (64 files in flight, a request waits two seconds
+  for a place, a minute for a file, 30 s of stall), but the platform's `http_requests` series does not count them. **A trade-off:**
+  the files are public, so 64 clients that each read an asset slowly but steadily can hold every place for up to a minute and make
+  the Studio's files answer `503` meanwhile (the API is not affected: it has its own limits); the connection cap and the minute
+  bound it, and the answer says when to come back.
+- **G159 — The Studio sends no telemetry from the browser.** There is no OpenTelemetry web SDK and no collection of client-side
+  errors: what a person sees fail is shown with the trace id the platform gave the request (`ErrorState`, SC-007-004), and the
+  platform's own spans, request metrics and the stream gauges and counters (`run_streams_open`, `run_streams_refused_total`,
+  `run_streams_tick_errors_total`) are what an operator has. A page that fails before it talks to the platform leaves no record.
 

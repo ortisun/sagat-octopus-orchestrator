@@ -455,7 +455,7 @@ pub fn graph_changes_body(changes: &GraphChanges) -> Value {
     let touched: std::collections::BTreeSet<&str> = changes
         .events
         .iter()
-        .flat_map(|e| e.touched.iter().map(String::as_str))
+        .flat_map(|e| e.touched.iter().flatten().map(String::as_str))
         .collect();
     let any = !changes.events.is_empty();
     let nodes = if changes.reset {

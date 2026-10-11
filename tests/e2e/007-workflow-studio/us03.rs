@@ -541,9 +541,15 @@ async fn us03_a_stream_ends_for_someone_who_is_no_longer_a_member_without_waitin
         .await
         .expect("removing the member");
 
-    // The stream that was open does not go on telling her about the run for its fifteen minutes.
-    let ended = stream.until("end", Duration::from_secs(5)).await;
-    assert!(ended.is_some(), "the stream of a removed member went on");
+    // The stream that was open does not go on telling her about the run for its fifteen minutes. It says
+    // "come back" (not "the run is over", which it is not), and when she does she is refused as what she is.
+    let cut = stream.until("reconnect", Duration::from_secs(5)).await;
+    assert!(cut.is_some(), "the stream of a removed member went on");
+    let (status, body) = Stream::open(&p, &run, "vera", TENANT, None)
+        .await
+        .err()
+        .expect("a removed member is refused");
+    assert_eq!(status, 401, "{body}");
 }
 
 #[tokio::test]

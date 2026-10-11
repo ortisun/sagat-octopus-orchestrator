@@ -602,7 +602,7 @@ async fn follow<B: Exec>(
             return;
         }
         // The role the stream opened with is not the role for fifteen minutes: whoever was removed
-        // or lowered since is asked again, and the stream ends for them.
+        // or lowered since is asked again, and the stream is cut for them.
         if now >= next_recheck {
             next_recheck = now + limits.recheck;
             match state.authenticate(&who.tenant, &who.subject).await {
@@ -610,7 +610,9 @@ async fn follow<B: Exec>(
                 Err(
                     AppError::Unauthenticated | AppError::NotFound | AppError::Forbidden { .. },
                 ) => {
-                    let _ = send(SseEvent::default().event("end").data("{}")).await;
+                    // "Come back", not "the run is over": the client opens the stream again and is told the
+                    // truth by the refusal (401, 403 or 404), which it shows as what it is.
+                    let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
                     return;
                 }
                 Err(_) => {}
@@ -625,7 +627,7 @@ async fn follow<B: Exec>(
             }
             Ok(_) => {}
             Err(AppError::NotFound | AppError::Forbidden { .. }) => {
-                let _ = send(SseEvent::default().event("end").data("{}")).await;
+                let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
                 return;
             }
             Err(_) => {
@@ -652,9 +654,9 @@ async fn follow<B: Exec>(
                     pause = limits.poll_max;
                 }
             }
-            // The run is gone, or the caller may no longer read it: end without saying which.
+            // The run is gone, or the caller may no longer read it: come back, and be told which.
             Err(AppError::NotFound | AppError::Forbidden { .. }) => {
-                let _ = send(SseEvent::default().event("end").data("{}")).await;
+                let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
                 return;
             }
             // The database is unavailable for a moment: the next tick tries again, and the

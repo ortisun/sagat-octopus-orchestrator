@@ -98,6 +98,7 @@ async fn the_reason_a_probe_failed_is_logged_but_not_returned() {
         secrets: None,
         scripts: None,
         studio: None,
+        streams: sagat_api_http::streams::StreamLimits::default(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

@@ -502,6 +502,74 @@ fn nonsensical_slow_client_settings_name_their_variable() {
 }
 
 #[test]
+fn event_streams_may_take_at_most_half_of_the_connections_the_server_accepts() {
+    // By default the platform's streams are the lesser of 2 000 and half of the connections (1 024).
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+    assert_eq!(serve.streams.global, 512);
+    assert_eq!(serve.streams.per_tenant, 200);
+    assert_eq!(serve.streams.per_subject, 20);
+    assert_eq!(serve.server.write_stall_timeout, Duration::from_secs(30));
+
+    // More connections, more streams, up to the ceiling that is set.
+    let mut big = OIDC.to_vec();
+    big.push(("SAGAT_MAX_CONNECTIONS", "8192"));
+    assert_eq!(
+        ServeConfig::from_lookup(&env(&big))
+            .expect("big")
+            .streams
+            .global,
+        2000
+    );
+
+    // A cap above half the connections would let streams starve the API, the probe and the files.
+    let mut starving = OIDC.to_vec();
+    starving.extend([
+        ("SAGAT_MAX_CONNECTIONS", "100"),
+        ("SAGAT_STREAMS_MAX", "51"),
+    ]);
+    match ServeConfig::from_lookup(&env(&starving)) {
+        Err(ConfigError::Invalid { name, reason }) => {
+            assert_eq!(name, "SAGAT_STREAMS_MAX");
+            assert!(reason.contains("half"), "{reason}");
+        }
+        other => panic!("a stream cap that starves the server was accepted: {other:?}"),
+    }
+    let mut fits = OIDC.to_vec();
+    fits.extend([
+        ("SAGAT_MAX_CONNECTIONS", "100"),
+        ("SAGAT_STREAMS_MAX", "50"),
+        ("SAGAT_STREAMS_PER_TENANT", "10"),
+        ("SAGAT_STREAMS_PER_SUBJECT", "3"),
+        ("SAGAT_WRITE_STALL_TIMEOUT_SECS", "5"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&fits)).expect("fits");
+    assert_eq!(
+        (
+            serve.streams.global,
+            serve.streams.per_tenant,
+            serve.streams.per_subject
+        ),
+        (50, 10, 3)
+    );
+    assert_eq!(serve.server.write_stall_timeout, Duration::from_secs(5));
+
+    // Zero is not a limit.
+    for name in [
+        "SAGAT_STREAMS_MAX",
+        "SAGAT_STREAMS_PER_TENANT",
+        "SAGAT_STREAMS_PER_SUBJECT",
+        "SAGAT_WRITE_STALL_TIMEOUT_SECS",
+    ] {
+        let mut zero = OIDC.to_vec();
+        zero.push((name, "0"));
+        match ServeConfig::from_lookup(&env(&zero)) {
+            Err(ConfigError::Invalid { name: named, .. }) => assert_eq!(named, name),
+            other => panic!("{name}=0 was accepted: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn the_per_subject_budget_has_its_own_defaults_and_validation() {
     let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
     assert!(

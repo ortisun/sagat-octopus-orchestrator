@@ -48,6 +48,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         secrets: None,
         scripts: None,
         studio: None,
+        streams: sagat_api_http::streams::StreamLimits::default(),
     }
 }
 

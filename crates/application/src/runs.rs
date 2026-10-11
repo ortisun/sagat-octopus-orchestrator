@@ -69,8 +69,8 @@ pub struct JournalEntry {
     pub payload_ref: Option<String>,
     /// Every step the event created or changed: the one it names and the ones it activated
     /// (`RunEvent::changed_nodes`). The journal view shows `node` only; the changes of the graph
-    /// need all of them.
-    pub touched: Vec<String>,
+    /// need all of them. `None` for an event this build cannot decode, whose effect is not known.
+    pub touched: Option<Vec<String>>,
 }
 
 /// One step as the runtime graph shows it.
@@ -621,7 +621,10 @@ where
         };
         // What the snapshot already includes and no more: events after it are the next read's.
         events.retain(|event| event.seq <= projection);
-        let reset = events.len() > MAX_CHANGE_EVENTS as usize;
+        // More events than a delta carries, or one whose effect on the graph is not known (an event of a
+        // newer engine): the whole graph is the answer that cannot be wrong.
+        let reset = events.len() > MAX_CHANGE_EVENTS as usize
+            || events.iter().any(|event| event.touched.is_none());
         if reset {
             events.clear();
         }

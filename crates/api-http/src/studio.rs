@@ -62,6 +62,8 @@ pub struct StudioLimits {
     pub max_transfers: usize,
     /// The longest one file may take to be read by the client.
     pub max_transfer: Duration,
+    /// How long a request waits for a place before it is told to come back.
+    pub wait: Duration,
 }
 
 impl Default for StudioLimits {
@@ -69,6 +71,7 @@ impl Default for StudioLimits {
         Self {
             max_transfers: 64,
             max_transfer: Duration::from_secs(60),
+            wait: Duration::from_secs(2),
         }
     }
 }
@@ -98,6 +101,7 @@ struct Site {
     csp: HeaderValue,
     transfers: Arc<Semaphore>,
     max_transfer: Duration,
+    wait: Duration,
 }
 
 /// The routes `/studio`, `/studio/` and `/studio/{*path}`.
@@ -129,6 +133,7 @@ pub fn studio_router(config: StudioConfig) -> Result<Router, StudioError> {
             .map_err(|_| StudioError::BadIssuer(String::new()))?,
         transfers: Arc::new(Semaphore::new(config.limits.max_transfers.max(1))),
         max_transfer: config.limits.max_transfer,
+        wait: config.limits.wait,
     };
     Ok(Router::new()
         .route("/studio", get(|| async { Redirect::permanent("/studio/") }))
@@ -238,12 +243,25 @@ async fn file(
     let Some(relative) = plain_path(&path) else {
         return hardened(&site, StatusCode::NOT_FOUND.into_response(), "no-store");
     };
-    if let Some((file, length)) = open_inside(&site.root, &relative).await {
-        let Ok(permit) = Arc::clone(&site.transfers).try_acquire_owned() else {
-            let mut busy = StatusCode::SERVICE_UNAVAILABLE.into_response();
-            busy.headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-            return hardened(&site, busy, "no-store");
+    if let Some((real, length)) = locate(&site.root, &relative).await {
+        // A place among the transfers, waited for a moment (a page asks for twenty files at once and a
+        // browser does not ask again for a script that failed), then a refusal that says when to come back.
+        let permit = match tokio::time::timeout(
+            site.wait,
+            Arc::clone(&site.transfers).acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            _ => {
+                let mut busy = StatusCode::SERVICE_UNAVAILABLE.into_response();
+                busy.headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+                return hardened(&site, busy, "no-store");
+            }
+        };
+        let Ok(file) = tokio::fs::File::open(&real).await else {
+            return hardened(&site, StatusCode::NOT_FOUND.into_response(), "no-store");
         };
         let kind = content_type(&relative);
         let cache = if relative.starts_with("assets") {
@@ -317,19 +335,19 @@ fn plain_path(url_path: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-/// The file `relative` under `root` and its length, if it is a regular file whose real path is
-/// inside `root` (a link out of the directory is not followed).
-async fn open_inside(root: &Path, relative: &Path) -> Option<(tokio::fs::File, u64)> {
+/// The real path of the file `relative` under `root` and its length, if it is a regular file (not a
+/// pipe, which opening could block on) whose real path is inside `root` (a link out of the directory
+/// is not followed).
+async fn locate(root: &Path, relative: &Path) -> Option<(PathBuf, u64)> {
     let real = tokio::fs::canonicalize(root.join(relative)).await.ok()?;
     if !real.starts_with(root) {
         return None;
     }
-    let file = tokio::fs::File::open(&real).await.ok()?;
-    let metadata = file.metadata().await.ok()?;
+    let metadata = tokio::fs::metadata(&real).await.ok()?;
     if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
         return None;
     }
-    Some((file, metadata.len()))
+    Some((real, metadata.len()))
 }
 
 fn content_type(path: &Path) -> &'static str {

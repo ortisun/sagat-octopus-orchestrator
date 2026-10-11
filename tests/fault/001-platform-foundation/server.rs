@@ -31,7 +31,7 @@ impl Server {
             Router::new()
                 .route("/ok", get(|| async { "ok" }))
                 .route("/big", get(|| async { body_of(128 * 1024 * 1024) }))
-                .route("/medium", get(|| async { body_of(4 * 1024 * 1024) })),
+                .route("/medium", get(|| async { body_of(16 * 1024 * 1024) })),
             HttpLimits::default(),
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -261,15 +261,16 @@ async fn a_client_that_reads_slowly_but_keeps_reading_is_served_to_the_end() {
     slow.write_all(b"GET /medium HTTP/1.1\r\nHost: test\r\n\r\n")
         .await
         .expect("request");
-    // 4 MiB at 64 KiB every 30 ms takes longer than the timeout, but each read is progress.
+    // 16 MiB (more than the buffers of the kernel hold) at 64 KiB every 10 ms takes longer than the timeout, but
+    // each read is progress.
     let total = read_all_counting(
         &mut slow,
-        Duration::from_millis(30),
+        Duration::from_millis(10),
         Duration::from_secs(60),
     )
     .await;
     assert!(
-        total >= 4 * 1024 * 1024,
+        total >= 16 * 1024 * 1024,
         "a client that kept reading was cut at {total} bytes"
     );
 }

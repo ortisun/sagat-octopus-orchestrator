@@ -419,7 +419,8 @@ pub async fn serve_with_admin(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache),
-    );
+    )
+    .with_stream_limits(serve.streams);
     let mut app = router_with_governance(exec, governance, serve.limits);
     // The Studio is static files on the API's own origin: no CORS, no second listener.
     if let Some(studio) = serve.studio.clone() {
