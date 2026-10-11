@@ -243,10 +243,17 @@ impl TelemetryStore for PgRunStore {
         }))
     }
 
-    async fn mark_projected(&self, pending: &Pending, upto: u64) -> Result<(), StoreError> {
-        sqlx::query(
+    async fn mark_projected(&self, pending: &Pending, upto: u64) -> Result<bool, StoreError> {
+        // What is left after `upto` is behind since its first entry was written, which is not when
+        // the run first fell behind: a run that is written to all the time would otherwise never
+        // look current.
+        let moved = sqlx::query(
             "UPDATE telemetry_pending \
-             SET applied_seq = $3, behind_since = CASE WHEN head_seq > $3 THEN behind_since ELSE NULL END \
+             SET applied_seq = $3, \
+                 behind_since = CASE WHEN head_seq > $3 THEN coalesce( \
+                     (SELECT occurred_at FROM run_events \
+                      WHERE tenant_id = $1 AND run_id = $2 AND seq = $3 + 1), behind_since) \
+                 ELSE NULL END \
              WHERE tenant_id = $1 AND run_id = $2 AND applied_seq < $3",
         )
         .bind(pending.tenant_id.as_uuid())
@@ -255,7 +262,7 @@ impl TelemetryStore for PgRunStore {
         .execute(self.pool())
         .await
         .map_err(store_error)?;
-        Ok(())
+        Ok(moved.rows_affected() > 0)
     }
 
     async fn run_telemetry(

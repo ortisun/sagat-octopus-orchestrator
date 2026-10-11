@@ -262,7 +262,10 @@ fn holding_a_step_does_not_forget_that_its_last_attempt_may_have_had_an_effect()
         Some("LEASE_EXPIRED"),
         "the outcome of the attempt is still unknown: the hold is only why it is waiting now"
     );
-    assert!(step.failure().is_some_and(FailureCode::leaves_outcome_unknown));
+    assert!(
+        step.failure()
+            .is_some_and(FailureCode::leaves_outcome_unknown)
+    );
     run.assert_replays();
 }
 
@@ -287,7 +290,8 @@ fn a_held_step_whose_attempt_may_have_had_an_effect_is_still_undone_when_the_sag
     run.expire("submit", f, Expiry::LeaseExpired).expect("lost");
     assert_eq!(run.status("submit"), StepStatus::RetryWait);
     run.operator_hold("submit").expect("held");
-    run.stop(StopReason::Cancelled).expect("the run is cancelled");
+    run.stop(StopReason::Cancelled)
+        .expect("the run is cancelled");
 
     // `submit` may have happened, so it is undone before `reserve`, as if it had never been held.
     assert_eq!(

@@ -689,11 +689,15 @@ pub trait TelemetryStore: Send + Sync {
     /// Records that the spans of the run up to `upto` were taken. The note stays after the run is
     /// over (and is purged later): removing it would let a late change start the run's projection
     /// again from the beginning.
+    ///
+    /// Whether this call moved the note: `false` means another projector had already taken at
+    /// least that far, and what was derived here is not to be counted again. The run is behind
+    /// from then on since the first entry not taken, not since before this look.
     fn mark_projected(
         &self,
         pending: &Pending,
         upto: u64,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// How far one run's telemetry has got. `None` if the run does not exist.
     fn run_telemetry(

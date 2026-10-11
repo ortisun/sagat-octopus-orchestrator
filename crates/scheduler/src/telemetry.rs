@@ -176,7 +176,7 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
                 group_spans = 0;
             }
         }
-        if !round.failed {
+        if !round.failed && !round.passive {
             self.flush(&mut group, &mut round).await;
         }
         self.gauges().await;
@@ -233,6 +233,24 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
         if group.is_empty() {
             return true;
         }
+        // A batch can take longer than the lease (a slow collector, several tries): the lease is
+        // asked for again before each hand-over, and a round that has lost it stops, so two
+        // projectors do not work on the same runs for long.
+        match self.store.acquire_projector().await {
+            Ok(true) => {}
+            Ok(false) => {
+                metrics::gauge!("telemetry_projector_active").set(0.0);
+                round.passive = true;
+                return false;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not renew the telemetry projector's lease");
+                metrics::counter!("telemetry_projection_errors_total", "reason" => "store")
+                    .increment(1);
+                round.failed = true;
+                return false;
+            }
+        }
         let taken = std::mem::take(group);
         let spans: Vec<SpanData> = taken.iter().flat_map(|t| t.spans.iter().cloned()).collect();
         let mut exported = 0u32;
@@ -267,15 +285,22 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
         }
         round.spans += exported;
         for run in &taken {
-            if let Err(error) = self.store.mark_projected(&run.pending, run.upto).await {
-                tracing::warn!(%error, run = %run.pending.run_id, "could not record the progress of a projection");
-                metrics::counter!("telemetry_projection_errors_total", "reason" => "store")
-                    .increment(1);
-                round.failed = true;
-                return false;
+            match self.store.mark_projected(&run.pending, run.upto).await {
+                Ok(true) => {
+                    round.runs += 1;
+                    record(&run.observations);
+                }
+                // Another projector took this run while this one was exporting (its lease ran
+                // out): its measurements were made by whoever moved the note, not twice.
+                Ok(false) => round.skipped += 1,
+                Err(error) => {
+                    tracing::warn!(%error, run = %run.pending.run_id, "could not record the progress of a projection");
+                    metrics::counter!("telemetry_projection_errors_total", "reason" => "store")
+                        .increment(1);
+                    round.failed = true;
+                    return false;
+                }
             }
-            round.runs += 1;
-            record(&run.observations);
         }
         true
     }
