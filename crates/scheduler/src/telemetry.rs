@@ -192,9 +192,27 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
             return Ok(None);
         };
         let derived = derive(&facts, &entries, applied_seq);
+        // The note is written in the transaction that appends to the journal, so what it claims is
+        // there when it is read. When nothing at all came after what was applied and the note says
+        // there should be more, the journal is shorter than the note (a restore, a trimmed journal):
+        // there is nothing more to wait for, and asking again would only keep the projector busy
+        // and the run "behind" for good. The note is settled to what it claimed.
+        let upto = if head_seq == applied_seq && note.head_seq > applied_seq {
+            tracing::warn!(
+                run = %note.run_id,
+                claimed = note.head_seq,
+                found = applied_seq,
+                "the note of a run claims journal entries that are not there; settling it"
+            );
+            metrics::counter!("telemetry_projection_errors_total", "reason" => "inconsistent")
+                .increment(1);
+            note.head_seq
+        } else {
+            head_seq
+        };
         Ok(Some(Taken {
             pending: note.clone(),
-            upto: head_seq,
+            upto,
             spans: derived.spans,
             observations: derived.observations,
         }))

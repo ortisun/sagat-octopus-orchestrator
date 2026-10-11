@@ -64,10 +64,37 @@ The write path notes, in the transaction that changes a run, how far its journal
 - A collector that is down: the spans wait in the journal (`telemetry_projection_errors_total{reason="collector"}`), the lag grows, nothing is lost. When it is back the projector catches up.
 - The projector that was working dies: another takes over when the lease runs out; spans exported but not recorded are exported again with the same ids.
 - Without an endpoint the measurements are still made and no span is exported.
+- A note that claims more journal than there is (a restore from a backup, a journal trimmed by a retention policy) is settled to what it claimed, with a warning and `telemetry_projection_errors_total{reason="inconsistent"}`; a run that is *still* behind after that is behind for another reason.
 
 ```sql
 -- runs that have changes not projected, oldest first
 SELECT run_id, head_seq, applied_seq, now() - behind_since AS behind FROM telemetry_pending WHERE applied_seq < head_seq ORDER BY behind_since LIMIT 20;
+```
+
+## 5. Operating a run, and the workers that serve it
+
+Every action is a command that the platform checks, journals and audits; none edits state. They go through `POST /runs/{id}/operations` (`run:operate`; Operator and Admin) unless said otherwise, and each needs a `reason` of 8 to 2000 characters, which is written to the audit trail.
+
+| Action | When it applies | What it does |
+|---|---|---|
+| `RETRY_STEP` | The step is waiting for a decision after a failure, **or is waiting for its next automatic retry** (`RETRY_WAIT`) | A new attempt now. The attempts before it stay in the journal, with their outcome and their trace. If the scheduler's own retry commits first, the operator's request gets `409`: only one attempt starts |
+| `MARK_MANUAL_REVIEW` | A step that is `READY` or in `RETRY_WAIT`, and not a lookup | Holds it for a person (code `MARKED_FOR_REVIEW`); it is then decided like any other review (`RETRY_STEP`, skip, abort). Nothing runs on it until then |
+| `RERUN_AS_NEW` | The run has **ended** | A new run of the same version with the same input; it says where it came from (`rerunOf`). Idempotent by the request's key. A run that is still going is refused: cancel it first |
+| `PAUSE`, `RESUME`, `CANCEL`, `SIGNAL` | As before (feature 002) | |
+
+**Draining a worker** (`POST /namespaces/{id}/workers/{subject}/drain`, `worker:manage`; undo with `…/undrain`) stops an identity from being given new attempts in that namespace. What it already holds goes on until it ends; it can still register and heartbeat, so a worker that restarts stays drained. `GET /namespaces/{id}/workers` shows `draining` and `inFlight`: when `inFlight` is 0 it is safe to stop the process. Use it before a deploy, or to take a bad version out of rotation without cancelling anything. It is by **identity and namespace**: two processes that share an identity are drained together (G184).
+
+## 6. Reading the audit trail
+
+`GET /audit` (Admin) returns the tenant's records, newest first, narrowed by `action`, `resourceType`, `resourceId`, `actor`, `from`, `to`; pages by cursor.
+
+- **Reading it is recorded** (`audit.read`, with the filters), once for the same reading repeated.
+- A reason that has the shape of a credential (a token, `Bearer …`, the password in a URL, a key with a well-known prefix) is replaced on the way out; the trail keeps what was written.
+- **Denied attempts to reach another tenant's resource (`access.denied.cross_tenant`) are not returned.** They are written only when the identifier exists elsewhere, so listing them would answer "does this exist?" for whoever could read them. They stay in the table for you:
+
+```sql
+SELECT created_at, actor, resource_type, resource_id, trace_id FROM audit_records
+WHERE action = 'access.denied.cross_tenant' ORDER BY created_at DESC LIMIT 100;
 ```
 
 ## engine-down
