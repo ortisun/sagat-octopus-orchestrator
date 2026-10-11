@@ -131,10 +131,18 @@ public sealed class ClientHardeningTests : IAsyncLifetime
                 var chunk = new byte[64 * 1024];
                 Array.Fill(chunk, (byte)'a');
                 await stream.WriteAsync(Encoding.ASCII.GetBytes("{\"runId\":\""), ct);
+                var sinceAPause = 0;
                 while (Interlocked.Read(ref written) < Total)
                 {
                     await stream.WriteAsync(chunk, ct);
                     Interlocked.Add(ref written, chunk.Length);
+                    // A pause every MiB, so that how far the server got says how far the client read: a fast machine
+                    // (the CI's) takes all of 160 MiB into its buffers before a client has read 32.
+                    if (++sinceAPause == 16)
+                    {
+                        sinceAPause = 0;
+                        await Task.Delay(1, ct);
+                    }
                 }
 
                 await stream.WriteAsync(Encoding.ASCII.GetBytes("\"}"), ct);
