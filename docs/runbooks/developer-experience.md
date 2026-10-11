@@ -31,13 +31,16 @@ and the whole danger, so:
 - It listens on loopback unless `SAGAT_DEV_IDP_EXPOSED=true` says the address is reachable only by the stack
   (the container sets it; compose publishes the port on the host's `127.0.0.1` only).
 - It answers only to the host names it is configured with (its issuer's, the machine's own, and
-  `SAGAT_DEV_IDP_HOSTS`): a web page that makes a browser resolve another name to this address gets `403` (DNS rebinding).
+  `SAGAT_DEV_IDP_HOSTS`): a web page that makes a browser resolve another name to this address gets `403` (DNS rebinding). A
+  request must carry exactly one `Host`, and a request line in absolute form must name an authority that is known too.
 - `POST /token` takes `application/json` and nothing else (a form or a text body is what a page of another origin
   can send without asking first), at most 4 KiB, for subjects and tenants the platform itself accepts (not the
   reserved `system:` actors) and a life of at most an hour, which is the most the platform takes. It sends no CORS
   headers.
-- The key is in `/data/key` (a volume, mode `600`; it refuses a key file others can read) so that a token outlives a
-  restart. Without `SAGAT_DEV_IDP_KEY_FILE` the key lives as long as the process.
+- The key is in `/data/key` (a volume, mode `600`) so that a token outlives a restart. It refuses a key file that others can
+  read, that is a link, or that sits in a directory others can write to (unless it is sticky, like `/tmp`); a new key is written
+  whole to a file of its own and only then given its name, so a crash leaves no half-written key and two starts at once share
+  one. A file that is not a key says to delete it. Without `SAGAT_DEV_IDP_KEY_FILE` the key lives as long as the process.
 - It is a stage of its own in the Dockerfile and in no other image. A deployment that is not a laptop uses its own
   provider (set the three `SAGAT_OIDC_*` variables and `SAGAT_ALLOW_INSECURE_JWKS_HTTP=false`) and does not start it.
 
@@ -53,15 +56,25 @@ is written to a file only the owner reads, for `--token-file`. The address is `-
 
 - **The token** comes from `--token-file` or `SAGAT_TOKEN`, never from an argument (it would be in the process list
   and the shell history). It is sent only to the address given, which must be https, or http on a loopback address; no
-  proxy is used for http; no redirect is followed. It is never printed.
+  proxy is used for http; no redirect is followed. The same rule holds for the worker endpoint (`--grpc`, `SAGAT_GRPC`): the
+  token is in the headers of every call there too. It is never printed, and `dev token --out` will not write through a link.
 - **What it prints** that somebody else wrote (a reason, a name, a message from the platform) goes through a filter that
-  shows control characters and the characters that reorder or hide text as `?`.
+  shows control characters and the characters that reorder or hide text (the bidirectional and invisible format characters,
+  among them the "tag" block that can carry text nobody sees) as `?`, and a value from the server is put on one line. An
+  answer is read up to a limit (64 MiB from the API, 1 MiB from a probe or the development provider).
 - **Documents** are checked with the platform's codec (`sagat-infra-ir`), so a document that validates is a document the
   platform accepts, and an error carries a code that [errors.md](../quickstarts/errors.md) explains. Parse errors do
   not quote the file.
 - **`worker bind`** (and `worker dev --bind`) puts the identity of the token in the worker bindings of the
   namespace for the activities named, **replacing** what it was bound to there. It says so. An administrator's token
-  can serve as a worker in the dev stack; in production a worker has an identity of its own.
+  can serve as a worker in the dev stack; in production a worker has an identity of its own. A name taken from a workflow
+  must be an activity name: a document that names `*` or `payments.*` is refused, because the platform would take it as a
+  pattern.
+- **Canned answers go to a `dev` namespace only.** `worker dev` and `worker bind` look up the namespace's environment and refuse
+  `staging`, `prod` or one they cannot read unless `--allow-non-dev` is given (they then say so). The banner names the
+  environment: `serving 2 activities in payments (dev) …`.
+- **Stopping.** Ctrl-C and SIGTERM stop `worker dev` at once, whether it is polling, waiting or in the middle of an answer; a
+  task it holds is left to its lease. `--max-tasks N` serves at most N.
 - **Mock files** are bounded (200 names, 10 s of delay) and parsed with a bounded YAML expansion. A mock that
   `lose`s a task holds the lease until it expires (30 seconds by default, `SAGAT_LEASE_TTL_SECS` on the engine).
 
@@ -100,6 +113,9 @@ to something else (or to nothing).
 | `namespace` | the namespace exists in the tenant | `--namespace`, or run the seed. |
 | `worker` | the gRPC endpoint accepts a connection | `SAGAT_GRPC` / `--grpc`; `docker compose ps execution-engine`. |
 | `studio` | `/studio/` | Skipped, not a failure, when it is not served; the API works either way. |
+
+A token the platform refuses is usually one that is *made to live* more than an hour (`exp` minus `iat`), however young it is;
+`doctor` says so under `token`.
 | `--nats` | a broker answering the NATS greeting | The platform works without it (it polls); events and task hints are slower. |
 
 ## 6. Keeping the documentation honest
@@ -120,7 +136,7 @@ to something else (or to nothing).
 | The development identity provider | `cargo test -p sagat-dev-idp` |
 | The first day, the stories, the diagnostics, `doctor`, the seed and the provider against the platform | `cargo test -p sagat-tests --test e2e_developer_experience` (PostgreSQL) |
 | The documentation | `cargo test -p sagat-tests --test contract_developer_experience` |
-| The examples in five languages and the saga, against a real platform | `cargo test -p sagat-tests --test e2e_developer_experience -- --ignored` (Node, Python, Go, .NET and a JDK; `SAGAT_EXAMPLE_LANGS=go,python` picks some) |
+| The examples in five languages, the saga and the script commands with the real sandbox, against a real platform | `cargo test -p sagat-tests --test e2e_developer_experience -- --ignored` (Node, Python, Go, .NET and a JDK, and Docker for the sandbox, which pulls `node:24-alpine` and may meet the anonymous pull limit of a shared runner; `SAGAT_EXAMPLE_LANGS=go,python` picks some languages) |
 | The compose stack, the provider and the first day on it | `SAGAT_BIN=target/debug/sagat scripts/smoke-compose.sh` (Docker; the `local-environment` job of CI) |
 
 ## 8. What is not built

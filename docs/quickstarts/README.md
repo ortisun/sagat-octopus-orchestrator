@@ -119,7 +119,7 @@ provider instead of charging twice. First with canned answers, then with a worke
 - A document the platform will not take: [errors.md](errors.md) has each code, what it means and what to do.
 - A machine that is not ready: `sagat doctor`.
 - `sagat` exit codes: `0` done, `1` failed, `2` usage, `3` waiting for approval, `4` refused as breaking, `5` differences,
-  `6` the run did not finish in time.
+  `6` it did not finish in time, or waits for a person (`workflow run --wait`, `script test`, `script publish`).
 
 ## 9. Stop and clean up
 

@@ -32,13 +32,14 @@ ONE WORKFLOW:
     workflow cancel <RUN> --reason <TEXT>
     script test <FILE> [--input <JSON|@FILE>] [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
     script publish <FILE> [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
-    worker dev --mocks <FILE> [--workflow <FILE>] [--bind] [--show-payloads] [--idle-exit <SECONDS>] [--max-tasks <N>]
+    worker dev --mocks <FILE> [--workflow <FILE>] [--bind] [--show-payloads] [--idle-exit <SECONDS>] [--max-tasks <N>] [--allow-non-dev]
                           serve the activities of a workflow from a file of canned answers and failures
+                          (only in a dev namespace unless --allow-non-dev: it answers real tasks)
     dev token [--idp <URL>] [--subject <SUBJECT>] [--tenant <SLUG>] [--ttl <SECONDS>] [--out <FILE>]
                           a token from the local stack's development identity provider (dev-admin of
                           tenant dev unless said otherwise); only the token is printed, or written
                           with --out for --token-file
-    worker bind [--workflow <FILE>] [<ACTIVITY>...]
+    worker bind [--workflow <FILE>] [<ACTIVITY>...] [--allow-non-dev]
                           let the identity of the token serve those activities (and the ones the workflow
                           names), so that an SDK worker can; it replaces what the identity served there
 
@@ -59,5 +60,5 @@ A MANIFEST KEPT IN GIT:
 
 EXIT CODES:
     0 done   1 failed   2 usage   3 waiting for approval   4 refused as breaking (see --accept-breaking)
-    5 differences (diff --check)   6 the run did not finish in time (workflow run --wait)
+    5 differences (diff --check)   6 it did not finish in time, or waits for a person (workflow run --wait, script test|publish)
 ```

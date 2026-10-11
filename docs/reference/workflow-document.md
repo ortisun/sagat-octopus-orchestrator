@@ -13,9 +13,20 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 | `inputSchema` | object |  |  |
 | `kind` | `"Workflow"` | yes |  |
 | `metadata` | object | yes |  |
-| `nodes` | array of [`node`](#node) (min items 1, max items 10000) | yes |  |
+| `metadata.description` | string |  |  |
+| `metadata.labels` | object |  |  |
+| `metadata.name` | string (pattern `^[a-z][a-z0-9-]{2,63}$`) | yes |  |
+| `nodes` | array of `node` (min items 1, max items 10000) | yes |  |
 | `outputSchema` | object |  |  |
 | `triggers` | array of object |  |  |
+| `triggers[].connector` | string |  | Required for a message trigger: the slug of the connector that consumes the messages. |
+| `triggers[].cron` | string |  | Required for a cron trigger: five fields, minute hour day-of-month month day-of-week. |
+| `triggers[].endpoint` | string |  | Required for a webhook trigger: the slug of the endpoint that receives the events. |
+| `triggers[].eventType` | string |  | Required for an event trigger; for a webhook or message trigger it narrows the events that start a run. |
+| `triggers[].filter` | string |  | A side-effect-free condition over `event` (id, source, type, subject, correlationKey, occurredAt, receivedAt) and `data`; the event starts a run only when it holds. |
+| `triggers[].kind` | one of `"manual"`, `"event"`, `"webhook"`, `"message"`, `"cron"` | yes | manual: somebody starts it. event: an event of a type, from any source. webhook: an event received by a webhook endpoint of the namespace. message: an event consumed from a topic or queue by a connector of the namespace. cron: a schedule. |
+| `triggers[].source` | string |  | For an event trigger: only events published by this source (an endpoint or connector slug, or `api`). |
+| `triggers[].timezone` | string |  | IANA name of the time zone of a cron trigger (UTC when absent). |
 
 ## Nodes
 

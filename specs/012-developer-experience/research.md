@@ -36,7 +36,7 @@ Enable safe adoption by product, backend and operations teams without manually c
 - Latency and overhead benchmarks on the critical path defined for this feature.
 - Detail compliance and retention requirements according to the deployment environment.
 
-## What was decided while building it (D206–D222) and what is left (G215–G232)
+## What was decided while building it (D206–D228) and what is left (G215–G237)
 
 Numbering continues after feature 011 (D183–D205, G193–G214). The decision is
 [ADR-0019](../../docs/adr/ADR-0019-the-first-day-runs-on-the-real-engine-with-canned-answers-and-a-development-identity-provider.md);
@@ -63,9 +63,12 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
   `e2e diagnostics.rs`.
 - **D210 — The tool's handling of the token and of what it prints.** The token comes from `--token-file` or `SAGAT_TOKEN`, never
   `argv`; it goes only to an `https` address or an `http` one on loopback (the URL is parsed, not matched; credentials in the URL
-  are refused); no proxy for `http`; no redirect; control and bidirectional characters in anything somebody else wrote are shown
-  as `?`; a parse error does not quote the file; YAML is expanded within a budget. Tested: `apps/cli/tests/client.rs`, `manifest.rs`;
-  `fault_developer_experience::no_command_prints_the_token_…`.
+  are refused); no proxy for `http`; no redirect; what an answer may weigh is capped (64 MiB for the API, 1 MiB for a probe or the
+  development provider); control characters, the bidirectional and the invisible format characters (the "tag" block that can carry
+  text nobody sees, the variation selectors, the soft hyphen) in anything somebody else wrote are shown as `?`, and a value from
+  the server is put on one line; a parse error does not quote the file; YAML is expanded within a budget. Tested:
+  `apps/cli/tests/client.rs`, `manifest.rs`, `terminal.rs`; `fault_developer_experience::no_command_prints_the_token_…`;
+  `e2e dev_environment::a_provider_that_never_stops_answering_…`.
 - **D211 — `GET /v1/version` is authenticated and needs no permission.** It says the service, the build version, the API version and
   the range of worker protocol minors (`1.0`–`1.{PROTOCOL_MINOR}`), so `doctor` can say "the tool is older than the platform"
   in words. It is in the OpenAPI document, the Studio's generated types and the REST conformance suite. Tested:
@@ -116,6 +119,32 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
   quickstart, a token, a run served by `worker dev`, and each example's `prepare.sh` (from a clean build, package caches warm)
   and `run.sh`. Tested: `perf_developer_experience`; report in `tests/performance/reports/developer-experience.md`.
 
+- **D223 — The worker commands give canned answers only to a `dev` namespace.** `worker dev` and `worker bind` look up the
+  environment of the namespace and refuse `staging`, `prod` or an environment they cannot read, unless `--allow-non-dev` says that
+  is meant (and then say it); the banner names the environment. Found by the security review: a shell still holding the
+  address and the administrator's token of a staging session would have answered its real tasks with canned answers.
+  Tested: `fault canned_answers_are_given_to_a_dev_namespace_and_to_no_other_unless_asked`.
+- **D224 — The worker endpoint is held to the rule of the REST address.** `https`, or `http` on a loopback address: the token is
+  also in the headers of every gRPC call. Found by both reviews (the ADR said it already; the code did not do it). Tested:
+  `fault the_token_is_not_sent_to_a_worker_endpoint_in_the_clear`.
+- **D225 — A binding is made of names, never of patterns.** The platform accepts `*` and `payments.*` as worker bindings; a workflow
+  from somebody else's repository can name an activity `*`, and the administrator's identity would have been bound to
+  everything. The names taken from a document are held to the rule of an activity name. Tested:
+  `fault a_workflow_from_somewhere_else_cannot_make_the_tool_bind_a_pattern`.
+- **D226 — The library reads the process only through `Env`.** The worker address, the development provider and the documentation
+  URL are fields of `Env` filled by `from_process`, so a test (or a program that embeds the tool) is not changed by what the
+  shell around it exported, and `run_until` lets the caller supply what stops a long command. Found when the quickstart's
+  exports made two tests fail on a developer's machine.
+- **D227 — `worker dev` listens for its stop signals from its first moment and takes no more than it was told.** One task waits for
+  Ctrl-C or SIGTERM and tells the loop, which honours it while polling, waiting and in the middle of an answer; before, a signal
+  that arrived while no one was waiting for it (almost always) was lost. Polling asks for at most what `--max-tasks` leaves.
+  Verified by hand against the real binary (SIGINT mid-sleep: exit in 0.05 s) and tested in the loop: `fault
+  a_worker_told_to_stop_stops_whatever_it_is_doing`, `the_cap_of_tasks_is_the_cap_…` (it served 3 for `--max-tasks 1` with the old
+  batch size).
+- **D228 — `workflow run --wait` stops waiting for a run that only a person can move.** `MANUAL_REVIEW` and `PAUSED` are reported
+  at once (exit 6, "it was not cancelled"), not after the timeout with a message about workers. Tested: `fault
+  a_run_that_waits_for_a_person_is_reported_at_once_…`.
+
 ### Gaps
 
 - **G215 — The first day has not been timed with people.** `SC-012-001` ("a new team member runs the first runs in TS and C#
@@ -154,12 +183,26 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
   tool and platform, or any person.
 - **G228 — `worker dev --bind` replaces bindings of an administrator's identity** in the namespace (D212); a developer who
   also runs a real worker with that token loses its bindings. The output says so before it happens, not before it is chosen.
-- **G229 — The development stack trusts plain `http` between its containers** and `SAGAT_ALLOW_INSECURE_JWKS_HTTP=true` in the
-  example environment file; copied into a shared environment without reading it, the API would fetch its keys over `http`
-  from a provider that signs for anyone. The provider's own refusals (D213) and the runbook stand between that and a
-  server that signs for anyone; nothing stops an operator who sets all of it on purpose.
+- **G229 — The development stack trusts plain `http` between its containers.** `SAGAT_ALLOW_INSECURE_JWKS_HTTP=true` is in the
+  example environment file, but the control plane and the engine refuse it unless `SAGAT_ENV=dev`, and the provider exits
+  unless `SAGAT_ENV=dev`. The hazard is the compose default `SAGAT_ENV: ${SAGAT_ENV:-dev}`: a deployment copied from this file
+  that never sets the variable is a development one, with a provider that signs for anyone. The runbook and the file say so;
+  nothing stops an operator who does it on purpose.
 - **G230 — The seed makes the namespace in the environment `dev`.** Another environment is `SAGAT_SEED_ENVIRONMENT`; a policy of
   approvals for `prod` (feature 011) applies to a seeded production namespace like any other.
 - **G231 — The script tests with the stand-in sandbox prove the tool and the platform's wiring, not the sandbox.** The sandbox's
   own behaviour is feature 005's.
 - **G232 — Reviews.** See `quickstart.md`.
+- **G233 — Paths of `worker dev` no test reaches:** the re-registration after `Unauthenticated`, the "attempt was no longer current" line for a
+  stale report, and the clip of a payload over 400 characters shown by `--show-payloads`. The examples end differently on an interrupt (130 or 1).
+- **G234 — Two installs are not hash-locked.** The Python example installs its run-time dependencies with the SDK's hashes but its
+  build backend (`setuptools`) comes from PyPI unpinned; the C# restore pins versions centrally but has no lock file; Maven uses the
+  wrapper's checksums for what it downloads.
+- **G235 — Small edges that were left.** `script test|publish` finds its script by name among the first 200 of the namespace; a `--key`
+  with a space is reported as a transport error; `diff` and `publish` read the namespace from the manifest before `SAGAT_NAMESPACE`
+  (feature 011); the provider's health check probes the IPv4 loopback only; a mock whose answer lies in the wrong section is warned
+  about, not refused.
+- **G236 — `dev-idp` is not behind a compose profile.** With `SAGAT_ENV` other than `dev` it exits and restarts for ever (it fails
+  closed) while `docker compose up -d` succeeds.
+- **G237 — The Studio's autosave unit tests are timing-sensitive.** Three of them failed once while the whole workspace was being
+  tested at the same time and passed on a quiet machine (feature 007's, unchanged here).

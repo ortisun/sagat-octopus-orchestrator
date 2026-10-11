@@ -28,7 +28,10 @@ sagat workflow run payment-saga --input '{"paymentId":"p-1","amount":10}' --wait
 ```
 
 As shipped, `mocks.yaml` makes the card be declined for good (`fail: { code: CARD_DECLINED, retryable: false }`). The
-journal shows `limit.release` running for the reservation and the run ends `COMPENSATED`. Change the mock and run again:
+journal shows `limit.release` running for the reservation and the run ends `COMPENSATED`.
+
+To change what the provider does, stop `worker dev` (Ctrl-C), edit the file and start it again: **the file is read once**, and
+the position in a `sequence` counts the calls of the whole life of the process, whichever run makes them. Then run again:
 
 | To see | Change `payment.charge` in `mocks.yaml` to |
 |---|---|
@@ -36,7 +39,7 @@ journal shows `limit.release` running for the reservation and the run ends `COMP
 | A retry that works | `sequence: [ { fail: { code: PROVIDER_TIMEOUT, retryable: true } }, { output: { chargeId: ch-1 } } ]` |
 | A worker that dies with the task | `sequence: [ { lose: true }, { output: { chargeId: ch-1 } } ]`: after the lease time (30 seconds by default, `SAGAT_LEASE_TTL_SECS` on the engine) the lease expires and the platform asks `payment.find-charge`, which the file answers with `effect: not_applied`, so it charges again with the same key |
 | The provider charged and the answer was lost | the same, with the reconciler `effect: applied` and `output: { chargeId: ch-1 }`: the platform does not charge again |
-| A compensation that fails | add `limit.release` under `compensations:` with `fail: { code: X, retryable: true }`: after its retries the run waits for an operator (`manual_review`) |
+| A compensation that fails | `limit.release` under `compensations:` with `fail: { code: RELEASE_REFUSED, retryable: false }`: the run waits for an operator (`MANUAL_REVIEW`), and `workflow run --wait` says so at once (exit 6) instead of waiting for its timeout. The template's compensations retry five times with a growing delay: to see it in seconds, give the `reserve` and `charge` nodes `"compensationRetry": { "maxAttempts": 1 }` |
 
 The engine is the real one. The retry, the compensation and the reconciliation are the platform's own, not an
 emulation of them.

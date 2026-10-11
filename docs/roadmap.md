@@ -13,7 +13,7 @@
 | 5 | 009 Security | advanced RBAC, secrets, tenant quotas | Pen-test and escape checks |
 | 10 | 010 Scale & HA | sharding, fairness, HA and benchmarks | Throughput and recoverability |
 | 11 | 011 GitOps & Versioning | versioning, promotion, diff, rollback | Old runs preserved |
-| 12 | 012 Developer Experience | CLI, local emulator, docs and examples | End-to-end onboarding |
+| 12 | 012 Developer Experience | CLI, local testing on the real engine (no emulator), docs and examples | End-to-end onboarding |
 
 **Realistic milestones:** M0=contracts and journal spike; M1=durable vertical slice; M2=sagas/events; M3=scripts and first SDK; M4=Studio; M5=enterprise hardening; M6=multi-SDK/HA. Avoid estimates without team composition and benchmark.
 

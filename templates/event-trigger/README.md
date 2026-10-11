@@ -1,6 +1,6 @@
 # event-trigger
 
-A run is started for each `order.created` event. The event's data is the run's input.
+A run is started for each `order.created` event. The run's input is the event document, `{"event": {id, source, type, ...}, "data": {...}}`: the data you published is under `data`, and what a step reads of it is `input.data.orderId`.
 
 ```sh
 sagat workflow publish workflow.json
