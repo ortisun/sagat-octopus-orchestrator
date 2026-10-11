@@ -46,7 +46,7 @@ tests/contract/sdk-conformance/
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/006-sdk-multilanguage/
+tests/e2e/sdk-multilanguage/
 ```
 
 ## Implementation phases

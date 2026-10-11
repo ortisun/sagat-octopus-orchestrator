@@ -63,7 +63,7 @@ act (`SAGAT_SDK_BLESS=1`), never part of a normal run. The golden files are *not
   adding a scenario and a golden, then the five runners.
 - The suite is slow (a platform per scenario and language, scenarios that space their actions in time because a
   worker is leased tasks in the order they became ready) and needs Docker. It is the gate for SDK changes, not
-  for server-only changes; the server's own gRPC contract tests (`tests/contract/006-sdk-multilanguage/grpc`)
+  for server-only changes; the server's own gRPC contract tests (`tests/contract/sdk-multilanguage/grpc`)
   stay fast and run everywhere.
 - A scenario that can be racy is written so that it is not (`awaitJournal`/`awaitWorkerLog` instead of sleeps,
   a worker started after the run, `control` actions to move time). A golden that flaked would train people to

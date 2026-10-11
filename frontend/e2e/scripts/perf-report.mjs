@@ -1,4 +1,4 @@
-// Turns what tests/perf.spec.ts measured into tests/performance/reports/007-workflow-studio.md.
+// Turns what tests/perf.spec.ts measured into tests/performance/reports/workflow-studio.md.
 // Usage: node scripts/perf-report.mjs <perf.json> <report.md>
 import { readFileSync, writeFileSync } from 'node:fs';
 

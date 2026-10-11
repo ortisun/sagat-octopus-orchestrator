@@ -12,11 +12,11 @@ Everything below was run against this repository. The pieces that are **not** bu
 1. **The user stories and the release gate battery**, against real PostgreSQL, a fake OIDC provider and real sockets:
 
    ```sh
-   cargo test -p sagat-tests --test e2e_009            # US01 (worker side), US02, US04 through REST and gRPC
-   cargo test -p sagat-tests --test contract_rest_009  # all 18 governance operations vs the OpenAPI; the cross-tenant battery
-   cargo test -p sagat-tests --test contract_grpc_009  # TLS and mutual TLS with real handshakes
-   cargo test -p sagat-tests --test integration_009    # quotas, bindings, secrets, egress against PostgreSQL
-   cargo test -p sagat-tests --test fault_009          # connections killed around quota, secret and binding transactions
+   cargo test -p sagat-tests --test e2e_security_multitenancy            # US01 (worker side), US02, US04 through REST and gRPC
+   cargo test -p sagat-tests --test contract_rest_security_multitenancy  # all 18 governance operations vs the OpenAPI; the cross-tenant battery
+   cargo test -p sagat-tests --test contract_grpc_security_multitenancy  # TLS and mutual TLS with real handshakes
+   cargo test -p sagat-tests --test integration_security_multitenancy    # quotas, bindings, secrets, egress against PostgreSQL
+   cargo test -p sagat-tests --test fault_security_multitenancy          # connections killed around quota, secret and binding transactions
    cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-secrets -p sagat-execution-engine -p sagat-control-plane
    ```
 
@@ -31,13 +31,13 @@ Everything below was run against this repository. The pieces that are **not** bu
    | Webhook replay | not built | Feature 004 (G36). |
    | Sandbox escape | not built | Feature 005 (G35). |
 
-3. **Failure injection.** `fault_009` kills database connections while quotas are judged (exactly the acknowledged runs exist, never more than the limit), while secrets are written (every committed version has exactly one audit record), while secrets are resolved (never a wrong value, and the attempt that was handed values has exactly one audit record however often it asked) and while a binding is replaced (no session survives a binding that does not cover it).
+3. **Failure injection.** `fault_security_multitenancy` kills database connections while quotas are judged (exactly the acknowledged runs exist, never more than the limit), while secrets are written (every committed version has exactly one audit record), while secrets are resolved (never a wrong value, and the attempt that was handed values has exactly one audit record however often it asked) and while a binding is replaced (no session survives a binding that does not cover it).
 
 4. **The benchmark** (cost of exact counting and of the new worker paths):
 
    ```sh
-   SAGAT_PERF_REPORT=tests/performance/reports/009-security-multitenancy.md \
-     cargo test -p sagat-tests --test perf_009 --release -- --ignored --nocapture
+   SAGAT_PERF_REPORT=tests/performance/reports/security-multitenancy.md \
+     cargo test -p sagat-tests --test perf_security_multitenancy --release -- --ignored --nocapture
    ```
 
 5. **Operating it:** `docs/runbooks/security-governance.md`.
@@ -60,7 +60,7 @@ Everything below was run against this repository. The pieces that are **not** bu
 | Container with undue privileges | Feature 005 |
 | Confused deputy across namespaces | A secret name resolves only in the run's own namespace; a binding is per namespace; the publisher's standing is checked at resolution |
 | ACL race when renewing a token | The publisher is re-checked at every resolution and the binding at every report (D43, D46); `bindings::a_binding_that_disappears_stops_a_lease_holder...`, `secrets::losing_access_after_publishing...` |
-| Quota with concurrent replicas | Exact count under an advisory lock in the creating transaction (D42); `quotas::replicas_racing...`, `fault_009` |
+| Quota with concurrent replicas | Exact count under an advisory lock in the creating transaction (D42); `quotas::replicas_racing...`, `fault_security_multitenancy` |
 
 ## Security review of the implementation (T009-035)
 
@@ -85,7 +85,7 @@ The smaller points of finding 8:
 | An expired lease that was not yet reclaimed still resolved secrets | Real. The resolution needs an unexpired lease (reports still accept a late completion) | `secrets::the_capability_ends_with_the_lease...` |
 | An administrator holds `worker:bind` and `worker:execute`, so can read any declared secret by binding itself | Real, **accepted**: a tenant administrator is trusted with the tenant's secrets, and every step is audited (G49) | Open |
 | `replace_binding` updated `steps.leased_by` with no index, while holding locks | Real. Partial index `steps_leased_by_idx` | `bindings::releasing_the_leases_of_closed_sessions_is_an_index_lookup...` |
-| G46 said namespaces of one tenant do not wait for each other; they share the tenant lock | Real. G46, `data-model.md` and the benchmark were corrected, and the benchmark has a two-tenant case | `tests/performance/reports/009-security-multitenancy.md` |
+| G46 said namespaces of one tenant do not wait for each other; they share the tenant lock | Real. G46, `data-model.md` and the benchmark were corrected, and the benchmark has a two-tenant case | `tests/performance/reports/security-multitenancy.md` |
 | `reseal` stopped at the first version no key opens, for every tenant | Real. It steps over it, moves the rest and fails at the end, saying how many | `secrets::one_version_that_no_key_opens...`, `the_cursor_steps_over...` |
 | Any developer could list every secret name, which made "a publisher cannot probe which names exist" moot | Real. Anyone but an administrator lists only the secrets whose access list names them | `secrets::a_developer_lists_only_the_secrets_they_may_use...` |
 | The publish check costs a lookup per declared name, bounded only by the document | Real. A definition declares at most 128 distinct secrets | `crates/domain/tests/workflow.rs::declared_secrets` |

@@ -3,7 +3,7 @@
 //! The fake mirrors the contract of `DefinitionStore` (tenant filter, name uniqueness, revision
 //! compare-and-swap, idempotency replay). It proves the *service* logic: authorization before
 //! storage, tenant derivation, audit records, error mapping. SQL-level guarantees are proven
-//! against a real PostgreSQL in `tests/integration/002-durable-execution`.
+//! against a real PostgreSQL in `tests/integration/durable-execution`.
 #![allow(
     clippy::expect_used,
     clippy::significant_drop_tightening,

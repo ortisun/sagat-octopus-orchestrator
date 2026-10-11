@@ -12,14 +12,14 @@ Everything below was run against this repository. The pieces that are **not** bu
 1. **The four user stories and the worker protocol**, against real PostgreSQL, a fake OIDC provider and real sockets:
 
    ```sh
-   cargo test -p sagat-tests --test e2e_002           # US01..US04 and the running engine process
-   cargo test -p sagat-tests --test contract_grpc_002 # the worker protocol over the wire
-   cargo test -p sagat-tests --test contract_rest_002 # definitions, runs, operations, signals vs. the OpenAPI
-   cargo test -p sagat-tests --test integration_002   # store, scheduler, outbox, NATS, faults, children
+   cargo test -p sagat-tests --test e2e_durable_execution           # US01..US04 and the running engine process
+   cargo test -p sagat-tests --test contract_grpc_durable_execution # the worker protocol over the wire
+   cargo test -p sagat-tests --test contract_rest_durable_execution # definitions, runs, operations, signals vs. the OpenAPI
+   cargo test -p sagat-tests --test integration_durable_execution   # store, scheduler, outbox, NATS, faults, children
    cargo test -p sagat-domain -p sagat-infra-expr -p sagat-infra-ir -p sagat-execution-engine
    ```
 
-2. **Failure injection.** `integration_002` (`faults.rs`) kills database connections around commits, `outbox.rs` loses the confirmation of a published message, `nats.rs` severs the broker connection through a proxy, `concurrency.rs` races workers, timers and cancellations, and `e2e_002` (`engine.rs`) lets the engine reclaim a dead worker's step by itself. The property tests (`crates/domain/tests/execution_properties.rs`, `PROPTEST_CASES=50000` for a long soak) apply random command sequences, including stale fences and out-of-order reports, and check the invariants after every step.
+2. **Failure injection.** `integration_durable_execution` (`faults.rs`) kills database connections around commits, `outbox.rs` loses the confirmation of a published message, `nats.rs` severs the broker connection through a proxy, `concurrency.rs` races workers, timers and cancellations, and `e2e_durable_execution` (`engine.rs`) lets the engine reclaim a dead worker's step by itself. The property tests (`crates/domain/tests/execution_properties.rs`, `PROPTEST_CASES=50000` for a long soak) apply random command sequences, including stale fences and out-of-order reports, and check the invariants after every step.
 
 3. **The local environment.** `scripts/smoke-compose.sh` builds both images, starts PostgreSQL + NATS + control plane + execution engine, and checks health, idempotent migrations and seed, that every non-owner connection is the least-privilege role, and that the worker port accepts connections. To run the stack by hand:
 
@@ -33,8 +33,8 @@ Everything below was run against this repository. The pieces that are **not** bu
 4. **The benchmark** (10k suspended runs, scheduling latency):
 
    ```sh
-   SAGAT_PERF_REPORT=tests/performance/reports/002-durable-execution.md \
-     cargo test -p sagat-tests --test perf_002 --release -- --ignored --nocapture
+   SAGAT_PERF_REPORT=tests/performance/reports/durable-execution.md \
+     cargo test -p sagat-tests --test perf_durable_execution --release -- --ignored --nocapture
    ```
 
 5. **Operating it:** `docs/runbooks/execution-engine.md`.
@@ -53,7 +53,7 @@ The review of the engine (abuse by a tenant, a worker or a run; isolation; secre
 | 6 | A poll that failed after leasing some steps lost their tokens, and one bad run blocked the tenant | Fixed: tasks join the response after their commit, a failing run is skipped (D38) | `hardening.rs::{a_task_leased_before_another_run_failed_*, a_run_that_cannot_be_leased_*}` |
 | 7 | A missing consumer made the outbox grow without bound | Fixed: five re-announcements per ready step, purge until caught up (D39) | `hardening.rs::{a_task_nobody_takes_*, housekeeping_purges_a_backlog_*}` |
 | 8 | Nothing limited the connections or the calls of the worker API as a whole | Fixed: connection cap and load shedding with a reserve for heartbeats and reports (D41). Per-tenant fairness is G32 | `grpc/limits.rs` (real sockets), `crates/api-grpc/src/limits.rs` (unit) |
-| 9 | A worker's authority is the whole tenant | **Fixed by feature 009** (G31): worker bindings, fail closed, re-checked at use | `specs/009-security-multitenancy/research.md` D43, `tests/integration/009-security-multitenancy/bindings.rs` |
+| 9 | A worker's authority is the whole tenant | **Fixed by feature 009** (G31): worker bindings, fail closed, re-checked at use | `specs/009-security-multitenancy/research.md` D43, `tests/integration/security-multitenancy/bindings.rs` |
 | 10 | An idempotency key was an oracle for a worker without the lease | Fixed: records scoped by the lease token (D40) | `hardening.rs::a_key_is_no_oracle_*` |
 | 11 | An error echoed a map key computed from run data | Fixed: `<computed>`; literals of the expression are still named | `crates/infra-expr/tests/subset.rs` |
 | 12 | The runtime role could delete an undelivered outbox message or rewrite journal tables it owned | Fixed: `BEFORE DELETE` trigger; the start-up guard refuses an owner of `run_events`, `payloads`, `workflow_versions` | `least_privilege.rs::{the_runtime_role_cannot_delete_*, each_append_only_table_*, a_role_that_owns_a_journal_table_*}`, `migrations.rs` |

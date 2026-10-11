@@ -86,8 +86,8 @@ mid-task, a protocol-1 worker against a server older than the fix in `a4107cd`).
 cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture          # five languages, every scenario (needs Docker)
 SAGAT_SDK_LANGS=go,python cargo test -p sagat-tests --test sdk_conformance -- --ignored   # some languages
 SAGAT_SDK_SCENARIO=lease-lost SAGAT_SDK_REUSE=1 cargo test -p sagat-tests --test sdk_conformance -- --ignored
-cargo test -p sagat-tests --test e2e_006 --test fault_006 -- --ignored               # the user stories and the faults
-cargo test -p sagat-tests --test perf_006 --release -- --ignored --nocapture   # the benchmark
+cargo test -p sagat-tests --test e2e_sdk_multilanguage --test fault_sdk_multilanguage -- --ignored               # the user stories and the faults
+cargo test -p sagat-tests --test perf_sdk_multilanguage --release -- --ignored --nocapture   # the benchmark
 ```
 
 All of these are `#[ignore]` in the workspace test run: they need Node, Python, Go, .NET, a JDK and Docker. The `sdks` job of CI (`.github/workflows/ci.yml`) installs the toolchains and runs the first, second and fourth lines; the benchmark is run by hand on a quiet machine.

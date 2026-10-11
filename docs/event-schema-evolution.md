@@ -23,9 +23,9 @@ A change that cannot be made that way is a **new message with a new name**, publ
 
 ## How it is checked
 
-- `tests/contract/004-events-webhooks-messaging/asyncapi/compatibility.rs` compares the current shape of every message with the previous one recorded in [`events.baseline.json`](../specs/001-platform-foundation/contracts/events.baseline.json) and fails on: a removed property, a changed type, a removed enumeration value, a property that became required, a message that disappeared. It also fails when a message is **missing from the baseline**, so the next change is judged against it. The checker itself is tested against each kind of break.
+- `tests/contract/events-webhooks-messaging/asyncapi/compatibility.rs` compares the current shape of every message with the previous one recorded in [`events.baseline.json`](../specs/001-platform-foundation/contracts/events.baseline.json) and fails on: a removed property, a changed type, a removed enumeration value, a property that became required, a message that disappeared. It also fails when a message is **missing from the baseline**, so the next change is judged against it. The checker itself is tested against each kind of break.
 - `conformance.rs` checks that what the platform really sends (a NATS hint, a signed webhook of a finished run, the document a trigger gives a run) validates against the message in the document, and that what the document promises about headers is what the code does.
-- A change that is meant to grow a message regenerates the baseline on purpose (`SAGAT_UPDATE_BASELINE=1 cargo test -p sagat-tests --test contract_asyncapi_004`), and the diff of the baseline is what a reviewer reads.
+- A change that is meant to grow a message regenerates the baseline on purpose (`SAGAT_UPDATE_BASELINE=1 cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging`), and the diff of the baseline is what a reviewer reads.
 
 ## Versions and deprecation
 

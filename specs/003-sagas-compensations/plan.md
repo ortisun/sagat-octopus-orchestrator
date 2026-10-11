@@ -44,7 +44,7 @@ crates/api-http/src/routes/saga_operations.rs
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/003-sagas-compensations/
+tests/e2e/sagas-compensations/
 ```
 
 **As built.** The structure above was a proposal. The coordinator is not a crate: it is a function of the run state, so it lives where the state is reduced (decision D59–D60, ADR-0010, gap G51).

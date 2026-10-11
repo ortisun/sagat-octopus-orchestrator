@@ -57,173 +57,173 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [[test]]
-name = "integration_001"
-path = "integration/001-platform-foundation/main.rs"
+name = "integration_platform_foundation"
+path = "integration/platform-foundation/main.rs"
 
 [[test]]
-name = "contract_001"
-path = "contract/001-platform-foundation/main.rs"
+name = "contract_platform_foundation"
+path = "contract/platform-foundation/main.rs"
 
 [[test]]
-name = "e2e_001"
-path = "e2e/001-platform-foundation/main.rs"
+name = "e2e_platform_foundation"
+path = "e2e/platform-foundation/main.rs"
 
 [[test]]
-name = "fault_001"
-path = "fault/001-platform-foundation/main.rs"
+name = "fault_platform_foundation"
+path = "fault/platform-foundation/main.rs"
 
 [[test]]
-name = "contract_rest_001"
-path = "contract/001-platform-foundation/rest/main.rs"
+name = "contract_rest_platform_foundation"
+path = "contract/platform-foundation/rest/main.rs"
 
 [[test]]
-name = "perf_001"
-path = "performance/001-platform-foundation/main.rs"
+name = "perf_platform_foundation"
+path = "performance/platform-foundation/main.rs"
 
 [[test]]
-name = "integration_002"
-path = "integration/002-durable-execution/main.rs"
+name = "integration_durable_execution"
+path = "integration/durable-execution/main.rs"
 
 [[test]]
-name = "contract_rest_002"
-path = "contract/002-durable-execution/rest/main.rs"
+name = "contract_rest_durable_execution"
+path = "contract/durable-execution/rest/main.rs"
 
 [[test]]
-name = "contract_grpc_002"
-path = "contract/002-durable-execution/grpc/main.rs"
+name = "contract_grpc_durable_execution"
+path = "contract/durable-execution/grpc/main.rs"
 
 [[test]]
 name = "sdk_conformance"
 path = "contract/sdk-conformance/main.rs"
 
 [[test]]
-name = "contract_rest_007"
-path = "contract/007-workflow-studio/rest/main.rs"
+name = "contract_rest_workflow_studio"
+path = "contract/workflow-studio/rest/main.rs"
 
 [[test]]
-name = "contract_grpc_006"
-path = "contract/006-sdk-multilanguage/grpc/main.rs"
+name = "contract_grpc_sdk_multilanguage"
+path = "contract/sdk-multilanguage/grpc/main.rs"
 
 [[test]]
-name = "e2e_002"
-path = "e2e/002-durable-execution/main.rs"
+name = "e2e_durable_execution"
+path = "e2e/durable-execution/main.rs"
 
 [[test]]
-name = "integration_009"
-path = "integration/009-security-multitenancy/main.rs"
+name = "integration_security_multitenancy"
+path = "integration/security-multitenancy/main.rs"
 
 [[test]]
-name = "contract_rest_009"
-path = "contract/009-security-multitenancy/rest/main.rs"
+name = "contract_rest_security_multitenancy"
+path = "contract/security-multitenancy/rest/main.rs"
 
 [[test]]
-name = "e2e_009"
-path = "e2e/009-security-multitenancy/main.rs"
+name = "e2e_security_multitenancy"
+path = "e2e/security-multitenancy/main.rs"
 
 [[test]]
-name = "contract_grpc_009"
-path = "contract/009-security-multitenancy/grpc/main.rs"
+name = "contract_grpc_security_multitenancy"
+path = "contract/security-multitenancy/grpc/main.rs"
 
 [[test]]
-name = "perf_009"
-path = "performance/009-security-multitenancy/main.rs"
+name = "perf_security_multitenancy"
+path = "performance/security-multitenancy/main.rs"
 
 [[test]]
-name = "fault_009"
-path = "fault/009-security-multitenancy/main.rs"
+name = "fault_security_multitenancy"
+path = "fault/security-multitenancy/main.rs"
 
 [[test]]
-name = "perf_002"
-path = "performance/002-durable-execution/main.rs"
+name = "perf_durable_execution"
+path = "performance/durable-execution/main.rs"
 
 [[test]]
-name = "integration_003"
-path = "integration/003-sagas-compensations/main.rs"
+name = "integration_sagas_compensations"
+path = "integration/sagas-compensations/main.rs"
 
 [[test]]
-name = "e2e_003"
-path = "e2e/003-sagas-compensations/main.rs"
+name = "e2e_sagas_compensations"
+path = "e2e/sagas-compensations/main.rs"
 
 [[test]]
-name = "fault_003"
-path = "fault/003-sagas-compensations/main.rs"
+name = "fault_sagas_compensations"
+path = "fault/sagas-compensations/main.rs"
 
 [[test]]
-name = "contract_rest_003"
-path = "contract/003-sagas-compensations/rest/main.rs"
+name = "contract_rest_sagas_compensations"
+path = "contract/sagas-compensations/rest/main.rs"
 
 [[test]]
-name = "contract_grpc_003"
-path = "contract/003-sagas-compensations/grpc/main.rs"
+name = "contract_grpc_sagas_compensations"
+path = "contract/sagas-compensations/grpc/main.rs"
 
 [[test]]
-name = "perf_003"
-path = "performance/003-sagas-compensations/main.rs"
+name = "perf_sagas_compensations"
+path = "performance/sagas-compensations/main.rs"
 
 [[test]]
-name = "integration_004"
-path = "integration/004-events-webhooks-messaging/main.rs"
+name = "integration_events_webhooks_messaging"
+path = "integration/events-webhooks-messaging/main.rs"
 
 [[test]]
-name = "contract_rest_004"
-path = "contract/004-events-webhooks-messaging/rest/main.rs"
+name = "contract_rest_events_webhooks_messaging"
+path = "contract/events-webhooks-messaging/rest/main.rs"
 
 [[test]]
-name = "e2e_004"
-path = "e2e/004-events-webhooks-messaging/main.rs"
+name = "e2e_events_webhooks_messaging"
+path = "e2e/events-webhooks-messaging/main.rs"
 
 [[test]]
-name = "contract_asyncapi_004"
-path = "contract/004-events-webhooks-messaging/asyncapi/main.rs"
+name = "contract_asyncapi_events_webhooks_messaging"
+path = "contract/events-webhooks-messaging/asyncapi/main.rs"
 
 [[test]]
-name = "fault_004"
-path = "fault/004-events-webhooks-messaging/main.rs"
+name = "fault_events_webhooks_messaging"
+path = "fault/events-webhooks-messaging/main.rs"
 
 [[test]]
-name = "perf_004"
-path = "performance/004-events-webhooks-messaging/main.rs"
+name = "perf_events_webhooks_messaging"
+path = "performance/events-webhooks-messaging/main.rs"
 
 [[test]]
-name = "integration_005_sandbox"
-path = "integration/005-inline-code-sandbox/sandbox/main.rs"
+name = "integration_inline_code_sandbox_containers"
+path = "integration/inline-code-sandbox/sandbox/main.rs"
 
 [[test]]
-name = "integration_005"
-path = "integration/005-inline-code-sandbox/registry/main.rs"
+name = "integration_inline_code_sandbox"
+path = "integration/inline-code-sandbox/registry/main.rs"
 
 [[test]]
-name = "e2e_005"
-path = "e2e/005-inline-code-sandbox/main.rs"
+name = "e2e_inline_code_sandbox"
+path = "e2e/inline-code-sandbox/main.rs"
 
 [[test]]
-name = "contract_rest_005"
-path = "contract/005-inline-code-sandbox/rest/main.rs"
+name = "contract_rest_inline_code_sandbox"
+path = "contract/inline-code-sandbox/rest/main.rs"
 
 [[test]]
-name = "fault_005"
-path = "fault/005-inline-code-sandbox/main.rs"
+name = "fault_inline_code_sandbox"
+path = "fault/inline-code-sandbox/main.rs"
 
 [[test]]
-name = "perf_005"
-path = "performance/005-inline-code-sandbox/main.rs"
+name = "perf_inline_code_sandbox"
+path = "performance/inline-code-sandbox/main.rs"
 
 [[test]]
-name = "e2e_006"
-path = "e2e/006-sdk-multilanguage/main.rs"
+name = "e2e_sdk_multilanguage"
+path = "e2e/sdk-multilanguage/main.rs"
 
 [[test]]
-name = "e2e_007"
-path = "e2e/007-workflow-studio/main.rs"
+name = "e2e_workflow_studio"
+path = "e2e/workflow-studio/main.rs"
 
 [[test]]
-name = "fault_006"
-path = "fault/006-sdk-multilanguage/main.rs"
+name = "fault_sdk_multilanguage"
+path = "fault/sdk-multilanguage/main.rs"
 
 [[test]]
-name = "fault_007"
-path = "fault/007-workflow-studio/main.rs"
+name = "fault_workflow_studio"
+path = "fault/workflow-studio/main.rs"
 
 [[test]]
-name = "perf_006"
-path = "performance/006-sdk-multilanguage/main.rs"
+name = "perf_sdk_multilanguage"
+path = "performance/sdk-multilanguage/main.rs"

@@ -32,7 +32,7 @@ runner, and then runs Playwright with the addresses and tokens it made:
 
 ```text
 npx playwright install chromium         # once, in e2e/
-cargo test -p sagat-tests --test e2e_007 -- --ignored journeys --nocapture
+cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
 ```
 
 `docs/runbooks/studio.md` §7 has the rest (one journey, a build that is reused, the benchmark).

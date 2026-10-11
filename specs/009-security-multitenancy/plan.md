@@ -46,11 +46,11 @@ crates/api-http/src/{governance,dto_gov}.rs, routes/governance.rs   REST routes 
 crates/api-grpc/src/{limits,server}.rs   connection and call caps, TLS / mTLS; ResolveSecrets in service.rs
 apps/control-plane, apps/execution-engine  SAGAT_SECRETS_KEYS, SAGAT_GRPC_TLS_*; `control-plane reseal-secrets`
 docs/runbooks/security-governance.md     operations
-tests/integration/009-security-multitenancy/   quotas, bindings, secrets, egress against PostgreSQL
-tests/contract/009-security-multitenancy/      rest/ (conformance, cross-tenant battery), grpc/ (TLS, mTLS)
-tests/e2e/009-security-multitenancy/           us01, us02, us04 through REST and gRPC
-tests/fault/009-security-multitenancy/         connection kills around quota and secret transactions
-tests/performance/009-security-multitenancy/   benchmark, report in tests/performance/reports/
+tests/integration/security-multitenancy/   quotas, bindings, secrets, egress against PostgreSQL
+tests/contract/security-multitenancy/      rest/ (conformance, cross-tenant battery), grpc/ (TLS, mTLS)
+tests/e2e/security-multitenancy/           us01, us02, us04 through REST and gRPC
+tests/fault/security-multitenancy/         connection kills around quota and secret transactions
+tests/performance/security-multitenancy/   benchmark, report in tests/performance/reports/
 ```
 
 Not built, and why: `crates/sandbox/src/policy.rs` and the sandbox itself (feature 005; G35), `infra/helm/templates/networkpolicy.yaml` (no Helm chart exists; G45).

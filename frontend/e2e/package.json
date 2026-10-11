@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Journeys of the Studio in a real browser, against a real platform started by tests/e2e/007-workflow-studio.",
+  "description": "Journeys of the Studio in a real browser, against a real platform started by tests/e2e/workflow-studio.",
   "scripts": {
     "test": "playwright test",
     "typecheck": "tsc --noEmit"

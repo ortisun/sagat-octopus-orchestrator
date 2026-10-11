@@ -31,7 +31,7 @@ section; what was **not** run is stated there too.
    heartbeat):
 
    ```text
-   cargo test --offline -p sagat-tests --test contract_grpc_006
+   cargo test --offline -p sagat-tests --test contract_grpc_sdk_multilanguage
    ```
 
 3. **The conformance suite** — the contract of the five SDKs (15 scenarios, each played by each language through its
@@ -50,7 +50,7 @@ section; what was **not** run is stated there too.
    service registered with `AddSagatOctopusOrchestrator`):
 
    ```text
-   cargo test -p sagat-tests --test e2e_006 --test fault_006 -- --ignored
+   cargo test -p sagat-tests --test e2e_sdk_multilanguage --test fault_sdk_multilanguage -- --ignored
    ```
 
 5. **Confirm** the outcomes, the journal and the traces: every scenario reads the state of the platform over REST,
@@ -59,13 +59,13 @@ section; what was **not** run is stated there too.
 
 6. **Take a worker down at a controlled moment**: the scenarios `lease-lost`, `worker-shutdown` and
    `worker-transport-faults` stop, restart and cut off workers mid-task and check that the step is retried once and
-   never lost; `fault_006` repeats it with every language.
+   never lost; `fault_sdk_multilanguage` repeats it with every language.
 
 7. **The benchmark** (release mode, a quiet machine, writes the report):
 
    ```text
-   SAGAT_PERF_REPORT=tests/performance/reports/006-sdk-multilanguage.md \
-     cargo test -p sagat-tests --test perf_006 --release -- --ignored --nocapture
+   SAGAT_PERF_REPORT=tests/performance/reports/sdk-multilanguage.md \
+     cargo test -p sagat-tests --test perf_sdk_multilanguage --release -- --ignored --nocapture
    ```
 
 ## Gates
@@ -81,15 +81,15 @@ Run on 2026-10-10 on the final code of the branch (all five SDKs, macOS arm64, D
 | Check | Result |
 |---|---|
 | Conformance suite, 15 scenarios × 5 languages (`sdk_conformance`) | passed three times in a row on the final code: 229.1 s (every runner rebuilt), 222.1 s, 222.3 s; the results equal the goldens and each other. The `secrets` scenario was added last (a finding of this closing: no scenario resolved a secret through the real server); the other 14 passed three times before it, in 207.6 s, 207.6 s and 208.8 s. A fourth pass, with the exact command of the `sdks` CI job, took 231.0 s |
-| `e2e_006` (US01..US04, with the ASP.NET Core service) | 6 passed (120.1 s, with the command the CI job runs, `-- --ignored`; 108.7 s before the 15th scenario) |
-| `fault_006` (network, workers, tenant) | 9 passed (162.4 s, same command; 151.5 s before) |
-| `contract_grpc_006` (negotiation) | 7 passed |
+| `e2e_sdk_multilanguage` (US01..US04, with the ASP.NET Core service) | 6 passed (120.1 s, with the command the CI job runs, `-- --ignored`; 108.7 s before the 15th scenario) |
+| `fault_sdk_multilanguage` (network, workers, tenant) | 9 passed (162.4 s, same command; 151.5 s before) |
+| `contract_grpc_sdk_multilanguage` (negotiation) | 7 passed |
 | TypeScript `npm test` (Node 26.8.1) | 96 passed |
 | Python `pytest` | 226 passed on 3.10.21, 3.11.15, 3.12.12, 3.13.9 and 3.14.7 (the pinned, hashed dev lock); `mypy --strict` (34 files) and `ruff check` passed on 3.14.7 |
 | Go `go test -race ./...`, `go vet`, `gofmt -l` | 165 top-level tests passed (0 failed) on 1.25.14; vet clean; gofmt prints nothing. `govulncheck` (run on 2026-10-08): 9 findings in the standard library and `x/net`, G135 |
 | C# `dotnet test`, `dotnet format --verify-no-changes` | 410 passed on net10.0; format clean. The `net8.0` build of the SDK ran the conformance suite once, on an earlier revision |
 | Workspace gate | `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `scripts/check-architecture.py`, `cargo audit --deny warnings` clean; `cargo test --workspace --locked`: 87 test binaries, 1 341 passed, 0 failed, 23 ignored (the doc-test step hung once, rustdoc at 0 % CPU, as clippy-driver did earlier, and passed when run again); OpenAPI lint valid (the same 9 warnings as `develop`), AsyncAPI valid, `worker.proto` compiles |
-| Benchmark `perf_006` (release, `--ignored`), report `tests/performance/reports/006-sdk-multilanguage.md` | three complete runs of ~285 s; all hypotheses held in the last one after H1, H3 and H4 were restated (the report says how and why); finding G141 |
+| Benchmark `perf_sdk_multilanguage` (release, `--ignored`), report `tests/performance/reports/sdk-multilanguage.md` | three complete runs of ~285 s; all hypotheses held in the last one after H1, H3 and H4 were restated (the report says how and why); finding G141 |
 | Java `./mvnw -q verify` | 202 tests run, 0 failures, 0 errors on JDK 23.0.2 (the `SEVERE` lines in its output are logged by tests that provoke a failure on purpose) |
 
 Reviews: two independent read-only security reviews and two correctness reviews, then a re-verification of each

@@ -190,7 +190,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **G150 — The code editor offers syntax colouring and the language service the browser has** (TypeScript and JSON only); for
   the other languages the platform checks the source when it builds it, and the page says so.
 - **G151 — The "reference browser" of NFR-007-PERF is not defined by the specification, and the benchmark measures one.** The
-  report (`tests/performance/reports/007-workflow-studio.md`) says which: headless Chromium on the machine it names. A low-end
+  report (`tests/performance/reports/workflow-studio.md`) says which: headless Chromium on the machine it names. A low-end
   machine, Firefox and Safari are not measured, and the floors of the report ("usable": 30 frames per second, a few seconds to
   open) are this feature's reading of "usable", chosen before the measured rounds.
 - **G152 — Two low advisories remain in the Studio's production dependencies.** `monaco-editor` 0.57.0 bundles DOMPurify

@@ -11,7 +11,7 @@ import { goTo, signIn } from '../support/studio';
 /**
  * The benchmark of the Studio (NFR-007-PERF, T007-034): a canvas of 1 000 nodes, a run of about 10 000 nodes and its table.
  * It is not part of the journeys: it runs when STUDIO_PERF=1 and writes what it measured to STUDIO_PERF_OUT, which
- * `scripts/perf-report.mjs` turns into tests/performance/reports/007-workflow-studio.md (the runbook has the commands).
+ * `scripts/perf-report.mjs` turns into tests/performance/reports/workflow-studio.md (the runbook has the commands).
  */
 test.skip(process.env.STUDIO_PERF !== '1', 'the benchmark runs with STUDIO_PERF=1');
 test.use({ viewport: { width: 1440, height: 900 } });

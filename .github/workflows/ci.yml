@@ -24,7 +24,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
-      - run: cargo test --workspace --locked
+      # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
+      - run: cargo test --workspace --locked --no-fail-fast
 
   architecture:
     name: architecture rules
@@ -94,7 +95,7 @@ jobs:
       # engine and the API in the test process). They are #[ignore] in the workspace run above because they
       # need the five toolchains.
       - name: conformance suite, user stories and faults, five languages
-        run: cargo test -p sagat-tests --test sdk_conformance --test e2e_006 --test fault_006 --locked -- --ignored
+        run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
 
   studio:
     name: studio (lint, types, unit tests, build, browser journeys)
@@ -131,7 +132,7 @@ jobs:
       # platform (PostgreSQL through Testcontainers, the API serving the Studio, the engine, a sandbox runner). They are
       # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
       - name: browser journeys
-        run: cargo test -p sagat-tests --test e2e_007 --locked -- --ignored journeys
+        run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
 
   contracts:
     name: contracts (OpenAPI, protobuf, JSON Schema)

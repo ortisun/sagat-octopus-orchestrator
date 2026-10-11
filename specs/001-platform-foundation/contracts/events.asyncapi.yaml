@@ -5,7 +5,7 @@ info:
   description: |
     Event contract; at-least-once everywhere. Hints on NATS are deduplicated by the Nats-Msg-Id header (the outbox row id); events that come in (webhook, API, broker) are deduplicated by (tenant, namespace, source, eventId) for the endpoint's window; events that go out (webhooks) carry a stable delivery id.
 
-    Evolution (FR-004-007): within a version of this document a message only grows. A property is never removed, renamed or given another type; a new property is optional; an enumeration gains values and never loses them; `required` never gains a member. A change that cannot be made that way is a new message with a new name next to the old one, and the old one is kept for the period the deprecation notice in `docs/event-schema-evolution.md` states. `tests/contract/004-events-webhooks-messaging/asyncapi` holds the previous shape of every message (`events.baseline.json`) and fails a change that breaks it.
+    Evolution (FR-004-007): within a version of this document a message only grows. A property is never removed, renamed or given another type; a new property is optional; an enumeration gains values and never loses them; `required` never gains a member. A change that cannot be made that way is a new message with a new name next to the old one, and the old one is kept for the period the deprecation notice in `docs/event-schema-evolution.md` states. `tests/contract/events-webhooks-messaging/asyncapi` holds the previous shape of every message (`events.baseline.json`) and fails a change that breaks it.
 defaultContentType: application/json
 servers:
   internal:

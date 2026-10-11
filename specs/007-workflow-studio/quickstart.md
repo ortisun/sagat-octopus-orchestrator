@@ -18,7 +18,7 @@ Every command below was run on macOS 26 (arm64, Darwin 25.3) against this reposi
    serving, the contract on the normal and error paths, and the faults around decisions):
 
    ```text
-   cargo test -p sagat-tests --test e2e_007 --test contract_rest_007 --test fault_007
+   cargo test -p sagat-tests --test e2e_workflow_studio --test contract_rest_workflow_studio --test fault_workflow_studio
    cargo test -p sagat-api-http --test studio
    cargo test -p sagat-infra-ir -p sagat-application
    ```
@@ -34,7 +34,7 @@ Every command below was run on macOS 26 (arm64, Darwin 25.3) against this reposi
    platform the harness starts, with workers of the TypeScript SDK:
 
    ```text
-   cargo test -p sagat-tests --test e2e_007 -- --ignored journeys --nocapture
+   cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
    SAGAT_STUDIO_GREP="US04" …            # one journey      SAGAT_STUDIO_REBUILD=0 …   # reuse the build
    ```
 
@@ -42,8 +42,8 @@ Every command below was run on macOS 26 (arm64, Darwin 25.3) against this reposi
 
    ```text
    STUDIO_PERF=1 STUDIO_PERF_OUT=$PWD/frontend/e2e/perf-results/perf.json SAGAT_STUDIO_GREP=PERF \
-     cargo test -p sagat-tests --test e2e_007 -- --ignored journeys --nocapture
-   node frontend/e2e/scripts/perf-report.mjs frontend/e2e/perf-results/perf.json tests/performance/reports/007-workflow-studio.md
+     cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+   node frontend/e2e/scripts/perf-report.mjs frontend/e2e/perf-results/perf.json tests/performance/reports/workflow-studio.md
    ```
 
 5. **The repository's gates**: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
@@ -54,7 +54,7 @@ Every command below was run on macOS 26 (arm64, Darwin 25.3) against this reposi
 - E2E create→validate→publish→trigger→fail→compensate→inspect journal/traces: `sc001-chain.spec.ts` (the workflow is built in the
   Studio, the failure and the undo are the platform's, the journal and the trace id are read from the page).
 - Reproducible, annotated errors; no confirmed transition lost: every error carries code, trace id and a way on (`ErrorState`);
-  the stream and the changes are proven equal to the whole graph (`us03`), and the decisions are made once (`fault_007`).
+  the stream and the changes are proven equal to the whole graph (`us03`), and the decisions are made once (`fault_workflow_studio`).
 - Update tasks `[x]` only when real tests have passed.
 
 ## Results
@@ -65,10 +65,10 @@ Run on macOS 26 (arm64), Docker Desktop, Node 26.8.1, Chromium 153, on the commi
 |---|---|
 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `python3 scripts/check-architecture.py`, `cargo audit --deny warnings` | clean (19 crates, no cycle) |
 | `cargo test --workspace --locked --no-fail-fast` | 1 426 passed, 0 failed, 24 ignored (the ignored ones need five toolchains or a browser and run in their own jobs) |
-| of them, for this feature | `e2e_007` 25, `fault_007` 5, `contract_rest_007` 1, `definition_service` 39, `infra-ir` diff 18, `api-http` studio 11, the server's faults of 001 37 (the guard against a client that stops reading), `control-plane` config 29, the chaos test of the domain with the invariant that every changed step is reported |
+| of them, for this feature | `e2e_workflow_studio` 25, `fault_workflow_studio` 5, `contract_rest_workflow_studio` 1, `definition_service` 39, `infra-ir` diff 18, `api-http` studio 11, the server's faults of 001 37 (the guard against a client that stops reading), `control-plane` config 29, the chaos test of the domain with the invariant that every changed step is reported |
 | frontend: `npm run lint`, `typecheck` (app and journeys), `npm test`, `npm run build`, `npm run check:api`, `npm audit --audit-level=moderate` | clean; 849 tests in 62 files; two **low** advisories remain in production dependencies (DOMPurify inside Monaco, G152) |
-| the journeys, `cargo test -p sagat-tests --test e2e_007 -- --ignored journeys` | 16 passed, three consecutive runs (35.5, 34.8 and 35.3 s of Playwright); the 2 benchmark journeys are skipped unless `STUDIO_PERF=1` |
-| the benchmark (`tests/performance/reports/007-workflow-studio.md`) | six hypotheses, all held; one machine, one browser |
+| the journeys, `cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys` | 16 passed, three consecutive runs (35.5, 34.8 and 35.3 s of Playwright); the 2 benchmark journeys are skipped unless `STUDIO_PERF=1` |
+| the benchmark (`tests/performance/reports/workflow-studio.md`) | six hypotheses, all held; one machine, one browser |
 | the reviews | two rounds of an independent security and an independent correctness review (read-only agents); round one found 3 major and 3 minor findings of security and 2 major and 5 minor of correctness, round two 2 major and 3 minor of security and 4 minor of correctness; each confirmed finding was reproduced by a test that failed first (or by a measurement: 6.8 s and 48 s of CPU for two hostile documents, 231 MB for an answer, 120 scans of a table for one quiet stream) and fixed; what was not fixed is a gap with a number (G151–G159) |
 
 What was **not** run, or not proven: the `studio` job of CI on GitHub (its commands were run locally); a sign-in against a real identity provider (a stand-in played by the journeys: G149); a screen reader used by a person (G146); a browser other than Chromium; the benchmark on another machine; the visual direction (`design/README.md`, FR-007-009/010, T007-039..045), which came after these results and is open.

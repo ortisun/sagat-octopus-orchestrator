@@ -223,7 +223,7 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj]) -> Any
                 try:
                     secrets = await ctx.secrets()
                 except SagatError as error:
-                    # `reportsSecretError`: the canonical code of the refusal is the output, so the scenario can compare it.
+                    # `reportsSecretError`: the refusal's canonical code is the output, so the scenario can compare it.
                     if behavior.get("reportsSecretError"):
                         return {**(behavior.get("returns") or {}), "secretError": error.code}
                     raise

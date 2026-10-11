@@ -17,7 +17,7 @@ in memory**. Behaviour and decisions: [`research.md`](./research.md) (D138–D15
 | `GET /runs/{id}/graph/changes?since=N` | the run's graph, the journal after `N` | The events after `N` (≤ the graph's sequence) and the full objects of the nodes they name; `reset` with the whole graph when `N` is ahead or more than 500 behind. |
 | `GET /runs/{id}/stream[?after=N]` | the same, pushed | `text/event-stream`: `graph` events (id = sequence), `: ping` every 15 s, `end`, `reconnect`; resumable with `Last-Event-ID`; closed at the token's expiry and after 15 minutes. At most 20 per subject and 200 per tenant. |
 
-Invariants (tested in `tests/e2e/007-workflow-studio`):
+Invariants (tested in `tests/e2e/workflow-studio`):
 
 - A node changes only through a journal event that names it or activates it (`RunEvent::changed_nodes`); therefore **applying
   every delta in order gives exactly the graph the platform would send whole** (`us03_applying_every_change_in_order…`, and

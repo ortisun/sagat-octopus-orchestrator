@@ -307,7 +307,14 @@ public sealed class ClientTests : IAsyncLifetime
         using var ambient = new Activity("caller").SetIdFormat(ActivityIdFormat.W3C);
         ambient.Start();
         await NewClient().GetAsync(Ids.Run);
-        Assert.Equal(ambient.Id, server.Requests[0].Header("traceparent"));
+        // The call is in the caller's trace. Its span id and its flags may differ from the ambient activity's: when
+        // something listens to the SDK's ActivitySource (a test of its telemetry that runs at the same time, or an
+        // application's tracer) the call has a span of its own, a child of the ambient one, and it is sampled.
+        var parts = server.Requests[0].Header("traceparent")!.Split('-');
+        Assert.Equal(4, parts.Length);
+        Assert.Equal("00", parts[0]);
+        Assert.Equal(ambient.TraceId.ToHexString(), parts[1]);
+        Assert.Matches("^[0-9a-f]{16}$", parts[2]);
     }
 
     [Fact]

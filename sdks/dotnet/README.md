@@ -296,7 +296,7 @@ bash conformance/prepare.sh      # builds the runner; the harness calls it, and 
 ```
 
 The runner has one mode besides `build` and `run`: `conformance/run.sh aspnet <config.json> <out.json>`, the acceptance test of
-US01-AC01 against the real platform (`tests/e2e/006-sdk-multilanguage`, `an_aspnet_core_service…`). It starts a minimal ASP.NET Core
+US01-AC01 against the real platform (`tests/e2e/sdk-multilanguage`, `an_aspnet_core_service…`). It starts a minimal ASP.NET Core
 service on a loopback port that registers the SDK with `AddSagatOctopusOrchestrator`, with `POST /orders` taking `ISagatClient` from
 dependency injection and calling `StartAsync` with the request's `Idempotency-Key` header and **no explicit trace**, calls it twice
 with the same key and one `traceparent`, and writes what came back. The trace reaches the platform through the ambient `Activity`
