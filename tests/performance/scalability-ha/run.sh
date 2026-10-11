@@ -22,7 +22,24 @@ find_pgbin() {
   echo "no PostgreSQL server binaries found: set PGBIN" >&2; return 1
 }
 PGBIN="$(find_pgbin)"
-PORT="${SAGAT_BENCH_PGPORT:-55433}"
+PORT_FROM="${SAGAT_BENCH_PGPORT:-55433}"
+# The first port from there up that nothing holds (a fixed one can be taken by whatever else the machine runs).
+PORT="$(python3 - "$PORT_FROM" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+while True:
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("127.0.0.1", port))
+        s.close()
+        print(port)
+        break
+    except OSError:
+        s.close()
+        port += 1
+PY
+)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sagat-bench-XXXXXX")"
 DATA="$WORK/pgdata"
 REPORT="${SAGAT_PERF_REPORT:-tests/performance/reports/scalability-ha.md}"

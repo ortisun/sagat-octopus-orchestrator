@@ -16,6 +16,7 @@
 #
 #   infra/dr/drill.sh                      # the report goes to tests/performance/reports/disaster-recovery.md
 #   SAGAT_DR_RUNS=20000 infra/dr/drill.sh  # a larger population
+# (A step that has not signalled in ten minutes is a drill that has failed, not one that is slow.)
 #
 # It needs PostgreSQL's server binaries (PGBIN), psql, a Rust toolchain and about 1 GiB of disk. The
 # clusters, the archive and the backup are made in a temporary directory and removed at the end
@@ -56,6 +57,25 @@ PASSWORD="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 (umask 077; printf '%s' "$PASSWORD" > "$WORK/password"; printf '127.0.0.1:*:*:postgres:%s\n' "$PASSWORD" > "$WORK/pgpass")
 export PGPASSWORD="$PASSWORD" PGPASSFILE="$WORK/pgpass"
 
+# The first port from $1 up that nothing holds on the loopback. (A fixed port can be taken by whatever else the machine
+# runs, or by the source port of a connection that happens to be open: the first run on a CI runner found one.)
+free_port() {
+  python3 - "$1" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+while True:
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("127.0.0.1", port))
+        s.close()
+        print(port)
+        break
+    except OSError:
+        s.close()
+        port += 1
+PY
+}
 now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 psqlc() { psql -X -At -h 127.0.0.1 -U postgres "$@"; }
@@ -98,7 +118,7 @@ add() { SUMMARY+="$1"$'\n'; }
 
 # ----------------------------------------------------------------------------- 1. point in time
 log "1/2 point-in-time recovery"
-P1=$BASE_PORT
+P1=$(free_port "$BASE_PORT")
 ARCH="$WORK/archive"; mkdir -p "$ARCH"
 D1=$(make_cluster primary "$P1" "archive_mode = on" \
   "archive_command = 'test ! -f $ARCH/%f && cp %p $ARCH/%f'" "archive_timeout = 30s" "max_wal_size = 2GB")
@@ -109,7 +129,7 @@ export SAGAT_DR_RUNS="$RUNS"
 run_test dr_workload > "$WORK/workload.log" 2>&1 &
 PIDS+=($!)
 workload=$!
-wait_for() { local f="$SAGAT_DR_DIR/$1" n=0; until [ -e "$f" ]; do sleep 0.2; n=$((n+1)); [ $n -lt 9000 ] || { echo "timeout waiting for $1" >&2; tail -20 "$WORK/workload.log" >&2; return 1; }; done; }
+wait_for() { local f="$SAGAT_DR_DIR/$1" n=0; until [ -e "$f" ]; do sleep 0.2; n=$((n+1)); [ $n -lt 3000 ] || { echo "timeout waiting for $1" >&2; tail -20 "$WORK/workload.log" >&2; return 1; }; done; }
 wait_for a.done
 DB=$(cat "$SAGAT_DR_DIR/db")
 log "phase A done: database $DB; taking the base backup while phase B runs"
@@ -144,7 +164,7 @@ DR="$WORK/restored/data"; mkdir -p "$WORK/restored"
 t0=$(now)
 cp -R "$WORK/base" "$DR"; chmod 700 "$DR"
 rm -f "$DR/pg_wal/"0000* 2>/dev/null || true
-P2=$((BASE_PORT + 1))
+P2=$(free_port $((P1 + 1)))
 {
   echo "port = $P2"
   echo "listen_addresses = '127.0.0.1'"
@@ -203,19 +223,23 @@ case "$verify" in *"failed=0"*) ;; *) echo "THE RESTORED RUNS DO NOT REPLAY: $ve
 # ----------------------------------------------------------------------------- 2. failover
 failover() { # $1 label, $2 synchronous_standby_names ('' = asynchronous), $3 port offset
   local label="$1" names="$2" off="$3"
-  local pp=$((BASE_PORT + off)) sp=$((BASE_PORT + off + 1))
+  # (This function runs in a command substitution, where bash does not stop at a failed command: every step
+  # that must not fail says so, or the drill would go on for as long as its waits last.)
+  local pp sp
+  pp=$(free_port $((BASE_PORT + off))) || exit 1
+  sp=$(free_port $((pp + 1))) || exit 1
   local sync_conf=""
   [ -n "$names" ] && sync_conf="synchronous_standby_names = '$names'"
   local dp; dp=$(make_cluster "primary-$label" "$pp" "${sync_conf:-synchronous_standby_names = ''}")
-  start "$dp"
+  start "$dp" || exit 1
   local ds="$WORK/standby-$label/data"; mkdir -p "$WORK/standby-$label"
-  PGAPPNAME=standby1 pg_basebackup -h 127.0.0.1 -p "$pp" -U postgres -D "$ds" -R -X stream -c fast >/dev/null
+  PGAPPNAME=standby1 pg_basebackup -h 127.0.0.1 -p "$pp" -U postgres -D "$ds" -R -X stream -c fast >/dev/null || exit 1
   {
     echo "port = $sp"
     echo "unix_socket_directories = '$WORK/standby-$label'"
   } >> "$ds/postgresql.conf"
   chmod 700 "$ds"
-  start "$ds"
+  start "$ds" || exit 1
   for _ in $(seq 1 100); do
     [ -n "$(psqlc -p "$pp" -c "SELECT 1 FROM pg_stat_replication WHERE state = 'streaming'")" ] && break
     sleep 0.2
@@ -226,14 +250,14 @@ failover() { # $1 label, $2 synchronous_standby_names ('' = asynchronous), $3 po
   export SAGAT_DR_DIR="$WORK/signals-$label"; mkdir -p "$SAGAT_DR_DIR"
   run_test dr_acked_workload > "$WORK/acked-$label.log" 2>&1 &
   local load=$!; PIDS+=($!)
-  wait_for workload.ready
+  wait_for workload.ready || exit 1
   sleep 8
   local pm; pm=$(head -1 "$dp/postmaster.pid")
   local children; children=$(pgrep -P "$pm" || true)
   local t_kill; t_kill=$(now)
   # shellcheck disable=SC2086
   kill -9 "$pm" $children 2>/dev/null || true
-  pg_ctl -D "$ds" -w promote >/dev/null
+  pg_ctl -D "$ds" -w promote >/dev/null || exit 1
   for _ in $(seq 1 600); do
     [ "$(psqlc -p "$sp" -c 'SELECT pg_is_in_recovery()' 2>/dev/null || echo t)" = f ] && break
     sleep 0.05
