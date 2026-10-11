@@ -357,6 +357,69 @@ async fn an_incident_on_one_node_does_not_suppress_another_nodes_terminal_audit(
 }
 
 #[tokio::test]
+async fn a_delayed_terminal_report_finds_incident_evidence_after_the_lease_advances() {
+    let (w, _old_session, old_task) = leased_production().await;
+    w.runner
+        .record_incident(
+            &w.runner_identity,
+            &production(&w, &old_task),
+            IncidentCategory::ForbiddenAddress,
+            &ctx(),
+        )
+        .await
+        .expect("incident committed before the old lease ended");
+
+    w.age_lease(old_task.run_id, old_task.node.as_str()).await;
+    assert_eq!(w.scheduler.tick().await.leases_expired, 1);
+    w.age_retry(old_task.run_id, old_task.node.as_str()).await;
+    assert_eq!(w.scheduler.tick().await.retries_released, 1);
+    let replacement_session = w
+        .session_as(&w.runner_identity, &[old_task.activity.as_str()], 1)
+        .await;
+    let replacement = w.one_task(&replacement_session).await;
+    assert_eq!(
+        replacement.step_id, old_task.step_id,
+        "step identity is stable"
+    );
+    assert!(replacement.fence.attempt > old_task.fence.attempt);
+    assert!(replacement.fence.generation > old_task.fence.generation);
+
+    let destination = "fetch https://late-old-attempt.example/secret-canary";
+    w.runner
+        .record_execution(
+            &w.runner_identity,
+            NewExecution {
+                namespace_id: w.namespace.id(),
+                digest: digest_of_activity(old_task.activity.as_str()).expect("script activity"),
+                run_id: Some(old_task.run_id.as_uuid()),
+                node: Some(old_task.node.as_str().to_owned()),
+                attempt: Some(old_task.fence.attempt),
+                status: ExecutionStatus::Failed,
+                failure: Some(Failure::Denied),
+                exit_code: None,
+                log: String::new(),
+                log_truncated: false,
+                denied: vec![destination.to_owned()],
+                wall_ms: 1,
+                start_ms: 1,
+                memory_peak_bytes: None,
+                trace_id: None,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("delayed terminal diagnostic");
+
+    let reasons: Vec<String> = incident_rows(&w)
+        .await
+        .into_iter()
+        .map(|row| row.3)
+        .collect();
+    assert_eq!(reasons, vec!["FORBIDDEN_ADDRESS"]);
+    assert!(!format!("{reasons:?}").contains("late-old-attempt"));
+}
+
+#[tokio::test]
 async fn stale_wrong_and_cross_tenant_production_targets_write_nothing() {
     let (w, _session, task) = leased_production().await;
     let other = Principal::new(

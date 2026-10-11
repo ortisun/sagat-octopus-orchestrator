@@ -35,30 +35,31 @@ pub(super) async fn production_was_recorded(
     node: &str,
     attempt: u32,
 ) -> Result<bool, StoreError> {
-    let step: Option<(Uuid, i64)> = sqlx::query_as(
-        "SELECT step_id, generation FROM steps \
-         WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND attempt = $4",
+    // `steps` is the current projection, but `step_id` is stable across retries. The terminal
+    // report can arrive after the projection advanced to another attempt, so use only the stable
+    // identity here and match the reported historical attempt in the immutable audit resource.
+    let step_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT step_id FROM steps \
+         WHERE tenant_id = $1 AND run_id = $2 AND node = $3",
     )
     .bind(tenant.as_uuid())
     .bind(run_id)
     .bind(node)
-    .bind(i32::try_from(attempt).unwrap_or(i32::MAX))
     .fetch_optional(&mut *conn)
     .await
     .map_err(store_error)?;
-    let Some((step_id, generation)) = step else {
+    let Some(step_id) = step_id else {
         return Ok(false);
     };
+    let resource_prefix = format!("run:{run_id}/step:{step_id}/attempt:{attempt}/generation:");
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM audit_records \
          WHERE tenant_id = $1 AND actor = $2 AND action = 'script.violation' \
-           AND resource_type = 'run' AND resource_id = $3 AND reason = ANY($4))",
+           AND resource_type = 'run' AND starts_with(resource_id, $3) AND reason = ANY($4))",
     )
     .bind(tenant.as_uuid())
     .bind(actor)
-    .bind(format!(
-        "run:{run_id}/step:{step_id}/attempt:{attempt}/generation:{generation}"
-    ))
+    .bind(resource_prefix)
     .bind(CATEGORIES.as_slice())
     .fetch_one(conn)
     .await
