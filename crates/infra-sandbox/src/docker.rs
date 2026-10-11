@@ -44,6 +44,8 @@ use sagat_infra_schema as schema;
 pub struct Images {
     pub typescript: String,
     pub python: String,
+    pub csharp_build: String,
+    pub csharp_runtime: String,
 }
 
 impl Default for Images {
@@ -51,6 +53,8 @@ impl Default for Images {
         Self {
             typescript: "node:24-alpine".to_owned(),
             python: "python:3.13-alpine".to_owned(),
+            csharp_build: "sagat/dotnet-builder:10.0.401".to_owned(),
+            csharp_runtime: "sagat/dotnet-runtime:10.0.12".to_owned(),
         }
     }
 }
@@ -70,6 +74,9 @@ fn failed_at<E: std::fmt::Display>(stage: &'static str) -> impl FnOnce(E) {
 const LOG_FLOOD_FACTOR: usize = 16;
 /// A line of the channel is at most the largest result plus its framing.
 const MAX_LINE: usize = MAX_RESULT_BYTES + 16 * 1024;
+/// A compiled C# assembly and its allowlisted managed dependencies cross this line. It remains
+/// below the control plane's artifact cap plus bounded protocol framing.
+const MAX_BUILD_LINE: usize = sagat_infra_schema::bundle::MAX_BUNDLE_BYTES + 64 * 1024;
 const KILL_GRACE: Duration = Duration::from_secs(2);
 /// How many times, and how far apart, a 137 without the out-of-memory flag is looked at again (two seconds in all: on
 /// a loaded machine the engine's event has been seen to come later than a quarter of a second).
@@ -145,6 +152,7 @@ struct Job {
     command: Vec<String>,
     first_message: Vec<u8>,
     limits: Limits,
+    max_line: usize,
 }
 
 /// The write side of the channel to a script.
@@ -176,10 +184,20 @@ impl DockerSandbox {
         })
     }
 
-    fn image_of(&self, language: Language) -> Option<&str> {
+    fn build_image_of(&self, language: Language) -> Option<&str> {
         match language {
             Language::TypeScript => Some(&self.images.typescript),
             Language::Python => Some(&self.images.python),
+            Language::CSharp => Some(&self.images.csharp_build),
+            _ => None,
+        }
+    }
+
+    fn runtime_image_of(&self, language: Language) -> Option<&str> {
+        match language {
+            Language::TypeScript => Some(&self.images.typescript),
+            Language::Python => Some(&self.images.python),
+            Language::CSharp => Some(&self.images.csharp_runtime),
             _ => None,
         }
     }
@@ -488,7 +506,7 @@ impl DockerSandbox {
                     for byte in message.iter().copied() {
                         if byte != b'\n' {
                             line.push(byte);
-                            if line.len() > MAX_LINE {
+                            if line.len() > job.max_line {
                                 driven.flooded = true;
                                 break 'read;
                             }
@@ -803,16 +821,29 @@ fn artifact_json(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    serde_json::to_vec(&json!({
-        "v": 1,
-        "language": language.as_str(),
-        "policy": policy.canonical(),
-        "inputSchema": schema(contract.0),
-        "outputSchema": schema(contract.1),
-        "entry": entry,
-        "files": files,
-    }))
-    .unwrap_or_default()
+    let value = if language == Language::CSharp {
+        json!({
+            "v": 2,
+            "language": language.as_str(),
+            "policy": policy.canonical(),
+            "inputSchema": schema(contract.0),
+            "outputSchema": schema(contract.1),
+            "entry": entry,
+            "encoding": "base64",
+            "files": files,
+        })
+    } else {
+        json!({
+            "v": 1,
+            "language": language.as_str(),
+            "policy": policy.canonical(),
+            "inputSchema": schema(contract.0),
+            "outputSchema": schema(contract.1),
+            "entry": entry,
+            "files": files,
+        })
+    };
+    serde_json::to_vec(&value).unwrap_or_default()
 }
 
 /// The schemas an artifact was built with: what its input and its result must satisfy.
@@ -837,45 +868,75 @@ pub fn artifact_policy(artifact: &[u8]) -> Option<Policy> {
     Policy::parse_canonical(value.get("policy")?.as_str()?).ok()
 }
 
-fn parse_artifact(bytes: &[u8], language: Language) -> Option<Vec<(String, String)>> {
-    sagat_infra_schema::bundle::files(bytes, language)
+fn parse_artifact(
+    bytes: &[u8],
+    language: Language,
+) -> Option<Vec<sagat_infra_schema::bundle::BundleFile>> {
+    sagat_infra_schema::bundle::decoded_files(bytes, language)
 }
 
 impl Sandbox for DockerSandbox {
     async fn toolchain(&self, language: Language) -> Result<String, BuildFailure> {
-        let image = self.image_of(language).ok_or(BuildFailure::Unsupported)?;
-        let id = self
-            .ensure_image(image)
+        let build_image = self
+            .build_image_of(language)
+            .ok_or(BuildFailure::Unsupported)?;
+        let build = self
+            .ensure_image(build_image)
             .await
             .map_err(|()| BuildFailure::Unavailable)?;
-        Ok(format!("{id};shim={}", shim_version()))
+        if language == Language::CSharp {
+            let runtime_image = self
+                .runtime_image_of(language)
+                .ok_or(BuildFailure::Unsupported)?;
+            let runtime = self
+                .ensure_image(runtime_image)
+                .await
+                .map_err(|()| BuildFailure::Unavailable)?;
+            Ok(format!(
+                "build={build};runtime={runtime};protocol=artifact-v2"
+            ))
+        } else {
+            Ok(format!("{build};shim={}", shim_version()))
+        }
     }
 
     async fn build(&self, request: BuildRequest) -> Result<Built, BuildFailure> {
         let language = request.language;
         let image = self
-            .image_of(language)
+            .build_image_of(language)
             .ok_or(BuildFailure::Unsupported)?
             .to_owned();
-        lockfile::accept(language, request.lockfile.as_ref()).map_err(BuildFailure::Lockfile)?;
+        let packages = lockfile::approved(language, request.lockfile.as_ref())
+            .map_err(BuildFailure::Lockfile)?;
         let toolchain = self.toolchain(language).await?;
         let command = match language {
-            Language::TypeScript => [
+            Language::TypeScript => vec![
                 "node",
                 "--no-warnings",
                 "--input-type=module",
                 "-e",
                 BUILD_MJS,
             ],
-            _ => ["python", "-I", "-B", "-c", BUILD_PY],
+            Language::Python => vec!["python", "-I", "-B", "-c", BUILD_PY],
+            Language::CSharp => vec!["dotnet", "/opt/sagat/build/Sagat.DotnetBuild.dll"],
+            _ => return Err(BuildFailure::Unsupported),
         };
         let job = Job {
             image,
-            command: command.map(str::to_owned).to_vec(),
-            first_message: protocol::build_message(request.source.as_str()),
+            command: command.into_iter().map(str::to_owned).collect(),
+            first_message: protocol::build_message(
+                request.source.as_str(),
+                request.lockfile.as_ref().map(|lockfile| lockfile.as_str()),
+                &packages,
+            ),
             // Reading a script takes a fraction of what running it may: a build gets at most the
             // default limits, whatever the policy of the script allows it later.
             limits: request.policy.within(&Policy::default()).limits,
+            max_line: if language == Language::CSharp {
+                MAX_BUILD_LINE
+            } else {
+                MAX_LINE
+            },
         };
         let driven = self.drive::<NoHost>(job, None).await;
         if driven.unavailable {
@@ -899,10 +960,23 @@ impl Sandbox for DockerSandbox {
                     &entry,
                     &files,
                 );
+                let package_components: Vec<Value> = packages
+                    .iter()
+                    .map(|package| {
+                        json!({
+                            "type": "library", "name": package.id, "version": package.version,
+                            "hashes": [{"alg": "SHA-512", "content": package.content_hash}],
+                        })
+                    })
+                    .collect();
+                let mut components = vec![json!({
+                    "type": "platform", "name": language.as_str(), "version": toolchain,
+                })];
+                components.extend(package_components);
                 let sbom = serde_json::to_vec(&json!({
                     "bomFormat": "CycloneDX", "specVersion": "1.5",
                     "metadata": {"component": {"type": "application", "name": "script", "version": "1"}},
-                    "components": [{"type": "platform", "name": language.as_str(), "version": toolchain}],
+                    "components": components,
                 }))
                 .unwrap_or_default();
                 Ok(Built {
@@ -939,7 +1013,7 @@ impl Sandbox for DockerSandbox {
             inferred_input_schema: None,
             inferred_output_schema: None,
         };
-        let Some(image) = self.image_of(language).map(str::to_owned) else {
+        let Some(image) = self.runtime_image_of(language).map(str::to_owned) else {
             return failed(
                 Failure::Unavailable,
                 "no runner for this language".to_owned(),
@@ -964,14 +1038,21 @@ impl Sandbox for DockerSandbox {
             );
         }
         let command = match language {
-            Language::TypeScript => [
+            Language::TypeScript => vec![
                 "node",
                 "--no-warnings",
                 "--input-type=module",
                 "-e",
                 RUNTIME_MJS,
             ],
-            _ => ["python", "-I", "-B", "-c", RUNTIME_PY],
+            Language::Python => vec!["python", "-I", "-B", "-c", RUNTIME_PY],
+            Language::CSharp => vec!["dotnet", "/opt/sagat/runtime/Sagat.DotnetRuntime.dll"],
+            _ => {
+                return failed(
+                    Failure::Unavailable,
+                    "no runner for this language".to_owned(),
+                );
+            }
         };
         if self.ensure_image(&image).await.is_err() {
             return failed(
@@ -981,13 +1062,28 @@ impl Sandbox for DockerSandbox {
         }
         let job = Job {
             image,
-            command: command.map(str::to_owned).to_vec(),
-            first_message: protocol::run_message(
-                &input,
-                &files,
-                request.idempotency_key.as_deref(),
-            ),
+            command: command.into_iter().map(str::to_owned).collect(),
+            first_message: if language == Language::CSharp {
+                protocol::run_binary_message(&input, &files, request.idempotency_key.as_deref())
+            } else {
+                let text: Option<Vec<(String, String)>> = files
+                    .into_iter()
+                    .map(|file| {
+                        String::from_utf8(file.bytes)
+                            .ok()
+                            .map(|text| (file.name, text))
+                    })
+                    .collect();
+                let Some(text) = text else {
+                    return failed(
+                        Failure::Unavailable,
+                        "the artifact is not one this runner can load".to_owned(),
+                    );
+                };
+                protocol::run_message(&input, &text, request.idempotency_key.as_deref())
+            },
             limits: request.policy.limits,
+            max_line: MAX_LINE,
         };
         let driven = self.drive(job, Some(host)).await;
 

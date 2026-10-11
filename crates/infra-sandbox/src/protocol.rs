@@ -2,8 +2,12 @@
 //! container's standard output (script to supervisor) and standard input (supervisor to script).
 //! Everything the script prints itself goes to standard error, which is its log.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use sagat_application::sandbox::{HttpReply, HttpRequest};
+use sagat_infra_schema::bundle::BundleFile;
 use serde_json::{Value, json};
+
+use crate::lockfile::ApprovedPackage;
 
 /// What the sandboxed side says.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,10 +104,45 @@ pub fn run_message(input: &Value, files: &[(String, String)], key: Option<&str>)
     line(&json!({"op": "run", "input": input, "files": files, "idempotencyKey": key}))
 }
 
+/// The first thing the .NET runtime receives. Binary assembly bytes remain on the JSON-line
+/// channel as canonical base64; the runtime never writes them to an executable filesystem.
+#[must_use]
+pub fn run_binary_message(input: &Value, files: &[BundleFile], key: Option<&str>) -> Vec<u8> {
+    let files: serde_json::Map<String, Value> = files
+        .iter()
+        .map(|file| {
+            (
+                file.name.clone(),
+                Value::String(STANDARD.encode(&file.bytes)),
+            )
+        })
+        .collect();
+    line(&json!({
+        "op": "run", "input": input, "encoding": "base64", "files": files,
+        "idempotencyKey": key
+    }))
+}
+
 /// The first thing the supervisor says to a builder: build this source.
 #[must_use]
-pub fn build_message(source: &str) -> Vec<u8> {
-    line(&json!({"op": "build", "source": source}))
+pub fn build_message(
+    source: &str,
+    lockfile: Option<&str>,
+    packages: &[ApprovedPackage],
+) -> Vec<u8> {
+    let packages: Vec<Value> = packages
+        .iter()
+        .map(|package| {
+            json!({
+                "id": package.id,
+                "version": package.version,
+                "contentHash": package.content_hash,
+            })
+        })
+        .collect();
+    line(&json!({
+        "op": "build", "source": source, "lockfile": lockfile, "packages": packages
+    }))
 }
 
 #[must_use]
@@ -193,7 +232,7 @@ mod tests {
                 &[("main.py".to_owned(), "x = 1\n".to_owned())],
                 Some("done-1"),
             ),
-            build_message("a\nb"),
+            build_message("a\nb", None, &[]),
             fetch_reply(
                 1,
                 &HttpReply {
@@ -209,5 +248,20 @@ mod tests {
             assert_eq!(text.matches('\n').count(), 1, "{text:?}");
             assert!(text.ends_with('\n'));
         }
+    }
+
+    #[test]
+    fn a_csharp_build_carries_the_exact_lock_and_approved_references() {
+        let package = ApprovedPackage {
+            id: "Newtonsoft.Json".to_owned(),
+            version: "13.0.4".to_owned(),
+            content_hash: "hash".to_owned(),
+        };
+        let message = build_message("source", Some("{\"version\":1}"), &[package]);
+        let value: Value = serde_json::from_slice(&message).expect("json line");
+        assert_eq!(value["lockfile"], "{\"version\":1}");
+        assert_eq!(value["packages"][0]["id"], "Newtonsoft.Json");
+        assert_eq!(value["packages"][0]["version"], "13.0.4");
+        assert_eq!(value["packages"][0]["contentHash"], "hash");
     }
 }

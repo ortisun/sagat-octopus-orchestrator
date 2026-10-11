@@ -3865,6 +3865,7 @@ dependencies = [
 name = "sagat-infra-sandbox"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "bollard",
  "futures-util",
  "metrics",
