@@ -71,6 +71,9 @@ const LOG_FLOOD_FACTOR: usize = 16;
 /// A line of the channel is at most the largest result plus its framing.
 const MAX_LINE: usize = MAX_RESULT_BYTES + 16 * 1024;
 const KILL_GRACE: Duration = Duration::from_secs(2);
+/// How many times, and how far apart, a 137 without the out-of-memory flag is looked at again (a quarter of a second).
+const OOM_FLAG_ATTEMPTS: u32 = 10;
+const OOM_FLAG_PAUSE: Duration = Duration::from_millis(25);
 /// Requests and secrets a script may ask its supervisor for in one run. Past it every ask is refused:
 /// a script in a loop must not make the supervisor do the same work as many times as it can ask.
 const MAX_HOST_CALLS: usize = 100;
@@ -395,6 +398,22 @@ impl DockerSandbox {
         driven
     }
 
+    /// Whether the engine says, within a moment, that the container was killed for its memory.
+    async fn oom_flag_settles(&self, name: &str) -> bool {
+        for _ in 0..OOM_FLAG_ATTEMPTS {
+            tokio::time::sleep(OOM_FLAG_PAUSE).await;
+            match within(self.docker.inspect_container(name, None)).await {
+                Some(Ok(info)) => {
+                    if info.state.as_ref().and_then(|s| s.oom_killed) == Some(true) {
+                        return true;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
     async fn drive_created<H: HostCalls>(
         &self,
         name: &str,
@@ -578,6 +597,20 @@ impl DockerSandbox {
                 if state.running != Some(true) || Instant::now() >= end {
                     driven.exit_code = state.exit_code;
                     driven.oom = state.oom_killed == Some(true);
+                    // 137 is SIGKILL: what the kernel's out-of-memory killer sends, and what our own kill sends.
+                    // The engine learns that the memory limit did it from an event that can arrive a moment after
+                    // the one that says the container stopped (it does, on the CI's Linux), so a script that
+                    // gave no answer, did not run out of time and was not flooded, and ended on a 137, is asked
+                    // about again for a moment before the flag is believed to be false.
+                    if !driven.oom
+                        && state.running != Some(true)
+                        && driven.exit_code == Some(137)
+                        && driven.message.is_none()
+                        && !driven.timed_out
+                        && !driven.flooded
+                    {
+                        driven.oom = self.oom_flag_settles(name).await;
+                    }
                     break;
                 }
             } else {
