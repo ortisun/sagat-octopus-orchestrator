@@ -3674,6 +3674,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-cli"
+version = "0.2.0"
+dependencies = [
+ "reqwest",
+ "rustls",
+ "sagat-application",
+ "sagat-infra-ir",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tokio",
+]
+
+[[package]]
 name = "sagat-control-plane"
 version = "0.2.0"
 dependencies = [
@@ -3939,6 +3954,7 @@ dependencies = [
  "sagat-api-grpc",
  "sagat-api-http",
  "sagat-application",
+ "sagat-cli",
  "sagat-control-plane",
  "sagat-domain",
  "sagat-execution-engine",

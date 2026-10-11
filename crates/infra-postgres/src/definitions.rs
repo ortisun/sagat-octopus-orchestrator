@@ -400,14 +400,16 @@ impl DefinitionStore for PgDefinitionStore {
             };
             crate::versioning::record_publication(
                 &mut tx,
-                tenant,
-                id,
-                workflow.active_version(),
-                version.id(),
-                created,
-                context,
-                principal.subject().as_str(),
-                now,
+                &crate::versioning::Published {
+                    tenant,
+                    workflow: id,
+                    previous_active: workflow.active_version(),
+                    version: version.id(),
+                    created,
+                    context,
+                    actor: principal.subject().as_str(),
+                    now,
+                },
             )
             .await?;
             sqlx::query(

@@ -58,10 +58,13 @@ fn page_request(query: &PageQuery) -> PageRequest {
     }
 }
 
-fn service<B: Exec>(
-    state: &B,
-) -> Result<&sagat_application::publishing::PublishingService<B::Store, B::Clock, B::Codec>, ApiError>
-{
+type Service<B> = sagat_application::publishing::PublishingService<
+    <B as Exec>::Store,
+    <B as Exec>::Clock,
+    <B as Exec>::Codec,
+>;
+
+fn service<B: Exec>(state: &B) -> Result<&Service<B>, ApiError> {
     state.publishing().ok_or_else(ApiError::not_found)
 }
 

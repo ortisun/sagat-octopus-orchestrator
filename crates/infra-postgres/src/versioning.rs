@@ -606,20 +606,38 @@ fn activation_from_row(row: &PgRow) -> Result<ActivationRecord, StoreError> {
     })
 }
 
+/// A publication as the transaction that makes it sees it.
+#[derive(Clone, Copy)]
+pub(crate) struct Published<'a> {
+    pub tenant: TenantId,
+    pub workflow: WorkflowId,
+    /// The version the pointer had before.
+    pub previous_active: Option<WorkflowVersionId>,
+    pub version: WorkflowVersionId,
+    /// False when the document was a version that existed.
+    pub created: bool,
+    pub context: &'a PublishContext,
+    pub actor: &'a str,
+    pub now: OffsetDateTime,
+}
+
 /// What a publication records beyond the version: the change of the pointer, the artifacts the
 /// version pins, and that a request was published. Called inside the publishing transaction, with
 /// the workflow row locked.
 pub(crate) async fn record_publication(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    tenant: TenantId,
-    workflow: WorkflowId,
-    previous_active: Option<WorkflowVersionId>,
-    version: WorkflowVersionId,
-    created: bool,
-    context: &PublishContext,
-    actor: &str,
-    now: OffsetDateTime,
+    published: &Published<'_>,
 ) -> Result<(), StoreError> {
+    let Published {
+        tenant,
+        workflow,
+        previous_active,
+        version,
+        created,
+        context,
+        actor,
+        now,
+    } = *published;
     if created {
         for digest in &context.scripts {
             sqlx::query(
