@@ -12,11 +12,34 @@ use std::time::Duration;
 
 use sagat_domain::execution::{Fence, RunId, RunStatus};
 use sagat_domain::identity::TenantId;
+use sagat_domain::sharding::ShardSet;
 use sagat_domain::workflow::NodeId;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::StoreError;
+
+/// What a candidate query is asked: which shards to look at (those the replica owns), which tenants
+/// to leave out (those that already have their share of this pass: `FR-010-002`), and how many.
+#[derive(Debug, Clone)]
+pub struct Window {
+    pub shards: ShardSet,
+    pub exclude: Vec<TenantId>,
+    pub limit: u32,
+}
+
+impl Window {
+    /// Every shard, no tenant left out: what a single engine, and the tests that do not care about
+    /// ownership, ask.
+    #[must_use]
+    pub const fn everything(limit: u32) -> Self {
+        Self {
+            shards: ShardSet::all(),
+            exclude: Vec::new(),
+            limit,
+        }
+    }
+}
 
 /// A step found by a maintenance query.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,31 +100,31 @@ pub trait MaintenanceStore: Send + Sync {
     /// Timers whose due time has passed, oldest first.
     fn due_timers(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
 
     /// Event waits whose deadline has passed.
     fn due_wait_deadlines(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
 
     /// Steps in retry backoff whose delay has elapsed.
     fn due_retries(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
 
     /// Leased attempts whose lease expired or whose attempt deadline passed.
     fn lost_leases(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<LostLease>, StoreError>> + Send;
 
     /// Unfinished runs past their deadline.
     fn overdue_runs(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
 
     /// `READY` steps that nobody was notified about for `older_than` (the notification may have
@@ -109,26 +132,26 @@ pub trait MaintenanceStore: Send + Sync {
     fn stale_hints(
         &self,
         older_than: Duration,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
 
     /// Child runs that `child` steps reserved and nobody has created yet, oldest first.
     fn pending_children(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<PendingChild>, StoreError>> + Send;
 
     /// Child runs that ended while the parent step that waits for them has not been told.
     fn ended_children(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<EndedChild>, StoreError>> + Send;
 
     /// Running child runs whose parent was stopped under a policy that cancels them and that have
     /// not been asked to stop yet.
     fn children_to_cancel(
         &self,
-        limit: u32,
+        window: &Window,
     ) -> impl Future<Output = Result<Vec<RunRef>, StoreError>> + Send;
 
     /// Deletes idempotency records older than `older_than`; returns how many.

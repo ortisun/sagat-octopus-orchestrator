@@ -294,3 +294,7 @@ path = "performance/developer-experience/main.rs"
 name = "e2e_developer_experience"
 path = "e2e/developer-experience/main.rs"
 
+
+[[test]]
+name = "integration_scalability_ha"
+path = "integration/scalability-ha/main.rs"

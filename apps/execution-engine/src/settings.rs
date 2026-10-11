@@ -15,8 +15,8 @@ use sagat_control_plane::config::{
 };
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
-    DeliverySettings, DispatchSettings, EventDispatchSettings, MonitorSettings, ProjectorSettings,
-    SchedulerSettings,
+    DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings, MonitorSettings,
+    ProjectorSettings, SchedulerSettings,
 };
 use sagat_telemetry::OtlpConfig;
 
@@ -55,6 +55,11 @@ pub struct EngineConfig {
     /// When the compensations of a provider operation that keeps failing stop being leased.
     pub breaker: BreakerPolicy,
     pub scheduler: SchedulerSettings,
+    /// How the replica holds its shards of the scheduler's work (`FR-010-001`).
+    pub shards: KeeperSettings,
+    /// Names the replica in the leases (`SAGAT_REPLICA_ID`, often the pod name); a random suffix is
+    /// added at start so that a restarted process is never mistaken for the one it replaces.
+    pub replica: String,
     /// Pause between scheduler ticks when the last one found nothing to do.
     pub tick_interval: Duration,
     pub housekeeping_interval: Duration,
@@ -83,6 +88,31 @@ pub struct EngineConfig {
     /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
     /// `ResolveSecrets` call off.
     pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
+}
+
+/// The most candidates of one pass a scheduler acts on at once; each holds a database connection.
+const MAX_SCHEDULER_CONCURRENCY: usize = 64;
+const MIN_SHARD_LEASE: Duration = Duration::from_secs(3);
+const MAX_SHARD_LEASE: Duration = Duration::from_secs(600);
+const MAX_REPLICA_ID: usize = 64;
+
+/// `SAGAT_REPLICA_ID`: printable ASCII without spaces, short; `engine` when it is not set.
+fn replica_name(get: Lookup<'_>) -> Result<String, ConfigError> {
+    let Some(name) = get("SAGAT_REPLICA_ID")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok("engine".to_owned());
+    };
+    if name.len() > MAX_REPLICA_ID || !name.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(ConfigError::Invalid {
+            name: "SAGAT_REPLICA_ID",
+            reason: format!(
+                "must be at most {MAX_REPLICA_ID} printable ASCII characters without spaces"
+            ),
+        });
+    }
+    Ok(name)
 }
 
 fn positive(name: &'static str, value: u64) -> Result<u64, ConfigError> {
@@ -327,8 +357,31 @@ impl EngineConfig {
                 name: "SAGAT_SCHEDULER_BATCH",
                 reason: "is too large".to_owned(),
             })?,
+            concurrency: capacity(
+                get,
+                "SAGAT_SCHEDULER_CONCURRENCY",
+                scheduler_defaults.concurrency,
+            )?
+            .min(MAX_SCHEDULER_CONCURRENCY),
             ..scheduler_defaults
         };
+        let shard_defaults = KeeperSettings::default();
+        let shards = KeeperSettings {
+            ttl: seconds(get, "SAGAT_SHARD_LEASE_SECS", shard_defaults.ttl)?,
+        };
+        // Shorter than this, a pause of the garbage collector or of a network hop loses the shards;
+        // longer, a crashed replica's work waits that long before somebody takes it over.
+        if !(MIN_SHARD_LEASE..=MAX_SHARD_LEASE).contains(&shards.ttl) {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_SHARD_LEASE_SECS",
+                reason: format!(
+                    "must be between {} and {} seconds",
+                    MIN_SHARD_LEASE.as_secs(),
+                    MAX_SHARD_LEASE.as_secs()
+                ),
+            });
+        }
+        let replica = replica_name(get)?;
         let tick_interval = Duration::from_millis(positive(
             "SAGAT_SCHEDULER_INTERVAL_MS",
             optional(get, "SAGAT_SCHEDULER_INTERVAL_MS", 500u64)?,
@@ -534,6 +587,8 @@ impl EngineConfig {
             worker,
             breaker,
             scheduler,
+            shards,
+            replica,
             tick_interval,
             housekeeping_interval,
             liveness_grace,

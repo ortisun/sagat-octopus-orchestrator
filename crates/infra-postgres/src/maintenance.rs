@@ -9,7 +9,7 @@ use std::time::Duration;
 use sagat_application::error::StoreError;
 use sagat_application::maintenance::{
     EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxMessage, OutboxStore, PendingChild,
-    RunRef, StepRef,
+    RunRef, StepRef, Window,
 };
 use sagat_domain::execution::{Fence, RunId};
 use sagat_domain::identity::TenantId;
@@ -40,14 +40,36 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
     })
 }
 
+/// The window as the three parameters every candidate query takes: how many, the shards to look at
+/// and the tenants to leave out.
+fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
+    (
+        i64::from(window.limit),
+        window.shards.indexes(),
+        window.exclude.iter().map(|t| t.as_uuid()).collect(),
+    )
+}
+
 impl MaintenanceStore for PgRunStore {
-    async fn due_timers(&self, limit: u32) -> Result<Vec<StepRef>, StoreError> {
+    // Each query is the same shape: for every shard the replica owns, the oldest `limit` due items of
+    // that shard (the first entries of an index whose leading column is the shard, so a shard with
+    // nothing due costs one probe), then the oldest `limit` of all of them. The oldest `limit` of the
+    // owned shards are among the oldest `limit` of each, so the answer is exactly what one query
+    // over all of them would give.
+    async fn due_timers(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT tenant_id, run_id, node FROM steps \
-             WHERE status = 'WAITING' AND waiting_kind = 'TIMER' AND due_at <= clock_timestamp() \
-             ORDER BY due_at LIMIT $1",
+            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, run_id, node, due_at FROM steps \
+                 WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'TIMER' \
+                   AND due_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY due_at LIMIT $1) t \
+             ORDER BY t.due_at LIMIT $1",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
@@ -56,13 +78,20 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
-    async fn due_wait_deadlines(&self, limit: u32) -> Result<Vec<StepRef>, StoreError> {
+    async fn due_wait_deadlines(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT tenant_id, run_id, node FROM steps \
-             WHERE status = 'WAITING' AND waiting_kind = 'EVENT' AND due_at <= clock_timestamp() \
-             ORDER BY due_at LIMIT $1",
+            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, run_id, node, due_at FROM steps \
+                 WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'EVENT' \
+                   AND due_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY due_at LIMIT $1) t \
+             ORDER BY t.due_at LIMIT $1",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
@@ -71,13 +100,20 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
-    async fn due_retries(&self, limit: u32) -> Result<Vec<StepRef>, StoreError> {
+    async fn due_retries(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT tenant_id, run_id, node FROM steps \
-             WHERE status = 'RETRY_WAIT' AND next_attempt_at <= clock_timestamp() \
-             ORDER BY next_attempt_at LIMIT $1",
+            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, run_id, node, next_attempt_at FROM steps \
+                 WHERE run_shard(run_id) = sh.s AND status = 'RETRY_WAIT' \
+                   AND next_attempt_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY next_attempt_at LIMIT $1) t \
+             ORDER BY t.next_attempt_at LIMIT $1",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
@@ -86,18 +122,33 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
-    async fn lost_leases(&self, limit: u32) -> Result<Vec<LostLease>, StoreError> {
+    async fn lost_leases(&self, window: &Window) -> Result<Vec<LostLease>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         // Two index scans (one per partial index) rather than one query with OR.
         let rows = sqlx::query(
-            "(SELECT tenant_id, run_id, node, attempt, generation, 'TIMED_OUT' AS cause FROM steps \
-              WHERE status IN ('LEASED', 'RUNNING') AND attempt_deadline_at <= clock_timestamp() \
-              ORDER BY attempt_deadline_at LIMIT $1) \
+            "(SELECT t.tenant_id, t.run_id, t.node, t.attempt, t.generation, t.cause \
+                FROM unnest($2::smallint[]) AS sh(s) \
+                CROSS JOIN LATERAL ( \
+                    SELECT tenant_id, run_id, node, attempt, generation, 'TIMED_OUT' AS cause, \
+                           attempt_deadline_at AS at FROM steps \
+                    WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
+                      AND attempt_deadline_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                    ORDER BY attempt_deadline_at LIMIT $1) t \
+              ORDER BY t.at LIMIT $1) \
              UNION ALL \
-             (SELECT tenant_id, run_id, node, attempt, generation, 'EXPIRED' AS cause FROM steps \
-              WHERE status IN ('LEASED', 'RUNNING') AND lease_expires_at <= clock_timestamp() \
-              ORDER BY lease_expires_at LIMIT $1)",
+             (SELECT t.tenant_id, t.run_id, t.node, t.attempt, t.generation, t.cause \
+                FROM unnest($2::smallint[]) AS sh(s) \
+                CROSS JOIN LATERAL ( \
+                    SELECT tenant_id, run_id, node, attempt, generation, 'EXPIRED' AS cause, \
+                           lease_expires_at AS at FROM steps \
+                    WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
+                      AND lease_expires_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                    ORDER BY lease_expires_at LIMIT $1) t \
+              ORDER BY t.at LIMIT $1)",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?;
@@ -125,17 +176,24 @@ impl MaintenanceStore for PgRunStore {
                 },
             });
         }
-        out.truncate(limit as usize);
+        out.truncate(window.limit as usize);
         Ok(out)
     }
 
-    async fn overdue_runs(&self, limit: u32) -> Result<Vec<RunRef>, StoreError> {
+    async fn overdue_runs(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT tenant_id, id FROM runs \
-             WHERE finished_at IS NULL AND stop_reason IS NULL AND deadline_at <= clock_timestamp() \
-             ORDER BY deadline_at LIMIT $1",
+            "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, id, deadline_at FROM runs \
+                 WHERE run_shard(id) = sh.s AND finished_at IS NULL AND stop_reason IS NULL \
+                   AND deadline_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY deadline_at LIMIT $1) t \
+             ORDER BY t.deadline_at LIMIT $1",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
@@ -147,16 +205,23 @@ impl MaintenanceStore for PgRunStore {
     async fn stale_hints(
         &self,
         older_than: Duration,
-        limit: u32,
+        window: &Window,
     ) -> Result<Vec<StepRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT tenant_id, run_id, node FROM steps \
-             WHERE status = 'READY' AND hint_count < 5 \
-               AND last_hinted_at <= clock_timestamp() - $1 * interval '1 microsecond' \
-             ORDER BY last_hinted_at LIMIT $2",
+            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, run_id, node, last_hinted_at FROM steps \
+                 WHERE run_shard(run_id) = sh.s AND status = 'READY' AND hint_count < 5 \
+                   AND last_hinted_at <= clock_timestamp() - $4 * interval '1 microsecond' \
+                   AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY last_hinted_at LIMIT $1) t \
+             ORDER BY t.last_hinted_at LIMIT $1",
         )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .bind(micros(older_than))
-        .bind(i64::from(limit))
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
@@ -165,15 +230,23 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
-    async fn pending_children(&self, limit: u32) -> Result<Vec<PendingChild>, StoreError> {
+    async fn pending_children(&self, window: &Window) -> Result<Vec<PendingChild>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT tenant_id, run_id, node, child_run_id, child_input, clock_timestamp() AS db_now \
-             FROM steps \
-             WHERE status = 'WAITING' AND waiting_kind = 'CHILD' AND child_started = false \
-               AND child_input IS NOT NULL \
-             ORDER BY updated_at LIMIT $1",
+            "SELECT t.tenant_id, t.run_id, t.node, t.child_run_id, t.child_input, \
+                    clock_timestamp() AS db_now \
+             FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, run_id, node, child_run_id, child_input, updated_at FROM steps \
+                 WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'CHILD' \
+                   AND child_started = false AND child_input IS NOT NULL \
+                   AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY updated_at LIMIT $1) t \
+             ORDER BY t.updated_at LIMIT $1",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
@@ -189,13 +262,23 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
-    async fn ended_children(&self, limit: u32) -> Result<Vec<EndedChild>, StoreError> {
+    async fn ended_children(&self, window: &Window) -> Result<Vec<EndedChild>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        // The child that ended is told to its parent: the shard is the parent's.
         sqlx::query(
-            "SELECT tenant_id, id, parent_run_id, parent_node, status FROM runs \
-             WHERE parent_run_id IS NOT NULL AND parent_settled = false AND finished_at IS NOT NULL \
-             ORDER BY finished_at LIMIT $1",
+            "SELECT t.tenant_id, t.id, t.parent_run_id, t.parent_node, t.status \
+             FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, id, parent_run_id, parent_node, status, finished_at FROM runs \
+                 WHERE run_shard(parent_run_id) = sh.s AND parent_run_id IS NOT NULL \
+                   AND parent_settled = false AND finished_at IS NOT NULL \
+                   AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY finished_at LIMIT $1) t \
+             ORDER BY t.finished_at LIMIT $1",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?
@@ -214,13 +297,20 @@ impl MaintenanceStore for PgRunStore {
         .collect()
     }
 
-    async fn children_to_cancel(&self, limit: u32) -> Result<Vec<RunRef>, StoreError> {
+    async fn children_to_cancel(&self, window: &Window) -> Result<Vec<RunRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT tenant_id, id FROM runs \
-             WHERE parent_cancel AND finished_at IS NULL AND stop_reason IS NULL \
-             ORDER BY id LIMIT $1",
+            "SELECT t.tenant_id, t.id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT tenant_id, id FROM runs \
+                 WHERE run_shard(id) = sh.s AND parent_cancel AND finished_at IS NULL \
+                   AND stop_reason IS NULL AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY id LIMIT $1) t \
+             ORDER BY t.id LIMIT $1",
         )
-        .bind(i64::from(limit))
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?

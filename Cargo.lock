@@ -3934,6 +3934,7 @@ dependencies = [
  "sagat-telemetry",
  "serde_json",
  "time",
+ "tokio",
  "tracing",
  "uuid",
 ]

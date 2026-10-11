@@ -110,6 +110,8 @@ fn intervals_and_sizes_must_be_positive_numbers() {
         "SAGAT_POLL_IDLE_RETRY_MS",
         "SAGAT_SCHEDULER_INTERVAL_MS",
         "SAGAT_SCHEDULER_BATCH",
+        "SAGAT_SCHEDULER_CONCURRENCY",
+        "SAGAT_SHARD_LEASE_SECS",
         "SAGAT_HOUSEKEEPING_INTERVAL_SECS",
         "SAGAT_LIVENESS_GRACE_SECS",
         "SAGAT_OUTBOX_BATCH",
@@ -130,6 +132,8 @@ fn intervals_and_sizes_must_be_positive_numbers() {
         ("SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS", "90"),
         ("SAGAT_SCHEDULER_INTERVAL_MS", "50"),
         ("SAGAT_SCHEDULER_BATCH", "7"),
+        ("SAGAT_SCHEDULER_CONCURRENCY", "3"),
+        ("SAGAT_SHARD_LEASE_SECS", "21"),
         ("SAGAT_OUTBOX_BATCH", "9"),
         ("SAGAT_GRPC_MAX_CONNECTIONS", "11"),
         ("SAGAT_GRPC_MAX_CONNECTIONS_PER_PEER", "3"),
@@ -146,6 +150,9 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     assert_eq!(config.breaker.max_open, Duration::from_secs(90));
     assert_eq!(config.tick_interval, Duration::from_millis(50));
     assert_eq!(config.scheduler.batch, 7);
+    assert_eq!(config.scheduler.concurrency, 3);
+    assert_eq!(config.shards.ttl, Duration::from_secs(21));
+    assert_eq!(config.shards.interval(), Duration::from_secs(7));
     assert_eq!(config.dispatch.batch, 9);
     assert_eq!(config.grpc.max_connections, 11);
     assert_eq!(config.grpc.max_connections_per_peer, 3);
@@ -497,4 +504,36 @@ fn the_compensation_breaker_can_be_turned_off_and_its_window_must_be_consistent(
             ..
         }
     ));
+}
+
+#[test]
+fn the_shard_lease_is_bounded_and_the_replica_is_named_safely() {
+    let defaults = parse(&[]).expect("config");
+    assert_eq!(defaults.shards.ttl, Duration::from_secs(15));
+    assert_eq!(defaults.scheduler.concurrency, 8);
+    assert_eq!(defaults.replica, "engine");
+    // Shorter and a pause loses the shards; longer and a crash leaves its work waiting for minutes.
+    for bad in ["2", "601"] {
+        match parse(&[("SAGAT_SHARD_LEASE_SECS", bad)]).expect_err(bad) {
+            ConfigError::Invalid { name, .. } => assert_eq!(name, "SAGAT_SHARD_LEASE_SECS"),
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
+    assert!(parse(&[("SAGAT_SHARD_LEASE_SECS", "3")]).is_ok());
+    assert!(parse(&[("SAGAT_SHARD_LEASE_SECS", "600")]).is_ok());
+    // A larger concurrency than a database connection each could carry is clamped, not refused.
+    let big = parse(&[("SAGAT_SCHEDULER_CONCURRENCY", "100000")]).expect("config");
+    assert_eq!(big.scheduler.concurrency, 64);
+    // The replica's name goes into rows and logs: short, printable, no spaces.
+    let named = parse(&[("SAGAT_REPLICA_ID", " engine-7f9c ")]).expect("config");
+    assert_eq!(named.replica, "engine-7f9c");
+    // 65 characters: one more than a replica's name may have.
+    const LONG: &str = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    assert_eq!(LONG.len(), 65);
+    for bad in ["has space", "tab\there", "ünï", LONG] {
+        match parse(&[("SAGAT_REPLICA_ID", bad)]).expect_err(bad) {
+            ConfigError::Invalid { name, .. } => assert_eq!(name, "SAGAT_REPLICA_ID"),
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
 }

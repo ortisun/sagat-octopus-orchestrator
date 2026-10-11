@@ -29,8 +29,8 @@ use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{PgIdentityStore, PgRunStore, spawn_pool_metrics};
 use sagat_scheduler::{
-    DeliveryWorker, EventDispatcher, Monitor, OutboxDispatcher, ProjectorSettings, Scheduler,
-    TelemetryProjector,
+    DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
+    ProjectorSettings, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -44,7 +44,7 @@ pub use sagat_control_plane::{probe, shutdown_signal};
 pub use settings::EngineConfig;
 
 use loops::{
-    EngineDeliveries, EngineDispatcher, EngineEvents, EngineMonitor, EngineProjector,
+    EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor, EngineProjector,
     EngineScheduler, Health,
 };
 
@@ -103,6 +103,15 @@ pub async fn serve(
     if let Some(secrets) = &engine.secrets {
         workers = workers.with_vault(secrets.cipher());
     }
+    // The scheduler's work is split in shards by the run's id and each replica works on the ones it
+    // holds a lease on (`FR-010-001`); the keeper is what takes, renews and gives back the leases.
+    let placement = Placement::new(format!(
+        "{}-{}",
+        engine.replica,
+        uuid::Uuid::new_v4().simple()
+    ));
+    let keeper: Arc<EngineKeeper> =
+        Arc::new(Keeper::new(store.clone(), placement.clone(), engine.shards));
     let scheduler: Arc<EngineScheduler> = Arc::new(
         Scheduler::new(
             store.clone(),
@@ -110,7 +119,8 @@ pub async fn serve(
             SystemEntropy,
             engine.scheduler,
         )
-        .with_children(cache.clone()),
+        .with_children(cache.clone())
+        .with_placement(placement),
     );
     let events: Arc<EngineEvents> = Arc::new(
         EventDispatcher::new(
@@ -208,7 +218,34 @@ pub async fn serve(
     let health = Arc::new(Health::new(
         (engine.tick_interval * 10).max(engine.liveness_grace),
     ));
+    // The first round before anything ticks, so the scheduler does not begin by finding nothing to
+    // look at; if the database is not there yet the loop below tries again.
+    match keeper.round().await {
+        Ok(first) => tracing::info!(
+            replicas = first.replicas,
+            held = first.held,
+            "holding scheduler shards"
+        ),
+        Err(error) => {
+            tracing::warn!(%error, "could not take the scheduler shards at start; trying again")
+        }
+    }
     let mut tasks = vec![
+        tokio::spawn(loops::run_keeper(
+            {
+                let keeper = Arc::clone(&keeper);
+                move || {
+                    let keeper = Arc::clone(&keeper);
+                    async move { keeper.round().await }
+                }
+            },
+            engine.shards.interval(),
+            {
+                let keeper = Arc::clone(&keeper);
+                move || async move { keeper.leave().await }
+            },
+            stop_rx.clone(),
+        )),
         tokio::spawn(loops::run_scheduler(
             {
                 let scheduler = Arc::clone(&scheduler);
