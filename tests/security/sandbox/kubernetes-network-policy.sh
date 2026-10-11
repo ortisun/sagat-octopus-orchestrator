@@ -83,11 +83,49 @@ for test_namespace in "$namespace" "$canary_namespace"; do
     --overwrite >/dev/null
 done
 
-# The API server's Pod Security admission evaluates every chart workload without starting the
-# product images or requiring its external database and identity provider.
+# Prove the cluster actually enforces restricted Pod Security. Workload-template admission can emit
+# only a warning, so a read-only root filesystem alone is not enough evidence.
+cat >"$work_dir/privileged-counterexample.yaml" <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-counterexample
+  namespace: $namespace
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+  containers:
+    - name: probe
+      image: busybox:1.36
+      command: [sh, -c, 'true']
+      securityContext:
+        privileged: true
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65534
+        capabilities: {drop: [ALL]}
+        seccompProfile: {type: RuntimeDefault}
+EOF
+if privileged_result=$(kubectl create --dry-run=server \
+  -f "$work_dir/privileged-counterexample.yaml" 2>&1); then
+  printf 'restricted Pod Security admitted the privileged counterexample\n' >&2
+  exit 2
+fi
+case $privileged_result in
+  *'violates PodSecurity'*) ;;
+  *)
+    printf 'privileged counterexample failed for an unrelated reason: %s\n' \
+      "$privileged_result" >&2
+    exit 2
+    ;;
+esac
+
+# Rendered workload resources are still server-validated for their own schemas. The restricted
+# security decision is made below against real Pod resources derived from their complete templates.
 if ! kubectl apply --dry-run=server --namespace "$namespace" \
   -f "$work_dir/rendered.yaml" -o json >"$work_dir/rendered.json"; then
-  fail 'the chart is not admitted by the restricted Pod Security profile'
+  fail 'the chart does not pass server-side resource validation'
   exit 1
 elif ! jq -e '
   def podspec:
@@ -101,6 +139,51 @@ elif ! jq -e '
       and all(.securityContext.readOnlyRootFilesystem == true)
 ' "$work_dir/rendered.json" >/dev/null; then
   fail 'every rendered workload container must set readOnlyRootFilesystem=true'
+fi
+
+# Pod creation admission resolves the template's service account. Install only the rendered service
+# accounts in this disposable namespace; the workload PodSpecs remain byte-for-byte equivalent.
+jq '{apiVersion: "v1", kind: "List", items: [.items[] | select(.kind == "ServiceAccount")]}' \
+  "$work_dir/rendered.json" >"$work_dir/serviceaccounts.json"
+if [ "$(jq '.items | length' "$work_dir/serviceaccounts.json")" -gt 0 ]; then
+  kubectl apply --namespace "$namespace" -f "$work_dir/serviceaccounts.json" >/dev/null
+fi
+
+jq --arg namespace "$namespace" '
+  def template:
+    if .kind == "CronJob" then .spec.jobTemplate.spec.template
+    elif (.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet"
+      or .kind == "Job" or .kind == "ReplicaSet") then .spec.template
+    else empty
+    end;
+  [.items[] | template] as $templates
+  | {
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        $templates
+        | to_entries[]
+        | {
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: {
+              name: "chart-template-psa-\(.key)",
+              namespace: $namespace,
+              labels: (.value.metadata.labels // {}),
+              annotations: (.value.metadata.annotations // {})
+            },
+            spec: .value.spec
+          }
+      ]
+    }
+' "$work_dir/rendered.json" >"$work_dir/workload-pods.json"
+if [ "$(jq '.items | length' "$work_dir/workload-pods.json")" -eq 0 ]; then
+  fail 'the chart rendered no workload Pod templates'
+  exit 1
+fi
+if ! kubectl create --dry-run=server -f "$work_dir/workload-pods.json" >/dev/null; then
+  fail 'a rendered workload Pod violates the restricted Pod Security profile'
+  exit 1
 fi
 
 # Extract every policy from the complete render. Feature 009 adds egress in a separate template after
