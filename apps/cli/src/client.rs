@@ -86,6 +86,8 @@ impl std::fmt::Display for CallError {
 
 /// The most of an answer this tool reads: a page of drafts of the largest size the platform keeps.
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
+/// The most a probe, a page of the Studio or the development provider answers with.
+const MAX_PUBLIC_ANSWER: usize = 1024 * 1024;
 
 /// The platform, a token and a namespace.
 pub struct Client {
@@ -99,7 +101,7 @@ pub struct Client {
 /// across a network. The address is parsed the way the HTTP client will read it, so that what is
 /// checked is where the request goes (`http://localhost:80@elsewhere` goes to `elsewhere`), and an
 /// address with a user name or a password in it is refused.
-fn is_safe_address(base: &str) -> bool {
+pub(crate) fn is_safe_address(base: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base) else {
         return false;
     };
@@ -124,6 +126,56 @@ fn is_loopback(url: &reqwest::Url) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// What went wrong between this machine and the platform, in words that say what to look at. Only
+/// the kind of failure is told (the chain of causes is read to find it, not printed): a message of
+/// the transport can carry an address and a token must never be near one.
+#[must_use]
+pub fn describe(error: &reqwest::Error) -> String {
+    let mut chain = String::new();
+    let mut source: Option<&dyn std::error::Error> = Some(error);
+    while let Some(cause) = source {
+        chain.push_str(&cause.to_string().to_lowercase());
+        chain.push(' ');
+        source = cause.source();
+    }
+    let has = |needles: &[&str]| needles.iter().any(|n| chain.contains(n));
+    if error.is_timeout() || has(&["timed out", "deadline has elapsed"]) {
+        "it took too long".to_owned()
+    } else if has(&[
+        "dns error",
+        "failed to lookup",
+        "name or service not known",
+        "nodename nor servname",
+        "no such host",
+        "temporary failure in name resolution",
+    ]) {
+        "the host name does not resolve (DNS)".to_owned()
+    } else if has(&["connection refused"]) {
+        "connection refused: nothing listens at that address and port".to_owned()
+    } else if has(&["certificate", "tls", "handshake", "unknownissuer"]) {
+        "the TLS handshake failed (a certificate that is not trusted, or a name that does not match)"
+            .to_owned()
+    } else if error.is_connect() {
+        "could not connect".to_owned()
+    } else {
+        "a transport error".to_owned()
+    }
+}
+
+/// A value as one path segment: everything but unreserved characters percent-encoded.
+#[must_use]
+pub fn encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// A path with its query string, the values percent-encoded.
 #[must_use]
 pub fn with_query(path: &str, params: &[(&str, &str)]) -> String {
@@ -141,6 +193,25 @@ pub fn with_query(path: &str, params: &[(&str, &str)]) -> String {
         }
     }
     out
+}
+
+/// The body of an answer, read chunk by chunk and refused past `cap` bytes: a server that never stops
+/// sending is a transport failure, not memory.
+async fn read_capped(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, CallError> {
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?
+    {
+        if bytes.len() + chunk.len() > cap {
+            return Err(CallError::Transport(
+                "the answer is larger than this tool reads".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 fn install_crypto_provider() {
@@ -214,32 +285,62 @@ impl Client {
                 .header("content-type", "application/json")
                 .body(serde_json::to_vec(body).map_err(|e| CallError::Transport(e.to_string()))?);
         }
-        let response = request.send().await.map_err(|e| {
-            CallError::Transport(if e.is_timeout() {
-                "it took too long".to_owned()
-            } else if e.is_connect() {
-                "connection refused or unreachable".to_owned()
-            } else {
-                "transport".to_owned()
-            })
-        })?;
-        let status = response.status().as_u16();
-        let mut response = response;
-        let mut bytes: Vec<u8> = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
+        let response = request
+            .send()
             .await
-            .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?
-        {
-            if bytes.len() + chunk.len() > MAX_ANSWER {
-                return Err(CallError::Transport(
-                    "the answer is larger than this tool reads".to_owned(),
-                ));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+            .map_err(|e| CallError::Transport(describe(&e)))?;
+        let status = response.status().as_u16();
+        let bytes = read_capped(response, MAX_ANSWER).await?;
         let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         Ok((status, value))
+    }
+
+    /// A GET that carries no credentials: the probes (`/health`, `/ready`) and the Studio. Any
+    /// status is an answer.
+    ///
+    /// # Errors
+    /// [`CallError::Transport`] when there is no answer.
+    pub async fn public(&self, path: &str) -> Result<(u16, Value), CallError> {
+        let response = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .send()
+            .await
+            .map_err(|e| CallError::Transport(describe(&e)))?;
+        let status = response.status().as_u16();
+        let bytes = read_capped(response, MAX_PUBLIC_ANSWER).await?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
+    }
+
+    /// A POST that carries no credentials (the development identity provider's `/token`). Any
+    /// status is an answer.
+    ///
+    /// # Errors
+    /// [`CallError::Transport`] when there is no answer.
+    pub async fn post_public(&self, path: &str, body: &Value) -> Result<(u16, Value), CallError> {
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(body).map_err(|e| CallError::Transport(e.to_string()))?)
+            .send()
+            .await
+            .map_err(|e| CallError::Transport(describe(&e)))?;
+        let status = response.status().as_u16();
+        let bytes = read_capped(response, MAX_PUBLIC_ANSWER).await?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
+    }
+
+    /// The address the platform was given, without a trailing slash (`doctor` shows it).
+    #[must_use]
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     /// Sends a request and gives the body of a success.

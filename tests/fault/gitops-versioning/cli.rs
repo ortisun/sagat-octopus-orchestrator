@@ -61,6 +61,7 @@ async fn run(
         token: Some(p.api.idp.token(sub, tenant).build()),
         namespace: None,
         cwd: dir.0.clone(),
+        ..Default::default()
     };
     let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());

@@ -14,6 +14,7 @@ pub mod api;
 pub mod brokers;
 pub mod collector;
 pub mod contract;
+pub mod dx;
 pub mod engine;
 pub mod logs;
 pub mod nats;

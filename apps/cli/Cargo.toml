@@ -19,14 +19,19 @@ name = "sagat"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 reqwest.workspace = true
 rustls.workspace = true
+sagat-api-grpc.workspace = true
 sagat-application.workspace = true
+sagat-domain.workspace = true
 sagat-infra-ir.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng = "0.10"
 sha2 = "0.11"
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "signal", "io-util"] }
+tonic = { workspace = true, features = ["tls-native-roots"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }

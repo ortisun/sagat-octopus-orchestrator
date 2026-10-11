@@ -98,7 +98,7 @@ pub fn stays_below(file: &str) -> bool {
 const MAX_EXPANDED: usize = 32 * 1024 * 1024;
 
 /// Reads YAML into a JSON value, refusing one that expands beyond [`MAX_EXPANDED`].
-fn yaml_value(text: &str) -> Result<Value, String> {
+pub fn yaml_to_value(text: &str) -> Result<Value, String> {
     let spent = Cell::new(0usize);
     let deserializer = serde_yaml_ng::Deserializer::from_str(text);
     let mut documents = deserializer.into_iter();
@@ -205,7 +205,7 @@ impl<'de> Visitor<'de> for Bounded<'_> {
 /// A message of the reader with what it quotes of the file taken out: it says `invalid type: string
 /// "…", expected struct Manifest` and not what the string was, so that pointing the tool at a file
 /// that is not a manifest (a link to a credential, say) does not put that file in a log.
-fn quiet(message: &str) -> String {
+pub fn quiet(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     let mut quoted = false;
     let mut chars = message.chars();
@@ -239,7 +239,7 @@ impl Manifest {
     /// A [`Problem`] naming what could not be read.
     pub fn parse(text: &str, yaml: bool) -> Result<Self, Problem> {
         let value = if yaml {
-            yaml_value(text).map_err(|e| problem("manifest", e))?
+            yaml_to_value(text).map_err(|e| problem("manifest", e))?
         } else {
             serde_json::from_str::<Value>(text).map_err(|e| problem("manifest", e.to_string()))?
         };
@@ -353,6 +353,67 @@ fn confined(base: &Path, file: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Why one document could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentError {
+    /// The file is larger than the platform takes of a document.
+    TooLarge(String),
+    /// The file could not be opened or is not a file.
+    Unreadable(String),
+    /// The file is not a JSON or YAML object.
+    Malformed(String),
+}
+
+/// One workflow document read from `path`, as the workflow it says it is (`metadata.name`).
+///
+/// # Errors
+/// [`DocumentError`] when the file cannot be read or is not a JSON or YAML object.
+pub fn load_one(path: &Path) -> Result<Loaded, DocumentError> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| DocumentError::Unreadable(format!("{}: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(DocumentError::Unreadable(format!(
+            "{} is not a file",
+            path.display()
+        )));
+    }
+    if meta.len() > MAX_BYTES {
+        return Err(DocumentError::TooLarge(format!(
+            "{} is larger than {MAX_BYTES} bytes",
+            path.display()
+        )));
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| DocumentError::Unreadable(format!("{}: {e}", path.display())))?;
+    let value: Value = if is_yaml(path) {
+        yaml_to_value(&text).map_err(DocumentError::Malformed)?
+    } else {
+        serde_json::from_str(&text).map_err(|e| DocumentError::Malformed(e.to_string()))?
+    };
+    if !value.is_object() {
+        return Err(DocumentError::Malformed(
+            "a workflow document is an object".to_owned(),
+        ));
+    }
+    let name = value["metadata"]["name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let document =
+        serde_json::to_vec(&value).map_err(|e| DocumentError::Malformed(e.to_string()))?;
+    Ok(Loaded {
+        entry: Entry {
+            name,
+            file: path
+                .file_name()
+                .map_or_else(String::new, |f| f.to_string_lossy().into_owned()),
+            release_notes: None,
+        },
+        document,
+        value,
+    })
+}
+
 /// A workflow of the manifest with its document read.
 #[derive(Debug, Clone)]
 pub struct Loaded {
@@ -394,7 +455,7 @@ pub fn load(path: &Path) -> Result<(Manifest, Vec<Loaded>), Vec<Problem>> {
             }
         };
         let value: Result<Value, String> = if is_yaml(&file) {
-            yaml_value(&text)
+            yaml_to_value(&text)
         } else {
             serde_json::from_str(&text).map_err(|e| e.to_string())
         };

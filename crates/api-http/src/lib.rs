@@ -196,6 +196,7 @@ where
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_in_flight.max(1)));
     let api = Router::new()
         .route("/auth/context", get(identity::auth_context))
+        .route("/version", get(identity::platform_version))
         .route(
             "/workspaces",
             get(identity::list_workspaces::<S, C>).post(identity::create_workspace::<S, C>),
@@ -607,6 +608,7 @@ where
 
     let identity_routes = Router::new()
         .route("/auth/context", get(identity::auth_context))
+        .route("/version", get(identity::platform_version))
         .route(
             "/workspaces",
             get(identity::list_workspaces::<S, C>).post(identity::create_workspace::<S, C>),

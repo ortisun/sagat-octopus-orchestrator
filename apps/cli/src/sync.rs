@@ -21,7 +21,7 @@ use crate::manifest::{Loaded, Manifest};
 use crate::remote::{self, RemoteWorkflow};
 use crate::{
     EXIT_BREAKING, EXIT_DIFFERENCES, EXIT_DONE, EXIT_FAILED, EXIT_PENDING, Env, Io, Session,
-    session, validate,
+    session,
 };
 
 /// How a workflow of the manifest stands against the platform.
@@ -51,7 +51,11 @@ fn short(digest: &str) -> &str {
 }
 
 /// The manifest read, every document checked locally, and compared with the platform.
-async fn plan<'a>(session: &Session, loaded: &'a [Loaded]) -> Result<Vec<Item<'a>>, String> {
+async fn plan<'a>(
+    session: &Session,
+    loaded: &'a [Loaded],
+    docs: Option<&str>,
+) -> Result<Vec<Item<'a>>, String> {
     let mut checked = Vec::new();
     let mut refused = Vec::new();
     for item in loaded {
@@ -60,9 +64,12 @@ async fn plan<'a>(session: &Session, loaded: &'a [Loaded]) -> Result<Vec<Item<'a
             Err(_) => {
                 refused.push(format!("{}:", item.entry.name));
                 refused.extend(
-                    validate::local_problems(&item.document)
-                        .into_iter()
-                        .map(|p| format!("    {p}")),
+                    crate::diagnostics::render(
+                        &crate::diagnostics::of_document(&item.document),
+                        docs,
+                    )
+                    .into_iter()
+                    .map(|line| format!("    {line}")),
                 );
             }
         }
@@ -231,7 +238,7 @@ pub(crate) async fn diff(
     };
     let namespace = common.namespace.clone().unwrap_or(manifest.namespace);
     let session = session(common, env, &namespace)?;
-    let items = plan(&session, &loaded).await?;
+    let items = plan(&session, &loaded, io.docs()).await?;
     show(io, &items);
     let pending = changes(&items);
     io.say(format!(
@@ -257,7 +264,20 @@ pub(crate) async fn publish(
     };
     let namespace = common.namespace.clone().unwrap_or(manifest.namespace);
     let session = session(common, env, &namespace)?;
-    let items = plan(&session, &loaded).await?;
+    publish_documents(&session, &loaded, &namespace, dry_run, accept_breaking, io).await
+}
+
+/// Makes the namespace say what these documents say: the plan, the gate for what breaks callers,
+/// then each workflow created or replaced and published.
+pub(crate) async fn publish_documents(
+    session: &Session,
+    loaded: &[Loaded],
+    namespace: &str,
+    dry_run: bool,
+    accept_breaking: bool,
+    io: &mut Io<'_>,
+) -> Result<u8, String> {
+    let items = plan(session, loaded, io.docs()).await?;
     show(io, &items);
     if dry_run {
         io.say(format!(
@@ -282,7 +302,7 @@ pub(crate) async fn publish(
         if matches!(item.state, State::Unchanged { .. }) {
             continue;
         }
-        match apply(&session, item, io).await? {
+        match apply(session, item, io).await? {
             Applied::Published => published += 1,
             Applied::Pending => pending += 1,
         }

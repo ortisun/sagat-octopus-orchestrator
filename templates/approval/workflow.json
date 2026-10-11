@@ -1,0 +1,37 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "change-approval",
+    "description": "Asks for a decision, waits for it as an event (a day at most), and applies the change only if it was approved."
+  },
+  "entrypoint": "ask",
+  "triggers": [{ "kind": "manual" }],
+  "inputSchema": {
+    "type": "object",
+    "required": ["requestId"],
+    "properties": { "requestId": { "type": "string" } }
+  },
+  "nodes": [
+    { "id": "ask", "type": "activity", "activity": "approvals.ask", "next": "decision" },
+    {
+      "id": "decision",
+      "type": "waitEvent",
+      "eventType": "approval.decided",
+      "correlationExpr": "input.requestId",
+      "timeoutMs": 86400000,
+      "next": "approved",
+      "onTimeout": "expire"
+    },
+    {
+      "id": "approved",
+      "type": "condition",
+      "expression": "steps.decision.output.data.approved == true",
+      "ifTrue": "apply",
+      "ifFalse": "decline"
+    },
+    { "id": "apply", "type": "activity", "activity": "changes.apply" },
+    { "id": "decline", "type": "activity", "activity": "changes.decline" },
+    { "id": "expire", "type": "activity", "activity": "changes.expire" }
+  ]
+}

@@ -1,0 +1,7 @@
+# Answers for `sagat worker dev --mocks mocks.yaml`: stand-ins for the two activities, so that the
+# workflow runs before you have written a worker. Your SDK worker replaces this file.
+activities:
+  greeting.compose:
+    output: { greeting: "Hello" }
+  greeting.deliver:
+    echo: true

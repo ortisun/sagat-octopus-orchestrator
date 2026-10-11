@@ -68,6 +68,9 @@ async fn every_identity_operation_conforms_to_the_contract_on_its_normal_and_err
             None,
             401,
         ),
+        scenario("GET", "/version", "/version", alice.clone(), None, 200),
+        scenario("GET", "/version", "/version", As::Anonymous, None, 401),
+        scenario("GET", "/version", "/version", As::Garbage, None, 401),
         scenario(
             "GET",
             "/workspaces",

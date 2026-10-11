@@ -30,6 +30,7 @@ sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-cli.workspace = true
+sagat-dev-idp.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
 sagat-execution-engine.workspace = true
@@ -276,4 +277,20 @@ path = "contract/gitops-versioning/manifest/main.rs"
 [[test]]
 name = "perf_gitops_versioning"
 path = "performance/gitops-versioning/main.rs"
+
+[[test]]
+name = "contract_developer_experience"
+path = "contract/developer-experience/main.rs"
+
+[[test]]
+name = "fault_developer_experience"
+path = "fault/developer-experience/main.rs"
+
+[[test]]
+name = "perf_developer_experience"
+path = "performance/developer-experience/main.rs"
+
+[[test]]
+name = "e2e_developer_experience"
+path = "e2e/developer-experience/main.rs"
 

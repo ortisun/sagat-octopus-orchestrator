@@ -64,6 +64,25 @@ pub struct AuthContextBody {
     pub trace_id: String,
 }
 
+/// What the platform is: so that a client can tell an older one from the one it was written for.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionBody {
+    pub service: &'static str,
+    /// The version of the build, as `control-plane version` prints it.
+    pub version: &'static str,
+    /// The REST API the client is talking to (the path prefix).
+    pub api_version: &'static str,
+    /// The lowest and highest worker protocol the platform speaks.
+    pub worker_protocol: ProtocolRange,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProtocolRange {
+    pub minimum: String,
+    pub maximum: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct HealthBody {
     pub status: &'static str,

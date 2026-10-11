@@ -49,6 +49,8 @@ impl RemoteWorkflow {
 pub struct NamespaceInfo {
     pub id: String,
     pub slug: String,
+    /// `dev`, `staging` or `prod`, when the platform said.
+    pub environment: Option<String>,
 }
 
 /// Every item of a listing, page after page.
@@ -98,6 +100,10 @@ pub async fn namespaces(client: &Client) -> Result<Vec<NamespaceInfo>, String> {
             Some(NamespaceInfo {
                 id: n.get("id")?.as_str()?.to_owned(),
                 slug: n.get("slug")?.as_str()?.to_owned(),
+                environment: n
+                    .get("environment")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
             })
         })
         .collect())

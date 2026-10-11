@@ -117,6 +117,10 @@ ENVIRONMENT (serve):
 ENVIRONMENT (seed-dev):
     SAGAT_SEED_TENANT                 tenant slug                     [dev]
     SAGAT_SEED_ADMIN_SUBJECT          administrator subject           [dev-admin]
+    SAGAT_SEED_NAMESPACE              also leave a namespace with this slug (and the workspace
+                                      below) for the administrator; unset: none
+    SAGAT_SEED_WORKSPACE              workspace slug of that namespace [dev]
+    SAGAT_SEED_ENVIRONMENT            its environment: dev, staging or prod [dev]
 
 ENVIRONMENT (provision-tenant):
     SAGAT_PROVISION_TENANT            tenant slug (required)

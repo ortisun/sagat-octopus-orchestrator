@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Smoke test of the local environment (US03): builds the image, starts the stack, checks that the
 # API, PostgreSQL and NATS are healthy, that migrations and the seed are idempotent and that the API
-# runs as the least-privilege database role, then tears everything down.
+# runs as the least-privilege database role, that the development identity provider signs a token the
+# API accepts, that the Studio is served and, when SAGAT_BIN names a built `sagat`, that the first day
+# works: doctor, a workflow published, served by `worker dev` and run to the end. Then it tears
+# everything down.
 #
 #   scripts/smoke-compose.sh                 # uses infra/docker/.env.example
 #   ENV_FILE=infra/docker/.env scripts/smoke-compose.sh
+#   SAGAT_BIN=target/debug/sagat scripts/smoke-compose.sh     # also the first day with the CLI
 #
 # The stack runs under its own throw-away compose project name, so the final `down -v` can never
 # touch the volumes of the development environment you start by hand.
@@ -109,5 +113,59 @@ ENGINE_USERS=$("${COMPOSE[@]}" exec -T postgres psql -U "$DB_OWNER" -d "$DB_NAME
   "SELECT string_agg(DISTINCT usename, ',') FROM pg_stat_activity WHERE datname = '$DB_NAME' AND usename <> '$DB_OWNER'")
 [ "$ENGINE_USERS" = "sagat_app" ] || { echo "unexpected database users: '$ENGINE_USERS'" >&2; exit 1; }
 echo "ok: every non-owner connection (API and engine) is the runtime role"
+
+echo "--- the development identity provider signs a token the API accepts, and the seed left a namespace"
+IDP="http://127.0.0.1:$(env_value SAGAT_IDP_PORT 18090)"
+STUDIO="http://127.0.0.1:$(env_value SAGAT_API_PORT 18080)/studio/"
+wait_for "development identity provider serves its keys ($IDP/.well-known/jwks.json)" \
+  curl -fsS "$IDP/.well-known/jwks.json"
+# The token is held in a variable and never printed, and never in the arguments of a process (they
+# are visible to every user of the machine): curl reads its header from a file descriptor.
+TOKEN=$(curl -fsS -X POST "$IDP/token" -H 'content-type: application/json' \
+  -d '{"subject":"dev-admin","tenant":"dev"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+authed_curl() {  # authed_curl <curl arguments...>: with the token of dev-admin
+  curl -fsS --config <(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN") "$@"
+}
+authed_curl "$API/auth/context" \
+  | python3 -c 'import json,sys; c=json.load(sys.stdin); assert (c["tenant"], c["role"]) == ("dev", "admin"), c'
+echo "ok: the API knows dev-admin as the administrator of tenant dev"
+authed_curl "$API/namespaces" \
+  | python3 -c 'import json,sys; s=[n["slug"] for n in json.load(sys.stdin)["items"]]; assert "payments" in s, s'
+echo "ok: the namespace payments is there (the seed ran twice and made it once)"
+BAD=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer not-a-token" "$API/auth/context")
+[ "$BAD" = "401" ] || { echo "a token nobody signed was answered $BAD, expected 401" >&2; exit 1; }
+echo "ok: a token nobody signed is refused"
+curl -fsS "$STUDIO" | grep -q '<div id="root">' \
+  || { echo "the Studio is not served at $STUDIO" >&2; exit 1; }
+echo "ok: the Studio is served at $STUDIO"
+IDP_HOST=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$IDP/.well-known/jwks.json")
+[ "$IDP_HOST" = "403" ] || { echo "the provider answered a stranger's Host header with $IDP_HOST, expected 403" >&2; exit 1; }
+echo "ok: the development identity provider refuses a Host header it is not known by"
+
+if [ -n "${SAGAT_BIN:-}" ]; then
+  echo "--- the first day with the CLI: doctor, publish, serve, run"
+  SAGAT_BIN=$(cd "$(dirname "$SAGAT_BIN")" && pwd)/$(basename "$SAGAT_BIN")
+  export SAGAT_SERVER="$API" SAGAT_GRPC="http://127.0.0.1:$(env_value SAGAT_GRPC_PORT 19000)" SAGAT_NAMESPACE=payments
+  export SAGAT_TOKEN="$TOKEN"
+  WORK=$(mktemp -d)
+  ( cd "$WORK"
+    "$SAGAT_BIN" doctor --nats "nats://127.0.0.1:$(env_value SAGAT_NATS_PORT 14222)"
+    "$SAGAT_BIN" new hello-world
+    "$SAGAT_BIN" workflow publish hello-world/workflow.json
+    "$SAGAT_BIN" worker dev --mocks hello-world/mocks.yaml --workflow hello-world/workflow.json \
+      --bind --max-tasks 2 --idle-exit 60 > worker.out 2>&1 &
+    WORKER=$!
+    ran=0; "$SAGAT_BIN" workflow run hello-world --input '{"name":"Ada"}' --wait --timeout 60 | tee run.out || ran=$?
+    served=0; wait "$WORKER" || served=$?
+    cat worker.out
+    [ "$ran" = 0 ] && [ "$served" = 0 ] || { echo "the run ended $ran, the worker $served" >&2; exit 1; }
+    grep -q "SUCCEEDED" run.out
+    grep -q "served 2 tasks" worker.out )
+  rm -rf "$WORK"
+  echo "ok: a two-step workflow was published, served and run to the end"
+else
+  echo "skipped: the first day with the CLI (set SAGAT_BIN to a built sagat to run it)"
+fi
 
 echo "--- smoke test passed"

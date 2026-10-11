@@ -1,0 +1,47 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "payment-saga",
+    "description": "Reserves a limit, then charges. If the charge fails for good the reservation is released; if its answer is lost the platform asks the provider whether it happened."
+  },
+  "entrypoint": "payment",
+  "triggers": [{ "kind": "manual" }],
+  "inputSchema": {
+    "type": "object",
+    "required": ["paymentId", "amount"],
+    "properties": {
+      "paymentId": { "type": "string" },
+      "amount": { "type": "number", "exclusiveMinimum": 0 }
+    }
+  },
+  "nodes": [
+    {
+      "id": "payment",
+      "type": "saga",
+      "begin": "reserve",
+      "next": "notify",
+      "onCompensationFailure": "manual_review",
+      "cancelPolicy": "compensate_completed"
+    },
+    {
+      "id": "reserve",
+      "type": "activity",
+      "activity": "limit.reserve",
+      "compensateWith": "limit.release",
+      "idempotencyTemplate": "reserve:${run.id}",
+      "next": "charge"
+    },
+    {
+      "id": "charge",
+      "type": "activity",
+      "activity": "payment.charge",
+      "compensateWith": "payment.refund",
+      "reconcileWith": "payment.find-charge",
+      "idempotencyTemplate": "charge:${input.paymentId}",
+      "retry": { "maxAttempts": 2, "strategy": "fixed", "initialDelayMs": 200, "maxDelayMs": 200, "jitter": false },
+      "highRisk": true
+    },
+    { "id": "notify", "type": "activity", "activity": "customer.notify" }
+  ]
+}

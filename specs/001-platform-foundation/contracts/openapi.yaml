@@ -67,6 +67,22 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /version:
+    get:
+      operationId: getPlatformVersion
+      summary: Say which build, which API and which worker protocols this platform speaks
+      tags: [Identity]
+      x-implemented: '012'
+      description: >-
+        Needs a token and no permission. A client compares it with what it was written for (`sagat doctor` does):
+        `version` is the build, `apiVersion` the path prefix, `workerProtocol` the lowest and highest protocol a
+        worker may offer. A platform older than feature 012 answers `404 ROUTE_NOT_FOUND`.
+      responses:
+        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PlatformVersion'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /workspaces:
     get:
       operationId: listWorkspaces
@@ -2672,6 +2688,19 @@ components:
       required: [status]
       properties:
         status: {type: string, enum: [ok]}
+    PlatformVersion:
+      type: object
+      required: [service, version, apiVersion, workerProtocol]
+      properties:
+        service: {type: string, const: sagat-octopus-orchestrator}
+        version: {type: string, description: 'The build, as `control-plane version` prints it.'}
+        apiVersion: {type: string, const: v1}
+        workerProtocol:
+          type: object
+          required: [minimum, maximum]
+          properties:
+            minimum: {type: string, pattern: '^1\.[0-9]+$'}
+            maximum: {type: string, pattern: '^1\.[0-9]+$'}
     AuthContext:
       type: object
       required: [tenant, subject, role, permissions, traceId]

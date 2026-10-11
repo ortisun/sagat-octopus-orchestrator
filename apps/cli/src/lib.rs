@@ -12,12 +12,20 @@
 
 pub mod args;
 pub mod client;
+mod dev;
+pub mod diagnostics;
+pub mod doctor;
 mod export;
 pub mod manifest;
+pub mod mocks;
+pub mod new;
 mod remote;
+mod script;
 mod sync;
 mod validate;
 mod versions;
+mod worker;
+mod workflow;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,6 +45,9 @@ pub const EXIT_PENDING: u8 = 3;
 pub const EXIT_BREAKING: u8 = 4;
 /// `diff --check` found differences.
 pub const EXIT_DIFFERENCES: u8 = 5;
+/// `workflow run --wait`, `script test` or `script publish` did not see the end within the time it was
+/// given (a run that waits for a person is reported at once).
+pub const EXIT_TIMEOUT: u8 = 6;
 
 /// What the process provides besides the arguments.
 #[derive(Debug, Clone, Default)]
@@ -46,6 +57,13 @@ pub struct Env {
     /// of the machine).
     pub token: Option<String>,
     pub namespace: Option<String>,
+    /// The worker endpoint (`SAGAT_GRPC`).
+    pub grpc: Option<String>,
+    /// The development identity provider (`SAGAT_DEV_IDP`).
+    pub idp: Option<String>,
+    /// Where the documentation is published (`SAGAT_DOCS_URL`), if somebody said: the links in the
+    /// help of a problem then lead there, and to the file in the repository otherwise.
+    pub docs_url: Option<String>,
     /// Relative paths are resolved against it.
     pub cwd: PathBuf,
 }
@@ -58,6 +76,9 @@ impl Env {
             server: var("SAGAT_SERVER"),
             token: var("SAGAT_TOKEN"),
             namespace: var("SAGAT_NAMESPACE"),
+            grpc: var("SAGAT_GRPC"),
+            idp: var("SAGAT_DEV_IDP"),
+            docs_url: var("SAGAT_DOCS_URL"),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         }
     }
@@ -67,20 +88,33 @@ impl Env {
 pub(crate) struct Io<'a> {
     out: &'a mut dyn Write,
     err: &'a mut dyn Write,
+    /// Where the documentation is published, if somebody said.
+    docs: Option<String>,
+    /// What stops a long-running command, when the caller gave one (a test, or a program that
+    /// embeds the tool); otherwise the process's own signals do.
+    stop: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 /// Whether a character may be shown as it is: not a control character, and none of the format
 /// characters that reorder or hide text (the bidirectional overrides and isolates, the zero-width
-/// characters, the line and paragraph separators).
+/// characters, the line and paragraph separators, the invisible "tag" characters that can carry
+/// text nobody sees, the variation selectors, the soft hyphen and the combining grapheme joiner).
 fn shown_as_is(c: char) -> bool {
     !c.is_control()
         && !matches!(
             c,
-            '\u{200B}'..='\u{200F}'
+            '\u{00AD}'
+                | '\u{034F}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
                 | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FE00}'..='\u{FE0F}'
                 | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+                | '\u{E0100}'..='\u{E01EF}'
         )
 }
 
@@ -121,6 +155,16 @@ pub fn one_line(text: &str) -> String {
 }
 
 impl Io<'_> {
+    /// What ends the command: the one it was given, or the process's own signals.
+    pub(crate) fn stop(&mut self) -> tokio::sync::watch::Receiver<bool> {
+        self.stop.take().unwrap_or_else(crate::worker::stop_signal)
+    }
+
+    /// Where the documentation is published, if somebody said (`SAGAT_DOCS_URL`).
+    pub(crate) fn docs(&self) -> Option<&str> {
+        self.docs.as_deref()
+    }
+
     /// A line of the result.
     pub(crate) fn say(&mut self, line: impl AsRef<str>) {
         let _ = writeln!(self.out, "{}", printable(line.as_ref()));
@@ -134,6 +178,14 @@ impl Io<'_> {
 
 /// The largest token file read.
 const MAX_TOKEN_BYTES: u64 = 16 * 1024;
+
+/// Where the documentation is published, if somebody said (`SAGAT_DOCS_URL`): the links in the help
+/// of a problem then lead there, and to the file in the repository otherwise.
+fn docs_base(env: &Env) -> Option<String> {
+    env.docs_url
+        .clone()
+        .filter(|v| v.starts_with("https://") || v.starts_with("http://"))
+}
 
 fn resolve(env: &Env, path: &Path) -> PathBuf {
     if path.is_absolute() {
@@ -217,7 +269,34 @@ pub(crate) fn namespace_of(common: &Common, env: &Env) -> Result<String, String>
 
 /// Runs a command line.
 pub async fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
-    let mut io = Io { out, err };
+    run_with(args, env, out, err, None).await
+}
+
+/// Runs a command line that a long-running command (`worker dev`) ends when `stop` becomes true,
+/// instead of when the process is signalled.
+pub async fn run_until(
+    args: &[String],
+    env: &Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> u8 {
+    run_with(args, env, out, err, Some(stop)).await
+}
+
+async fn run_with(
+    args: &[String],
+    env: &Env,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    stop: Option<tokio::sync::watch::Receiver<bool>>,
+) -> u8 {
+    let mut io = Io {
+        out,
+        err,
+        docs: docs_base(env),
+        stop,
+    };
     let Invocation { common, command } = match args::parse(args) {
         Ok(invocation) => invocation,
         Err(args::UsageError(why)) => {
@@ -293,6 +372,158 @@ pub async fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn 
             reason,
             approve,
         } => versions::decide(&common, env, &request, &reason, approve, &mut io).await,
+        Command::WorkflowValidate { file } => {
+            workflow::validate(&common, env, &file, &mut io).await
+        }
+        Command::WorkflowPublish {
+            file,
+            notes,
+            dry_run,
+            accept_breaking,
+        } => {
+            workflow::publish(
+                &common,
+                env,
+                &file,
+                notes.as_deref(),
+                dry_run,
+                accept_breaking,
+                &mut io,
+            )
+            .await
+        }
+        Command::WorkflowRun {
+            name,
+            input,
+            wait,
+            timeout,
+            key,
+        } => {
+            workflow::run(
+                &common,
+                env,
+                &workflow::RunAsk {
+                    name: &name,
+                    input: input.as_deref(),
+                    wait,
+                    timeout,
+                    key: key.as_deref(),
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::WorkflowRuns { name, limit } => {
+            workflow::runs(&common, env, &name, limit, &mut io).await
+        }
+        Command::WorkflowInspect { run } => workflow::inspect(&common, env, &run, &mut io).await,
+        Command::WorkflowCancel { run, reason } => {
+            workflow::cancel(&common, env, &run, &reason, &mut io).await
+        }
+        Command::Doctor { json, nats } => {
+            doctor::run(&common, env, json, nats.as_deref(), &mut io).await
+        }
+        Command::WorkerDev {
+            mocks,
+            workflow,
+            bind,
+            idle_exit,
+            max_tasks,
+            show_payloads,
+            allow_non_dev,
+        } => {
+            worker::dev(
+                &common,
+                env,
+                &worker::Ask {
+                    mocks: &mocks,
+                    workflow: workflow.as_deref(),
+                    bind,
+                    idle_exit,
+                    max_tasks,
+                    show_payloads,
+                    allow_non_dev,
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::DevToken {
+            idp,
+            subject,
+            tenant,
+            ttl,
+            out,
+        } => {
+            dev::token(
+                env,
+                &dev::Ask {
+                    idp: idp.as_deref(),
+                    subject: &subject,
+                    tenant: &tenant,
+                    ttl,
+                    out: out.as_deref(),
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::WorkerBind {
+            workflow,
+            activities,
+            allow_non_dev,
+        } => {
+            worker::bind_command(
+                &common,
+                env,
+                workflow.as_deref(),
+                &activities,
+                allow_non_dev,
+                &mut io,
+            )
+            .await
+        }
+        Command::New {
+            template,
+            dir,
+            force,
+        } => new::run(env, template.as_deref(), dir.as_deref(), force, &mut io),
+        Command::ScriptTest {
+            file,
+            input,
+            language,
+            name,
+            timeout,
+        } => {
+            script::test(
+                &common,
+                env,
+                &file,
+                input.as_deref(),
+                language.as_deref(),
+                name.as_deref(),
+                timeout,
+                &mut io,
+            )
+            .await
+        }
+        Command::ScriptPublish {
+            file,
+            language,
+            name,
+            timeout,
+        } => {
+            script::publish(
+                &common,
+                env,
+                &file,
+                language.as_deref(),
+                name.as_deref(),
+                timeout,
+                &mut io,
+            )
+            .await
+        }
     };
     match result {
         Ok(code) => code,

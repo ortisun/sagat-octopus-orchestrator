@@ -1,0 +1,3 @@
+activities:
+  reports.nightly:
+    output: { rows: 0 }
