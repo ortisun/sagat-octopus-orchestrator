@@ -135,7 +135,16 @@ async fn a_name_is_taken_once_per_namespace_and_a_script_count_is_a_hard_limit()
 #[tokio::test]
 async fn only_a_script_that_can_be_built_is_accepted() {
     let w = world().await;
-    for language in [Language::CSharp, Language::Go, Language::Java] {
+    w.scripts
+        .create(
+            &w.admin,
+            w.namespace.id(),
+            spec("csharp", Language::CSharp, "public sealed class Script {}"),
+            &ctx(),
+        )
+        .await
+        .expect("C# is built");
+    for language in [Language::Go, Language::Java] {
         assert_eq!(
             w.scripts
                 .create(

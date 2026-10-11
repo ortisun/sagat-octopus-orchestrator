@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Sagat.DotnetRuntime</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Sagat.ScriptContract/Sagat.ScriptContract.csproj" />
+  </ItemGroup>
+</Project>

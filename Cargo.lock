@@ -3865,6 +3865,7 @@ dependencies = [
 name = "sagat-infra-sandbox"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "bollard",
  "futures-util",
  "metrics",
@@ -3883,9 +3884,11 @@ dependencies = [
 name = "sagat-infra-schema"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "jsonschema",
  "sagat-application",
  "sagat-domain",
+ "serde",
  "serde_json",
 ]
 
