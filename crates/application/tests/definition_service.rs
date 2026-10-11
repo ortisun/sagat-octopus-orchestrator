@@ -311,6 +311,15 @@ impl DefinitionStore for FakeStore {
         })
     }
 
+    async fn publication_policy(
+        &self,
+        _tenant: TenantId,
+        _namespace: NamespaceId,
+    ) -> Result<Option<sagat_domain::versioning::ApprovalPolicy>, StoreError> {
+        // The fake's namespaces ask for nothing.
+        Ok(Some(sagat_domain::versioning::ApprovalPolicy::NONE))
+    }
+
     async fn publish(
         &self,
         principal: &Principal,
@@ -322,6 +331,7 @@ impl DefinitionStore for FakeStore {
         _release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
         _triggers: &[sagat_application::dispatch::TriggerRegistration],
+        _context: &sagat_application::definitions::PublishContext,
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,

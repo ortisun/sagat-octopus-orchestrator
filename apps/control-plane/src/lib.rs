@@ -22,6 +22,7 @@ use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
 use sagat_application::operations::OperationsService;
 use sagat_application::outbound::OutboundService;
+use sagat_application::publishing::PublishingService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
 use sagat_application::scripts::{RunnerService, ScriptService};
@@ -421,13 +422,15 @@ pub async fn serve_with_admin(
             ),
         );
     }
+    let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec);
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
             .with_lag_budget(serve.telemetry_lag_budget),
     )
-    .with_stream_limits(serve.streams);
+    .with_stream_limits(serve.streams)
+    .with_publishing(publishing);
     let mut app = router_with_governance(exec, governance, serve.limits);
     // The Studio is static files on the API's own origin: no CORS, no second listener.
     if let Some(studio) = serve.studio.clone() {

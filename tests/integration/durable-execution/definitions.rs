@@ -161,6 +161,7 @@ async fn publish(
             Some("notes"),
             &[],
             &[],
+            &sagat_application::definitions::PublishContext::default(),
             &audit(
                 p,
                 AuditAction::WorkflowPublished,
@@ -682,6 +683,7 @@ async fn ten_simultaneous_publishers_get_gapless_distinct_numbers() {
                     None,
                     &[],
                     &[],
+                    &sagat_application::definitions::PublishContext::default(),
                     &audit(
                         &p,
                         AuditAction::WorkflowPublished,
