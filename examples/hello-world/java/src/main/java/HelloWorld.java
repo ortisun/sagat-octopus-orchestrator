@@ -31,6 +31,9 @@ public final class HelloWorld {
         } catch (SagatException e) {
             // The code, the trace and what to do about it; never the payload or the token.
             System.err.println(e.code() + " (trace " + e.traceId() + "): " + e.remediation());
+            if (e.reason().filter("WAIT_TIMEOUT"::equals).isPresent()) {
+                System.err.println("the run did not finish in time: is it waiting for a worker? Let this identity serve its activities (sagat worker bind)");
+            }
             exit = 1;
         }
         // The host's threads are not daemons: exit explicitly, once everything is stopped.

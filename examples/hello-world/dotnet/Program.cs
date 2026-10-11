@@ -27,6 +27,10 @@ catch (SagatException failure)
 {
     // The code, the trace and what to do about it; never the payload or the token.
     Console.Error.WriteLine($"{failure.Code.ToWireName()} (trace {failure.TraceId}): {failure.Remediation}");
+    if (failure.Reason == "WAIT_TIMEOUT")
+    {
+        Console.Error.WriteLine("the run did not finish in time: is it waiting for a worker? Let this identity serve its activities (sagat worker bind)");
+    }
     return 1;
 }
 catch (OperationCanceledException)

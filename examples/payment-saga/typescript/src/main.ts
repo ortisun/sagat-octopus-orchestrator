@@ -158,6 +158,9 @@ try {
   if (error instanceof SagatError) {
     // The code, the trace and what to do about it; never the payload or the token.
     console.error(`${error.code} (trace ${error.traceId}): ${error.remediation}`);
+    if (error.reason === 'WAIT_TIMEOUT') {
+      console.error('the run did not finish in time: is it waiting for a worker? Let this identity serve its activities (sagat worker bind)');
+    }
   } else {
     console.error(error instanceof Error ? error.message : String(error));
   }

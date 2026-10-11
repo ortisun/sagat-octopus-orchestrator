@@ -97,6 +97,8 @@ def main() -> int:
     except SagatError as failure:
         # The code, the trace and what to do about it; never the payload or the token.
         print(f"{failure.code} (trace {failure.trace_id}): {failure.remediation}", file=sys.stderr)
+        if failure.reason == "WAIT_TIMEOUT":
+            print("the run did not finish in time: is it waiting for a worker? Let this identity serve its activities (sagat worker bind)", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

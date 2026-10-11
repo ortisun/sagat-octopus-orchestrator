@@ -39,6 +39,9 @@ func main() {
 		if errors.As(err, &failure) {
 			// The code, the trace and what to do about it; never the payload or the token.
 			fmt.Fprintf(os.Stderr, "%s (trace %s): %s\n", failure.Code, failure.TraceID, failure.Remediation)
+			if failure.Reason == "WAIT_TIMEOUT" {
+				fmt.Fprintln(os.Stderr, "the run did not finish in time: is it waiting for a worker? Let this identity serve its activities (sagat worker bind)")
+			}
 		} else {
 			fmt.Fprintln(os.Stderr, err)
 		}

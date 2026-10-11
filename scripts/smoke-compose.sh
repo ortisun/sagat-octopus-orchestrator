@@ -119,14 +119,18 @@ IDP="http://127.0.0.1:$(env_value SAGAT_IDP_PORT 18090)"
 STUDIO="http://127.0.0.1:$(env_value SAGAT_API_PORT 18080)/studio/"
 wait_for "development identity provider serves its keys ($IDP/.well-known/jwks.json)" \
   curl -fsS "$IDP/.well-known/jwks.json"
-# The token is held in a variable and never printed.
+# The token is held in a variable and never printed, and never in the arguments of a process (they
+# are visible to every user of the machine): curl reads its header from a file descriptor.
 TOKEN=$(curl -fsS -X POST "$IDP/token" -H 'content-type: application/json' \
   -d '{"subject":"dev-admin","tenant":"dev"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
-curl -fsS -H "Authorization: Bearer $TOKEN" "$API/auth/context" \
+authed_curl() {  # authed_curl <curl arguments...>: with the token of dev-admin
+  curl -fsS --config <(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN") "$@"
+}
+authed_curl "$API/auth/context" \
   | python3 -c 'import json,sys; c=json.load(sys.stdin); assert (c["tenant"], c["role"]) == ("dev", "admin"), c'
 echo "ok: the API knows dev-admin as the administrator of tenant dev"
-curl -fsS -H "Authorization: Bearer $TOKEN" "$API/namespaces" \
+authed_curl "$API/namespaces" \
   | python3 -c 'import json,sys; s=[n["slug"] for n in json.load(sys.stdin)["items"]]; assert "payments" in s, s'
 echo "ok: the namespace payments is there (the seed ran twice and made it once)"
 BAD=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer not-a-token" "$API/auth/context")
@@ -152,9 +156,10 @@ if [ -n "${SAGAT_BIN:-}" ]; then
     "$SAGAT_BIN" worker dev --mocks hello-world/mocks.yaml --workflow hello-world/workflow.json \
       --bind --max-tasks 2 --idle-exit 60 > worker.out 2>&1 &
     WORKER=$!
-    "$SAGAT_BIN" workflow run hello-world --input '{"name":"Ada"}' --wait --timeout 60 | tee run.out
-    wait "$WORKER"
+    ran=0; "$SAGAT_BIN" workflow run hello-world --input '{"name":"Ada"}' --wait --timeout 60 | tee run.out || ran=$?
+    served=0; wait "$WORKER" || served=$?
     cat worker.out
+    [ "$ran" = 0 ] && [ "$served" = 0 ] || { echo "the run ended $ran, the worker $served" >&2; exit 1; }
     grep -q "SUCCEEDED" run.out
     grep -q "served 2 tasks" worker.out )
   rm -rf "$WORK"
