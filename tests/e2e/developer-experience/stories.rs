@@ -15,26 +15,38 @@ async fn worker(
     template: &str,
     tasks: u64,
 ) -> Outcome {
-    cli(
-        p,
-        dir,
-        &[
-            "worker",
-            "dev",
-            "--mocks",
-            &format!("{template}/mocks.yaml"),
-            "--workflow",
-            &format!("{template}/workflow.json"),
-            "--bind",
-            "--grpc",
-            &engine.grpc_url,
-            "--max-tasks",
-            &tasks.to_string(),
-            "--idle-exit",
-            "40",
-        ],
-    )
-    .await
+    worker_with(p, dir, engine, template, tasks, &[]).await
+}
+
+/// The same with more flags.
+async fn worker_with(
+    p: &Platform,
+    dir: &Dir,
+    engine: &RunningEngine,
+    template: &str,
+    tasks: u64,
+    extra: &[&str],
+) -> Outcome {
+    let mocks = format!("{template}/mocks.yaml");
+    let workflow = format!("{template}/workflow.json");
+    let tasks = tasks.to_string();
+    let mut args = vec![
+        "worker",
+        "dev",
+        "--mocks",
+        &mocks,
+        "--workflow",
+        &workflow,
+        "--bind",
+        "--grpc",
+        &engine.grpc_url,
+        "--max-tasks",
+        &tasks,
+        "--idle-exit",
+        "40",
+    ];
+    args.extend_from_slice(extra);
+    cli(p, dir, &args).await
 }
 
 async fn status_of(p: &Platform, run: &str) -> String {
@@ -403,19 +415,28 @@ async fn us03_the_event_template_starts_a_run_for_each_event_and_a_repeat_starts
             .await
         }
     };
-    let (served, _) = tokio::join!(worker(&p, &dir, &engine, "event-trigger", 1), async {
-        let (status, _) = send("order-1").await;
-        assert_eq!(status, 202);
-        let (status, again) = send("order-1").await;
-        assert_eq!(status, 202);
-        assert_eq!(again["status"], "DUPLICATE");
-        within("the event to start a run", 30, || async {
-            let runs = cli(&p, &dir, &["workflow", "runs", "on-order-created"]).await;
-            runs.out.contains("SUCCEEDED").then_some(())
-        })
-        .await;
-    });
-    served.expect(0).mentions("orders.handle  completes");
+    let (served, _) = tokio::join!(
+        worker_with(&p, &dir, &engine, "event-trigger", 1, &["--show-payloads"]),
+        async {
+            let (status, _) = send("order-1").await;
+            assert_eq!(status, 202);
+            let (status, again) = send("order-1").await;
+            assert_eq!(status, 202);
+            assert_eq!(again["status"], "DUPLICATE");
+            within("the event to start a run", 30, || async {
+                let runs = cli(&p, &dir, &["workflow", "runs", "on-order-created"]).await;
+                runs.out.contains("SUCCEEDED").then_some(())
+            })
+            .await;
+        }
+    );
+    // The run's input is the event document: the envelope, and the data that was published under `data`.
+    served
+        .expect(0)
+        .mentions("orders.handle")
+        .mentions(r#""data":{"orderId":"order-1"}"#)
+        .mentions(r#""event":{"#)
+        .mentions(r#""type":"order.created""#);
     let runs = cli(&p, &dir, &["workflow", "runs", "on-order-created"]).await;
     assert_eq!(
         runs.out.lines().count(),

@@ -36,6 +36,7 @@ fn env_for(
         token,
         namespace: namespace.map(str::to_owned),
         cwd: dir.0.clone(),
+        ..Default::default()
     }
 }
 
@@ -200,6 +201,7 @@ async fn an_address_that_leads_nowhere_is_told_what_kind_of_nowhere() {
         token: Some(token.clone()),
         namespace: Some("payments".into()),
         cwd: dir.0.clone(),
+        ..Default::default()
     };
     // Nothing listens.
     doctor(with("http://127.0.0.1:1/v1"), &[])

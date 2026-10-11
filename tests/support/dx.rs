@@ -115,6 +115,7 @@ pub async fn cli_as(p: &Platform, dir: &Dir, sub: &str, args: &[&str]) -> Outcom
         token: Some(p.api.idp.token(sub, "acme").build()),
         namespace: Some("payments".to_owned()),
         cwd: dir.0.clone(),
+        ..Default::default()
     };
     run_with(env, args).await
 }

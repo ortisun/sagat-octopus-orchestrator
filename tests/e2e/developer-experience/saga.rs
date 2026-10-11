@@ -102,8 +102,12 @@ async fn us02_the_payment_saga_of_the_example_compensates_a_decline_and_reconcil
             .to_owned()
     };
 
+    // Everything the example printed, on every day: none of it is the token.
+    let mut printed = String::new();
+
     // A good day: the reservation is made, the charge works, the customer is told.
     let (code, out, err) = day("ok").await;
+    printed.push_str(&format!("{out}{err}"));
     assert_eq!(code, Some(0), "ok:\n{out}\n{err}");
     let lines: Vec<&str> = out.lines().collect();
     assert!(position(&lines, "charge p-1: ch-p-1") > position(&lines, "reserve p-1: r-p-1 for 10"));
@@ -118,6 +122,7 @@ async fn us02_the_payment_saga_of_the_example_compensates_a_decline_and_reconcil
     // The card is declined for good: the saga undoes the reservation, newest effect first, and
     // nobody is told.
     let (code, out, err) = day("decline").await;
+    printed.push_str(&format!("{out}{err}"));
     assert_eq!(code, Some(0), "decline:\n{out}\n{err}");
     let lines: Vec<&str> = out.lines().collect();
     assert!(
@@ -136,8 +141,15 @@ async fn us02_the_payment_saga_of_the_example_compensates_a_decline_and_reconcil
     // The provider took the money and the answer was lost: the platform asks the provider whether
     // it happened (it did) and goes on. There is one charge, not two.
     let (code, out, err) = day("lost-answer").await;
+    printed.push_str(&format!("{out}{err}"));
     assert_eq!(code, Some(0), "lost-answer:\n{out}\n{err}");
     let lines: Vec<&str> = out.lines().collect();
+    // The provider is idempotent by key, so a second charge would not show in the ledger: it would show
+    // as the line the charge prints when it works, which the lost answer never did.
+    assert!(
+        !lines.contains(&"charge p-1: ch-p-1"),
+        "the charge was made again:\n{out}"
+    );
     assert!(
         position(&lines, "find-charge p-1: applied ch-p-1")
             > position(
@@ -154,5 +166,5 @@ async fn us02_the_payment_saga_of_the_example_compensates_a_decline_and_reconcil
     assert!(events.iter().any(|e| e.contains("reconcil")), "{events:?}");
 
     // And the token is not something the example prints.
-    assert!(!out.contains(&token) && !err.contains(&token));
+    assert!(!printed.contains(&token), "an example printed the token");
 }

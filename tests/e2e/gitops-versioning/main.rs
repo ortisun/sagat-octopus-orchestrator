@@ -119,6 +119,7 @@ pub async fn cli(p: &Platform, dir: &Dir, sub: &str, args: &[&str]) -> Outcome {
         token: Some(p.api.idp.token(sub, "acme").build()),
         namespace: None,
         cwd: dir.0.clone(),
+        ..Default::default()
     };
     let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
     let (mut out, mut err) = (Vec::new(), Vec::new());

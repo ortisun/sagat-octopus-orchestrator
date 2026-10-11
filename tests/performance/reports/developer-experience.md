@@ -10,9 +10,9 @@ The specification asks for an onboarding under fifteen minutes with the dependen
 
 - CPU: Apple M3 Max (16 logical cores)
 - OS: Darwin 25.3.0 arm64
-- Load average when the run began: 10.56 8.33 6.46 (other work on the machine adds noise)
+- Load average when the run began: 13.04 13.87 12.81 (other work on the machine adds noise)
 - Build profile of the test process and the tool: release
-- Commit: b4ab31e plus uncommitted changes to tracked files
+- Commit: df66de6 plus uncommitted changes to tracked files
 - Toolchains: node: v26.8.1; go: go version go1.24.2 darwin/arm64; python3: Python 3.14.7; dotnet: 10.0.401; java: openjdk version "23.0.2" 2025-01-21
 - PostgreSQL in a server named by SAGAT_TEST_DATABASE_URL (or a container) on the same machine; the platform and the tool run in-process, so there is no network between them (the tool speaks HTTP to the API on the loopback)
 
@@ -20,17 +20,17 @@ The specification asks for an onboarding under fifteen minutes with the dependen
 
 | Operation | Samples | p50 | p95 | max |
 |---|---:|---:|---:|---:|
-| `sagat doctor` | 5 | 4.3 ms | 6.5 ms | 6.5 ms |
-| `sagat new hello-world` | 5 | 0.83 ms | 0.88 ms | 0.88 ms |
-| `sagat workflow validate` | 5 | 2.6 ms | 6.1 ms | 6.1 ms |
-| `sagat workflow publish` | 5 | 9.0 ms | 9.2 ms | 9.2 ms |
-| `sagat worker bind` | 5 | 4.1 ms | 6.5 ms | 6.5 ms |
-| `worker dev` + `workflow run --wait`, start to SUCCEEDED | 5 | 771.4 ms | 778.9 ms | 778.9 ms |
-| `sagat dev token` | 100 | 0.55 ms | 0.60 ms | 1.2 ms |
-| one two-step run served by `worker dev`, `workflow run --wait` | 30 | 277.6 ms | 769.5 ms | 769.6 ms |
-| the commands above, together (what the machine takes) | 5 | 791.8 ms | 807.9 ms | 807.9 ms |
+| `sagat doctor` | 5 | 4.4 ms | 5.5 ms | 5.5 ms |
+| `sagat new hello-world` | 5 | 0.78 ms | 0.99 ms | 0.99 ms |
+| `sagat workflow validate` | 5 | 2.8 ms | 5.9 ms | 5.9 ms |
+| `sagat workflow publish` | 5 | 9.5 ms | 10.6 ms | 10.6 ms |
+| `sagat worker bind` | 5 | 4.8 ms | 5.2 ms | 5.2 ms |
+| `worker dev` + `workflow run --wait`, start to SUCCEEDED | 5 | 780.1 ms | 782.7 ms | 782.7 ms |
+| `sagat dev token` | 100 | 0.56 ms | 0.64 ms | 2.1 ms |
+| one two-step run served by `worker dev`, `workflow run --wait` | 30 | 276.8 ms | 769.5 ms | 771.5 ms |
+| the commands above, together (what the machine takes) | 5 | 802.3 ms | 810.6 ms | 810.6 ms |
 
-The six commands together, on a fresh platform: 807.9 ms.
+The six commands together, on a fresh platform: 810.6 ms. Their rows have only five samples, so their p95 is the slowest one.
 
 ## Each SDK's hello-world
 
@@ -38,21 +38,21 @@ The six commands together, on a fresh platform: 807.9 ms.
 
 | Language | prepare.sh | run.sh | prepare < 300 s | run < 30 s |
 |---|---:|---:|---|---|
-| typescript | 2.32 s | 627.4 ms | held | held |
-| go | 1.25 s | 673.8 ms | held | held |
-| python | 4.70 s | 723.7 ms | held | held |
-| dotnet | 3.79 s | 681.1 ms | held | held |
-| java | 5.72 s | 1.37 s | held | held |
+| typescript | 1.83 s | 661.9 ms | held | held |
+| go | 1.25 s | 623.0 ms | held | held |
+| python | 5.12 s | 749.4 ms | held | held |
+| dotnet | 3.46 s | 720.2 ms | held | held |
+| java | 5.59 s | 1.97 s | held | held |
 
 ## Hypotheses
 
 | Hypothesis | Measured | |
 |---|---|---|
-| the quickstart's commands take the machine under 10 s together (p95) | 807.9 ms | held |
+| the quickstart's commands take the machine under 10 s together (p95) | 810.6 ms | held |
 | one run served by `worker dev` takes under 3 s (p95) | 769.5 ms | held |
-| a token from the development provider under 50 ms (p95) | 0.60 ms | held |
-| each example's `run.sh` under 30 s | slowest 1.37 s | held |
-| each example's `prepare.sh` under 300 s | slowest 5.72 s | held |
+| a token from the development provider under 50 ms (p95) | 0.64 ms | held |
+| each example's `run.sh` under 30 s | slowest 1.97 s | held |
+| each example's `prepare.sh` under 300 s | slowest 5.59 s | held |
 
 ## What the figures say, and do not
 

@@ -17,6 +17,7 @@ struct Block {
 fn files() -> Vec<PathBuf> {
     let root = repo();
     let mut found = Vec::new();
+    let mut extras = Vec::new();
     let mut visit = |dir: &Path| {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = entry.path();
@@ -27,6 +28,14 @@ fn files() -> Vec<PathBuf> {
     };
     visit(&root.join("docs/quickstarts"));
     visit(&root.join("docs/reference"));
+    // The documents that say how to run it and why, with the ports, the variables and the commands.
+    visit(&root.join("specs/012-developer-experience"));
+    for extra in [
+        "docs/runbooks/developer-experience.md",
+        "docs/adr/ADR-0019-the-first-day-runs-on-the-real-engine-with-canned-answers-and-a-development-identity-provider.md",
+    ] {
+        extras.push(root.join(extra));
+    }
     for group in ["templates", "examples"] {
         for entry in std::fs::read_dir(root.join(group))
             .into_iter()
@@ -47,6 +56,7 @@ fn files() -> Vec<PathBuf> {
             }
         }
     }
+    found.extend(extras);
     found.retain(|p| !p.to_string_lossy().contains("node_modules"));
     found.sort();
     found
@@ -80,6 +90,12 @@ fn all_blocks() -> Vec<Block> {
         .collect()
 }
 
+/// A block of shell: what the quickstarts and the runbooks call `sh`, `bash` or `shell`.
+fn is_shell(block: &Block) -> bool {
+    let kind = block.info.split_whitespace().next().unwrap_or_default();
+    matches!(kind, "sh" | "bash" | "shell" | "console")
+}
+
 fn shown(block: &Block) -> String {
     format!(
         "{}:{}",
@@ -103,6 +119,11 @@ fn an_excerpt_is_in_the_file_it_names_just_as_shown() {
         else {
             continue;
         };
+        assert!(
+            block.body.iter().any(|l| !l.trim().is_empty()),
+            "{}: an excerpt with nothing in it proves nothing",
+            shown(&block)
+        );
         let source = std::fs::read_to_string(repo().join(path))
             .unwrap_or_else(|e| panic!("{}: {path}: {e}", shown(&block)));
         let lines: Vec<&str> = source.lines().collect();
@@ -199,31 +220,41 @@ fn commands(block: &Block) -> Vec<(usize, String)> {
 fn the_sagat_commands_in_the_docs_are_commands_the_tool_parses() {
     let mut checked = 0;
     for block in all_blocks() {
-        if !(block.info == "sh" || block.info.starts_with("sh ")) {
+        if !is_shell(&block) {
             continue;
         }
         for (line, text) in commands(&block) {
-            let words = words(text.trim_start_matches("$ ").trim());
-            if words.first().map(String::as_str) != Some("sagat") {
-                continue;
+            // The line itself, and any command substituted into it (`export SAGAT_TOKEN=$(sagat dev token)`).
+            let mut candidates = vec![words(text.trim_start_matches("$ ").trim())];
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find("$(") {
+                let after = &rest[at + 2..];
+                let end = after.find(')').unwrap_or(after.len());
+                candidates.push(words(&after[..end]));
+                rest = &after[end..];
             }
-            // A placeholder (<run>) is a thing the reader fills in, not a value to parse.
-            if words.iter().any(|w| w.starts_with('<') && w.ends_with('>')) {
-                continue;
+            for words in candidates {
+                if words.first().map(String::as_str) != Some("sagat") {
+                    continue;
+                }
+                // A placeholder (<run>) is a thing the reader fills in, not a value to parse.
+                if words.iter().any(|w| w.starts_with('<') && w.ends_with('>')) {
+                    continue;
+                }
+                let parsed = sagat_cli::args::parse(&words[1..]);
+                assert!(
+                    parsed.is_ok(),
+                    "{}:{line}: `{}` is not a command: {:?}",
+                    block
+                        .file
+                        .strip_prefix(repo())
+                        .unwrap_or(&block.file)
+                        .display(),
+                    words.join(" "),
+                    parsed.err().map(|e| e.0)
+                );
+                checked += 1;
             }
-            let parsed = sagat_cli::args::parse(&words[1..]);
-            assert!(
-                parsed.is_ok(),
-                "{}:{line}: `{}` is not a command: {:?}",
-                block
-                    .file
-                    .strip_prefix(repo())
-                    .unwrap_or(&block.file)
-                    .display(),
-                words.join(" "),
-                parsed.err().map(|e| e.0)
-            );
-            checked += 1;
         }
     }
     assert!(
@@ -239,7 +270,7 @@ fn the_scripts_a_readme_runs_are_there_and_executable() {
         let dir = block.file.parent().expect("dir");
         let readme = block.file.file_name().is_some_and(|n| n == "README.md");
         let inside = block.file.strip_prefix(repo().join("examples")).is_ok();
-        if !(readme && inside) || !(block.info == "sh" || block.info.starts_with("sh ")) {
+        if !(readme && inside) || !is_shell(&block) {
             continue;
         }
         for (line, text) in commands(&block) {

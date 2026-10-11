@@ -52,8 +52,13 @@ pub struct Finished {
     pub err: String,
 }
 
-/// Runs one of the scripts of an example, with the platform in its environment and nothing else
-/// of the test's: the token is in the environment of the child and never in an argument.
+/// The builds of the examples that share something (the SDK of a language that is built in its own
+/// directory) take turns: two tests of this target build the TypeScript SDK.
+static BUILDING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Runs one of the scripts of an example, with the settings of the platform added to the
+/// environment of the test (the toolchains need their own variables): the token is in the
+/// environment of the child and never in an argument.
 pub async fn script(
     example: &str,
     language: &str,
@@ -66,6 +71,11 @@ pub async fn script(
         .join(example)
         .join(language)
         .join(name);
+    let _turn = if name == "prepare.sh" {
+        Some(BUILDING.lock().await)
+    } else {
+        None
+    };
     let mut command = Command::new(&path);
     command
         .current_dir(path.parent().expect("dir"))
@@ -154,17 +164,27 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
         .expect(0)
         .mentions("bound alice to 2 activities in payments");
 
-    let token = p.api.idp.token("alice", "acme").build();
-    let setting = vec![
-        ("SAGAT_SERVER", p.api.base.clone()),
-        ("SAGAT_GRPC", engine.grpc_url.clone()),
-        ("SAGAT_NAMESPACE", "payments".to_owned()),
-        ("SAGAT_TOKEN", token.clone()),
-    ];
+    // A token lives five minutes in the tests and a clean build of the later languages can take longer
+    // than that on a slow machine: each language gets a fresh one, just before it runs.
+    let settings = |token: &str| {
+        vec![
+            ("SAGAT_SERVER", p.api.base.clone()),
+            ("SAGAT_GRPC", engine.grpc_url.clone()),
+            ("SAGAT_NAMESPACE", "payments".to_owned()),
+            ("SAGAT_TOKEN", token.to_owned()),
+        ]
+    };
 
     let mut runs: Vec<(&str, String)> = Vec::new();
     for language in &languages {
-        let prepared = script("hello-world", language, "prepare.sh", 900, &setting).await;
+        let prepared = script(
+            "hello-world",
+            language,
+            "prepare.sh",
+            900,
+            &settings("unused"),
+        )
+        .await;
         assert_eq!(
             prepared.code,
             Some(0),
@@ -172,7 +192,22 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
             prepared.out,
             prepared.err
         );
-        let ran = script("hello-world", language, "run.sh", 180, &setting).await;
+        // Without a token the example says so and ends with the code of a usage error, in every language.
+        let without = script("hello-world", language, "run.sh", 60, &settings("")).await;
+        assert_eq!(
+            without.code,
+            Some(2),
+            "{language}: {}{}",
+            without.out,
+            without.err
+        );
+        assert!(
+            without.err.contains("SAGAT_TOKEN is not set"),
+            "{language}: {}",
+            without.err
+        );
+        let token = p.api.idp.token("alice", "acme").build();
+        let ran = script("hello-world", language, "run.sh", 180, &settings(&token)).await;
         assert_eq!(
             ran.code,
             Some(0),
@@ -232,9 +267,11 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
         )
         .await;
         for event in events["items"].as_array().expect("items") {
-            if let Some(t) = event["traceId"].as_str() {
-                assert_eq!(t, trace, "{language}: {event}");
-            }
+            assert_eq!(
+                event["traceId"].as_str(),
+                Some(trace),
+                "{language}: an event is not in the trace of the run: {event}"
+            );
         }
         stories.push((language, journal(&p, run, true).await, trace.to_owned()));
     }

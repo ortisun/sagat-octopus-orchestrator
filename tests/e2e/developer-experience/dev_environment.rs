@@ -149,6 +149,33 @@ async fn the_namespace_seed_is_refused_outside_development_and_without_the_tenan
         );
     }
     assert_eq!(count(&db, "namespaces").await, 0);
+    // Nothing was made on the way to finding that out: not even the workspace.
+    assert_eq!(count(&db, "workspaces").await, 0);
+}
+
+#[tokio::test]
+async fn two_seeds_at_once_leave_one_workspace_and_one_namespace() {
+    let db = migrated_db().await;
+    let cfg = config(&db, Environment::Dev);
+    seed_dev(&cfg, &seed()).await.expect("tenant");
+    let (who, wanted) = (seed(), namespace());
+    let (a, b, c) = tokio::join!(
+        seed_dev_namespace(&cfg, &who, &wanted),
+        seed_dev_namespace(&cfg, &who, &wanted),
+        seed_dev_namespace(&cfg, &who, &wanted),
+    );
+    // Whoever lost the race is told it was there, not that something broke.
+    let outcomes = [a.expect("a"), b.expect("b"), c.expect("c")];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|o| **o == SeedOutcome::Created)
+            .count(),
+        1,
+        "{outcomes:?}"
+    );
+    assert_eq!(count(&db, "workspaces").await, 1);
+    assert_eq!(count(&db, "namespaces").await, 1);
 }
 
 /// The development identity provider on a port of its own, and its address.
@@ -183,6 +210,7 @@ fn cli_env(server: Option<&str>, token: Option<String>, dir: &Dir) -> Env {
         token,
         namespace: Some("payments".to_owned()),
         cwd: dir.0.clone(),
+        ..Default::default()
     }
 }
 
@@ -305,13 +333,15 @@ async fn a_token_from_the_development_provider_is_the_first_credential_of_the_fi
         &["doctor"],
     )
     .await
-    .expect(1);
+    .expect(1)
+    .mentions("FAIL  credentials");
 
     // And the platform does not trust a token of another provider.
     let other = api.idp.token("dev-admin", "dev").build();
     run_with(cli_env(Some(&api.base), Some(other), &dir), &["doctor"])
         .await
-        .expect(1);
+        .expect(1)
+        .mentions("FAIL  credentials");
 }
 
 #[tokio::test]
@@ -352,4 +382,74 @@ async fn the_command_says_what_went_wrong_asking_for_a_token() {
         .expect(2);
     ask(&dir, &["dev"]).await.expect(2);
     ask(&dir, &["dev", "login"]).await.expect(2);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_token_is_not_written_through_a_link_somebody_planted() {
+    let idp = dev_idp().await;
+    let dir = Dir::new();
+    dir.write("precious.txt", "do not touch");
+    std::os::unix::fs::symlink(dir.0.join("precious.txt"), dir.0.join("token.txt")).expect("link");
+    ask(&dir, &["dev", "token", "--idp", &idp, "--out", "token.txt"])
+        .await
+        .expect(1)
+        .mentions("symbolic link")
+        .omits("eyJ");
+    assert_eq!(dir.read("precious.txt"), "do not touch");
+    // A file that is there, and is not a link, is replaced and is the owner's alone afterwards.
+    dir.write("plain.txt", "old");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            dir.0.join("plain.txt"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .expect("chmod");
+    }
+    ask(&dir, &["dev", "token", "--idp", &idp, "--out", "plain.txt"])
+        .await
+        .expect(0);
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(dir.0.join("plain.txt"))
+        .expect("meta")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert!(dir.read("plain.txt").starts_with("eyJ"));
+}
+
+#[tokio::test]
+async fn a_provider_that_never_stops_answering_is_not_read_to_the_end() {
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // Read the request (not all of it matters), then answer with a body larger than any
+                // answer of the provider and keep sending.
+                let mut buffer = [0u8; 2048];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 400000000\r\n\r\n")
+                    .await;
+                let chunk = vec![b' '; 64 * 1024];
+                for _ in 0..4096 {
+                    if socket.write_all(&chunk).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let dir = Dir::new();
+    let started = std::time::Instant::now();
+    ask(&dir, &["dev", "token", "--idp", &format!("http://{addr}")])
+        .await
+        .expect(1)
+        .mentions("larger than this tool reads");
+    assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
 }

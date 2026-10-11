@@ -1,7 +1,7 @@
 //! Markdown from the contracts. Pure functions of the documents they are given, so that the output
 //! is the same on every machine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde_json::Value;
@@ -17,6 +17,8 @@ fn cell(text: &str) -> String {
 #[must_use]
 pub fn api_reference(openapi: &Value, source: &str) -> String {
     let mut by_tag: BTreeMap<String, Vec<(String, usize, String)>> = BTreeMap::new();
+    // The operations that take no token: a `security: []` of their own.
+    let mut open: Vec<String> = Vec::new();
     let methods = ["get", "post", "put", "patch", "delete"];
     let mut count = 0usize;
     for (path, item) in openapi["paths"].as_object().into_iter().flatten() {
@@ -26,6 +28,9 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
             };
             count += 1;
             let tag = operation["tags"][0].as_str().unwrap_or("Other").to_owned();
+            if operation["security"].as_array().is_some_and(Vec::is_empty) {
+                open.push(format!("`{} {}`", method.to_uppercase(), path));
+            }
             let success = operation["responses"]
                 .as_object()
                 .into_iter()
@@ -71,10 +76,17 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
         out,
         "Made from `{source}` (version {}): {count} operations in {} groups. The full contract \
          (parameters, bodies, schemas, errors) is that file; this page is the map of it. Every call \
-         takes `Authorization: Bearer <token>`; the tenant is the token's. The operations that take an \
-         `Idempotency-Key` are marked: a repeat with the same key and body answers the first result.\n",
+         takes `Authorization: Bearer <token>` (the tenant is the token's) except {}. The operations \
+         that take an `Idempotency-Key` are marked: a repeat with the same key and body answers the \
+         first result.\n",
         openapi["info"]["version"].as_str().unwrap_or("?"),
-        by_tag.len()
+        by_tag.len(),
+        if open.is_empty() {
+            "none".to_owned()
+        } else {
+            open.sort();
+            format!("these, which take no bearer token: {}", open.join(", "))
+        }
     );
     for (tag, mut rows) in by_tag {
         rows.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
@@ -91,9 +103,15 @@ pub fn api_reference(openapi: &Value, source: &str) -> String {
     out.trim_end().to_owned() + "\n"
 }
 
-fn type_of(schema: &Value) -> String {
+/// How a type reads: a reference is a link only to a heading this page has.
+fn type_of(schema: &Value, headings: &BTreeSet<String>) -> String {
     if let Some(reference) = schema["$ref"].as_str() {
-        return format!("[`{0}`](#{0})", reference.rsplit('/').next().unwrap_or("?"));
+        let name = reference.rsplit('/').next().unwrap_or("?");
+        return if headings.contains(name) {
+            format!("[`{name}`](#{name})")
+        } else {
+            format!("`{name}`")
+        };
     }
     if let Some(constant) = schema.get("const") {
         return format!("`{constant}`");
@@ -103,7 +121,7 @@ fn type_of(schema: &Value) -> String {
         return format!("one of {}", names.join(", "));
     }
     match schema["type"].as_str() {
-        Some("array") => format!("array of {}", type_of(&schema["items"])),
+        Some("array") => format!("array of {}", type_of(&schema["items"], headings)),
         Some(other) => other.to_owned(),
         None => "any".to_owned(),
     }
@@ -133,22 +151,20 @@ fn limits(schema: &Value) -> String {
     }
 }
 
-fn fields(schema: &Value, out: &mut String) {
+/// The rows of a table of fields: one for each property, and the properties of an object (or of
+/// the objects of an array) under it, with the path in front of the name.
+fn rows(schema: &Value, prefix: &str, headings: &BTreeSet<String>, out: &mut String) {
     let required: Vec<&str> = schema["required"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
         .collect();
-    let _ = writeln!(
-        out,
-        "| Field | Type | Required | Description |\n|---|---|---|---|"
-    );
     for (name, property) in schema["properties"].as_object().into_iter().flatten() {
         let _ = writeln!(
             out,
-            "| `{name}` | {}{} | {} | {} |",
-            type_of(property),
+            "| `{prefix}{name}` | {}{} | {} | {} |",
+            type_of(property, headings),
             limits(property),
             if required.contains(&name.as_str()) {
                 "yes"
@@ -157,7 +173,25 @@ fn fields(schema: &Value, out: &mut String) {
             },
             cell(property["description"].as_str().unwrap_or(""))
         );
+        if property["properties"].is_object() {
+            rows(property, &format!("{prefix}{name}."), headings, out);
+        } else if property["items"]["properties"].is_object() {
+            rows(
+                &property["items"],
+                &format!("{prefix}{name}[]."),
+                headings,
+                out,
+            );
+        }
     }
+}
+
+fn fields(schema: &Value, headings: &BTreeSet<String>, out: &mut String) {
+    let _ = writeln!(
+        out,
+        "| Field | Type | Required | Description |\n|---|---|---|---|"
+    );
+    rows(schema, "", headings, out);
     out.push('\n');
 }
 
@@ -173,8 +207,6 @@ pub fn workflow_reference(schema: &Value, source: &str) -> String {
          (the graph, the expressions, the references between nodes), and `sagat workflow validate` runs \
          the codec: [errors.md](../quickstarts/errors.md) says what each of its findings means.\n"
     );
-    let _ = writeln!(out, "## The document\n");
-    fields(schema, &mut out);
     let defs = schema["$defs"].as_object();
     let kinds: Vec<&str> = schema["$defs"]["node"]["oneOf"]
         .as_array()
@@ -183,6 +215,15 @@ pub fn workflow_reference(schema: &Value, source: &str) -> String {
         .filter_map(|r| r["$ref"].as_str())
         .filter_map(|r| r.rsplit('/').next())
         .collect();
+    // The headings this page has: every definition but `node`, which is the choice among the kinds.
+    let headings: BTreeSet<String> = defs
+        .into_iter()
+        .flatten()
+        .map(|(name, _)| name.clone())
+        .filter(|name| name != "node")
+        .collect();
+    let _ = writeln!(out, "## The document\n");
+    fields(schema, &headings, &mut out);
     let _ = writeln!(out, "## Nodes\n");
     let _ = writeln!(
         out,
@@ -195,7 +236,7 @@ pub fn workflow_reference(schema: &Value, source: &str) -> String {
     );
     if let Some(base) = defs.and_then(|d| d.get("base")) {
         let _ = writeln!(out, "### base\n");
-        fields(base, &mut out);
+        fields(base, &headings, &mut out);
     }
     for kind in &kinds {
         let Some(def) = defs.and_then(|d| d.get(*kind)) else {
@@ -206,7 +247,7 @@ pub fn workflow_reference(schema: &Value, source: &str) -> String {
             .and_then(|parts| parts.iter().find(|p| p.get("properties").is_some()))
             .unwrap_or(def);
         let _ = writeln!(out, "### {kind}\n");
-        fields(own, &mut out);
+        fields(own, &headings, &mut out);
     }
     let _ = writeln!(out, "## Other shapes\n");
     for (name, def) in defs.into_iter().flatten() {
@@ -215,9 +256,9 @@ pub fn workflow_reference(schema: &Value, source: &str) -> String {
         }
         let _ = writeln!(out, "### {name}\n");
         if def.get("properties").is_some() {
-            fields(def, &mut out);
+            fields(def, &headings, &mut out);
         } else {
-            let _ = writeln!(out, "{}\n", type_of(def));
+            let _ = writeln!(out, "{}\n", type_of(def, &headings));
         }
     }
     out.trim_end().to_owned() + "\n"
