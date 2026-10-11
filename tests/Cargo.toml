@@ -264,3 +264,8 @@ path = "contract/gitops-versioning/rest/main.rs"
 [[test]]
 name = "e2e_gitops_versioning"
 path = "e2e/gitops-versioning/main.rs"
+
+[[test]]
+name = "fault_gitops_versioning"
+path = "fault/gitops-versioning/main.rs"
+

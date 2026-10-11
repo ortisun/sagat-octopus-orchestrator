@@ -443,21 +443,14 @@ impl PublishingStore for PgDefinitionStore {
         before: Option<ActivationId>,
         limit: u32,
     ) -> Result<Vec<ActivationRecord>, StoreError> {
-        sqlx::query(
-            "SELECT a.id, a.workflow_id, a.version_id, v.version_number, pv.version_number AS previous_number, \
-                    a.kind, a.reason, a.actor, a.request_id, a.created_at, \
-                    sv.version_number AS source_number, sw.id AS source_workflow, sw.namespace_id AS source_namespace \
-             FROM workflow_activations a \
-             JOIN workflow_versions v ON v.tenant_id = a.tenant_id AND v.id = a.version_id \
-             LEFT JOIN workflow_versions pv ON pv.tenant_id = a.tenant_id AND pv.id = a.previous_version_id \
-             LEFT JOIN workflow_versions sv ON sv.tenant_id = a.tenant_id AND sv.id = a.promoted_from_version_id \
-             LEFT JOIN workflows sw ON sw.tenant_id = a.tenant_id AND sw.id = sv.workflow_id \
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{ACTIVATION_SELECT} \
              WHERE a.tenant_id = $1 AND a.workflow_id = $2 \
                AND ($3::uuid IS NULL OR (a.created_at, a.id) < ( \
                     SELECT c.created_at, c.id FROM workflow_activations c \
                     WHERE c.id = $3 AND c.tenant_id = $1 AND c.workflow_id = $2)) \
-             ORDER BY a.created_at DESC, a.id DESC LIMIT $4",
-        )
+             ORDER BY a.created_at DESC, a.id DESC LIMIT $4"
+        )))
         .bind(tenant.as_uuid())
         .bind(workflow.as_uuid())
         .bind(before.map(ActivationId::as_uuid))
@@ -536,7 +529,10 @@ impl PublishingStore for PgDefinitionStore {
         sqlx::query(
             "INSERT INTO workflow_activations \
              (id, tenant_id, workflow_id, version_id, previous_version_id, kind, reason, actor, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, \
+                     GREATEST($9, coalesce((SELECT max(created_at) + interval '1 microsecond' \
+                                            FROM workflow_activations \
+                                            WHERE tenant_id = $2 AND workflow_id = $3), $9)))",
         )
         .bind(change.id.as_uuid())
         .bind(tenant.as_uuid())
@@ -564,15 +560,32 @@ impl PublishingStore for PgDefinitionStore {
         register_triggers(&mut tx, &record, WorkflowVersionId::new(target), triggers).await?;
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
-        let latest = self
-            .activations(tenant, workflow, None, 1)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| corrupt("activation"))?;
-        Ok(Switched::Done(Box::new(latest)))
+        let written = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{ACTIVATION_SELECT} WHERE a.tenant_id = $1 AND a.id = $2"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(change.id.as_uuid())
+        .fetch_one(self.pool())
+        .await
+        .map_err(store_error)?;
+        Ok(Switched::Done(Box::new(activation_from_row(&written)?)))
     }
 }
+
+/// The columns of a change of the active version with the numbers of the versions it names. The
+/// caller adds the `WHERE`. A change is stored strictly after the one before it for the same
+/// workflow whatever the clock of the replica that made it says (the pointer is moved with the
+/// workflow row locked, so the order in which changes are stored is the order in which they
+/// happened), and this is read newest first.
+const ACTIVATION_SELECT: &str = "SELECT a.id, a.workflow_id, a.version_id, v.version_number, \
+            pv.version_number AS previous_number, \
+            a.kind, a.reason, a.actor, a.request_id, a.created_at, \
+            sv.version_number AS source_number, sw.id AS source_workflow, sw.namespace_id AS source_namespace \
+     FROM workflow_activations a \
+     JOIN workflow_versions v ON v.tenant_id = a.tenant_id AND v.id = a.version_id \
+     LEFT JOIN workflow_versions pv ON pv.tenant_id = a.tenant_id AND pv.id = a.previous_version_id \
+     LEFT JOIN workflow_versions sv ON sv.tenant_id = a.tenant_id AND sv.id = a.promoted_from_version_id \
+     LEFT JOIN workflows sw ON sw.tenant_id = a.tenant_id AND sw.id = sv.workflow_id";
 
 fn activation_from_row(row: &PgRow) -> Result<ActivationRecord, StoreError> {
     let kind: String = col(row, "kind")?;
@@ -704,7 +717,10 @@ pub(crate) async fn record_publication(
             "INSERT INTO workflow_activations \
              (id, tenant_id, workflow_id, version_id, previous_version_id, kind, reason, actor, \
               request_id, promoted_from_version_id, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+                     GREATEST($11, coalesce((SELECT max(created_at) + interval '1 microsecond' \
+                                             FROM workflow_activations \
+                                             WHERE tenant_id = $2 AND workflow_id = $3), $11)))",
         )
         .bind(ActivationId::generate().as_uuid())
         .bind(tenant.as_uuid())
