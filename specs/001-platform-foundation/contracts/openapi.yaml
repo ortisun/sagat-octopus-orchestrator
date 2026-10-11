@@ -4005,7 +4005,11 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ProductionIncidentTarget'
             - $ref: '#/components/schemas/TestIncidentTarget'
-          discriminator: {propertyName: kind}
+          discriminator:
+            propertyName: kind
+            mapping:
+              production: '#/components/schemas/ProductionIncidentTarget'
+              test: '#/components/schemas/TestIncidentTarget'
         category:
           type: string
           enum: [EGRESS_DISABLED, UNSUPPORTED_SCHEME, INVALID_HOST, PORT_NOT_ALLOWED, NOT_ALLOWLISTED, FORBIDDEN_ADDRESS, NO_ADDRESS]

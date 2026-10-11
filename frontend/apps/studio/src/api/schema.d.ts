@@ -3328,7 +3328,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            kind: "ProductionIncidentTarget";
+            kind: "production";
             /** Format: uuid */
             namespaceId: string;
             /** Format: uuid */
@@ -3346,7 +3346,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            kind: "TestIncidentTarget";
+            kind: "test";
             /** Format: uuid */
             namespaceId: string;
             /** Format: uuid */
