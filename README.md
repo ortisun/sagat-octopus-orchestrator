@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="hero.png" alt="Sagat Octopus: a purple, eight-armed octopus in Muay Thai shorts, wearing a red headband and an eye patch, standing on a rock and holding a workflow canvas, code, services and events, a plan-execute-monitor-compensate-succeed checklist, and task, workflow, event and compensation steps. Orchestrate a better tomorrow: workflows, sagas, systems, people, further." width="420">
+</p>
+
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
 > **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution), 003 (sagas and compensations, apart from the SDK DSL, Studio screens and dashboards, which belong to other features), 004 (triggers, webhooks and messaging, apart from OIDC/mTLS webhook profiles, outbound broker producers and Studio screens), 005 (inline TypeScript and Python scripts in a sandbox, apart from C#, dependency installation and the Studio editor) and 009 (security and multi-tenant governance, apart from a Helm chart, which belongs to another feature) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
