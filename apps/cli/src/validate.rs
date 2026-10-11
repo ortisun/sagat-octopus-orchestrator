@@ -1,30 +1,10 @@
 //! `sagat validate`: the manifest and every document, locally with the platform's own codec and,
 //! where the platform is reachable, against what only it knows (secrets, scripts).
 
-use sagat_application::definitions::IrCodec;
-use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
 
 use crate::args::Common;
-use crate::{EXIT_DONE, EXIT_FAILED, Env, Io, manifest, remote, session};
-
-/// What the codec says about a document, one line per problem. Empty when it would be published.
-pub(crate) fn local_problems(document: &[u8]) -> Vec<String> {
-    match JsonIrCodec.parse(document) {
-        Ok(_) => Vec::new(),
-        Err(error) => sagat_application::definitions::problems_of(&error)
-            .into_iter()
-            .map(|p| {
-                let place = p
-                    .node
-                    .or(p.path)
-                    .map(|w| format!(" at {w}"))
-                    .unwrap_or_default();
-                format!("{}{place}: {}", p.code, p.message)
-            })
-            .collect(),
-    }
-}
+use crate::{EXIT_DONE, EXIT_FAILED, Env, Io, Session, manifest, remote, session};
 
 pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u8, String> {
     let path = crate::manifest_path(common, env);
@@ -39,16 +19,18 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
         }
     };
     let mut failed = 0usize;
+    let docs = io.docs().map(str::to_owned);
     for item in &loaded {
-        let problems = local_problems(&item.document);
-        if problems.is_empty() {
+        let diagnostics = crate::diagnostics::of_document(&item.document);
+        let errors = diagnostics.iter().filter(|d| !d.warning).count();
+        if errors == 0 {
             io.say(format!("ok    {}", item.entry.name));
         } else {
             failed += 1;
             io.say(format!("FAIL  {}", item.entry.name));
-            for problem in problems {
-                io.say(format!("        {problem}"));
-            }
+        }
+        for line in crate::diagnostics::render(&diagnostics, docs.as_deref()) {
+            io.say(format!("        {line}"));
         }
     }
     if failed > 0 {
@@ -90,27 +72,8 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
             unchecked.push(item.entry.name.as_str());
             continue;
         };
-        let body = json!({ "ir": item.value });
-        let (_, answer) = session
-            .client
-            .call(
-                "POST",
-                &format!("/workflows/{}/validate", existing.id),
-                Some(&body),
-                None,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        let problems = answer["problems"].as_array().cloned().unwrap_or_default();
-        for warning in answer["warnings"].as_array().into_iter().flatten() {
-            io.say(format!("warn  {}  {}", item.entry.name, describe(warning)));
-        }
-        if !problems.is_empty() {
+        if !check_on_platform(&session, &existing.id, &item.value, &item.entry.name, io).await? {
             problems_found += 1;
-            io.say(format!("FAIL  {} (the platform)", item.entry.name));
-            for problem in &problems {
-                io.say(format!("        {}", describe(problem)));
-            }
         }
     }
     if problems_found > 0 {
@@ -133,15 +96,46 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
     Ok(EXIT_DONE)
 }
 
-fn describe(problem: &Value) -> String {
-    let text = |key: &str| problem.get(key).and_then(Value::as_str);
-    let place = text("nodeId")
-        .or_else(|| text("path"))
-        .map(|w| format!(" at {w}"))
-        .unwrap_or_default();
-    format!(
-        "{}{place}: {}",
-        text("code").unwrap_or("PROBLEM"),
-        text("message").unwrap_or("")
-    )
+/// Asks the platform whether it would publish `document` as the workflow `id`, and prints what it
+/// found: the warnings, and the problems with their help. `true` when there are no problems.
+pub(crate) async fn check_on_platform(
+    session: &Session,
+    id: &str,
+    document: &Value,
+    label: &str,
+    io: &mut Io<'_>,
+) -> Result<bool, String> {
+    let body = json!({ "ir": document });
+    let (_, answer) = session
+        .client
+        .call(
+            "POST",
+            &format!("/workflows/{id}/validate"),
+            Some(&body),
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let docs = io.docs().map(str::to_owned);
+    let problems = answer["problems"].as_array().cloned().unwrap_or_default();
+    let warnings: Vec<_> = answer["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(crate::diagnostics::of_server_problem)
+        .collect();
+    for line in crate::diagnostics::render(&warnings, docs.as_deref()) {
+        io.say(format!("        {line}"));
+    }
+    if !problems.is_empty() {
+        io.say(format!("FAIL  {label} (the platform)"));
+        let found: Vec<_> = problems
+            .iter()
+            .map(crate::diagnostics::of_server_problem)
+            .collect();
+        for line in crate::diagnostics::render(&found, docs.as_deref()) {
+            io.say(format!("        {line}"));
+        }
+    }
+    Ok(problems.is_empty())
 }

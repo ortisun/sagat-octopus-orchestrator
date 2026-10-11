@@ -202,4 +202,4 @@ repository**; do one before relying on this section.
 - **OTLP span export** exists (feature 008) with the limits in [`observability.md`](observability.md): HTTP with JSON only, one projector at a time.
 - **Alert rules and dashboards** ship in `infra/observability/` but are not tuned to a production baseline, and alerts leave only by webhook (no pager or email integration, G175).
 - **Restore** and **failover** have not been rehearsed.
-- A development identity provider does not exist (G10): local use needs your own provider.
+- The development identity provider (G10) is `apps/dev-idp`, closed by feature 012 ([`developer-experience.md`](developer-experience.md) §2): it signs a token for anyone who asks and runs only with `SAGAT_ENV=dev`; a shared environment uses its own provider.

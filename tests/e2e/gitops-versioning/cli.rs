@@ -297,6 +297,7 @@ async fn the_tool_says_what_is_missing_and_never_sends_a_token_where_it_would_be
         token: token.map(str::to_owned),
         namespace: None,
         cwd: dir.0.clone(),
+        ..Default::default()
     };
 
     plain(env(None, Some("t")), &["diff"])
@@ -407,6 +408,7 @@ async fn credentials_that_were_given_and_cannot_be_used_stop_validate_instead_of
         token: None,
         namespace: None,
         cwd: dir.0.clone(),
+        ..Default::default()
     };
     let local = plain(env(None, None), &["validate"]).await;
     local.expect(0).mentions("Not checked against the platform");

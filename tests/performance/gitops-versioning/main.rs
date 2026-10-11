@@ -591,6 +591,7 @@ async fn the_cost_of_publishing_moving_the_pointer_and_the_command_line() {
                 token: Some(p.api.idp.token("dev1", "acme").build()),
                 namespace: None,
                 cwd: dir,
+                ..Default::default()
             };
             let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
             let (mut out, mut err) = (Vec::new(), Vec::new());

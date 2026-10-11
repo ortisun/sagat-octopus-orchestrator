@@ -83,6 +83,30 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # The development identity provider (gap G10): it signs a token for anyone who asks, so it runs only
+  # with SAGAT_ENV=dev and is published on the loopback of this machine alone. A real environment uses
+  # its own OIDC provider and does not start this. `sagat dev token` asks it for a token.
+  dev-idp:
+    image: sagat-octopus-orchestrator/dev-idp:dev
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+      target: dev-idp
+    <<: *hardening
+    environment:
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_DEV_IDP_ISSUER: ${SAGAT_OIDC_ISSUER:?set SAGAT_OIDC_ISSUER in infra/docker/.env}
+      SAGAT_DEV_IDP_AUDIENCE: ${SAGAT_OIDC_AUDIENCE:?set SAGAT_OIDC_AUDIENCE in infra/docker/.env}
+      SAGAT_DEV_IDP_TENANT_CLAIM: ${SAGAT_OIDC_TENANT_CLAIM:-tenant}
+      # The names a request may carry: the other containers' (the issuer's) and this machine's published port.
+      SAGAT_DEV_IDP_HOSTS: 127.0.0.1:${SAGAT_IDP_PORT:-18090},localhost:${SAGAT_IDP_PORT:-18090}
+    ports:
+      - "127.0.0.1:${SAGAT_IDP_PORT:-18090}:9100"
+    volumes:
+      # The signing key, so that a token outlives a restart of the provider.
+      - idpdata:/data
+    restart: unless-stopped
+
   control-plane:
     <<: *control-plane
     environment:
@@ -103,6 +127,8 @@ services:
       # one with `docker run --rm sagat-octopus-orchestrator/control-plane:dev script-key`.
       SAGAT_SCRIPT_SIGNING_KEY: ${SAGAT_SCRIPT_SIGNING_KEY:-}
       SAGAT_SCRIPT_CEILING: ${SAGAT_SCRIPT_CEILING:-}
+      # The Studio, under /studio/ (its files are in the image; set this empty to not serve it).
+      SAGAT_STUDIO_DIR: ${SAGAT_STUDIO_DIR-/srv/studio}
     ports:
       - "127.0.0.1:${SAGAT_API_PORT:-18080}:8080"
     depends_on:
@@ -191,6 +217,10 @@ services:
       SAGAT_ENV: ${SAGAT_ENV:-dev}
       SAGAT_SEED_TENANT: ${SAGAT_SEED_TENANT:-dev}
       SAGAT_SEED_ADMIN_SUBJECT: ${SAGAT_SEED_ADMIN_SUBJECT:-dev-admin}
+      # A workspace and a namespace for that tenant, so that a first workflow can be published at once
+      # (set the namespace empty to leave none).
+      SAGAT_SEED_NAMESPACE: ${SAGAT_SEED_NAMESPACE-payments}
+      SAGAT_SEED_WORKSPACE: ${SAGAT_SEED_WORKSPACE:-dev}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -198,4 +228,5 @@ services:
 
 volumes:
   pgdata:
+  idpdata:
   natsdata:

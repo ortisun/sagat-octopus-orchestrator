@@ -55,6 +55,20 @@ pub async fn auth_context(caller: Caller) -> Json<AuthContextBody> {
     })
 }
 
+/// The version of the platform, for any caller with a token: the build, the API and the worker
+/// protocols it speaks (a client compares them with what it was written for; `sagat doctor` does).
+pub async fn platform_version(_caller: Caller) -> Json<crate::dto::VersionBody> {
+    Json(crate::dto::VersionBody {
+        service: "sagat-octopus-orchestrator",
+        version: env!("CARGO_PKG_VERSION"),
+        api_version: "v1",
+        worker_protocol: crate::dto::ProtocolRange {
+            minimum: "1.0".to_owned(),
+            maximum: format!("1.{}", sagat_application::worker::PROTOCOL_MINOR),
+        },
+    })
+}
+
 pub async fn create_workspace<S, C>(
     caller: Caller,
     State(state): State<AppState<S, C>>,
