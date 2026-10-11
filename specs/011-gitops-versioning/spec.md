@@ -68,6 +68,7 @@ Maintain Git pipelines, auditing, immutable versions and safe deployment of work
 - **FR-011-003**: The system MUST apply optimistic concurrency control on drafts and approval policies for prod publish.
 - **FR-011-004**: The system MUST allow versioned routing by namespace and event trigger with compatibility rules.
 - **FR-011-005**: The system MUST record an audit trail of authorship, review, approval, publisher, digest and reason.
+  Repeating a committed publication request with its original idempotency key MUST return the committed version, even after the draft changes. Recovery MUST retain tenant and permission checks and MUST NOT move the active pointer, publish the new draft, or append a second publication audit entry. A different key does not republish a final request.
 - **FR-011-006**: The system MUST block removal of artifacts used by active Runs until a safe retention policy is in place.
 
 ## Edge Cases

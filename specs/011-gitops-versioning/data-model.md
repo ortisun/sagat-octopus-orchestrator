@@ -67,7 +67,12 @@ publishing counts them again against the policy in force then.
   else (`activation.rs::every_publication_is_a_row_of_the_history_and_a_rollback_adds_one`).
 - A request publishes the draft at the revision it names, only while it is `APPROVED` with the approvals the policy
   asks for now, and at most once.
-- The author of a request is never one of its approvers, and a person is at most one decision.
+- Neither the requester nor the last editor of the named draft revision may decide the request; the editor is
+  frozen in `publication_requests.draft_edited_by` when the request opens. Historical drafts with no recorded
+  editor keep `NULL`. A person contributes at most one decision.
+- A committed request recovers its version through the tenant-scoped publication idempotency record, using the
+  revision, digest and release notes frozen in the request. Recovery reads the immutable version rather than
+  validating the current draft, and writes no activation or audit record.
 - The event triggers in force for a workflow are those of its active version, with ids that do not change when the
   pointer moves.
 - An artifact pinned by a version is not removable.
