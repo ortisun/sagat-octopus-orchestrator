@@ -5,9 +5,9 @@ import { JSON_SCHEMA_META, META_SCHEMA_URI } from './jsonSchemaMeta';
 import { checkInputText } from './jsonText';
 
 describe('languages', () => {
-  it('builds TypeScript and Python and does not pretend about the others (G96)', () => {
-    expect(LANGUAGES.filter((language) => language.built).map((language) => language.id)).toEqual(['typescript', 'python']);
-    expect(LANGUAGES.filter((language) => !language.built).map((language) => language.id)).toEqual(['csharp', 'go', 'java']);
+  it('builds TypeScript, Python and C# while Go and Java remain unavailable', () => {
+    expect(LANGUAGES.filter((language) => language.built).map((language) => language.id)).toEqual(['typescript', 'python', 'csharp']);
+    expect(LANGUAGES.filter((language) => !language.built).map((language) => language.id)).toEqual(['go', 'java']);
   });
 
   it('has a language service in the browser for TypeScript only, and says what the others get', () => {
@@ -25,6 +25,7 @@ describe('languages', () => {
   it('starts a script from the shape the runner expects', () => {
     expect(sampleSource('typescript')).toMatch(/export default/);
     expect(sampleSource('python')).toMatch(/def run\(input, octopus\)/);
+    expect(sampleSource('csharp')).toContain('IInlineScript');
     expect(checkInputText(SAMPLE_INPUT).kind).toBe('ok');
   });
 

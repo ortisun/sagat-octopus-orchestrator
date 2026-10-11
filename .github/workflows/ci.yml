@@ -23,6 +23,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: isolated C# compiler and runtime images
+        run: |
+          docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
+          docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
       # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
       # The workspace also verifies worker/event compatibility baselines and that applying
       # platform migrations twice is a no-op (T001-030/031).

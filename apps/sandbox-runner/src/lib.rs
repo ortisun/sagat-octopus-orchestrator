@@ -60,7 +60,7 @@ const SESSION_AGE: Duration = Duration::from_secs(1800);
 /// Artifacts kept verified in memory.
 const MAX_CACHED_ARTIFACTS: usize = 128;
 /// The languages this runner knows how to build, in the order they are looked at.
-const LANGUAGES: [Language; 2] = [Language::TypeScript, Language::Python];
+const LANGUAGES: [Language; 3] = [Language::TypeScript, Language::Python, Language::CSharp];
 
 /// Why the secrets of a step were not taken.
 enum SecretsFailure {

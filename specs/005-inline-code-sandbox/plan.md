@@ -6,7 +6,7 @@
 
 Allow writing and publishing code directly on the platform without manual application build/deploy.
 
-**Technical approach:** ScriptRegistry controls src/digest and the build pipeline; worker supervisor manages isolated pools. Inline Go/C#/Java are compiled automatically into artifacts and executed outside privileged processes.
+**Technical approach:** ScriptRegistry controls src/digest and the build pipeline; the sandbox runner manages isolated containers. TypeScript/Python and compiled C# execute outside privileged processes. Go and Java remain explicit future languages.
 
 ## Technical Context
 
@@ -35,7 +35,7 @@ These checks indicate conformance **of the design**, not approval of the impleme
 
 ## Project Structure
 
-The plan proposed `crates/script-registry`, `crates/sandbox`, `apps/worker-supervisor` and a Studio editor. As built (ADR-0013, G109, G110), by the same rule as feature 004: a crate boundary has to buy isolation, and these would have had to import the whole run state or the whole application layer for none.
+The plan proposed `crates/script-registry`, `crates/sandbox`, `apps/worker-supervisor` and a Studio editor. As built (ADR-0013, ADR-0021, G109, G110), by the same rule as feature 004: a crate boundary has to buy isolation, and these would have had to import the whole run state or the whole application layer for none.
 
 ```text
 crates/domain/src/scripts.rs                       languages, source, lockfile, digest, limits and policy, versions, failures, redaction
@@ -43,8 +43,9 @@ crates/domain/src/{identity,audit,quota}.rs        script:* permissions, the run
 crates/application/src/scripts.rs                  ScriptService (authors), RunnerService (the runner), ports ScriptStore / RunnerStore / ScriptLookup
 crates/application/src/sandbox.rs                  Sandbox and HostCalls ports, the build key
 crates/application/src/script_signing.rs           Ed25519 signer and verifier of artifacts
-crates/infra-sandbox/                              the container driver, the JSON-line protocol, the lockfile policy, the shims (Node, Python)
-crates/infra-schema/                               JSON Schema: check a schema, validate without echoing, infer from a value
+crates/infra-sandbox/                              the container driver, JSON-line protocol, lockfile policy and Node/Python shims
+crates/infra-schema/                               JSON Schema plus v1 text/v2 binary artifact validation before signing
+runners/dotnet/                                    pinned Roslyn build host, closed NuGet catalog and separate .NET runtime host
 crates/infra-postgres/src/scripts.rs               the SQL; migration 20261014000000_scripts
 crates/infra-ir/src/convert.rs                     a script node becomes the activity script.sha256-<hex>
 crates/api-http/src/routes/{scripts,runner}.rs     25 operations
@@ -75,7 +76,7 @@ tests/performance/inline-code-sandbox/         the benchmark; report in tests/pe
 
 ## Risks & Mitigations
 
-- **Functional risk:** dependency changed remotely. Mitigate via adversarial scenario with fixture.
+- **Functional risk:** dependency changed remotely. The C# catalog pins package identity, version, NuGet content hash, archive SHA-512 and selected assembly SHA-256 in the immutable builder image; customer builds have no registry access.
 - **Operational risk:** throughput below target; perf profiling and scaling driven by metrics, never a promise without a benchmark.
 - **Compatibility risk:** schema/SDK diverges; schema evolution and golden fixtures.
 - **Security risk:** tenant/sandbox boundary; adversarial tests and fail closed.

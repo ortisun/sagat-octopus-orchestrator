@@ -95,14 +95,14 @@ describe('ScriptsPage: permissions', () => {
 });
 
 describe('ScriptsPage: making a script', () => {
-  it('offers the five languages, and disables the three the platform does not build, saying so', async () => {
+  it('offers the five languages, and disables the two the platform does not build, saying so', async () => {
     const { user } = await open();
     await user.click(await screen.findByRole('button', { name: 'New script' }));
     const dialog = screen.getByRole('dialog', { name: 'New script' });
     const select = within(dialog).getByRole('combobox', { name: 'Language' });
     const options = within(select).getAllByRole('option');
-    expect(options.map((o) => o.textContent)).toEqual(['TypeScript', 'Python', 'C# (not built by this platform yet)', 'Go (not built by this platform yet)', 'Java (not built by this platform yet)']);
-    expect(options.map((o) => (o as HTMLOptionElement).disabled)).toEqual([false, false, true, true, true]);
+    expect(options.map((o) => o.textContent)).toEqual(['TypeScript', 'Python', 'C#', 'Go (not built by this platform yet)', 'Java (not built by this platform yet)']);
+    expect(options.map((o) => (o as HTMLOptionElement).disabled)).toEqual([false, false, false, true, true]);
   });
 
   it('makes a script from the sample of the language and opens its editor', async () => {
@@ -124,6 +124,22 @@ describe('ScriptsPage: making a script', () => {
     expect(body).toMatchObject({ name: 'send-mail', language: 'python' });
     expect(body.source).toMatch(/def run\(input, octopus\)/);
     expect((posted?.init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
+  });
+
+  it('creates a C# script with the isolated runner contract as its starter', async () => {
+    const { server, user } = await open();
+    await user.click(await screen.findByRole('button', { name: 'New script' }));
+    const dialog = screen.getByRole('dialog', { name: 'New script' });
+    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'csharp-double');
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Language' }), 'csharp');
+    await user.click(within(dialog).getByRole('button', { name: 'Create script' }));
+    expect(await screen.findByText('the editor of a script')).toBeInTheDocument();
+    const posted = server.callsTo('POST', server.paths.base)[0];
+    const body = JSON.parse(posted?.init.body as string) as { language: string; source: string };
+    expect(body.language).toBe('csharp');
+    expect(body.source).toContain('IInlineScript');
+    expect(body.source).toContain('ValueTask<JsonElement> RunAsync');
+    expect(body.source).toContain('IOctopus octopus');
   });
 
   it('puts the problem with a taken name on the name', async () => {

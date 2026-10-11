@@ -84,8 +84,17 @@ async fn a_test_run_whose_runner_dies_is_run_again_by_another() {
     let script = lab
         .script(
             "dying-test",
-            "typescript",
-            "export default (i: any) => ({ got: i });\n",
+            "csharp",
+            r#"
+using System.Text.Json;
+using Sagat.ScriptContract;
+
+public sealed class Script : IInlineScript
+{
+    public ValueTask<JsonElement> RunAsync(JsonElement input, IOctopus octopus, CancellationToken cancellationToken)
+        => ValueTask.FromResult(JsonSerializer.SerializeToElement(new { got = input }));
+}
+"#,
         )
         .await;
     let (status, queued) = lab

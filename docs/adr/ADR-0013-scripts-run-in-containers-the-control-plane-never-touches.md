@@ -2,6 +2,10 @@
 
 Status: **Accepted** | Date: 2026-10-09 | Feature: 005 | Supersedes nothing; refines ADR-0006
 
+The C# language/dependency restrictions below are superseded by
+[ADR-0021](ADR-0021-csharp-builds-use-a-curated-offline-toolchain.md), which introduces a curated
+offline Roslyn toolchain and versioned binary bundles. All isolation boundaries still apply.
+
 ## Context
 
 ADR-0006 decided that scripts are untrusted execution: compiled in build workers, run in isolated
