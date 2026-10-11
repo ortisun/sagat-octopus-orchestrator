@@ -2510,6 +2510,32 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /script-runner/incidents:
+    post:
+      operationId: recordScriptRunnerIncident
+      summary: Commit a supervisor denial before acknowledging it to a script
+      tags: [Scripts]
+      x-implemented: '009'
+      description: |
+        Needs `script:execute`. Validates the authenticated runner against the current production
+        step lease, worker session and binding, or against the current test-run lease. The request
+        accepts only a closed denial category and fenced identifiers; it cannot carry a destination,
+        actor, digest, URL, headers, payload or free-form reason. `204` is returned only after the
+        audit transaction commits. An identical retry is an idempotent `204`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecordRunnerIncidentRequest'}
+      responses:
+        '204': {description: 'Incident committed, or committed already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
@@ -3605,7 +3631,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         source: {type: string}
         lockfile: {type: string}
         inputSchema: {type: object}
@@ -3625,7 +3651,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer, minimum: 1, maximum: 365}
         revision: {type: integer}
@@ -3671,7 +3697,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         source: {type: string}
         lockfile: {type: string}
@@ -3698,7 +3724,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python]}
+        language: {type: string, enum: [typescript, python, csharp]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer}
@@ -3970,6 +3996,40 @@ components:
       required: [recorded]
       properties:
         recorded: {type: boolean}
+    RecordRunnerIncidentRequest:
+      type: object
+      additionalProperties: false
+      required: [target, category]
+      properties:
+        target:
+          oneOf:
+            - $ref: '#/components/schemas/ProductionIncidentTarget'
+            - $ref: '#/components/schemas/TestIncidentTarget'
+          discriminator: {propertyName: kind}
+        category:
+          type: string
+          enum: [EGRESS_DISABLED, UNSUPPORTED_SCHEME, INVALID_HOST, PORT_NOT_ALLOWED, NOT_ALLOWLISTED, FORBIDDEN_ADDRESS, NO_ADDRESS]
+    ProductionIncidentTarget:
+      type: object
+      additionalProperties: false
+      required: [kind, namespaceId, runId, stepId, attempt, generation, leaseToken]
+      properties:
+        kind: {type: string, const: production}
+        namespaceId: {type: string, format: uuid}
+        runId: {type: string, format: uuid}
+        stepId: {type: string, format: uuid}
+        attempt: {type: integer, format: int32, minimum: 1}
+        generation: {type: integer, format: int64, minimum: 1}
+        leaseToken: {type: string, minLength: 1, maxLength: 128}
+    TestIncidentTarget:
+      type: object
+      additionalProperties: false
+      required: [kind, namespaceId, testRunId, leaseToken]
+      properties:
+        kind: {type: string, const: test}
+        namespaceId: {type: string, format: uuid}
+        testRunId: {type: string, format: uuid}
+        leaseToken: {type: string, minLength: 1, maxLength: 128}
     PublicationPolicy:
       type: object
       required: [namespaceId, environment, requiredApprovals, source]

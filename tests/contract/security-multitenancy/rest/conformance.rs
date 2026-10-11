@@ -64,6 +64,7 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
     let sec_one = |name: &str| format!("/namespaces/{ns}/secrets/{name}");
     let sec_access = |name: &str| format!("/namespaces/{ns}/secrets/{name}/access");
     let sec_grant = |name: &str, who: &str| format!("/namespaces/{ns}/secrets/{name}/access/{who}");
+    let incident_t = "/script-runner/incidents";
 
     let scenarios = vec![
         // ---- the tenant level
@@ -646,6 +647,27 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
         scenario("DELETE", egress_t, &egress_path, bob.clone(), None, 404),
         scenario("DELETE", egress_t, &egress_path, alice.clone(), None, 204),
         scenario("DELETE", egress_t, &egress_path, alice.clone(), None, 204),
+        // ---- runner incidents: authentication is checked before the fenced target is resolved.
+        // Stateful success and stale-fence paths use real leases in the integration suite.
+        scenario(
+            "POST",
+            incident_t,
+            incident_t,
+            As::Anonymous,
+            Some(json!({
+                "target": {
+                    "kind": "production",
+                    "namespaceId": ns,
+                    "runId": missing,
+                    "stepId": missing,
+                    "attempt": 1,
+                    "generation": 1,
+                    "leaseToken": "not-a-real-token"
+                },
+                "category": "NOT_ALLOWLISTED"
+            })),
+            401,
+        ),
     ];
 
     let mut covered = BTreeSet::new();

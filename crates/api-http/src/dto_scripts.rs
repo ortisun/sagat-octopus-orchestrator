@@ -908,6 +908,38 @@ pub struct PendingBody {
     pub activities: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum IncidentTargetBody {
+    Production {
+        namespace_id: String,
+        run_id: String,
+        step_id: String,
+        attempt: i32,
+        generation: i64,
+        lease_token: String,
+    },
+    Test {
+        namespace_id: String,
+        test_run_id: String,
+        lease_token: String,
+    },
+}
+
+/// Category-only evidence from the sandbox supervisor. Destination and actor fields are absent by
+/// construction and unknown fields are refused instead of silently discarded.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordIncidentBody {
+    pub target: IncidentTargetBody,
+    pub category: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecordExecutionBody {

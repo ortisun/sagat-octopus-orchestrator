@@ -33,6 +33,9 @@ use crate::quotas::QuotaLookup;
 use crate::sandbox::{Contract, MAX_RESULT_BYTES, build_key, digest_of};
 use crate::script_signing::Signer;
 
+mod incident;
+pub use incident::{IncidentCategory, IncidentTarget, StoredIncidentTarget};
+
 /// Longest input a test run takes, in bytes: what a result may be, so a script can return its input.
 pub const MAX_INPUT_BYTES: usize = MAX_RESULT_BYTES;
 /// Largest artifact accepted from a build, in bytes.
@@ -790,6 +793,17 @@ pub trait RunnerStore: NamespaceDirectory {
         &self,
         record: &ExecutionRecord,
         audits: &[AuditRecord],
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Validates a supervisor denial against the current fenced attempt and writes its bounded
+    /// category to the audit trail in that same transaction. `false` means the target is stale.
+    fn record_incident(
+        &self,
+        principal: &Principal,
+        target: &StoredIncidentTarget,
+        category: IncidentCategory,
+        trace_id: Option<&str>,
+        now: OffsetDateTime,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
@@ -1947,6 +1961,45 @@ where
         )
         .increment(1);
         Ok(kept)
+    }
+
+    /// Durably records a closed supervisor-denial category before the runner acknowledges the
+    /// denial to an untrusted script. The store validates and locks the current lease; this method
+    /// does not accept an actor, destination or free-form reason from the caller.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `script:execute`; [`AppError::StaleAttempt`] when the lease,
+    /// worker session, binding or test run is no longer current; [`AppError::Unavailable`] when the
+    /// audit transaction cannot commit.
+    pub async fn record_incident(
+        &self,
+        principal: &Principal,
+        target: &IncidentTarget<'_>,
+        category: IncidentCategory,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        principal.authorize(Permission::ScriptExecute)?;
+        let stored = target.for_storage()?;
+        let recorded = self
+            .store
+            .record_incident(
+                principal,
+                &stored,
+                category,
+                ctx.trace_id.as_deref(),
+                self.clock.now(),
+            )
+            .await?;
+        if !recorded {
+            return Err(AppError::StaleAttempt);
+        }
+        metrics::counter!("script_incidents_total", "category" => category.as_str()).increment(1);
+        tracing::info!(
+            category = category.as_str(),
+            target = target.kind(),
+            "script supervisor denial committed"
+        );
+        Ok(())
     }
 
     fn violation_audit(
