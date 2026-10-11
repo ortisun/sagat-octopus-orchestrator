@@ -1,4 +1,4 @@
-import type { GraphEvent, JournalEvent, Page } from '../../api/types';
+import type { Cause, GraphEvent, JournalEvent, Page } from '../../api/types';
 import { eventTone } from '../../model/events';
 
 /** A line of the timeline. */
@@ -15,6 +15,10 @@ export interface Entry {
   detail: 'journal' | 'live';
   actor: string | undefined;
   traceId: string | null;
+  /** The attempt's span in the trace, for the events of an attempt. */
+  spanId: string | null;
+  /** Why it happened, when the event is the result of a failure, a decision, a request or the clock. */
+  cause: Cause | null;
   payloadRef: string | null;
 }
 
@@ -28,6 +32,8 @@ export function fromJournal(event: JournalEvent): Entry {
     detail: 'journal',
     actor: event.actor,
     traceId: event.traceId ?? null,
+    spanId: event.spanId ?? null,
+    cause: event.cause ?? null,
     payloadRef: event.payloadRef ?? null,
   };
 }
@@ -42,6 +48,8 @@ export function fromLive(event: GraphEvent): Entry {
     detail: 'live',
     actor: undefined,
     traceId: null,
+    spanId: null,
+    cause: null,
     payloadRef: null,
   };
 }

@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::time::Duration;
 
 use sagat_domain::execution::{RunEvent, RunId, RunStatus};
 use sagat_domain::identity::{NamespaceId, TenantId};
@@ -595,6 +596,74 @@ pub struct ToProject {
     pub applied_seq: u64,
 }
 
+/// How far one run's telemetry has got, as the database sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunTelemetry {
+    /// The run belongs to a trace (runs created before traces were recorded do not).
+    pub traced: bool,
+    pub finished: bool,
+    /// The last journal sequence written for the run and the last one projected, when the run has a
+    /// note; none for a run created before notes were kept, or one whose note was purged.
+    pub head_seq: Option<u64>,
+    pub applied_seq: Option<u64>,
+    /// For how long the run has had changes that are not projected, in seconds; zero when it has not.
+    pub behind_seconds: f64,
+}
+
+/// How a run's spans and measurements stand in relation to its journal (the timeline's
+/// "projection state"). The journal itself, and the graph, are as current as the last commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetryState {
+    /// Everything in the journal has been turned into spans.
+    Current,
+    /// Behind, by less than the budget: it is being worked on.
+    CatchingUp,
+    /// Behind by more than the budget: the collector, the database or the projector has a problem
+    /// (the journal is intact; the trace may be missing steps).
+    Behind,
+    /// The run has no trace to belong to: nothing is exported for it.
+    NoTrace,
+    /// The run was created before telemetry was projected and has not changed since.
+    Untracked,
+}
+
+impl TelemetryState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "CURRENT",
+            Self::CatchingUp => "CATCHING_UP",
+            Self::Behind => "BEHIND",
+            Self::NoTrace => "NO_TRACE",
+            Self::Untracked => "UNTRACKED",
+        }
+    }
+}
+
+impl RunTelemetry {
+    /// The state, given how late is too late.
+    #[must_use]
+    pub fn state(&self, budget: Duration) -> TelemetryState {
+        if !self.traced {
+            return TelemetryState::NoTrace;
+        }
+        match (self.head_seq, self.applied_seq) {
+            (Some(head), Some(applied)) if applied < head => {
+                if self.behind_seconds <= budget.as_secs_f64() {
+                    TelemetryState::CatchingUp
+                } else {
+                    TelemetryState::Behind
+                }
+            }
+            (Some(_), Some(_)) => TelemetryState::Current,
+            // No note: a run that finished has had its note purged after it was projected; one that
+            // is still live was created before notes were kept.
+            _ if self.finished => TelemetryState::Current,
+            _ => TelemetryState::Untracked,
+        }
+    }
+}
+
 /// The store of the telemetry projection.
 pub trait TelemetryStore: Send + Sync {
     /// Takes the right to project: only one process does at a time. `false` when another has it.
@@ -622,6 +691,13 @@ pub trait TelemetryStore: Send + Sync {
         pending: &Pending,
         upto: u64,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// How far one run's telemetry has got. `None` if the run does not exist.
+    fn run_telemetry(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<RunTelemetry>, StoreError>> + Send;
 
     /// How far behind the projection is.
     fn backlog(&self) -> impl Future<Output = Result<Backlog, StoreError>> + Send;

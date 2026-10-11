@@ -67,6 +67,12 @@ pub struct JournalEntry {
     pub occurred_at: OffsetDateTime,
     /// Digest of the payload the event refers to (a step output), hex.
     pub payload_ref: Option<String>,
+    /// Why it happened, when it is the result of something going wrong, a person's choice or the
+    /// clock (FR-008-002).
+    pub cause: Option<sagat_domain::execution::Cause>,
+    /// The span of the attempt the event belongs to (16 hex), for the events of an attempt: the span
+    /// the worker was given, which a trace backend shows.
+    pub span_id: Option<String>,
     /// Every step the event created or changed: the one it names and the ones it activated
     /// (`RunEvent::changed_nodes`). The journal view shows `node` only; the changes of the graph
     /// need all of them. `None` for an event this build cannot decode, whose effect is not known.
@@ -148,7 +154,7 @@ pub struct RunFilter {
 /// Storage port for runs. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait RunStore: QuotaLookup + Send + Sync {
+pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync {
     type Tx: RunTx;
 
     /// Creates the run (row, input payload, empty state) and returns its open transaction, or
@@ -299,6 +305,16 @@ pub struct RunService<S, C, E> {
     clock: C,
     engine: Engine<E>,
     cache: DefinitionCache,
+    lag_budget: Duration,
+}
+
+/// The state of a run's telemetry and what it is judged by.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunTelemetryView {
+    pub state: crate::telemetry::TelemetryState,
+    pub telemetry: crate::telemetry::RunTelemetry,
+    /// How late spans may be before the state is `BEHIND`.
+    pub budget: Duration,
 }
 
 impl<S, C, E> std::fmt::Debug for RunService<S, C, E> {
@@ -319,7 +335,15 @@ where
             clock,
             engine,
             cache,
+            lag_budget: Duration::from_secs(30),
         }
+    }
+
+    /// How late a run's spans may be before its telemetry is called behind (default 30 s).
+    #[must_use]
+    pub const fn with_lag_budget(mut self, budget: Duration) -> Self {
+        self.lag_budget = budget;
+        self
     }
 
     /// Starts a run of a published version. The run is durable when this returns: its first steps
@@ -571,6 +595,68 @@ where
         match self.store.graph(principal.tenant_id(), id).await? {
             Some(graph) => Ok(graph),
             None => Err(self.missing(principal, id, ctx).await),
+        }
+    }
+
+    /// How far the run's spans and measurements have got in relation to its journal (the timeline's
+    /// projection state). The journal and the graph are as current as the last commit; this is
+    /// about what is derived from them.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
+    pub async fn telemetry(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        ctx: &RequestContext,
+    ) -> Result<RunTelemetryView, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        let Some(telemetry) = self.store.run_telemetry(principal.tenant_id(), id).await? else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        Ok(RunTelemetryView {
+            state: telemetry.state(self.lag_budget),
+            telemetry,
+            budget: self.lag_budget,
+        })
+    }
+
+    /// The attempts of the run's steps as the journal tells them (FR-008-002): when each was
+    /// leased, how it ended and why, the span a trace backend shows it as. At most the first
+    /// attempts the journal's batch holds.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
+    pub async fn attempts(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<crate::telemetry::Attempt>, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        let note = crate::telemetry::Pending {
+            tenant_id: principal.tenant_id(),
+            run_id: id,
+            head_seq: u64::MAX,
+            applied_seq: 0,
+            behind_since: self.clock.now(),
+        };
+        match self.store.load_for_projection(&note).await? {
+            Some(project) => Ok(crate::telemetry::attempts(&project.facts, &project.entries)),
+            None => {
+                // No trace to derive from (or no run): a run the caller may see has no attempts to
+                // show, a run they may not is a 404.
+                if self
+                    .store
+                    .run_telemetry(principal.tenant_id(), id)
+                    .await?
+                    .is_some()
+                {
+                    Ok(Vec::new())
+                } else {
+                    Err(self.missing(principal, id, ctx).await)
+                }
+            }
         }
     }
 

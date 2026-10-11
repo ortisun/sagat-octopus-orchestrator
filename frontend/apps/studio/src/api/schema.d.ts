@@ -356,6 +356,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{runId}/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How far the spans and measurements of a run have got in relation to its journal
+         * @description Needs `run:read`. The journal and the runtime graph are as current as the last commit; what is derived from the journal afterwards (the spans of the run and its attempts, the measurements of how long they took) is made by the engine's projector and can be late, or missing while a collector is down. `state` is `CURRENT` (everything in the journal has been turned into spans), `CATCHING_UP` (behind by less than `budgetMs`), `BEHIND` (by more: the trace may be missing steps; the journal is intact), `NO_TRACE` (the run belongs to no trace) or `UNTRACKED` (created before this was tracked and not changed since).
+         */
+        get: operations["getRunTelemetry"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the attempts of the run's steps as the journal tells them
+         * @description Needs `run:read`. One entry per attempt of a step (a compensation or a lookup is a step like another), in the order they were leased: when the step became ready, when the attempt was leased and when and how it ended, with the failure code, and the `spanId` the attempt has in the run's trace (`traceId`): the same id the worker's lease carried as the parent of its `traceparent`. An attempt that has not ended has outcome `open`. Derived from the journal, so it is as current as the last commit.
+         */
+        get: operations["listRunAttempts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/graph": {
         parameters: {
             query?: never;
@@ -1713,6 +1753,75 @@ export interface components {
             traceId?: string | null;
             /** @description SHA-256 of the output payload the event refers to. */
             payloadRef?: string | null;
+            /** @description Why it happened, when the event is the result of something going wrong, a person's choice or the clock. */
+            cause?: components["schemas"]["Cause"] | null;
+            /** @description For the events of an attempt: its span in the run's trace (`traceId` of the run). */
+            spanId?: string | null;
+        };
+        Cause: {
+            /**
+             * @description A closed set.
+             * @enum {string}
+             */
+            kind: "failure" | "retry" | "review" | "abort" | "unknown_outcome" | "reconciliation" | "stop" | "timeout" | "cancel" | "decision" | "request" | "outcome";
+            /** @description A failure code, a stop reason, what an operator decided or asked for, or the status a run ended with. */
+            code: string;
+        };
+        RunTelemetry: {
+            /** Format: uuid */
+            runId: string;
+            /** @description W3C trace id (32 hex) of the run. */
+            traceId?: string | null;
+            /** @enum {string} */
+            state: "CURRENT" | "CATCHING_UP" | "BEHIND" | "NO_TRACE" | "UNTRACKED";
+            /**
+             * Format: int64
+             * @description The last sequence of the run's journal, as the projector was told.
+             */
+            headSeq?: number | null;
+            /**
+             * Format: int64
+             * @description The last sequence whose spans were taken by the collector.
+             */
+            appliedSeq?: number | null;
+            /**
+             * Format: int64
+             * @description For how long the run has had changes that are not projected.
+             */
+            lagMs: number;
+            /**
+             * Format: int64
+             * @description How late spans may be before the state is BEHIND.
+             */
+            budgetMs: number;
+        };
+        Attempt: {
+            node: string;
+            attempt: number;
+            /** Format: int64 */
+            generation: number;
+            spanId: string;
+            /** Format: date-time */
+            readyAt?: string | null;
+            /** Format: date-time */
+            leasedAt: string;
+            /** Format: date-time */
+            endedAt?: string | null;
+            /** @enum {string} */
+            outcome: "open" | "succeeded" | "failed" | "retry" | "review" | "unknown_outcome" | "cancelled";
+            /** @description The failure code, when the attempt did not succeed. */
+            code?: string | null;
+            /**
+             * Format: int64
+             * @description From ready to leased, when the journal says when it became ready.
+             */
+            scheduleLatencyMs?: number | null;
+        };
+        AttemptList: {
+            /** Format: uuid */
+            runId: string;
+            traceId?: string | null;
+            items: components["schemas"]["Attempt"][];
         };
         JournalPage: {
             items: components["schemas"]["JournalEvent"][];
@@ -3662,6 +3771,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JournalPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getRunTelemetry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The state of the run's telemetry */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunTelemetry"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listRunAttempts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The attempts */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttemptList"];
                 };
             };
             401: components["responses"]["Unauthorized"];

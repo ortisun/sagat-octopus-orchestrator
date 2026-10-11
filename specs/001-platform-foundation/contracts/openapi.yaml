@@ -477,6 +477,42 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/telemetry:
+    get:
+      operationId: getRunTelemetry
+      summary: How far the spans and measurements of a run have got in relation to its journal
+      tags: [Runs]
+      x-implemented: '008'
+      description: |
+        Needs `run:read`. The journal and the runtime graph are as current as the last commit; what is derived from the journal afterwards (the spans of the run and its attempts, the measurements of how long they took) is made by the engine's projector and can be late, or missing while a collector is down. `state` is `CURRENT` (everything in the journal has been turned into spans), `CATCHING_UP` (behind by less than `budgetMs`), `BEHIND` (by more: the trace may be missing steps; the journal is intact), `NO_TRACE` (the run belongs to no trace) or `UNTRACKED` (created before this was tracked and not changed since).
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+      responses:
+        '200': {description: 'The state of the run''s telemetry', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunTelemetry'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/attempts:
+    get:
+      operationId: listRunAttempts
+      summary: List the attempts of the run's steps as the journal tells them
+      tags: [Runs]
+      x-implemented: '008'
+      description: |
+        Needs `run:read`. One entry per attempt of a step (a compensation or a lookup is a step like another), in the order they were leased: when the step became ready, when the attempt was leased and when and how it ended, with the failure code, and the `spanId` the attempt has in the run's trace (`traceId`): the same id the worker's lease carried as the parent of its `traceparent`. An attempt that has not ended has outcome `open`. Derived from the journal, so it is as current as the last commit.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+      responses:
+        '200': {description: 'The attempts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AttemptList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/graph:
     get:
       operationId: getRuntimeGraph
@@ -2426,6 +2462,46 @@ components:
         actor: {type: string, description: 'user:<sub>, worker:<id> or system:<component>.'}
         traceId: {type: [string, 'null']}
         payloadRef: {type: [string, 'null'], description: 'SHA-256 of the output payload the event refers to.'}
+        cause: {anyOf: [{$ref: '#/components/schemas/Cause'}, {type: 'null'}], description: 'Why it happened, when the event is the result of something going wrong, a person''s choice or the clock.'}
+        spanId: {type: [string, 'null'], pattern: '^[0-9a-f]{16}$', description: 'For the events of an attempt: its span in the run''s trace (`traceId` of the run).'}
+    Cause:
+      type: object
+      required: [kind, code]
+      properties:
+        kind: {type: string, enum: [failure, retry, review, abort, unknown_outcome, reconciliation, stop, timeout, cancel, decision, request, outcome], description: 'A closed set.'}
+        code: {type: string, description: 'A failure code, a stop reason, what an operator decided or asked for, or the status a run ended with.'}
+    RunTelemetry:
+      type: object
+      required: [runId, state, lagMs, budgetMs]
+      properties:
+        runId: {type: string, format: uuid}
+        traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
+        state: {type: string, enum: [CURRENT, CATCHING_UP, BEHIND, NO_TRACE, UNTRACKED]}
+        headSeq: {type: [integer, 'null'], format: int64, description: 'The last sequence of the run''s journal, as the projector was told.'}
+        appliedSeq: {type: [integer, 'null'], format: int64, description: 'The last sequence whose spans were taken by the collector.'}
+        lagMs: {type: integer, format: int64, minimum: 0, description: 'For how long the run has had changes that are not projected.'}
+        budgetMs: {type: integer, format: int64, minimum: 0, description: 'How late spans may be before the state is BEHIND.'}
+    Attempt:
+      type: object
+      required: [node, attempt, generation, spanId, leasedAt, outcome]
+      properties:
+        node: {type: string}
+        attempt: {type: integer, minimum: 1}
+        generation: {type: integer, format: int64, minimum: 0}
+        spanId: {type: string, pattern: '^[0-9a-f]{16}$'}
+        readyAt: {type: [string, 'null'], format: date-time}
+        leasedAt: {type: string, format: date-time}
+        endedAt: {type: [string, 'null'], format: date-time}
+        outcome: {type: string, enum: [open, succeeded, failed, retry, review, unknown_outcome, cancelled]}
+        code: {type: [string, 'null'], description: 'The failure code, when the attempt did not succeed.'}
+        scheduleLatencyMs: {type: [integer, 'null'], format: int64, minimum: 0, description: 'From ready to leased, when the journal says when it became ready.'}
+    AttemptList:
+      type: object
+      required: [runId, items]
+      properties:
+        runId: {type: string, format: uuid}
+        traceId: {type: [string, 'null']}
+        items: {type: array, items: {$ref: '#/components/schemas/Attempt'}}
     JournalPage:
       type: object
       required: [items]

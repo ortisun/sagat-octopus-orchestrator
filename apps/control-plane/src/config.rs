@@ -383,6 +383,9 @@ pub struct ServeConfig {
     /// The URL or path of the alerts runbook, to which each alert's anchor is appended
     /// (`SAGAT_RUNBOOK_BASE_URL`).
     pub runbook_base: String,
+    /// How late a run's spans may be before its telemetry is called behind
+    /// (`SAGAT_TELEMETRY_LAG_BUDGET_SECS`, default 30).
+    pub telemetry_lag_budget: Duration,
 }
 
 impl ServeConfig {
@@ -533,6 +536,9 @@ impl ServeConfig {
             scripts: read_scripts(get)?,
             studio: read_studio(get)?,
             streams,
+            telemetry_lag_budget: Duration::from_secs(
+                optional(get, "SAGAT_TELEMETRY_LAG_BUDGET_SECS", 30u64)?.max(1),
+            ),
             runbook_base: get("SAGAT_RUNBOOK_BASE_URL")
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())

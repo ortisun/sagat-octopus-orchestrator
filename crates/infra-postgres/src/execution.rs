@@ -455,6 +455,17 @@ impl RunStore for PgRunStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
+        // The identity of each step, which the span of an attempt is computed from.
+        let steps: std::collections::HashMap<String, Uuid> =
+            sqlx::query("SELECT node, step_id FROM steps WHERE tenant_id = $1 AND run_id = $2")
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_error)?
+                .iter()
+                .map(|r| Ok((col::<String>(r, "node")?, col::<Uuid>(r, "step_id")?)))
+                .collect::<Result<_, StoreError>>()?;
         rows.iter()
             .map(|row| {
                 let seq: i64 = col(row, "seq")?;
@@ -465,19 +476,28 @@ impl RunStore for PgRunStore {
                 // The steps the event changed, not only the one it names. An event this build cannot
                 // decode (one written by a newer engine) says nothing of what it changed: `None`, and a
                 // change of the graph that holds one is the whole graph.
-                let touched = decode(&event_type, node.as_deref(), &detail).map(|event| {
+                let decoded = decode(&event_type, node.as_deref(), &detail);
+                let touched = decoded.as_ref().map(|event| {
                     event
                         .changed_nodes()
                         .iter()
                         .map(|n| n.as_str().to_owned())
                         .collect()
                 });
+                let attempt = attempt.and_then(|a| u32::try_from(a).ok());
+                let span_id = attempt.and_then(|a| {
+                    node.as_deref()
+                        .and_then(|n| steps.get(n))
+                        .map(|step| sagat_telemetry::attempt_span_id(*step, a).to_string())
+                });
                 Ok(JournalEntry {
                     seq: u64::try_from(seq).map_err(|_| corrupt("sequence"))?,
                     event_type,
                     node,
                     touched,
-                    attempt: attempt.and_then(|a| u32::try_from(a).ok()),
+                    cause: decoded.as_ref().and_then(RunEvent::cause),
+                    span_id,
+                    attempt,
                     actor: col(row, "actor")?,
                     trace_id: col(row, "trace_id")?,
                     occurred_at: col(row, "occurred_at")?,

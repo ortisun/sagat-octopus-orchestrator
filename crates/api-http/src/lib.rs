@@ -654,6 +654,14 @@ where
             get(ex::run_journal::<B<S, C, P, X, E>>),
         )
         .route(
+            "/runs/{run_id}/telemetry",
+            get(ex::run_telemetry::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/attempts",
+            get(ex::run_attempts::<B<S, C, P, X, E>>),
+        )
+        .route(
             "/runs/{run_id}/graph",
             get(ex::run_graph::<B<S, C, P, X, E>>),
         )

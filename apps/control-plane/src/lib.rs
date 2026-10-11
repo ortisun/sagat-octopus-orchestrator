@@ -424,7 +424,8 @@ pub async fn serve_with_admin(
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
-        RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache),
+        RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
+            .with_lag_budget(serve.telemetry_lag_budget),
     )
     .with_stream_limits(serve.streams);
     let mut app = router_with_governance(exec, governance, serve.limits);

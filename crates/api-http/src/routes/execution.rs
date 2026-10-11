@@ -407,6 +407,62 @@ pub async fn run_journal<B: Exec>(
     Ok(page(&result))
 }
 
+/// `GET /runs/{runId}/telemetry`
+pub async fn run_telemetry<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::dto_exec::RunTelemetryBody>, ApiError> {
+    let run = parse_id::<RunId>(&id)?;
+    let view = state
+        .runs()
+        .telemetry(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    let record = state
+        .runs()
+        .get(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    let millis = |seconds: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ms = (seconds * 1000.0).round() as u64;
+        ms
+    };
+    Ok(Json(crate::dto_exec::RunTelemetryBody {
+        run_id: run.to_string(),
+        trace_id: record.info.trace_id.clone(),
+        state: view.state.as_str(),
+        head_seq: view.telemetry.head_seq,
+        applied_seq: view.telemetry.applied_seq,
+        lag_ms: millis(view.telemetry.behind_seconds),
+        budget_ms: u64::try_from(view.budget.as_millis()).unwrap_or(u64::MAX),
+    }))
+}
+
+/// `GET /runs/{runId}/attempts`
+pub async fn run_attempts<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::dto_exec::AttemptListBody>, ApiError> {
+    let run = parse_id::<RunId>(&id)?;
+    let attempts = state
+        .runs()
+        .attempts(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    let record = state
+        .runs()
+        .get(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    Ok(Json(crate::dto_exec::AttemptListBody {
+        run_id: run.to_string(),
+        trace_id: record.info.trace_id.clone(),
+        items: attempts
+            .iter()
+            .map(crate::dto_exec::AttemptBody::from)
+            .collect(),
+    }))
+}
+
 pub async fn run_graph<B: Exec>(
     caller: Caller,
     State(state): State<B>,

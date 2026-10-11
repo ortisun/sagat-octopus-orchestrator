@@ -9,5 +9,6 @@ mod support;
 
 mod helpers;
 mod trace_links;
+mod us01;
 mod us02;
 mod us03;

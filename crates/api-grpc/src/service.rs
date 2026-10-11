@@ -196,6 +196,12 @@ where
         request: Request<pb::PollTasksRequest>,
     ) -> Result<Response<pb::PollTasksResponse>, Status> {
         let trace = trace_of(&request);
+        // A poll that carries no `traceparent` is a trace of its own that nobody asked for. The
+        // leases it makes belong to the traces of the runs they are for, and the timeline of a run
+        // says so: only a poll that continues a trace puts its own on the lease.
+        let request_trace = trace
+            .is_continuation()
+            .then(|| trace.trace_id().to_string());
         observe("PollTasks", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
@@ -209,7 +215,7 @@ where
                     worker,
                     &message.session_token,
                     max_tasks,
-                    Some(&trace.trace_id().to_string()),
+                    request_trace.as_deref(),
                 )
                 .await
                 .map_err(app)?;

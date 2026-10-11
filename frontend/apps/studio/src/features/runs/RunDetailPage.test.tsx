@@ -483,6 +483,66 @@ describe('the run page: the timeline', () => {
     expect(await screen.findByRole('complementary', { name: 'Details of reserve' })).toBeInTheDocument();
   });
 
+  it('says why an event happened, and which span of the trace an attempt is', async () => {
+    const SPAN = 'e38d47a78a176150';
+    const journal = [
+      journalEvent(1, 'step.leased', 'pay', { attempt: 1, spanId: SPAN }),
+      journalEvent(2, 'step.retry_scheduled', 'pay', { attempt: 1, spanId: SPAN, cause: { kind: 'retry', code: 'PAYMENT_DECLINED' } }),
+      journalEvent(3, 'step.retry_requested', 'pay', { attempt: null, actor: 'user:bob', cause: { kind: 'decision', code: 'RETRY' } }),
+      journalEvent(4, 'run.finished', null, { cause: { kind: 'outcome', code: 'SUCCEEDED' } }),
+    ];
+    const { grid, user } = await timeline({ journal });
+    await waitFor(() => expect(seqs()).toHaveLength(4));
+    expect(within(grid).getByRole('columnheader', { name: 'Cause' })).toBeInTheDocument();
+    const retry = within(grid).getByText('step.retry_scheduled').closest('tr') as HTMLElement;
+    expect(within(retry).getByText('PAYMENT_DECLINED')).toBeInTheDocument();
+    expect(within(retry).getByText('retried')).toBeInTheDocument();
+    const decision = within(grid).getByText('step.retry_requested').closest('tr') as HTMLElement;
+    expect(within(decision).getByText('decided by a person')).toBeInTheDocument();
+    expect(within(grid).getByText('how the run ended')).toBeInTheDocument();
+    // The attempt's span is next to the trace, and copies whole.
+    const leased = within(grid).getByText('step.leased').closest('tr') as HTMLElement;
+    expect(within(leased).getByText(SPAN)).toBeInTheDocument();
+    await user.click(within(leased).getByRole('button', { name: 'Copy span id' }));
+    expect(await navigator.clipboard.readText()).toBe(SPAN);
+    // An event with no cause says nothing about one.
+    expect(within(leased).queryByText('retried')).not.toBeInTheDocument();
+  });
+
+  describe('how far the trace is behind the journal', () => {
+    const telemetry = (state: string, lagMs: number) => ({ routes: { [`GET /runs/${RUN_ID}/telemetry`]: () => ({ runId: RUN_ID, traceId: TRACE, state, headSeq: 11, appliedSeq: state === 'CURRENT' ? 11 : 4, lagMs, budgetMs: 30_000 }) } });
+
+    it('says nothing when the spans are current', async () => {
+      await timeline({ journal: JOURNAL, ...telemetry('CURRENT', 0) });
+      await waitFor(() => expect(seqs()).toHaveLength(JOURNAL.length));
+      expect(screen.queryByText(/The trace of this run is behind/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/catching up/)).not.toBeInTheDocument();
+    });
+
+    it('says it is catching up, in seconds', async () => {
+      await timeline({ journal: JOURNAL, ...telemetry('CATCHING_UP', 7_400) });
+      expect(await screen.findByText(/The trace is catching up with the journal \(7 seconds behind\)/)).toBeInTheDocument();
+    });
+
+    it('warns that steps may be missing from the trace and that the journal is whole when it is behind', async () => {
+      await timeline({ journal: JOURNAL, ...telemetry('BEHIND', 600_000) });
+      expect(await screen.findByText('The trace of this run is behind its journal.')).toBeInTheDocument();
+      expect(screen.getByText(/about 600 seconds late/)).toBeInTheDocument();
+      expect(screen.getByText(/Everything in the journal below is complete/)).toBeInTheDocument();
+    });
+
+    it('says a run belongs to no trace when it does not', async () => {
+      await timeline({ journal: JOURNAL, ...telemetry('NO_TRACE', 0) });
+      expect(await screen.findByText(/belongs to no trace/)).toBeInTheDocument();
+    });
+
+    it('shows nothing, and no error, on a platform that does not know the endpoint', async () => {
+      await timeline({ journal: JOURNAL, routes: { [`GET /runs/${RUN_ID}/telemetry`]: () => new Response('{"code":"NOT_FOUND"}', { status: 404 }) } });
+      await waitFor(() => expect(seqs()).toHaveLength(JOURNAL.length));
+      expect(screen.queryByText(/trace/i, { selector: '[role="alert"]' })).not.toBeInTheDocument();
+    });
+  });
+
   it('adds the events of live updates as they arrive, once each, and marks them as live', async () => {
     const { grid, platform } = await timeline();
     await waitFor(() => expect(seqs()).toHaveLength(JOURNAL.length));

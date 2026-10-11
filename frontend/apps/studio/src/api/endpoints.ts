@@ -1,7 +1,7 @@
 import type { ApiClient } from './client';
 import { path } from './client';
 import type { components } from './schema';
-import type { DefinitionDiff, GraphChanges, JournalEvent, OperationRequest, OperationResult, Page, Run, RuntimeGraph, Validation, VersionSummary, Workflow, WorkflowVersion } from './types';
+import type { DefinitionDiff, GraphChanges, JournalEvent, OperationRequest, OperationResult, Page, Run, RunTelemetry, RuntimeGraph, Validation, VersionSummary, Workflow, WorkflowVersion } from './types';
 
 type Schemas = components['schemas'];
 
@@ -32,6 +32,7 @@ export function endpoints(api: ApiClient) {
     graph: (id: string, signal?: AbortSignal) => api.get<RuntimeGraph>(path`/runs/${id}/graph`, { signal }),
     changes: (id: string, since: number, signal?: AbortSignal) => api.get<GraphChanges>(path`/runs/${id}/graph/changes`, { query: { since }, signal }),
     journal: (id: string, query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<JournalEvent>>(path`/runs/${id}/events`, { query, signal }),
+    telemetry: (id: string, signal?: AbortSignal) => api.get<RunTelemetry>(path`/runs/${id}/telemetry`, { signal }),
     operate: (id: string, request: OperationRequest, key?: string) => api.post<OperationResult>(path`/runs/${id}/operations`, { body: request, ...(key ? { key } : {}) }),
   };
 }

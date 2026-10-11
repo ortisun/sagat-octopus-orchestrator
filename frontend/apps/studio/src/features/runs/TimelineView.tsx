@@ -1,4 +1,7 @@
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useApp } from '../../app/context';
+import { Banner } from '../../ui/Banner';
 import { eventLabel, eventTone } from '../../model/events';
 import { ErrorState } from '../../ui/ErrorState';
 import { CopyButton } from './CopyButton';
@@ -11,11 +14,27 @@ import { clip } from './time';
 import { useWindowedRows } from './useWindow';
 
 const ROW_ESTIMATE = 48;
-const COLUMNS = 8;
+const COLUMNS = 9;
 /** Pages are read on their own as the list is scrolled, up to this many events; beyond it a person asks for more. */
 const AUTO_LOAD_UP_TO = 10_000;
 /** How close to the end of what is read the list is before the next page is asked for. */
 const NEAR_END = 25;
+
+/** What the kind of a cause is called to a person. */
+const CAUSE_WORDS: Record<string, string> = {
+  failure: 'failed',
+  retry: 'retried',
+  review: 'waits for a person',
+  abort: 'saga stopped going forward',
+  unknown_outcome: 'outcome unknown',
+  reconciliation: 'looked up at the provider',
+  stop: 'run stopped',
+  timeout: 'timed out',
+  cancel: 'cancelled',
+  decision: 'decided by a person',
+  request: 'asked for',
+  outcome: 'how the run ended',
+};
 
 const TONES: Record<string, { word: string; symbol: string; tone: string } | undefined> = {
   problem: { word: 'Problem', symbol: '⚠', tone: 'bad' },
@@ -27,7 +46,7 @@ const TONES: Record<string, { word: string; symbol: string; tone: string } | und
  * a time. The payload of an event is never shown (the journal holds a digest only): the digest is
  * shown shortened with the whole of it to copy.
  */
-export function TimelineView({ journal, filter, onFilter, onSelect, selectedId }: { journal: JournalStore; filter: EntryFilter; onFilter: (filter: EntryFilter) => void; onSelect: (id: string) => void; selectedId: string | undefined }) {
+export function TimelineView({ runId, journal, filter, onFilter, onSelect, selectedId }: { runId: string; journal: JournalStore; filter: EntryFilter; onFilter: (filter: EntryFilter) => void; onSelect: (id: string) => void; selectedId: string | undefined }) {
   const snapshot = useSyncExternalStore(journal.subscribe, journal.getSnapshot);
   useEffect(() => {
     journal.start();
@@ -75,6 +94,8 @@ export function TimelineView({ journal, filter, onFilter, onSelect, selectedId }
         </button>
       </div>
 
+      <TelemetryNote runId={runId} />
+
       <p className="hint">
         {snapshot.complete ? `All ${total} journal events are read.` : `${total} journal events read so far.`}
         {filtered ? ` ${shown.length} match the filters.` : ''}
@@ -97,6 +118,7 @@ export function TimelineView({ journal, filter, onFilter, onSelect, selectedId }
                 <th scope="col">Seq</th>
                 <th scope="col">Time</th>
                 <th scope="col">Event</th>
+                <th scope="col">Cause</th>
                 <th scope="col">Step</th>
                 <th scope="col">Attempt</th>
                 <th scope="col">Actor</th>
@@ -160,6 +182,19 @@ function EntryRow({ entry, index, measure, selected, onSelect }: { entry: Entry;
         {live ? <span className="hint"> (live)</span> : null}
       </td>
       <td>
+        {entry.cause !== null ? (
+          <>
+            <code>{clip(entry.cause.code, 40)}</code>
+            <br />
+            <span className="hint">{CAUSE_WORDS[entry.cause.kind] ?? entry.cause.kind}</span>
+          </>
+        ) : live ? (
+          '—'
+        ) : (
+          <span className="hint">—</span>
+        )}
+      </td>
+      <td>
         {entry.stepId !== null ? (
           <button type="button" className="link rn-id" title={entry.stepId} onClick={() => onSelect(entry.stepId as string)}>
             {clip(entry.stepId, 40)}
@@ -176,6 +211,12 @@ function EntryRow({ entry, index, measure, selected, onSelect }: { entry: Entry;
         ) : entry.traceId ? (
           <>
             <code>{clip(entry.traceId, 64)}</code> <CopyButton text={entry.traceId} what="trace id" />
+            {entry.spanId !== null ? (
+              <>
+                <br />
+                <span className="hint">attempt span</span> <code>{entry.spanId}</code> <CopyButton text={entry.spanId} what="span id" />
+              </>
+            ) : null}
           </>
         ) : (
           'no trace'
@@ -194,4 +235,36 @@ function EntryRow({ entry, index, measure, selected, onSelect }: { entry: Entry;
       </td>
     </tr>
   );
+}
+
+/**
+ * How far the spans of this run are behind its journal. The journal below is whole whatever this says:
+ * a run whose trace is missing steps is still read to the last event.
+ */
+function TelemetryNote({ runId }: { runId: string }) {
+  const { ep } = useApp();
+  const telemetry = useQuery({
+    queryKey: ['run', runId, 'telemetry'],
+    queryFn: ({ signal }) => ep.telemetry(runId, signal),
+    // A platform that does not know the endpoint, or a person who may not read it, is not an error to show.
+    retry: false,
+    refetchInterval: (query) => (query.state.data?.state === 'CATCHING_UP' || query.state.data?.state === 'BEHIND' ? 10_000 : false),
+  });
+  const data = telemetry.data;
+  if (data === undefined) return null;
+  const behind = Math.max(1, Math.round(data.lagMs / 1000));
+  if (data.state === 'BEHIND') {
+    return (
+      <Banner tone="warn" title="The trace of this run is behind its journal.">
+        Its spans reach the trace backend about {behind} seconds late: steps may be missing from the trace. Everything in the journal below is complete.
+      </Banner>
+    );
+  }
+  if (data.state === 'CATCHING_UP') {
+    return <p className="hint">The trace is catching up with the journal ({behind} seconds behind).</p>;
+  }
+  if (data.state === 'NO_TRACE') {
+    return <p className="hint">This run belongs to no trace: nothing is exported for it.</p>;
+  }
+  return null;
 }

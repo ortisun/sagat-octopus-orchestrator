@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::telemetry::{
-    Backlog, CONTEXT_EVENTS, JournalEntry, Pending, RunFacts, TelemetryStore, ToProject,
+    Backlog, CONTEXT_EVENTS, JournalEntry, Pending, RunFacts, RunTelemetry, TelemetryStore,
+    ToProject,
 };
 use sagat_domain::execution::RunId;
 use sagat_domain::identity::{NamespaceId, TenantId};
@@ -255,6 +256,38 @@ impl TelemetryStore for PgRunStore {
         .await
         .map_err(store_error)?;
         Ok(())
+    }
+
+    async fn run_telemetry(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<RunTelemetry>, StoreError> {
+        let Some(row) = sqlx::query(
+            "SELECT r.trace_id IS NOT NULL AS traced, r.finished_at IS NOT NULL AS finished, \
+                    p.head_seq, p.applied_seq, \
+                    coalesce(extract(epoch FROM clock_timestamp() - p.behind_since), 0)::float8 AS behind \
+             FROM runs r LEFT JOIN telemetry_pending p ON p.tenant_id = r.tenant_id AND p.run_id = r.id \
+             WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        let optional = |name: &str| -> Result<Option<u64>, StoreError> {
+            col::<Option<i64>>(&row, name)?.map(seq).transpose()
+        };
+        Ok(Some(RunTelemetry {
+            traced: col(&row, "traced")?,
+            finished: col(&row, "finished")?,
+            head_seq: optional("head_seq")?,
+            applied_seq: optional("applied_seq")?,
+            behind_seconds: col::<f64>(&row, "behind")?.max(0.0),
+        }))
     }
 
     async fn backlog(&self) -> Result<Backlog, StoreError> {
