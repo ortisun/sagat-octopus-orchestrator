@@ -266,7 +266,7 @@
   --xy-controls-button-color-default: var(--fg);
   --xy-controls-button-border-color-default: var(--border);
   --xy-minimap-background-color-default: var(--bg-raised);
-  --xy-minimap-mask-background-color-default: rgb(0 0 0 / 0.15);
+  --xy-minimap-mask-background-color-default: var(--minimap-mask);
   --xy-minimap-node-background-color-default: var(--fg-muted);
   --xy-attribution-background-color-default: var(--bg-raised);
 }

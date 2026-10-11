@@ -136,3 +136,5 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-007-###` and criteria `SC-007-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+Implementation status (2026-10-11): the initial FR-007-009 shared palette and contrast gate are recorded in `design/README.md`. T007-039 and SC-007-005 remain open pending complete token/theme and journey coverage.

@@ -276,3 +276,10 @@ the fix and passed afterwards. It asserts one version, one activation, a final `
 version on replay and refusal of a different key. The REST conformance test checks `created=false`, the same
 version identifier, and continued tenant/permission enforcement. Contract, generated Studio types, spec,
 data model and GitOps runbook describe this behavior.
+
+### 007 visual direction — initial token increment (2026-10-11)
+
+FR-007-009 / T007-039: shared palette and WCAG contrast tests in
+`frontend/apps/studio/src/styles/tokens.test.ts`; details and deviations in
+`specs/007-workflow-studio/design/README.md`. Partial: SC-007-005, forced-colour
+coverage, complete tokens, authenticated axe journeys and human review remain open.

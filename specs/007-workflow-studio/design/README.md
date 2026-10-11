@@ -170,3 +170,29 @@ Settled: light and dark, following the system by default (D157, the owner, 2026-
   of every text, control-border and focus pair against the thresholds, and fails on a literal colour in any other stylesheet (T007-039);
 - axe-core runs in the journeys in light, dark and forced colours on every page (T007-044);
 - the Runs screen is compared with `runs-prototype.jpg` at 1470 × 812 by a person (T007-044): **a review, not a test**, and the report says so.
+
+## First token increment — 2026-10-11
+
+The shared dark palette now adopts the recorded page/field/raised surfaces, text,
+accent and semantic status colours. T007-039 remains **in progress**: the complete
+spacing/type/radius scale, forced-colour coverage and all component pairs are not
+claimed by this increment. Fonts and layout are separate tasks.
+
+Additional contrast deviations: shared dark control border is `#686b70` instead
+of `#616368` to maintain 3:1 on the raised surface as well as the page; idle/skip
+text uses `#83868c` to maintain 4.5:1 on that surface. The light derivation uses
+`#12643f` for the accent/focus, `#78818d` for controls and `#626975` for skipped
+status. The previous light border (2.81:1) and skipped text (4.43:1) failed against
+the subtle surface. Colour literals for the minimap mask and backdrop now live
+in the shared tokens.
+
+`src/styles/tokens.test.ts` computes WCAG sRGB contrast for shared text/status,
+control/focus, primary action and banner pairs, prevents literal hex/function
+colours in sibling stylesheets, and checks system/explicit dark parity. It is
+not a claim that forced system colours have fixed RGB ratios or that every page
+has passed axe. The full visual review and authenticated journeys remain open.
+
+Validation: Studio typecheck, ESLint, Vitest and production build passed. The
+initial full run had 957 tests (94 new); the added dark-parity assertion is checked
+in the focused run. Chrome rendered the dark sign-in screen at localhost:5177;
+no authenticated API/Studio journey or human prototype approval was performed.

@@ -86,3 +86,7 @@ T007-034 (the benchmark must measure the restyled Studio) and T007-035/036. Cont
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+First T007-039 increment (2026-10-11): shared palette and contrast regression tests
+implemented on `feature/007-design-tokens`; see `design/README.md` for measured
+failures, deviations, validation and remaining coverage. Task stays open.
