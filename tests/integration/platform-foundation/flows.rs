@@ -191,8 +191,13 @@ async fn us04_a_tenant_a_user_cannot_see_tenant_b_data_and_the_attempt_is_record
         assert_eq!(actor, "alice");
         assert_eq!(trace.as_deref(), Some(TRACE));
     }
-    let recorded: Vec<_> = alice_rows.iter().map(|r| r.2.clone()).collect();
-    assert_eq!(recorded, vec![ws_b.id().to_string(), ns_b.id().to_string()]);
+    // The records are written off the request path, by tasks that race: which of the two lands first is not
+    // decided, and the test is about what was recorded, not about the order of the writes.
+    let mut recorded: Vec<_> = alice_rows.iter().map(|r| r.2.clone()).collect();
+    recorded.sort();
+    let mut expected = vec![ws_b.id().to_string(), ns_b.id().to_string()];
+    expected.sort();
+    assert_eq!(recorded, expected);
 
     // Tenant B's audit trail contains only its own creations, nothing about alice's probing
     let bob_actions: Vec<_> = audit_rows(&db.pool, "globex")
