@@ -461,3 +461,155 @@ fn a_file_that_is_not_a_key_is_refused_and_left_alone() {
         "this is not a key"
     );
 }
+
+/// A request written by hand, so that what a client library would never send can be sent: the status
+/// line of the answer.
+async fn raw(base: &str, request: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = base.trim_start_matches("http://");
+    let mut socket = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    socket.write_all(request.as_bytes()).await.expect("write");
+    let mut answer = Vec::new();
+    let _ = socket.read_to_end(&mut answer).await;
+    String::from_utf8_lossy(&answer)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn only_a_host_the_provider_is_known_by_is_answered_whatever_the_request_looks_like() {
+    let (base, _) = serve(&[]).await;
+    let port = base.rsplit(':').next().expect("port");
+    let ok =
+        |host: &str| format!("GET /livez HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    // /livez answers any request; the keys and the token are the ones behind the rule.
+    let keys = |lines: &str| {
+        format!("GET /.well-known/jwks.json HTTP/1.1\r\n{lines}Connection: close\r\n\r\n")
+    };
+    assert!(
+        raw(&base, &keys(&format!("Host: 127.0.0.1:{port}\r\n")))
+            .await
+            .contains(" 200")
+    );
+    for host in [
+        format!("localhost.evil.com:{port}"),
+        format!("127.0.0.1:{}", port.parse::<u16>().expect("port") ^ 1),
+        "127.0.0.1".to_owned(),
+        format!("127.0.0.1:{port}.evil.com"),
+        format!("evil.example:{port}"),
+    ] {
+        let status = raw(&base, &keys(&format!("Host: {host}\r\n"))).await;
+        assert!(status.contains(" 403"), "{host}: {status}");
+    }
+    // No Host at all, and two of them: a proxy and a client could be saying different things.
+    assert!(
+        raw(&base, &keys("")).await.contains(" 403")
+            || raw(&base, &keys("")).await.contains(" 400")
+    );
+    let two = keys(&format!("Host: 127.0.0.1:{port}\r\nHost: evil.example\r\n"));
+    assert!(raw(&base, &two).await.contains(" 403"));
+    let two_the_other_way = keys(&format!("Host: evil.example\r\nHost: 127.0.0.1:{port}\r\n"));
+    assert!(raw(&base, &two_the_other_way).await.contains(" 403"));
+    // A request line in absolute form names an authority of its own: it is held to the same rule.
+    let absolute = format!(
+        "GET http://evil.example/.well-known/jwks.json HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    assert!(raw(&base, &absolute).await.contains(" 403"));
+    let absolute_known = format!(
+        "GET http://127.0.0.1:{port}/.well-known/jwks.json HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    assert!(raw(&base, &absolute_known).await.contains(" 200"));
+    let _ = ok;
+}
+
+#[test]
+fn the_issuers_own_name_is_known_as_a_client_writes_it() {
+    let with_port = config(&[
+        ("SAGAT_ENV", "dev"),
+        ("SAGAT_DEV_IDP_ISSUER", "http://IDP.Internal:80/"),
+    ])
+    .expect("config");
+    let hosts = with_port.hosts();
+    assert!(hosts.contains(&"idp.internal".to_owned()), "{hosts:?}");
+    assert!(hosts.contains(&"idp.internal:80".to_owned()), "{hosts:?}");
+    let secure = config(&[
+        ("SAGAT_ENV", "dev"),
+        ("SAGAT_DEV_IDP_ISSUER", "https://idp.internal:443/"),
+    ])
+    .expect("config");
+    assert!(secure.hosts().contains(&"idp.internal".to_owned()));
+    let other_port = config(&[
+        ("SAGAT_ENV", "dev"),
+        ("SAGAT_DEV_IDP_ISSUER", "http://idp.internal:9100/"),
+    ])
+    .expect("config");
+    assert!(!other_port.hosts().contains(&"idp.internal".to_owned()));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_key_is_not_taken_through_a_link_or_from_a_directory_others_can_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let path = temp_file("link");
+    let dir = path.parent().expect("dir").to_owned();
+    // A link, even to a good key, is refused.
+    let good = DevKey::load_or_create(&dir.join("real")).expect("real key");
+    std::os::unix::fs::symlink(dir.join("real"), &path).expect("link");
+    assert!(matches!(
+        DevKey::load_or_create(&path),
+        Err(KeyError::Link(_))
+    ));
+    // A directory others can write to: refused, for reading and for creating.
+    let shared = dir.join("shared");
+    std::fs::create_dir_all(&shared).expect("dir");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+    assert!(matches!(
+        DevKey::load_or_create(&shared.join("key")),
+        Err(KeyError::Shared(_))
+    ));
+    assert!(!shared.join("key").exists());
+    // With the sticky bit, as /tmp has, others cannot remove what is not theirs: accepted.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).expect("chmod");
+    DevKey::load_or_create(&shared.join("key")).expect("sticky directory");
+    let _ = good;
+}
+
+#[test]
+fn a_key_file_that_is_empty_says_to_delete_it_and_two_starts_at_once_share_one_key() {
+    let path = temp_file("race");
+    let dir = path.parent().expect("dir").to_owned();
+    // What a crash in the middle of an older version's write left behind.
+    let empty = dir.join("empty");
+    std::fs::write(&empty, "").expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&empty, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    }
+    let error = DevKey::load_or_create(&empty)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(error.contains("delete it"), "{error}");
+
+    // Eight starts at once: one key is made and every one of them has it, and no half-written file
+    // is left under any name.
+    let kids: Vec<String> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            std::thread::spawn(move || DevKey::load_or_create(&path).expect("key").kid().to_owned())
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|t| t.join().expect("thread"))
+        .collect();
+    assert!(kids.windows(2).all(|w| w[0] == w[1]), "{kids:?}");
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .expect("dir")
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}

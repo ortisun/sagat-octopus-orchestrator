@@ -142,7 +142,17 @@ impl Config {
             .nth(1)
             .and_then(|rest| rest.split(['/', '?', '#']).next())
         {
-            hosts.push(authority.to_owned());
+            // A client writes the host in lower case and leaves out the port its scheme implies.
+            let authority = authority.to_ascii_lowercase();
+            let implied = if self.issuer.starts_with("https://") {
+                ":443"
+            } else {
+                ":80"
+            };
+            if let Some(bare) = authority.strip_suffix(implied) {
+                hosts.push(bare.to_owned());
+            }
+            hosts.push(authority);
         }
         hosts.extend(self.extra_hosts.iter().cloned());
         hosts

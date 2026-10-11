@@ -188,15 +188,26 @@ pub async fn seed_dev_namespace(
     seed: &SeedConfig,
     wanted: &NamespaceSeed,
 ) -> Result<SeedOutcome, RunError> {
+    use sagat_application::error::AppError;
     use sagat_application::identity::{PageRequest, RequestContext};
     if config.environment != Environment::Dev {
         return Err(RunError::Refused("seed-dev only runs when SAGAT_ENV=dev"));
     }
     let invalid = |name: &'static str, reason: String| ConfigError::Invalid { name, reason };
+    // Everything that can be wrong with what was asked is found before anything is made.
     let workspace_slug = Slug::parse(&wanted.workspace_slug)
         .map_err(|e| invalid("SAGAT_SEED_WORKSPACE", e.to_string()))?;
     let namespace_slug = Slug::parse(&wanted.namespace_slug)
         .map_err(|e| invalid("SAGAT_SEED_NAMESPACE", e.to_string()))?;
+    wanted
+        .environment
+        .parse::<sagat_domain::identity::Environment>()
+        .map_err(|_| {
+            invalid(
+                "SAGAT_SEED_ENVIRONMENT",
+                "not an environment (dev, staging or prod)".to_owned(),
+            )
+        })?;
 
     let pool = open_pool(&config.database, config.database.statement_timeout).await?;
     let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
@@ -204,8 +215,11 @@ pub async fn seed_dev_namespace(
         let session = service
             .authenticate(&seed.tenant_slug, &seed.admin_subject)
             .await
-            .map_err(|_| {
-                RunError::Refused("run seed-dev first: the tenant has no such administrator")
+            .map_err(|e| match e {
+                AppError::Unauthenticated => {
+                    RunError::Refused("run seed-dev first: the tenant has no such administrator")
+                }
+                other => RunError::Database(other.to_string()),
             })?;
         let principal = session.principal;
         let context = RequestContext::default();
@@ -213,7 +227,7 @@ pub async fn seed_dev_namespace(
             limit: Some(200),
             cursor: None,
         };
-        let database = |e: sagat_application::error::AppError| RunError::Database(e.to_string());
+        let database = |e: AppError| RunError::Database(e.to_string());
         let namespaces = service
             .list_namespaces(&principal, &page)
             .await
@@ -221,22 +235,30 @@ pub async fn seed_dev_namespace(
         if namespaces.items.iter().any(|n| n.slug() == &namespace_slug) {
             return Ok(SeedOutcome::AlreadyPresent);
         }
-        let workspaces = service
-            .list_workspaces(&principal, &page)
-            .await
-            .map_err(database)?;
-        let workspace = match workspaces
-            .items
-            .into_iter()
-            .find(|w| w.slug() == &workspace_slug)
-        {
+        let find_workspace = || async {
+            let all = service.list_workspaces(&principal, &page).await?;
+            Ok::<_, AppError>(all.items.into_iter().find(|w| w.slug() == &workspace_slug))
+        };
+        let workspace = match find_workspace().await.map_err(database)? {
             Some(existing) => existing,
-            None => service
+            None => match service
                 .create_workspace(&principal, workspace_slug.as_str(), &context)
                 .await
-                .map_err(database)?,
+            {
+                Ok(made) => made,
+                // Another seed made it between the list and the create: it is there now.
+                Err(AppError::Conflict(_)) => {
+                    find_workspace()
+                        .await
+                        .map_err(database)?
+                        .ok_or(RunError::Database(
+                            "the workspace is there and cannot be found".to_owned(),
+                        ))?
+                }
+                Err(other) => return Err(database(other)),
+            },
         };
-        service
+        match service
             .create_namespace(
                 &principal,
                 workspace.id(),
@@ -245,14 +267,11 @@ pub async fn seed_dev_namespace(
                 &context,
             )
             .await
-            .map_err(|e| match e {
-                sagat_application::error::AppError::Invalid(_) => RunError::Config(invalid(
-                    "SAGAT_SEED_ENVIRONMENT",
-                    "not an environment (dev, staging or prod)".to_owned(),
-                )),
-                other => database(other),
-            })?;
-        Ok(SeedOutcome::Created)
+        {
+            Ok(_) => Ok(SeedOutcome::Created),
+            Err(AppError::Conflict(_)) => Ok(SeedOutcome::AlreadyPresent),
+            Err(other) => Err(database(other)),
+        }
     }
     .await;
     pool.close().await;

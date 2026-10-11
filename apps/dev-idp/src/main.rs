@@ -92,6 +92,18 @@ async fn run(probe: bool) -> ExitCode {
     );
     let served = axum::serve(listener, router(config, key))
         .with_graceful_shutdown(async {
+            // Ctrl-C, and the termination signal a container engine sends first.
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                if let Ok(mut term) = signal(SignalKind::terminate()) {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = term.recv() => {}
+                    }
+                    return;
+                }
+            }
             let _ = tokio::signal::ctrl_c().await;
         })
         .await;

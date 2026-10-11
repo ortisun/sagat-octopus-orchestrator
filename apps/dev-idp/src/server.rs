@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use sagat_domain::identity::{Slug, Subject};
@@ -65,12 +65,18 @@ fn refuse(status: StatusCode, error: &str, message: &str) -> Response {
 
 /// A request whose `Host` is not one this provider is known by is refused: a page that makes a
 /// browser resolve another name to this address must not be able to ask for a token.
-fn host_known(state: &Inner, headers: &HeaderMap) -> bool {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    state.hosts.iter().any(|known| known == host)
+fn host_known(state: &Inner, headers: &HeaderMap, uri: &Uri) -> bool {
+    // Exactly one Host header, and (for a request line in absolute form) the same rule for the
+    // authority the request line names: a proxy in front must not be able to say two things.
+    let mut hosts = headers.get_all(header::HOST).iter();
+    let (Some(only), None) = (hosts.next(), hosts.next()) else {
+        return false;
+    };
+    let Ok(host) = only.to_str() else {
+        return false;
+    };
+    let known = |name: &str| state.hosts.iter().any(|k| k == name);
+    known(host) && uri.authority().is_none_or(|a| known(a.as_str()))
 }
 
 fn unknown_host() -> Response {
@@ -85,15 +91,15 @@ async fn livez() -> &'static str {
     "ok"
 }
 
-async fn jwks(State(state): State<Shared>, headers: HeaderMap) -> Response {
-    if !host_known(&state, &headers) {
+async fn jwks(State(state): State<Shared>, headers: HeaderMap, uri: Uri) -> Response {
+    if !host_known(&state, &headers, &uri) {
         return unknown_host();
     }
     reply(StatusCode::OK, &json!({ "keys": [state.key.public_jwk()] }))
 }
 
-async fn discovery(State(state): State<Shared>, headers: HeaderMap) -> Response {
-    if !host_known(&state, &headers) {
+async fn discovery(State(state): State<Shared>, headers: HeaderMap, uri: Uri) -> Response {
+    if !host_known(&state, &headers, &uri) {
         return unknown_host();
     }
     let base = format!("{}/", state.config.issuer.trim_end_matches('/'));
@@ -119,8 +125,8 @@ struct TokenRequest {
     ttl_seconds: Option<u64>,
 }
 
-async fn token(State(state): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
-    if !host_known(&state, &headers) {
+async fn token(State(state): State<Shared>, headers: HeaderMap, uri: Uri, body: Bytes) -> Response {
+    if !host_known(&state, &headers, &uri) {
         return unknown_host();
     }
     // Only JSON: a form or a text body is what a page of another origin can send without asking.
