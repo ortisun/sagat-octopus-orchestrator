@@ -285,9 +285,10 @@ pub fn attempts(facts: &RunFacts, entries: &[JournalEntry]) -> Vec<Attempt> {
     done
 }
 
-/// The event types [`attempts`] needs from the part of the journal that was projected already, to
-/// close an attempt that was leased in an earlier batch.
-pub const CONTEXT_EVENTS: [&str; 9] = [
+/// The event types [`derive`] needs from the part of the journal that was projected already: the
+/// ones that close an attempt leased in an earlier batch, and the starts of the timers and waits
+/// that end in this one.
+pub const CONTEXT_EVENTS: [&str; 11] = [
     "step.released",
     "step.retry_due",
     "step.leased",
@@ -297,6 +298,8 @@ pub const CONTEXT_EVENTS: [&str; 9] = [
     "step.needs_review",
     "reconciliation.requested",
     "step.cancelled",
+    "timer.started",
+    "wait.started",
 ];
 
 /// Whether `actor` is the platform itself or one of its workers, as opposed to a person: the only

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use sagat_application::telemetry::{
-    AttemptOutcome, JournalEntry, Observation, RunFacts, attempts, derive,
+    AttemptOutcome, CONTEXT_EVENTS, JournalEntry, Observation, RunFacts, attempts, derive,
 };
 use sagat_domain::execution::{
     FailureCode, Fence, ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
@@ -698,4 +698,102 @@ fn the_attempts_of_two_steps_do_not_get_each_others_ends() {
     // `a` was leased 1 ms before `b`, and ended 5 ms after it: 1 + 5 + 5.
     assert_eq!(by_node["a"], 11 * 1_000_000);
     assert_eq!(by_node["b"], 5 * 1_000_000);
+}
+
+#[test]
+fn a_timer_that_starts_in_one_batch_and_fires_in_a_later_one_gets_its_span() {
+    // The store gives a batch the new entries and, of the part already projected, only the events
+    // `CONTEXT_EVENTS` names. A timer that began before the split and fires after it must not be
+    // lost because its start was left out.
+    let facts = facts(&["charge"]);
+    let mut j = Journal::new();
+    let sleep = node("sleep");
+    j.push(
+        0,
+        "system:engine",
+        RunEvent::RunStarted {
+            entrypoint: sleep.clone(),
+        },
+    );
+    j.push(
+        5,
+        "system:engine",
+        RunEvent::TimerStarted {
+            node: sleep.clone(),
+            due_at: OffsetDateTime::from_unix_timestamp(1_800_003_600).expect("time"),
+        },
+    );
+    j.push(
+        3_600_000,
+        "system:scheduler",
+        RunEvent::TimerFired {
+            node: sleep.clone(),
+        },
+    );
+    // The first batch took the first two entries; the second sees the third and the filtered rest.
+    let applied = 2;
+    let kept: Vec<JournalEntry> = j
+        .entries
+        .iter()
+        .filter(|e| e.seq <= applied && CONTEXT_EVENTS.contains(&e.event.name()))
+        .chain(j.entries.iter().filter(|e| e.seq > applied))
+        .cloned()
+        .collect();
+    let second = derive(&facts, &kept, applied);
+    assert!(
+        second.spans.iter().any(|s| s.name == "timer"),
+        "the span of the timer: {:?}",
+        second
+            .spans
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_wait_that_starts_in_one_batch_and_is_satisfied_in_a_later_one_gets_its_span() {
+    let facts = facts(&["charge"]);
+    let mut j = Journal::new();
+    let hold = node("hold");
+    j.push(
+        0,
+        "system:engine",
+        RunEvent::RunStarted {
+            entrypoint: hold.clone(),
+        },
+    );
+    j.push(
+        5,
+        "system:engine",
+        RunEvent::WaitStarted {
+            node: hold.clone(),
+            correlation_key: sagat_domain::execution::CorrelationKey::parse("order-1")
+                .expect("key"),
+            deadline: OffsetDateTime::from_unix_timestamp(1_800_003_600).expect("time"),
+        },
+    );
+    j.push(
+        60_000,
+        "system:events",
+        RunEvent::WaitSatisfied { node: hold.clone() },
+    );
+    let applied = 2;
+    let kept: Vec<JournalEntry> = j
+        .entries
+        .iter()
+        .filter(|e| e.seq <= applied && CONTEXT_EVENTS.contains(&e.event.name()))
+        .chain(j.entries.iter().filter(|e| e.seq > applied))
+        .cloned()
+        .collect();
+    let second = derive(&facts, &kept, applied);
+    assert!(
+        second.spans.iter().any(|s| s.name == "wait.event"),
+        "the span of the wait: {:?}",
+        second
+            .spans
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+    );
 }
