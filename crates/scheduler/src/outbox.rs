@@ -150,11 +150,12 @@ where
         )
         .await?;
         if discover && selection.found_nobody && !self.settings.discovery_rest.is_zero() {
+            let rest = fairness::rest(self.settings.discovery_rest, selection.discovery);
             *self
                 .rest_until
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some(std::time::Instant::now() + self.settings.discovery_rest);
+                Some(std::time::Instant::now() + rest);
         }
         if selection.limited > 0 {
             metrics::counter!("scheduler_fairness_limited_total", "pass" => "outbox")

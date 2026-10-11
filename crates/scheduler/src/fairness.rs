@@ -10,9 +10,12 @@
 //! 2. Otherwise the pass **discovers** the tenants that have work. A tenant that already shows more
 //!    candidates than its share of the batch is left out of the next query (the exclusion list), so
 //!    that the next page shows who else has work. At most [`ROUNDS`] pages are read. A discovery that
-//!    finds nobody has read the whole backlog of the tenants it left out (their rows are filtered, not
-//!    skipped), so the caller may **rest** it for a while: the pass then shares the first page only,
-//!    and a tenant that arrives behind a burst is found when the rest is over.
+//!    finds nobody new has read the whole backlog of the tenants it left out (their rows are filtered,
+//!    not skipped), so the caller **rests** it for a while ([`rest`]: the base time, or ten times what
+//!    the discovery took, whichever is longer, so the discovery never costs more than a tenth of the
+//!    pass's time): the pass then shares the first page only, and a tenant that arrives behind a burst
+//!    is found when the rest is over. A discovery that finds somebody is not rested: the next pass
+//!    looks again, because the tenants found are the ones that have work.
 //!    The list of tenants left out is at most [`MAX_EXCLUDED`] long.
 //! 3. The batch is then **shared out by weighted max-min fairness** over what each tenant showed:
 //!    a tenant that has less than its share gets all it has, and what it leaves goes to the others
@@ -29,6 +32,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::hash::Hash;
+use std::time::{Duration, Instant};
 
 use sagat_application::error::StoreError;
 use sagat_domain::identity::TenantId;
@@ -41,6 +45,22 @@ pub const ROUNDS: usize = 16;
 pub const MAX_EXCLUDED: usize = 256;
 /// The weight of a tenant nobody has weighted.
 pub const DEFAULT_WEIGHT: u16 = 1;
+/// The longest a discovery is rested, whatever it cost.
+pub const MAX_REST: Duration = Duration::from_secs(60);
+/// A rested discovery is rested for this many times what it took: the share of the pass's time it may use.
+const REST_FACTOR: u32 = 10;
+
+/// How long to rest the search for other tenants after a discovery that took `spent` and found nobody:
+/// at least `base`, and at least [`REST_FACTOR`] times `spent`, so that the cost of looking is bounded
+/// to about a tenth of the time whatever the size of the backlog it had to read. Zero `base` is "never
+/// rest". Never more than [`MAX_REST`].
+#[must_use]
+pub fn rest(base: Duration, spent: Duration) -> Duration {
+    if base.is_zero() {
+        return Duration::ZERO;
+    }
+    base.max(spent.saturating_mul(REST_FACTOR)).min(MAX_REST)
+}
 
 /// The scheduling weights of the tenants that have one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,9 +92,11 @@ pub struct Selection {
     pub limited: usize,
     /// The pages ran out while the last one was still full: there may be tenants not found.
     pub exhausted: bool,
-    /// The discovery left tenants out and the last page it asked for was empty: nobody else has work,
-    /// and finding that out cost a read of the backlog of the tenants left out.
+    /// The discovery left tenants out and met no tenant that the first page did not show: nobody else
+    /// has work, and finding that out cost a read of the backlog of the tenants left out.
     pub found_nobody: bool,
+    /// What the pages after the first took: the cost of looking for other tenants (see [`rest`]).
+    pub discovery: Duration,
 }
 
 /// Shares `budget` between demands by weighted max-min fairness: a demand that is no more than its
@@ -157,6 +179,7 @@ where
     let mut order: Vec<TenantId> = Vec::new();
     let mut met = 0_usize;
     let mut excluded: Vec<TenantId> = Vec::new();
+    let mut on_first_page = 0_usize;
     let mut page = first;
     loop {
         let full = page.len() >= wanted;
@@ -174,6 +197,9 @@ where
             }
             shown.entry(owner).or_default().push((met, item));
             met += 1;
+        }
+        if selection.pages == 1 {
+            on_first_page = order.len();
         }
         if !full || !discover {
             break;
@@ -209,10 +235,14 @@ where
             selection.exhausted = true;
             break;
         }
-        page = fetch(excluded.clone()).await?;
+        let asked = Instant::now();
+        let fetched = fetch(excluded.clone()).await;
+        selection.discovery += asked.elapsed();
+        page = fetched?;
         selection.pages += 1;
-        selection.found_nobody = page.is_empty();
     }
+    // Somebody the first page did not show means the discovery was worth its cost.
+    selection.found_nobody = selection.pages > 1 && order.len() == on_first_page;
 
     let demands: Vec<(u16, u32)> = order
         .iter()
@@ -412,11 +442,66 @@ mod tests {
         assert_eq!(picked.len(), 200);
         assert_eq!((selection.pages, selection.found_nobody), (1, false));
 
-        // A discovery that does find somebody is not "nobody".
+        // A discovery that does find somebody is not "nobody", even when the page after it is empty
+        // (this is the one that starved the tenant it had just found).
         let mut items: Vec<Item> = (0..1_000).map(|n| (tenant(1), n)).collect();
         items.extend((1_000..1_005).map(|n| (tenant(2), n)));
-        let (_, selection) = pick(items, 200, &Weights::default()).await;
+        let (picked, selection) = pick(items, 200, &Weights::default()).await;
+        assert_eq!(count(&picked, tenant(2)), 5);
         assert!(!selection.found_nobody);
+
+        // Nor is one whose first page already showed everybody there is: it asks again only to be sure.
+        let mut items: Vec<Item> = (0..150).map(|n| (tenant(1), n)).collect();
+        items.extend((150..300).map(|n| (tenant(2), n)));
+        let (_, selection) = pick(items, 200, &Weights::default()).await;
+        assert!(
+            selection.found_nobody,
+            "no tenant beyond the two the first page showed"
+        );
+    }
+
+    #[test]
+    fn a_rest_costs_a_tenth_of_the_time_and_is_never_unbounded() {
+        let base = Duration::from_secs(2);
+        // A cheap discovery rests the base time.
+        assert_eq!(rest(base, Duration::from_millis(50)), base);
+        // An expensive one rests ten times what it took.
+        assert_eq!(rest(base, Duration::from_secs(1)), Duration::from_secs(10));
+        // Never more than the cap.
+        assert_eq!(rest(base, Duration::from_secs(30)), MAX_REST);
+        // Zero is "never rest", whatever the discovery cost.
+        assert_eq!(rest(Duration::ZERO, Duration::from_secs(5)), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn the_time_spent_looking_for_other_tenants_is_reported() {
+        let items: Vec<Item> = (0..1_000).map(|n| (tenant(1), n)).collect();
+        let slow = |excluded: Vec<TenantId>| {
+            let page: Vec<Item> = items
+                .iter()
+                .filter(|(t, _)| !excluded.contains(t))
+                .take(200)
+                .copied()
+                .collect();
+            async move {
+                if !excluded.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+                Ok::<_, StoreError>(page)
+            }
+        };
+        let (_, selection) = select(
+            200,
+            true,
+            &Weights::default(),
+            |i: &Item| i.0,
+            |i| i.1,
+            slow,
+        )
+        .await
+        .unwrap();
+        assert!(selection.discovery >= Duration::from_millis(30));
+        assert!(selection.found_nobody);
     }
 
     #[test]

@@ -128,6 +128,59 @@ async fn equal_weights_split_a_pass_equally_and_a_lone_tenant_still_gets_all_of_
 }
 
 #[tokio::test]
+async fn a_search_that_found_nobody_rests_and_a_tenant_behind_the_burst_is_found_when_it_is_over() {
+    let w = world().await;
+    let burst = sleepers(&w, "rest-burst", 90).await;
+    let rest = std::time::Duration::from_secs(3);
+    let resting = scheduler(
+        &w,
+        SchedulerSettings {
+            batch: 20,
+            discovery_rest: rest,
+            ..SchedulerSettings::default()
+        },
+        None,
+    );
+
+    // Only the burst's tenant has work: the search for others finds nobody, and rests.
+    assert_eq!(resting.tick().await.timers_fired, 20);
+
+    // Somebody arrives behind the burst. During the rest the pass shares the oldest page, which is
+    // the burst's, and says so: this is the bound (a rest) that the discovery costs in latency.
+    let small = sleepers_of_other_tenant(&w, "rest-small", 5).await;
+    assert_eq!(resting.tick().await.timers_fired, 20);
+    assert_eq!(
+        count_fired(&w, &small).await,
+        0,
+        "rested: the page is the burst's"
+    );
+
+    // When the rest is over the search looks again, finds the tenant, and serves it in that pass.
+    tokio::time::sleep(rest + std::time::Duration::from_millis(300)).await;
+    let report = resting.tick().await;
+    assert_eq!(report.timers_fired, 20, "{report:?}");
+    assert_eq!(
+        count_fired(&w, &small).await,
+        5,
+        "found, and served in full"
+    );
+    assert_eq!(
+        count_fired(&w, &burst).await,
+        55,
+        "the burst keeps the rest of each pass"
+    );
+
+    // A search that finds somebody is not rested: the next pass looks again.
+    let late = sleepers_of_other_tenant(&w, "rest-late", 3).await;
+    assert_eq!(resting.tick().await.timers_fired, 20);
+    assert_eq!(
+        count_fired(&w, &late).await,
+        3,
+        "not resting, the late tenant is found at once"
+    );
+}
+
+#[tokio::test]
 async fn a_tenant_never_reaches_another_tenants_runs() {
     // Fairness is about order, not access: what a pass takes for one tenant is applied under that
     // tenant's id, and a run of the other is never touched by it.

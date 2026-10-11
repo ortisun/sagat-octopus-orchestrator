@@ -41,10 +41,11 @@ const PURGE_ROUNDS: u32 = 20;
 pub struct SchedulerSettings {
     /// Candidates examined per pass per tick.
     pub batch: u32,
-    /// How long a pass rests its search for other tenants after a search that found nobody (zero:
+    /// The least a pass rests its search for other tenants after a search that found nobody new (zero:
     /// never rests). Finding out that the tenants a pass left out are the only ones with work costs a
     /// read of their whole backlog; with one tenant's burst of a hundred thousand timers that is
-    /// every tick for as long as it drains. During the rest the pass shares the first page of the
+    /// every tick for as long as it drains. The rest is this or ten times what the search took,
+    /// whichever is longer (`fairness::rest`). During the rest the pass shares the first page of the
     /// oldest candidates, so a tenant that arrives behind a burst is found when the rest is over.
     pub discovery_rest: Duration,
     /// Whether a pass takes its candidates fairly between tenants (the default). Off, it takes the
@@ -555,10 +556,11 @@ where
             && selection.found_nobody
             && !self.settings.discovery_rest.is_zero()
         {
+            let rest = fairness::rest(self.settings.discovery_rest, selection.discovery);
             self.rests
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(what, Instant::now() + self.settings.discovery_rest);
+                .insert(what, Instant::now() + rest);
         }
         match selected {
             Ok((items, selection)) => {

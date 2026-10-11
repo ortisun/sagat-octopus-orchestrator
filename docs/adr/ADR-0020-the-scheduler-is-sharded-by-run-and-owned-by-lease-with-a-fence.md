@@ -115,12 +115,17 @@ not at all. A trigger on `runs` keeps sixteen counters per namespace in the same
 at most sixteen rows. The lock stays, so the quota is still exact when starts race for the last places, and the
 runtime role can read the counters and cannot write them (the function is `SECURITY DEFINER`).
 
-**10. A pass rests its search for other tenants after a search that found nobody.** Leaving a tenant out of a query
-filters its rows rather than skipping them, so a search that finds nobody has read the whole backlog of the tenants it
-left out; repeated at every tick of a burst of a hundred thousand timers that is quadratic. After such a search the
-pass shares the first page only for two seconds (`SAGAT_SCHEDULER_DISCOVERY_REST_MS`), and a tenant that arrives behind a
-burst is found when the rest is over. The cost that remains, one read of the backlog of the tenants left out per
-rest, is a limit that is stated (research G264) and is what a tenant-first index would remove.
+**10. A pass rests its search for other tenants after a search that found nobody new, for as long as the search cost.**
+Leaving a tenant out of a query filters its rows rather than skipping them, so a search that finds nobody has read the
+whole backlog of the tenants it left out; repeated at every tick of a burst of a hundred thousand timers that is
+quadratic. A search that met no tenant the first page did not already show is rested: the pass shares the first page only,
+for `SAGAT_SCHEDULER_DISCOVERY_REST_MS` (two seconds) or ten times what the search took, whichever is longer, up to a
+minute. The search therefore never costs more than about a tenth of the pass's time, whatever the size of the backlog it had
+to read, and a tenant that arrives behind a burst waits for the rest to be over before it is found. A search that found
+somebody is **not** rested: the tenants found are the ones that have work, and the next pass looks again (the first version
+rested after any search whose last page was empty, which is every search that ends, and starved the tenant it had just found
+until the rest was over: the benchmark's noisy-neighbour scenario showed it). What remains is one read of the backlog of the
+tenants left out per rest, a limit that is stated (research G264) and is what a tenant-first index would remove.
 
 ## Consequences
 

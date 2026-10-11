@@ -380,6 +380,11 @@ async fn replica_scheduler(
     }
 }
 
+/// The lease of the harness's keepers. The harness rounds once and then measures for as long as the
+/// scenario takes, so the lease must outlast the scenario or the snapshot of what a scheduler holds
+/// expires on its own clock and the passes measured would be empty ones.
+const HARNESS_LEASE: Duration = Duration::from_secs(3_600);
+
 /// `n` replicas that share the 64 shards, each with its scheduler.
 async fn replicas(w: &World, n: usize, settings: SchedulerSettings) -> Vec<Sched> {
     let keepers: Vec<Keeper<PgRunStore>> = (0..n)
@@ -387,9 +392,7 @@ async fn replicas(w: &World, n: usize, settings: SchedulerSettings) -> Vec<Sched
             Keeper::new(
                 w.store.clone(),
                 Placement::new(format!("bench-{n}-{i}-{}", uuid::Uuid::new_v4().simple())),
-                KeeperSettings {
-                    ttl: Duration::from_secs(60),
-                },
+                KeeperSettings { ttl: HARNESS_LEASE },
             )
         })
         .collect();
@@ -715,9 +718,7 @@ async fn a_noisy_tenant_and_a_quiet_one() {
         let keeper = Keeper::new(
             w.store.clone(),
             Placement::new(format!("bench-noisy-{}", uuid::Uuid::new_v4().simple())),
-            KeeperSettings {
-                ttl: Duration::from_secs(60),
-            },
+            KeeperSettings { ttl: HARNESS_LEASE },
         );
         keeper.round().await.expect("round");
         let schedulers = vec![
