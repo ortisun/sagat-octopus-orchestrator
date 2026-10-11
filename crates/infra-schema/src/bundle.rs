@@ -49,15 +49,13 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
 fn rva_offset(bytes: &[u8], sections: usize, count: usize, rva: u32, size: u32) -> Option<usize> {
     for index in 0..count {
         let section = sections.checked_add(index.checked_mul(40)?)?;
-        let virtual_size = u32_at(bytes, section + 8)?;
         let virtual_address = u32_at(bytes, section + 12)?;
         let raw_size = u32_at(bytes, section + 16)?;
         let raw = u32_at(bytes, section + 20)?;
-        let span = virtual_size.max(raw_size);
         let Some(relative) = rva.checked_sub(virtual_address) else {
             continue;
         };
-        if relative <= span && size <= span.checked_sub(relative)? {
+        if relative <= raw_size && size <= raw_size.checked_sub(relative)? {
             let offset = raw.checked_add(relative)?;
             let end = offset.checked_add(size)?;
             let offset = usize::try_from(offset).ok()?;
@@ -85,6 +83,7 @@ fn managed_pe(bytes: &[u8]) -> bool {
     }
     let section_count = u16_at(bytes, pe + 6).map(usize::from).unwrap_or(0);
     let optional_size = u16_at(bytes, pe + 20).map(usize::from).unwrap_or(0);
+    let characteristics = u16_at(bytes, pe + 22).unwrap_or_default();
     let optional = pe + 24;
     let (directories, count_at, minimum) = match u16_at(bytes, optional) {
         Some(0x10b) => (optional + 96, optional + 92, 224),
@@ -92,6 +91,7 @@ fn managed_pe(bytes: &[u8]) -> bool {
         _ => return false,
     };
     if section_count == 0
+        || characteristics & 0x2000 == 0
         || optional_size < minimum
         || u32_at(bytes, count_at).is_none_or(|count| count <= 14)
     {
@@ -108,6 +108,9 @@ fn managed_pe(bytes: &[u8]) -> bool {
     let Some(cli_at) = rva_offset(bytes, sections, section_count, cli_rva, cli_size) else {
         return false;
     };
+    if u32_at(bytes, cli_at).is_none_or(|size| size < 72) {
+        return false;
+    }
     let Some(metadata_rva) = u32_at(bytes, cli_at + 8).filter(|rva| *rva != 0) else {
         return false;
     };
@@ -119,7 +122,7 @@ fn managed_pe(bytes: &[u8]) -> bool {
     else {
         return false;
     };
-    flags & 1 == 1 && bytes.get(metadata..metadata + 4) == Some(b"BSJB")
+    flags & 1 == 1 && flags & 0x10 == 0 && bytes.get(metadata..metadata + 4) == Some(b"BSJB")
 }
 
 struct UniqueJson;
@@ -232,7 +235,7 @@ pub fn decoded_files(bytes: &[u8], language: Language) -> Option<Vec<BundleFile>
     if files.is_empty() || files.len() > MAX_FILES {
         return None;
     }
-    match version {
+    let decoded: Vec<BundleFile> = match version {
         1 if matches!(language, Language::TypeScript | Language::Python) => files
             .iter()
             .map(|(name, content)| {
@@ -287,7 +290,12 @@ pub fn decoded_files(bytes: &[u8], language: Language) -> Option<Vec<BundleFile>
                 .collect()
         }
         _ => None,
-    }
+    }?;
+    let entry = value.get("entry")?.as_str()?;
+    decoded
+        .iter()
+        .any(|file| file.name == entry)
+        .then_some(decoded)
 }
 
 /// Checks that a bundle says what the version it was built from says.
@@ -356,20 +364,27 @@ mod tests {
         }
     }
 
-    fn fake_managed_pe(marker: u8) -> Vec<u8> {
+    fn fake_managed_pe_with(marker: u8, pe32_plus: bool) -> Vec<u8> {
         let mut bytes = vec![0u8; 1536];
         bytes[0..2].copy_from_slice(b"MZ");
         bytes[0x3c..0x40].copy_from_slice(&64u32.to_le_bytes());
         bytes[64..68].copy_from_slice(b"PE\0\0");
         bytes[70..72].copy_from_slice(&1u16.to_le_bytes());
-        bytes[84..86].copy_from_slice(&224u16.to_le_bytes());
+        bytes[84..86].copy_from_slice(&(if pe32_plus { 240u16 } else { 224u16 }).to_le_bytes());
+        bytes[86..88].copy_from_slice(&0x2000u16.to_le_bytes());
         let optional = 64 + 24;
-        bytes[optional..optional + 2].copy_from_slice(&0x10bu16.to_le_bytes());
-        bytes[optional + 92..optional + 96].copy_from_slice(&15u32.to_le_bytes());
-        let cli = optional + 96 + 14 * 8;
+        bytes[optional..optional + 2]
+            .copy_from_slice(&(if pe32_plus { 0x20bu16 } else { 0x10bu16 }).to_le_bytes());
+        let (directories, count_at, optional_size) = if pe32_plus {
+            (optional + 112, optional + 108, 240)
+        } else {
+            (optional + 96, optional + 92, 224)
+        };
+        bytes[count_at..count_at + 4].copy_from_slice(&15u32.to_le_bytes());
+        let cli = directories + 14 * 8;
         bytes[cli..cli + 4].copy_from_slice(&0x2000u32.to_le_bytes());
         bytes[cli + 4..cli + 8].copy_from_slice(&72u32.to_le_bytes());
-        let section = optional + 224;
+        let section = optional + optional_size;
         bytes[section..section + 5].copy_from_slice(b".text");
         bytes[section + 8..section + 12].copy_from_slice(&0x400u32.to_le_bytes());
         bytes[section + 12..section + 16].copy_from_slice(&0x2000u32.to_le_bytes());
@@ -383,6 +398,10 @@ mod tests {
         bytes[0x300..0x304].copy_from_slice(b"BSJB");
         bytes[1535] = marker;
         bytes
+    }
+
+    fn fake_managed_pe(marker: u8) -> Vec<u8> {
+        fake_managed_pe_with(marker, false)
     }
 
     fn csharp_bundle(policy: &Policy) -> Value {
@@ -490,6 +509,11 @@ mod tests {
         let decoded = decoded_files(&bytes, Language::CSharp).expect("decoded files");
         assert_eq!(decoded[0].bytes, dependency);
         assert_eq!(decoded[1].bytes, script);
+
+        let mut pe32_plus = csharp_bundle(&policy);
+        pe32_plus["files"] = json!({"script.dll": STANDARD.encode(fake_managed_pe_with(3, true))});
+        let pe32_plus = serde_json::to_vec(&pe32_plus).expect("json");
+        assert_eq!(Bundles.check(&pe32_plus, &csharp_expected(&policy)), Ok(()));
     }
 
     #[test]
@@ -592,6 +616,39 @@ mod tests {
         let mut too_large = valid.clone();
         too_large["files"] = json!({"script.dll": STANDARD.encode(oversized)});
         cases.push(("too many decoded bytes", too_large));
+
+        let section = 64 + 24 + 224;
+        for (what, invalid) in [
+            ("an image without the DLL characteristic", {
+                let mut bytes = fake_managed_pe(1);
+                bytes[86..88].copy_from_slice(&0u16.to_le_bytes());
+                bytes
+            }),
+            ("a CLR header in a section without raw bytes", {
+                let mut bytes = fake_managed_pe(1);
+                bytes[section + 16..section + 20].copy_from_slice(&0u32.to_le_bytes());
+                bytes
+            }),
+            ("metadata beyond the section's raw bytes", {
+                let mut bytes = fake_managed_pe(1);
+                bytes[0x208..0x20c].copy_from_slice(&0x2400u32.to_le_bytes());
+                bytes
+            }),
+            ("a truncated CLR header declaration", {
+                let mut bytes = fake_managed_pe(1);
+                bytes[0x200..0x204].copy_from_slice(&0u32.to_le_bytes());
+                bytes
+            }),
+            ("a native-entry-point CLR image", {
+                let mut bytes = fake_managed_pe(1);
+                bytes[0x210..0x214].copy_from_slice(&0x11u32.to_le_bytes());
+                bytes
+            }),
+        ] {
+            let mut value = valid.clone();
+            value["files"] = json!({"script.dll": STANDARD.encode(invalid)});
+            cases.push((what, value));
+        }
 
         for (what, value) in cases {
             let bytes = serde_json::to_vec(&value).expect("json");
