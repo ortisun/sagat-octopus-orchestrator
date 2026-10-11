@@ -20,6 +20,12 @@ use serde_json::{Map, Value};
 /// Longest name repeated in a message.
 const MAX_NAME: usize = 64;
 
+/// Levels of a path that are shown in full (see [`render`]).
+const MAX_SEGMENTS: usize = 10;
+
+/// A schema with nothing in it, to compare against when one side has no `properties`.
+static NOTHING: std::sync::LazyLock<Map<String, Value>> = std::sync::LazyLock::new(Map::new);
+
 /// Differences outside the nodes that are listed; the rest are counted. A draft is stored after a
 /// size check only (a megabyte, which can be a hundred thousand array elements), and the answer is
 /// read by a person.
@@ -27,6 +33,40 @@ const MAX_CHANGES: usize = 1_000;
 
 /// Findings of one kind that are listed; the rest are counted in a last finding.
 const MAX_FINDINGS: usize = 100;
+
+/// One step of the way to a place in a document. A path is made of these and rendered only for what is listed:
+/// a document can be nested a hundred levels deep with names of kilobytes, and a path built at every one of
+/// a hundred thousand places would cost gigabytes.
+#[derive(Clone, Copy)]
+enum Seg<'a> {
+    Key(&'a str),
+    Index(usize),
+}
+
+/// A JSON pointer to the place `trail` leads to. A name longer than [`MAX_NAME`] is clipped, and a path
+/// through more than [`MAX_SEGMENTS`] levels shows its first four and its last ones with `…` between, so
+/// a path is a way to find a place and not a copy of the document.
+fn render(trail: &[Seg<'_>]) -> String {
+    const HEAD: usize = 4;
+    fn put(out: &mut String, segments: &[Seg<'_>]) {
+        for seg in segments {
+            out.push('/');
+            match seg {
+                Seg::Key(key) => out.push_str(&escape(&name(key))),
+                Seg::Index(index) => out.push_str(&index.to_string()),
+            }
+        }
+    }
+    let mut out = String::new();
+    if trail.len() <= MAX_SEGMENTS {
+        put(&mut out, trail);
+    } else {
+        put(&mut out, &trail[..HEAD]);
+        out.push_str("/…");
+        put(&mut out, &trail[trail.len() - (MAX_SEGMENTS - HEAD)..]);
+    }
+    out
+}
 
 /// The differences outside the nodes: the first [`MAX_CHANGES`] and how many came after them.
 #[derive(Default)]
@@ -36,15 +76,47 @@ struct Changes {
 }
 
 impl Changes {
-    fn push(&mut self, path: &str, change: Change) {
+    fn push(&mut self, trail: &[Seg<'_>], change: Change) {
         if self.listed.len() < MAX_CHANGES {
             self.listed.push(DocumentChange {
-                path: path.to_owned(),
+                path: render(trail),
                 change,
             });
         } else {
             self.omitted += 1;
         }
+    }
+}
+
+/// The findings of one kind: the first [`MAX_FINDINGS`] are built and listed, the rest are only counted
+/// (a finding that is not listed is never built).
+#[derive(Default)]
+struct Found {
+    listed: Vec<DiffFinding>,
+    omitted: usize,
+}
+
+impl Found {
+    fn push(&mut self, make: impl FnOnce() -> DiffFinding) {
+        if self.listed.len() < MAX_FINDINGS {
+            self.listed.push(make());
+        } else {
+            self.omitted += 1;
+        }
+    }
+
+    /// Sorted, with a last finding that says how many were left out.
+    fn into_list(mut self) -> Vec<DiffFinding> {
+        sort_findings(&mut self.listed);
+        if self.omitted > 0 {
+            self.listed.push(finding(
+                "MORE_FINDINGS",
+                format!("{} more findings of this kind are not listed", self.omitted),
+                None,
+                None,
+            ));
+        }
+        self.listed
     }
 }
 
@@ -84,13 +156,11 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
 
     let mut changes = Changes::default();
     let keys: BTreeSet<&String> = from.keys().chain(to.keys()).collect();
+    let mut trail = Vec::new();
     for key in keys.into_iter().filter(|k| k.as_str() != "nodes") {
-        walk(
-            &format!("/{}", escape(key)),
-            from.get(key),
-            to.get(key),
-            &mut changes,
-        );
+        trail.push(Seg::Key(key.as_str()));
+        walk(&mut trail, from.get(key), to.get(key), &mut changes);
+        trail.pop();
     }
     let Changes {
         listed: mut changes,
@@ -99,7 +169,7 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
     changes.sort_by(|a, b| a.path.cmp(&b.path));
 
     // A workflow that was never published had no callers and no emitters: nothing to break.
-    let mut breaking = Vec::new();
+    let mut breaking = Found::default();
     if !from.is_empty() {
         triggers(&from, &to, &mut breaking);
         schema(&from, &to, "inputSchema", Side::Input, &mut breaking);
@@ -107,13 +177,9 @@ pub(crate) fn diff(from: &[u8], to: &[u8]) -> Result<DocumentDiff, IrError> {
         removed_event_types(&from_nodes, &to_nodes, &mut breaking);
     }
 
-    let mut attention = Vec::new();
+    let mut attention = Found::default();
     needs_preparing(&from_nodes, &to_nodes, &mut attention);
-
-    sort_findings(&mut breaking);
-    sort_findings(&mut attention);
-    cap_findings(&mut breaking);
-    cap_findings(&mut attention);
+    let (breaking, attention) = (breaking.into_list(), attention.into_list());
 
     let identical = nodes_added.is_empty()
         && nodes_removed.is_empty()
@@ -215,30 +281,34 @@ fn escape(segment: &str) -> String {
     segment.replace('~', "~0").replace('/', "~1")
 }
 
-/// Records every leaf that differs between two values at `path`.
-fn walk(path: &str, before: Option<&Value>, after: Option<&Value>, out: &mut Changes) {
+/// Records every leaf that differs between two values at the place `trail` leads to.
+fn walk<'a>(
+    trail: &mut Vec<Seg<'a>>,
+    before: Option<&'a Value>,
+    after: Option<&'a Value>,
+    out: &mut Changes,
+) {
     match (before, after) {
         (None, None) => {}
-        (None, Some(_)) => out.push(path, Change::Added),
-        (Some(_), None) => out.push(path, Change::Removed),
+        (None, Some(_)) => out.push(trail, Change::Added),
+        (Some(_), None) => out.push(trail, Change::Removed),
         (Some(a), Some(b)) if a == b => {}
         (Some(Value::Object(a)), Some(Value::Object(b))) => {
             let keys: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
             for key in keys {
-                walk(
-                    &format!("{path}/{}", escape(key)),
-                    a.get(key),
-                    b.get(key),
-                    out,
-                );
+                trail.push(Seg::Key(key.as_str()));
+                walk(trail, a.get(key), b.get(key), out);
+                trail.pop();
             }
         }
         (Some(Value::Array(a)), Some(Value::Array(b))) => {
             for index in 0..a.len().max(b.len()) {
-                walk(&format!("{path}/{index}"), a.get(index), b.get(index), out);
+                trail.push(Seg::Index(index));
+                walk(trail, a.get(index), b.get(index), out);
+                trail.pop();
             }
         }
-        (Some(_), Some(_)) => out.push(path, Change::Changed),
+        (Some(_), Some(_)) => out.push(trail, Change::Changed),
     }
 }
 
@@ -276,20 +346,6 @@ fn sort_findings(findings: &mut [DiffFinding]) {
     });
 }
 
-/// Lists the first [`MAX_FINDINGS`] findings and says how many were left out.
-fn cap_findings(findings: &mut Vec<DiffFinding>) {
-    if findings.len() > MAX_FINDINGS {
-        let omitted = findings.len() - MAX_FINDINGS;
-        findings.truncate(MAX_FINDINGS);
-        findings.push(finding(
-            "MORE_FINDINGS",
-            format!("{omitted} more findings of this kind are not listed"),
-            None,
-            None,
-        ));
-    }
-}
-
 // ------------------------------------------------------------------------------ the contract
 
 /// What starts a run, as far as another system can tell: the kind and the name it listens on.
@@ -320,7 +376,7 @@ fn describe_trigger((kind, key): &(String, String)) -> String {
     }
 }
 
-fn triggers(from: &Map<String, Value>, to: &Map<String, Value>, out: &mut Vec<DiffFinding>) {
+fn triggers(from: &Map<String, Value>, to: &Map<String, Value>, out: &mut Found) {
     let list = |document: &Map<String, Value>| -> Vec<Value> {
         document
             .get("triggers")
@@ -341,25 +397,29 @@ fn triggers(from: &Map<String, Value>, to: &Map<String, Value>, out: &mut Vec<Di
         let identity = trigger_identity(trigger);
         let path = Some(format!("/triggers/{index}"));
         if identities.contains(&identity) {
-            out.push(finding(
-                "TRIGGER_CHANGED",
-                format!(
-                    "the {} trigger changed: events that used to start a run may not any more",
-                    describe_trigger(&identity)
-                ),
-                None,
-                path,
-            ));
+            out.push(|| {
+                finding(
+                    "TRIGGER_CHANGED",
+                    format!(
+                        "the {} trigger changed: events that used to start a run may not any more",
+                        describe_trigger(&identity)
+                    ),
+                    None,
+                    path,
+                )
+            });
         } else {
-            out.push(finding(
-                "TRIGGER_REMOVED",
-                format!(
-                    "the {} trigger is gone: nothing starts a run from it any more",
-                    describe_trigger(&identity)
-                ),
-                None,
-                path,
-            ));
+            out.push(|| {
+                finding(
+                    "TRIGGER_REMOVED",
+                    format!(
+                        "the {} trigger is gone: nothing starts a run from it any more",
+                        describe_trigger(&identity)
+                    ),
+                    None,
+                    path,
+                )
+            });
         }
     }
 }
@@ -375,7 +435,7 @@ fn schema(
     to: &Map<String, Value>,
     field: &str,
     side: Side,
-    out: &mut Vec<DiffFinding>,
+    out: &mut Found,
 ) {
     let empty = Map::new();
     // No input schema accepts anything, so a `required` entry added to one that had none breaks the
@@ -393,15 +453,15 @@ fn schema(
         (None, Side::Input) => return,
         (None, Side::Output) => &empty,
     };
-    compare_properties(&format!("/{field}"), before, after, side, out);
+    compare_properties(&mut vec![Seg::Key(field)], before, after, side, out);
 }
 
-fn compare_properties(
-    path: &str,
-    before: &Map<String, Value>,
-    after: &Map<String, Value>,
+fn compare_properties<'a>(
+    trail: &mut Vec<Seg<'a>>,
+    before: &'a Map<String, Value>,
+    after: &'a Map<String, Value>,
     side: Side,
-    out: &mut Vec<DiffFinding>,
+    out: &mut Found,
 ) {
     let (removed, retyped, required) = match side {
         Side::Input => (
@@ -411,44 +471,54 @@ fn compare_properties(
         ),
         Side::Output => ("OUTPUT_PROPERTY_REMOVED", "OUTPUT_TYPE_CHANGED", ""),
     };
-    let empty = Map::new();
     let props_before = before
         .get("properties")
         .and_then(Value::as_object)
-        .unwrap_or(&empty);
+        .unwrap_or(&NOTHING);
     let props_after = after
         .get("properties")
         .and_then(Value::as_object)
-        .unwrap_or(&empty);
+        .unwrap_or(&NOTHING);
+    trail.push(Seg::Key("properties"));
     for (property, definition) in props_before {
-        let here = format!("{path}/properties/{}", escape(property));
+        trail.push(Seg::Key(property.as_str()));
         let Some(new_definition) = props_after.get(property) else {
-            out.push(finding(
-                removed,
-                format!(
-                    "the property '{}' is no longer described: callers and consumers that use it can fail",
-                    name(property)
-                ),
-                None,
-                Some(here),
-            ));
+            out.push(|| {
+                finding(
+                    removed,
+                    format!(
+                        "the property '{}' is no longer described: callers and consumers that use it can fail",
+                        name(property)
+                    ),
+                    None,
+                    Some(render(trail)),
+                )
+            });
+            trail.pop();
             continue;
         };
         if let (Some(old_type), Some(new_type)) =
             (definition.get("type"), new_definition.get("type"))
             && old_type != new_type
         {
-            out.push(finding(
-                retyped,
-                format!("the type of the property '{}' changed", name(property)),
-                None,
-                Some(format!("{here}/type")),
-            ));
+            out.push(|| {
+                trail.push(Seg::Key("type"));
+                let path = render(trail);
+                trail.pop();
+                finding(
+                    retyped,
+                    format!("the type of the property '{}' changed", name(property)),
+                    None,
+                    Some(path),
+                )
+            });
         }
         if let (Some(a), Some(b)) = (definition.as_object(), new_definition.as_object()) {
-            compare_properties(&here, a, b, side, out);
+            compare_properties(trail, a, b, side, out);
         }
+        trail.pop();
     }
+    trail.pop();
     if side == Side::Input {
         let names = |schema: &Map<String, Value>| -> BTreeSet<String> {
             schema
@@ -461,15 +531,20 @@ fn compare_properties(
         };
         let known = names(before);
         for added in names(after).difference(&known) {
-            out.push(finding(
-                required,
-                format!(
-                    "'{}' is now required: callers that do not send it will be refused",
-                    name(added)
-                ),
-                None,
-                Some(format!("{path}/required")),
-            ));
+            out.push(|| {
+                trail.push(Seg::Key("required"));
+                let path = render(trail);
+                trail.pop();
+                finding(
+                    required,
+                    format!(
+                        "'{}' is now required: callers that do not send it will be refused",
+                        name(added)
+                    ),
+                    None,
+                    Some(path),
+                )
+            });
         }
     }
 }
@@ -492,20 +567,22 @@ fn awaited_events<'a>(
 fn removed_event_types(
     from: &BTreeMap<&str, &Map<String, Value>>,
     to: &BTreeMap<&str, &Map<String, Value>>,
-    out: &mut Vec<DiffFinding>,
+    out: &mut Found,
 ) {
     let still: BTreeSet<&str> = awaited_events(to).into_iter().map(|(_, e)| e).collect();
     for (node, event) in awaited_events(from) {
         if !still.contains(event) {
-            out.push(finding(
-                "EVENT_TYPE_REMOVED",
-                format!(
-                    "no node awaits '{}' any more: whoever publishes it is no longer heard",
-                    name(event)
-                ),
-                Some(node),
-                None,
-            ));
+            out.push(|| {
+                finding(
+                    "EVENT_TYPE_REMOVED",
+                    format!(
+                        "no node awaits '{}' any more: whoever publishes it is no longer heard",
+                        name(event)
+                    ),
+                    Some(node),
+                    None,
+                )
+            });
         }
     }
 }
@@ -530,7 +607,7 @@ fn activity_names(node: &Map<String, Value>) -> Vec<&str> {
 fn needs_preparing(
     from: &BTreeMap<&str, &Map<String, Value>>,
     to: &BTreeMap<&str, &Map<String, Value>>,
-    out: &mut Vec<DiffFinding>,
+    out: &mut Found,
 ) {
     let served: BTreeSet<&str> = from.values().flat_map(|n| activity_names(n)).collect();
     let secrets: BTreeSet<&str> = from.values().flat_map(|n| strings(n, "secrets")).collect();
@@ -550,43 +627,49 @@ fn needs_preparing(
             .filter(|n| !served.contains(n))
             .collect();
         for activity in names {
-            out.push(finding(
-                code,
-                format!(
-                    "the activity '{}' is new: a worker must serve it and be bound to it before runs reach this node",
-                    name(activity)
-                ),
-                Some(id),
-                None,
-            ));
+            out.push(|| {
+                finding(
+                    code,
+                    format!(
+                        "the activity '{}' is new: a worker must serve it and be bound to it before runs reach this node",
+                        name(activity)
+                    ),
+                    Some(id),
+                    None,
+                )
+            });
         }
         let new_secrets: BTreeSet<&str> = strings(node, "secrets")
             .into_iter()
             .filter(|s| !secrets.contains(s))
             .collect();
         for secret in new_secrets {
-            out.push(finding(
-                "SECRET_ADDED",
-                format!(
-                    "the node reads the secret '{}': it must exist and be usable by whoever publishes",
-                    name(secret)
-                ),
-                Some(id),
-                None,
-            ));
+            out.push(|| {
+                finding(
+                    "SECRET_ADDED",
+                    format!(
+                        "the node reads the secret '{}': it must exist and be usable by whoever publishes",
+                        name(secret)
+                    ),
+                    Some(id),
+                    None,
+                )
+            });
         }
         if node.get("type").and_then(Value::as_str) == Some("script") {
             for digest in strings(node, "artifactDigest") {
                 if !scripts.contains(digest) {
-                    out.push(finding(
-                        "SCRIPT_CHANGED",
-                        format!(
-                            "the node runs a script artifact ({}…) that the previous document did not",
-                            name(&digest.chars().take(12).collect::<String>())
-                        ),
-                        Some(id),
-                        None,
-                    ));
+                    out.push(|| {
+                        finding(
+                            "SCRIPT_CHANGED",
+                            format!(
+                                "the node runs a script artifact ({}…) that the previous document did not",
+                                name(&digest.chars().take(12).collect::<String>())
+                            ),
+                            Some(id),
+                            None,
+                        )
+                    });
                 }
             }
         }

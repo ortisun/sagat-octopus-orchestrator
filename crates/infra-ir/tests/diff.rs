@@ -483,3 +483,49 @@ fn an_answer_about_tens_of_thousands_of_differences_is_bounded_and_says_how_many
     assert!(d.changes_omitted > 3_000, "{}", d.changes_omitted);
     assert!(d.attention.len() <= 101);
 }
+
+/// A document is nested up to a hundred levels and its names are as long as the megabyte allows: a path
+/// built at every one of thousands of places would cost gigabytes, and a path is only worth what it
+/// helps a person find.
+#[test]
+fn thousands_of_differences_deep_in_a_nested_document_cost_what_reading_it_costs_and_the_answer_stays_small()
+ {
+    // 30 levels of 7 000-character names, with three thousand properties at the bottom of the one
+    // document and none in the other.
+    let nest = |leaves: usize| {
+        let mut bottom = serde_json::Map::new();
+        for i in 0..leaves {
+            bottom.insert(format!("p{i}"), json!({}));
+        }
+        let mut schema = json!({"type": "object", "properties": Value::Object(bottom)});
+        for level in (0..30).rev() {
+            let name = format!("{}{level}", "n".repeat(7_000));
+            schema = json!({"type": "object", "properties": {name: schema}});
+        }
+        schema
+    };
+    let mut from = base();
+    from["inputSchema"] = nest(3_000);
+    from["outputSchema"] = nest(3_000);
+    let mut to = base();
+    to["inputSchema"] = nest(0);
+    to["outputSchema"] = nest(0);
+    let started = std::time::Instant::now();
+    let d = diff(&from, &to);
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
+    assert!(d.breaking.iter().any(|f| f.code == "MORE_FINDINGS"));
+    let answer: usize = d
+        .breaking
+        .iter()
+        .chain(&d.attention)
+        .map(|f| f.message.len() + f.path.as_ref().map_or(0, String::len))
+        .sum::<usize>()
+        + d.changes.iter().map(|c| c.path.len()).sum::<usize>();
+    assert!(answer < 1_000_000, "the answer is {answer} bytes");
+    // A path is clipped, not copied: nothing in it is longer than a name is allowed to be.
+    assert!(
+        d.changes.iter().all(|c| c.path.len() < 2_000),
+        "a path of the changes is long"
+    );
+}
