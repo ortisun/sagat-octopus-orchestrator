@@ -22,6 +22,7 @@ ENVIRONMENT:
     SAGAT_DEV_IDP_AUDIENCE       the aud of the tokens                  [sagat-octopus-orchestrator]
     SAGAT_DEV_IDP_TENANT_CLAIM   the claim that carries the tenant      [tenant]
     SAGAT_DEV_IDP_KEY_FILE       keep the signing key here (mode 600), so that tokens outlive a restart
+    SAGAT_DEV_IDP_HOSTS          other host:port names a request may use (a published port), comma separated
 ";
 
 fn env(name: &str) -> Option<String> {

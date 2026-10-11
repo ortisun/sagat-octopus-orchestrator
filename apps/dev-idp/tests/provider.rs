@@ -105,6 +105,35 @@ fn an_issuer_or_a_claim_that_could_confuse_the_platform_is_refused() {
     }
 }
 
+#[test]
+fn other_host_names_are_added_only_when_they_are_names() {
+    let ok = config(&[
+        ("SAGAT_ENV", "dev"),
+        ("SAGAT_DEV_IDP_HOSTS", "127.0.0.1:18090, localhost:18090"),
+    ])
+    .expect("hosts");
+    assert_eq!(ok.extra_hosts, vec!["127.0.0.1:18090", "localhost:18090"]);
+    assert!(ok.hosts().contains(&"localhost:18090".to_owned()));
+    for bad in [
+        "localhost",
+        "http://localhost:1",
+        "a b:1",
+        "host:99999",
+        ":80",
+    ] {
+        assert!(
+            matches!(
+                config(&[("SAGAT_ENV", "dev"), ("SAGAT_DEV_IDP_HOSTS", bad)]),
+                Err(ConfigError::Invalid {
+                    name: "SAGAT_DEV_IDP_HOSTS",
+                    ..
+                })
+            ),
+            "{bad}"
+        );
+    }
+}
+
 /// The provider on a port of its own, and the base URL to reach it by.
 async fn serve(extra: &[(&str, &str)]) -> (String, Config) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

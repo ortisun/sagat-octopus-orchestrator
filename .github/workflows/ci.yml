@@ -96,6 +96,10 @@ jobs:
       # need the five toolchains.
       - name: conformance suite, user stories and faults, five languages
         run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
+      # The hello-world of each SDK (examples/hello-world), run against a real platform: the five make the
+      # same run, whose journal is the one `sagat worker dev` makes.
+      - name: hello-world examples, five languages
+        run: cargo test -p sagat-tests --test e2e_developer_experience us03 --locked -- --ignored
 
   studio:
     name: studio (lint, types, unit tests, build, browser journeys)
@@ -172,9 +176,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Builds the image, starts PostgreSQL + NATS + control plane, checks health, runs the seed
-      # twice and tears everything down (see scripts/smoke-compose.sh).
-      - run: scripts/smoke-compose.sh
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The CLI the smoke test uses for the first day: doctor, publish, serve, run.
+      - run: cargo build -p sagat-cli --locked
+      # Builds the images, starts PostgreSQL + NATS + the development identity provider + control plane +
+      # engine, checks health, runs the seed twice, gets a token from the provider, publishes and runs a
+      # workflow with the CLI and tears everything down (see scripts/smoke-compose.sh).
+      - run: SAGAT_BIN=target/debug/sagat scripts/smoke-compose.sh
 
   observability:
     name: observability files (Prometheus rules and configuration, Collector configuration, dashboards)
