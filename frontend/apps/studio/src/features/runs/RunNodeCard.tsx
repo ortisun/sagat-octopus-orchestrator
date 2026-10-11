@@ -54,12 +54,12 @@ export function RunCard({ data }: NodeProps<CardNode>) {
       <strong className="rn-id" title={node.id}>
         {node.id}
       </strong>
-      <span className="rn-kind">{kind.label}</span>
       <span className="rn-row">
+        <span className="rn-kind">{kind.label}</span>
         <StatusBadge view={nodeStatus(node.status)} />
-        {attempt ? <span className="rn-chip">{attempt}</span> : null}
       </span>
       <span className="rn-notes">
+        {attempt ? <span className="rn-chip">{attempt}</span> : null}
         {node.failureCode ? <span className="rn-chip bad">failure {clip(node.failureCode, 32)}</span> : null}
         {waiting ? <span className={node.waitingOn === 'operator' ? 'rn-chip bad' : 'rn-chip'}>{waiting}</span> : null}
         {node.nextAttemptAt ? (

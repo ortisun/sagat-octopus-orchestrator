@@ -62,9 +62,9 @@ test('SEC text that comes from outside is shown as text and never runs: a descri
 
   // The workflow: the description in the list and in the editor, the release note in the versions.
   await page.getByRole('link', { name: 'Workflows' }).click();
-  await expect(page.getByRole('link', { name: 'sec-text' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'sec-text', exact: true })).toBeVisible();
   await nothingRan(page);
-  await page.getByRole('link', { name: 'sec-text' }).click();
+  await page.getByRole('link', { name: 'sec-text', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'sec-text', level: 1 })).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Description' })).toHaveValue(HOSTILE);
   await page.getByRole('tab', { name: 'Versions' }).click();

@@ -47,13 +47,44 @@ export function installMonacoEnvironment(target: { MonacoEnvironment?: unknown }
   return environment;
 }
 
-export type MonacoTheme = 'vs' | 'vs-dark';
+export type MonacoTheme = 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
+
+export type StudioMonacoTheme = 'sagat-light' | 'sagat-dark' | 'hc-black' | 'hc-light';
+
+export interface StudioMonacoThemeData {
+  base: 'vs' | 'vs-dark';
+  inherit: true;
+  rules: { token: 'comment'; foreground: string }[];
+  colors: Record<string, string>;
+}
 
 /** The theme that matches the page: the explicit choice (`data-theme`) wins over the system's. */
-export function resolveTheme(dataTheme: string | null | undefined, prefersDark: boolean): MonacoTheme {
-  if (dataTheme === 'dark') return 'vs-dark';
-  if (dataTheme === 'light') return 'vs';
-  return prefersDark ? 'vs-dark' : 'vs';
+export function resolveTheme(dataTheme: string | null | undefined, prefersDark: boolean, forcedColors = false): MonacoTheme {
+  const dark = dataTheme === 'dark' || (dataTheme !== 'light' && prefersDark);
+  if (forcedColors) return dark ? 'hc-black' : 'hc-light';
+  return dark ? 'vs-dark' : 'vs';
+}
+
+/** The Studio only customizes normal themes; forced-colors mode keeps Monaco's high-contrast themes. */
+export function studioThemeName(base: MonacoTheme): StudioMonacoTheme {
+  if (base === 'vs-dark') return 'sagat-dark';
+  if (base === 'vs') return 'sagat-light';
+  return base;
+}
+
+/**
+ * Monaco token theme colors are six-digit hex without `#`. The single override uses the page's
+ * semantic muted-text token, whose contrast is checked with the rest of the Studio palette.
+ */
+export function studioThemeData(base: 'vs' | 'vs-dark', mutedText: string): StudioMonacoThemeData {
+  const match = /^#([\da-f]{6})$/i.exec(mutedText.trim());
+  if (match?.[1] === undefined) throw new Error('The Monaco comment token must be a six-digit hex color');
+  return {
+    base,
+    inherit: true,
+    rules: [{ token: 'comment', foreground: match[1].toUpperCase() }],
+    colors: {},
+  };
 }
 
 /** The kind of model, which decides its language service and where it lives. */

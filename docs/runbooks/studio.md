@@ -39,8 +39,10 @@ put both behind one host.
 - **Build a workflow**: add steps from the palette (or the *Add node* menu with the keyboard), connect them (drag, or choose in the inspector), set their fields. The checks of the
   platform run as you work and are listed with the node each is about; advice the platform does not give is listed apart. The draft is saved by itself; if someone else saved first you are
   shown the difference and nothing is overwritten without it. *Publish…* shows what changes against the active version and which changes can break callers.
-- **Watch a run**: the graph shows each step's state, attempts and the way the run took; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner tells how the
-  view is kept current (live, polling, reconnecting).
+- **Watch a run**: on wide screens the filtered Runs list stays beside the detail; selecting another run preserves its filters,
+  loaded rows and scroll position. On narrow screens, use the separate Runs list and detail routes. The graph shows each step's
+  state, attempts and the way the run took; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner
+  tells how the view is kept current (live, polling, reconnecting). Missing finish times stay unknown rather than counting through now.
 - **Act on a failure**: choose the step, *Retry*, *Retry compensation*, *Skip compensation* or *Resolve*; each asks for a reason, says what it will do, and is recorded with your name.
   Skipping or resolving needs the administrator permission `saga:override`.
 - **Everything the canvas does, the list view does** (*Canvas | List* toggle), for keyboard and screen-reader use.
@@ -65,6 +67,14 @@ WCAG 2.2 AA is the target (D148, G146): every action has a keyboard route, statu
 `prefers-reduced-motion`, and `forced-colors` is supported. It is checked by automated runs of axe-core over the main pages in the browser journeys and by a keyboard
 walkthrough in them; it has **not** been tested by people using a screen reader. Report a barrier as a defect.
 
+The [visual-direction record](../../specs/007-workflow-studio/design/README.md) documents accessible deviations from the prototype.
+Shared tokens supply light, dark and forced-colour roles, with locally bundled Geist fonts and system fallbacks. The browser
+checks now include light, dark and forced colours, plus 320px reflow checks; their latest outcome and any outstanding failures
+are recorded in [the quickstart](../../specs/007-workflow-studio/quickstart.md#visual-direction-validation--2026-10-11).
+All 18 executed final browser journeys passed; US02 remains excluded from the local partial run. The
+[ten preserved captures](../../specs/007-workflow-studio/design/README.md#owner-review-captures--2026-10-11) support owner review;
+automated screenshots do not complete visual acceptance.
+
 ## 6. What is not built
 
 Showing a step's input, output or error text (the journal carries none: G144); *retry run as new* and *mark manual review* (the API refuses them: G145); human approval and
@@ -79,4 +89,15 @@ the database (G143); a screen-reader test by a person (G146).
 | The journeys (US01..US04, SC-007-001, accessibility, security, sign-in) | `cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture`; needs Node, the frontend's dependencies (`npm ci` in `frontend/`), Chromium (`npx playwright install chromium` in `frontend/e2e/`) and Docker. `SAGAT_STUDIO_GREP="US04"` plays one; `SAGAT_STUDIO_REBUILD=0` reuses the build in `frontend/apps/studio/dist`. A failure leaves screenshots and traces in `frontend/e2e/test-results/`. |
 | The benchmark | `STUDIO_PERF=1 STUDIO_PERF_OUT=$PWD/frontend/e2e/perf-results/perf.json SAGAT_STUDIO_GREP=PERF cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture`, then `node frontend/e2e/scripts/perf-report.mjs frontend/e2e/perf-results/perf.json tests/performance/reports/workflow-studio.md`. The floors it asserts are in `frontend/e2e/tests/perf.spec.ts`; the report says what it does not measure. |
 | Dependency advisories | `npm audit --audit-level=moderate` in `frontend/` (CI runs it; two low advisories are accepted: G152) |
+
+When Docker's sandbox runtime is unavailable, an explicitly partial development check is possible:
+
+```sh
+SAGAT_STUDIO_NO_SANDBOX=1 cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+The harness prints `PARTIAL STUDIO RUN`, starts no sandbox runner and excludes US02 with Playwright's `--grep-invert`.
+The API, engine and browser remain real. PostgreSQL is still required; `SAGAT_TEST_DATABASE_URL` can point to an existing
+administrative test connection when Docker cannot start it. The default/CI path still starts real containers and includes US02.
+Report partial results as such: they provide no evidence that scripts build or execute in the sandbox.
 
