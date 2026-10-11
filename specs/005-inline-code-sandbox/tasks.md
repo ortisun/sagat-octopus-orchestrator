@@ -32,11 +32,11 @@
 
 ## Phase 5: US03 — Run inline C# code (P1)
 **Independent test:** Given a C# script with allowed NuGet references; When the author publishes; Then Roslyn compiles in a build worker and an isolated .NET host executes without a manual app deploy.
-- [ ] T005-018 [P] [US03] Write a Given/When/Then test for running inline C# code in `tests/e2e/inline-code-sandbox/us03.rs`. — Not done: `us03.rs` proves that C# is *refused* with `LANGUAGE_NOT_BUILT`, not that it runs (G96).
-- [ ] T005-019 [US03] Implement the domain path and error handling for running inline C# code in `crates/sandbox/src/policy.rs`. — Not done: Roslyn and an isolated .NET host are not built (G96).
-- [ ] T005-020 [US03] Integrate adapters and persistence for scenario US03 in `crates/application/` and `crates/infra-postgres/`. — Not done (G96).
-- [ ] T005-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to scenario US03 in `crates/telemetry/`. — Not done (G96).
-- [ ] T005-022 [US03] Run and document duplicate, timeout, worker failure and tenant boundary tests for US03 in `tests/fault/inline-code-sandbox/`. — Not done (G96).
+- [x] T005-018 [P] [US03] Write a Given/When/Then test for running inline C# code in `tests/e2e/inline-code-sandbox/us03.rs`. — A draft using the pinned Newtonsoft.Json package is tested, published, pinned by a workflow and executed by the real runner.
+- [x] T005-019 [US03] Implement the domain path and error handling for running inline C# code in `crates/sandbox/src/policy.rs`. — `crates/domain/src/scripts.rs`, `crates/infra-sandbox/` and `runners/dotnet/`: Roslyn compiles in a build container and a distinct runtime image loads the signed v2 assembly bundle.
+- [x] T005-020 [US03] Integrate adapters and persistence for scenario US03 in `crates/application/` and `crates/infra-postgres/`. — The existing language-neutral build lease, artifact signing, persistence and step execution paths carry C# v2 artifacts; the E2E test crosses all of them.
+- [x] T005-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to scenario US03 in `crates/telemetry/`. — Existing runner metrics carry the `csharp` language label; container tests prove supervised host calls, secret redaction and direct-network denial without adding tenant or secret labels.
+- [x] T005-022 [US03] Run and document duplicate, timeout, worker failure and tenant boundary tests for US03 in `tests/fault/inline-code-sandbox/`. — C# uses the same signed artifact/build-key, fenced lease and tenant-scoped queues; the fault suite takes over a lost C# test-run lease, and the container suite proves CPU timeout, cleanup and the runtime limits.
 
 ## Phase 6: US04 — Block a malicious script (P1)
 **Independent test:** Given a script tries to access cloud metadata, the host, or exceed CPU; When the worker executes; Then egress and resources are denied, the failure result is audited.
@@ -49,7 +49,7 @@
 ## Phase: Engineering design details (story-linked hardening)
 
 - [x] T005-028 [US01] Implement deterministic build digest source+deps+toolchain+policy in `crates/script-registry/src/builds.rs`. — the build key is the SHA-256 of the length-prefixed language, source, lockfile, toolchain, policy and schemas (`build_key` in `crates/application/src/scripts.rs`); `integration_inline_code_sandbox builds::an_identical_build_is_reused…`.
-- [ ] T005-029 [US01] Implement C# runner with Roslyn/NuGet in `runners/dotnet/` isolated per container. — Not done: no C# runner (G96).
+- [x] T005-029 [US01] Implement C# runner with Roslyn/NuGet in `runners/dotnet/` isolated per container. — Pinned .NET 10 SDK/runtime images, an offline exact Newtonsoft.Json 13.0.4 catalog, separate build/runtime hosts and a managed-assembly-only artifact v2; `integration_inline_code_sandbox_containers::csharp` runs the real images.
 - [x] T005-030 [US01] Implement egress permissions and cgroups/seccomp in `crates/sandbox/src/policy.rs` and manifests in `infra/helm/`. — the container's network, read-only root, capabilities, seccomp, cgroups and user are in `crates/infra-sandbox/src/docker.rs` (`config`) and the egress policy in `apps/sandbox-runner/src/host.rs`; there is no `infra/helm` in the repository: the deployment is `infra/docker/compose.yaml` (profile `sandbox`) and `docs/runbooks/scripts.md` (G109).
 - [x] T005-031 [US01] Add sandbox escapement/SSRF test in `tests/security/sandbox/`. — `tests/integration/inline-code-sandbox/sandbox/` (what a hostile script cannot do, in real containers) and `e2e_inline_code_sandbox::us04`; there is no `tests/security` target (G110).
 
