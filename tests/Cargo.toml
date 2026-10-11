@@ -247,3 +247,7 @@ path = "contract/observability-operations/rest/main.rs"
 [[test]]
 name = "integration_observability_operations"
 path = "integration/observability-operations/main.rs"
+
+[[test]]
+name = "perf_observability_operations"
+path = "performance/observability-operations/main.rs"
