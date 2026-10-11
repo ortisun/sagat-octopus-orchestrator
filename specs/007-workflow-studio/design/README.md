@@ -114,6 +114,7 @@ and the active chip's border (3.01 : 1, thin). **Fails** and what the Studio doe
 | dim text: sidebar counts and tagline, search placeholder and ⌘K, event numbers | lightness 0.55 | 3.9–4.15 : 1 (4.5 needed) | lightness **0.60** (4.7–5.1 : 1) |
 | border of a field, the namespace select, an idle chip, a ghost button | 0.26–0.30 | 1.2–1.4 : 1 (3 needed) | neutral lightness **0.50** (`#616368`, 3.2–3.4 : 1) |
 | the edge not yet taken | 0.34 | 1.7 : 1 (3 needed; the dash is not enough, a graphic that carries the structure) | lightness **0.50**, dashed as in the prototype |
+| omitted edge and its legend sample in the Studio | decorative divider colour at 80 % opacity | **1.15 : 1 dark**, **1.24 : 1 light** against the canvas | control border at full opacity: `#686b70` dark (**3.72 : 1**), `#78818d` light (**3.62 : 1**); keeps a dotted `2 5` pattern, distinct from pending `4 4` |
 | the card's border at rest and its status tint | 0.27 / status at 45 % | 1.3 / 2.1–2.7 : 1 | **kept**: the card is identified by its text, and the state by the dot (≥ 4.6 : 1) **and a word**, in the selected-step strip and in the Table tab. T007-042 checks that no state is carried by colour alone and adds a pattern or a label if one is |
 | panel dividers, the dotted grid, the selected row's fill, the ⌘K hint's border | 0.20–0.28 | ≈ 1.1–1.3 : 1 | **kept**: decorative (the row's accent bar, 10.5 : 1, and `aria-current` mark the selection) |
 | `min-width: 1180px` | fixed | no reflow | **not adopted**: content reflows to 320 px (WCAG 1.4.10), D158 |
@@ -170,3 +171,79 @@ Settled: light and dark, following the system by default (D157, the owner, 2026-
   of every text, control-border and focus pair against the thresholds, and fails on a literal colour in any other stylesheet (T007-039);
 - axe-core runs in the journeys in light, dark and forced colours on every page (T007-044);
 - the Runs screen is compared with `runs-prototype.jpg` at 1470 × 812 by a person (T007-044): **a review, not a test**, and the report says so.
+
+## First token increment — 2026-10-11
+
+This historical first increment adopted the recorded page/field/raised surfaces, text,
+accent and semantic status colours. T007-039 was then **in progress**: the complete
+spacing/type/radius scale, forced-colour coverage and all component pairs are not
+claimed by this increment. Fonts and layout are separate tasks.
+
+Additional contrast deviations: shared dark control border is `#686b70` instead
+of `#616368` to maintain 3:1 on the raised surface as well as the page; idle/skip
+text uses `#83868c` to maintain 4.5:1 on that surface. The light derivation uses
+`#12643f` for the accent/focus, `#78818d` for controls and `#626975` for skipped
+status. The previous light border (2.81:1) and skipped text (4.43:1) failed against
+the subtle surface. Colour literals for the minimap mask and backdrop now live
+in the shared tokens.
+
+`src/styles/tokens.test.ts` computes WCAG sRGB contrast for shared text/status,
+control/focus, primary action and banner pairs, prevents literal hex/function
+colours in sibling stylesheets, and checks system/explicit dark parity. It is
+not a claim that forced system colours have fixed RGB ratios or that every page
+has passed axe. The full visual review and authenticated journeys remain open.
+
+Validation: Studio typecheck, ESLint, Vitest and production build passed. The
+initial full run had 957 tests (94 new); the added dark-parity assertion is checked
+in the focused run. Chrome rendered the dark sign-in screen at localhost:5177;
+no authenticated API/Studio journey or human prototype approval was performed.
+
+## Implemented restyle — 2026-10-11
+
+The shared scale now includes the recorded type sizes, weights, spacing, radii and layout dimensions. Dark follows the export;
+light is the Studio's derivation; forced colours map to system roles. `tokens.test.ts` checks light/dark text, control and focus
+contrasts, system/explicit dark parity, forced-colour mappings, local font imports and licences, and that CSS custom-property
+references resolve. A system colour is not assigned an invented fixed RGB contrast ratio.
+
+Geist and Geist Mono are bundled from pinned `@fontsource` packages `5.3.0`, published 2026-07-19, with their SIL OFL 1.1 licence
+served at `licenses/geist-OFL.txt`. There is no remote font request. System stacks remain; the browser suite includes a check
+that blocks font files, verifies Geist did not load, and exercises reflow with the fallback; it passed in the final Chromium run.
+
+The shell uses the 216px sidebar, namespace selector, real navigation destinations and a top bar with current location/session.
+Runs uses a 392px master list beside `/runs/:runId` at 74rem and above. Below that threshold it keeps the separate pages and does
+not mount or request the hidden master list. The master list retains filters, loaded rows and scroll across sibling-run
+navigation; run-specific stores, selections and dialogs reset. Run facts and the selected-step strip use the API's values.
+Terminal rows without a finish time show `—`. The list displays the last eight characters of the run ID to distinguish nearby
+UUIDv7 runs; the full ID remains available in the detail and the tooltip.
+
+Full graph cards are 184 × 62px, edges are curved, and the canvas is dotted. Taken, pending and omitted paths stay solid, dashed
+and dotted respectively, including in forced colours; words and the Table view carry the same states. Review fixed missing
+graph-token definitions, insufficient contrast of omitted paths, the selected-step mobile cascade and master-list remounting.
+The workflow editor, Scripts and sign-in consume the same tokens. The owner approved their layouts and the light theme on 2026-10-11 (T007-043); the plain `S` monogram is provisional, not a final logo selection (G162).
+
+Final local validation records **1 033 passing Vitest tests in 64 files**, typecheck, lint, build, generated-API check and the
+dependency advisory gate. The expanded browser suite finished with **18 passed, zero failed and two skipped opt-in benchmarks**;
+light/dark/forced-colour checks, 320px reflow and system-font fallback passed. Both benchmarks passed separately in three cold
+rounds per scenario, with all six existing floors met and the report regenerated. The earlier dark Monaco contrast failure was
+corrected before this final run. US02 was explicitly excluded because Docker's sandbox runtime was unavailable; no sandbox
+execution is claimed for that local run; the subsequent Studio CI job passed all 19 browser journeys including US02. See [the validation record](../quickstart.md#visual-direction-validation--2026-10-11).
+The owner explicitly approved the visual proposal after receiving the live Studio, reference and review captures.
+
+## Owner review captures — 2026-10-11
+
+These ten PNGs were copied from the passing browser suite, using a 1470 × 812 viewport (full-page captures may be taller).
+They contain test fixtures and capture the validated wide-header and canvas-background adjustments. They are review material,
+not evidence of owner approval or a visual match; compare Runs with
+[`runs-prototype.jpg`](./runs-prototype.jpg) and review the derived light/editor/Script screens separately.
+
+| Screen | Light | Dark | Forced colours |
+|---|---|---|---|
+| Runs | [Capture](./review/runs-light-1470x812.png) | [Capture](./review/runs-dark-1470x812.png) | [Capture](./review/runs-forced-1470x812.png) |
+| Workflow editor | [Capture](./review/editor-light-1470x812.png) | [Capture](./review/editor-dark-1470x812.png) | [Capture](./review/editor-forced-1470x812.png) |
+| Scripts, plain-text source | [Capture](./review/scripts-light-1470x812.png) | [Capture](./review/scripts-dark-1470x812.png) | [Capture](./review/scripts-forced-1470x812.png) |
+
+[Runs with system fonts, Geist blocked](./review/runs-system-fonts-1470x812.png).
+
+Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
+after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
+automated CI evidence for this branch is recorded separately.

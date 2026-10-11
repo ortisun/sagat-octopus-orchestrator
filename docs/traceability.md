@@ -10,7 +10,7 @@
 | [004 events-webhooks-messaging](../specs/004-events-webhooks-messaging/spec.md) | FR-004-001..008 | 4 | `tests/e2e/events-webhooks-messaging/`, `tests/integration/events-webhooks-messaging/`, `tests/contract/events-webhooks-messaging/`, `tests/fault/events-webhooks-messaging/` | Implementing (see the evidence table; OIDC/mTLS profiles, outbound broker producers and Studio are other work) |
 | [005 inline-code-sandbox](../specs/005-inline-code-sandbox/spec.md) | FR-005-001..008 | 4 | `tests/e2e/inline-code-sandbox/`, `tests/integration/inline-code-sandbox/`, `tests/contract/inline-code-sandbox/`, `tests/fault/inline-code-sandbox/` | Implementing (see the evidence table; C#, dependencies and the Studio editor are not built) |
 | [006 sdk-multilanguage](../specs/006-sdk-multilanguage/spec.md) | FR-006-001..008 | 4 | `tests/e2e/sdk-multilanguage/`, `tests/fault/sdk-multilanguage/`, `tests/contract/sdk-conformance/`, `tests/contract/sdk-multilanguage/`, `tests/performance/sdk-multilanguage/` | Implementing (see the evidence table; publishing, streaming and licensing are not built) |
-| [007 workflow-studio](../specs/007-workflow-studio/spec.md) | FR-007-001..010 | 4 | `tests/e2e/workflow-studio/`, `tests/fault/workflow-studio/` | Implementing (FR-007-001..008 built and tested; the visual direction, FR-007-009/010, is open: see the evidence table) |
+| [007 workflow-studio](../specs/007-workflow-studio/spec.md) | FR-007-001..010 | 4 | `tests/e2e/workflow-studio/`, `tests/fault/workflow-studio/` | Implementing (visual direction and local technical checks complete; owner approval and sandbox CI validation complete: see the evidence table) |
 | [008 observability-operations](../specs/008-observability-operations/spec.md) | FR-008-001..006 | 4 | `tests/e2e/observability-operations/`, `tests/integration/observability-operations/`, `tests/contract/observability-operations/`, `tests/fault/observability-operations/`, `tests/performance/observability-operations/` | Implementing (see the evidence table; exemplars, pager integrations, protobuf export and the Studio screens for alerts and drains are not built) |
 | [009 security-multitenancy](../specs/009-security-multitenancy/spec.md) | FR-009-001..008 | 4 | `tests/e2e/security-multitenancy/`, `tests/integration/security-multitenancy/`, `tests/contract/security-multitenancy/`, `tests/fault/security-multitenancy/` | Implementing (see the evidence table; Helm is another feature) |
 | [010 scalability-ha](../specs/010-scalability-ha/spec.md) | FR-010-001..007 | 4 | `tests/e2e/scalability-ha/`, `tests/fault/scalability-ha/` | Planned |
@@ -194,7 +194,10 @@ Gaps and decisions: `specs/006-sdk-multilanguage/research.md` (G121–G141, D119
 
 ## Evidence: 007 workflow-studio
 
-Gaps and decisions: `specs/007-workflow-studio/research.md` (D138–D153 and G142–G159 are built and recorded; D154 onwards and G160 onwards belong to the visual direction, which is not built). Validation flow and results: `specs/007-workflow-studio/quickstart.md`. Using and operating the Studio: `docs/runbooks/studio.md`, `frontend/README.md`. Design: ADR-0016. Benchmark: `tests/performance/reports/workflow-studio.md`.
+Gaps and decisions: `specs/007-workflow-studio/research.md` (D138–D159, G142–G168). The visual direction is implemented; the original
+baseline and current restyle checks are distinguished in `specs/007-workflow-studio/quickstart.md`. Using and operating the Studio:
+`docs/runbooks/studio.md`, `frontend/README.md`. Design: ADR-0016 and `specs/007-workflow-studio/design/README.md`. Benchmark:
+`tests/performance/reports/workflow-studio.md` (restyled benchmarks passed).
 
 | Requirement | State | Evidence |
 |---|---|---|
@@ -206,18 +209,18 @@ Gaps and decisions: `specs/007-workflow-studio/research.md` (D138–D153 and G14
 | FR-007-006 incremental updates by stream with a polling fallback, no reload of the whole graph | Done | `GET /runs/{id}/graph/changes` and `/stream` (`e2e_workflow_studio us03`: 14 tests, among them reconnection with `Last-Event-ID`, the caps, the token's expiry, a removed member, the cost of a quiet stream), `follow.ts` and its tests, the journey US03 asserts the graph is loaded once; a quiet stream costs the read of one row per tick (G143) |
 | FR-007-007 RBAC and a confirmation that explains the consequence | Done | `ops.ts` and the dialog (`operations.test.tsx`: 32 tests), `e2e_workflow_studio us04`, `fault_workflow_studio` (two operators at once, a request repeated, a stale view, an undo that fails again, another tenant), journeys US04 |
 | FR-007-008 WCAG AA as a target and an alternative table/list view | Done as a target, partly proven | axe-core (WCAG 2.2 A and AA rules) on every page in the journeys, dialogs and menus driven by the keyboard alone, the table and the timeline as first-class views, the list view of the editor; **no screen reader was used by a person (G146)** |
-| FR-007-009 the visual direction on every screen | **Not done** | tokens, shell, Runs as list and detail, cards and edges: T007-039..043 of `tasks.md`; the owner's export (T007-038) is awaited |
-| FR-007-010 no element without a data source | **Not done** | T007-041; depends on FR-007-009 |
+| FR-007-009 the visual direction on every screen | Implemented; owner approved | shared tokens/themes, local Geist fonts, sidebar/top bar, wide Runs master/detail, graph cards/curves/grid and derived editor/Script/sign-in styles; `tokens.test.ts`, `Shell.test.tsx`, `RunDetailPage.test.tsx`, `styles.test.ts`; final browser suite passed after the dark Monaco correction, including all three themes, 320px reflow and system fonts; owner approval was recorded on 2026-10-11 (T007-043/044), with captures linked in the design record |
+| FR-007-010 no element without a data source | Implemented and unit-tested | only real navigation destinations; run facts use API fields, omit queue/worker/trigger-kind/global counts, and show unknown terminal duration without `finishedAt`; `Shell.test.tsx`, compact-list and detail regressions; payload, signal action and per-step timeline bars remain unbuilt (G144, G163–G168) |
 | NFR-007-SEC tenant isolation, RBAC, least privilege, no secret in logs or the journal | Done for what exists | two rounds of independent security and correctness reviews of the Studio, each confirmed finding fixed failing-first (quadratic and unbounded work on hostile documents, the file server's memory, the cost and the role of a stream, a delta that missed created steps, step reads after a rename, a decision repeated with a new key; the list is in `quickstart.md`); the strict policy of the page is asserted (`crates/api-http/tests/studio.rs`, journey SEC), the token is in memory only, text from outside is rendered as text (journey SEC), another tenant gets the answer an unknown run gets (`contract_rest_security_multitenancy` battery, `fault_workflow_studio`, `e2e_workflow_studio`) |
 | NFR-007-DUR after commit, losing a worker or the broker loses no transition | Done | the Studio adds no state; a decision is made once however many ask and however often (`fault_workflow_studio`); deltas equal the whole graph (`e2e_workflow_studio us03` and an invariant of the chaos test) |
 | NFR-007-OBS logs, correlated traces, essential metrics, auditability | Partial | the platform's request metrics, trace ids in every error, `run_streams_open`, `run_streams_refused_total`, `run_streams_tick_errors_total`, `http_write_stalls_total`, every decision audited with its reason; **the browser sends no telemetry (G159)**, the Studio's files have no request metrics (G158) |
 | NFR-007-COMP versioned protocol and schemas, do not break runs in progress | Done | the OpenAPI changes are additive (validate, diff, changes, stream, the `begin` edge, `changesOmitted`, `operationId` derived), the TypeScript types are generated from the contract and checked in CI (`npm run check:api`) |
-| NFR-007-PERF a 1 000-node DAG usable, virtualized lists for 10k+, FPS targets | Done as a baseline | `tests/performance/reports/workflow-studio.md`: six hypotheses held in three cold rounds on one machine (a canvas of 1 000 nodes opens in under a second and pans and zooms at 58–60 frames per second; a run of 9 991 nodes draws 377 cards and at most 29 rows); **one machine, one browser, to be measured again after the visual direction (G151)** |
+| NFR-007-PERF a 1 000-node DAG usable, virtualized lists for 10k+, FPS targets | Proven on the stated reference environment | Restyled `tests/performance/reports/workflow-studio.md`: both benchmarks passed, H1–H6 held in three cold rounds each with unchanged floors. Median open 687 ms for 1 000 editor nodes and 1 470 ms for 9 991 run nodes; 245 run cards, at most 29 table rows, peak heap 307 MB. **One machine, Chromium, stationary run and loopback network (G151)**. |
 | SC-007-001 create → validate → publish → trigger → fail → compensate → inspect | Done | journey `sc001-chain.spec.ts`: a saga built in the Studio, published, run by a worker that fails, compensated, and its journal and trace id read from the page |
-| SC-007-002 100% of US01..US04 pass in a reproducible automated suite | Done | `e2e_workflow_studio` (25) and the 16 journeys of `frontend/e2e`, three consecutive passes on the final code; the `studio` job of CI runs them and passed on GitHub (PRs #7 and #8) |
+| SC-007-002 100% of US01..US04 pass in a reproducible automated suite | Proven | [Studio CI](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38156597169/job/114520746513) on `ace4060`: all 19 browser journeys passed, including real-sandbox US02; two opt-in benchmarks skipped and passed separately locally. The local partial run passed 18 journeys and excluded US02 explicitly. |
 | SC-007-003 no violation of the Constitution's gates and no silent loss of persisted state | Partial | fmt, clippy, the architecture check, `cargo audit` and the workspace tests pass; only principle II has an automated gate |
 | SC-007-004 critical errors expose `code`, `trace_id` and remediation without leaking | Done | `ErrorState` shows the platform's message, what to do, the code and the trace id (`ErrorState.test.tsx`, journey SEC); the journal and the graph carry no payload |
-| SC-007-005 the tokens, the contrast of every pair of every theme and the Runs screen against the prototype | **Not done** | T007-039..044 |
+| SC-007-005 tokens, contrast and human comparison with the prototype | Proven within the recorded scope | Token/literal-colour tests, axe in light/dark/forced colours, 320px reflow and system-font fallback; [Studio CI](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38156597169/job/114520746513) passed 1 034 unit tests and 19 journeys. Marcelo explicitly approved the visual proposal on 2026-10-11. Ten captures and the reference are linked from `design/README.md`. |
 
 ## Evidence: 008 observability-operations
 
@@ -276,6 +279,21 @@ the fix and passed afterwards. It asserts one version, one activation, a final `
 version on replay and refusal of a different key. The REST conformance test checks `created=false`, the same
 version identifier, and continued tenant/permission enforcement. Contract, generated Studio types, spec,
 data model and GitOps runbook describe this behavior.
+
+### 007 visual direction — implementation and validation (2026-10-11)
+
+FR-007-009/010 and T007-039..043/046: shared design tokens, locally licensed fonts, shell, Runs master/detail, compact graph and
+derived editor/Script/sign-in screens. Latest unit result: **1 033 tests passed in 64 files**; lint/typecheck/build/API/advisory
+checks and Rust fmt/clippy/architecture passed locally. Review fixed missing graph tokens, faint omitted edges, master-list state
+reset, unknown terminal duration and selected-step reflow. Both restyled benchmarks passed with all six floors met in three cold
+rounds each. All 18 executed final browser journeys passed, including three-theme accessibility, 320px reflow and system-font
+fallback; two opt-in benchmarks were skipped in that suite and passed separately. Human visual acceptance was recorded on 2026-10-11; ten review
+PNGs are linked from the design record. Exact scope is recorded in `specs/007-workflow-studio/quickstart.md`. The explicit
+no-sandbox development mode excluded US02; the subsequent Studio CI job on `ace4060` passed all 19 journeys with real Docker, closing T007-044 (link in the evidence table).
+
+Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
+after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
+automated CI evidence for this branch is recorded separately.
 
 ## Evidence: 012 developer-experience
 

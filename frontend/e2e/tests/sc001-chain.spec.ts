@@ -69,7 +69,7 @@ test('SC-007-001 create, validate, publish, trigger, fail, compensate and inspec
     // INSPECT: the run, as the Studio shows it, and the journal, as the platform keeps it.
     await signIn(page, env.tokens.operator);
     await goTo(page, `/runs/${run}`);
-    await expect(page.getByText('Compensated', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Compensated', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
     await page.getByRole('tab', { name: 'Table' }).click();
     const rows = page.getByRole('table').getByRole('row');
     await expect(rows.filter({ hasText: 'activity_2' }).first()).toContainText('CARD_DECLINED');

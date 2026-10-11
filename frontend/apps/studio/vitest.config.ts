@@ -9,5 +9,7 @@ export default defineConfig({
     setupFiles: ['./test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'test/**/*.test.{ts,tsx}'],
     css: false,
+    // Bound jsdom contention on shared developer/CI machines; keep the test deadlines unchanged.
+    maxWorkers: 4,
   },
 });

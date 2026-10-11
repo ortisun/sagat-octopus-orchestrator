@@ -270,7 +270,7 @@ test('PERF a run of about 10 000 nodes: the graph of simplified cards, the table
       page.evaluate(
         () =>
           new Promise<void>((done) => {
-            const box = document.querySelector('.rn-scroll') as HTMLElement;
+            const box = document.querySelector('.rn-run .rn-scroll') as HTMLElement;
             const step = box.clientHeight;
             const tick = () => {
               (window as unknown as { __rows: number[] }).__rows = [...((window as unknown as { __rows?: number[] }).__rows ?? []), document.querySelectorAll('.rn-steps tbody tr[data-index]').length];

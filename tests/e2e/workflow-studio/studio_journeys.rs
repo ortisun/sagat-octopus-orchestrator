@@ -19,7 +19,7 @@ use tokio::process::Command;
 
 use crate::support::api::Options;
 use crate::support::scripts::lab_with;
-use crate::support::worker::{HUMAN, NAMESPACE, RunningEngine, TENANT, engine_env};
+use crate::support::worker::{HUMAN, NAMESPACE, RunningEngine, TENANT, engine_env, platform_with};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
@@ -109,25 +109,34 @@ async fn the_studio_journeys_pass_in_a_real_browser() {
 
     // The platform of the script suites: the API, the engine's database and a sandbox runner (real
     // containers), because US02 builds and tests a script from the browser.
-    let lab = lab_with(Options {
+    let options = Options {
         studio: Some(StudioConfig {
             dir: dist,
             oidc: None,
             limits: sagat_api_http::studio::StudioLimits::default(),
         }),
         ..Options::default()
-    })
-    .await;
-    let platform = &lab.p;
+    };
+    // An explicit partial run for machines without a working container engine. Never substitute a
+    // fake sandbox: US02 is excluded below, and the default/CI path still requires real containers.
+    let without_sandbox = std::env::var("SAGAT_STUDIO_NO_SANDBOX").as_deref() == Ok("1");
     // The runner works in the background, the way the production one does (the suites step it).
-    let runner = std::sync::Arc::clone(&lab.runner);
-    let pump = tokio::spawn(async move {
-        loop {
-            let _ = runner.build_once().await;
-            let _ = runner.test_once().await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    });
+    let (platform, pump) = if without_sandbox {
+        eprintln!("PARTIAL STUDIO RUN: no sandbox runner; US02 is excluded, not proven");
+        (platform_with(options).await, None)
+    } else {
+        let lab = lab_with(options).await;
+        let runner = std::sync::Arc::clone(&lab.runner);
+        let pump = tokio::spawn(async move {
+            loop {
+                let _ = runner.build_once().await;
+                let _ = runner.test_once().await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        (lab.p, Some(pump))
+    };
+    let platform = &platform;
     for (subject, role) in [
         ("olivia", Role::Operator),
         ("vera", Role::Viewer),
@@ -171,6 +180,9 @@ async fn the_studio_journeys_pass_in_a_real_browser() {
     env.push(("STUDIO_NAMESPACE_ID".into(), platform.namespace_id().await));
 
     let mut args = vec!["playwright".to_owned(), "test".to_owned()];
+    if without_sandbox {
+        args.extend(["--grep-invert".to_owned(), "US02".to_owned()]);
+    }
     if let Ok(grep) = std::env::var("SAGAT_STUDIO_GREP") {
         args.push("--grep".into());
         args.push(grep);
@@ -189,7 +201,9 @@ async fn the_studio_journeys_pass_in_a_real_browser() {
     .await
     .expect("the journeys finish within 40 minutes")
     .expect("playwright ran");
-    pump.abort();
+    if let Some(pump) = pump {
+        pump.abort();
+    }
     assert!(
         finished.status.success(),
         "the journeys failed ({}): see the Playwright output above and frontend/e2e/test-results",

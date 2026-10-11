@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkerFactories } from './monacoSetup';
-import { installMonacoEnvironment, modelAddress, monacoEnvironment, resolveTheme, severityOf, tidyProblems, workerKind } from './monacoSetup';
+import {
+  installMonacoEnvironment,
+  modelAddress,
+  monacoEnvironment,
+  resolveTheme,
+  severityOf,
+  studioThemeData,
+  studioThemeName,
+  tidyProblems,
+  workerKind,
+} from './monacoSetup';
 
 function factories() {
   const made: string[] = [];
@@ -60,6 +70,33 @@ describe('resolveTheme', () => {
     expect(resolveTheme(null, true)).toBe('vs-dark');
     expect(resolveTheme(undefined, false)).toBe('vs');
     expect(resolveTheme('sepia', true)).toBe('vs-dark');
+  });
+
+  it('uses Monaco high-contrast themes while forced colors are active', () => {
+    expect(resolveTheme('dark', false, true)).toBe('hc-black');
+    expect(resolveTheme('light', true, true)).toBe('hc-light');
+    expect(resolveTheme(null, true, true)).toBe('hc-black');
+    expect(resolveTheme(null, false, true)).toBe('hc-light');
+  });
+});
+
+describe('the Studio Monaco theme', () => {
+  it('keeps the inherited syntax palette and replaces comments with the semantic muted text color', () => {
+    expect(studioThemeName('vs')).toBe('sagat-light');
+    expect(studioThemeName('vs-dark')).toBe('sagat-dark');
+    expect(studioThemeName('hc-black')).toBe('hc-black');
+    expect(studioThemeName('hc-light')).toBe('hc-light');
+
+    expect(studioThemeData('vs-dark', '#8f9298')).toEqual({
+      base: 'vs-dark',
+      inherit: true,
+      rules: [{ token: 'comment', foreground: '8F9298' }],
+      colors: {},
+    });
+  });
+
+  it('rejects a non-hex semantic token instead of passing invalid theme data to Monaco', () => {
+    expect(() => studioThemeData('vs-dark', 'CanvasText')).toThrow(/six-digit hex/);
   });
 });
 

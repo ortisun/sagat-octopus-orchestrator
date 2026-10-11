@@ -83,7 +83,7 @@ export function GraphView({
           <span className="rn-swatch pending" aria-hidden="true" /> Dashed: not decided yet
         </li>
         <li>
-          <span className="rn-swatch omitted" aria-hidden="true" /> Dotted and faint: omitted
+          <span className="rn-swatch omitted" aria-hidden="true" /> Dotted: omitted
         </li>
         <li>Dashed card: an undo or a lookup the platform added</li>
       </ul>

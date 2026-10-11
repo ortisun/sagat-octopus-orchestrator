@@ -10,6 +10,10 @@ const NAV = [
   { to: '/scripts', label: 'Scripts' },
 ] as const;
 
+function pageName(pathname: string): string {
+  return NAV.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`))?.label ?? 'Studio';
+}
+
 /** The frame of every page: skip link, header with the namespace and the session, navigation, main. */
 export function Shell() {
   const { session, ep, namespace } = useApp();
@@ -36,11 +40,17 @@ export function Shell() {
       <a className="skip-link" href="#main">
         Skip to the content
       </a>
-      <header>
-        <span className="brand">Sagat Studio</span>
-        <label>
-          <span className="visually-hidden">Namespace</span>
-          <select className="input" value={current ?? ''} onChange={(event) => namespace.set(event.target.value)} aria-label="Namespace" disabled={(namespaces.data?.items.length ?? 0) === 0}>
+      <aside className="shell-sidebar" aria-label="Studio navigation">
+        <div className="shell-brand">
+          <span className="shell-mark" aria-hidden="true">S</span>
+          <span>
+            <strong>sagat-octopus</strong>
+            <small>Durable sagas · many arms</small>
+          </span>
+        </div>
+        <label className="shell-namespace">
+          <span>Namespace</span>
+          <select value={current ?? ''} onChange={(event) => namespace.set(event.target.value)} aria-label="Namespace" disabled={(namespaces.data?.items.length ?? 0) === 0}>
             {(namespaces.data?.items ?? []).map((item) => (
               <option key={item.id} value={item.slug}>
                 {item.slug}
@@ -48,23 +58,34 @@ export function Shell() {
             ))}
           </select>
         </label>
-        <span aria-label="Signed in as">
-          {info?.subject} <span className="badge" data-tone="idle">{info?.role}</span>
-        </span>
-        <Button onClick={() => session.signOut('signed-out')}>Sign out</Button>
-      </header>
-      <nav aria-label="Main">
-        <ul>
-          {NAV.map((item) => (
-            <li key={item.to}>
-              <NavLink to={item.to}>{item.label}</NavLink>
-            </li>
-          ))}
-        </ul>
-      </nav>
-      <main id="main" tabIndex={-1}>
-        <Outlet />
-      </main>
+        <nav aria-label="Main">
+          <ul>
+            {NAV.map((item) => (
+              <li key={item.to}>
+                <NavLink to={item.to}>{item.label}</NavLink>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </aside>
+      <div className="shell-frame">
+        <header className="shell-topbar">
+          <div className="shell-crumb" aria-label="Current location">
+            <span>{current ?? 'No namespace'}</span>
+            <span aria-hidden="true">/</span>
+            <strong>{pageName(location.pathname)}</strong>
+          </div>
+          <span className="shell-session" aria-label="Signed in as">
+            <span>{info?.subject}</span>
+            {' '}
+            <span className="badge" data-tone="idle">{info?.role}</span>
+          </span>
+          <Button onClick={() => session.signOut('signed-out')}>Sign out</Button>
+        </header>
+        <main id="main" tabIndex={-1}>
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

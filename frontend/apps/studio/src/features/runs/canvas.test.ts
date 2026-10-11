@@ -42,6 +42,7 @@ describe('flowNodes', () => {
   ];
 
   it('draws one card per node with the size the layout reserved, named for assistive technology', () => {
+    expect(CARD_SIZE).toEqual({ width: 184, height: 62 });
     const { model, order, positions } = setup(nodes, edges);
     const out = flowNodes({ nodes: model.nodes, order, positions, detail: 'full', selectedId: undefined, flash: NO_FLASH });
     expect(out.map((n) => n.id)).toEqual(['a', 'b', 'c']);
@@ -128,6 +129,7 @@ describe('flowEdges', () => {
     expect(out.map((e) => e.className)).toEqual(['edge-taken edge-kind-true', 'edge-not-taken edge-kind-false', 'edge-pending edge-kind-next']);
     expect(out.map((e) => e.label)).toEqual(['If true', 'If false (omitted)', 'Next']);
     expect(out.map((e) => e.ariaLabel)).toEqual(['check to pay: If true, taken', 'check to skip: If false, omitted', 'pay to later: Next, not decided yet']);
+    expect(out.every((edge) => edge.type === 'default')).toBe(true);
   });
 
   it('has ids that are unique even for two links of the same kind between the same nodes', () => {
