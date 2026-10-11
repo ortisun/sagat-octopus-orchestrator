@@ -186,6 +186,142 @@ pub trait MonitorStore: Send + Sync {
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 }
 
+/// A worker identity serving a namespace, as an operator sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerView {
+    pub id: Uuid,
+    pub subject: String,
+    pub name: String,
+    pub activities: Vec<String>,
+    pub languages: Vec<String>,
+    pub pools: Vec<String>,
+    pub max_inflight: u32,
+    /// Attempts it holds a lease on right now.
+    pub in_flight: u32,
+    pub registered_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+    /// Its identity is being drained: it takes no new work, and what it holds goes on.
+    pub draining: bool,
+}
+
+/// Who stopped a worker identity from taking work, why and when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrainRecord {
+    pub subject: String,
+    pub reason: String,
+    pub drained_by: String,
+    pub drained_at: OffsetDateTime,
+}
+
+/// What the API reads and changes about the workers of a namespace.
+pub trait WorkerAdmin: NamespaceDirectory {
+    /// The live worker sessions of a namespace, newest first, with what they hold.
+    fn list_workers(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<WorkerView>, StoreError>> + Send;
+
+    /// The identities being drained in a namespace.
+    fn list_drains(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<Vec<DrainRecord>, StoreError>> + Send;
+
+    /// Marks the identity as drained (replacing the reason of a drain already there) and writes
+    /// `audit` in the same transaction.
+    fn drain_worker(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        record: &DrainRecord,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Lets the identity take work again, writing `audit` in the same transaction. Whether it was
+    /// being drained.
+    fn undrain_worker(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &str,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+}
+
+/// What narrows a reading of the audit trail.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditFilter {
+    /// An action by its dotted name (`run.rerun`).
+    pub action: Option<String>,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub actor: Option<String>,
+    pub from: Option<OffsetDateTime>,
+    pub to: Option<OffsetDateTime>,
+}
+
+impl AuditFilter {
+    /// The filter in words, as the record of a reading says what was looked for.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(a) = &self.action {
+            parts.push(format!("action={a}"));
+        }
+        if let Some(t) = &self.resource_type {
+            parts.push(format!("resourceType={t}"));
+        }
+        if let Some(r) = &self.resource_id {
+            parts.push(format!("resourceId={r}"));
+        }
+        if let Some(a) = &self.actor {
+            parts.push(format!("actor={a}"));
+        }
+        if let Some(f) = self.from {
+            parts.push(format!("from={f}"));
+        }
+        if let Some(t) = self.to {
+            parts.push(format!("to={t}"));
+        }
+        if parts.is_empty() {
+            "the whole trail".to_owned()
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
+/// One record of the audit trail as it is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditEntry {
+    pub id: Uuid,
+    pub actor: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    pub reason: Option<String>,
+    pub trace_id: Option<String>,
+    pub created_at: OffsetDateTime,
+}
+
+/// Reading the audit trail of a tenant.
+pub trait AuditStore: Send + Sync {
+    /// The records of `tenant` matching `filter`, newest first, after the one with id `before`.
+    /// `reading` is written in the same transaction: a trail that can be read is a trail whose
+    /// readings are on it.
+    fn read_audit(
+        &self,
+        tenant: TenantId,
+        filter: &AuditFilter,
+        before: Option<Uuid>,
+        limit: u32,
+        reading: &sagat_domain::audit::AuditRecord,
+    ) -> impl Future<Output = Result<Vec<AuditEntry>, StoreError>> + Send;
+}
+
 /// What the API reads alerts through.
 pub trait AlertReader: NamespaceDirectory {
     /// The alerts of a namespace, newest first.
@@ -212,7 +348,7 @@ impl<S, C> std::fmt::Debug for OperationsService<S, C> {
     }
 }
 
-impl<S: AlertReader, C: Clock> OperationsService<S, C> {
+impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C> {
     /// `runbook_base` is the URL or path of `alerts.md`, to which each alert's anchor is appended.
     pub fn new(store: S, clock: C, runbook_base: impl Into<String>) -> Self {
         Self {
@@ -226,6 +362,146 @@ impl<S: AlertReader, C: Clock> OperationsService<S, C> {
     #[must_use]
     pub fn runbook(&self, alert: &AlertRecord) -> String {
         alert.runbook(&self.runbook_base)
+    }
+
+    /// The audit trail of the tenant, newest first. Only an administrator reads it, and the reading
+    /// is itself recorded (once for the same filters in a row).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `audit:read`.
+    pub async fn audit(
+        &self,
+        principal: &Principal,
+        filter: &AuditFilter,
+        before: Option<Uuid>,
+        limit: Option<u32>,
+        ctx: &RequestContext,
+    ) -> Result<Vec<AuditEntry>, AppError> {
+        principal.authorize(Permission::AuditRead)?;
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE);
+        let reading = sagat_domain::audit::AuditRecord::by(
+            principal,
+            sagat_domain::audit::AuditAction::AuditRead,
+            sagat_domain::audit::ResourceType::Tenant,
+            principal.tenant_id().to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(filter.describe());
+        Ok(self
+            .store
+            .read_audit(principal.tenant_id(), filter, before, limit, &reading)
+            .await?)
+    }
+
+    /// The worker identities serving a namespace, with what each holds and whether it is being
+    /// drained.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `ops:read`; [`AppError::NotFound`] for a namespace that is not
+    /// the caller's tenant's.
+    pub async fn workers(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<WorkerView>, AppError> {
+        principal.authorize(Permission::OpsRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        Ok(self
+            .store
+            .list_workers(principal.tenant_id(), namespace, 200)
+            .await?)
+    }
+
+    /// The identities being drained in a namespace.
+    ///
+    /// # Errors
+    /// As [`Self::workers`].
+    pub async fn drains(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<DrainRecord>, AppError> {
+        principal.authorize(Permission::OpsRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        Ok(self
+            .store
+            .list_drains(principal.tenant_id(), namespace)
+            .await?)
+    }
+
+    /// Stops a worker identity from taking new work in a namespace (a deploy, a bad version, a
+    /// maintenance window). What it holds goes on until it ends; it can register and heartbeat as
+    /// before. Audited, with the justification.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `worker:manage`; [`AppError::NotAllowed`] without a
+    /// justification or for a subject that cannot be one; [`AppError::NotFound`].
+    pub async fn drain(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        subject: &str,
+        reason: &str,
+        ctx: &RequestContext,
+    ) -> Result<DrainRecord, AppError> {
+        principal.authorize(Permission::WorkerManage)?;
+        let reason = justification(reason)?;
+        let subject = worker_subject(subject)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        let now = self.clock.now();
+        let record = DrainRecord {
+            subject: subject.to_owned(),
+            reason: reason.to_owned(),
+            drained_by: principal.subject().as_str().to_owned(),
+            drained_at: now,
+        };
+        let audit = sagat_domain::audit::AuditRecord::by(
+            principal,
+            sagat_domain::audit::AuditAction::WorkerDrained,
+            sagat_domain::audit::ResourceType::Worker,
+            format!("{namespace}/{subject}"),
+            ctx.trace_id.clone(),
+            now,
+        )
+        .with_reason(reason.to_owned());
+        self.store
+            .drain_worker(principal.tenant_id(), namespace, &record, &audit)
+            .await?;
+        Ok(record)
+    }
+
+    /// Lets the identity take work again. `false` if it was not being drained.
+    ///
+    /// # Errors
+    /// As [`Self::drain`].
+    pub async fn undrain(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        subject: &str,
+        reason: &str,
+        ctx: &RequestContext,
+    ) -> Result<bool, AppError> {
+        principal.authorize(Permission::WorkerManage)?;
+        let reason = justification(reason)?;
+        let subject = worker_subject(subject)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        let audit = sagat_domain::audit::AuditRecord::by(
+            principal,
+            sagat_domain::audit::AuditAction::WorkerUndrained,
+            sagat_domain::audit::ResourceType::Worker,
+            format!("{namespace}/{subject}"),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(reason.to_owned());
+        Ok(self
+            .store
+            .undrain_worker(principal.tenant_id(), namespace, subject, &audit)
+            .await?)
     }
 
     /// The alerts of a namespace, newest first, optionally only those firing or only those resolved.
@@ -250,4 +526,27 @@ impl<S: AlertReader, C: Clock> OperationsService<S, C> {
             .list_alerts(principal.tenant_id(), namespace, state, before, limit)
             .await?)
     }
+}
+
+/// An operator's reason, trimmed, 8 to 2000 characters of plain text.
+fn justification(reason: &str) -> Result<&str, AppError> {
+    let reason = reason.trim();
+    let length = reason.chars().count();
+    if !(crate::runs::MIN_JUSTIFICATION..=crate::runs::MAX_JUSTIFICATION).contains(&length)
+        || reason.chars().any(char::is_control)
+    {
+        return Err(AppError::NotAllowed(
+            "a justification of 8 to 2000 characters, in plain text, is required",
+        ));
+    }
+    Ok(reason)
+}
+
+/// The identity of a worker: what the `sub` of its token can be.
+fn worker_subject(subject: &str) -> Result<&str, AppError> {
+    if subject.is_empty() || subject.chars().count() > 255 || subject.chars().any(char::is_control)
+    {
+        return Err(AppError::NotAllowed("the worker identity is not valid"));
+    }
+    Ok(subject)
 }

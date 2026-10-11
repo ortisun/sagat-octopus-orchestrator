@@ -239,3 +239,7 @@ path = "fault/observability-operations/main.rs"
 [[test]]
 name = "contract_observability_operations"
 path = "contract/observability-operations/main.rs"
+
+[[test]]
+name = "contract_rest_observability_operations"
+path = "contract/observability-operations/rest/main.rs"

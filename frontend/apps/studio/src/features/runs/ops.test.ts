@@ -56,11 +56,21 @@ describe('runOperations', () => {
     for (const action of ['PAUSE', 'RESUME', 'CANCEL'] as const) expect(by(ops, action)).toMatchObject({ enabled: false, reason: 'You need the run:operate permission to do this.', needs: 'run:operate' });
   });
 
-  it('lists what the platform does not do yet, disabled, for everybody (G145)', () => {
-    for (const can of [admin, operator, viewer]) {
-      const ops = runOperations(run({ status: 'FAILED' }), can);
-      for (const action of ['RERUN_AS_NEW', 'MARK_MANUAL_REVIEW'] as const) expect(by(ops, action)).toMatchObject({ enabled: false, reason: 'The platform does not offer this yet.' });
+  it('offers to start a run again only when it ended, and to someone who may operate and start runs', () => {
+    const both = (p: string) => p === 'run:operate' || p === 'run:start';
+    for (const status of ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'COMPENSATED', 'PARTIAL', 'COMPENSATION_FAILED']) {
+      expect(by(runOperations(run({ status }), both), 'RERUN_AS_NEW').enabled).toBe(true);
     }
+    // While it goes on, starting it again would do its work twice.
+    for (const status of ['RUNNING', 'PAUSED', 'MANUAL_REVIEW', 'COMPENSATING']) {
+      expect(by(runOperations(run({ status }), both), 'RERUN_AS_NEW')).toMatchObject({ enabled: false, reason: 'The run has not ended: starting it again would do its work twice.' });
+    }
+    expect(by(runOperations(run({ status: 'FAILED' }), operator), 'RERUN_AS_NEW')).toMatchObject({ enabled: false, reason: 'You need the run:start permission to do this.' });
+    expect(by(runOperations(run({ status: 'FAILED' }), viewer), 'RERUN_AS_NEW')).toMatchObject({ enabled: false, reason: 'You need the run:operate permission to do this.' });
+  });
+
+  it('no longer lists holding the run: a step is held, not the run', () => {
+    expect(runOperations(run(), admin).map((o) => o.action)).toEqual(['PAUSE', 'RESUME', 'CANCEL', 'RERUN_AS_NEW']);
   });
 });
 
@@ -110,6 +120,29 @@ describe('stepOperations', () => {
     expect(by(stepOperations(unknown, run(), admin), 'RETRY_STEP').enabled).toBe(true);
     // A failure the platform knows left no effect is the operator's to retry.
     expect(by(stepOperations(node({ failureCode: 'RECONCILED_NOT_APPLIED' }), run(), operator), 'RETRY_STEP').enabled).toBe(true);
+  });
+
+  it('offers to retry a step that is waiting out its retry now, without waiting for the delay', () => {
+    const waiting = node({ status: 'RETRY_WAIT', waitingOn: null, failureCode: 'PAYMENT_DECLINED' });
+    const ops = stepOperations(waiting, run({ status: 'RUNNING' }), operator);
+    expect(by(ops, 'RETRY_STEP').enabled).toBe(true);
+    expect(by(ops, 'RESOLVE_STEP')).toMatchObject({ enabled: false });
+    // A failure that left it unknown whether it happened is judged by the platform's own retry, which is coming anyway.
+    const unknown = node({ status: 'RETRY_WAIT', waitingOn: null, failureCode: 'LEASE_EXPIRED' });
+    expect(by(stepOperations(unknown, run({ status: 'RUNNING' }), operator), 'RETRY_STEP').enabled).toBe(true);
+    expect(consequence('RETRY_STEP', 'pay', waiting)).toMatch(/Starts the next attempt of step pay now, without waiting for the delay/);
+  });
+
+  it('offers to hold a step that has not started, and says why not for the others', () => {
+    for (const status of ['READY', 'RETRY_WAIT'] as const) {
+      expect(by(stepOperations(node({ status, waitingOn: null }), run({ status: 'RUNNING' }), operator), 'MARK_MANUAL_REVIEW').enabled).toBe(true);
+    }
+    for (const status of ['RUNNING', 'LEASED', 'WAITING', 'SUCCEEDED', 'FAILED'] as const) {
+      expect(by(stepOperations(node({ status, waitingOn: null }), run({ status: 'RUNNING' }), operator), 'MARK_MANUAL_REVIEW').reason).toMatch(/Only a step that has not started can be held/);
+    }
+    expect(by(stepOperations(node({ id: 'pay~r', status: 'READY', waitingOn: null }), run({ status: 'RUNNING' }), operator), 'MARK_MANUAL_REVIEW').reason).toBe('A lookup is held by holding the step it is for.');
+    expect(by(stepOperations(node({ status: 'READY', waitingOn: null }), run({ status: 'RUNNING' }), viewer), 'MARK_MANUAL_REVIEW')).toMatchObject({ enabled: false, reason: 'You need the run:operate permission to do this.' });
+    expect(consequence('MARK_MANUAL_REVIEW', 'pay')).toMatch(/Holds step pay for a person/);
   });
 
   it('refuses a decision on a finished run', () => {

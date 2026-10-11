@@ -203,6 +203,12 @@ impl FailureCode {
         Self::system("SECRET_IN_OUTPUT")
     }
 
+    /// An operator held the step for a person to decide, before it ran.
+    #[must_use]
+    pub fn marked_for_review() -> Self {
+        Self::system("MARKED_FOR_REVIEW")
+    }
+
     /// Completing the step would make the run retain more output than allowed.
     #[must_use]
     pub fn run_data_limit() -> Self {

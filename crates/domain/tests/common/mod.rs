@@ -372,6 +372,13 @@ impl Harness {
         Ok(())
     }
 
+    pub fn operator_hold(&mut self, node: &str) -> Result<(), ExecutionError> {
+        let progress =
+            execution::mark_for_review(&self.def, &mut self.state, &sid(node), self.now)?;
+        self.absorb(progress);
+        Ok(())
+    }
+
     pub fn operator_skip(&mut self, node: &str) -> Result<(), ExecutionError> {
         let progress = execution::skip_review(&self.def, &mut self.state, &sid(node), self.now)?;
         self.absorb(progress);

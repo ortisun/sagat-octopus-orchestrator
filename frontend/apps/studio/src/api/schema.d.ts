@@ -475,8 +475,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Cancel, pause or resume a run, or decide on a step that waits for a person
-         * @description CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409. RERUN_AS_NEW and MARK_MANUAL_REVIEW are declared for later and refused with 422.
+         * Cancel, pause or resume a run, decide on a step, hold a step, or start a run again
+         * @description CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
+         *
+         *     Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW, nothing more happens to the step until someone retries it or settles it; refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
          */
         post: operations["operateRun"];
         delete?: never;
@@ -765,6 +767,86 @@ export interface paths {
          * @description Needs `ops:read`. The conditions the engine's monitor found that need a person: outbox messages that wait too long, attempts whose lease ran out and were not taken back, steps no worker takes, runs waiting for a decision, items that ran out of attempts. An alert carries counts, ages and names, never data of a run, and a `runbook` that says what to do. It toggles between `FIRING` and `RESOLVED`; `firedCount` says how many times it began to fire. The same changes are delivered to the namespace's webhook subscriptions that ask for `ops.alert.fired` and `ops.alert.resolved`.
          */
         get: operations["listAlerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/workers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the worker identities serving a namespace
+         * @description Needs `ops:read`. The live worker sessions of the namespace, newest first, with what each can serve (`activities`, `languages`, `pools`, `maxInflight`), how many attempts it holds a lease on right now (`inFlight`) and whether its identity is being drained, and the identities being drained whether or not a session of theirs is live (`drains`). A drained worker is stopped when its `inFlight` is 0.
+         */
+        get: operations["listWorkers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/workers/{subject}/drain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop a worker identity from taking new work
+         * @description Needs `worker:manage`. Its sessions in the namespace are given no new attempts from now on (a poll answers with none); what it holds goes on until it ends, and it can register and heartbeat as before, so a worker that restarts is still drained. Use it before a deploy or when a version misbehaves; `listWorkers` says when `inFlight` is 0. Calling it again replaces the reason. Audited with the justification in `reason` (8 to 2000 characters).
+         */
+        post: operations["drainWorker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/workers/{subject}/undrain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Let a drained worker identity take work again
+         * @description Needs `worker:manage`. `wasDraining` is false when the identity was not being drained (nothing changes and nothing is audited). Audited with the justification in `reason`.
+         */
+        post: operations["undrainWorker"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the audit trail of the tenant, newest first
+         * @description Needs `audit:read`, which only administrators have. The trail is append-only and kept per tenant; this reads it, narrowed by what the caller asks for (an action by its dotted name such as `run.rerun`, a resource, an actor, a time range). Free text an operator wrote in a reason is returned with anything that has the shape of a credential (a web token, a `Bearer` or `Basic` credential, the password of a URL, a key with a well-known prefix) replaced; the trail itself is kept as it was written. **Reading the trail is itself recorded** (`audit.read`, with the filters in its reason; the same reading again adds nothing).
+         */
+        get: operations["listAuditRecords"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1574,6 +1656,8 @@ export interface components {
             message: string;
             retryable: boolean;
             traceId: string;
+            /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
+            remediation?: string;
             /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. */
             details?: {
                 [key: string]: unknown;
@@ -1724,6 +1808,11 @@ export interface components {
             deadline?: string | null;
             traceId?: string | null;
             correlationId?: string | null;
+            /**
+             * Format: uuid
+             * @description The ended run this one was started again from (RERUN_AS_NEW), when it was.
+             */
+            rerunOf?: string;
             /** @description Nesting of child runs: 0 for a run started through the API. */
             depth?: number;
             /** @description Set when this run is the child of a `child` node of another run. */
@@ -2016,7 +2105,7 @@ export interface components {
         OperationRequest: {
             /** @enum {string} */
             action: "PAUSE" | "RESUME" | "CANCEL" | "RETRY_STEP" | "RETRY_COMPENSATION" | "SKIP_COMPENSATION" | "RESOLVE_STEP" | "RERUN_AS_NEW" | "MARK_MANUAL_REVIEW";
-            /** @description The node id of the step the operation is about (`reserve~c` for the compensation of `reserve`). Required for RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION and RESOLVE_STEP; refused for the others. */
+            /** @description The node id of the step the operation is about (`reserve~c` for the compensation of `reserve`). Required for RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION, RESOLVE_STEP and MARK_MANUAL_REVIEW; refused for the others. */
             stepId?: string;
             /**
              * @description For RESOLVE_STEP: the step happened, or it did not.
@@ -2040,6 +2129,11 @@ export interface components {
             runStatus?: string;
             /** Format: int64 */
             runVersion?: number;
+            /**
+             * Format: uuid
+             * @description For RERUN_AS_NEW: the run that was started. `runStatus` and `runVersion` are those of the run it was started from.
+             */
+            newRunId?: string;
         };
         RevokedWorkers: {
             sessionsClosed: number;
@@ -2493,6 +2587,61 @@ export interface components {
         };
         AlertPage: {
             items: components["schemas"]["Alert"][];
+            nextCursor?: string | null;
+        };
+        Reason: {
+            /** @description Counted after trimming; plain text; kept whole in the audit trail. */
+            reason: string;
+        };
+        Worker: {
+            /** Format: uuid */
+            workerId: string;
+            /** @description The identity (the `sub` of its token). */
+            subject: string;
+            name: string;
+            activities: string[];
+            languages: string[];
+            pools: string[];
+            maxInflight: number;
+            /** @description Attempts it holds a lease on right now. */
+            inFlight: number;
+            /** Format: date-time */
+            registeredAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            draining: boolean;
+        };
+        Drain: {
+            subject: string;
+            reason: string;
+            drainedBy: string;
+            /** Format: date-time */
+            drainedAt: string;
+        };
+        WorkerList: {
+            items: components["schemas"]["Worker"][];
+            drains: components["schemas"]["Drain"][];
+        };
+        Undrain: {
+            wasDraining: boolean;
+        };
+        AuditRecord: {
+            /** Format: uuid */
+            id: string;
+            /** @description The subject (`sub`) of the person or worker, or `system:<component>` for the platform. */
+            actor: string;
+            /** @description A dotted name such as `run.rerun`, `worker.drained`, `saga.step_retried`. */
+            action: string;
+            resourceType: string;
+            resourceId: string;
+            /** @description What the person wrote, or the platform recorded; credential-shaped text is replaced on the way out. */
+            reason?: string | null;
+            traceId?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        AuditPage: {
+            items: components["schemas"]["AuditRecord"][];
             nextCursor?: string | null;
         };
         DeadLetterPage: {
@@ -4599,6 +4748,150 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listWorkers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workers */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    drainWorker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                /** @description The identity (the `sub` of its token), URL-encoded. */
+                subject: components["parameters"]["WorkerSubject"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Reason"];
+            };
+        };
+        responses: {
+            /** @description The identity is drained */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Drain"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    undrainWorker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                /** @description The identity (the `sub` of its token), URL-encoded. */
+                subject: components["parameters"]["WorkerSubject"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Reason"];
+            };
+        };
+        responses: {
+            /** @description Done */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Undrain"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listAuditRecords: {
+        parameters: {
+            query?: {
+                action?: string;
+                resourceType?: string;
+                resourceId?: string;
+                actor?: string;
+                /** @description RFC 3339; records at or after it. */
+                from?: string;
+                /** @description RFC 3339; records before it. */
+                to?: string;
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of records */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];

@@ -584,12 +584,15 @@ paths:
   /runs/{runId}/operations:
     post:
       operationId: operateRun
-      summary: Cancel, pause or resume a run, or decide on a step that waits for a person
+      summary: Cancel, pause or resume a run, decide on a step, hold a step, or start a run again
       tags: [Operations]
       x-implemented: '002'
       x-extended: '003'
+      x-extended-again: '008'
       description: |
-        CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409. RERUN_AS_NEW and MARK_MANUAL_REVIEW are declared for later and refused with 422.
+        CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
+
+        Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW, nothing more happens to the step until someone retries it or settles it; refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
       parameters:
         - {$ref: '#/components/parameters/RunId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1007,6 +1010,102 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/workers:
+    get:
+      operationId: listWorkers
+      summary: List the worker identities serving a namespace
+      tags: [Operations]
+      x-implemented: '008'
+      description: |
+        Needs `ops:read`. The live worker sessions of the namespace, newest first, with what each can serve (`activities`, `languages`, `pools`, `maxInflight`), how many attempts it holds a lease on right now (`inFlight`) and whether its identity is being drained, and the identities being drained whether or not a session of theirs is live (`drains`). A drained worker is stopped when its `inFlight` is 0.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The workers', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/workers/{subject}/drain:
+    post:
+      operationId: drainWorker
+      summary: Stop a worker identity from taking new work
+      tags: [Operations]
+      x-implemented: '008'
+      description: |
+        Needs `worker:manage`. Its sessions in the namespace are given no new attempts from now on (a poll answers with none); what it holds goes on until it ends, and it can register and heartbeat as before, so a worker that restarts is still drained. Use it before a deploy or when a version misbehaves; `listWorkers` says when `inFlight` is 0. Calling it again replaces the reason. Audited with the justification in `reason` (8 to 2000 characters).
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Reason'}
+      responses:
+        '200': {description: 'The identity is drained', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Drain'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/workers/{subject}/undrain:
+    post:
+      operationId: undrainWorker
+      summary: Let a drained worker identity take work again
+      tags: [Operations]
+      x-implemented: '008'
+      description: |
+        Needs `worker:manage`. `wasDraining` is false when the identity was not being drained (nothing changes and nothing is audited). Audited with the justification in `reason`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/WorkerSubject'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Reason'}
+      responses:
+        '200': {description: 'Done', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Undrain'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /audit:
+    get:
+      operationId: listAuditRecords
+      summary: Read the audit trail of the tenant, newest first
+      tags: [Operations]
+      x-implemented: '008'
+      description: |
+        Needs `audit:read`, which only administrators have. The trail is append-only and kept per tenant; this reads it, narrowed by what the caller asks for (an action by its dotted name such as `run.rerun`, a resource, an actor, a time range). Free text an operator wrote in a reason is returned with anything that has the shape of a credential (a web token, a `Bearer` or `Basic` credential, the password of a URL, a key with a well-known prefix) replaced; the trail itself is kept as it was written. **Reading the trail is itself recorded** (`audit.read`, with the filters in its reason; the same reading again adds nothing).
+      parameters:
+        - {name: action, in: query, required: false, schema: {type: string, maxLength: 255}}
+        - {name: resourceType, in: query, required: false, schema: {type: string, maxLength: 255}}
+        - {name: resourceId, in: query, required: false, schema: {type: string, maxLength: 255}}
+        - {name: actor, in: query, required: false, schema: {type: string, maxLength: 255}}
+        - {name: from, in: query, required: false, description: 'RFC 3339; records at or after it.', schema: {type: string, format: date-time}}
+        - {name: to, in: query, required: false, description: 'RFC 3339; records before it.', schema: {type: string, format: date-time}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of records', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuditPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -2273,6 +2372,12 @@ components:
         message: {type: string, description: "Safe, human-readable summary. Never contains secrets, payloads or other tenants' data."}
         retryable: {type: boolean}
         traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
+        remediation:
+          type: string
+          description: >-
+            What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined
+            by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's
+            data. Absent from the errors of a platform older than feature 008.
         details:
           type: object
           additionalProperties: true
@@ -2435,6 +2540,7 @@ components:
         deadline: {type: [string, 'null'], format: date-time}
         traceId: {type: [string, 'null']}
         correlationId: {type: [string, 'null']}
+        rerunOf: {type: string, format: uuid, description: 'The ended run this one was started again from (RERUN_AS_NEW), when it was.'}
         depth: {type: integer, minimum: 0, maximum: 8, description: 'Nesting of child runs: 0 for a run started through the API.'}
         parent:
           type: [object, 'null']
@@ -2686,7 +2792,7 @@ components:
       required: [action, reason]
       properties:
         action: {type: string, enum: [PAUSE, RESUME, CANCEL, RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION, RESOLVE_STEP, RERUN_AS_NEW, MARK_MANUAL_REVIEW]}
-        stepId: {type: string, description: 'The node id of the step the operation is about (`reserve~c` for the compensation of `reserve`). Required for RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION and RESOLVE_STEP; refused for the others.'}
+        stepId: {type: string, description: 'The node id of the step the operation is about (`reserve~c` for the compensation of `reserve`). Required for RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION, RESOLVE_STEP and MARK_MANUAL_REVIEW; refused for the others.'}
         outcome: {type: string, enum: [SUCCEEDED, FAILED], description: 'For RESOLVE_STEP: the step happened, or it did not.'}
         errorCode: {type: string, description: 'For RESOLVE_STEP with outcome FAILED: the code the step is recorded as failed with.'}
         reason: {type: string, minLength: 8, maxLength: 2000, description: 'Counted after trimming; for the decisions of a saga it is kept whole in the audit trail.'}
@@ -2699,6 +2805,7 @@ components:
         accepted: {type: boolean}
         runStatus: {type: string}
         runVersion: {type: integer, format: int64}
+        newRunId: {type: string, format: uuid, description: 'For RERUN_AS_NEW: the run that was started. `runStatus` and `runVersion` are those of the run it was started from.'}
     RevokedWorkers:
       type: object
       required: [sessionsClosed, leasesReleased]
@@ -3093,6 +3200,64 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/Alert'}}
+        nextCursor: {type: [string, 'null']}
+    Reason:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 8, maxLength: 2000, description: 'Counted after trimming; plain text; kept whole in the audit trail.'}
+    Worker:
+      type: object
+      required: [workerId, subject, name, activities, languages, pools, maxInflight, inFlight, registeredAt, expiresAt, draining]
+      properties:
+        workerId: {type: string, format: uuid}
+        subject: {type: string, description: 'The identity (the `sub` of its token).'}
+        name: {type: string}
+        activities: {type: array, items: {type: string}}
+        languages: {type: array, items: {type: string}}
+        pools: {type: array, items: {type: string}}
+        maxInflight: {type: integer, minimum: 1}
+        inFlight: {type: integer, minimum: 0, description: 'Attempts it holds a lease on right now.'}
+        registeredAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        draining: {type: boolean}
+    Drain:
+      type: object
+      required: [subject, reason, drainedBy, drainedAt]
+      properties:
+        subject: {type: string}
+        reason: {type: string}
+        drainedBy: {type: string}
+        drainedAt: {type: string, format: date-time}
+    WorkerList:
+      type: object
+      required: [items, drains]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Worker'}}
+        drains: {type: array, items: {$ref: '#/components/schemas/Drain'}}
+    Undrain:
+      type: object
+      required: [wasDraining]
+      properties:
+        wasDraining: {type: boolean}
+    AuditRecord:
+      type: object
+      required: [id, actor, action, resourceType, resourceId, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        actor: {type: string, description: 'The subject (`sub`) of the person or worker, or `system:<component>` for the platform.'}
+        action: {type: string, description: 'A dotted name such as `run.rerun`, `worker.drained`, `saga.step_retried`.'}
+        resourceType: {type: string}
+        resourceId: {type: string}
+        reason: {type: [string, 'null'], description: 'What the person wrote, or the platform recorded; credential-shaped text is replaced on the way out.'}
+        traceId: {type: [string, 'null']}
+        createdAt: {type: string, format: date-time}
+    AuditPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AuditRecord'}}
         nextCursor: {type: [string, 'null']}
     DeadLetterPage:
       type: object

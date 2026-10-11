@@ -753,6 +753,7 @@ pub async fn operate_run<B: Exec>(
     }
     let review = match body.action.as_str() {
         "RETRY_STEP" => Some(ReviewAction::Retry),
+        "MARK_MANUAL_REVIEW" => Some(ReviewAction::Hold),
         "RETRY_COMPENSATION" => Some(ReviewAction::Retry),
         "SKIP_COMPENSATION" => Some(ReviewAction::Skip),
         "RESOLVE_STEP" => Some(ReviewAction::Resolve(resolution(&body)?)),
@@ -765,12 +766,7 @@ pub async fn operate_run<B: Exec>(
         "CANCEL" => RunOperation::Cancel,
         "PAUSE" => RunOperation::Pause,
         "RESUME" => RunOperation::Resume,
-        // Declared in the contract, built in later features: said plainly instead of ignored.
-        "RERUN_AS_NEW" | "MARK_MANUAL_REVIEW" => {
-            return Err(ApiError::validation(
-                "this operation is declared in the contract but not supported yet",
-            ));
-        }
+        "RERUN_AS_NEW" => return rerun_run(&caller, &state, &headers, &id, &body).await,
         _ => return Err(ApiError::validation("unknown operation")),
     };
     if body.step_id.is_some() {
@@ -798,6 +794,56 @@ pub async fn operate_run<B: Exec>(
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,
+            new_run_id: None,
+        }),
+    ))
+}
+
+/// `RERUN_AS_NEW`: a run of the same version with the same input, from a run that ended.
+async fn rerun_run<B: Exec>(
+    caller: &Caller,
+    state: &B,
+    headers: &HeaderMap,
+    id: &str,
+    body: &OperationBody,
+) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
+    if body.step_id.is_some() || body.outcome.is_some() || body.error_code.is_some() {
+        return Err(ApiError::validation(
+            "RERUN_AS_NEW applies to the whole run and takes only a reason",
+        ));
+    }
+    let run_id = parse_id::<RunId>(id)?;
+    let original = state
+        .runs()
+        .get(&caller.session.principal, run_id, &caller.ctx)
+        .await?;
+    if body
+        .expected_run_version
+        .is_some_and(|expected| expected != original.version)
+    {
+        return Err(AppError::RevisionConflict {
+            current: original.version,
+        }
+        .into());
+    }
+    let started = state
+        .runs()
+        .rerun(
+            &caller.session.principal,
+            run_id,
+            &body.reason,
+            idempotency_key(headers)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(OperationResultBody {
+            operation_id: operation_id(&run_id.to_string(), idempotency_key(headers)?),
+            accepted: true,
+            run_status: original.status.as_str().to_owned(),
+            run_version: original.version,
+            new_run_id: Some(started.info.run_id.to_string()),
         }),
     ))
 }
@@ -872,6 +918,7 @@ async fn review_step<B: Exec>(
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,
+            new_run_id: None,
         }),
     ))
 }

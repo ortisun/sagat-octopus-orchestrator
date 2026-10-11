@@ -247,6 +247,9 @@ pub struct OperationResultBody {
     pub accepted: bool,
     pub run_status: String,
     pub run_version: u64,
+    /// For `RERUN_AS_NEW`: the run that was started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +281,9 @@ pub struct RunBody {
     pub finished_at: Option<OffsetDateTime>,
     /// The run and step that started this one, when it is a child run.
     pub parent: Option<ParentBody>,
+    /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerun_of: Option<String>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
 }
@@ -311,6 +317,7 @@ impl From<&RunRecord> for RunBody {
                 node: p.node.to_string(),
                 cancel_policy: p.cancel_policy.as_str(),
             }),
+            rerun_of: r.info.rerun_of.map(|r| r.to_string()),
             depth: r.info.depth,
         }
     }

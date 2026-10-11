@@ -257,6 +257,8 @@ pub struct RunInfo {
     pub started_by: String,
     pub correlation_id: Option<String>,
     pub trace_id: Option<String>,
+    /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
+    pub rerun_of: Option<RunId>,
     /// The span the run's own span hangs from: the request that started it, or the request that
     /// published the event that did. None for a child run (its parent's span is its parent) and for
     /// a run created before spans were recorded.

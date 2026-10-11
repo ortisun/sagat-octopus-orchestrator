@@ -9,7 +9,7 @@ use sagat_application::connectors::{ConnectorService, ConnectorStore};
 use sagat_application::egress::{EgressService, EgressStore};
 use sagat_application::events::{EventService, EventStore};
 use sagat_application::identity::IdentityStore;
-use sagat_application::operations::{AlertReader, OperationsService};
+use sagat_application::operations::{AlertReader, AuditStore, OperationsService, WorkerAdmin};
 use sagat_application::outbound::{OutboundService, OutboundStore};
 use sagat_application::quotas::{QuotaService, QuotaStore};
 use sagat_application::scripts::{RunnerService, RunnerStore, ScriptService, ScriptStore};
@@ -32,6 +32,8 @@ pub trait Governance: Core {
         + ScriptStore
         + RunnerStore
         + AlertReader
+        + WorkerAdmin
+        + AuditStore
         + 'static;
     type Clock: Clock + 'static;
 
@@ -209,6 +211,8 @@ where
         + ScriptStore
         + RunnerStore
         + AlertReader
+        + WorkerAdmin
+        + AuditStore
         + 'static,
 {
     type Store = G;

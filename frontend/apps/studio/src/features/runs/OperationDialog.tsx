@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useRef, useState, useSyncExternalStore } from 'react';
+import { useNavigate } from 'react-router';
 import type { FormEvent } from 'react';
 import { ApiError, isApiError } from '../../api/errors';
 import type { OperationRequest, RuntimeNode } from '../../api/types';
@@ -74,6 +75,7 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
   const queries = useQueryClient();
   const announce = useAnnounce();
   const can = useCanOperate();
+  const navigate = useNavigate();
   const snapshot = useSyncExternalStore(live.subscribe, live.getSnapshot);
   const { action, stepId } = decision;
   const scope = stepId === undefined ? 'run' : 'step';
@@ -130,10 +132,12 @@ function DecisionForm({ decision, run, live, runId, onDone }: { decision: Decisi
     setSending(true);
     setError(undefined);
     try {
-      await ep.operate(runId, body, sent.current.key);
+      const result = await ep.operate(runId, body, sent.current.key);
       announce(`${actionLabel(action)} requested${stepId === undefined ? '' : ` for ${clip(stepId, 40)}`}. The platform recorded your decision; the graph shows its effect when it happens.`);
       void queries.invalidateQueries({ queryKey: ['run', runId] });
       onDone();
+      // A run started again is another run: the person is taken to it.
+      if (action === 'RERUN_AS_NEW' && result.newRunId !== undefined) void navigate(`/runs/${result.newRunId}`);
     } catch (cause) {
       setError(cause);
     } finally {

@@ -424,6 +424,7 @@ where
             correlation_id: None,
             trace_id: Some(trace_id.clone()),
             parent_span,
+            rerun_of: None,
             deadline_at: None,
             created_at: now,
             parent: None,

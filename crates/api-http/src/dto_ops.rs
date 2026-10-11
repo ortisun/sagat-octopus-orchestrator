@@ -60,3 +60,126 @@ pub struct AlertPageBody {
     pub items: Vec<AlertBody>,
     pub next_cursor: Option<String>,
 }
+
+/// A worker identity serving a namespace.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerBody {
+    pub worker_id: String,
+    pub subject: String,
+    pub name: String,
+    pub activities: Vec<String>,
+    pub languages: Vec<String>,
+    pub pools: Vec<String>,
+    pub max_inflight: u32,
+    /// Attempts it holds a lease on right now.
+    pub in_flight: u32,
+    #[serde(with = "time::serde::rfc3339")]
+    pub registered_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+    /// Its identity is being drained: it takes no new work, and what it holds goes on.
+    pub draining: bool,
+}
+
+impl From<&sagat_application::operations::WorkerView> for WorkerBody {
+    fn from(w: &sagat_application::operations::WorkerView) -> Self {
+        Self {
+            worker_id: w.id.to_string(),
+            subject: w.subject.clone(),
+            name: w.name.clone(),
+            activities: w.activities.clone(),
+            languages: w.languages.clone(),
+            pools: w.pools.clone(),
+            max_inflight: w.max_inflight,
+            in_flight: w.in_flight,
+            registered_at: w.registered_at,
+            expires_at: w.expires_at,
+            draining: w.draining,
+        }
+    }
+}
+
+/// Who stopped a worker identity from taking work, why and when.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DrainBody {
+    pub subject: String,
+    pub reason: String,
+    pub drained_by: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub drained_at: OffsetDateTime,
+}
+
+impl From<&sagat_application::operations::DrainRecord> for DrainBody {
+    fn from(d: &sagat_application::operations::DrainRecord) -> Self {
+        Self {
+            subject: d.subject.clone(),
+            reason: d.reason.clone(),
+            drained_by: d.drained_by.clone(),
+            drained_at: d.drained_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerListBody {
+    pub items: Vec<WorkerBody>,
+    /// The identities being drained in the namespace, whether or not a session of theirs is live.
+    pub drains: Vec<DrainBody>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReasonBody {
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndrainBody {
+    /// Whether the identity was being drained.
+    pub was_draining: bool,
+}
+
+/// One record of the audit trail. Free text an operator wrote is scrubbed of what has the shape of a
+/// credential on the way out; the trail itself is kept as it was written.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditRecordBody {
+    pub id: String,
+    pub actor: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    pub reason: Option<String>,
+    pub trace_id: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+impl From<&sagat_application::operations::AuditEntry> for AuditRecordBody {
+    fn from(e: &sagat_application::operations::AuditEntry) -> Self {
+        Self {
+            id: e.id.to_string(),
+            actor: e.actor.clone(),
+            action: e.action.clone(),
+            resource_type: e.resource_type.clone(),
+            resource_id: e.resource_id.clone(),
+            reason: e
+                .reason
+                .as_deref()
+                .map(|r| sagat_telemetry::scrub(r).into_owned()),
+            trace_id: e.trace_id.clone(),
+            created_at: e.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditPageBody {
+    pub items: Vec<AuditRecordBody>,
+    pub next_cursor: Option<String>,
+}

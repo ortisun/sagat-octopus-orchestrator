@@ -1163,13 +1163,17 @@ impl RunState {
                 }
             }
             RunEvent::StepNeedsReview { node, code, fence } => {
-                let step = self.step_mut(node, name, &[Leased, Running, Waiting])?;
+                let step =
+                    self.step_mut(node, name, &[Leased, Running, Waiting, Ready, RetryWait])?;
                 match (step.status.is_leased(), fence, &step.waiting) {
                     (true, Some(f), _) if step.fenced_by(f.attempt, f.generation) => {}
                     (true, _, _) => {
                         return Err(ExecutionError::StaleAttempt { node: node.clone() });
                     }
                     (false, None, Some(WaitingOn::Reconciliation)) => {}
+                    // An operator holds a step that has not started: it waits for a decision like
+                    // the ones that ran out of attempts.
+                    (false, None, None) if matches!(step.status, Ready | RetryWait) => {}
                     _ => {
                         return Err(ExecutionError::IllegalTransition {
                             node: node.clone(),
@@ -1182,10 +1186,16 @@ impl RunState {
                 step.waiting = Some(WaitingOn::Operator { code: code.clone() });
                 step.failure = Some(code.clone());
                 step.cancel_requested = false;
+                step.next_attempt_at = None;
             }
             RunEvent::StepRetryRequested { node } => {
-                let step = self.step_mut(node, name, &[Waiting])?;
-                if !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
+                // A step that waits for a decision, or one whose retry is scheduled and an operator
+                // does not want to wait for: the scheduler's own `retry_due` finds it no longer in
+                // `RETRY_WAIT` and does nothing, so the two cannot both start an attempt.
+                let step = self.step_mut(node, name, &[Waiting, RetryWait])?;
+                if step.status == Waiting
+                    && !matches!(step.waiting, Some(WaitingOn::Operator { .. }))
+                {
                     return Err(ExecutionError::IllegalTransition {
                         node: node.clone(),
                         status: step.status,

@@ -131,6 +131,8 @@ pub struct SessionRecord {
     pub activities: Vec<String>,
     pub max_inflight: u32,
     pub expires_at: OffsetDateTime,
+    /// Its identity is being drained in this namespace: it is given no new work.
+    pub draining: bool,
 }
 
 /// A session about to be created. Only the hash of the token is stored.
@@ -596,6 +598,12 @@ where
         trace_id: Option<&str>,
     ) -> Result<Vec<ClaimedTask>, AppError> {
         let session = self.session(principal, worker_id, session_token).await?;
+        // A drained identity keeps its session (it renews it, it reports what it holds) and is given
+        // nothing new: the operator waits for what is in flight to end, then stops the process.
+        if session.draining {
+            metrics::counter!("worker_polls_drained_total").increment(1);
+            return Ok(Vec::new());
+        }
         let inflight = self.store.inflight(session.tenant_id, session.id).await?;
         let room = session.max_inflight.saturating_sub(inflight);
         let wanted = max_tasks.clamp(1, MAX_POLL).min(room);

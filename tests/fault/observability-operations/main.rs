@@ -8,4 +8,5 @@
 mod support;
 
 mod monitor;
+mod operators;
 mod projection;

@@ -320,3 +320,80 @@ fn a_dashboard_has_a_unique_uid_and_no_panel_without_an_expression() {
         }
     }
 }
+
+/// The labels the code puts on metrics: the names after `"label" =>` inside a metric macro.
+fn labels_by_metric() -> Vec<(String, String, String)> {
+    let mut files = Vec::new();
+    for dir in ["crates", "apps"] {
+        sources(&repo().join(dir), &mut files);
+    }
+    let call = Regex::new(r#"(?s)(?:counter|gauge|histogram)!\(\s*"([a-z][a-z0-9_]*)"(.*?)\)\s*\.\s*(?:increment|set|record|absolute)"#).expect("regex");
+    let label = Regex::new(r#""([a-z_]+)"\s*=>"#).expect("regex");
+    let mut found = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).expect("source");
+        for metric in call.captures_iter(&text) {
+            for name in label.captures_iter(&metric[2]) {
+                found.push((
+                    metric[1].to_owned(),
+                    name[1].to_owned(),
+                    file.display().to_string(),
+                ));
+            }
+        }
+    }
+    found
+}
+
+/// A metric whose label can take as many values as there are tenants, runs or people is a memory
+/// leak with a dashboard on it ("metric with exploding cardinality"): identifiers belong in spans and
+/// logs, and in the timeline, which has the trace id of every transition.
+#[test]
+fn no_metric_is_labelled_with_something_that_grows_with_the_data() {
+    let labels = labels_by_metric();
+    assert!(
+        labels.len() > 40,
+        "the scan found {} labels: is the pattern right?",
+        labels.len()
+    );
+    let forbidden = [
+        "tenant",
+        "tenant_id",
+        "namespace",
+        "namespace_id",
+        "run",
+        "run_id",
+        "step",
+        "step_id",
+        "node",
+        "activity",
+        "subject",
+        "user",
+        "actor",
+        "trace",
+        "trace_id",
+        "span_id",
+        "workflow",
+        "workflow_id",
+        "event_id",
+        "delivery_id",
+        "worker",
+        "worker_id",
+        "session",
+        "token",
+        "key",
+        "url",
+        "path",
+        "host",
+    ];
+    let offenders: Vec<String> = labels
+        .iter()
+        .filter(|(_, label, _)| forbidden.contains(&label.as_str()))
+        .map(|(metric, label, file)| format!("{metric}{{{label}}} in {file}"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "labels that grow with the data:\n{}",
+        offenders.join("\n")
+    );
+}

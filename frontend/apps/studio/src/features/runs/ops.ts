@@ -12,7 +12,7 @@ export interface RunFacts {
   version?: number | undefined;
 }
 
-export type Permission = 'run:operate' | 'saga:override';
+export type Permission = 'run:operate' | 'run:start' | 'saga:override';
 
 export interface Operation {
   action: Action;
@@ -44,11 +44,9 @@ export function actionLabel(action: Action): string {
 }
 
 /** The decisions about one step, in the order they are offered. */
-export const STEP_ACTIONS: readonly Action[] = ['RETRY_STEP', 'RETRY_COMPENSATION', 'SKIP_COMPENSATION', 'RESOLVE_STEP'];
-/** What an operator can do to the run as a whole, and what the platform does not offer yet (G145). */
-export const RUN_ACTIONS: readonly Action[] = ['PAUSE', 'RESUME', 'CANCEL', 'RERUN_AS_NEW', 'MARK_MANUAL_REVIEW'];
-
-const NOT_BUILT = 'The platform does not offer this yet.';
+export const STEP_ACTIONS: readonly Action[] = ['RETRY_STEP', 'RETRY_COMPENSATION', 'SKIP_COMPENSATION', 'RESOLVE_STEP', 'MARK_MANUAL_REVIEW'];
+/** What an operator can do to the run as a whole. */
+export const RUN_ACTIONS: readonly Action[] = ['PAUSE', 'RESUME', 'CANCEL', 'RERUN_AS_NEW'];
 
 /** The error codes that leave it unknown whether a step's effect happened; the platform asks for more to retry one (`FailureCode::leaves_outcome_unknown`). */
 const OUTCOME_UNKNOWN = new Set(['LEASE_EXPIRED', 'ATTEMPT_TIMEOUT', 'OUTCOME_UNKNOWN', 'RECONCILIATION_FAILED', 'RECONCILIATION_UNKNOWN']);
@@ -97,28 +95,39 @@ export function runOperations(run: RunFacts, can: (permission: string) => boolea
     if (action === 'CANCEL' && stopping) return 'The run is already being stopped.';
     return undefined;
   };
-  return RUN_ACTIONS.map((action) => {
-    if (action === 'RERUN_AS_NEW' || action === 'MARK_MANUAL_REVIEW') return op(action, 'run', undefined, NOT_BUILT);
-    return op(action, 'run', 'run:operate', refuse(action));
-  });
+  // Starting a run again is for a run that ended: while it goes on it would do its work twice. It starts a run, so it needs that permission too.
+  const rerun = (): string | undefined => {
+    if (!can('run:operate')) return noPermission('run:operate');
+    if (!can('run:start')) return noPermission('run:start');
+    return finished ? undefined : 'The run has not ended: starting it again would do its work twice.';
+  };
+  return RUN_ACTIONS.map((action) => (action === 'RERUN_AS_NEW' ? op(action, 'run', 'run:operate', rerun()) : op(action, 'run', 'run:operate', refuse(action))));
 }
 
 /**
  * The decisions about one step. Only a step that waits for a person can be decided (`waitingOn`
- * is `operator`); a compensation can be retried or skipped, any step can be resolved.
+ * is `operator`); a compensation can be retried or skipped, any step can be resolved. A step that
+ * is waiting out the delay of a retry can be retried now, and one that has not started (ready, or
+ * waiting out that delay) can be held for a person.
  */
 export function stepOperations(node: RuntimeNode, run: RunFacts, can: (permission: string) => boolean): Operation[] {
   const finished = isTerminal(run.status);
   const waiting = node.waitingOn === 'operator';
+  const retryWait = node.status === 'RETRY_WAIT';
+  const notStarted = node.status === 'READY' || retryWait;
   const undo = isCompensation(node.id);
   const refuse = (action: Action, needs: Permission): string | undefined => {
     if (!can(needs)) return noPermission(needs);
     if (finished) return 'The run is finished.';
+    if (action === 'MARK_MANUAL_REVIEW') {
+      if (node.id.endsWith('~r')) return 'A lookup is held by holding the step it is for.';
+      return notStarted ? undefined : 'Only a step that has not started can be held: one that is ready, or waiting for its retry.';
+    }
     if (action === 'RETRY_STEP' && undo) return 'This is a compensation: use Retry compensation.';
     if (action === 'RETRY_COMPENSATION' && !undo) return 'Only a compensation (an id ending in ~c) can be retried this way: use Retry step.';
     if (action === 'SKIP_COMPENSATION' && !undo) return 'Only a compensation can be skipped.';
-    if (!waiting) return 'This step is not waiting for a decision.';
-    if (action === 'RETRY_STEP' && !can('saga:override') && mayHaveHappened(node)) {
+    if (!waiting && !((action === 'RETRY_STEP' || action === 'RETRY_COMPENSATION') && retryWait)) return 'This step is not waiting for a decision.';
+    if (action === 'RETRY_STEP' && waiting && !can('saga:override') && mayHaveHappened(node)) {
       return `This step may already have happened (${node.failureCode}). Retrying it needs the saga:override permission.`;
     }
     return undefined;
@@ -140,19 +149,26 @@ export function consequence(action: Action, step?: string, node?: RuntimeNode): 
     case 'CANCEL':
       return 'Stops the run. Completed steps of a saga are compensated according to its cancel policy; the steps still running are asked to stop.';
     case 'RETRY_STEP':
+      if (node?.status === 'RETRY_WAIT') {
+        return `Starts the next attempt of ${which} now, without waiting for the delay of its retry. The earlier attempts stay in the journal.`;
+      }
       if (mayHaveHappened(node)) {
         return `Asks for another attempt of ${which}, which may already have happened (${node?.failureCode ?? 'outcome unknown'}): if it did, it will happen twice. Do this only if you know it did not, or that the effect can safely be repeated. The earlier attempts stay in the journal.`;
       }
       return `Asks for another attempt of ${which}; the earlier attempts stay in the journal.`;
     case 'RETRY_COMPENSATION':
+      if (node?.status === 'RETRY_WAIT') {
+        return `Starts the next attempt at undoing ${which} now, without waiting for the delay of its retry. The earlier attempts stay in the journal.`;
+      }
       return `Asks for another attempt at undoing ${which}; the earlier attempts stay in the journal.`;
     case 'SKIP_COMPENSATION':
       return `Gives up on undoing ${which}. The saga ends partly undone and cannot be compensated again.`;
     case 'RESOLVE_STEP':
       return `Declares that ${which} did or did not happen. This overrides what the platform knows.`;
     case 'RERUN_AS_NEW':
+      return 'Starts a new run of the same version of this workflow with the same input. This run stays as it is, and you are taken to the new one.';
     case 'MARK_MANUAL_REVIEW':
-      return NOT_BUILT;
+      return `Holds ${which} for a person: no worker is given it and nothing more happens to it until someone retries or settles it. The run waits for a decision.`;
   }
 }
 

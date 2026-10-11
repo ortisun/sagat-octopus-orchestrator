@@ -176,7 +176,11 @@ impl WorkerStore for PgRunStore {
         let row = sqlx::query(
             "UPDATE worker_sessions SET expires_at = clock_timestamp() + $4 * interval '1 microsecond' \
              WHERE tenant_id = $1 AND id = $2 AND token_hash = $3 AND expires_at > clock_timestamp() \
-             RETURNING id, tenant_id, namespace_id, subject, worker_name, activities, max_inflight, expires_at",
+             RETURNING id, tenant_id, namespace_id, subject, worker_name, activities, max_inflight, expires_at, \
+                       EXISTS (SELECT 1 FROM worker_drains d \
+                               WHERE d.tenant_id = worker_sessions.tenant_id \
+                                 AND d.namespace_id = worker_sessions.namespace_id \
+                                 AND d.subject = worker_sessions.subject) AS draining",
         )
         .bind(tenant.as_uuid())
         .bind(id)
@@ -196,6 +200,7 @@ impl WorkerStore for PgRunStore {
                 activities: col(&row, "activities")?,
                 max_inflight: u32::try_from(inflight).map_err(|_| corrupt("max inflight"))?,
                 expires_at: col(&row, "expires_at")?,
+                draining: col(&row, "draining")?,
             })
         })
         .transpose()

@@ -397,7 +397,7 @@ describe('the run page: the table', () => {
     await user.keyboard('{Enter}');
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
     const list = screen.getByRole('list', { name: 'Actions for reserve~c' });
-    expect(within(list).getAllByRole('button').map((b) => b.textContent)).toEqual(['Retry step', 'Retry compensation', 'Skip compensation', 'Resolve step']);
+    expect(within(list).getAllByRole('button').map((b) => b.textContent)).toEqual(['Retry step', 'Retry compensation', 'Skip compensation', 'Resolve step', 'Mark for manual review']);
     expect(within(list).getByRole('button', { name: 'Retry compensation' })).not.toHaveAttribute('aria-disabled');
     expect(within(list).getByRole('button', { name: 'Retry step' })).toHaveAttribute('aria-disabled', 'true');
     expect(within(list).getByText('This is a compensation: use Retry compensation.')).toBeInTheDocument();
@@ -415,7 +415,7 @@ describe('the run page: the table', () => {
     const trigger = screen.getByRole('button', { name: 'Actions for reserve~c' });
     await user.click(trigger);
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    for (let i = 0; i < 5; i++) await user.tab();
+    for (let i = 0; i < 6; i++) await user.tab();
     expect(screen.queryByRole('list', { name: 'Actions for reserve~c' })).not.toBeInTheDocument();
   });
 });
@@ -785,8 +785,8 @@ describe('the run page: who may do what', () => {
     const { user } = await open({}, VIEWER);
     await user.click(await screen.findByRole('button', { name: 'Run actions' }));
     const list = screen.getByRole('list', { name: 'Run actions' });
-    for (const name of ['Pause run', 'Resume run', 'Cancel run']) expect(within(list).getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
-    expect(within(list).getAllByText('You need the run:operate permission to do this.')).toHaveLength(3);
+    for (const name of ['Pause run', 'Resume run', 'Cancel run', 'Run again as new']) expect(within(list).getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
+    expect(within(list).getAllByText('You need the run:operate permission to do this.')).toHaveLength(4);
   });
 
   it('keeps the run open for everybody (it is read-only without run:operate)', async () => {

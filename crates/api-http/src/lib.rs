@@ -262,6 +262,8 @@ where
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
         + sagat_application::operations::AlertReader
+        + sagat_application::operations::WorkerAdmin
+        + sagat_application::operations::AuditStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
@@ -289,6 +291,8 @@ where
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
         + sagat_application::operations::AlertReader
+        + sagat_application::operations::WorkerAdmin
+        + sagat_application::operations::AuditStore
         + 'static,
 {
     use routes::governance as gov;
@@ -328,6 +332,19 @@ where
         .route(
             "/namespaces/{namespace_id}/alerts",
             get(ops::list_alerts::<B<S, C, G>>),
+        )
+        .route("/audit", get(ops::list_audit::<B<S, C, G>>))
+        .route(
+            "/namespaces/{namespace_id}/workers",
+            get(ops::list_workers::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/workers/{subject}/drain",
+            axum::routing::post(ops::drain_worker::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/workers/{subject}/undrain",
+            axum::routing::post(ops::undrain_worker::<B<S, C, G>>),
         )
         .route(
             "/namespaces/{namespace_id}/egress-policy",

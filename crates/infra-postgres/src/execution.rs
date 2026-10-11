@@ -235,9 +235,9 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id, trace_parent_span) \
+                 depth, root_run_id, trace_parent_span, rerun_of) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17)",
+                         $12, $13, $14, $15, $16, $17, $18)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -256,6 +256,7 @@ impl RunStore for PgRunStore {
             .bind(i16::from(info.depth))
             .bind(info.root.as_uuid())
             .bind(info.parent_span.as_deref())
+            .bind(info.rerun_of.map(|r| r.as_uuid()))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -402,7 +403,7 @@ impl RunStore for PgRunStore {
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-                    cancel_policy, depth, trace_parent_span \
+                    cancel_policy, depth, trace_parent_span, rerun_of \
              FROM runs \
              WHERE tenant_id = $1 AND namespace_id = $2 \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -506,6 +507,32 @@ impl RunStore for PgRunStore {
             })
             .collect::<Result<Vec<_>, StoreError>>()
             .map(Some)
+    }
+
+    async fn rerun_source(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<sagat_application::runs::RerunSource>, StoreError> {
+        let Some(row) = sqlx::query(
+            "SELECT n.slug AS namespace, p.content AS input \
+             FROM runs r \
+             JOIN namespaces n ON n.tenant_id = r.tenant_id AND n.id = r.namespace_id \
+             JOIN payloads p ON p.tenant_id = r.tenant_id AND p.digest = r.input_digest \
+             WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(sagat_application::runs::RerunSource {
+            namespace: col(&row, "namespace")?,
+            input: col(&row, "input")?,
+        }))
     }
 
     async fn graph(
@@ -699,19 +726,19 @@ async fn claim_reservation(
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
-     trace_parent_span \
+     trace_parent_span, rerun_of \
      FROM runs WHERE tenant_id = $1 AND id = $2";
 
 const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, trace_parent_span, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, rerun_of, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE";
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, trace_parent_span, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, rerun_of, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE SKIP LOCKED";
 
 fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
@@ -744,6 +771,7 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             correlation_id: col(row, "correlation_id")?,
             trace_id: col(row, "trace_id")?,
             parent_span: col(row, "trace_parent_span")?,
+            rerun_of: col::<Option<Uuid>>(row, "rerun_of")?.map(RunId::new),
             deadline_at: col(row, "deadline_at")?,
             created_at: col(row, "created_at")?,
             parent: parent_link(row)?,

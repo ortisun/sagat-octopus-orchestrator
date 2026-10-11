@@ -60,6 +60,15 @@ pub enum AuditAction {
     SagaStepRetried,
     /// An operator gave up on a compensation, with a justification.
     SagaStepSkipped,
+    /// An operator held a step that had not started for a person to decide.
+    RunMarkedForReview,
+    /// An operator started a new run from an ended one.
+    RunRerun,
+    /// An administrator read the audit trail. Reading it again with the same filters adds nothing.
+    AuditRead,
+    /// An operator stopped a worker identity from taking new work, or let it take work again.
+    WorkerDrained,
+    WorkerUndrained,
     /// An operator settled a step with an unknown outcome (or a compensation done elsewhere).
     SagaStepResolved,
     /// A webhook endpoint was created, changed or deleted.
@@ -114,7 +123,11 @@ impl AuditAction {
     pub const fn collapses_repeats(self) -> bool {
         matches!(
             self,
-            Self::SecretResolved | Self::SecretDenied | Self::EventRejected | Self::ScriptViolation
+            Self::SecretResolved
+                | Self::SecretDenied
+                | Self::EventRejected
+                | Self::ScriptViolation
+                | Self::AuditRead
         )
     }
 
@@ -154,6 +167,11 @@ impl AuditAction {
             Self::QuotaChanged => "quota.changed",
             Self::EgressPolicyChanged => "egress.policy_changed",
             Self::EgressDenied => "egress.denied",
+            Self::RunMarkedForReview => "run.marked_for_review",
+            Self::RunRerun => "run.rerun",
+            Self::AuditRead => "audit.read",
+            Self::WorkerDrained => "worker.drained",
+            Self::WorkerUndrained => "worker.undrained",
             Self::WorkerBound => "worker.bound",
             Self::WorkerUnbound => "worker.unbound",
             Self::WorkerDenied => "worker.denied",
@@ -206,6 +224,8 @@ pub enum ResourceType {
     Quota,
     EgressPolicy,
     WorkerBinding,
+    /// A worker identity, as `namespace-id/subject`.
+    Worker,
     EventEndpoint,
     /// An event admitted to the inbox, as `source/id`.
     Event,
@@ -231,6 +251,7 @@ impl ResourceType {
             Self::Quota => "quota",
             Self::EgressPolicy => "egress_policy",
             Self::WorkerBinding => "worker_binding",
+            Self::Worker => "worker",
             Self::EventEndpoint => "event_endpoint",
             Self::Event => "event",
             Self::WebhookSubscription => "webhook_subscription",

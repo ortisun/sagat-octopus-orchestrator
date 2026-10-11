@@ -62,6 +62,8 @@ struct ErrorBody<'a> {
     message: &'a str,
     retryable: bool,
     trace_id: String,
+    /// What to do about it (SC-008-004): from a closed table, never from the data of the request.
+    remediation: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     details: Option<&'a Value>,
 }
@@ -139,6 +141,13 @@ fn finalize(response: Response, trace_id: TraceId) -> Response {
             message: &parts.message,
             retryable: parts.retryable,
             trace_id: trace_id.to_string(),
+            remediation: parts.code.remediation(
+                parts
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.get("reason"))
+                    .and_then(Value::as_str),
+            ),
             details: parts.details.as_ref(),
         };
         // Serializing a plain struct cannot fail; fall back to an empty body just in case.

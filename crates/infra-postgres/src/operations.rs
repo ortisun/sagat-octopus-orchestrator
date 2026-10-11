@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::operations::{
-    AlertReader, AlertRecord, Candidate, MAX_CANDIDATES, MAX_PER_NAMESPACE, MonitorStore,
-    Reconciled, Sample, Thresholds,
+    AlertReader, AlertRecord, AuditEntry, AuditFilter, AuditStore, Candidate, DrainRecord,
+    MAX_CANDIDATES, MAX_PER_NAMESPACE, MonitorStore, Reconciled, Sample, Thresholds, WorkerAdmin,
+    WorkerView,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::operations::{AlertKind, AlertState, Severity};
@@ -420,5 +421,185 @@ impl AlertReader for PgRunStore {
         .iter()
         .map(alert_from_row)
         .collect()
+    }
+}
+
+impl WorkerAdmin for PgRunStore {
+    async fn list_workers(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        limit: u32,
+    ) -> Result<Vec<WorkerView>, StoreError> {
+        sqlx::query(
+            "SELECT s.id, s.subject, s.worker_name, s.activities, s.languages, s.pools, s.max_inflight, \
+                    s.created_at, s.expires_at, \
+                    (SELECT count(*) FROM steps st WHERE st.tenant_id = s.tenant_id \
+                        AND st.status IN ('LEASED', 'RUNNING') AND st.leased_by = s.id::text) AS in_flight, \
+                    EXISTS (SELECT 1 FROM worker_drains d WHERE d.tenant_id = s.tenant_id \
+                        AND d.namespace_id = s.namespace_id AND d.subject = s.subject) AS draining \
+             FROM worker_sessions s \
+             WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.expires_at > clock_timestamp() \
+             ORDER BY s.created_at DESC, s.id LIMIT $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            let max: i32 = col(row, "max_inflight")?;
+            let held: i64 = col(row, "in_flight")?;
+            Ok(WorkerView {
+                id: col(row, "id")?,
+                subject: col(row, "subject")?,
+                name: col(row, "worker_name")?,
+                activities: col(row, "activities")?,
+                languages: col(row, "languages")?,
+                pools: col(row, "pools")?,
+                max_inflight: u32::try_from(max).map_err(|_| corrupt("max inflight"))?,
+                in_flight: u32::try_from(held).unwrap_or(u32::MAX),
+                registered_at: col(row, "created_at")?,
+                expires_at: col(row, "expires_at")?,
+                draining: col(row, "draining")?,
+            })
+        })
+        .collect()
+    }
+
+    async fn list_drains(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<Vec<DrainRecord>, StoreError> {
+        sqlx::query(
+            "SELECT subject, reason, drained_by, drained_at FROM worker_drains \
+             WHERE tenant_id = $1 AND namespace_id = $2 ORDER BY drained_at DESC LIMIT 500",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            Ok(DrainRecord {
+                subject: col(row, "subject")?,
+                reason: col(row, "reason")?,
+                drained_by: col(row, "drained_by")?,
+                drained_at: col(row, "drained_at")?,
+            })
+        })
+        .collect()
+    }
+
+    async fn drain_worker(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        record: &DrainRecord,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO worker_drains (tenant_id, namespace_id, subject, reason, drained_by) \
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (tenant_id, namespace_id, subject) DO UPDATE \
+               SET reason = EXCLUDED.reason, drained_by = EXCLUDED.drained_by, drained_at = clock_timestamp()",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(&record.subject)
+        .bind(&record.reason)
+        .bind(&record.drained_by)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        crate::identity::insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn undrain_worker(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        subject: &str,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        let removed = sqlx::query(
+            "DELETE FROM worker_drains WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(subject)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected()
+            > 0;
+        if removed {
+            crate::identity::insert_audit(&mut tx, audit).await?;
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(removed)
+    }
+}
+
+impl AuditStore for PgRunStore {
+    async fn read_audit(
+        &self,
+        tenant: TenantId,
+        filter: &AuditFilter,
+        before: Option<Uuid>,
+        limit: u32,
+        reading: &sagat_domain::audit::AuditRecord,
+    ) -> Result<Vec<AuditEntry>, StoreError> {
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        let rows = sqlx::query(
+            "SELECT id, actor, action, resource_type, resource_id, reason, trace_id, created_at \
+             FROM audit_records \
+             WHERE tenant_id = $1 \
+               AND ($2::text IS NULL OR action = $2) \
+               AND ($3::text IS NULL OR resource_type = $3) \
+               AND ($4::text IS NULL OR resource_id = $4) \
+               AND ($5::text IS NULL OR actor = $5) \
+               AND ($6::timestamptz IS NULL OR created_at >= $6) \
+               AND ($7::timestamptz IS NULL OR created_at < $7) \
+               AND ($8::uuid IS NULL OR id < $8) \
+             ORDER BY id DESC LIMIT $9",
+        )
+        .bind(tenant.as_uuid())
+        .bind(filter.action.as_deref())
+        .bind(filter.resource_type.as_deref())
+        .bind(filter.resource_id.as_deref())
+        .bind(filter.actor.as_deref())
+        .bind(filter.from)
+        .bind(filter.to)
+        .bind(before)
+        .bind(i64::from(limit))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        // The reading is on the trail in the same transaction that reads it (and so is not in what it
+        // read: the next reading sees it).
+        crate::identity::insert_audit(&mut tx, reading).await?;
+        tx.commit().await.map_err(store_error)?;
+        rows.iter()
+            .map(|row| {
+                Ok(AuditEntry {
+                    id: col(row, "id")?,
+                    actor: col(row, "actor")?,
+                    action: col(row, "action")?,
+                    resource_type: col(row, "resource_type")?,
+                    resource_id: col(row, "resource_id")?,
+                    reason: col(row, "reason")?,
+                    trace_id: col(row, "trace_id")?,
+                    created_at: col(row, "created_at")?,
+                })
+            })
+            .collect()
     }
 }

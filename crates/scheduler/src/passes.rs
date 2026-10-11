@@ -668,6 +668,7 @@ where
             correlation_id: parent.info.correlation_id.clone(),
             trace_id: parent.info.trace_id.clone(),
             parent_span: None,
+            rerun_of: None,
             deadline_at,
             created_at: pending.as_of,
             parent: Some(ParentLink {
