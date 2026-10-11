@@ -283,6 +283,10 @@ name = "contract_developer_experience"
 path = "contract/developer-experience/main.rs"
 
 [[test]]
+name = "fault_developer_experience"
+path = "fault/developer-experience/main.rs"
+
+[[test]]
 name = "e2e_developer_experience"
 path = "e2e/developer-experience/main.rs"
 
