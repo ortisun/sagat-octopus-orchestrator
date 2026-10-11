@@ -824,7 +824,7 @@ async fn step_transitions_per_second() {
     body.push_str(&format!(
         "{runs} runs of three chained activities per configuration; a worker polls up to 16 tasks and completes each one (a complete is one transition: the commit, the routing and the next step becoming ready). Workers are tasks in this process with sessions of their own, spread over identities (a session budget is 32 per identity). The worker API is served by 1 to 8 replicas, each with a pool of {API_POOL} connections (the engine's default is 20): a worker's calls go to the replica its number selects. Closed loop: the workers take work as fast as they can, so the figure is the ceiling of this machine, not a rate that was asked for.\n\n"
     ));
-    body.push_str("| API replicas | Workers | Transitions | Transitions/s | Poll per task p50 / p95 / p99 | Complete p50 / p95 / p99 |\n|---:|---:|---:|---:|---|---|\n");
+    body.push_str("| API replicas | Workers | Transitions | Transitions/s | Poll per task p50 / p95 / p99 | Complete p50 / p95 / p99 | What the active backends of the database were doing (share of 25 ms samples) |\n|---:|---:|---:|---:|---|---|---|\n");
     let mut ceiling = 0f64;
     for (api_replicas, workers) in [
         (1usize, 4usize),
@@ -863,6 +863,34 @@ async fn step_transitions_per_second() {
                     .await,
             );
         }
+        // While the workers run, the database is asked every 25 ms what its active backends are
+        // doing: running on a CPU, or waiting for a lock, the WAL, a buffer... The figure of the
+        // table says how much; this says what the time was spent on.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sampler = tokio::spawn({
+            let (w, stop) = (Arc::clone(&w), Arc::clone(&stop));
+            async move {
+                let mut seen: std::collections::BTreeMap<String, u64> = Default::default();
+                let mut total = 0_u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let rows: Result<Vec<(String, String, i64)>, _> = sqlx::query_as(
+                        "SELECT coalesce(wait_event_type, 'CPU'), coalesce(wait_event, 'running'), count(*)::bigint \
+                           FROM pg_stat_activity \
+                          WHERE state = 'active' AND backend_type = 'client backend' AND pid <> pg_backend_pid() \
+                          GROUP BY 1, 2",
+                    )
+                    .fetch_all(&w.db.pool)
+                    .await;
+                    for (kind, event, n) in rows.unwrap_or_default() {
+                        let n = u64::try_from(n).unwrap_or(0);
+                        *seen.entry(format!("{kind}:{event}")).or_default() += n;
+                        total += n;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                (seen, total)
+            }
+        });
         let started = Instant::now();
         let results =
             futures_util::future::join_all(sessions.iter().enumerate().map(|(n, session)| {
@@ -909,6 +937,16 @@ async fn step_transitions_per_second() {
                 }
             }))
             .await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (seen, samples) = sampler.await.expect("the sampler");
+        let mut by_share: Vec<_> = seen.into_iter().collect();
+        by_share.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let waiting_on = by_share
+            .iter()
+            .take(4)
+            .map(|(event, n)| format!("{event} {:.0}%", 100.0 * *n as f64 / samples.max(1) as f64))
+            .collect::<Vec<_>>()
+            .join(", ");
         // The rate is over the time the work took: until the last completion, not the last empty poll.
         let (mut polls, mut completes) = (Vec::new(), Vec::new());
         let mut finished = started;
@@ -924,7 +962,7 @@ async fn step_transitions_per_second() {
         polls.sort_unstable();
         completes.sort_unstable();
         body.push_str(&format!(
-            "| {api_replicas} | {workers} | {transitions} | {per_second:.0} | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms |\n",
+            "| {api_replicas} | {workers} | {transitions} | {per_second:.0} | {:.0} / {:.0} / {:.0} ms | {:.0} / {:.0} / {:.0} ms | {waiting_on} |\n",
             ms(percentile(&polls, 0.50)),
             ms(percentile(&polls, 0.95)),
             ms(percentile(&polls, 0.99)),
