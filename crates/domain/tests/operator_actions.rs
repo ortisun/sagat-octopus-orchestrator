@@ -7,8 +7,11 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Harness, build, flaky, id};
-use sagat_domain::execution::{ExecutionError, FailureCode, ReviewOutcome, RunStatus, StepStatus};
+use common::{Harness, build, effect, effect_with, flaky, id, ms, saga};
+use sagat_domain::execution::{
+    ExecutionError, Expiry, FailureCode, ReviewOutcome, RunStatus, StepStatus, StopReason,
+};
+use sagat_domain::workflow::{BackoffStrategy, RetryPolicy};
 
 fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
@@ -239,5 +242,59 @@ fn a_lookup_cannot_be_held_only_the_step_it_is_for() {
         ),
         "holding the lookup would leave the step waiting for an answer that was declared never to come"
     );
+    run.assert_replays();
+}
+
+#[test]
+fn holding_a_step_does_not_forget_that_its_last_attempt_may_have_had_an_effect() {
+    // The lease of the first attempt ran out: nobody knows whether the effect happened, and the
+    // step waits for its retry. An operator holds it meanwhile.
+    let mut run = Harness::start(build("a", vec![flaky("a", 3)]));
+    let first = run.lease("a");
+    run.expire("a", first, Expiry::LeaseExpired)
+        .expect("the lease is lost");
+    assert_eq!(run.status("a"), StepStatus::RetryWait);
+    run.operator_hold("a").expect("held while it waits");
+
+    let step = run.state.step(&id("a")).expect("step");
+    assert_eq!(
+        step.failure().map(FailureCode::as_str),
+        Some("LEASE_EXPIRED"),
+        "the outcome of the attempt is still unknown: the hold is only why it is waiting now"
+    );
+    assert!(step.failure().is_some_and(FailureCode::leaves_outcome_unknown));
+    run.assert_replays();
+}
+
+#[test]
+fn a_held_step_whose_attempt_may_have_had_an_effect_is_still_undone_when_the_saga_is_stopped() {
+    let mut run = Harness::start(build(
+        "settlement",
+        vec![
+            saga("settlement", "reserve"),
+            effect("reserve", false).with_next(id("submit")),
+            effect_with(
+                "submit",
+                false,
+                RetryPolicy::new(3, ms(100), ms(100), BackoffStrategy::Fixed, false)
+                    .expect("retry"),
+            ),
+        ],
+    ));
+    let f = run.lease("reserve");
+    run.complete("reserve", f).expect("reserve");
+    let f = run.lease("submit");
+    run.expire("submit", f, Expiry::LeaseExpired).expect("lost");
+    assert_eq!(run.status("submit"), StepStatus::RetryWait);
+    run.operator_hold("submit").expect("held");
+    run.stop(StopReason::Cancelled).expect("the run is cancelled");
+
+    // `submit` may have happened, so it is undone before `reserve`, as if it had never been held.
+    assert_eq!(
+        run.status("submit~c"),
+        StepStatus::Ready,
+        "the effect may have happened, so it is undone first"
+    );
+    assert_eq!(run.status("reserve~c"), StepStatus::Pending);
     run.assert_replays();
 }

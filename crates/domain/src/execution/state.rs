@@ -1182,9 +1182,16 @@ impl RunState {
                         });
                     }
                 }
+                // An operator's hold of a step that has not started says why it waits now (the
+                // code of the waiting); it does not say what happened to its last attempt. If that
+                // attempt ended without anyone knowing whether the effect happened, the step still
+                // says so: a saga that is stopped later must undo it.
+                let held = fence.is_none() && matches!(step.status, Ready | RetryWait);
                 step.status = Waiting;
                 step.waiting = Some(WaitingOn::Operator { code: code.clone() });
-                step.failure = Some(code.clone());
+                if !(held && step.failure.is_some()) {
+                    step.failure = Some(code.clone());
+                }
                 step.cancel_requested = false;
                 step.next_attempt_at = None;
             }
