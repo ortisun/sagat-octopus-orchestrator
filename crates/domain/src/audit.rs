@@ -137,6 +137,18 @@ impl AuditAction {
         )
     }
 
+    /// How long an identical event is taken as the same one, for the actions that collapse repeats:
+    /// `None` for ever (what a worker asks again is the same ask), or a period after which the same
+    /// thing done again is a new event. Reading the trail is the second kind: an administrator who
+    /// exports it every day leaves a record every day, not one record for good.
+    #[must_use]
+    pub const fn repeat_window(self) -> Option<std::time::Duration> {
+        match self {
+            Self::AuditRead => Some(std::time::Duration::from_secs(300)),
+            _ => None,
+        }
+    }
+
     /// How many different events of this action one actor may have on one resource before the
     /// rest are not recorded: `None` for no limit. The text of an event can be chosen by whoever
     /// causes it, so "once per distinct text" alone does not bound the trail.

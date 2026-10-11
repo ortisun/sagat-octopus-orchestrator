@@ -88,7 +88,7 @@ Every action is a command that the platform checks, journals and audits; none ed
 
 `GET /audit` (Admin) returns the tenant's records, newest first, narrowed by `action`, `resourceType`, `resourceId`, `actor`, `from`, `to`; pages by cursor.
 
-- **Reading it is recorded** (`audit.read`, with the filters), once for the same reading repeated.
+- **Reading it is recorded** (`audit.read`, with the filters). The same reading by the same person within five minutes is recorded once; after that it is a new reading and is on the trail again.
 - A reason that has the shape of a credential (a token, `Bearer …`, the password in a URL, a key with a well-known prefix) is replaced on the way out; the trail keeps what was written.
 - **Denied attempts to reach another tenant's resource (`access.denied.cross_tenant`) are not returned.** They are written only when the identifier exists elsewhere, so listing them would answer "does this exist?" for whoever could read them. They stay in the table for you:
 

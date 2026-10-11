@@ -411,7 +411,7 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
     }
 
     /// The audit trail of the tenant, newest first. Only an administrator reads it, and the reading
-    /// is itself recorded (once for the same filters in a row).
+    /// is itself recorded (once for the same filters within five minutes).
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `audit:read`.

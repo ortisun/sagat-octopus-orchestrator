@@ -289,3 +289,56 @@ async fn a_drain_is_kept_per_tenant_and_namespace_and_the_store_refuses_a_foreig
         1
     );
 }
+
+#[tokio::test]
+async fn reading_the_trail_is_recorded_again_once_the_window_of_the_same_reading_has_passed() {
+    let w = world().await;
+    let read_at = |after: time::Duration| {
+        let w = &w;
+        async move {
+            let reading = AuditRecord::by(
+                &w.admin,
+                AuditAction::AuditRead,
+                ResourceType::Tenant,
+                w.admin.tenant_id().to_string(),
+                None,
+                now() + after,
+            )
+            .with_reason("everything");
+            w.store
+                .read_audit(
+                    w.admin.tenant_id(),
+                    &AuditFilter::default(),
+                    None,
+                    10,
+                    &reading,
+                )
+                .await
+                .expect("audit");
+        }
+    };
+    let recorded = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_records WHERE action = 'audit.read' AND tenant_id = $1",
+        )
+        .bind(w.admin.tenant_id().as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("count")
+    };
+    read_at(time::Duration::ZERO).await;
+    read_at(time::Duration::minutes(1)).await;
+    assert_eq!(
+        recorded().await,
+        1,
+        "the same reading again within the window adds nothing"
+    );
+    read_at(time::Duration::minutes(30)).await;
+    assert_eq!(
+        recorded().await,
+        2,
+        "half an hour later the same reading is a reading again, and is on the trail"
+    );
+    read_at(time::Duration::minutes(31)).await;
+    assert_eq!(recorded().await, 2);
+}
