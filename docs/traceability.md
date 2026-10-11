@@ -4,7 +4,7 @@
 
 | Feature | Requirements | User stories | Planned tests | Status |
 |---|---|---|---|---|
-| [001 platform-foundation](../specs/001-platform-foundation/spec.md) | FR-001-001..007 | 4 | `tests/e2e/platform-foundation/`, `tests/fault/platform-foundation/` | Implementing |
+| [001 platform-foundation](../specs/001-platform-foundation/spec.md) | FR-001-001..007 | 4 | `tests/e2e/platform-foundation/`, `tests/fault/platform-foundation/` | Implementation tasks complete; explicit criterion gaps remain below |
 | [002 durable-execution](../specs/002-durable-execution/spec.md) | FR-002-001..009 | 4 | `tests/e2e/durable-execution/`, `tests/integration/durable-execution/`, `tests/contract/durable-execution/` | Implementing (see the evidence table) |
 | [003 sagas-compensations](../specs/003-sagas-compensations/spec.md) | FR-003-001..007 | 4 | `tests/e2e/sagas-compensations/`, `tests/integration/sagas-compensations/`, `tests/contract/sagas-compensations/`, `tests/fault/sagas-compensations/` | Implementing (see the evidence table; the SDK DSL, Studio and dashboards are other features) |
 | [004 events-webhooks-messaging](../specs/004-events-webhooks-messaging/spec.md) | FR-004-001..008 | 4 | `tests/e2e/events-webhooks-messaging/`, `tests/integration/events-webhooks-messaging/`, `tests/contract/events-webhooks-messaging/`, `tests/fault/events-webhooks-messaging/` | Implementing (see the evidence table; OIDC/mTLS profiles, outbound broker producers and Studio are other work) |
@@ -27,15 +27,14 @@
 
 ## Evidence: 001 platform-foundation
 
-Last updated with the control-plane branch. "Partial" and "Open" are stated explicitly; see
-`specs/001-platform-foundation/research.md` for the gaps behind them.
+Completion review, 2026-10-11: T001-002/030/031 are covered by static consumer fixtures, the existing compatibility baselines and the existing migration/CI gates. Focused verification passed: platform contracts 27, live REST 3, worker compatibility 2, AsyncAPI compatibility/conformance 4, and migration idempotency 1. Formatting, focused Clippy, OpenAPI lint, protobuf compilation and AsyncAPI validation passed. Exact commands and non-blocking validator notices are in `specs/001-platform-foundation/quickstart.md`. "Partial" and "Open" below describe remaining requirement gaps rather than unchecked implementation tasks.
 
 | Requirement | State | Evidence |
 |---|---|---|
 | FR-001-001 tenants, workspaces, namespaces, memberships, roles; uniqueness and tenant isolation | Done | `crates/domain/tests/identity.rs`, `tests/integration/platform-foundation/{constraints,store,flows}.rs` |
-| FR-001-002 REST/OpenAPI v1 for health, auth context, workspace, namespace | Done | OpenAPI lint in CI, `tests/e2e/platform-foundation/{us01,us02}.rs`, live conformance of every Identity operation in `tests/contract/platform-foundation/rest/` |
+| FR-001-002 REST/OpenAPI v1 for health, auth context, workspace, namespace | Done | OpenAPI lint in CI, `tests/e2e/platform-foundation/{us01,us02}.rs`, live conformance of every Identity operation in `tests/contract/platform-foundation/rest/`; static REST and TaskReady consumer fixtures in `tests/contract/platform-foundation/fixtures/`, validated by `fixtures.rs` |
 | FR-001-002 … and the **definition lifecycle** | Open | Declared in `openapi.yaml`, not implemented (belongs with feature 002) |
-| FR-001-003 versioned gRPC/protobuf worker protocol | Partial | `worker.proto` compiles in CI; no server, no compatibility check (`buf breaking`) yet |
+| FR-001-003 versioned gRPC/protobuf worker protocol | Done | `worker.proto` compiles in CI; `crates/api-grpc/tests/compatibility.rs` compares the compiled descriptor with `worker.baseline.json`; feature 002 supplies the real worker server and protocol conformance suite. The descriptor baseline provides the required compatibility gate without a second `buf breaking` implementation. |
 | FR-001-004 idempotent migrations; development-only seed (and an explicit `provision-tenant` for real environments) | Done | `tests/integration/platform-foundation/migrations.rs`, `tests/e2e/platform-foundation/us03.rs`, `apps/control-plane/tests/cli.rs` |
 | FR-001-005 Docker Compose with PostgreSQL, NATS and optional S3-compatible store | Partial | `infra/docker/compose.yaml`, `scripts/smoke-compose.sh`; the S3-compatible store is deferred (optional in this phase) |
 | FR-001-006 canonical errors without sensitive data | Partial | One envelope `{code, message, retryable, traceId, details}` proven in `tests/e2e/platform-foundation/`; the spec's separate `request_id` is not implemented (the trace id serves) |
