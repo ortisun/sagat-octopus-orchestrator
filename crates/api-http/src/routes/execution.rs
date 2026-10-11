@@ -423,9 +423,12 @@ pub async fn run_graph<B: Exec>(
     Ok(Json(runtime_graph(&graph)))
 }
 
-#[derive(Debug, Deserialize)]
+/// `since` is read by hand, not by the extractor, so that a run the caller may not see is `404` (or
+/// `403`) whatever else is wrong with the request: a refusal about the query must not tell a foreign
+/// run from one that does not exist, and must not come before the refusal about the run.
+#[derive(Debug, Default, Deserialize)]
 pub struct ChangesQuery {
-    pub since: u64,
+    pub since: Option<String>,
 }
 
 pub async fn run_graph_changes<B: Exec>(
@@ -434,14 +437,24 @@ pub async fn run_graph_changes<B: Exec>(
     Path(id): Path<String>,
     Query(query): Query<ChangesQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let run = parse_id::<RunId>(&id)?;
+    let Some(since) = query
+        .since
+        .as_deref()
+        .and_then(|text| text.parse::<u64>().ok())
+    else {
+        // Who may not read the run is told that first; only then what is wrong with the query.
+        state
+            .runs()
+            .get(&caller.session.principal, run, &caller.ctx)
+            .await?;
+        return Err(ApiError::bad_request(
+            "since is the projection sequence the client last saw: a non-negative integer",
+        ));
+    };
     let changes = state
         .runs()
-        .graph_changes(
-            &caller.session.principal,
-            parse_id::<RunId>(&id)?,
-            query.since,
-            &caller.ctx,
-        )
+        .graph_changes(&caller.session.principal, run, since, &caller.ctx)
         .await?;
     Ok(Json(graph_changes_body(&changes)))
 }

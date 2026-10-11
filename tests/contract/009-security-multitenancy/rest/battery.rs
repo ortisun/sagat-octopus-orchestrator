@@ -33,6 +33,8 @@ fn body_of(operation: &str) -> Option<Value> {
         "createWorkflowDraft" => json!({"name": "attacker-flow", "ir": flow("attacker-flow")}),
         "updateWorkflowDraft" => json!({"draftRevision": 1, "ir": flow("victim-flow")}),
         "publishWorkflow" => json!({"draftRevision": 1}),
+        // Feature 007: a dry run of the victim's draft with a document of the attacker's.
+        "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
         "signalRun" => json!({"paid": true}),

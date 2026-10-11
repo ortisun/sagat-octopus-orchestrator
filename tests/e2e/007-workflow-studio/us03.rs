@@ -312,6 +312,22 @@ async fn us03_the_changes_are_the_runs_own_and_need_run_read() {
         404,
         "another tenant's run does not exist for us"
     );
+    // Whatever else is wrong with the request, a run of another tenant is as unknown as one that does not
+    // exist: the refusal about the query does not come first.
+    for query in ["", "?since=x", "?since=-1"] {
+        let response = p
+            .api
+            .as_user(
+                Method::GET,
+                &format!("/runs/{run}/graph/changes{query}"),
+                "bob",
+                "globex",
+            )
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(response.status(), 404, "{query:?}");
+    }
     let unauthenticated = p
         .api
         .request(Method::GET, &format!("/runs/{run}/graph/changes?since=0"))
