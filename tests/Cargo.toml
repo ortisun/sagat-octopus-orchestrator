@@ -273,3 +273,7 @@ path = "fault/gitops-versioning/main.rs"
 name = "contract_manifest_gitops_versioning"
 path = "contract/gitops-versioning/manifest/main.rs"
 
+[[test]]
+name = "perf_gitops_versioning"
+path = "performance/gitops-versioning/main.rs"
+
