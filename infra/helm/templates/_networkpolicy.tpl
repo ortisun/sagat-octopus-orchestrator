@@ -56,7 +56,7 @@
 {{- if not (get $ipBlock "cidr") -}}
 {{- fail (printf "%s.ipBlock.cidr is required" $peerName) -}}
 {{- end -}}
-{{- if has (get $ipBlock "cidr") (list "0.0.0.0/0" "::/0") -}}
+{{- if regexMatch "/0+$" (toString (get $ipBlock "cidr")) -}}
 {{- fail (printf "%s.ipBlock.cidr cannot allow the global address space" $peerName) -}}
 {{- end -}}
 {{- else -}}
@@ -120,6 +120,7 @@
 {{- if not (kindIs "map" $egress) -}}
 {{- fail "networkPolicy.egress is required when networkPolicy.enabled=true" -}}
 {{- end -}}
+{{- include "sagat.networkPolicy.validatePeers" (dict "name" "networkPolicy.metricsFrom" "peers" .Values.networkPolicy.metricsFrom) -}}
 {{- include "sagat.networkPolicy.validatePeers" (dict "name" "networkPolicy.apiFrom" "peers" .Values.networkPolicy.apiFrom) -}}
 {{- include "sagat.networkPolicy.validatePeers" (dict "name" "networkPolicy.workersFrom" "peers" .Values.networkPolicy.workersFrom) -}}
 {{- include "sagat.networkPolicy.validatePeers" (dict "name" "networkPolicy.egress.dnsTo" "peers" (get $egress "dnsTo")) -}}

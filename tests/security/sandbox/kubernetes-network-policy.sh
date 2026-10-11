@@ -106,6 +106,31 @@ expect_render_failure 'empty API ingress source' \
 expect_render_failure 'global PostgreSQL CIDR' \
   'networkPolicy.egress.postgres.to[0].ipBlock.cidr cannot allow the global address space' \
   --set-json 'networkPolicy.egress.postgres.to=[{"ipBlock":{"cidr":"0.0.0.0/0"}}]'
+expect_render_failure 'compressed global IPv6 PostgreSQL CIDR' \
+  'networkPolicy.egress.postgres.to[0].ipBlock.cidr cannot allow the global address space' \
+  --set-json 'networkPolicy.egress.postgres.to=[{"ipBlock":{"cidr":"::/0"}}]'
+expect_render_failure 'expanded global IPv6 PostgreSQL CIDR' \
+  'networkPolicy.egress.postgres.to[0].ipBlock.cidr cannot allow the global address space' \
+  --set-json 'networkPolicy.egress.postgres.to=[{"ipBlock":{"cidr":"0:0:0:0:0:0:0:0/0"}}]'
+expect_render_failure 'nonzero-address zero-prefix PostgreSQL CIDR' \
+  'networkPolicy.egress.postgres.to[0].ipBlock.cidr cannot allow the global address space' \
+  --set-json 'networkPolicy.egress.postgres.to=[{"ipBlock":{"cidr":"2001:db8::/0"}}]'
+expect_render_failure 'empty metrics peer' \
+  'networkPolicy.metricsFrom[0] cannot be empty because an empty peer allows every destination' \
+  --set-json 'networkPolicy.metricsFrom=[{}]'
+expect_render_failure 'global metrics namespace selector' \
+  'networkPolicy.metricsFrom[0].namespaceSelector cannot be empty because an empty selector matches globally' \
+  --set-json 'networkPolicy.metricsFrom=[{"namespaceSelector":{}}]'
+
+# Nonzero IPv4 and IPv6 CIDRs remain valid explicit peers.
+# shellcheck disable=SC2086
+helm template "$release" "$chart_dir" --namespace "$namespace" -f "$values_file" $helm_args \
+  --set-json 'networkPolicy.egress.postgres.to=[{"ipBlock":{"cidr":"192.0.2.0/24"}}]' \
+  >"$work_dir/nonzero-ipv4.yaml"
+# shellcheck disable=SC2086
+helm template "$release" "$chart_dir" --namespace "$namespace" -f "$values_file" $helm_args \
+  --set-json 'networkPolicy.egress.postgres.to=[{"ipBlock":{"cidr":"2001:db8::/64"}}]' \
+  >"$work_dir/nonzero-ipv6.yaml"
 
 # Disabling NetworkPolicy must suppress every policy, while an unused NATS configuration must not
 # create a NATS egress rule or require a destination.
@@ -423,7 +448,7 @@ spec:
   containers:
     - name: probe
       image: busybox:1.36
-      command: [sh, -c, 'sleep 300']
+      command: [sh, -c, 'while true; do sleep 3600; done']
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
@@ -448,7 +473,7 @@ spec:
   containers:
     - name: probe
       image: busybox:1.36
-      command: [sh, -c, 'sleep 300']
+      command: [sh, -c, 'while true; do sleep 3600; done']
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
@@ -594,11 +619,44 @@ expect_blocked() {
   source_pod=$3
   destination=$4
   port=$5
-  if kubectl exec --namespace "$source_namespace" "$source_pod" -- \
-    nc -z -w 3 "$destination" "$port" >/dev/null 2>&1; then
-    fail "$description was reachable at $destination:$port"
+  set +e
+  # The positional parameters are intentionally expanded by the shell inside the probe container.
+  # shellcheck disable=SC2016
+  probe_output=$(kubectl exec --namespace "$source_namespace" "$source_pod" -- \
+    sh -c 'nc -z -w 3 "$1" "$2"; printf "__SAGAT_NC_STATUS__:%s\n" "$?"' \
+    sh "$destination" "$port" 2>&1)
+  exec_status=$?
+  set -e
+  if [ "$exec_status" -ne 0 ]; then
+    printf 'network denial probe could not execute in %s/%s: %s\n' \
+      "$source_namespace" "$source_pod" "$probe_output" >&2
+    exit 2
   fi
+  case $probe_output in
+    *'__SAGAT_NC_STATUS__:0'*)
+      fail "$description was reachable at $destination:$port"
+      ;;
+    *'__SAGAT_NC_STATUS__:1') ;;
+    *)
+      printf 'network denial probe returned an invalid nc status in %s/%s: %s\n' \
+        "$source_namespace" "$source_pod" "$probe_output" >&2
+      exit 2
+      ;;
+  esac
 }
+
+# A missing or terminated source must invalidate the test rather than look like a denied packet.
+set +e
+(expect_blocked 'infrastructure failure counterexample' \
+  "$namespace" missing-denial-source "$api_ip" 443) \
+  >"$work_dir/infrastructure-failure.log" 2>&1
+infrastructure_failure_status=$?
+set -e
+if [ "$infrastructure_failure_status" -ne 2 ] || \
+  ! grep -F 'network denial probe could not execute' \
+    "$work_dir/infrastructure-failure.log" >/dev/null; then
+  fail 'a missing denial-probe source was not classified as an infrastructure failure'
+fi
 
 # Establish that this cluster and probe image can reach the destination without a policy. Otherwise
 # a failed connection below could be a cluster-level block rather than evidence about the chart.
