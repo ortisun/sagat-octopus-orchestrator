@@ -1,6 +1,6 @@
 //! What the suites of this feature share.
 
-use sagat_application::definitions::WorkflowRecord;
+use sagat_application::definitions::{DefinitionStore, WorkflowRecord};
 use sagat_application::error::{AppError, Refusal};
 use sagat_domain::definition::WorkflowId;
 use sagat_domain::identity::{Environment, Namespace, Principal, Role};
@@ -70,4 +70,23 @@ pub fn refusal(error: AppError) -> Refusal {
         AppError::Versioning(refusal) => refusal,
         other => panic!("expected a refusal, got {other:?}"),
     }
+}
+
+/// The workflow called `name` in a namespace.
+pub async fn by_name(
+    w: &World,
+    namespace: sagat_domain::identity::NamespaceId,
+    name: &str,
+) -> WorkflowId {
+    w.store
+        .find_workflow_by_name(
+            w.admin.tenant_id(),
+            namespace,
+            &sagat_domain::identity::Slug::parse(name).expect("a name"),
+        )
+        .await
+        .expect("a lookup")
+        .expect("the workflow exists")
+        .workflow
+        .id()
 }

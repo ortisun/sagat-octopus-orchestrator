@@ -306,3 +306,216 @@ async fn only_those_with_the_permission_move_the_pointer_and_never_without_a_rea
         Err(sagat_application::error::AppError::NotFound)
     ));
 }
+
+fn triggered(name: &str, marker: &str, triggers: serde_json::Value) -> serde_json::Value {
+    let mut d = doc(name, marker);
+    d["triggers"] = triggers;
+    d
+}
+
+async fn registered(
+    w: &crate::support::engine::World,
+    workflow: sagat_domain::definition::WorkflowId,
+) -> Vec<(String, uuid::Uuid)> {
+    sqlx::query_as(
+        "SELECT match_type, version_id FROM workflow_triggers WHERE workflow_id = $1 ORDER BY match_type",
+    )
+    .bind(workflow.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("triggers")
+}
+
+#[tokio::test]
+async fn the_triggers_in_force_are_those_of_the_active_version_and_follow_a_rollback() {
+    let w = world().await;
+    let created = json!([{"kind": "event", "eventType": "order.created"}]);
+    let updated = json!([
+        {"kind": "event", "eventType": "order.created"},
+        {"kind": "event", "eventType": "order.updated"}
+    ]);
+    let (id, _) = w.publish(triggered("flow", "one", created)).await;
+    let record = w
+        .defs
+        .get_workflow(&w.admin, id, &ctx())
+        .await
+        .expect("workflow");
+    let revision = crate::common::edit(
+        &w,
+        &w.admin,
+        id,
+        record.workflow.draft_revision(),
+        &triggered("flow", "two", updated),
+    )
+    .await;
+    w.defs
+        .publish(&w.admin, id, revision, None, "key-two-0123456789", &ctx())
+        .await
+        .expect("v2");
+    let v1 = w
+        .defs
+        .get_version(&w.admin, id, 1, &ctx())
+        .await
+        .expect("v1")
+        .version
+        .id()
+        .as_uuid();
+    let v2 = w
+        .defs
+        .get_version(&w.admin, id, 2, &ctx())
+        .await
+        .expect("v2")
+        .version
+        .id()
+        .as_uuid();
+    assert_eq!(
+        registered(&w, id).await,
+        [
+            ("order.created".to_owned(), v2),
+            ("order.updated".to_owned(), v2)
+        ]
+    );
+    let created_row: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM workflow_triggers WHERE workflow_id = $1 AND match_type = 'order.created'",
+    )
+    .bind(id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("row");
+
+    // Going back removes the trigger version 1 never had, and the one both have stays the same row,
+    // so an event that was handled once is not handled again because the pointer moved.
+    let ops = operator(&w, "olivia").await;
+    // A trigger that goes away is a contract with emitters that ends: the operator is told.
+    let refused = w
+        .publishing
+        .activate(
+            &ops,
+            id,
+            1,
+            "version 2 listens to too much",
+            Some(2),
+            false,
+            &ctx(),
+        )
+        .await
+        .expect_err("a trigger is removed");
+    match refusal(refused) {
+        Refusal::BreakingChange { codes, .. } => {
+            assert!(codes.contains(&"TRIGGER_REMOVED"), "{codes:?}")
+        }
+        other => panic!("expected a breaking change, got {other:?}"),
+    }
+    assert_eq!(registered(&w, id).await.len(), 2, "and nothing moved");
+    w.publishing
+        .activate(
+            &ops,
+            id,
+            1,
+            "version 2 listens to too much; emitters are told",
+            Some(2),
+            true,
+            &ctx(),
+        )
+        .await
+        .expect("accepted");
+    assert_eq!(registered(&w, id).await, [("order.created".to_owned(), v1)]);
+    let after: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM workflow_triggers WHERE workflow_id = $1 AND match_type = 'order.created'",
+    )
+    .bind(id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("row");
+    assert_eq!(
+        after, created_row,
+        "the same trigger, pointed at the other version"
+    );
+
+    // And forward again: the trigger comes back.
+    w.publishing
+        .activate(&ops, id, 2, "version 2 is fixed", Some(1), false, &ctx())
+        .await
+        .expect("forward");
+    assert_eq!(registered(&w, id).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_rollback_that_breaks_what_callers_rely_on_must_be_accepted_by_the_operator() {
+    let w = world().await;
+    let with_note = |marker: &str, properties: serde_json::Value| {
+        let mut d = doc("flow", marker);
+        d["inputSchema"] = json!({"type": "object", "properties": properties});
+        d
+    };
+    let (id, _) = w
+        .publish(with_note("one", json!({"orderId": {"type": "string"}})))
+        .await;
+    let record = w
+        .defs
+        .get_workflow(&w.admin, id, &ctx())
+        .await
+        .expect("workflow");
+    let revision = crate::common::edit(
+        &w,
+        &w.admin,
+        id,
+        record.workflow.draft_revision(),
+        &with_note(
+            "two",
+            json!({"orderId": {"type": "string"}, "note": {"type": "string"}}),
+        ),
+    )
+    .await;
+    w.defs
+        .publish(&w.admin, id, revision, None, "key-two-0123456789", &ctx())
+        .await
+        .expect("v2");
+    let ops = operator(&w, "olivia").await;
+
+    // Callers have started to send `note` since version 2: going back drops it.
+    let refused = w
+        .publishing
+        .activate(
+            &ops,
+            id,
+            1,
+            "version 2 shows a regression",
+            Some(2),
+            false,
+            &ctx(),
+        )
+        .await
+        .expect_err("breaking");
+    match refusal(refused) {
+        Refusal::BreakingChange { findings, codes } => {
+            assert!(findings >= 1 && !codes.is_empty(), "{codes:?}");
+        }
+        other => panic!("expected a breaking change, got {other:?}"),
+    }
+    let record = w
+        .defs
+        .get_workflow(&w.admin, id, &ctx())
+        .await
+        .expect("workflow");
+    assert_eq!(
+        record.active.as_ref().map(|v| v.number()),
+        Some(2),
+        "nothing moved"
+    );
+
+    let accepted = w
+        .publishing
+        .activate(
+            &ops,
+            id,
+            1,
+            "version 2 shows a regression; callers will be told",
+            Some(2),
+            true,
+            &ctx(),
+        )
+        .await
+        .expect("accepted");
+    assert_eq!(accepted.record.kind, ActivationKind::Rollback);
+}

@@ -1,0 +1,260 @@
+//! The tenant boundary in everything this feature added: what another tenant's administrator
+//! cannot read, ask for or change, and what the store itself refuses (NFR-011-SEC).
+
+use sagat_application::error::AppError;
+use sagat_application::publishing::PublishingStore;
+use sagat_domain::identity::Environment;
+use sagat_domain::versioning::{ApprovalPolicy, Verdict};
+
+use crate::common::{developer, doc, draft, namespace};
+use crate::support::engine::{ctx, world};
+
+#[tokio::test]
+async fn nothing_of_publishing_is_readable_or_changeable_from_another_tenant() {
+    let w = world().await;
+    namespace(&w, "billing-prod", Environment::Prod).await;
+    let author = developer(&w, "author").await;
+    let reviewer = developer(&w, "reviewer").await;
+    let record = draft(
+        &w,
+        "billing-prod",
+        "payments-flow",
+        &doc("payments-flow", "v1"),
+    )
+    .await;
+    let id = record.workflow.id();
+    let request = w
+        .publishing
+        .open_request(&author, id, record.workflow.draft_revision(), None, &ctx())
+        .await
+        .expect("request");
+    w.publishing
+        .decide(
+            &reviewer,
+            request.id(),
+            Verdict::Approve,
+            "reads well",
+            &ctx(),
+        )
+        .await
+        .expect("approve");
+    w.publishing
+        .publish_request(&author, request.id(), "key-publish-0123456789", &ctx())
+        .await
+        .expect("published");
+
+    let theirs = &w.other_admin;
+    let not_found = |result: Result<(), AppError>, what: &str| {
+        assert!(
+            matches!(result, Err(AppError::NotFound)),
+            "{what}: {result:?}"
+        );
+    };
+    not_found(
+        w.publishing
+            .get_request(theirs, request.id(), &ctx())
+            .await
+            .map(|_| ()),
+        "reading a request",
+    );
+    not_found(
+        w.publishing
+            .requests(theirs, id, None, &Default::default(), &ctx())
+            .await
+            .map(|_| ()),
+        "listing the requests",
+    );
+    not_found(
+        w.publishing
+            .activations(theirs, id, &Default::default(), &ctx())
+            .await
+            .map(|_| ()),
+        "reading the history",
+    );
+    not_found(
+        w.publishing
+            .activate(
+                theirs,
+                id,
+                1,
+                "an administrator of another tenant",
+                None,
+                true,
+                &ctx(),
+            )
+            .await
+            .map(|_| ()),
+        "moving the pointer",
+    );
+    not_found(
+        w.publishing
+            .open_request(theirs, id, 1, None, &ctx())
+            .await
+            .map(|_| ()),
+        "opening a request",
+    );
+    not_found(
+        w.publishing
+            .decide(
+                theirs,
+                request.id(),
+                Verdict::Reject,
+                "a rejection from elsewhere",
+                &ctx(),
+            )
+            .await
+            .map(|_| ()),
+        "deciding a request",
+    );
+    not_found(
+        w.publishing
+            .withdraw(theirs, request.id(), &ctx())
+            .await
+            .map(|_| ()),
+        "withdrawing a request",
+    );
+    // The namespace of the policy is another tenant's too.
+    let ours = w.namespace.id();
+    not_found(
+        w.publishing.policy(theirs, ours, &ctx()).await.map(|_| ()),
+        "reading the policy",
+    );
+    not_found(
+        w.publishing
+            .set_policy(
+                theirs,
+                ours,
+                0,
+                "an administrator of another tenant",
+                &ctx(),
+            )
+            .await
+            .map(|_| ()),
+        "setting the policy",
+    );
+    // Promoting into a namespace of another tenant, or from a workflow of another tenant.
+    not_found(
+        w.publishing
+            .promote(
+                &w.admin,
+                id,
+                1,
+                w.other_namespace.id(),
+                "into somebody else's namespace",
+                true,
+                "promote-x-0123456789",
+                &ctx(),
+            )
+            .await
+            .map(|_| ()),
+        "promoting into another tenant's namespace",
+    );
+    not_found(
+        w.publishing
+            .promote(
+                theirs,
+                id,
+                1,
+                w.other_namespace.id(),
+                "out of somebody else's workflow",
+                true,
+                "promote-y-0123456789",
+                &ctx(),
+            )
+            .await
+            .map(|_| ()),
+        "promoting another tenant's workflow",
+    );
+
+    // The store answers the same way when asked directly.
+    assert!(
+        w.store
+            .request(theirs.tenant_id(), request.id())
+            .await
+            .expect("store")
+            .is_none()
+    );
+    assert!(
+        w.store
+            .stored_policy(theirs.tenant_id(), ours)
+            .await
+            .expect("store")
+            .is_none()
+    );
+    assert!(
+        w.store
+            .activations(theirs.tenant_id(), id, None, 10)
+            .await
+            .expect("store")
+            .is_empty()
+    );
+    // And nothing of theirs moved ours.
+    let history = w
+        .publishing
+        .activations(&w.admin, id, &Default::default(), &ctx())
+        .await
+        .expect("history");
+    assert_eq!(history.items.len(), 1);
+}
+
+#[tokio::test]
+async fn the_database_refuses_a_policy_a_request_or_a_dependency_that_points_into_another_tenant() {
+    let w = world().await;
+    let ours = w.namespace.id().as_uuid();
+    let theirs = w.other_admin.tenant_id().as_uuid();
+    // A policy for our namespace written under their tenant.
+    let refused = sqlx::query(
+        "INSERT INTO publication_policies (tenant_id, namespace_id, required_approvals, set_by, set_at) \
+         VALUES ($1, $2, 1, 'mallory', now())",
+    )
+    .bind(theirs)
+    .bind(ours)
+    .execute(&w.db.pool)
+    .await
+    .expect_err("composite foreign key");
+    let (code, constraint) = crate::support::db_error(refused);
+    assert_eq!(code, "23503");
+    assert_eq!(
+        constraint.as_deref(),
+        Some("publication_policies_namespace_fk")
+    );
+
+    // A policy of the right tenant outside the range.
+    let refused = sqlx::query(
+        "INSERT INTO publication_policies (tenant_id, namespace_id, required_approvals, set_by, set_at) \
+         VALUES ($1, $2, 9, 'alice', now())",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(ours)
+    .execute(&w.db.pool)
+    .await
+    .expect_err("range");
+    let (code, constraint) = crate::support::db_error(refused);
+    assert_eq!(code, "23514");
+    assert_eq!(constraint.as_deref(), Some("publication_policies_range"));
+    let _ = ApprovalPolicy::NONE;
+}
+
+#[tokio::test]
+async fn the_history_of_the_pointer_cannot_be_rewritten() {
+    let w = world().await;
+    let (id, _) = w.publish(doc("flow", "one")).await;
+    for statement in [
+        "UPDATE workflow_activations SET reason = 'rewritten'",
+        "DELETE FROM workflow_activations",
+        "TRUNCATE workflow_activations",
+    ] {
+        let refused = sqlx::query(statement)
+            .execute(&w.db.pool)
+            .await
+            .expect_err("append-only");
+        let (code, _) = crate::support::db_error(refused);
+        assert_eq!(code, "23001", "{statement}");
+    }
+    let history = w
+        .publishing
+        .activations(&w.admin, id, &Default::default(), &ctx())
+        .await
+        .expect("history");
+    assert_eq!(history.items.len(), 1);
+}

@@ -8,4 +8,8 @@ mod support;
 
 mod activation;
 mod approvals;
+mod artifacts;
 mod common;
+mod isolation;
+mod migration;
+mod promotion;
