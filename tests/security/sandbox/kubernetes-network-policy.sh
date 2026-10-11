@@ -88,6 +88,7 @@ done
 if ! kubectl apply --dry-run=server --namespace "$namespace" \
   -f "$work_dir/rendered.yaml" -o json >"$work_dir/rendered.json"; then
   fail 'the chart is not admitted by the restricted Pod Security profile'
+  exit 1
 elif ! jq -e '
   def podspec:
     if .kind == "CronJob" then .spec.jobTemplate.spec.template.spec
@@ -102,10 +103,15 @@ elif ! jq -e '
   fail 'every rendered workload container must set readOnlyRootFilesystem=true'
 fi
 
-# shellcheck disable=SC2086
-helm template "$release" "$chart_dir" --namespace "$namespace" $helm_args \
-  --show-only templates/networkpolicy.yaml >"$work_dir/networkpolicy.yaml"
-kubectl apply --namespace "$namespace" -f "$work_dir/networkpolicy.yaml" >/dev/null
+# Extract every policy from the complete render. Feature 009 adds egress in a separate template after
+# the Feature 010 chart integrates; naming one template here would silently leave those policies out.
+jq '{apiVersion: "v1", kind: "List", items: [.items[] | select(.kind == "NetworkPolicy")]}' \
+  "$work_dir/rendered.json" >"$work_dir/networkpolicies.json"
+if [ "$(jq '.items | length' "$work_dir/networkpolicies.json")" -eq 0 ]; then
+  fail 'the chart rendered no NetworkPolicy objects'
+  exit 1
+fi
+kubectl apply --namespace "$namespace" -f "$work_dir/networkpolicies.json" >/dev/null
 
 cat >"$work_dir/probes.yaml" <<EOF
 apiVersion: v1
