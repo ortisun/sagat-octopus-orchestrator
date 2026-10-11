@@ -1,7 +1,7 @@
 {
   "name": "@sagat/e2e",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Journeys of the Studio in a real browser, against a real platform started by tests/e2e/workflow-studio.",
   "scripts": {
