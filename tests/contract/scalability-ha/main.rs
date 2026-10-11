@@ -87,6 +87,40 @@ fn named<'a>(docs: &'a [Value], kind: &str, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no {kind} named {name}"))
 }
 
+fn rule_for_port<'a>(policy: &'a Value, direction: &str, port: u64, protocol: &str) -> &'a Value {
+    policy["spec"][direction]
+        .as_array()
+        .unwrap_or_else(|| panic!("{} has no {direction} rules", policy["metadata"]["name"]))
+        .iter()
+        .find(|rule| {
+            rule["ports"].as_array().is_some_and(|ports| {
+                ports.iter().any(|candidate| {
+                    candidate["port"].as_u64() == Some(port)
+                        && candidate["protocol"].as_str() == Some(protocol)
+                })
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{} has no {direction} rule for {protocol}/{port}",
+                policy["metadata"]["name"]
+            )
+        })
+}
+
+fn has_rule_for_port(policy: &Value, direction: &str, port: u64, protocol: &str) -> bool {
+    policy["spec"][direction].as_array().is_some_and(|rules| {
+        rules.iter().any(|rule| {
+            rule["ports"].as_array().is_some_and(|ports| {
+                ports.iter().any(|candidate| {
+                    candidate["port"].as_u64() == Some(port)
+                        && candidate["protocol"].as_str() == Some(protocol)
+                })
+            })
+        })
+    })
+}
+
 /// The environment of the first container, name to value (a reference to a Secret or a field is
 /// given a stand-in, as the pod would resolve it).
 fn env_of(deployment: &Value) -> BTreeMap<String, String> {
@@ -307,13 +341,191 @@ fn the_admin_ports_answer_the_monitoring_namespace_only() {
             "monitoring"
         );
     }
+    for (policy, port) in [
+        ("sagat-octopus-orchestrator-control-plane", 8080),
+        ("sagat-octopus-orchestrator-engine", 9000),
+    ] {
+        let policy = named(&docs, "NetworkPolicy", policy);
+        let api = rule_for_port(policy, "ingress", port, "TCP");
+        assert_eq!(
+            api["from"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"],
+            "sagat-octopus-orchestrator"
+        );
+        assert_eq!(
+            api["from"][0]["podSelector"]["matchExpressions"][0]["operator"],
+            "In"
+        );
+        assert_eq!(
+            api["from"][0]["podSelector"]["matchExpressions"][0]["values"],
+            serde_json::json!(["worker-render", "worker-export"])
+        );
+    }
     // The pods listen on those ports only because the NetworkPolicy keeps others out.
     let engine = named(&docs, "Deployment", "sagat-octopus-orchestrator-engine");
     assert_eq!(env_of(engine)["SAGAT_ADMIN_ADDR"], "0.0.0.0:9091");
-    let off = render(&with(
-        &serde_json::json!({"networkPolicy": {"enabled": false}}),
-    ));
+    let off = render(&with(&serde_json::json!({
+        "networkPolicy": {
+            "enabled": false,
+            "metricsFrom": [],
+            "apiFrom": [],
+            "workersFrom": [],
+            "egress": {
+                "dnsTo": [],
+                "postgres": {"to": []},
+                "oidc": {"to": []},
+                "nats": {"to": []}
+            }
+        }
+    })));
     assert!(of_kind(&off, "NetworkPolicy").is_empty());
+}
+
+#[test]
+fn control_plane_and_engine_egress_only_to_declared_dependencies() {
+    let docs = render(&base());
+    assert_eq!(
+        of_kind(&docs, "NetworkPolicy").len(),
+        6,
+        "two ingress, two core egress and one policy per worker pool"
+    );
+
+    let control_plane = named(
+        &docs,
+        "NetworkPolicy",
+        "sagat-octopus-orchestrator-control-plane-egress",
+    );
+    assert_eq!(
+        control_plane["spec"]["policyTypes"],
+        serde_json::json!(["Egress"])
+    );
+    assert_eq!(
+        control_plane["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"],
+        "control-plane"
+    );
+    let control_rules = control_plane["spec"]["egress"].as_array().expect("egress");
+    assert_eq!(control_rules.len(), 3);
+    let dns = rule_for_port(control_plane, "egress", 53, "UDP");
+    assert!(has_rule_for_port(control_plane, "egress", 53, "TCP"));
+    assert_eq!(
+        dns["to"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
+        "kube-system"
+    );
+    assert_eq!(
+        dns["to"][0]["podSelector"]["matchLabels"]["k8s-app"],
+        "kube-dns"
+    );
+    let postgres = rule_for_port(control_plane, "egress", 5432, "TCP");
+    assert_eq!(
+        postgres["to"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
+        "database"
+    );
+    let oidc = rule_for_port(control_plane, "egress", 443, "TCP");
+    assert_eq!(
+        oidc["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"],
+        "identity-provider"
+    );
+    assert!(!has_rule_for_port(control_plane, "egress", 4222, "TCP"));
+
+    let engine = named(
+        &docs,
+        "NetworkPolicy",
+        "sagat-octopus-orchestrator-engine-egress",
+    );
+    assert_eq!(engine["spec"]["policyTypes"], serde_json::json!(["Egress"]));
+    assert_eq!(
+        engine["spec"]["egress"].as_array().expect("egress").len(),
+        4
+    );
+    assert!(has_rule_for_port(engine, "egress", 53, "UDP"));
+    assert!(has_rule_for_port(engine, "egress", 53, "TCP"));
+    assert!(has_rule_for_port(engine, "egress", 5432, "TCP"));
+    assert!(has_rule_for_port(engine, "egress", 443, "TCP"));
+    let nats = rule_for_port(engine, "egress", 4222, "TCP");
+    assert_eq!(
+        nats["to"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
+        "nats"
+    );
+    assert_eq!(
+        nats["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"],
+        "nats"
+    );
+
+    let without_nats = render(&with(&serde_json::json!({
+        "nats": {"url": ""},
+        "networkPolicy": {"egress": {"nats": {"to": []}}}
+    })));
+    let engine = named(
+        &without_nats,
+        "NetworkPolicy",
+        "sagat-octopus-orchestrator-engine-egress",
+    );
+    assert!(!has_rule_for_port(engine, "egress", 4222, "TCP"));
+    assert_eq!(
+        engine["spec"]["egress"].as_array().expect("egress").len(),
+        3
+    );
+}
+
+#[test]
+fn worker_policies_are_release_scoped_and_pool_overrides_do_not_leak() {
+    let docs = render(&base());
+    let render = named(
+        &docs,
+        "NetworkPolicy",
+        "sagat-octopus-orchestrator-worker-render",
+    );
+    assert_eq!(
+        render["spec"]["policyTypes"],
+        serde_json::json!(["Ingress", "Egress"])
+    );
+    assert_eq!(
+        render["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"],
+        "worker-render"
+    );
+    let control_plane = rule_for_port(render, "egress", 8080, "TCP");
+    assert_eq!(
+        control_plane["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/instance"],
+        "sagat"
+    );
+    assert_eq!(
+        control_plane["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/component"],
+        "control-plane"
+    );
+    let engine = rule_for_port(render, "egress", 9000, "TCP");
+    assert_eq!(
+        engine["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/component"],
+        "execution-engine"
+    );
+    assert!(!has_rule_for_port(render, "egress", 5432, "TCP"));
+    assert!(!has_rule_for_port(render, "egress", 4222, "TCP"));
+    assert!(has_rule_for_port(render, "egress", 53, "UDP"));
+    assert!(has_rule_for_port(render, "egress", 53, "TCP"));
+    let pool_extra = rule_for_port(render, "egress", 8443, "TCP");
+    assert_eq!(
+        pool_extra["to"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
+        "render-assets"
+    );
+    let ingress_extra = rule_for_port(render, "ingress", 9443, "TCP");
+    assert_eq!(
+        ingress_extra["from"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"],
+        "pool-controller"
+    );
+
+    let export = named(
+        &docs,
+        "NetworkPolicy",
+        "sagat-octopus-orchestrator-worker-export",
+    );
+    assert_eq!(export["spec"]["ingress"], serde_json::json!([]));
+    assert_eq!(
+        export["spec"]["egress"].as_array().expect("egress").len(),
+        3
+    );
+    assert!(!has_rule_for_port(export, "egress", 8443, "TCP"));
+    assert!(has_rule_for_port(export, "egress", 53, "UDP"));
+    assert!(has_rule_for_port(export, "egress", 53, "TCP"));
+    assert!(has_rule_for_port(export, "egress", 8080, "TCP"));
+    assert!(has_rule_for_port(export, "egress", 9000, "TCP"));
 }
 
 /// The names of the metrics the code records.

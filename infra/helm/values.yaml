@@ -122,6 +122,10 @@ engine:
 #     env: []                           # the worker's own configuration (server, tokens from Secrets)
 #     envFrom: []
 #     resources: {requests: {cpu: 500m, memory: 512Mi}}
+#     networkPolicy:
+#       # Optional, pool-specific rules. Every rule needs explicit peers and integer ports.
+#       extraEgress: []
+#       extraIngress: []
 #     autoscaling:
 #       enabled: true
 #       minReplicaCount: 1
@@ -139,16 +143,38 @@ workerPoolAutoscaling:
 metrics:
   selector: ""
 
-# Who may reach the pods. The admin listeners (metrics, probes) are unauthenticated.
+# Who may reach the pods and which dependencies the platform pods may reach. NetworkPolicy peers
+# cannot name hostnames: use pod/namespace selectors for in-cluster dependencies or operator-owned
+# CIDRs for external services. Empty/global peers are refused rather than rendered as allow-all.
 networkPolicy:
   enabled: true
   # Labels of the namespace(s) and pods that may scrape the admin port. It cannot be empty: an empty
   # `from` in a NetworkPolicy means everybody, and the admin ports have no authentication.
   metricsFrom:
     - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
-  # Where the API and the worker API are reached from; empty: from anywhere in the cluster.
+  # Explicit callers of the REST API and worker gRPC API. Both are required when policy is enabled.
+  # A podSelector without a namespaceSelector matches only this release namespace.
   apiFrom: []
   workersFrom: []
+  egress:
+    # Cluster DNS. Adapt these labels for a provider that uses NodeLocal DNS or different labels.
+    dnsTo: []
+    # DATABASE_URL and oidc.* remain the connection authority. These peers are the network boundary
+    # for the same dependencies and must be supplied explicitly when policy is enabled.
+    postgres:
+      port: 5432
+      to: []
+    oidc:
+      port: 443
+      to: []
+    # Required only when nats.url is nonempty.
+    nats:
+      port: 4222
+      to: []
+    # Optional complete NetworkPolicy egress rules for deployment-specific dependencies. Rules with
+    # missing peers or ports, named ports, unsupported protocols or global peers are refused.
+    controlPlaneExtra: []
+    engineExtra: []
 
 serviceAccount:
   create: true
