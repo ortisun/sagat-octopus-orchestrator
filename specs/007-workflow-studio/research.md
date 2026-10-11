@@ -131,6 +131,35 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   The document cannot be left pointing at a node that is not there by the Studio's own doing.
 - **D153 — The CSP allows inline styles and no inline script.** `style-src 'self' 'unsafe-inline'`: the code editor and the canvas
   set styles from script, and CSS cannot run code; `script-src 'self'` has no `unsafe-inline`, no `unsafe-eval`, no remote origin.
+- **D154 — The visual direction is a Claude Design project; the repository keeps a dated record of it** (`design/README.md`, with the
+  reference image `design/runs-prototype.jpg`). The project is mutable and private to its owner, so the Studio is built from what
+  the repository records, and a change in the project reaches the Studio by updating that record first (the same change as the
+  code that follows it, AGENTS.md rule 10). The record says what was measured and what is not known (G160); a value is not
+  written down that was only guessed.
+- **D155 — The accessibility floor wins over the direction.** FR-007-008 holds in every theme: where a colour of the prototype fails
+  its threshold (text 4.5 : 1, the boundary of a control and a focus ring 3 : 1) the Studio uses a lighter or stronger value, and
+  the deviation is listed in `design/README.md` with its ratio. Decorative lines and card borders keep the prototype's weight.
+  Rejected: following the prototype to the letter, which would relax a constraint the journeys test (a product decision, not an
+  implementation detail).
+- **D156 — The labels stay in English; the prototype's Portuguese is mapped in `design/README.md`.** The platform's errors, the
+  documentation and the existing journeys are English; a translation is an internationalisation feature, not a restyling.
+- **D157 — Light and dark are both themes of the Studio, derived from the same tokens, and the default is the system's colour
+  scheme.** Decided by the owner on 2026-10-10. Dark is the theme the prototype is drawn in, so its values are exact and it is
+  reviewed first; the light theme is not in the design and is derived from the same hues and the same contrast floor (G160, G161),
+  for the owner to review. Nothing forces a theme on a person who set their system to the other. The `data-theme` attribute stays the
+  explicit override that the stylesheet and the code editor already read (the editor follows it and the system's scheme); the
+  journeys do not exercise both themes today and T007-044 adds that. A control in the interface to choose a theme is not part of
+  this decision and is not built.
+- **D158 — The Runs screen is a composition, not a new route.** On a wide viewport the list and the detail pane sit side by side;
+  the URL of a run stays `/runs/:id`, so a link, a reload, the back button and the journeys keep their meaning; where the two
+  stop reflowing (320 px, WCAG 1.4.10) it is the two pages it is today. The *Table* tab, the accessible alternative to the graph,
+  stays beside the prototype's tabs.
+- **D159 — The fonts (Geist, Geist Mono) are bundled, not loaded from Google Fonts.** The prototype links them from a remote
+  stylesheet; the Studio's policy is `default-src 'none'` with `font-src 'self'` and `style-src 'self' 'unsafe-inline'`, and
+  D138 forbids a CDN so that the editor works offline. The faces are open (SIL OFL), so they are served from the platform's own
+  origin as files of the build; the packages that carry them follow D138 (pinned by `package-lock.json`, at least two weeks old,
+  `npm ci --ignore-scripts`) and are added only with the licence read. The system stacks of `base.css` stay as the fallback
+  (G166).
 
 ## Gaps (feature 007: G142 onwards)
 
@@ -199,4 +228,37 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   errors: what a person sees fail is shown with the trace id the platform gave the request (`ErrorState`, SC-007-004), and the
   platform's own spans, request metrics and the stream gauges and counters (`run_streams_open`, `run_streams_refused_total`,
   `run_streams_tick_errors_total`) are what an operator has. A page that fails before it talks to the platform leaves no record.
+- **G160 — The design is exact for the dark theme of the Runs screen only.** The owner's export of 2026-10-10 gave the source of
+  `sagat-octopus.dc.html`, and `design/README.md` is written from it: colours in `oklch`, the faces, the type scale, radii, sizes,
+  the graph. (A first version had been written from a capture of the running prototype; one of its numbers was wrong and is
+  corrected in the record.) **Still not in the design:** the light theme, focus rings, disabled states, motion, loading and error
+  states, and how it behaves below 1180 px (the prototype is fixed at a minimum width of 1180 px). Those are derived by the
+  Studio from the same tokens and are the owner's to review (G161).
+- **G161 — Only the Runs screen is designed.** The workflow editor (canvas, palette, inspector, validation, publish, diff), the
+  Scripts pages, the sign-in and the empty, loading and error states have no reference. The owner asked for all screens at once;
+  they are derived from the same tokens and language **without a design**, and each is a proposal for the owner to review, not an
+  implementation of one (T007-043).
+- **G162 — The logo is undecided.** The project holds three geometric options and a provisional "S" mark. The Studio keeps its text
+  brand until one is chosen; the provisional mark is not adopted.
+- **G163 — The shell of the prototype lists what the platform does not have.** Schedules, Workers, Task queues, Secrets and
+  Settings are other features' pages (no link to a page that does not exist); the counts beside the navigation and the filters
+  need a count the API does not give (it pages by cursor); the sidebar's active workers and queue backlog have no read API. **Scripts
+  is a page of the Studio that the prototype's navigation does not list**: it keeps an item, and where it sits is the owner's call.
+- **G164 — A run has no queue, no worker and no trigger kind.** `Run` carries `startedBy`, not the way it was started; the strip of
+  facts shows what exists (*Started*, *Duration*, *Started by*, and what the Studio already shows) and omits the rest. Adding them is
+  a contract change for the features that own the run.
+- **G165 — The prototype's tweaks (`graphLayout`, `liveUpdates`, `defaultTab`) are not settings of the Studio.** The layout is computed
+  (D151), updates are followed live with the polling fallback (FR-007-006), and the first tab follows the viewer's preference for motion
+  and the size of the graph. Whether any of them should be a setting is the owner's question; none is built as a setting.
+- **G166 — The faces are not in the repository yet.** Until Geist and Geist Mono are added as packages or as files (D159), the Studio
+  draws with the system stacks and the screens differ from the prototype in the shape of the letters and in the width of the text;
+  a layout that fits the prototype's faces is tested with the fallback too, because that is what a browser shows while a face
+  loads.
+- **G167 — The design has a *Send signal* button, the platform has the operation (`signalRun`), the Studio has no such action.**
+  A signal has a name, a payload and consequences (it wakes every `waitEvent` node that expects it; one that nobody waits for is a
+  `409`), so it is a feature of the Studio with its own confirmation, permission and tests, not a restyle. Not built here; the
+  owner decides whether it is part of 007.
+- **G168 — The prototype's *Timeline* (a bar per step over elapsed time) has no counterpart.** The Studio's *Timeline* tab is the
+  journal, which is what the prototype calls *Event history*. A bar view is a new view over the step times of the graph (and, for a
+  run of thousands of steps, over the virtualised list of D147); it is not built by this restyle.
 

@@ -19,8 +19,8 @@ The floors were fixed before the three measured rounds, after one exploratory ru
 - OS: Darwin 25.3.0 arm64; Node v26.8.1
 - Browser: Chromium 153.0.8010.12 (headless, the one Playwright installs)
 - Studio: the production build (vite build, minified), served by the platform
-- Load average when the run began: 7.1 6.9 6.22
-- Commit: b2fcee6
+- Load average when the run began: 5.24 5.09 5.39
+- Commit: 969a748 (with uncommitted changes at the time of the run)
 - Rounds per scenario: 3; each round is a new browser context (a cold page); every cell is the median round, with the lowest and highest in brackets
 - The platform, the engine and the browser on the same machine, over loopback; PostgreSQL in a container
 
@@ -28,44 +28,44 @@ The floors were fixed before the three measured rounds, after one exploratory ru
 
 | Measure | Result |
 |---|---|
-| Time until the first card is drawn | 696 ms (687–764) |
+| Time until the first card is drawn | 702 ms (698–715) |
 | Cards in the page (the editor draws all of them up to 1 000) | 1000 (1000–1000) |
-| Time for the platform's check of the draft to answer | 40 ms (38–40) |
-| Time from Enter on a card to its fields in the inspector | 142 ms (142–145) |
-| JavaScript heap | 87 MB (82–87) |
+| Time for the platform's check of the draft to answer | 38 ms (38–41) |
+| Time from Enter on a card to its fields in the inspector | 144 ms (142–159) |
+| JavaScript heap | 82 MB (65–87) |
 
 | Interaction (about 4 s each) | Frames per second | Median frame | 95th percentile | Slowest frame | Frames over 50 ms |
 |---|---|---|---|---|---|
-| Pan (drag the background) | 59.1 (58.9–59.4) | 16.7 ms (16.7–16.7) | 16.8 ms (16.8–16.8) | 33.4 ms (33.4–50.0) | 0 (0–0) |
-| Zoom (Ctrl and wheel) | 59.8 (59.5–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.8) | 33.3 ms (16.8–33.4) | 0 (0–0) |
+| Pan (drag the background) | 59.2 (59.1–59.4) | 16.7 ms (16.7–16.7) | 16.8 ms (16.7–16.8) | 33.4 ms (33.3–33.4) | 0 (0–0) |
+| Zoom (Ctrl and wheel) | 60.0 (59.8–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.7) | 16.8 ms (16.8–33.4) | 0 (0–0) |
 
 ## A run of 9991 nodes (a chain of 3 330 diamonds), none of them started
 
 | Measure | Result |
 |---|---|
-| Time until the first card of the graph is drawn | 1352 ms (1324–1360) |
+| Time until the first card of the graph is drawn | 1198 ms (1183–1317) |
 | Cards in the page of 9991 (simplified cards, only those in view) | 377 (377–377) |
-| Time from the click on the Table tab to its first row | 69 ms (59–72) |
+| Time from the click on the Table tab to its first row | 72 ms (60–72) |
 | Most rows in the page at any point of a scroll through all of them | 29 (29–29) |
 | Index of the last row reached | 9990, 9990, 9990 |
-| Time to find one step by typing its id | 9 ms (8–9) |
-| JavaScript heap with the graph open | 290 MB (273–290) |
-| JavaScript heap after the table was scrolled through | 290 MB (273–290) |
+| Time to find one step by typing its id | 8 ms (8–8) |
+| JavaScript heap with the graph open | 273 MB (273–290) |
+| JavaScript heap after the table was scrolled through | 273 MB (273–290) |
 
 | Interaction | Frames per second | Median frame | 95th percentile | Slowest frame | Frames over 50 ms |
 |---|---|---|---|---|---|
-| Pan the graph (about 4 s) | 60.0 (59.8–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.8) | 16.8 ms (16.8–33.4) | 0 (0–0) |
-| Scroll the table from the first row to the last (one screenful per frame) | 60.0 (59.9–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.7) | 16.8 ms (16.8–33.3) | 0 (0–0) |
+| Pan the graph (about 4 s) | 60.0 (60.0–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.7) | 16.8 ms (16.8–16.8) | 0 (0–0) |
+| Scroll the table from the first row to the last (one screenful per frame) | 60.0 (60.0–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.8) | 16.8 ms (16.8–16.8) | 0 (0–0) |
 
 ## Results against the hypotheses
 
 | | Hypothesis | Result |
 |---|---|---|
-| H1 | the editor opens 1 000 nodes in ≤ 3 s | held (slowest round 764 ms) |
+| H1 | the editor opens 1 000 nodes in ≤ 3 s | held (slowest round 715 ms) |
 | H2 | pan and zoom of 1 000 nodes: median ≤ 33.4 ms, p95 ≤ 50 ms | held |
-| H3 | a run of 9991 nodes: first card ≤ 10 s, ≤ 10 % of the cards drawn, smooth pan | held (slowest round 1360 ms; most cards drawn 377) |
+| H3 | a run of 9991 nodes: first card ≤ 10 s, ≤ 10 % of the cards drawn, smooth pan | held (slowest round 1317 ms; most cards drawn 377) |
 | H4 | the table: opens in ≤ 3 s, ≤ 100 rows in the page, last row reached, smooth scroll | held (slowest 72 ms; most rows 29) |
-| H5 | the filter finds one step in ≤ 2 s | held (slowest 9 ms) |
+| H5 | the filter finds one step in ≤ 2 s | held (slowest 8 ms) |
 | H6 | heap ≤ 512 MB | held (highest 290 MB) |
 
 ## What this report does not say
@@ -74,6 +74,6 @@ The floors were fixed before the three measured rounds, after one exploratory ru
 - **Frames are measured with `requestAnimationFrame`,** which on a 60 Hz display tops out at 60 per second: a figure of 60 says "no frame was missed", not "it could do more". The scripted drag and wheel are not a person: a person pauses.
 - **The shape of the graphs is one shape:** a chain of diamonds, two wide. A wide graph (hundreds of branches side by side) or one with many edges per node draws differently; it was not measured.
 - **Dragging a card** in the editor and **editing while 1 000 nodes are drawn** were not measured beyond the keyboard selection above.
-- **The run is not moving:** its nodes are not started, so no live updates arrived while it was measured. The cost of a live update on a large run is bounded by the design (a node changes only through events that name it, and the table redraws the rows in view) and by the unit tests of the model, but this benchmark did not put a number on it.
+- **The run is not moving:** its nodes are not started, so no live updates arrived while it was measured. The size of a live update is bounded by the design (a change carries the steps its events name or create, and the table redraws the rows in view) and the model is unit-tested, but this benchmark did not put a time on applying updates to a large run.
 - **The heap is Chromium's `performance.memory`,** which is coarse (it is rounded and updated lazily) and says nothing about the memory of the browser outside the page.
 - **Loopback network.** The platform and the browser are on the same machine; the time to fetch 9991 nodes of graph over a real network is not in these figures.

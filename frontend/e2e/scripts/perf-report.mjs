@@ -123,7 +123,7 @@ ${row('Scroll the table from the first row to the last (one screenful per frame)
 - **Frames are measured with \`requestAnimationFrame\`,** which on a 60 Hz display tops out at 60 per second: a figure of 60 says "no frame was missed", not "it could do more". The scripted drag and wheel are not a person: a person pauses.
 - **The shape of the graphs is one shape:** a chain of diamonds, two wide. A wide graph (hundreds of branches side by side) or one with many edges per node draws differently; it was not measured.
 - **Dragging a card** in the editor and **editing while 1 000 nodes are drawn** were not measured beyond the keyboard selection above.
-- **The run is not moving:** its nodes are not started, so no live updates arrived while it was measured. The cost of a live update on a large run is bounded by the design (a node changes only through events that name it, and the table redraws the rows in view) and by the unit tests of the model, but this benchmark did not put a number on it.
+- **The run is not moving:** its nodes are not started, so no live updates arrived while it was measured. The size of a live update is bounded by the design (a change carries the steps its events name or create, and the table redraws the rows in view) and the model is unit-tested, but this benchmark did not put a time on applying updates to a large run.
 - **The heap is Chromium's \`performance.memory\`,** which is coarse (it is rounded and updated lazily) and says nothing about the memory of the browser outside the page.
 - **Loopback network.** The platform and the browser are on the same machine; the time to fetch ${run10k.nodes} nodes of graph over a real network is not in these figures.
 `;
