@@ -2781,6 +2781,7 @@ components:
           properties:
             releaseNotes: {type: [string, 'null']}
             document: {$ref: '#/components/schemas/JsonObject'}
+            scripts: {type: array, items: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}, description: 'The digests of the script artifacts the version pins (feature 011), sorted. Present when a single version is read.'}
     VersionPage:
       type: object
       required: [items]

@@ -175,6 +175,13 @@ pub trait PublishingStore: DefinitionStore {
         id: RequestId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// The digests of the script artifacts a version pins, sorted.
+    fn version_scripts(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+    ) -> impl Future<Output = Result<Vec<String>, StoreError>> + Send;
+
     fn stored_policy(
         &self,
         tenant: TenantId,
@@ -285,6 +292,30 @@ where
             clock,
             codec,
         }
+    }
+
+    // ------------------------------------------------------------------ dependencies
+
+    /// The script artifacts the version pins (FR-011-001): what a promotion has to find in the target
+    /// and what the database will not let be removed while the version exists.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `definition:read`; [`AppError::NotFound`].
+    pub async fn dependencies(
+        &self,
+        principal: &Principal,
+        workflow: WorkflowId,
+        version: u32,
+        ctx: &RequestContext,
+    ) -> Result<Vec<String>, AppError> {
+        let record = self
+            .definitions
+            .get_version(principal, workflow, version, ctx)
+            .await?;
+        Ok(self
+            .store
+            .version_scripts(principal.tenant_id(), record.version.id())
+            .await?)
     }
 
     // ------------------------------------------------------------------ policy
@@ -991,10 +1022,10 @@ where
             if !clean {
                 return Err(AppError::Versioning(Refusal::DraftHasChanges));
             }
-            if let (Some(active_document), false) = (&active_document, accept_breaking) {
-                if let Some(refusal) = self.breaking(active_document, &from.document)? {
-                    return Err(AppError::Versioning(refusal));
-                }
+            if let (Some(active_document), false) = (&active_document, accept_breaking)
+                && let Some(refusal) = self.breaking(active_document, &from.document)?
+            {
+                return Err(AppError::Versioning(refusal));
             }
             let updated = if draft_digest.as_ref() == Some(from.version.digest()) {
                 existing.workflow.draft_revision()

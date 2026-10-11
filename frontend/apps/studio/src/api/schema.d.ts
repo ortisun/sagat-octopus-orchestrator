@@ -188,7 +188,7 @@ export interface paths {
         put?: never;
         /**
          * Publish an immutable workflow version and make it active
-         * @description Validates the draft against the workflow schema, the graph rules and the expression subset. A document with no engine yet (foreach, humanApproval) is refused with a reason. A `script` node pins the digest of a ready script artifact of the tenant (`UNKNOWN_SCRIPT` otherwise) and runs as the activity `script.sha256-<hex>`. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
+         * @description Validates the draft against the workflow schema, the graph rules and the expression subset. A namespace that asks for approvals (production by default, see `getPublicationPolicy`) refuses it with `409 APPROVAL_REQUIRED`, and the draft goes through `openPublicationRequest` instead. A document with no engine yet (foreach, humanApproval) is refused with a reason. A `script` node pins the digest of a ready script artifact of the tenant (`UNKNOWN_SCRIPT` otherwise) and runs as the activity `script.sha256-<hex>`. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
          */
         post: operations["publishWorkflow"];
         delete?: never;
@@ -849,6 +849,214 @@ export interface paths {
         get: operations["listAuditRecords"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/publication-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How many approvals a publication into the namespace needs
+         * @description Needs `definition:read`. One approval in a production namespace and none elsewhere until an administrator sets it (`source` says which). The author of a request is never one of the approvers, whatever the number.
+         */
+        get: operations["getPublicationPolicy"];
+        /**
+         * Set how many approvals a publication into the namespace needs
+         * @description Needs `publication:manage` (administrators). From 0 to 3. It applies to what is published after it is set: a request that was approved under a lower number needs the extra approvals before it is published. Audited with the justification in `reason`.
+         */
+        put: operations["setPublicationPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflows/{workflowId}/publication-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The requests to publish a workflow, newest first
+         * @description Needs `definition:read`. Narrowed by `state`.
+         */
+        get: operations["listPublicationRequests"];
+        put?: never;
+        /**
+         * Ask for the draft to be approved and published
+         * @description Needs `definition:publish`. The draft must be publishable as it stands at `draftRevision` (the checks of publishing run now, so nobody is asked to approve what cannot be published). The request names that revision and the digest of the document; approvers see exactly that. There is one open request per workflow: `409 REQUEST_OPEN` names it. Editing the draft afterwards supersedes the request.
+         */
+        post: operations["openPublicationRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publication-requests/{requestId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A request to publish, with what each person decided
+         * @description Needs `definition:read`.
+         */
+        get: operations["getPublicationRequest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publication-requests/{requestId}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a request to publish
+         * @description Needs `publication:approve`. Never the author of the request (`403 AUTHOR_CANNOT_DECIDE`), and a person decides once (`409 ALREADY_DECIDED`). The request is `APPROVED` when it has as many approvals as the policy asked for. Audited with the justification in `reason`.
+         */
+        post: operations["approvePublicationRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publication-requests/{requestId}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject a request to publish
+         * @description Needs `publication:approve`. One rejection ends the request whatever the others said. Same rules as approving.
+         */
+        post: operations["rejectPublicationRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publication-requests/{requestId}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take a request to publish back
+         * @description Needs `definition:publish`, and only the author of the request (`403 NOT_THE_AUTHOR`). Final.
+         */
+        post: operations["withdrawPublicationRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publication-requests/{requestId}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish an approved request
+         * @description Needs `definition:publish`. Publishes the draft at the revision the request names, as the version its approvers saw, and makes it active. Refused (`409`) if the request is not approved, if the policy now asks for more approvals than it has (`NOT_ENOUGH_APPROVALS`), or if the draft moved on (the request is then `SUPERSEDED`). The change of the active version records the request, so the history says who asked, who approved and who published.
+         */
+        post: operations["publishPublicationRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflows/{workflowId}/activations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The history of the active version of a workflow, newest first
+         * @description Needs `definition:read`. Every publication, promotion, rollback and activation, with who did it, why, and for a publication through a request, which request. Append-only: the database refuses to change or remove a row. The newest row is the active version.
+         */
+        get: operations["listWorkflowActivations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflows/{workflowId}/active-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Point new runs at a version that was published already
+         * @description Needs `version:activate` (operators and administrators). A rollback when the version is older than the active one, the way forward again otherwise. Nothing is rewritten: the versions are as they were, the runs in flight keep the version they started with, the event triggers become those of the version, and the change is a row of the history. `expectedVersion`, the version the caller saw active, makes the change refused (`409 ACTIVE_VERSION_CHANGED`) if someone moved it meanwhile. A change that breaks what callers and emitters rely on (a trigger gone, an input property gone, retyped or newly required, an output property gone) is refused (`409 BREAKING_CHANGE`, with the codes) unless `acceptBreaking` is set. Asking for the version that is active is answered `200` with `changed: false`. Audited with the justification in `reason`.
+         */
+        put: operations["activateWorkflowVersion"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflows/{workflowId}/versions/{versionNumber}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish a version into another namespace as the same document
+         * @description Needs `definition:publish` and `definition:write`. Takes the document of the version, byte for byte, and publishes it into the namespace `namespaceId` as the workflow of the same name (created if it is not there), so that what was tried in one environment is exactly what reaches the next. The target must be another namespace of the same environment or a later one (dev, staging, production). It stops at what the target does not have (a secret) and at a draft with changes nobody published (`409 DRAFT_HAS_CHANGES`), which it never overwrites; a change that breaks callers and emitters of the target needs `acceptBreaking`. If the target namespace asks for approvals, a request bound to that document is opened (`202`, `outcome: REQUESTED`); otherwise it is published at once (`201`, `PUBLISHED`); if the target runs this document already nothing changes (`200`, `ALREADY_ACTIVE`). The history of the target says where the version came from.
+         */
+        post: operations["promoteWorkflowVersion"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1757,6 +1965,8 @@ export interface components {
         WorkflowVersionDocument: components["schemas"]["VersionSummary"] & {
             releaseNotes?: string | null;
             document: components["schemas"]["JsonObject"];
+            /** @description The digests of the script artifacts the version pins (feature 011), sorted. Present when a single version is read. */
+            scripts?: string[];
         };
         VersionPage: {
             items: components["schemas"]["WorkflowVersionDocument"][];
@@ -3052,6 +3262,136 @@ export interface components {
         Recorded: {
             recorded: boolean;
         };
+        PublicationPolicy: {
+            /** Format: uuid */
+            namespaceId: string;
+            /** @enum {string} */
+            environment: "dev" | "staging" | "prod";
+            requiredApprovals: number;
+            /**
+             * @description `default`: what the environment asks for until someone sets it (one in production, none elsewhere).
+             * @enum {string}
+             */
+            source: "default" | "set";
+            setBy?: string | null;
+            /** Format: date-time */
+            setAt?: string | null;
+        };
+        SetPublicationPolicy: {
+            requiredApprovals: number;
+            reason: string;
+        };
+        OpenPublicationRequest: {
+            /** Format: int64 */
+            draftRevision: number;
+            releaseNotes?: string;
+        };
+        PublicationDecision: {
+            by: string;
+            /** @enum {string} */
+            verdict: "APPROVED" | "REJECTED";
+            reason: string;
+            /** Format: date-time */
+            at: string;
+        };
+        PublicationRequest: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            workflowId: string;
+            /** Format: uuid */
+            namespaceId: string;
+            /** @enum {string} */
+            kind: "PUBLISH" | "PROMOTE";
+            /** @enum {string} */
+            state: "PENDING" | "APPROVED" | "REJECTED" | "WITHDRAWN" | "SUPERSEDED" | "PUBLISHED";
+            /** Format: int64 */
+            draftRevision: number;
+            /** @description Of the document the approvers saw. */
+            digest: string;
+            releaseNotes?: string | null;
+            /**
+             * Format: uuid
+             * @description For a promotion: the version whose document this publishes.
+             */
+            promotedFromVersionId?: string | null;
+            requestedBy: string;
+            /** Format: date-time */
+            requestedAt: string;
+            /** @description What the policy asked for when the request was opened; the policy in force is read again when it is published. */
+            requiredApprovals: number;
+            approvals: number;
+            decisions: components["schemas"]["PublicationDecision"][];
+            published?: {
+                /** Format: uuid */
+                versionId: string;
+                by: string;
+                /** Format: date-time */
+                at: string;
+            } | null;
+        };
+        PublicationRequestPage: {
+            items: components["schemas"]["PublicationRequest"][];
+            nextCursor?: string | null;
+        };
+        ActivateVersion: {
+            version: number;
+            reason: string;
+            /** @description The version the caller saw active; the change is refused if it is not any more. */
+            expectedVersion?: number;
+            /**
+             * @description The caller accepts that callers and emitters of the workflow may fail.
+             * @default false
+             */
+            acceptBreaking: boolean;
+        };
+        Activation: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            workflowId: string;
+            version: number;
+            /** Format: uuid */
+            versionId: string;
+            previousVersion?: number | null;
+            /** @enum {string} */
+            kind: "PUBLISH" | "PROMOTE" | "ROLLBACK" | "ACTIVATE";
+            reason?: string | null;
+            actor: string;
+            /** Format: uuid */
+            requestId?: string | null;
+            promotedFrom?: {
+                /** Format: uuid */
+                namespaceId: string;
+                /** Format: uuid */
+                workflowId: string;
+                version: number;
+            } | null;
+            /** Format: date-time */
+            at: string;
+        };
+        ActivationResult: components["schemas"]["Activation"] & {
+            /** @description False when the version was the active one already. */
+            changed: boolean;
+        };
+        ActivationPage: {
+            items: components["schemas"]["Activation"][];
+            nextCursor?: string | null;
+        };
+        PromoteVersion: {
+            /** Format: uuid */
+            namespaceId: string;
+            reason: string;
+            /** @default false */
+            acceptBreaking: boolean;
+        };
+        Promotion: {
+            /** @enum {string} */
+            outcome: "PUBLISHED" | "REQUESTED" | "ALREADY_ACTIVE";
+            version?: components["schemas"]["WorkflowVersion"] | null;
+            request?: components["schemas"]["PublicationRequest"] | null;
+            activeVersion?: number | null;
+        };
     };
     responses: {
         /** @description The body is larger than this endpoint takes */
@@ -3167,6 +3507,7 @@ export interface components {
         QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
         WorkflowId: string;
         VersionNumber: number;
+        RequestId: string;
         RunId: string;
         ScriptId: string;
         TestRunId: string;
@@ -4892,6 +5233,437 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getPublicationPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The policy */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationPolicy"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    setPublicationPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPublicationPolicy"];
+            };
+        };
+        responses: {
+            /** @description The policy now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationPolicy"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listPublicationRequests: {
+        parameters: {
+            query?: {
+                state?: "PENDING" | "APPROVED" | "REJECTED" | "WITHDRAWN" | "SUPERSEDED" | "PUBLISHED";
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                workflowId: components["parameters"]["WorkflowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of requests */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRequestPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    openPublicationRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflowId: components["parameters"]["WorkflowId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenPublicationRequest"];
+            };
+        };
+        responses: {
+            /** @description The request */
+            201: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRequest"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getPublicationRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["RequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The request */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRequest"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    approvePublicationRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["RequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Reason"];
+            };
+        };
+        responses: {
+            /** @description The request after the decision */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRequest"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    rejectPublicationRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["RequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Reason"];
+            };
+        };
+        responses: {
+            /** @description The request after the decision */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRequest"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    withdrawPublicationRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                requestId: components["parameters"]["RequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The withdrawn request */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationRequest"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    publishPublicationRequest: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                requestId: components["parameters"]["RequestId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version published */
+            201: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowVersion"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listWorkflowActivations: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                workflowId: components["parameters"]["WorkflowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of changes */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivationPage"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    activateWorkflowVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflowId: components["parameters"]["WorkflowId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActivateVersion"];
+            };
+        };
+        responses: {
+            /** @description The change, or the unchanged state */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivationResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    promoteWorkflowVersion: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                workflowId: components["parameters"]["WorkflowId"];
+                versionNumber: components["parameters"]["VersionNumber"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromoteVersion"];
+            };
+        };
+        responses: {
+            /** @description The target runs this document already */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Promotion"];
+                };
+            };
+            /** @description Published into the target */
+            201: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Promotion"];
+                };
+            };
+            /** @description A request is waiting for approvals */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Promotion"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];

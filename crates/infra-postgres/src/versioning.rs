@@ -196,6 +196,22 @@ impl PublishingStore for PgDefinitionStore {
         .map_err(store_error)
     }
 
+    async fn version_scripts(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+    ) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar(
+            "SELECT digest FROM workflow_version_scripts \
+             WHERE tenant_id = $1 AND workflow_version_id = $2 ORDER BY digest",
+        )
+        .bind(tenant.as_uuid())
+        .bind(version.as_uuid())
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)
+    }
+
     async fn request_outside(&self, tenant: TenantId, id: RequestId) -> Result<bool, StoreError> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM publication_requests WHERE id = $2 AND tenant_id <> $1)",
@@ -740,6 +756,14 @@ impl PublishingStore for crate::execution::PgRunStore {
         id: NamespaceId,
     ) -> Result<bool, StoreError> {
         self.definitions.namespace_outside(tenant, id).await
+    }
+
+    async fn version_scripts(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+    ) -> Result<Vec<String>, StoreError> {
+        self.definitions.version_scripts(tenant, version).await
     }
 
     async fn request_outside(&self, tenant: TenantId, id: RequestId) -> Result<bool, StoreError> {

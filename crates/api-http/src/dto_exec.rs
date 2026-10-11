@@ -196,6 +196,9 @@ pub struct VersionBody {
     pub release_notes: Option<String>,
     /// The canonical document this version froze.
     pub document: Value,
+    /// The digests of the script artifacts the version pins (only when one version is read).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scripts: Option<Vec<String>>,
 }
 
 impl From<&VersionRecord> for VersionBody {
@@ -204,6 +207,7 @@ impl From<&VersionRecord> for VersionBody {
             version: VersionSummary::from(&r.version),
             release_notes: r.release_notes.clone(),
             document: serde_json::from_slice(&r.document).unwrap_or(Value::Null),
+            scripts: None,
         }
     }
 }
