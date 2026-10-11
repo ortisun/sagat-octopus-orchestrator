@@ -276,3 +276,19 @@ fn a_yaml_document_that_expands_without_end_is_stopped_not_followed() {
     let two = format!("{}---\nsecond: true\n", manifest_text(""));
     assert!(Manifest::parse(&two, true).is_err());
 }
+
+#[test]
+fn a_file_that_is_not_a_manifest_is_not_quoted_back() {
+    // A file that holds one line of something that must stay secret, read as YAML: a string.
+    let secret = "ghp_0123456789abcdefSECRETSECRETSECRET";
+    for text in [
+        secret.to_owned(),
+        format!("workflows: \"{secret}\""),
+        format!("namespace: [{secret}]"),
+    ] {
+        let problem = Manifest::parse(&text, true).expect_err("not a manifest");
+        assert!(!problem.message.contains("SECRET"), "{problem}");
+    }
+    let problem = Manifest::parse(&format!("\"{secret}\""), false).expect_err("not a manifest");
+    assert!(!problem.message.contains("SECRET"), "{problem}");
+}

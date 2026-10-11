@@ -69,29 +69,55 @@ pub(crate) struct Io<'a> {
     err: &'a mut dyn Write,
 }
 
+/// Whether a character may be shown as it is: not a control character, and none of the format
+/// characters that reorder or hide text (the bidirectional overrides and isolates, the zero-width
+/// characters, the line and paragraph separators).
+fn shown_as_is(c: char) -> bool {
+    !c.is_control()
+        && !matches!(
+            c,
+            '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+}
+
 /// A line as it may be shown on a terminal. Much of what is printed was written by somebody else (a
 /// reason typed by an approver, a name or a message from the platform): a control character in it
 /// (an escape sequence that rewrites the screen, a carriage return that hides the start of the
-/// line) is shown as `?`. New lines and tabs are the layout of the tool's own text and stay.
+/// line) or a character that reorders or hides text is shown as `?`. New lines and tabs are the
+/// layout of the tool's own text and stay; text written by somebody else goes through
+/// [`one_line`] first.
 #[must_use]
 pub fn printable(line: &str) -> std::borrow::Cow<'_, str> {
     if line
         .chars()
-        .all(|c| !c.is_control() || c == '\n' || c == '\t')
+        .all(|c| shown_as_is(c) || c == '\n' || c == '\t')
     {
         return std::borrow::Cow::Borrowed(line);
     }
     std::borrow::Cow::Owned(
         line.chars()
             .map(|c| {
-                if c.is_control() && c != '\n' && c != '\t' {
-                    '?'
-                } else {
+                if shown_as_is(c) || c == '\n' || c == '\t' {
                     c
+                } else {
+                    '?'
                 }
             })
             .collect(),
     )
+}
+
+/// Text somebody else wrote, as one line of ours: a new line in it would forge another line of the
+/// tool's output (a row of a history that never happened).
+#[must_use]
+pub fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .collect()
 }
 
 impl Io<'_> {

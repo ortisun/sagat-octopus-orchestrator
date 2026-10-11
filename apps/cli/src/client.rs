@@ -46,16 +46,21 @@ impl Failure {
 
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({}", self.message, self.code)?;
+        write!(
+            f,
+            "{} ({}",
+            crate::one_line(&self.message),
+            crate::one_line(&self.code)
+        )?;
         if let Some(reason) = &self.reason {
-            write!(f, ", {reason}")?;
+            write!(f, ", {}", crate::one_line(reason))?;
         }
         write!(f, ")")?;
         if let Some(todo) = &self.remediation {
-            write!(f, ". {todo}")?;
+            write!(f, ". {}", crate::one_line(todo))?;
         }
         if let Some(trace) = &self.trace_id {
-            write!(f, " Trace {trace}.")?;
+            write!(f, " Trace {}.", crate::one_line(trace))?;
         }
         Ok(())
     }
@@ -80,7 +85,7 @@ impl std::fmt::Display for CallError {
 }
 
 /// The most of an answer this tool reads: a page of drafts of the largest size the platform keeps.
-const MAX_ANSWER: usize = 128 * 1024 * 1024;
+const MAX_ANSWER: usize = 64 * 1024 * 1024;
 
 /// The platform, a token and a namespace.
 pub struct Client {
@@ -91,21 +96,32 @@ pub struct Client {
 }
 
 /// An `https` address, or an `http` one to this machine: a bearer token is never sent in the clear
-/// across a network.
+/// across a network. The address is parsed the way the HTTP client will read it, so that what is
+/// checked is where the request goes (`http://localhost:80@elsewhere` goes to `elsewhere`), and an
+/// address with a user name or a password in it is refused.
 fn is_safe_address(base: &str) -> bool {
-    if base.starts_with("https://") {
-        return base.len() > "https://".len();
-    }
-    let Some(rest) = base.strip_prefix("http://") else {
+    let Ok(url) = reqwest::Url::parse(base) else {
         return false;
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = if authority.starts_with('[') {
-        authority.split(']').next().map(|h| format!("{h}]"))
-    } else {
-        authority.split(':').next().map(str::to_owned)
+    if !url.username().is_empty() || url.password().is_some() || url.host().is_none() {
+        return false;
+    }
+    match url.scheme() {
+        "https" => true,
+        "http" => is_loopback(&url),
+        _ => false,
+    }
+}
+
+fn is_loopback(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
     };
-    matches!(host.as_deref(), Some("localhost" | "127.0.0.1" | "[::1]"))
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// A path with its query string, the values percent-encoded.
@@ -152,7 +168,13 @@ impl Client {
             );
         }
         install_crypto_provider();
-        let http = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        // A plain-http address is this machine's: a proxy configured in the environment must not
+        // be handed a token that was promised never to travel in the clear.
+        if base.starts_with("http://") {
+            builder = builder.no_proxy();
+        }
+        let http = builder
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
@@ -179,8 +201,11 @@ impl Client {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base))
-            .bearer_auth(&self.token)
-            .header("x-octopus-namespace", &self.namespace);
+            .bearer_auth(&self.token);
+        // Some operations are of the tenant and not of a namespace (a request is decided by its id).
+        if !self.namespace.is_empty() {
+            request = request.header("x-octopus-namespace", &self.namespace);
+        }
         if let Some(key) = key {
             request = request.header("idempotency-key", key);
         }

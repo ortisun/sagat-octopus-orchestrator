@@ -80,21 +80,25 @@ fn the_commands_take_the_flags_they_document() {
         }
     );
     assert_eq!(
-        parse(&argv("approve --request 0192 --reason looks-right"))
-            .expect("parses")
-            .command,
+        parse(&argv(
+            "approve --request 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --reason looks-right"
+        ))
+        .expect("parses")
+        .command,
         Command::Decide {
-            request: "0192".into(),
+            request: "01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8".into(),
             reason: "looks-right".into(),
             approve: true
         }
     );
     assert_eq!(
-        parse(&argv("reject --request 0192 --reason not-ready"))
-            .expect("parses")
-            .command,
+        parse(&argv(
+            "reject --request 01A12ACA-0D9D-7589-BF01-BC7B7CC0A7B8 --reason not-ready"
+        ))
+        .expect("parses")
+        .command,
         Command::Decide {
-            request: "0192".into(),
+            request: "01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8".into(),
             reason: "not-ready".into(),
             approve: false
         }
@@ -117,7 +121,10 @@ fn what_the_command_line_gets_wrong_is_named() {
         ("rollback --reason bad-deploy", "--workflow is required"),
         ("export", "--out is required"),
         ("approve --reason fine-by-me", "--request is required"),
-        ("reject --request 0192", "--reason is required"),
+        (
+            "reject --request 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8",
+            "--reason is required",
+        ),
         ("validate --dry-run", "--dry-run is not a flag"),
         ("diff --server", "--server needs a value"),
         ("diff extra", "unexpected argument"),
@@ -127,6 +134,18 @@ fn what_the_command_line_gets_wrong_is_named() {
         ),
         ("history --workflow a --limit many", "--limit is a number"),
         ("diff --check=yes", "does not take a value"),
+        (
+            "approve --request ../../x --reason fine-by-me",
+            "--request is the id of a request",
+        ),
+        (
+            "reject --request 0192 --reason fine-by-me",
+            "--request is the id of a request",
+        ),
+        (
+            "approve --request 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8/reject?x --reason fine-by-me",
+            "--request is the id of a request",
+        ),
     ] {
         let error = parse(&argv(line)).expect_err(line);
         assert!(error.0.contains(mentions), "{line}: {}", error.0);
@@ -156,4 +175,19 @@ fn what_is_shown_on_a_terminal_has_no_control_characters_but_the_layout() {
     assert_eq!(printable("hidden\rAPPROVED"), "hidden?APPROVED");
     assert_eq!(printable("a\u{7f}b\u{85}c\u{0}d"), "a?b?c?d");
     assert_eq!(printable("two\nlines"), "two\nlines");
+}
+
+#[test]
+fn text_that_reorders_or_hides_other_text_is_not_shown_and_a_new_line_is_not_forged() {
+    use sagat_cli::{one_line, printable};
+    // A bidirectional override, a zero-width space, a line separator and the byte order mark.
+    assert_eq!(
+        printable("a\u{202e}b\u{200b}c\u{2028}d\u{feff}e"),
+        "a?b?c?d?e"
+    );
+    assert_eq!(printable("an é and a 日本語"), "an é and a 日本語");
+    assert_eq!(
+        one_line("fix\nPUBLISH v9 by root\tx"),
+        "fix PUBLISH v9 by root x"
+    );
 }

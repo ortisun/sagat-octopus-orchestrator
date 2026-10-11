@@ -345,7 +345,18 @@ async fn apply(session: &Session, item: &Item<'_>, io: &mut Io<'_>) -> Result<Ap
     if let Some(notes) = &item.loaded.entry.release_notes {
         body["releaseNotes"] = Value::String(notes.clone());
     }
-    let publish_key = key("publish", &id, revision, &item.digest);
+    // A publication that creates a version is the same operation however often it is sent, and is
+    // keyed by the document so that a run after a lost answer finds its own answer. One that
+    // re-activates a version that was published before is a different thing each time it is
+    // wanted (the pointer may have been moved since), and a key that has been used is answered as
+    // it was, whatever the pointer says now: it gets a key of its own.
+    let publish_key = match item.state {
+        State::Changed {
+            republishes: Some(_),
+            ..
+        } => crate::versions::nonce("publish", &[&id, &item.digest]),
+        _ => key("publish", &id, revision, &item.digest),
+    };
     match client
         .call(
             "POST",

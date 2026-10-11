@@ -12,6 +12,20 @@ use crate::{EXIT_DONE, Env, Io, namespace_of, remote, session};
 /// The name of the manifest written next to the documents.
 const MANIFEST: &str = "sagat.yaml";
 
+/// Writes a file that does not exist yet: an existing file, and a link in the way (even one that
+/// points nowhere), are refused and not followed, so exporting never writes where somebody planted
+/// a link.
+fn write_new(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("{}: {e} (export into an empty directory)", path.display()))?;
+    file.write_all(text.as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
 pub(crate) async fn run(
     common: &Common,
     env: &Env,
@@ -33,6 +47,13 @@ pub(crate) async fn run(
         ));
     }
     let workflows = remote::workflows(client).await?;
+    if workflows.len() > crate::manifest::MAX_WORKFLOWS {
+        return Err(format!(
+            "{namespace} has {} workflows and a manifest lists at most {}: nothing was written",
+            workflows.len(),
+            crate::manifest::MAX_WORKFLOWS
+        ));
+    }
     let mut entries = Vec::new();
     let mut skipped = Vec::new();
     let mut documents = Vec::new();
@@ -61,19 +82,10 @@ pub(crate) async fn run(
     std::fs::create_dir_all(dir.join("workflows"))
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     for (file, text) in &documents {
-        let path = dir.join(file);
-        if path.exists() {
-            return Err(format!(
-                "{} exists: export into an empty directory",
-                path.display()
-            ));
-        }
-        std::fs::write(&path, format!("{text}\n"))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        write_new(&dir.join(file), &format!("{text}\n"))?;
     }
     let text = serde_yaml_ng::to_string(&manifest).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(MANIFEST), text)
-        .map_err(|e| format!("{}: {e}", dir.join(MANIFEST).display()))?;
+    write_new(&dir.join(MANIFEST), &text)?;
     io.say(format!(
         "exported {} workflows of {namespace} to {}",
         documents.len(),

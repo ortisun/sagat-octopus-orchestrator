@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::args::Common;
 use crate::client::CallError;
 use crate::{
-    EXIT_BREAKING, EXIT_DONE, EXIT_FAILED, EXIT_PENDING, Env, Io, namespace_of, remote, session,
+    EXIT_BREAKING, EXIT_DONE, EXIT_PENDING, Env, Io, namespace_of, one_line, remote, session,
 };
 
 pub(crate) struct Promote<'a> {
@@ -25,9 +25,12 @@ pub(crate) struct Rollback<'a> {
     pub accept_breaking: bool,
 }
 
-/// An idempotency key for one run of the tool: it makes a retry of this very call safe, and a
-/// later call (after the state moved) a new one.
-fn nonce(kind: &str, parts: &[&str]) -> String {
+/// An idempotency key for one run of the tool, different for every run. It is not what makes
+/// running the command again safe: that is the state of the platform (a version the target runs
+/// already is `ALREADY_ACTIVE`, an open request is `REQUEST_OPEN` and is finished), which a key
+/// derived from the arguments would hide behind the answer to an earlier run (a key that has been
+/// used is answered as it was, for days, even when the pointer has moved since).
+pub(crate) fn nonce(kind: &str, parts: &[&str]) -> String {
     let mut hash = Sha256::new();
     hash.update(kind.as_bytes());
     for part in parts {
@@ -174,8 +177,23 @@ pub(crate) async fn rollback(
             let history =
                 remote::first_page(client, &format!("/workflows/{}/activations", workflow.id))
                     .await?;
-            history
-                .first()
+            let newest = history.first();
+            // Going back from a publication is undoing it. Going back from a rollback would
+            // undo the rollback (the same command run again after its answer was lost would
+            // put the version that was removed back): say which version is wanted.
+            if let Some(row) =
+                newest.filter(|row| matches!(row["kind"].as_str(), Some("ROLLBACK" | "ACTIVATE")))
+            {
+                return Err(format!(
+                    "the last change of {} was already a {} to v{} by {} at {}: say which version you want with --to",
+                    ask.workflow,
+                    row["kind"].as_str().unwrap_or("?").to_lowercase(),
+                    row["version"].as_u64().unwrap_or(0),
+                    one_line(row["actor"].as_str().unwrap_or("?")),
+                    one_line(row["at"].as_str().unwrap_or("?")),
+                ));
+            }
+            newest
                 .and_then(|row| row["previousVersion"].as_u64())
                 .and_then(|n| u32::try_from(n).ok())
                 .ok_or_else(|| {
@@ -251,7 +269,7 @@ pub(crate) async fn history(
         io.say(format!(
             "{workflow} has never been activated in {namespace}"
         ));
-        return Ok(EXIT_FAILED);
+        return Ok(EXIT_DONE);
     }
     for row in &rows {
         let text = |key: &str| row[key].as_str().unwrap_or("-");
@@ -280,7 +298,7 @@ pub(crate) async fn history(
         }
         io.say(line);
         if let Some(reason) = row["reason"].as_str() {
-            io.say(format!("    {reason}"));
+            io.say(format!("    {}", one_line(reason)));
         }
     }
     if page["nextCursor"].as_str().is_some() {
@@ -302,30 +320,56 @@ async fn finish_request(
         .call("GET", &format!("/publication-requests/{id}"), None, None)
         .await
         .map_err(|e| e.to_string())?;
-    if request["state"].as_str() == Some("APPROVED") {
-        let key = format!("cli-request-{id}");
-        let (_, version) = client
-            .call(
-                "POST",
-                &format!("/publication-requests/{id}/publish"),
-                None,
-                Some(&key),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-        io.say(format!(
-            "request {id} had its approvals: published in {target} as v{}, now active",
-            version["versionNumber"].as_u64().unwrap_or(0)
-        ));
-        return Ok(EXIT_DONE);
-    }
-    io.say(format!(
-        "request {id} is {}: {} of {} approvals so far",
-        request["state"].as_str().unwrap_or("?").to_lowercase(),
+    let state = request["state"].as_str().unwrap_or("?");
+    let approvals = format!(
+        "{} of {} approvals",
         request["approvals"].as_u64().unwrap_or(0),
         request["requiredApprovals"].as_u64().unwrap_or(0)
-    ));
-    Ok(EXIT_PENDING)
+    );
+    match state {
+        "APPROVED" => {
+            let key = format!("cli-request-{id}");
+            match client
+                .call(
+                    "POST",
+                    &format!("/publication-requests/{id}/publish"),
+                    None,
+                    Some(&key),
+                )
+                .await
+            {
+                Ok((_, version)) => {
+                    io.say(format!(
+                        "request {id} had its approvals: published in {target} as v{}, now active",
+                        version["versionNumber"].as_u64().unwrap_or(0)
+                    ));
+                    Ok(EXIT_DONE)
+                }
+                // The namespace asks for more than the request has now: it waits again.
+                Err(CallError::Refused(failure)) if failure.is("NOT_ENOUGH_APPROVALS") => {
+                    io.say(format!(
+                        "request {id} waits again: the namespace now asks for more ({approvals} so far)"
+                    ));
+                    Ok(EXIT_PENDING)
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "PENDING" => {
+            io.say(format!("request {id} is pending: {approvals} so far"));
+            Ok(EXIT_PENDING)
+        }
+        "PUBLISHED" => {
+            io.say(format!(
+                "request {id} is published already: {target} runs this document"
+            ));
+            Ok(EXIT_DONE)
+        }
+        other => Err(format!(
+            "request {id} is {}: it will not be published; promote again to ask again",
+            other.to_lowercase()
+        )),
+    }
 }
 
 pub(crate) async fn requests(
@@ -355,7 +399,7 @@ pub(crate) async fn requests(
     for row in &rows {
         let text = |key: &str| row[key].as_str().unwrap_or("-");
         io.say(format!(
-            "{}  {:<10} {:<7} revision {} ({})  {} of {} approvals  by {} at {}",
+            "{}  {:<10} {:<7} revision {} ({})  {} of {} approvals  by {}{} at {}",
             text("id"),
             text("state"),
             text("kind"),
@@ -363,16 +407,22 @@ pub(crate) async fn requests(
             text("digest").get(..12).unwrap_or("-"),
             row["approvals"].as_u64().unwrap_or(0),
             row["requiredApprovals"].as_u64().unwrap_or(0),
-            text("requestedBy"),
+            one_line(text("requestedBy")),
+            row["editedBy"]
+                .as_str()
+                .map_or_else(String::new, |who| format!(
+                    " (document saved by {})",
+                    one_line(who)
+                )),
             text("requestedAt"),
         ));
         for decision in row["decisions"].as_array().into_iter().flatten() {
             io.say(format!(
                 "    {} {} at {}: {}",
                 decision["verdict"].as_str().unwrap_or("?").to_lowercase(),
-                decision["by"].as_str().unwrap_or("?"),
+                one_line(decision["by"].as_str().unwrap_or("?")),
                 decision["at"].as_str().unwrap_or("?"),
-                decision["reason"].as_str().unwrap_or("")
+                one_line(decision["reason"].as_str().unwrap_or(""))
             ));
         }
     }
@@ -387,7 +437,8 @@ pub(crate) async fn decide(
     approve: bool,
     io: &mut Io<'_>,
 ) -> Result<u8, String> {
-    let namespace = namespace_of(common, env)?;
+    // A request is decided by its id: the namespace is not needed and is not asked for.
+    let namespace = namespace_of(common, env).unwrap_or_default();
     let session = session(common, env, &namespace)?;
     let verb = if approve { "approve" } else { "reject" };
     let (_, answer) = session

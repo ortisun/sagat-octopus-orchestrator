@@ -393,3 +393,55 @@ async fn a_reason_that_would_rewrite_the_terminal_is_refused_by_the_platform() {
     shown.expect(0);
     assert!(!shown.all().contains('\u{1b}') && !shown.all().contains('\r'));
 }
+
+#[tokio::test]
+async fn credentials_that_were_given_and_cannot_be_used_stop_validate_instead_of_skipping_the_check()
+ {
+    let p = platform().await;
+    let dir = Dir::new();
+    dir.document("checkout", &flow("checkout", "one"));
+    dir.manifest(DEV, &["checkout"]);
+    // Nothing given: a local check, said as such.
+    let env = |_token_file: Option<&str>, server: Option<&str>| Env {
+        server: server.map(str::to_owned),
+        token: None,
+        namespace: None,
+        cwd: dir.0.clone(),
+    };
+    let local = plain(env(None, None), &["validate"]).await;
+    local.expect(0).mentions("Not checked against the platform");
+    // A token file that is not there: a failure, not a pass.
+    let mut args = vec!["validate", "--token-file", "no-such-file"];
+    let missing = plain(env(None, Some(&p.api.base)), &args).await;
+    missing.expect(1).mentions("no-such-file");
+    args.clear();
+    // Flags without an address: the same.
+    let half = plain(
+        env(None, None),
+        &["validate", "--token-file", "no-such-file"],
+    )
+    .await;
+    half.expect(1);
+}
+
+#[tokio::test]
+async fn a_workflow_nobody_published_has_an_empty_history_and_that_is_not_a_failure() {
+    let p = platform().await;
+    p.grant(p.tenant, "dev1", Role::Developer).await;
+    let dir = Dir::new();
+    dir.manifest(DEV, &["checkout"]);
+    let (status, _) = rest_in(
+        &p,
+        "dev1",
+        DEV,
+        Method::POST,
+        "/workflows",
+        Some(&json!({"name": "checkout", "ir": flow("checkout", "one")})),
+    )
+    .await;
+    assert_eq!(status, 201);
+    cli(&p, &dir, "dev1", &["history", "--workflow", "checkout"])
+        .await
+        .expect(0)
+        .mentions("has never been activated");
+}

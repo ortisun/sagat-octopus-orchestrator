@@ -202,6 +202,36 @@ impl<'de> Visitor<'de> for Bounded<'_> {
     }
 }
 
+/// A message of the reader with what it quotes of the file taken out: it says `invalid type: string
+/// "…", expected struct Manifest` and not what the string was, so that pointing the tool at a file
+/// that is not a manifest (a link to a credential, say) does not put that file in a log.
+fn quiet(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut quoted = false;
+    let mut chars = message.chars();
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (false, '"') => {
+                quoted = true;
+                out.push_str("\"…");
+            }
+            (true, '\\') => {
+                chars.next();
+            }
+            (true, '"') => {
+                quoted = false;
+                out.push('"');
+            }
+            (true, _) => {}
+            (false, c) => out.push(c),
+        }
+    }
+    if quoted {
+        out.push('"');
+    }
+    out
+}
+
 impl Manifest {
     /// Reads a manifest from `text`, as JSON or as YAML.
     ///
@@ -213,7 +243,7 @@ impl Manifest {
         } else {
             serde_json::from_str::<Value>(text).map_err(|e| problem("manifest", e.to_string()))?
         };
-        serde_json::from_value(value).map_err(|e| problem("manifest", e.to_string()))
+        serde_json::from_value(value).map_err(|e| problem("manifest", quiet(&e.to_string())))
     }
 
     /// Everything wrong with the manifest as written, found in one pass.

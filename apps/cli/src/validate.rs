@@ -62,8 +62,18 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
         .namespace
         .clone()
         .unwrap_or(manifest.namespace.clone());
-    let reachable = crate::credentials(common, env).is_ok();
-    if !reachable {
+    // Nothing given means a local check, said as such. Something given that cannot be used (a token
+    // file that is not there, an address that is not one) is a failure: a gate that passes the
+    // flags and silently skips what they were for is worse than one that stops.
+    let given = common.server.is_some()
+        || common.token_file.is_some()
+        || env.server.is_some()
+        || env.token.is_some();
+    let credentials = crate::credentials(common, env);
+    if given {
+        credentials.as_ref().map_err(Clone::clone)?;
+    }
+    if credentials.is_err() {
         io.say(format!(
             "{} documents are valid as documents. Not checked against the platform (secrets, scripts): \
              pass --server and a token to do that.",

@@ -144,3 +144,141 @@ async fn us04_rolling_back_moves_the_pointer_and_rewrites_nothing() {
     .expect(0)
     .mentions("nothing changed");
 }
+
+#[tokio::test]
+async fn us04_publishing_the_manifest_again_after_a_rollback_activates_the_document_in_git() {
+    let p = platform().await;
+    p.grant(p.tenant, "dev1", Role::Developer).await;
+    p.grant(p.tenant, "olga", Role::Operator).await;
+    let dir = Dir::new();
+    dir.manifest(NS, &["checkout"]);
+    for marker in ["one", "two"] {
+        dir.document("checkout", &flow("checkout", marker));
+        cli(&p, &dir, "dev1", &["publish"]).await.expect(0);
+    }
+    let checkout = workflow_id(&p, NS, "checkout").await;
+    assert_eq!(active(&p, NS, &checkout).await, 2);
+
+    // The operator goes back; Git still holds version 2.
+    cli(
+        &p,
+        &dir,
+        "olga",
+        &[
+            "rollback",
+            "--workflow",
+            "checkout",
+            "--reason",
+            "two misbehaves in checkout",
+        ],
+    )
+    .await
+    .expect(0);
+    assert_eq!(active(&p, NS, &checkout).await, 1);
+
+    // Running the pipeline again publishes what Git holds: version 2 is active again, and the
+    // command says so instead of saying it did and leaving the pointer where it was (the key of the
+    // first publication of version 2 would have answered with that publication).
+    cli(&p, &dir, "dev1", &["publish"])
+        .await
+        .expect(0)
+        .mentions("activated  checkout v2");
+    assert_eq!(active(&p, NS, &checkout).await, 2);
+    // And the same thing again, after another rollback.
+    cli(
+        &p,
+        &dir,
+        "olga",
+        &[
+            "rollback",
+            "--workflow",
+            "checkout",
+            "--to",
+            "1",
+            "--reason",
+            "two misbehaves again",
+        ],
+    )
+    .await
+    .expect(0);
+    cli(&p, &dir, "dev1", &["publish"])
+        .await
+        .expect(0)
+        .mentions("activated  checkout v2");
+    assert_eq!(active(&p, NS, &checkout).await, 2);
+    let history = cli(&p, &dir, "olga", &["history", "--workflow", "checkout"]).await;
+    history.expect(0);
+    assert_eq!(
+        history.out.matches("ROLLBACK").count(),
+        2,
+        "{}",
+        history.out
+    );
+}
+
+#[tokio::test]
+async fn us04_rolling_back_again_without_saying_where_does_not_undo_the_rollback() {
+    let p = platform().await;
+    p.grant(p.tenant, "dev1", Role::Developer).await;
+    p.grant(p.tenant, "olga", Role::Operator).await;
+    let dir = Dir::new();
+    dir.manifest(NS, &["checkout"]);
+    for marker in ["one", "two", "three"] {
+        dir.document("checkout", &flow("checkout", marker));
+        cli(&p, &dir, "dev1", &["publish"]).await.expect(0);
+    }
+    let checkout = workflow_id(&p, NS, "checkout").await;
+    cli(
+        &p,
+        &dir,
+        "olga",
+        &[
+            "rollback",
+            "--workflow",
+            "checkout",
+            "--reason",
+            "three misbehaves",
+        ],
+    )
+    .await
+    .expect(0);
+    assert_eq!(active(&p, NS, &checkout).await, 2);
+
+    // The same command again (an operator who did not see the answer, a pipeline that retried):
+    // the previous version of the last change is the one that was just removed.
+    cli(
+        &p,
+        &dir,
+        "olga",
+        &[
+            "rollback",
+            "--workflow",
+            "checkout",
+            "--reason",
+            "three misbehaves",
+        ],
+    )
+    .await
+    .expect(1)
+    .mentions("was already a rollback to v2")
+    .mentions("--to");
+    assert_eq!(active(&p, NS, &checkout).await, 2, "nothing moved");
+    // Saying where is always fine.
+    cli(
+        &p,
+        &dir,
+        "olga",
+        &[
+            "rollback",
+            "--workflow",
+            "checkout",
+            "--to",
+            "1",
+            "--reason",
+            "two misbehaves too",
+        ],
+    )
+    .await
+    .expect(0);
+    assert_eq!(active(&p, NS, &checkout).await, 1);
+}

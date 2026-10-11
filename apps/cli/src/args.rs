@@ -186,6 +186,26 @@ fn split(args: &[String]) -> Result<(Option<String>, Flags), UsageError> {
     Ok((verb, flags))
 }
 
+/// A request id as the platform writes it: 36 characters of hexadecimal digits and hyphens. It
+/// goes into a path, so nothing else is let through.
+fn request_id(text: &str) -> Result<String, UsageError> {
+    let shaped = text.len() == 36
+        && text.char_indices().all(|(i, c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        });
+    if shaped {
+        Ok(text.to_ascii_lowercase())
+    } else {
+        Err(UsageError(
+            "--request is the id of a request (a UUID)".to_owned(),
+        ))
+    }
+}
+
 fn number(text: &str, name: &str) -> Result<u32, UsageError> {
     text.parse::<u32>()
         .ok()
@@ -258,7 +278,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
             state: flags.take_value(&["--state"]),
         },
         Some(verb @ ("approve" | "reject")) => Command::Decide {
-            request: flags.required("--request")?,
+            request: request_id(&flags.required("--request")?)?,
             reason: flags.required("--reason")?,
             approve: verb == "approve",
         },
