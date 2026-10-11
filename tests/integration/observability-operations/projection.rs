@@ -75,3 +75,91 @@ async fn a_note_that_claims_more_than_the_journal_holds_is_settled_and_does_not_
     assert_eq!(projector.run_once().await.runs, 1);
     assert!(collector.spans().len() > exported);
 }
+
+#[tokio::test]
+async fn a_trace_the_sampler_does_not_keep_is_not_exported_and_its_progress_moves() {
+    let w = world().await;
+    let collector = Collector::start().await;
+    let (wf, _) = w
+        .publish(document("sampled-out", "a", vec![activity("a")]))
+        .await;
+    w.start(wf, &json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({"ok": true}))
+        .await
+        .expect("complete");
+
+    let nothing = TelemetryProjector::new(
+        w.store.clone(),
+        Some(collector.client()),
+        ProjectorSettings {
+            sample_ratio: 0.0,
+            ..ProjectorSettings::default()
+        },
+    );
+    let round = nothing.run_once().await;
+    assert_eq!(round.runs, 1, "{round:?}");
+    assert_eq!(round.spans, 0, "{round:?}");
+    assert!(
+        collector.spans().is_empty(),
+        "a trace that is not kept leaves the platform in no span"
+    );
+    assert_eq!(
+        w.store.backlog().await.expect("backlog").runs,
+        0,
+        "and the run is not asked for again"
+    );
+
+    // The same projector settings with everything kept export the next run.
+    let (wf2, _) = w
+        .publish(document("sampled-in", "a", vec![activity("a")]))
+        .await;
+    w.start(wf2, &json!({})).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({"ok": true}))
+        .await
+        .expect("complete");
+    let everything = TelemetryProjector::new(
+        w.store.clone(),
+        Some(collector.client()),
+        ProjectorSettings::default(),
+    );
+    assert_eq!(everything.run_once().await.runs, 1);
+    assert!(!collector.spans().is_empty());
+}
+
+#[tokio::test]
+async fn a_collector_that_wants_other_credentials_delays_the_spans_and_loses_none_of_them() {
+    let w = world().await;
+    let collector = Collector::start().await;
+    let (wf, _) = w
+        .publish(document("unauthorised", "a", vec![activity("a")]))
+        .await;
+    w.start(wf, &json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({"ok": true}))
+        .await
+        .expect("complete");
+    let projector = TelemetryProjector::new(
+        w.store.clone(),
+        Some(collector.client()),
+        ProjectorSettings::default(),
+    );
+
+    // An expired token is the operator's to fix; the spans wait in the journal meanwhile.
+    collector.answer_with(&[401, 401, 401, 401, 401, 401, 401, 401]);
+    let round = projector.run_once().await;
+    assert!(round.failed, "{round:?}");
+    assert_eq!(round.runs, 0, "{round:?}");
+    assert_eq!(w.store.backlog().await.expect("backlog").runs, 1);
+    assert!(collector.spans().is_empty());
+
+    // Once it is fixed the same run is projected.
+    collector.answer_with(&[]);
+    let round = projector.run_once().await;
+    assert_eq!(round.runs, 1, "{round:?}");
+    assert!(!collector.spans().is_empty());
+    assert_eq!(w.store.backlog().await.expect("backlog").runs, 0);
+}

@@ -225,6 +225,48 @@ async fn a_batch_the_collector_refuses_is_not_sent_again() {
 }
 
 #[tokio::test]
+async fn a_collector_that_wants_credentials_or_is_not_there_is_a_wait_and_not_a_verdict_on_the_batch()
+ {
+    // The batch is fine; the setting is wrong. The projector must keep its place and try again when
+    // someone has fixed the token or the address, so these are not "refused for good".
+    for status in [401_u16, 403, 404, 301, 307, 410] {
+        let (collector, url) = collector(&[status, 200]).await;
+        let client = OtlpClient::new(config(&url)).expect("client");
+        let error = client.export(&[a_span("x")]).await.expect_err("not taken");
+        assert!(
+            matches!(error, ExportError::Unavailable(_)),
+            "HTTP {status}: {error:?}"
+        );
+        assert_eq!(
+            collector.headers.lock().expect("headers").len(),
+            1,
+            "HTTP {status}: asking again at once changes nothing"
+        );
+    }
+    // The ones that say the batch itself is wrong stay verdicts.
+    for status in [400_u16, 413, 422] {
+        let (_collector, url) = collector(&[status]).await;
+        let error = OtlpClient::new(config(&url))
+            .expect("client")
+            .export(&[a_span("x")])
+            .await
+            .expect_err("refused");
+        assert_eq!(error, ExportError::Rejected(status));
+    }
+}
+
+#[tokio::test]
+async fn a_server_error_of_the_collector_is_tried_again() {
+    let (collector, url) = collector(&[500, 408, 200]).await;
+    OtlpClient::new(config(&url))
+        .expect("client")
+        .export(&[a_span("x")])
+        .await
+        .expect("exported after retries");
+    assert_eq!(collector.headers.lock().expect("headers").len(), 3);
+}
+
+#[tokio::test]
 async fn a_collector_that_stays_down_ends_in_an_error_after_the_retries() {
     let (_collector, url) = collector(&[503, 503, 503, 503, 503]).await;
     let mut cfg = config(&url);

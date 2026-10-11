@@ -29,7 +29,8 @@ use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{PgIdentityStore, PgRunStore, spawn_pool_metrics};
 use sagat_scheduler::{
-    DeliveryWorker, EventDispatcher, Monitor, OutboxDispatcher, Scheduler, TelemetryProjector,
+    DeliveryWorker, EventDispatcher, Monitor, OutboxDispatcher, ProjectorSettings, Scheduler,
+    TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -178,10 +179,19 @@ pub async fn serve(
         ),
         None => None,
     };
+    // The sampler that decides which live spans are kept decides which projected ones are too.
+    let projector_settings = ProjectorSettings {
+        sample_ratio: engine
+            .telemetry
+            .otlp
+            .as_ref()
+            .map_or(1.0, |otlp| otlp.sample_ratio),
+        ..engine.telemetry.projector
+    };
     let projector: Arc<EngineProjector> = Arc::new(TelemetryProjector::new(
         store.clone(),
         exporter,
-        engine.telemetry.projector,
+        projector_settings,
     ));
 
     let monitor: Arc<EngineMonitor> =

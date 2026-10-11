@@ -270,8 +270,9 @@ pub enum ExportError {
     /// The collector could not be reached, or said to come back later. Trying again may work.
     #[error("the collector is not available ({0})")]
     Unavailable(String),
-    /// The collector refused the batch for good (a 4xx other than 429): sending it again changes
-    /// nothing.
+    /// The collector said the batch itself is wrong (`400`, `413`, `422`): sending it again changes
+    /// nothing. Any other answer is about the collector, the credentials or the address, and not
+    /// about the batch, and is [`ExportError::Unavailable`].
     #[error("the collector refused the batch (HTTP {0})")]
     Rejected(u16),
 }
@@ -284,8 +285,16 @@ pub struct OtlpClient {
     resource: Arc<Value>,
 }
 
-/// What the Collector returns when it cannot take the batch now (OTLP/HTTP, "retryable").
-const RETRYABLE: [u16; 4] = [429, 502, 503, 504];
+/// What the Collector returns when it cannot take the batch now: OTLP/HTTP names 429, 502, 503 and
+/// 504; a server error or a timeout is the same kind of thing.
+fn retryable(status: u16) -> bool {
+    matches!(status, 408 | 429) || (500..=599).contains(&status)
+}
+
+/// What the Collector returns when the batch is the problem. These are the only verdicts: a `401`
+/// or a `404` says the setting is wrong, and the spans, which the journal still holds, wait for
+/// someone to fix it instead of being dropped.
+const BATCH_REFUSED: [u16; 3] = [400, 413, 422];
 const BACKOFF_START: Duration = Duration::from_millis(200);
 const BACKOFF_CAP: Duration = Duration::from_secs(5);
 
@@ -374,8 +383,12 @@ impl OtlpClient {
                     if response.status().is_success() {
                         return Ok(());
                     }
-                    if !RETRYABLE.contains(&status) {
+                    if BATCH_REFUSED.contains(&status) {
                         return Err(ExportError::Rejected(status));
+                    }
+                    if !retryable(status) {
+                        // Asking again at once changes nothing; the caller asks again later.
+                        return Err(ExportError::Unavailable(format!("HTTP {status}")));
                     }
                     if let Some(wait) = retry_after(&response) {
                         delay = wait.min(BACKOFF_CAP);

@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use sagat_application::telemetry::{Observation, Pending, TelemetryStore, ToProject, derive};
-use sagat_telemetry::{ExportError, OtlpClient, SpanData};
+use sagat_telemetry::{ExportError, OtlpClient, SpanData, keeps};
 
 /// Tunable limits of the projector.
 #[derive(Debug, Clone, Copy)]
@@ -24,6 +24,10 @@ pub struct ProjectorSettings {
     pub batch_spans: usize,
     /// How far behind the projection may be before it is called behind.
     pub lag_budget: Duration,
+    /// The share of traces whose spans are exported (`OTEL_TRACES_SAMPLER_ARG`): decided from the
+    /// trace id, so it agrees with the live spans of every process. The measurements are made
+    /// whatever it is.
+    pub sample_ratio: f64,
 }
 
 impl Default for ProjectorSettings {
@@ -32,6 +36,7 @@ impl Default for ProjectorSettings {
             batch_runs: 50,
             batch_spans: 256,
             lag_budget: Duration::from_secs(30),
+            sample_ratio: 1.0,
         }
     }
 }
@@ -191,7 +196,11 @@ impl<S: TelemetryStore> TelemetryProjector<S> {
         else {
             return Ok(None);
         };
-        let derived = derive(&facts, &entries, applied_seq);
+        let mut derived = derive(&facts, &entries, applied_seq);
+        // A trace the sampler does not keep is not exported, and its progress moves all the same.
+        if !keeps(facts.trace_id, self.settings.sample_ratio) {
+            derived.spans.clear();
+        }
         // The note is written in the transaction that appends to the journal, so what it claims is
         // there when it is read. When nothing at all came after what was applied and the note says
         // there should be more, the journal is shorter than the note (a restore, a trimmed journal):
