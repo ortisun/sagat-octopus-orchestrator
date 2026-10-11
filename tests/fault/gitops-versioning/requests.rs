@@ -4,7 +4,7 @@
 use futures_util::future::join_all;
 use sagat_application::error::{AppError, Refusal};
 use sagat_domain::identity::Environment;
-use sagat_domain::versioning::{RequestState, Verdict};
+use sagat_domain::versioning::{RequestState, Verdict, VersioningError};
 use serde_json::json;
 
 use crate::support::engine::{World, ctx, world};
@@ -239,4 +239,156 @@ async fn an_edit_that_races_an_approval_never_lets_the_request_publish_what_nobo
         assert!(refused.is_err(), "a superseded request does not publish");
         assert_eq!(versions(&w, id).await, 0, "nothing was published");
     }
+}
+
+#[tokio::test]
+async fn a_request_is_never_left_open_for_a_revision_that_was_saved_over() {
+    let w = world().await;
+    w.add_namespace_in("billing-prod", Environment::Prod).await;
+    let pipeline = w
+        .member("pipeline", sagat_domain::identity::Role::Developer)
+        .await;
+    let editor = w
+        .member("erin", sagat_domain::identity::Role::Developer)
+        .await;
+    // The same race many times: a pipeline asks for revision 1 while somebody saves revision 2.
+    for n in 0..24 {
+        let name = format!("flow-{n}");
+        let mut first = doc(&format!("one-{n}"));
+        first["metadata"]["name"] = json!(name);
+        let created = w
+            .defs
+            .create_workflow(
+                &w.admin,
+                "billing-prod",
+                &name,
+                &serde_json::to_vec(&first).expect("json"),
+                &format!("create-{n}-0123456789"),
+                &ctx(),
+            )
+            .await
+            .expect("draft");
+        let mut renamed = doc(&format!("two-{n}"));
+        renamed["metadata"]["name"] = json!(name);
+        let renamed = serde_json::to_vec(&renamed).expect("json");
+        let context = ctx();
+        let open = w
+            .publishing
+            .open_request(&pipeline, created.workflow.id(), 1, None, &context);
+        let save = w
+            .defs
+            .update_draft(&editor, created.workflow.id(), 1, &renamed, &context);
+        let (opened, saved) = futures_util::future::join(open, save).await;
+        saved.expect("the edit goes through");
+        // Whichever came first, a request that is open is about the draft that is there.
+        match opened {
+            Ok(_) | Err(AppError::RevisionConflict { .. }) => {}
+            Err(other) => panic!("opening: {other:?}"),
+        }
+    }
+    let stale: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM publication_requests r JOIN workflows f ON f.id = r.workflow_id \
+         WHERE r.state IN ('PENDING', 'APPROVED') AND r.draft_revision <> f.draft_revision",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(
+        stale, 0,
+        "no request waits for approval of a document that is gone"
+    );
+}
+
+#[tokio::test]
+async fn a_retry_storm_with_one_key_gets_one_answer_and_later_the_same_one() {
+    let w = world().await;
+    let (id, request, author) = requested(&w).await;
+    let request_id = request.id();
+    let reviewer = w
+        .member("reviewer", sagat_domain::identity::Role::Developer)
+        .await;
+    w.publishing
+        .decide(
+            &reviewer,
+            request_id,
+            Verdict::Approve,
+            "looks right to me",
+            &ctx(),
+        )
+        .await
+        .expect("approved");
+
+    // Eight clients publish it with the key of one publication whose answer was lost.
+    let storm = join_all((0..8).map(|_| {
+        let (w, author) = (&w, &author);
+        async move {
+            w.publishing
+                .publish_request(author, request_id, "key-same-0123456789", &ctx())
+                .await
+        }
+    }))
+    .await;
+    let answers: std::collections::BTreeSet<_> = storm
+        .iter()
+        .map(|r| r.as_ref().expect("an answer, not a refusal").version.id())
+        .collect();
+    assert_eq!(answers.len(), 1, "one answer for one key");
+    assert_eq!(versions(&w, id).await, 1);
+
+    // The answer that was lost is given again later with the same key, and no other key is a repeat.
+    let again = w
+        .publishing
+        .publish_request(&author, request_id, "key-same-0123456789", &ctx())
+        .await
+        .expect("the key of the publication answers again");
+    assert_eq!(Some(&again.version.id()), answers.iter().next());
+
+    // The answer must remain recoverable after another editor saves a new, even invalid, draft.
+    // Retrying a committed request neither validates that draft nor publishes it.
+    w.defs
+        .update_draft(&author, id, request.draft_revision(), b"{}", &ctx())
+        .await
+        .expect("save the next draft");
+    let recovered = w
+        .publishing
+        .publish_request(&author, request_id, "key-same-0123456789", &ctx())
+        .await
+        .expect("a saved draft cannot erase the answer to a committed publication");
+    assert_eq!(recovered.version.id(), again.version.id());
+    assert!(!recovered.created);
+    assert_eq!(versions(&w, id).await, 1);
+    assert_eq!(crate::chain(&w, id).await, vec![(1, None)]);
+    let publications: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND action = 'workflow.published'",
+    )
+    .bind(author.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("publication audit count");
+    assert_eq!(
+        publications, 1,
+        "recovery does not audit another publication"
+    );
+    assert_eq!(
+        w.publishing
+            .get_request(&author, request_id, &ctx())
+            .await
+            .expect("request")
+            .state(),
+        RequestState::Published
+    );
+    let refused = w
+        .publishing
+        .publish_request(&author, request_id, "key-another-0123456789", &ctx())
+        .await
+        .expect_err("a published request is not published again by another key");
+    assert!(
+        matches!(
+            refused,
+            AppError::Versioning(Refusal::Request(VersioningError::NotInState(
+                RequestState::Published
+            )))
+        ),
+        "{refused:?}"
+    );
 }

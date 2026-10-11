@@ -6,6 +6,13 @@
 -- with how many approvals, the requests to publish and what each person decided, every change of the
 -- pointer (the history a rollback is read from), and the artifacts each version depends on.
 
+-- Who saved the draft (the last person to), so that nobody who wrote a document approves it, and
+-- keys that let the tables below say, and the database check, that a version, a request and a
+-- workflow belong together. A draft saved before this is of an unknown editor.
+ALTER TABLE workflows ADD COLUMN draft_edited_by text;
+ALTER TABLE workflows ADD CONSTRAINT workflows_tenant_namespace_id_uniq UNIQUE (tenant_id, namespace_id, id);
+ALTER TABLE workflow_versions ADD CONSTRAINT workflow_versions_tenant_workflow_id_uniq UNIQUE (tenant_id, workflow_id, id);
+
 -- How many people other than the author must approve a publication into a namespace. No row means
 -- the default of the namespace's environment (one in production, none elsewhere): the platform
 -- decides it, so a namespace created later is covered without a row for it.
@@ -35,6 +42,8 @@ CREATE TABLE publication_requests (
     -- For a promotion: the version, in another namespace, whose document this publishes.
     promoted_from_version_id uuid,
     requested_by             text        NOT NULL,
+    -- Who saved the document at this revision, when known: neither they nor the requester decide.
+    draft_edited_by          text,
     requested_at             timestamptz NOT NULL,
     -- What the policy asked for when the request was opened; the policy in force is read again
     -- when it is published.
@@ -45,6 +54,7 @@ CREATE TABLE publication_requests (
     published_at             timestamptz,
     updated_at               timestamptz NOT NULL,
     CONSTRAINT publication_requests_tenant_id_uniq UNIQUE (tenant_id, id),
+    CONSTRAINT publication_requests_tenant_workflow_id_uniq UNIQUE (tenant_id, workflow_id, id),
     CONSTRAINT publication_requests_kind_valid CHECK (kind IN ('PUBLISH', 'PROMOTE')),
     CONSTRAINT publication_requests_state_valid CHECK (
         state IN ('PENDING', 'APPROVED', 'REJECTED', 'WITHDRAWN', 'SUPERSEDED', 'PUBLISHED')),
@@ -57,15 +67,44 @@ CREATE TABLE publication_requests (
         AND (published_version_id IS NULL) = (published_at IS NULL)),
     CONSTRAINT publication_requests_promoted_consistent CHECK (
         (kind = 'PROMOTE') = (promoted_from_version_id IS NOT NULL)),
-    CONSTRAINT publication_requests_workflow_fk FOREIGN KEY (tenant_id, workflow_id)
-        REFERENCES workflows (tenant_id, id),
+    -- The workflow is in the namespace the request says it is.
+    CONSTRAINT publication_requests_workflow_fk FOREIGN KEY (tenant_id, namespace_id, workflow_id)
+        REFERENCES workflows (tenant_id, namespace_id, id),
     CONSTRAINT publication_requests_namespace_fk FOREIGN KEY (tenant_id, namespace_id)
         REFERENCES namespaces (tenant_id, id),
     CONSTRAINT publication_requests_promoted_fk FOREIGN KEY (tenant_id, promoted_from_version_id)
         REFERENCES workflow_versions (tenant_id, id),
-    CONSTRAINT publication_requests_published_fk FOREIGN KEY (tenant_id, published_version_id)
-        REFERENCES workflow_versions (tenant_id, id)
+    CONSTRAINT publication_requests_published_fk FOREIGN KEY (tenant_id, workflow_id, published_version_id)
+        REFERENCES workflow_versions (tenant_id, workflow_id, id)
 );
+
+-- What a request is about does not change: the state, the decisions and who published it do.
+CREATE FUNCTION publication_requests_freeze_identity() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.namespace_id IS DISTINCT FROM OLD.namespace_id
+       OR NEW.workflow_id IS DISTINCT FROM OLD.workflow_id
+       OR NEW.kind IS DISTINCT FROM OLD.kind
+       OR NEW.draft_revision IS DISTINCT FROM OLD.draft_revision
+       OR NEW.digest IS DISTINCT FROM OLD.digest
+       OR NEW.release_notes IS DISTINCT FROM OLD.release_notes
+       OR NEW.promoted_from_version_id IS DISTINCT FROM OLD.promoted_from_version_id
+       OR NEW.requested_by IS DISTINCT FROM OLD.requested_by
+       OR NEW.draft_edited_by IS DISTINCT FROM OLD.draft_edited_by
+       OR NEW.requested_at IS DISTINCT FROM OLD.requested_at
+       OR NEW.required_approvals IS DISTINCT FROM OLD.required_approvals THEN
+        RAISE EXCEPTION 'what a publication request is about cannot change'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER publication_requests_freeze
+    BEFORE UPDATE ON publication_requests
+    FOR EACH ROW EXECUTE FUNCTION publication_requests_freeze_identity();
+ALTER TABLE publication_requests ENABLE ALWAYS TRIGGER publication_requests_freeze;
 -- One request is open for a workflow at a time: what people are asked to approve is unambiguous.
 CREATE UNIQUE INDEX publication_requests_open_uniq ON publication_requests (tenant_id, workflow_id)
     WHERE state IN ('PENDING', 'APPROVED');
@@ -104,12 +143,13 @@ CREATE TABLE workflow_activations (
     CONSTRAINT workflow_activations_kind_valid CHECK (kind IN ('PUBLISH', 'PROMOTE', 'ROLLBACK', 'ACTIVATE')),
     CONSTRAINT workflow_activations_workflow_fk FOREIGN KEY (tenant_id, workflow_id)
         REFERENCES workflows (tenant_id, id),
-    CONSTRAINT workflow_activations_version_fk FOREIGN KEY (tenant_id, version_id)
-        REFERENCES workflow_versions (tenant_id, id),
-    CONSTRAINT workflow_activations_previous_fk FOREIGN KEY (tenant_id, previous_version_id)
-        REFERENCES workflow_versions (tenant_id, id),
-    CONSTRAINT workflow_activations_request_fk FOREIGN KEY (tenant_id, request_id)
-        REFERENCES publication_requests (tenant_id, id),
+    -- The versions are of the workflow whose pointer this is, and so is the request.
+    CONSTRAINT workflow_activations_version_fk FOREIGN KEY (tenant_id, workflow_id, version_id)
+        REFERENCES workflow_versions (tenant_id, workflow_id, id),
+    CONSTRAINT workflow_activations_previous_fk FOREIGN KEY (tenant_id, workflow_id, previous_version_id)
+        REFERENCES workflow_versions (tenant_id, workflow_id, id),
+    CONSTRAINT workflow_activations_request_fk FOREIGN KEY (tenant_id, workflow_id, request_id)
+        REFERENCES publication_requests (tenant_id, workflow_id, id),
     CONSTRAINT workflow_activations_promoted_fk FOREIGN KEY (tenant_id, promoted_from_version_id)
         REFERENCES workflow_versions (tenant_id, id)
 );
@@ -128,6 +168,10 @@ CREATE TRIGGER workflow_activations_append_only
 CREATE TRIGGER workflow_activations_no_truncate
     BEFORE TRUNCATE ON workflow_activations
     FOR EACH STATEMENT EXECUTE FUNCTION workflow_activations_reject_mutation();
+-- Fire even in a session that sets `session_replication_role = replica`, like the other records
+-- that are only added to.
+ALTER TABLE workflow_activations ENABLE ALWAYS TRIGGER workflow_activations_append_only;
+ALTER TABLE workflow_activations ENABLE ALWAYS TRIGGER workflow_activations_no_truncate;
 
 -- The script artifacts a version pins (FR-011-001). The foreign key is the guard of FR-011-006: the
 -- database refuses to remove an artifact that a published version depends on, whatever policy of

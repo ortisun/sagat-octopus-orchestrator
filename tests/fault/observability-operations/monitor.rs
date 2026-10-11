@@ -258,8 +258,21 @@ async fn the_gauges_follow_the_queues_and_never_carry_a_tenant_a_namespace_or_an
     unserved_run(&p, "unserved", "act.secret-activity-name").await;
     age_ready_steps(&p).await;
     let monitor = Monitor::new(p.api.executions.clone(), MonitorSettings::default());
-    monitor.run_once().await;
-    let page = sagat_telemetry::Metrics::global().render();
+    // The recorder is the process's, and the other tests of this binary run monitors of their own
+    // that set the same gauges (to the lag of their own, younger, platform): look until the page
+    // shows this platform's figure, which is the one that is being tested.
+    let mut page = String::new();
+    for _ in 0..40 {
+        monitor.run_once().await;
+        page = sagat_telemetry::Metrics::global().render();
+        let lag = page
+            .lines()
+            .find_map(|l| l.strip_prefix("queue_lag_seconds "))
+            .and_then(|v| v.trim().parse::<f64>().ok());
+        if lag.is_some_and(|lag| lag >= 3500.0) {
+            break;
+        }
+    }
     for series in [
         "ready_steps",
         "queue_lag_seconds",

@@ -591,12 +591,29 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
     }
 }
 
+/// Whether a character may be in text a person wrote that others will read on a terminal or in a
+/// page: no control character, and none of the format characters that reorder or hide text (the
+/// bidirectional overrides and isolates, the zero-width characters, the line and paragraph
+/// separators).
+#[must_use]
+pub fn is_plain(c: char) -> bool {
+    !c.is_control()
+        && !matches!(
+            c,
+            '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+}
+
 /// An operator's reason, trimmed, 8 to 2000 characters of plain text.
 pub(crate) fn justification(reason: &str) -> Result<&str, AppError> {
     let reason = reason.trim();
     let length = reason.chars().count();
     if !(crate::runs::MIN_JUSTIFICATION..=crate::runs::MAX_JUSTIFICATION).contains(&length)
-        || reason.chars().any(char::is_control)
+        || !reason.chars().all(is_plain)
     {
         return Err(AppError::NotAllowed(
             "a justification of 8 to 2000 characters, in plain text, is required",

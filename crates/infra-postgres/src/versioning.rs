@@ -5,7 +5,7 @@
 //! request under the lock of its row, applies one transition, and writes the result and its audit
 //! record in the same transaction. Every statement carries the tenant.
 
-use sagat_application::definitions::PublishContext;
+use sagat_application::definitions::{DefinitionStore, PublishContext};
 use sagat_application::dispatch::TriggerRegistration;
 use sagat_application::error::StoreError;
 use sagat_application::publishing::{
@@ -30,7 +30,7 @@ use crate::identity::{col, corrupt, insert_audit, namespace_from_row, store_erro
 use crate::pool::BeginSafely;
 
 const REQUEST_COLUMNS: &str = "id, tenant_id, namespace_id, workflow_id, kind, draft_revision, \
-     digest, release_notes, promoted_from_version_id, requested_by, requested_at, \
+     digest, release_notes, promoted_from_version_id, requested_by, draft_edited_by, requested_at, \
      required_approvals, state, published_version_id, published_by, published_at";
 
 fn subject(text: &str) -> Result<Subject, StoreError> {
@@ -55,6 +55,9 @@ fn request_from_row(
         }
     };
     let requested_by: String = col(row, "requested_by")?;
+    let edited_by = col::<Option<String>>(row, "draft_edited_by")?
+        .map(|s| subject(&s))
+        .transpose()?;
     Ok(PublicationRequest::restore(
         RequestId::new(col::<Uuid>(row, "id")?),
         TenantId::new(col::<Uuid>(row, "tenant_id")?),
@@ -66,6 +69,7 @@ fn request_from_row(
         col(row, "release_notes")?,
         col::<Option<Uuid>>(row, "promoted_from_version_id")?.map(WorkflowVersionId::new),
         subject(&requested_by)?,
+        edited_by,
         col(row, "requested_at")?,
         u8::try_from(required).map_err(|_| corrupt("required approvals"))?,
         decisions,
@@ -163,6 +167,30 @@ async fn save_state(
 }
 
 impl PublishingStore for PgDefinitionStore {
+    async fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &sagat_application::definitions::Idempotency,
+    ) -> Result<Option<sagat_application::definitions::VersionRecord>, StoreError> {
+        let mut conn = self.pool().acquire().await.map_err(store_error)?;
+        let number = crate::definitions::replay(
+            &mut conn,
+            tenant,
+            idempotency,
+            &crate::definitions::hash(&idempotency.fingerprint),
+        )
+        .await?;
+        drop(conn);
+        match number {
+            Some(number) => {
+                let number = number.parse().map_err(|_| corrupt("publication version"))?;
+                self.get_version(tenant, workflow, number).await
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn namespace_by_id(
         &self,
         tenant: TenantId,
@@ -284,11 +312,33 @@ impl PublishingStore for PgDefinitionStore {
         audit: &AuditRecord,
     ) -> Result<Opened, StoreError> {
         let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        // The draft cannot be saved while the request is made (this lock conflicts with the
+        // statement that saves it), so a request is never born for a revision that is gone; and the
+        // person who saved the document is read here, from the draft the request is about.
+        let Some(draft) = sqlx::query(
+            "SELECT draft_revision, draft_edited_by FROM workflows \
+             WHERE tenant_id = $1 AND id = $2 FOR SHARE",
+        )
+        .bind(request.tenant_id().as_uuid())
+        .bind(request.workflow_id().as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?
+        else {
+            return Err(StoreError::MissingReference);
+        };
+        let current: i64 = col(&draft, "draft_revision")?;
+        let current = u64::try_from(current).map_err(|_| corrupt("draft revision"))?;
+        if current != request.draft_revision() {
+            return Ok(Opened::Stale { current });
+        }
+        let edited_by: Option<String> = col(&draft, "draft_edited_by")?;
         let inserted = sqlx::query(
             "INSERT INTO publication_requests \
              (id, tenant_id, namespace_id, workflow_id, kind, draft_revision, digest, release_notes, \
-              promoted_from_version_id, requested_by, requested_at, required_approvals, state, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $11) \
+              promoted_from_version_id, requested_by, requested_at, required_approvals, state, updated_at, \
+              draft_edited_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $11, $14) \
              ON CONFLICT (tenant_id, workflow_id) WHERE state IN ('PENDING', 'APPROVED') DO NOTHING",
         )
         .bind(request.id().as_uuid())
@@ -304,6 +354,7 @@ impl PublishingStore for PgDefinitionStore {
         .bind(request.requested_at())
         .bind(i16::from(request.required()))
         .bind(request.state().as_str())
+        .bind(edited_by.as_deref())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?
@@ -322,7 +373,9 @@ impl PublishingStore for PgDefinitionStore {
         }
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
-        Ok(Opened::Done)
+        Ok(Opened::Done {
+            edited_by: edited_by.as_deref().map(subject).transpose()?,
+        })
     }
 
     async fn request(
@@ -629,6 +682,10 @@ pub(crate) struct Published<'a> {
     pub version: WorkflowVersionId,
     /// False when the document was a version that existed.
     pub created: bool,
+    /// The draft revision and the digest of the document being published: a request publishes
+    /// the one it names and no other.
+    pub draft_revision: u64,
+    pub digest: sagat_domain::workflow::Digest,
     pub context: &'a PublishContext,
     pub actor: &'a str,
     pub now: OffsetDateTime,
@@ -647,6 +704,8 @@ pub(crate) async fn record_publication(
         previous_active,
         version,
         created,
+        draft_revision,
+        digest,
         context,
         actor,
         now,
@@ -666,15 +725,17 @@ pub(crate) async fn record_publication(
         }
     }
     if let Some(request) = context.request {
-        // The request must be approved, with what the policy in force asks for now.
+        // The request must be approved, for this draft revision and this document, with what the
+        // policy in force asks for now, the policy of the namespace the workflow is in.
         let row = sqlx::query(
-            "SELECT r.state, \
+            "SELECT r.state, r.draft_revision, r.digest, \
                     (SELECT count(*) FROM publication_decisions d \
                      WHERE d.request_id = r.id AND d.verdict = 'APPROVED') AS approvals, \
                     coalesce(p.required_approvals, CASE n.environment WHEN 'prod' THEN 1 ELSE 0 END)::smallint AS needed \
              FROM publication_requests r \
-             JOIN namespaces n ON n.tenant_id = r.tenant_id AND n.id = r.namespace_id \
-             LEFT JOIN publication_policies p ON p.tenant_id = r.tenant_id AND p.namespace_id = r.namespace_id \
+             JOIN workflows w ON w.tenant_id = r.tenant_id AND w.id = r.workflow_id \
+             JOIN namespaces n ON n.tenant_id = w.tenant_id AND n.id = w.namespace_id \
+             LEFT JOIN publication_policies p ON p.tenant_id = w.tenant_id AND p.namespace_id = w.namespace_id \
              WHERE r.tenant_id = $1 AND r.id = $2 AND r.workflow_id = $3 FOR UPDATE OF r",
         )
         .bind(tenant.as_uuid())
@@ -687,7 +748,13 @@ pub(crate) async fn record_publication(
         let state: String = col(&row, "state")?;
         let approvals: i64 = col(&row, "approvals")?;
         let needed: i16 = col(&row, "needed")?;
-        if state != "APPROVED" || approvals < i64::from(needed) {
+        let named_revision: i64 = col(&row, "draft_revision")?;
+        let named_digest: String = col(&row, "digest")?;
+        if state != "APPROVED"
+            || approvals < i64::from(needed)
+            || u64::try_from(named_revision).ok() != Some(draft_revision)
+            || named_digest != digest.to_hex()
+        {
             return Err(StoreError::Conflict(
                 sagat_application::error::ConflictKind::RequestNotApproved,
             ));
@@ -776,6 +843,17 @@ pub(crate) async fn effective_policy(
 
 /// The run store serves publishing too, so one value backs every service of the control plane.
 impl PublishingStore for crate::execution::PgRunStore {
+    async fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &sagat_application::definitions::Idempotency,
+    ) -> Result<Option<sagat_application::definitions::VersionRecord>, StoreError> {
+        self.definitions
+            .replay_publication(tenant, workflow, idempotency)
+            .await
+    }
+
     async fn namespace_by_id(
         &self,
         tenant: TenantId,

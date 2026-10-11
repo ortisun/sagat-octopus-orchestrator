@@ -78,6 +78,11 @@ pub enum AuditAction {
     PublicationApproved,
     PublicationRejected,
     PublicationWithdrawn,
+    /// A request was ended because the draft it was about was saved again.
+    PublicationSuperseded,
+    /// Somebody tried to decide their own request, or to withdraw somebody else's. Written once
+    /// per person, request and reason in a window: whoever can reach the endpoint can repeat it.
+    PublicationDenied,
     /// The pointer to the active version of a workflow moved without a publication: a rollback, or
     /// the way forward again.
     WorkflowActivated,
@@ -144,6 +149,7 @@ impl AuditAction {
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
+                | Self::PublicationDenied
         )
     }
 
@@ -154,7 +160,7 @@ impl AuditAction {
     #[must_use]
     pub const fn repeat_window(self) -> Option<std::time::Duration> {
         match self {
-            Self::AuditRead => Some(std::time::Duration::from_secs(300)),
+            Self::AuditRead | Self::PublicationDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
     }
@@ -211,6 +217,8 @@ impl AuditAction {
             Self::PublicationApproved => "publication.approved",
             Self::PublicationRejected => "publication.rejected",
             Self::PublicationWithdrawn => "publication.withdrawn",
+            Self::PublicationSuperseded => "publication.superseded",
+            Self::PublicationDenied => "publication.denied",
             Self::WorkflowActivated => "workflow.activated",
             Self::EventEndpointCreated => "event.endpoint_created",
             Self::EventEndpointChanged => "event.endpoint_changed",
@@ -340,6 +348,29 @@ impl AuditRecord {
             reason: None,
             trace_id,
             created_at: now,
+        }
+    }
+
+    /// A second record of the same transaction, about another resource, by the same actor at the
+    /// same time and in the same trace: the requests that saving a draft ended, one for each.
+    #[must_use]
+    pub fn follow_up(
+        &self,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id: self.tenant_id,
+            actor: self.actor.clone(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id: self.trace_id.clone(),
+            created_at: self.created_at,
         }
     }
 

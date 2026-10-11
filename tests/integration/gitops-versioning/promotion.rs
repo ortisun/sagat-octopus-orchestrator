@@ -388,3 +388,31 @@ async fn promoting_needs_the_permission_to_publish() {
         .expect_err("forbidden");
     assert!(matches!(error, AppError::Forbidden { .. }), "{error:?}");
 }
+
+#[tokio::test]
+async fn a_promotion_with_the_longest_key_creates_the_workflow_in_the_target() {
+    let w = world().await;
+    let dev = namespace(&w, "shop-dev", Environment::Dev).await;
+    let staging = namespace(&w, "shop-staging", Environment::Staging).await;
+    let author = developer(&w, "author").await;
+    let source = published_in(&w, "shop-dev", "checkout", &doc("checkout", "release 7")).await;
+    let _ = dev;
+    // The key the API takes at most; the step that creates the workflow derives its own from it.
+    let key = format!("promote-{}", "k".repeat(160 - "promote-".len()));
+    assert_eq!(key.len(), 160);
+    let promoted = w
+        .publishing
+        .promote(
+            &author,
+            source,
+            1,
+            staging.id(),
+            "tried in dev for a week",
+            false,
+            &key,
+            &ctx(),
+        )
+        .await
+        .expect("promoted");
+    assert!(matches!(promoted, Promotion::Published(_)));
+}

@@ -367,11 +367,24 @@ async fn the_operations_of_feature_011_conform_to_the_contract_on_their_normal_a
         .await;
     r.go(scenario("POST", publish, &publish_path, dev1(), None, 400))
         .await;
+    let publication_key = key();
     let published = r
         .go(scenario("POST", publish, &publish_path, dev1(), None, 201)
-            .with_header("idempotency-key", key()))
+            .with_header("idempotency-key", publication_key.clone()))
         .await;
     assert_eq!(published["versionNumber"], 1);
+    let replayed = r
+        .go(scenario("POST", publish, &publish_path, dev1(), None, 201)
+            .with_header("idempotency-key", publication_key.clone()))
+        .await;
+    assert_eq!(replayed["id"], published["id"]);
+    assert_eq!(replayed["created"], false);
+    r.go(scenario("POST", publish, &publish_path, bob(), None, 404)
+        .with_header("idempotency-key", publication_key.clone()))
+        .await;
+    r.go(scenario("POST", publish, &publish_path, vera(), None, 403)
+        .with_header("idempotency-key", publication_key))
+        .await;
     r.go(scenario("POST", publish, &publish_path, dev1(), None, 409)
         .with_header("idempotency-key", key()))
         .await;

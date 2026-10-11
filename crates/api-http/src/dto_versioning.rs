@@ -92,6 +92,9 @@ pub struct RequestBody {
     /// For a promotion: the version whose document this publishes.
     pub promoted_from_version_id: Option<String>,
     pub requested_by: String,
+    /// Who saved the document the request is about, when the platform knows (a draft saved before
+    /// it kept that has no one). Neither they nor the requester may decide it.
+    pub edited_by: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub requested_at: OffsetDateTime,
     /// What the policy asked for when the request was opened.
@@ -114,6 +117,7 @@ impl From<&PublicationRequest> for RequestBody {
             release_notes: request.release_notes().map(str::to_owned),
             promoted_from_version_id: request.promoted_from().map(|v| v.to_string()),
             requested_by: request.requested_by().to_string(),
+            edited_by: request.edited_by().map(ToString::to_string),
             requested_at: request.requested_at(),
             required_approvals: request.required(),
             approvals: request.approvals(),

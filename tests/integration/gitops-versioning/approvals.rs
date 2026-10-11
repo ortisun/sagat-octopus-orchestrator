@@ -1,7 +1,7 @@
 //! A namespace that asks for approvals: who may publish into it, what each person decided, and
 //! when a request can no longer be published (FR-011-003, FR-011-005).
 
-use sagat_application::error::Refusal;
+use sagat_application::error::{AppError, ConflictKind, Refusal};
 use sagat_domain::identity::Environment;
 use sagat_domain::versioning::{ApprovalPolicy, RequestState, Verdict, VersioningError};
 
@@ -371,10 +371,11 @@ async fn a_policy_raised_after_the_approvals_asks_for_one_more_before_it_publish
         refusal(refused),
         Refusal::Request(VersioningError::NotEnoughApprovals { have: 1, need: 2 })
     );
-    // A second approver is what is missing.
+    // A second approver is what is missing. (Not the administrator: they saved the draft.)
+    let second = developer(&w, "second").await;
     w.publishing
         .decide(
-            &w.admin,
+            &second,
             request.id(),
             Verdict::Approve,
             "second pair of eyes",
@@ -388,4 +389,354 @@ async fn a_policy_raised_after_the_approvals_asks_for_one_more_before_it_publish
         .await
         .expect("published");
     assert_eq!(published.version.number(), 1);
+}
+
+async fn audit_count(w: &crate::support::engine::World, action: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE action = $1")
+        .bind(action)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("audit")
+}
+
+#[tokio::test]
+async fn whoever_saved_the_draft_cannot_approve_a_request_somebody_else_opened() {
+    let w = world().await;
+    namespace(&w, "billing-prod", Environment::Prod).await;
+    let editor = developer(&w, "erin").await;
+    let pipeline = developer(&w, "pipeline").await;
+    let reviewer = developer(&w, "reviewer").await;
+    let created = w
+        .defs
+        .create_workflow(
+            &editor,
+            "billing-prod",
+            "payments-flow",
+            &crate::common::bytes(&doc("payments-flow", "v1")),
+            "create-erin-0123456789",
+            &ctx(),
+        )
+        .await
+        .expect("a draft by erin");
+    let id = created.workflow.id();
+
+    // A pipeline asks for the document Erin saved; she may not approve it, and neither may it.
+    let request = w
+        .publishing
+        .open_request(
+            &pipeline,
+            id,
+            created.workflow.draft_revision(),
+            None,
+            &ctx(),
+        )
+        .await
+        .expect("request");
+    assert_eq!(request.edited_by().map(|s| s.as_str()), Some("erin"));
+    for who in [&editor, &pipeline] {
+        let refused = w
+            .publishing
+            .decide(
+                who,
+                request.id(),
+                Verdict::Approve,
+                "it is fine, i know it",
+                &ctx(),
+            )
+            .await
+            .expect_err("not theirs to approve");
+        assert_eq!(
+            refusal(refused),
+            Refusal::Request(VersioningError::AuthorCannotDecide)
+        );
+    }
+    // And rejecting is deciding too.
+    assert!(
+        w.publishing
+            .decide(
+                &editor,
+                request.id(),
+                Verdict::Reject,
+                "i would rather not",
+                &ctx()
+            )
+            .await
+            .is_err()
+    );
+    // The attempts are on the trail, once for each person however often they try (the denials are
+    // written off the path of the answer, so give them a moment).
+    let mut written = 0;
+    for _ in 0..100 {
+        written = audit_count(&w, "publication.denied").await;
+        if written >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(written, 2);
+    w.publishing
+        .decide(
+            &reviewer,
+            request.id(),
+            Verdict::Approve,
+            "reviewed the document",
+            &ctx(),
+        )
+        .await
+        .expect("somebody else can");
+
+    // The person who saves the draft next is the one who wrote the next document: Erin may now
+    // approve what Frank wrote, and the request that was about her document is over, on the trail.
+    let frank = developer(&w, "frank").await;
+    let revision = crate::common::edit(
+        &w,
+        &frank,
+        id,
+        created.workflow.draft_revision(),
+        &doc("payments-flow", "v2"),
+    )
+    .await;
+    assert_eq!(audit_count(&w, "publication.superseded").await, 1);
+    let next = w
+        .publishing
+        .open_request(&pipeline, id, revision, None, &ctx())
+        .await
+        .expect("a new request");
+    assert_eq!(next.edited_by().map(|s| s.as_str()), Some("frank"));
+    assert!(
+        w.publishing
+            .decide(
+                &editor,
+                next.id(),
+                Verdict::Approve,
+                "frank wrote it, i read it",
+                &ctx()
+            )
+            .await
+            .is_ok()
+    );
+
+    // The publication names the request on the trail.
+    let published = w
+        .publishing
+        .publish_request(&pipeline, next.id(), "key-erin-0123456789", &ctx())
+        .await
+        .expect("published");
+    assert_eq!(published.version.number(), 1);
+    let named: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'workflow.published' AND reason LIKE '%by request ' || $1",
+    )
+    .bind(next.id().to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(named, 1);
+}
+
+#[tokio::test]
+async fn a_policy_change_says_from_what_to_what() {
+    let w = world().await;
+    let prod = namespace(&w, "billing-prod", Environment::Prod).await;
+    w.publishing
+        .set_policy(&w.admin, prod.id(), 0, "we trust the pipeline here", &ctx())
+        .await
+        .expect("lowered");
+    let reason: String = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE action = 'publication.policy_changed' ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audit");
+    assert!(reason.starts_with("from 1 to 0 approval(s)"), "{reason}");
+}
+
+#[tokio::test]
+async fn a_request_publishes_the_revision_and_the_document_it_names_and_no_other() {
+    let w = world().await;
+    namespace(&w, "billing-prod", Environment::Prod).await;
+    let author = developer(&w, "author").await;
+    let reviewer = developer(&w, "reviewer").await;
+    let created = w
+        .defs
+        .create_workflow(
+            &author,
+            "billing-prod",
+            "payments-flow",
+            &crate::common::bytes(&doc("payments-flow", "v1")),
+            "create-author-0123456789",
+            &ctx(),
+        )
+        .await
+        .expect("a draft");
+    let id = created.workflow.id();
+    let request = w
+        .publishing
+        .open_request(
+            &developer(&w, "pipeline").await,
+            id,
+            created.workflow.draft_revision(),
+            None,
+            &ctx(),
+        )
+        .await
+        .expect("request");
+    w.publishing
+        .decide(
+            &reviewer,
+            request.id(),
+            Verdict::Approve,
+            "reviewed the document",
+            &ctx(),
+        )
+        .await
+        .expect("approved");
+
+    // What a request is about cannot be changed under it: the database refuses.
+    let changed =
+        sqlx::query("UPDATE publication_requests SET digest = repeat('a', 64) WHERE id = $1")
+            .bind(request.id().as_uuid())
+            .execute(&w.db.pool)
+            .await
+            .expect_err("frozen");
+    assert!(changed.to_string().contains("cannot change"), "{changed}");
+
+    // Even if it were (the trigger is switched off for a moment, as a bug or a restore could),
+    // the transaction that publishes compares what it publishes with what was approved.
+    sqlx::query("ALTER TABLE publication_requests DISABLE TRIGGER publication_requests_freeze")
+        .execute(&w.db.pool)
+        .await
+        .expect("off");
+    sqlx::query("UPDATE publication_requests SET digest = repeat('a', 64) WHERE id = $1")
+        .bind(request.id().as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("forged");
+    sqlx::query(
+        "ALTER TABLE publication_requests ENABLE ALWAYS TRIGGER publication_requests_freeze",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("on");
+    let refused = w
+        .publishing
+        .publish_request(&author, request.id(), "key-forged-0123456789", &ctx())
+        .await
+        .expect_err("not the document that was approved");
+    assert!(
+        matches!(
+            refused,
+            AppError::Conflict(ConflictKind::RequestNotApproved)
+        ),
+        "{refused:?}"
+    );
+    let versions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM workflow_versions WHERE workflow_id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("count");
+    assert_eq!(versions, 0, "nothing was published");
+}
+
+#[tokio::test]
+async fn release_notes_are_plain_text_because_they_are_read_on_terminals_and_in_the_history() {
+    let w = world().await;
+    let record = draft(&w, "payments", "notes-flow", &doc("notes-flow", "v1")).await;
+    let id = record.workflow.id();
+    let revision = record.workflow.draft_revision();
+    for (notes, why) in [
+        ("fix\u{1b}[2J", "an escape sequence"),
+        ("a\u{202e}b", "a bidirectional override"),
+        ("a\r\nb", "a carriage return"),
+        ("a\u{2028}b", "a line separator"),
+    ] {
+        let refused = w
+            .defs
+            .publish(
+                &w.admin,
+                id,
+                revision,
+                Some(notes),
+                "key-notes-0123456789",
+                &ctx(),
+            )
+            .await
+            .expect_err(why);
+        assert!(
+            matches!(refused, AppError::NotAllowed(_)),
+            "{why}: {refused:?}"
+        );
+    }
+    // New lines and tabs are layout, and stay.
+    w.defs
+        .publish(
+            &w.admin,
+            id,
+            revision,
+            Some("line one\n\tline two"),
+            "key-notes-1-0123456789",
+            &ctx(),
+        )
+        .await
+        .expect("notes with lines");
+}
+
+#[tokio::test]
+async fn a_request_is_not_born_for_a_revision_that_was_saved_over() {
+    use sagat_application::publishing::{Opened, PublishingStore};
+    use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+    use sagat_domain::versioning::{PublicationRequest, RequestId, RequestKind};
+
+    let w = world().await;
+    let prod = namespace(&w, "billing-prod", Environment::Prod).await;
+    let author = developer(&w, "author").await;
+    let record = draft(
+        &w,
+        "billing-prod",
+        "payments-flow",
+        &doc("payments-flow", "v1"),
+    )
+    .await;
+    let id = record.workflow.id();
+    let one = record.workflow.draft_revision();
+    // The service read revision 1 and prepared a request; before it is stored, somebody saves 2.
+    let two = edit(&w, &w.admin, id, one, &doc("payments-flow", "v2")).await;
+    assert_eq!(two, one + 1);
+
+    let now = time::OffsetDateTime::now_utc();
+    let request = PublicationRequest::open(
+        RequestId::generate(),
+        author.tenant_id(),
+        prod.id(),
+        id,
+        RequestKind::Publish,
+        one,
+        sagat_domain::workflow::Digest::new([7; 32]),
+        None,
+        None,
+        author.subject().clone(),
+        ApprovalPolicy::new(1).expect("a policy"),
+        now,
+    );
+    let audit = AuditRecord::by(
+        &author,
+        AuditAction::PublicationRequested,
+        ResourceType::PublicationRequest,
+        request.id().to_string(),
+        None,
+        now,
+    );
+    let opened = w
+        .store
+        .open_request(&request, &audit)
+        .await
+        .expect("answered");
+    assert_eq!(opened, Opened::Stale { current: two });
+    let stored: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM publication_requests WHERE workflow_id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("count");
+    assert_eq!(stored, 0, "nothing was stored, so nothing holds the slot");
 }

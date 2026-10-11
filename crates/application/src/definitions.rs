@@ -59,6 +59,27 @@ pub fn unknown_script_problems(
 /// Longest release note.
 pub const MAX_RELEASE_NOTES: usize = 2048;
 
+/// Release notes are text for people to read, in the history of a workflow among other places: up
+/// to [`MAX_RELEASE_NOTES`] bytes, with new lines and tabs but no other control character and none
+/// of the format characters that reorder or hide text.
+pub(crate) fn check_release_notes(notes: Option<&str>) -> Result<(), AppError> {
+    let Some(notes) = notes else {
+        return Ok(());
+    };
+    if notes.len() > MAX_RELEASE_NOTES {
+        return Err(AppError::NotAllowed("release notes are too long"));
+    }
+    if !notes
+        .chars()
+        .all(|c| crate::operations::is_plain(c) || c == '\n' || c == '\t')
+    {
+        return Err(AppError::NotAllowed(
+            "release notes are plain text: no control or format characters",
+        ));
+    }
+    Ok(())
+}
+
 /// One problem found in a workflow document. `path` is a JSON pointer; `message` never contains
 /// values from the document beyond a clipped fragment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -784,9 +805,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         mut context: PublishContext,
     ) -> Result<Published, AppError> {
         principal.authorize(Permission::DefinitionPublish)?;
-        if release_notes.is_some_and(|n| n.len() > MAX_RELEASE_NOTES) {
-            return Err(AppError::NotAllowed("release notes are too long"));
-        }
+        check_release_notes(release_notes)?;
         let (_, parsed) = self.prepare(principal, id, draft_revision, ctx).await?;
         context.scripts = parsed.definition.script_digests().into_iter().collect();
         if context.reason.is_none() {
@@ -802,16 +821,12 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             ctx.trace_id.clone(),
             now,
         )
-        .with_reason(format!("digest {}", parsed.digest));
-        let idempotency = Idempotency {
-            scope: format!("workflow.publish:{id}"),
-            key: key.to_owned(),
-            fingerprint: fingerprint(&[
-                &draft_revision.to_be_bytes(),
-                parsed.digest.as_bytes(),
-                release_notes.unwrap_or_default().as_bytes(),
-            ]),
-        };
+        .with_reason(match context.request {
+            Some(request) => format!("digest {}, by request {request}", parsed.digest),
+            None => format!("digest {}", parsed.digest),
+        });
+        let idempotency =
+            publication_idempotency(id, draft_revision, parsed.digest, release_notes, key);
         let outcome = self
             .store
             .publish(
@@ -1175,6 +1190,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             }
         }
         AppError::NotFound
+    }
+}
+
+/// The identity of a publication, also available from an immutable publication request after
+/// its draft has changed. Keep writes and recovery on the same fingerprint.
+pub(crate) fn publication_idempotency(
+    id: WorkflowId,
+    revision: u64,
+    digest: Digest,
+    notes: Option<&str>,
+    key: &str,
+) -> Idempotency {
+    Idempotency {
+        scope: format!("workflow.publish:{id}"),
+        key: key.to_owned(),
+        fingerprint: fingerprint(&[
+            &revision.to_be_bytes(),
+            digest.as_bytes(),
+            notes.unwrap_or_default().as_bytes(),
+        ]),
     }
 }
 

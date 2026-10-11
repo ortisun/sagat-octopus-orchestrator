@@ -63,6 +63,9 @@ impl ErrorCode {
             (Self::Conflict, "DRAFT_HAS_CHANGES") => {
                 "The workflow in the target namespace has a draft with changes that were not published: publish or discard them, then promote again."
             }
+            (Self::Conflict, "REQUEST_NOT_APPROVED") => {
+                "The request stopped being approved while it was being published (decided, withdrawn, superseded, or the namespace asks for more): read it again."
+            }
             (Self::Conflict, "REQUEST_STATE" | "ALREADY_DECIDED") => {
                 "Read the request again: it is in a state that does not allow this, or you have already decided it."
             }
@@ -472,6 +475,16 @@ impl From<AppError> for ApiError {
                         json!({ "field": "name" })
                     }
                     ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
+                    ConflictKind::RequestNotApproved => {
+                        // It is a refusal of the publishing rules like the others, found by the
+                        // transaction that would have made it instead of by the check before it.
+                        metrics::counter!(
+                            "publication_refusals_total",
+                            "reason" => "REQUEST_NOT_APPROVED"
+                        )
+                        .increment(1);
+                        json!({ "reason": "REQUEST_NOT_APPROVED" })
+                    }
                     _ => json!({ "field": "slug" }),
                 });
                 e

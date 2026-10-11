@@ -222,3 +222,28 @@ fn names_survive_the_round_trip_through_storage() {
         assert!(!closed.is_open());
     }
 }
+
+#[test]
+fn whoever_saved_the_document_cannot_approve_it_even_when_somebody_else_asked() {
+    // A pipeline (or a colleague) opens the request for the document that Bob saved.
+    let mut open = request(asks(1)).with_edited_by(Some(who("bob")));
+    assert_eq!(open.edited_by(), Some(&who("bob")));
+    assert_eq!(
+        open.approve(&who("bob"), "i wrote it and it is fine", now()),
+        Err(VersioningError::AuthorCannotDecide)
+    );
+    assert_eq!(
+        open.reject(&who("bob"), "i changed my mind about it", now()),
+        Err(VersioningError::AuthorCannotDecide)
+    );
+    assert_eq!(open.approvals(), 0);
+    // The requester still cannot, and somebody else can.
+    assert_eq!(
+        open.approve(&who("alice"), "i asked for it myself", now()),
+        Err(VersioningError::AuthorCannotDecide)
+    );
+    assert_eq!(
+        open.approve(&who("carol"), "reviewed the document", now()),
+        Ok(RequestState::Approved)
+    );
+}

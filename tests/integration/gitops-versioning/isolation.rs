@@ -315,3 +315,105 @@ async fn only_a_request_that_exists_elsewhere_leaves_a_trace_of_the_probe() {
         "one for the request that exists, none for the 20 that do not"
     );
 }
+
+#[tokio::test]
+async fn the_history_stays_append_only_where_triggers_are_switched_off_for_replication() {
+    let w = world().await;
+    w.publish(doc("flow", "one")).await;
+    let mut conn = w.db.pool.acquire().await.expect("connection");
+    sqlx::query("SET session_replication_role = replica")
+        .execute(&mut *conn)
+        .await
+        .expect("a superuser may");
+    for statement in [
+        "UPDATE workflow_activations SET reason = 'rewritten'",
+        "DELETE FROM workflow_activations",
+        "TRUNCATE workflow_activations",
+        "UPDATE publication_requests SET digest = repeat('b', 64)",
+    ] {
+        let result = sqlx::query(statement).execute(&mut *conn).await;
+        // The last one has no rows to refuse; the others are refused although triggers do not
+        // fire in this session unless they were made to.
+        if statement.starts_with("UPDATE publication_requests") {
+            assert!(result.is_ok());
+        } else {
+            let (code, _) = crate::support::db_error(result.expect_err("append-only"));
+            assert_eq!(code, "23001", "{statement}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_history_row_and_a_request_belong_to_the_workflow_they_name() {
+    let w = world().await;
+    let tenant = w.admin.tenant_id().as_uuid();
+    let (a, _version_a) = w.publish(doc("flow-a", "one")).await;
+    let (_b, version_b) = w.publish(doc("flow-b", "one")).await;
+    namespace(&w, "billing-prod", Environment::Prod).await;
+    let prod_flow = draft(&w, "billing-prod", "prod-flow", &doc("prod-flow", "one")).await;
+    let author = developer(&w, "author").await;
+    let request = w
+        .publishing
+        .open_request(
+            &author,
+            prod_flow.workflow.id(),
+            prod_flow.workflow.draft_revision(),
+            None,
+            &ctx(),
+        )
+        .await
+        .expect("request");
+
+    // A change of flow-a's pointer to a version of flow-b.
+    let refused = sqlx::query(
+        "INSERT INTO workflow_activations (id, tenant_id, workflow_id, version_id, kind, actor, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, $3, 'ACTIVATE', 'mallory', now())",
+    )
+    .bind(tenant)
+    .bind(a.as_uuid())
+    .bind(version_b.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect_err("the version is of another workflow");
+    let (code, constraint) = crate::support::db_error(refused);
+    assert_eq!(
+        (code.as_str(), constraint.as_deref()),
+        ("23503", Some("workflow_activations_version_fk"))
+    );
+
+    // A change authorised by a request that was about another workflow.
+    let refused = sqlx::query(
+        "INSERT INTO workflow_activations (id, tenant_id, workflow_id, version_id, kind, actor, request_id, created_at) \
+         SELECT gen_random_uuid(), $1, $2, v.id, 'PUBLISH', 'mallory', $3, now() \
+         FROM workflow_versions v WHERE v.workflow_id = $2",
+    )
+    .bind(tenant)
+    .bind(a.as_uuid())
+    .bind(request.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect_err("the request is about another workflow");
+    let (code, constraint) = crate::support::db_error(refused);
+    assert_eq!(
+        (code.as_str(), constraint.as_deref()),
+        ("23503", Some("workflow_activations_request_fk"))
+    );
+
+    // A request that says its workflow is in a namespace it is not in.
+    let refused = sqlx::query(
+        "INSERT INTO publication_requests (id, tenant_id, namespace_id, workflow_id, kind, draft_revision, digest, \
+                                           requested_by, requested_at, required_approvals, state, updated_at) \
+         VALUES (gen_random_uuid(), $1, $2, $3, 'PUBLISH', 1, repeat('c', 64), 'mallory', now(), 0, 'REJECTED', now())",
+    )
+    .bind(tenant)
+    .bind(w.namespace.id().as_uuid())
+    .bind(prod_flow.workflow.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect_err("the workflow is in another namespace");
+    let (code, constraint) = crate::support::db_error(refused);
+    assert_eq!(
+        (code.as_str(), constraint.as_deref()),
+        ("23503", Some("publication_requests_workflow_fk"))
+    );
+}

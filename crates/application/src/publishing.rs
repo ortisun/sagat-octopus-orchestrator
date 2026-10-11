@@ -30,7 +30,8 @@ use time::OffsetDateTime;
 
 use crate::clock::Clock;
 use crate::definitions::{
-    DefinitionService, DefinitionStore, IrCodec, MAX_RELEASE_NOTES, PublishContext, Published,
+    DefinitionService, DefinitionStore, Idempotency, IrCodec, PublishContext, Published,
+    VersionRecord, publication_idempotency,
 };
 use crate::dispatch::{TriggerRegistration, triggers_of};
 use crate::error::{AppError, Refusal, StoreError};
@@ -103,11 +104,15 @@ pub struct NewActivation {
 }
 
 /// What opening a request found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opened {
-    Done,
+    /// The request was stored, for the document that `edited_by` saved (when the platform knows).
+    Done { edited_by: Option<Subject> },
     /// A request is open for the workflow already.
     AlreadyOpen(RequestId),
+    /// The draft was saved again after the request was prepared: it is at revision `current`, and
+    /// nobody is asked to approve a document that is gone.
+    Stale { current: u64 },
 }
 
 /// What deciding, or withdrawing, a request came to.
@@ -153,6 +158,15 @@ pub struct Activation {
 
 /// The storage port of publishing. Every method takes the tenant and applies it to every statement.
 pub trait PublishingStore: DefinitionStore {
+    /// Reads the committed result of a publication with the same key and fingerprint. Never
+    /// validates the current draft, moves the active pointer or writes another audit record.
+    fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
+
     fn namespace_by_id(
         &self,
         tenant: TenantId,
@@ -415,6 +429,7 @@ where
         let policy = ApprovalPolicy::new(required)
             .map_err(|_| AppError::NotAllowed("a policy asks for at most 3 approvals"))?;
         let namespace = self.namespace(principal, namespace, ctx).await?;
+        let before = self.effective_policy(principal, &namespace).await?.policy;
         let now = self.clock.now();
         let audit = AuditRecord::by(
             principal,
@@ -424,7 +439,11 @@ where
             ctx.trace_id.clone(),
             now,
         )
-        .with_reason(format!("{} approval(s): {reason}", policy.required()));
+        .with_reason(format!(
+            "from {} to {} approval(s): {reason}",
+            before.required(),
+            policy.required()
+        ));
         self.store
             .set_policy(
                 principal.tenant_id(),
@@ -454,9 +473,7 @@ where
         ctx: &RequestContext,
     ) -> Result<PublicationRequest, AppError> {
         principal.authorize(Permission::DefinitionPublish)?;
-        if release_notes.is_some_and(|n| n.len() > MAX_RELEASE_NOTES) {
-            return Err(AppError::NotAllowed("release notes are too long"));
-        }
+        crate::definitions::check_release_notes(release_notes)?;
         let (record, parsed) = self
             .definitions
             .prepare(principal, workflow, draft_revision, ctx)
@@ -525,7 +542,8 @@ where
             request.digest().to_hex()
         ));
         match self.store.open_request(&request, &audit).await? {
-            Opened::Done => Ok(request),
+            Opened::Done { edited_by } => Ok(request.with_edited_by(edited_by)),
+            Opened::Stale { current } => Err(AppError::RevisionConflict { current }),
             Opened::AlreadyOpen(open) => {
                 Err(AppError::Versioning(Refusal::RequestOpen { request: open }))
             }
@@ -645,8 +663,40 @@ where
             .await?
         {
             Decided::Done(request) => Ok(*request),
-            Decided::Refused(error) => Err(AppError::Versioning(Refusal::Request(error))),
+            Decided::Refused(error) => {
+                self.record_refusal(principal, id, error, ctx).await;
+                Err(AppError::Versioning(Refusal::Request(error)))
+            }
             Decided::NotFound => Err(self.missing_request(principal, id, ctx).await),
+        }
+    }
+
+    /// Writes down that somebody tried to decide their own request, or to withdraw somebody
+    /// else's: the two refusals that are worth a person looking at. A failure to write it is
+    /// logged and does not change the answer.
+    async fn record_refusal(
+        &self,
+        principal: &Principal,
+        id: RequestId,
+        error: VersioningError,
+        ctx: &RequestContext,
+    ) {
+        let code = match error {
+            VersioningError::AuthorCannotDecide => "AUTHOR_CANNOT_DECIDE",
+            VersioningError::NotTheAuthor => "NOT_THE_AUTHOR",
+            _ => return,
+        };
+        let record = AuditRecord::by(
+            principal,
+            AuditAction::PublicationDenied,
+            ResourceType::PublicationRequest,
+            id.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(code);
+        if let Err(error) = self.store.record_denial(&record).await {
+            tracing::error!(%error, action = %record.action(), "failed to record audit entry");
         }
     }
 
@@ -677,7 +727,10 @@ where
             .await?
         {
             Decided::Done(request) => Ok(*request),
-            Decided::Refused(error) => Err(AppError::Versioning(Refusal::Request(error))),
+            Decided::Refused(error) => {
+                self.record_refusal(principal, id, error, ctx).await;
+                Err(AppError::Versioning(Refusal::Request(error)))
+            }
             Decided::NotFound => Err(self.missing_request(principal, id, ctx).await),
         }
     }
@@ -697,6 +750,14 @@ where
     ) -> Result<Published, AppError> {
         principal.authorize(Permission::DefinitionPublish)?;
         let request = self.get_request(principal, id, ctx).await?;
+        // A request that was published is asked again with the key it was published with when the
+        // answer was lost: that is answered as it was by the store, which knows the key; any other
+        // key finds the request published and is refused.
+        if request.state() == RequestState::Published {
+            return self
+                .replay_published_request(principal, &request, key)
+                .await;
+        }
         if request.state() != RequestState::Approved {
             return Err(AppError::Versioning(Refusal::Request(
                 VersioningError::NotInState(request.state()),
@@ -734,11 +795,53 @@ where
             .await
         {
             // The draft moved on after the request was made: the store superseded it with the edit.
-            Err(AppError::RevisionConflict { .. }) => Err(AppError::Versioning(Refusal::Request(
-                VersioningError::NotInState(RequestState::Superseded),
-            ))),
+            Err(AppError::RevisionConflict { .. }) => {
+                let current = self.get_request(principal, id, ctx).await?;
+                if current.state() == RequestState::Published {
+                    self.replay_published_request(principal, &current, key)
+                        .await
+                } else {
+                    Err(AppError::Versioning(Refusal::Request(
+                        VersioningError::NotInState(current.state()),
+                    )))
+                }
+            }
             other => other,
         }
+    }
+
+    async fn replay_published_request(
+        &self,
+        principal: &Principal,
+        request: &PublicationRequest,
+        key: &str,
+    ) -> Result<Published, AppError> {
+        let identity = publication_idempotency(
+            request.workflow_id(),
+            request.draft_revision(),
+            *request.digest(),
+            request.release_notes(),
+            key,
+        );
+        let stored = self
+            .store
+            .replay_publication(principal.tenant_id(), request.workflow_id(), &identity)
+            .await?
+            .ok_or(AppError::Versioning(Refusal::Request(
+                VersioningError::NotInState(RequestState::Published),
+            )))?;
+        if request.published().map(|(id, _, _)| *id) != Some(stored.version.id()) {
+            return Err(AppError::Internal);
+        }
+        let parsed = self
+            .codec
+            .parse(&stored.document)
+            .map_err(|_| AppError::Internal)?;
+        Ok(Published {
+            version: stored.version,
+            created: false,
+            warnings: parsed.warnings,
+        })
     }
 
     // ------------------------------------------------------------------ the pointer
@@ -1051,7 +1154,7 @@ where
                     target.slug().as_str(),
                     name.as_str(),
                     &from.document,
-                    &format!("{key}:create"),
+                    &derived_key(key, "create"),
                     ctx,
                 )
                 .await?;
@@ -1096,6 +1199,21 @@ where
             .await?;
         Ok(Promotion::Published(Box::new(published)))
     }
+}
+
+/// A key for a step of an operation that has a key of its own: the same for the same key, a
+/// different one for each step, and short whatever the caller's is (the store takes 8 to 160
+/// characters, and the caller's may be 160 already).
+fn derived_key(key: &str, step: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"sagat/derived-key/v1");
+    hash.update((key.len() as u64).to_be_bytes());
+    hash.update(key.as_bytes());
+    hash.update(step.as_bytes());
+    let digest = hash.finalize();
+    let hex: String = digest.iter().take(20).map(|b| format!("{b:02x}")).collect();
+    format!("{step}-{hex}")
 }
 
 /// How late in a pipeline an environment is.

@@ -272,6 +272,9 @@ pub struct PublicationRequest {
     release_notes: Option<String>,
     promoted_from: Option<WorkflowVersionId>,
     requested_by: Subject,
+    /// Who saved the document the request is about (the last person to save the draft at this
+    /// revision). Unknown for a draft saved before the platform kept it.
+    edited_by: Option<Subject>,
     requested_at: OffsetDateTime,
     required: u8,
     decisions: Vec<Decision>,
@@ -308,6 +311,7 @@ impl PublicationRequest {
             release_notes,
             promoted_from,
             requested_by,
+            edited_by: None,
             requested_at: now,
             required: policy.required(),
             decisions: Vec::new(),
@@ -335,6 +339,7 @@ impl PublicationRequest {
         release_notes: Option<String>,
         promoted_from: Option<WorkflowVersionId>,
         requested_by: Subject,
+        edited_by: Option<Subject>,
         requested_at: OffsetDateTime,
         required: u8,
         decisions: Vec<Decision>,
@@ -352,12 +357,20 @@ impl PublicationRequest {
             release_notes,
             promoted_from,
             requested_by,
+            edited_by,
             requested_at,
             required,
             decisions,
             state,
             published,
         }
+    }
+
+    /// Says who saved the document this request is about. Nobody who saved it may approve it.
+    #[must_use]
+    pub fn with_edited_by(mut self, edited_by: Option<Subject>) -> Self {
+        self.edited_by = edited_by;
+        self
     }
 
     #[must_use]
@@ -399,6 +412,11 @@ impl PublicationRequest {
     #[must_use]
     pub const fn requested_by(&self) -> &Subject {
         &self.requested_by
+    }
+    /// Who saved the document being asked about, when the platform knows.
+    #[must_use]
+    pub const fn edited_by(&self) -> Option<&Subject> {
+        self.edited_by.as_ref()
     }
     #[must_use]
     pub const fn requested_at(&self) -> OffsetDateTime {
@@ -444,7 +462,7 @@ impl PublicationRequest {
         if !self.state.is_open() {
             return Err(VersioningError::NotInState(self.state));
         }
-        if *by == self.requested_by {
+        if *by == self.requested_by || self.edited_by.as_ref() == Some(by) {
             return Err(VersioningError::AuthorCannotDecide);
         }
         if self.decisions.iter().any(|d| d.by == *by) {

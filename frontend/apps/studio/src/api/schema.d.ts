@@ -934,7 +934,7 @@ export interface paths {
         put?: never;
         /**
          * Approve a request to publish
-         * @description Needs `publication:approve`. Never the author of the request (`403 AUTHOR_CANNOT_DECIDE`), and a person decides once (`409 ALREADY_DECIDED`). The request is `APPROVED` when it has as many approvals as the policy asked for. Audited with the justification in `reason`.
+         * @description Needs `publication:approve`. Never the author of the request nor the person who saved the document it is about (`403 AUTHOR_CANNOT_DECIDE`), and a person decides once (`409 ALREADY_DECIDED`). The request is `APPROVED` when it has as many approvals as the policy asked for. Audited with the justification in `reason`.
          */
         post: operations["approvePublicationRequest"];
         delete?: never;
@@ -994,7 +994,7 @@ export interface paths {
         put?: never;
         /**
          * Publish an approved request
-         * @description Needs `definition:publish`. Publishes the draft at the revision the request names, as the version its approvers saw, and makes it active. Refused (`409`) if the request is not approved, if the policy now asks for more approvals than it has (`NOT_ENOUGH_APPROVALS`), or if the draft moved on (the request is then `SUPERSEDED`). The change of the active version records the request, so the history says who asked, who approved and who published.
+         * @description Needs `definition:publish`. Publishes the draft at the revision the request names, as the version its approvers saw, and makes it active. Refused (`409`) if the request is not approved, if the policy now asks for more approvals than it has (`NOT_ENOUGH_APPROVALS`), or if the draft moved on (the request is then `SUPERSEDED`). Repeating a committed request with the same Idempotency-Key returns its original version with created=false, even after the draft changes; it does not move the pointer or publish the new draft. A different key cannot republish a final request. The change of the active version records the request, so the history says who asked, who approved and who published.
          */
         post: operations["publishPublicationRequest"];
         delete?: never;
@@ -3316,6 +3316,8 @@ export interface components {
              */
             promotedFromVersionId?: string | null;
             requestedBy: string;
+            /** @description Who saved the document the request is about (the last person to save the draft at that revision), when the platform knows; a draft saved before it kept that has no one. Neither they nor the requester may decide the request. */
+            editedBy?: string | null;
             /** Format: date-time */
             requestedAt: string;
             /** @description What the policy asked for when the request was opened; the policy in force is read again when it is published. */
