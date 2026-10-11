@@ -152,7 +152,13 @@ async fn a_finished_run_is_delivered_signed_to_every_subscription_that_asked() {
         "the same event for both"
     );
 
-    let seen = &wanted.seen()[0];
+    // The two subscriptions are delivered at the same time, so which request arrives first is not
+    // decided: the one that is asserted on is the one of the first subscription's delivery.
+    let all = wanted.seen();
+    let seen = all
+        .iter()
+        .find(|request| request.headers["x-octopus-delivery-id"] == delivery.id.to_string())
+        .expect("the request of the first subscription's delivery");
     let body: Value = serde_json::from_slice(&seen.body).expect("json");
     assert_eq!(body["id"], outbox);
     assert_eq!(body["type"], "run.finished");
