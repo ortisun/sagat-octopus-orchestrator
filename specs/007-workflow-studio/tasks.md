@@ -60,21 +60,47 @@ T007-034 (the benchmark must measure the restyled Studio) and T007-035/036. Cont
 
 - [x] T007-037 Record the design direction: source, what was measured and what is not known, the mapping of labels, the elements the platform cannot feed, the accessibility deviations. — `specs/007-workflow-studio/design/README.md` and `design/runs-prototype.jpg`; FR-007-009/010, SC-007-005, D154–D159 and G160–G168 in the spec and `research.md`. **No Studio code was changed.**
 - [x] T007-038 Replace the measured values by the exact ones from the owner's export and update the record (G160). — `design/README.md` rewritten from `design/source/sagat-octopus.dc.html` (sha-256 in the record): `oklch` tokens, faces, scale, radii, sizes and graph; the contrast of each pair computed from them, which corrected one number of the first version; the deviations of D155 listed with their ratios. The light theme, focus and disabled states are not in the design (G160).
-- [ ] T007-039 [P] Tokens: the dark, light and forced-colours themes in `frontend/apps/studio/src/styles/base.css` from the record (the light theme and the focus ring derived, G160/G161), with a Vitest test that converts the tokens and computes the contrast of every text, control-border and focus pair per theme against its threshold (the deviations of `design/README.md` are its expected values), and one that fails on a literal colour in any other stylesheet (SC-007-005).
-- [ ] T007-046 [P] Fonts: Geist and Geist Mono served from the platform's own origin (`font-src 'self'`), the licence read, the packages pinned and at least two weeks old (D138, D159); the system stacks stay as the fallback and the layouts are checked with it (G166). If the packages are not approved, the system stacks stay and G166 is closed as a decision.
-- [ ] T007-040 [US03] Shell: sidebar (brand, namespace, navigation without links to pages that do not exist, G163) and top bar in `frontend/apps/studio/src/app/Shell.tsx` and `styles/base.css`; the skip link, the focus move on navigation and `nav[aria-label=Main]` keep working; `Shell` tests and the journeys pass.
-- [ ] T007-041 [US03] Runs: list beside detail on a wide viewport, the URL of a run unchanged, two pages below the reflow width (D158); the strip of facts, the filters and the selected-step strip from what the API gives (FR-007-010, G164) in `features/runs/{RunsPage,RunDetailPage,RunHeader,NodePanel}.tsx` and `styles/runs.css`; `RunsPage` and `RunDetailPage` tests and `us03-analyze.spec.ts` pass.
-- [ ] T007-042 [US03] Graph: the cards, edges and dotted canvas of the prototype in `features/runs/{RunNodeCard,GraphView}.tsx` and `styles/runs.css`, keeping a taken edge solid, a pending edge dashed and an omitted edge dotted, the visible focus ring and the forced-colours rules that `styles.test.ts` asserts.
-- [ ] T007-043 [US01] [US02] Derive the workflow editor and the Scripts pages from the same tokens, without a reference design (G161): `styles/{workflows,scripts}.css` and the sign-in; the result is a proposal and is reviewed by the owner before it counts as done.
+- [x] T007-039 [P] Tokens: the dark, light and forced-colours themes in `frontend/apps/studio/src/styles/base.css` from the record (the light theme and the focus ring derived, G160/G161), with a Vitest test that converts the tokens and computes the contrast of every text, control-border and focus pair per theme against its threshold (the deviations of `design/README.md` are its expected values), and one that fails on a literal colour in any other stylesheet (SC-007-005).
+- [x] T007-046 [P] Fonts: Geist and Geist Mono served from the platform's own origin (`font-src 'self'`), the licence read, the packages pinned and at least two weeks old (D138, D159); the system stacks stay as the fallback and the layouts are checked with it (G166). If the packages are not approved, the system stacks stay and G166 is closed as a decision.
+- [x] T007-040 [US03] Shell: sidebar (brand, namespace, navigation without links to pages that do not exist, G163) and top bar in `frontend/apps/studio/src/app/Shell.tsx` and `styles/base.css`; the skip link, the focus move on navigation and `nav[aria-label=Main]` keep working; `Shell` tests and the journeys pass.
+- [x] T007-041 [US03] Runs: list beside detail on a wide viewport, the URL of a run unchanged, two pages below the reflow width (D158); the strip of facts, the filters and the selected-step strip from what the API gives (FR-007-010, G164) in `features/runs/{RunsPage,RunDetailPage,RunHeader,NodePanel}.tsx` and `styles/runs.css`; `RunsPage` and `RunDetailPage` tests and `us03-analyze.spec.ts` pass.
+- [x] T007-042 [US03] Graph: the cards, edges and dotted canvas of the prototype in `features/runs/{RunNodeCard,GraphView}.tsx` and `styles/runs.css`, keeping a taken edge solid, a pending edge dashed and an omitted edge dotted, the visible focus ring and the forced-colours rules that `styles.test.ts` asserts.
+- [x] T007-043 [US01] [US02] Derive the workflow editor and the Scripts pages from the same tokens, without a reference design (G161): `styles/{workflows,scripts}.css` and the sign-in; the result is a proposal and is reviewed by the owner before it counts as done.
 - [ ] T007-044 Verify: axe-core in the journeys in light, dark and forced colours on every page, the US01..US04 and `SC-007-001` journeys unchanged in what they assert, the Runs screen compared with `design/runs-prototype.jpg` at 1470 × 812 by a person (a review, reported as one), and `npm run typecheck`, `lint`, `test` and `build` of the frontend.
-- [ ] T007-045 Update `docs/traceability.md` and the Studio's README for FR-007-009/010 and SC-007-005 with the evidence of T007-039..044 and T007-046.
+- [x] T007-045 Update `docs/traceability.md` and the Studio's README for FR-007-009/010 and SC-007-005 with the evidence of T007-039..044 and T007-046.
+
+Implementation evidence (2026-10-11; owner acceptance and local sandbox journey remain open):
+
+- **T007-039:** shared colour/type/spacing/radius/layout tokens, system light/dark preference and forced-colour mappings are in
+  `styles/base.css`. `tokens.test.ts` checks contrast, theme parity, fonts/licence, colour literal ownership and resolution of
+  custom properties. Dark Monaco contrast was corrected; the final three-theme browser checks passed.
+- **T007-046:** Geist and Geist Mono `5.3.0` are pinned and bundled locally; publication 2026-07-19 meets D138's age rule. SIL OFL
+  1.1 is distributed in `public/licenses/geist-OFL.txt`. The browser test blocked font files, verified Geist did not load and
+  passed 320px reflow using the system fallback (G166 closed).
+- **T007-040:** `Shell.tsx` and `Shell.test.tsx` cover the sidebar, namespace, real destinations, session, skip link and navigation
+  focus. The final expanded local browser journeys exercised the shell and passed.
+- **T007-041:** wide master/detail composition, API-backed facts and selected-step strip are implemented. Regression tests cover
+  preserving master-list filters/pagination on sibling navigation and unknown terminal duration. US03 passed in the final partial
+  browser suite; no hidden master list is mounted below 74rem.
+- **T007-042:** compact cards, curves, dotted canvas and solid/dashed/dotted edge states are implemented. Review fixed undefined
+  graph tokens, omitted-edge contrast and the selected-step mobile cascade; `canvas.test.ts`, `styles.test.ts`, shared token
+  tests and browser checks passed, as did both restyled benchmarks.
+- **T007-043:** editor, Scripts and sign-in styles are derived from shared tokens. **Owner approval is pending**; no reference
+  design exists for those screens or the light theme.
+- **T007-044:** **1 033 Vitest tests in 64 files**, lint/typecheck/build/API/advisory checks and Rust fmt/clippy/architecture passed
+  locally. Final browser result: **18 passed, zero failed, two opt-in performance skips**; the skipped benchmarks passed separately
+  (T007-034). Light/dark/forced-colour accessibility, 320px reflow and system-font fallback passed. **US02 was excluded** by explicit
+  partial mode because Docker's sandbox runtime was unavailable. The full sandbox journey and human visual comparison remain
+  open; ten PNGs are linked from `design/README.md`. Detailed results: `quickstart.md`.
+- **T007-045:** README, runbook, design/research record, quickstart and traceability describe the implementation, final local
+  results and remaining acceptance conditions. No new GitHub CI pass is claimed.
 
 ## Final Phase: Hardening / rollout
 - [x] T007-032 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/workflow-studio/`. — REST only: this feature adds no gRPC and no event contract; `tests/contract/workflow-studio/rest/conformance.rs` (the new operations on their normal and error paths against the OpenAPI) and `npm run check:api` (the generated types equal the contract).
-- [ ] T007-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — Interim, on the Studio before the visual direction: `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -D warnings`, `scripts/check-architecture.py` (19 crates, layers and cycles), `cargo audit --deny warnings`, and `npm run lint`, `typecheck`, `check:api`, `npm audit --audit-level=moderate` pass. Repeat after T007-039..043, which change the frontend, and tick then.
-- [ ] T007-034 Run the benchmark defined in `specs/007-workflow-studio/plan.md` and publish the report in `tests/performance/reports/workflow-studio.md`. — Interim: the report exists for the Studio before the visual direction (six hypotheses, three cold rounds, all held; `frontend/e2e/tests/perf.spec.ts`). The visual direction changes the cards and the shell, so it is run again after T007-042 and ticked then.
-- [ ] T007-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/007-workflow-studio/quickstart.md`. — Interim: two rounds of independent security and correctness reviews of the Studio before the visual direction, every confirmed finding fixed failing-first (the list is in `quickstart.md`); README (`frontend/README.md`, the root one) and `docs/runbooks/studio.md` written. The restyle is reviewed again, for what it changes, before this is ticked.
-- [ ] T007-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — Interim: the evidence section of 007 is written for FR-007-001..008 and SC-007-001..004; FR-007-009/010 and SC-007-005 are marked not done (T007-045 adds their evidence).
+- [x] T007-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — Restyle: Rust fmt, workspace/all-targets clippy and architecture passed locally, as did frontend lint/typecheck/generated API/advisory checks. Final post-Monaco-fix frontend checks passed; prior baseline `cargo audit` evidence is recorded separately in `quickstart.md`.
+- [x] T007-034 Run the benchmark defined in `specs/007-workflow-studio/plan.md` and publish the report in `tests/performance/reports/workflow-studio.md`. — Restyled Studio: both `frontend/e2e/tests/perf.spec.ts` benchmarks passed, three cold rounds each; all six unchanged floors held. The 1 000-node editor opened in median 687 ms; the 9 991-node run in 1 470 ms, drawing 245 cards and at most 29 table rows, peak recorded heap 307 MB. Report regenerated. One machine and Chromium; partial no-sandbox mode does not affect these scenarios.
+- [x] T007-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/007-workflow-studio/quickstart.md`. — The original two review rounds remain in the baseline record. A fresh read-only restyle review checked correctness, security, accessibility and performance; its confirmed graph, navigation and duration findings were fixed. README/runbook and `quickstart.md` record the review fixes and passing technical checks; human design acceptance remains T007-043/044.
+- [x] T007-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — The evidence table records the built visual changes and final passing local checks, with the excluded US02 journey and pending owner acceptance explicitly distinguished.
 
 ## Dependencies & independent delivery
 
@@ -89,4 +115,12 @@ Contract → first failing test → domain → adapter → happy path → failur
 
 First T007-039 increment (2026-10-11): shared palette and contrast regression tests
 implemented on `feature/007-design-tokens`; see `design/README.md` for measured
-failures, deviations, validation and remaining coverage. Task stays open.
+failures, deviations, validation and the coverage that was still open at that increment.
+
+The later restyle completes the technical evidence for T007-039..042/045/046. T007-043/044 retain owner acceptance and the local
+US02 sandbox rerun; implementation and screenshots alone do not close them.
+
+Owner acceptance, 2026-10-11: Marcelo reviewed the open local Studio and explicitly answered
+"Aprovo a proposta visual" for Runs, the light theme, workflow editor, Scripts and sign-in. This closes
+the owner-review portion of T007-043/044 and SC-007-005. T007-044 remains open only until the real-sandbox
+US02 browser journey passes for this branch in CI. No second visual approval is required for this proposal.

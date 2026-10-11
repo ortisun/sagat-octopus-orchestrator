@@ -26,8 +26,14 @@ const PAGE_SIZE = 50;
 const ROW_ESTIMATE = 56;
 const COLUMNS = 6;
 
+export interface RunsPageProps {
+  /** The compact list shown beside `/runs/:id` on a wide viewport. */
+  variant?: 'page' | 'master';
+  selectedRunId?: string;
+}
+
 /** `/runs`: the runs of the namespace, newest first, kept up to date while the tab is open. */
-export function RunsPage() {
+export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}) {
   const allowed = useCan('run:read');
   const namespace = useNamespace();
   const [status, setStatus] = useState('');
@@ -35,8 +41,8 @@ export function RunsPage() {
   const workflows = useWorkflowIndex();
   if (!allowed) return <NotAllowed what="Runs" permission="run:read" />;
   return (
-    <section>
-      <h1>Runs</h1>
+    <section className={variant === 'master' ? 'rn-runs-page rn-runs-master-page' : 'rn-runs-page'}>
+      {variant === 'master' ? <h2>Runs</h2> : <h1>Runs</h1>}
       <div className="toolbar rn-filters">
         <Field label="Status">
           <select value={status} onChange={(event) => setStatus(event.target.value)}>
@@ -63,13 +69,35 @@ export function RunsPage() {
         <p role="status">Waiting for a namespace…</p>
       ) : (
         // A different namespace or filter is a different list: nothing of the last one carries over.
-        <RunList key={`${namespace}|${status}|${workflowId}`} namespace={namespace} status={status} workflowId={workflowId} workflows={workflows.data} />
+        <RunList
+          key={`${namespace}|${status}|${workflowId}`}
+          namespace={namespace}
+          status={status}
+          workflowId={workflowId}
+          workflows={workflows.data}
+          compact={variant === 'master'}
+          selectedRunId={selectedRunId}
+        />
       )}
     </section>
   );
 }
 
-function RunList({ namespace, status, workflowId, workflows }: { namespace: string; status: string; workflowId: string; workflows: WorkflowIndex | undefined }) {
+function RunList({
+  namespace,
+  status,
+  workflowId,
+  workflows,
+  compact,
+  selectedRunId,
+}: {
+  namespace: string;
+  status: string;
+  workflowId: string;
+  workflows: WorkflowIndex | undefined;
+  compact: boolean;
+  selectedRunId: string | undefined;
+}) {
   const { ep } = useApp();
   const announce = useAnnounce();
   const [store] = useState(
@@ -111,35 +139,48 @@ function RunList({ namespace, status, workflowId, workflows }: { namespace: stri
 
       {snapshot.items.length > 0 ? (
         <ScrollRegion label="Runs" scroller={scroller}>
-          <table className="data rn-fixed rn-runs" aria-rowcount={snapshot.items.length + 1}>
-            <caption className="visually-hidden">Runs, newest first</caption>
-            <thead>
-              <tr aria-rowindex={1}>
-                <th scope="col">Run</th>
-                <th scope="col">Workflow</th>
-                <th scope="col">Status</th>
-                <th scope="col">Started</th>
-                <th scope="col">Finished / duration</th>
-                <th scope="col">Started by</th>
-              </tr>
-            </thead>
-            <tbody>
-              {padTop > 0 ? (
-                <tr aria-hidden="true" className="rn-pad">
-                  <td colSpan={COLUMNS} style={{ height: padTop }} />
-                </tr>
-              ) : null}
+          {compact ? (
+            <ul className="rn-master-list" aria-label="Runs, newest first">
+              {padTop > 0 ? <li aria-hidden="true" className="rn-pad" style={{ height: padTop }} /> : null}
               {windowItems.map((item) => {
-                const run = snapshot.items[item.index];
-                return run === undefined ? null : <RunRow key={run.runId} run={run} index={item.index} measure={measure} workflows={workflows} />;
+                const itemRun = snapshot.items[item.index];
+                return itemRun === undefined ? null : (
+                  <RunMasterRow key={itemRun.runId} run={itemRun} index={item.index} measure={measure} workflow={workflows?.byId.get(itemRun.workflowId)} selected={itemRun.runId === selectedRunId} />
+                );
               })}
-              {padBottom > 0 ? (
-                <tr aria-hidden="true" className="rn-pad">
-                  <td colSpan={COLUMNS} style={{ height: padBottom }} />
+              {padBottom > 0 ? <li aria-hidden="true" className="rn-pad" style={{ height: padBottom }} /> : null}
+            </ul>
+          ) : (
+            <table className="data rn-fixed rn-runs" aria-rowcount={snapshot.items.length + 1}>
+              <caption className="visually-hidden">Runs, newest first</caption>
+              <thead>
+                <tr aria-rowindex={1}>
+                  <th scope="col">Run</th>
+                  <th scope="col">Workflow</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Started</th>
+                  <th scope="col">Finished / duration</th>
+                  <th scope="col">Started by</th>
                 </tr>
-              ) : null}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {padTop > 0 ? (
+                  <tr aria-hidden="true" className="rn-pad">
+                    <td colSpan={COLUMNS} style={{ height: padTop }} />
+                  </tr>
+                ) : null}
+                {windowItems.map((item) => {
+                  const itemRun = snapshot.items[item.index];
+                  return itemRun === undefined ? null : <RunRow key={itemRun.runId} run={itemRun} index={item.index} measure={measure} workflows={workflows} />;
+                })}
+                {padBottom > 0 ? (
+                  <tr aria-hidden="true" className="rn-pad">
+                    <td colSpan={COLUMNS} style={{ height: padBottom }} />
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          )}
         </ScrollRegion>
       ) : null}
 
@@ -154,6 +195,37 @@ function RunList({ namespace, status, workflowId, workflows }: { namespace: stri
       {snapshot.capped ? <Banner tone="info">Showing the newest {snapshot.items.length.toLocaleString()} runs. Narrow the filters to see others.</Banner> : null}
       {snapshot.items.length > 0 ? <p className="hint">{snapshot.items.length.toLocaleString()} runs loaded.</p> : null}
     </NowProvider>
+  );
+}
+
+function RunMasterRow({
+  run,
+  index,
+  measure,
+  workflow,
+  selected,
+}: {
+  run: Run;
+  index: number;
+  measure: (element: Element | null) => void;
+  workflow: WorkflowIndex['list'][number] | undefined;
+  selected: boolean;
+}) {
+  const finished = isTerminal(run.status);
+  return (
+    <li ref={measure} data-index={index} data-status={run.status} className="rn-master-row">
+      <Link to={path`/runs/${run.runId}`} aria-current={selected ? 'page' : undefined}>
+        <span className="rn-master-name">{workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`}</span>
+        <StatusBadge view={runStatus(run.status)} />
+        <code title={run.runId}>{run.runId.slice(-8)}</code>
+        <span className="rn-master-duration">
+          {finished ? (run.finishedAt ? <Elapsed from={run.createdAt} to={run.finishedAt} /> : '—') : <Elapsed from={run.createdAt} />}
+        </span>
+        <span className="rn-master-meta">
+          <Moment at={run.createdAt} /> · {run.startedBy ? clip(run.startedBy, 40) : 'unknown starter'}
+        </span>
+      </Link>
+    </li>
   );
 }
 

@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { Root } from './app/Root';
 import { createApp } from './app/context';
 import type { StudioSettings } from './app/context';
+import '@fontsource/geist/latin-400.css';
+import '@fontsource/geist/latin-500.css';
+import '@fontsource/geist/latin-600.css';
+import '@fontsource/geist-mono/latin-400.css';
+import '@fontsource/geist-mono/latin-500.css';
 import './styles/base.css';
 
 /** The settings the deployment publishes; without them the Studio signs in with a pasted token. */

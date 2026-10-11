@@ -1,7 +1,7 @@
 # Validation quickstart: the Workflow Studio (feature 007)
 
-Every command below was run on macOS 26 (arm64, Darwin 25.3) against this repository. Results are in the last section; what was
-**not** run is stated there too.
+Commands below reproduce the feature's checks. The original baseline and the visual-direction validation are recorded separately
+below; a baseline pass is not evidence that a later restyle passed. What was **not** run is stated with each result.
 
 ## Prerequisites
 
@@ -38,6 +38,17 @@ Every command below was run on macOS 26 (arm64, Darwin 25.3) against this reposi
    SAGAT_STUDIO_GREP="US04" …            # one journey      SAGAT_STUDIO_REBUILD=0 …   # reuse the build
    ```
 
+   If the sandbox container runtime is unavailable, an explicit partial development run is possible:
+
+   ```sh
+   SAGAT_STUDIO_NO_SANDBOX=1 cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+   ```
+
+   This starts the real API, engine and browser, but no sandbox runner; it prints `PARTIAL STUDIO RUN` and excludes US02.
+   PostgreSQL remains required. Set `SAGAT_TEST_DATABASE_URL` to an existing administrative test connection if Docker cannot
+   start PostgreSQL either. Default/CI execution still requires real containers and includes US02. Never report this partial
+   command as proof of the full US01..US04 suite or sandbox execution.
+
 4. **The benchmark** (a 1 000-node canvas and a run of 9 991 nodes, three cold rounds):
 
    ```text
@@ -57,7 +68,7 @@ Every command below was run on macOS 26 (arm64, Darwin 25.3) against this reposi
   the stream and the changes are proven equal to the whole graph (`us03`), and the decisions are made once (`fault_workflow_studio`).
 - Update tasks `[x]` only when real tests have passed.
 
-## Results
+## Original baseline results (before the visual direction)
 
 Run on macOS 26 (arm64), Docker Desktop, Node 26.8.1, Chromium 153, on the commit that carries this file (the working tree held, besides it, the visual-direction records, which no test reads).
 
@@ -81,3 +92,46 @@ Round two, security: the paths of a diff of a deeply nested document (fixed: a s
 
 The final gate also found, in code written before this feature, what a run on Linux shows and a macOS machine does not: a timestamp with nanoseconds where the database keeps microseconds, tests that assumed the order or the speed of the machine, and a sandbox out-of-memory kill the engine did not report; they were fixed on the release branch (`release/0.1.0`).
 
+## Visual-direction validation — 2026-10-11
+
+This is the local worktree validation of the restyled Studio, not a GitHub CI result. The feature's REST contract and execution
+semantics are unchanged. The implementation and accessibility deviations are in [`design/README.md`](./design/README.md).
+
+| Check | Latest observed result |
+|---|---|
+| Studio Vitest | **1 033 passed in 64 files**. Four workers bound jsdom contention; test deadlines and assertions were not weakened. |
+| Frontend lint, typecheck, production build, generated API types, `npm audit --audit-level=moderate` | Passed locally; the accepted low-severity Monaco dependency advisories remain G152. Final post-Monaco-fix checks passed. |
+| Rust format, workspace/all-targets clippy, architecture check | Passed locally after the harness partial-mode change. This row does not claim a new complete workspace test or GitHub CI run. |
+| Expanded Chromium journeys in partial mode | **18 passed, 0 failed, 2 skipped** after the dark Monaco contrast correction. All executed journeys passed, including light/dark/forced-colour accessibility, 320px reflow and system-font fallback. The two skips are opt-in benchmarks, passed separately. **US02 was excluded**, not passed, because Docker's sandbox runtime was unavailable. |
+| Restyled benchmark | **Both browser benchmarks passed**, three cold rounds each; H1–H6 held with unchanged floors. Median first-card time: 687 ms for 1 000 editor nodes, 1 470 ms for 9 991 run nodes; 245 run cards and at most 29 table rows mounted; peak recorded heap 307 MB. Report regenerated at `tests/performance/reports/workflow-studio.md`. |
+| Font fallback | Passed: blocked font files, asserted Geist did not load and checked 320px reflow. Capture: [`runs-system-fonts-1470x812.png`](./design/review/runs-system-fonts-1470x812.png). |
+| Owner acceptance | **Pending**: Runs comparison with `design/runs-prototype.jpg` at 1470 × 812, light theme and derived editor/Script/sign-in screens. No tool or screenshot substitutes for that review. |
+
+The browser suite checks axe in light, dark and forced colours, including the Script editor/plain-text alternative, and selected
+pages at 320px. Status locators in US03, US04 and SC-007-001 are scoped to the named **Run detail** region because the new master
+list contains the same words. The expected states, deadlines, graph-update and audited-operation assertions retain their
+original intent. The benchmark's run-table selector scopes `.rn-scroll` to `.rn-run` so that the new master list cannot be measured in its place.
+Scenario sizes and performance thresholds are unchanged.
+
+The independent restyle review found missing graph CSS tokens, low-contrast omitted edges, master-list state lost on run
+navigation and invented elapsed time for terminal runs without a finish timestamp. These were fixed; regression coverage checks
+token resolution, edge styling, master navigation and unknown duration. The selected-step mobile layout was corrected as well.
+
+Ten named captures from the passing suite are preserved in [`design/review/`](./design/README.md#owner-review-captures--2026-10-11).
+The initial expanded run had 16 passes and one dark Monaco contrast failure; the correction is covered by the final passing
+suite and 1 033 unit tests. Before closing T007-044, restore the real Docker sandbox for US02 and obtain the owner's visual review. No GitHub CI execution, real identity-provider
+sign-in, human screen-reader testing or additional browser/machine result is claimed for this restyle.
+
+
+The final visual inspection also found that the initial wide header pushed the graph below the first screen and that React
+Flow's dark background covered the dotted canvas. The wide composition now keeps all eight facts in two rows, places actions
+beside the title and makes the library background transparent. Browser checks require a complete graph step in the initial
+1470 × 812 viewport and verify the transparent overlay; the normal, forced-colour and 320px checks remain enabled. The graph
+legend says "Dotted: omitted", matching the accessible full-opacity edge. Post-adjustment focused tests: 233 passed.
+
+Implementation was split across GPT-5.6 Sol agents; independent correctness/security reviews used GPT-6 Astra. These agent
+reviews are technical evidence only and do not replace owner visual acceptance or a human accessibility study.
+
+Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
+after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
+it supersedes the pending owner-acceptance wording above. Automated CI evidence for this branch is recorded separately.

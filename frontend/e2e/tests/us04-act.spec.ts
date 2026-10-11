@@ -47,7 +47,7 @@ test('US04 an operator finds the step that waits for a decision, decides with a 
   try {
     const before = await api.journal(run);
     await openRun(page, env.tokens.operator, run);
-    await expect(page.getByText('Needs a person', { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Needs a person', { exact: true }).first()).toBeVisible();
 
     // Only what the role and the state allow is offered, and what is not is explained.
     await openStepActions(page, 'reserve~c');
@@ -69,7 +69,7 @@ test('US04 an operator finds the step that waits for a decision, decides with a 
     await confirm.click();
 
     // The effect is the platform's, and arrives through the live view: the run ends compensated.
-    await expect(page.getByText('Compensated', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Compensated', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     expect(await api.until(run, 'COMPENSATED')).toBe('COMPENSATED');
 
     // Nothing was erased: what the journal said before it still says, in the same order, and the decision is in it.
@@ -115,7 +115,7 @@ test('US04 a viewer watches but is not offered a decision, and giving up on an u
     expect(await api.until(run, 'MANUAL_REVIEW', 5_000)).toBe('MANUAL_REVIEW'); // still waiting: nothing was sent
     await dialog.getByRole('textbox', { name: 'Type the step id to confirm' }).fill('reserve~c');
     await confirm.click();
-    await expect(adminPage.getByText('Partly undone', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByRole('region', { name: 'Run detail' }).getByText('Partly undone', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     expect(await api.until(run, 'PARTIAL')).toBe('PARTIAL');
     await admin.close();
   } finally {

@@ -37,6 +37,32 @@ cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --noc
 
 `docs/runbooks/studio.md` §7 has the rest (one journey, a build that is reused, the benchmark).
 
+For development without a working sandbox container engine, the harness has an explicit **partial** mode. Use an existing
+PostgreSQL through `SAGAT_TEST_DATABASE_URL` if Docker cannot start PostgreSQL either:
+
+```sh
+SAGAT_STUDIO_NO_SANDBOX=1 cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+This runs the real API, engine and browser, excludes **US02**, and starts no sandbox runner. It cannot prove script build/test
+execution. The default command and CI still require real Docker containers; this flag is not a substitute for their gate.
+
+## Visual direction
+
+The [recorded design](../specs/007-workflow-studio/design/README.md) supplies the dark palette, type, spacing and shapes. The
+Studio follows the system's light/dark preference and supports forced colours. Geist and Geist Mono `5.3.0` are bundled on the
+same origin with their SIL OFL licence in `apps/studio/public/licenses/geist-OFL.txt`; system fonts remain the fallback.
+
+The shell puts the namespace and the three real destinations in the sidebar. On wide screens, `/runs/:runId` keeps a filtered,
+virtualized Runs list beside the selected run; choosing another run retains the list's state. Narrow screens keep the separate
+list and detail routes. Facts come from the API: missing terminal duration is unknown, and queue, worker, trigger-kind and
+global counts are not invented. Graph, Table and Timeline remain available; Timeline means the journal, not per-step bars.
+
+The workflow editor, Scripts, sign-in and light theme are derived proposals. Their owner review and the human comparison of
+Runs with the prototype are still open. Current test results and remaining gaps are in
+[the validation record](../specs/007-workflow-studio/quickstart.md#visual-direction-validation--2026-10-11). The passing browser suite's
+[ten review captures](../specs/007-workflow-studio/design/README.md#owner-review-captures--2026-10-11) are available for the owner.
+
 ## Rules this code keeps
 
 - The platform decides; the page asks it and shows what it said (validation, the diff of two versions, what an operator may do).

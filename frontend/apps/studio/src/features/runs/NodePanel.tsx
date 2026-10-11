@@ -60,26 +60,9 @@ function AttemptRow({ attempt, now, running }: { attempt: Attempt; now: number; 
 }
 
 function Facts({ node }: { node: RuntimeNode }) {
-  const waiting = waitingWords(node);
   const saga = sagaWords(node);
   return (
     <dl className="rn-facts">
-      <dt>Attempt</dt>
-      <dd>{node.attempt && node.attempt > 0 ? (attemptWords(node) ?? 'attempt 1') : 'not started'}</dd>
-      {node.failureCode ? (
-        <>
-          <dt>Failure code</dt>
-          <dd>
-            <code>{clip(node.failureCode, 64)}</code>
-          </dd>
-        </>
-      ) : null}
-      {waiting ? (
-        <>
-          <dt>Waiting</dt>
-          <dd>{waiting}</dd>
-        </>
-      ) : null}
       {node.nextAttemptAt ? (
         <>
           <dt>Next attempt</dt>
@@ -196,6 +179,7 @@ export function NodePanel({
   const traces = [...new Set(snapshot.entries.filter((e) => e.stepId === selectedId && e.detail === 'journal' && e.traceId).map((e) => e.traceId as string))];
   const knowsTraces = snapshot.entries.some((e) => e.stepId === selectedId && e.detail === 'journal');
   const kind = node === undefined ? undefined : kindView(node);
+  const waiting = node === undefined ? undefined : waitingWords(node);
   return (
     <aside ref={panel} className="rn-panel" aria-label={`Details of ${clip(selectedId, 60)}`} data-testid="node-panel">
       <div className="rn-panel-head">
@@ -208,9 +192,35 @@ export function NodePanel({
         <Banner tone="warn">This step is not in the graph any more. It may have been removed when the graph was read again.</Banner>
       ) : (
         <>
-          <p>
-            {kind.label} <StatusBadge view={nodeStatus(node.status)} />
-          </p>
+          <div className="rn-selected-step" role="group" aria-label="Selected step">
+            <div className="rn-selected-step-name">
+              <span className="rn-micro-label">Selected step</span>
+              <strong title={selectedId}>{clip(selectedId, 60)}</strong>
+              <StatusBadge view={nodeStatus(node.status)} />
+            </div>
+            <dl>
+              <div>
+                <dt>Kind</dt>
+                <dd>{kind.label}</dd>
+              </div>
+              <div>
+                <dt>Attempts</dt>
+                <dd>{node.attempt && node.attempt > 0 ? (attemptWords(node) ?? 'attempt 1') : 'not started'}</dd>
+              </div>
+              {node.failureCode ? (
+                <div>
+                  <dt>Failure code</dt>
+                  <dd>{clip(node.failureCode, 64)}</dd>
+                </div>
+              ) : null}
+              {waiting ? (
+                <div>
+                  <dt>Waiting</dt>
+                  <dd>{waiting}</dd>
+                </div>
+              ) : null}
+            </dl>
+          </div>
           <Facts node={node} />
 
           <h3>Actions</h3>
