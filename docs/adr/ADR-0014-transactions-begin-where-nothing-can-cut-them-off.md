@@ -1,10 +1,10 @@
 # ADR-0014 — Transactions begin in a task of their own, because sqlx 0.9.0 can be cut off halfway
 
-Status: **Accepted** | Date: 2026-10-10 | Feature: cross-cutting (found by `fault_004`) | Supersedes nothing
+Status: **Accepted** | Date: 2026-10-10 | Feature: cross-cutting (found by `fault_events_webhooks_messaging`) | Supersedes nothing
 
 ## Context
 
-`tests/fault/004-events-webhooks-messaging/dispatch.rs::a_dispatcher_cut_off_at_any_await…` stops a
+`tests/fault/events-webhooks-messaging/dispatch.rs::a_dispatcher_cut_off_at_any_await…` stops a
 dispatcher at random microseconds and then expects the event table to be updatable. In most runs on
 `develop` it hung for ever (6 of 8 runs; 2 of 4 on the feature-005 branch): the test's own `UPDATE`
 waited on a lock held by a pooled connection that was `idle in transaction`.
@@ -47,7 +47,7 @@ call sites were changed mechanically; there is no other way into a transaction i
 
 * A `tokio::spawn` per transaction: microseconds against a database round trip. The pool is cloned
   (an `Arc`) into the task.
-* `tests/fault/004-events-webhooks-messaging/cancellation.rs` holds two tests. One proves that no cut-off
+* `tests/fault/events-webhooks-messaging/cancellation.rs` holds two tests. One proves that no cut-off
   `begin_safely` leaves a transaction open (0 of 3000). The other proves that `sqlx` still does (a canary):
   **when it fails, `sqlx` has been fixed**, and the helper and the canary can both be removed.
 * The dispatcher test that hung now passes 8 of 8 runs.

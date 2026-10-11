@@ -95,7 +95,7 @@ jobs:
       # engine and the API in the test process). They are #[ignore] in the workspace run above because they
       # need the five toolchains.
       - name: conformance suite, user stories and faults, five languages
-        run: cargo test -p sagat-tests --test sdk_conformance --test e2e_006 --test fault_006 --locked -- --ignored
+        run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
 
   contracts:
     name: contracts (OpenAPI, protobuf, JSON Schema)

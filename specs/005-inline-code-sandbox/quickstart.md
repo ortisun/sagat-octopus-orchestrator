@@ -14,34 +14,34 @@ Everything below runs against the real stack. Nothing is simulated except time, 
 cargo test -p sagat-domain -p sagat-application -p sagat-infra-schema -p sagat-infra-sandbox -p sagat-sandbox-runner
 
 # The registry against a real PostgreSQL: versions, signing, leases, quotas, retention, migration
-cargo test -p sagat-tests --test integration_005
+cargo test -p sagat-tests --test integration_inline_code_sandbox
 
 # The sandbox against real containers: what a hostile script cannot do (T005-031)
-cargo test -p sagat-tests --test integration_005_sandbox
+cargo test -p sagat-tests --test integration_inline_code_sandbox_containers
 
 # The user stories through the API, the worker protocol and the runner
-cargo test -p sagat-tests --test e2e_005          # US01, US02, US03 (the refusal), US04
+cargo test -p sagat-tests --test e2e_inline_code_sandbox          # US01, US02, US03 (the refusal), US04
 
 # Failure: runner dies mid-build and mid-step, restarts, engine down, cancelled run (the stop is reported), room for one, scripts that become ready at different times
-cargo test -p sagat-tests --test fault_005
+cargo test -p sagat-tests --test fault_inline_code_sandbox
 
 # The contract: every one of the 25 operations, normal and error paths
-cargo test -p sagat-tests --test contract_rest_005
+cargo test -p sagat-tests --test contract_rest_inline_code_sandbox
 
 # The benchmark (on purpose; release mode)
-SAGAT_PERF_REPORT=tests/performance/reports/005-inline-code-sandbox.md \
-  cargo test -p sagat-tests --test perf_005 --release -- --ignored --nocapture
+SAGAT_PERF_REPORT=tests/performance/reports/inline-code-sandbox.md \
+  cargo test -p sagat-tests --test perf_inline_code_sandbox --release -- --ignored --nocapture
 ```
 
 ### What the last run of each said (2026-10-10, this machine, Docker Desktop, PostgreSQL 16)
 
 | Suite | Result |
 |---|---|
-| `integration_005_sandbox` (real containers) | 23 passed |
-| `integration_005` (registry, PostgreSQL) | 41 passed |
-| `e2e_005` | 27 passed (three consecutive runs; one earlier run failed `us04::a_script_that_floods_its_output_is_cut_off` with `logTruncated` false and was not reproduced in the next five — the assertion now prints the stored record if it comes back) |
-| `fault_005` | 12 passed (twice in a row) |
-| `contract_rest_005` | 1 passed (25 operations) |
+| `integration_inline_code_sandbox_containers` (real containers) | 23 passed |
+| `integration_inline_code_sandbox` (registry, PostgreSQL) | 41 passed |
+| `e2e_inline_code_sandbox` | 27 passed (three consecutive runs; one earlier run failed `us04::a_script_that_floods_its_output_is_cut_off` with `logTruncated` false and was not reproduced in the next five — the assertion now prints the stored record if it comes back) |
+| `fault_inline_code_sandbox` | 12 passed (twice in a row) |
+| `contract_rest_inline_code_sandbox` | 1 passed (25 operations) |
 | `cargo test --workspace` | 95 test binaries, 1328 passed, 0 failed, 6 ignored (the benchmarks) with `a_dispatcher_cut_off_at_any_await…` of feature 004 skipped, because it hung in most runs on `develop` too (6 of 8). Its cause was an sqlx 0.9.0 bug that leaves a connection in a transaction when a `begin` is cut off (ADR-0014); after the fix (`bugfix/dispatcher-cancel-hang`) the run with nothing skipped is 95 binaries, 1331 passed, 0 failed, 6 ignored |
 
 ### The reviews (T005-035)
@@ -105,7 +105,7 @@ Two independent read-only reviews (security, correctness) of the whole feature p
 
 ## Gates
 
-- TS and Python go from the editor's API to execution, with the limits, the network and the secrets held (US01, US02, US04; `integration_005_sandbox`). **C# does not** (`LANGUAGE_NOT_BUILT`; gap G96 in `research.md`).
+- TS and Python go from the editor's API to execution, with the limits, the network and the secrets held (US01, US02, US04; `integration_inline_code_sandbox_containers`). **C# does not** (`LANGUAGE_NOT_BUILT`; gap G96 in `research.md`).
 - Reproducible, annotated errors: every failure has a stable `SCRIPT_*` code, the envelope's `traceId`, and a reason that never repeats the script's words or a secret.
 - No confirmed transition lost: a build and a test run are leased and fenced; a script step is the engine's own lease; a late report from a runner that lost its lease is refused.
 - `[x]` in `tasks.md` only for what a test above proves.

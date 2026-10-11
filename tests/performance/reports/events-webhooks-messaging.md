@@ -1,6 +1,6 @@
 # Benchmark: events, webhooks and messaging (feature 004)
 
-Produced by `tests/performance/004-events-webhooks-messaging` (T004-040, NFR-004-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.
+Produced by `tests/performance/events-webhooks-messaging` (T004-040, NFR-004-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.
 
 ## Environment
 

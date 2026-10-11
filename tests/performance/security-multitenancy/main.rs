@@ -11,8 +11,8 @@
 //! purpose:
 //!
 //! ```sh
-//! SAGAT_PERF_REPORT=tests/performance/reports/009-security-multitenancy.md \
-//!   cargo test -p sagat-tests --test perf_009 --release -- --ignored --nocapture
+//! SAGAT_PERF_REPORT=tests/performance/reports/security-multitenancy.md \
+//!   cargo test -p sagat-tests --test perf_security_multitenancy --release -- --ignored --nocapture
 //! ```
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
@@ -517,7 +517,7 @@ async fn exact_quota_counting_stays_cheap_and_the_new_worker_paths_cost_little()
 
     // ------------------------------------------------ report
     let mut report = format!(
-        "# Benchmark: security and multi-tenancy controls (feature 009)\n\nMeasured by `tests/performance/009-security-multitenancy/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Results\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
+        "# Benchmark: security and multi-tenancy controls (feature 009)\n\nMeasured by `tests/performance/security-multitenancy/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Results\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
         environment()
     );
     for line in level_rows

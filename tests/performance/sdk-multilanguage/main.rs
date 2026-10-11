@@ -5,8 +5,8 @@
 //! counted (`grpc_requests_total`) and the wall time of the runner are what is reported.
 //!
 //! ```text
-//! SAGAT_PERF_REPORT=tests/performance/reports/006-sdk-multilanguage.md \
-//!   cargo test -p sagat-tests --test perf_006 --release -- --ignored --nocapture
+//! SAGAT_PERF_REPORT=tests/performance/reports/sdk-multilanguage.md \
+//!   cargo test -p sagat-tests --test perf_sdk_multilanguage --release -- --ignored --nocapture
 //! ```
 //! `SAGAT_SDK_LANGS` narrows the languages; `SAGAT_PERF_ROUNDS` (default 3) is the rounds of each scenario.
 #![allow(clippy::expect_used, clippy::panic)]
@@ -171,7 +171,7 @@ fn benchmark() {
         );
         let _ = writeln!(
             report,
-            "Produced by `tests/performance/006-sdk-multilanguage` (T006-034, NFR-006-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.\n"
+            "Produced by `tests/performance/sdk-multilanguage` (T006-034, NFR-006-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.\n"
         );
         let _ = writeln!(report, "## Hypotheses\n");
         let _ = writeln!(

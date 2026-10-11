@@ -28,11 +28,11 @@ ADR-0002 makes PostgreSQL the authority and the outbox the way to tell the outsi
 
 ## Trade-offs
 
-- A dispatcher adds a hop: the latency from admission to a started run is the dispatcher's poll interval (50 ms in the tests, configurable) plus the work. The ingress p95 is what the plan sets a target for; the run start is measured separately (`tests/performance/reports/004-events-webhooks-messaging.md`).
+- A dispatcher adds a hop: the latency from admission to a started run is the dispatcher's poll interval (50 ms in the tests, configurable) plus the work. The ingress p95 is what the plan sets a target for; the run start is measured separately (`tests/performance/reports/events-webhooks-messaging.md`).
 - There is no ordering guarantee across events (G74). Events of one correlation key are dispatched oldest first within a claim, but two dispatchers and a retry can reorder them; a workflow that needs order carries a sequence in the event and checks it.
 - `inbox_events` is a hot, short-lived table: rows are purged after their window once dispatched. The payload is kept for the window and is a retention decision for the operator (G80).
 - The broker libraries open their own sockets after the first connection, so the egress policy is applied to the bootstrap names and addresses and not to what the brokers advertise (G76). The compose profile for production must restrict the network of the engine.
 
 ## Review criteria
 
-Open a new ADR, with data from `tests/performance/reports/004-events-webhooks-messaging.md` and failure tests, if the inbox becomes the bottleneck (partitioning `inbox_events` by tenant hash, or moving ingress ahead of the database), if ordering per correlation key becomes a requirement (per-key sequencing in the dispatcher), or if outgoing events need to reach a broker (Kafka/SQS producers are not built, G77).
+Open a new ADR, with data from `tests/performance/reports/events-webhooks-messaging.md` and failure tests, if the inbox becomes the bottleneck (partitioning `inbox_events` by tenant hash, or moving ingress ahead of the database), if ordering per correlation key becomes a requirement (per-key sequencing in the dispatcher), or if outgoing events need to reach a broker (Kafka/SQS producers are not built, G77).

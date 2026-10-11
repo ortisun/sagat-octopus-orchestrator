@@ -1,6 +1,6 @@
 //! US01: tenant A, with a valid token, tries to reach tenant B's runs: reading, manipulating and
 //! discovering that they exist are all refused (FR-009-001, NFR-009-SEC). The REST side of this is
-//! attacked operation by operation in `tests/contract/009-security-multitenancy/rest/battery.rs`;
+//! attacked operation by operation in `tests/contract/security-multitenancy/rest/battery.rs`;
 //! this is the same story through the worker protocol, with a lease token that leaked.
 
 use reqwest::Method;

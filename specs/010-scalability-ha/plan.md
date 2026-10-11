@@ -45,7 +45,7 @@ tests/fault/failover/
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/010-scalability-ha/
+tests/e2e/scalability-ha/
 ```
 
 ## Implementation phases

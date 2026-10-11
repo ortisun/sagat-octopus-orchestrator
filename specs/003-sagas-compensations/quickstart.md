@@ -12,18 +12,18 @@ Everything below was run against this repository. The pieces that are **not** bu
 1. **The user stories, the contracts and the failures**, against real PostgreSQL, a fake OIDC provider, real sockets and a real HTTP provider:
 
    ```sh
-   cargo test -p sagat-tests --test e2e_003            # US01–US04 over REST and gRPC, with the engine as a process
-   cargo test -p sagat-tests --test integration_003    # plans, compensations, lookups, decisions, stopping, children, the breaker
-   cargo test -p sagat-tests --test contract_rest_003  # the saga operations and statuses against the OpenAPI and AsyncAPI documents
-   cargo test -p sagat-tests --test contract_grpc_003  # the worker protocol: task kinds, targets, a protocol-1.0 worker
-   cargo test -p sagat-tests --test fault_003          # crashes, duplicates, races, a provider that accepts before it times out, connections killed
+   cargo test -p sagat-tests --test e2e_sagas_compensations            # US01–US04 over REST and gRPC, with the engine as a process
+   cargo test -p sagat-tests --test integration_sagas_compensations    # plans, compensations, lookups, decisions, stopping, children, the breaker
+   cargo test -p sagat-tests --test contract_rest_sagas_compensations  # the saga operations and statuses against the OpenAPI and AsyncAPI documents
+   cargo test -p sagat-tests --test contract_grpc_sagas_compensations  # the worker protocol: task kinds, targets, a protocol-1.0 worker
+   cargo test -p sagat-tests --test fault_sagas_compensations          # crashes, duplicates, races, a provider that accepts before it times out, connections killed
    cargo test -p sagat-domain --test sagas             # the coordinator as a pure function, 60 scenarios
    cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres -p sagat-api-grpc -p sagat-execution-engine
    ```
 
 2. **The example.** `examples/payment-saga.workflow.json` is the reference saga (reserve the limit, submit the payment with a lookup, wait for the confirmation) and is what the end-to-end stories publish.
 
-3. **Failure injection** (`tests/fault/003-sagas-compensations/`). Each test states an invariant that must hold whatever was cut off:
+3. **Failure injection** (`tests/fault/sagas-compensations/`). Each test states an invariant that must hold whatever was cut off:
 
    | Class | Test | What it does |
    |---|---|---|
@@ -37,14 +37,14 @@ Everything below was run against this repository. The pieces that are **not** bu
    | Provider accepts before it times out | `provider::a_provider_that_accepts_before_it_times_out_is_asked_instead_of_paid_again` | A real HTTP provider records the payment and answers too late: the platform looks it up; one payment, one request. |
    | Provider failed before accepting | `provider::a_provider_that_failed_before_accepting_is_asked_and_then_paid_with_the_same_key` | The lookup says not found; the retry uses the same key; one payment, two requests. |
    | Duplicate return | `provider::a_release_delivered_twice_is_performed_once_and_the_duplicate_is_said_so` | The provider answers `duplicate: true` to the second release with the same key. |
-   | Lost broker delivery | `integration_003`'s hints are the same outbox as feature 002 (`outbox.rs`); a held-back compensation is the only new case (G63) | Polling is the claim; hints only wake. |
+   | Lost broker delivery | `integration_sagas_compensations`'s hints are the same outbox as feature 002 (`outbox.rs`); a held-back compensation is the only new case (G63) | Polling is the claim; hints only wake. |
    | Connections killed | `chaos::connection_kills_while_sagas_succeed_and_compensate_lose_nothing_and_duplicate_nothing` | Twenty runs, half declined, four workers retrying every call while every other backend is terminated for three seconds: every run ends in the state its history demands, every journal replays, every effect has a key and happened once. |
 
 4. **The benchmark** (cost of planning, compensations per second, waiting costs nothing, the claim path with the breaker, a lookup):
 
    ```sh
-   SAGAT_PERF_REPORT=tests/performance/reports/003-sagas-compensations.md \
-     cargo test -p sagat-tests --test perf_003 --release -- --ignored --nocapture
+   SAGAT_PERF_REPORT=tests/performance/reports/sagas-compensations.md \
+     cargo test -p sagat-tests --test perf_sagas_compensations --release -- --ignored --nocapture
    ```
 
 5. **Operating it:** `docs/runbooks/sagas.md`.
@@ -66,19 +66,19 @@ Everything below was run against this repository. The pieces that are **not** bu
 | FR-003-002 the plan as a reverse DAG, respecting branch independence | `branches_of_a_parallel_node_are_independent_in_the_plan`, `what_ran_after_a_join_is_undone_before_the_branches_that_fed_it`, `the_plan_is_the_same_as_the_one_worked_out_the_long_way`; stored per version (`plan::*`) |
 | FR-003-003 compensation with its own retries, idempotency, limits, timeout and circuit breaker | `RetryPolicy::COMPENSATION`, `compensationRetry` / `compensationTimeoutMs`, `compensation::a_compensation_that_fails_is_retried_with_its_own_budget`, the keys (`us02`, `crashes`), the breaker (`breaker::*`, 15 tests, plus 4 unit tests of its state machine, mutation-checked) |
 | FR-003-004 COMPENSATED, PARTIAL, COMPENSATION_FAILED, MANUAL_REVIEW and irreversible | the statuses in the OpenAPI and a test that every status the engine can produce is documented; `an_irreversible_effect_makes_the_outcome_partial...`, `skipping_a_compensation_ends_the_saga_partial`, `with_the_fail_policy...`, `a_sibling_saga_whose_compensation_failed_is_not_hidden...` |
-| FR-003-005 pause, retry compensation and skip, skip only with permission and an audited justification | `review::*`, `us04`, `contract_rest_003`; pause is feature 002's, and `cancelling_a_paused_run_still_undoes_what_it_did` |
+| FR-003-005 pause, retry compensation and skip, skip only with permission and an audited justification | `review::*`, `us04`, `contract_rest_sagas_compensations`; pause is feature 002's, and `cancelling_a_paused_run_still_undoes_what_it_did` |
 | FR-003-006 cancellation and deadline reach sub-workflows under the configured policy | `children::*` (request_cancel, propagate, detach, a deadline, a child that compensates, a child that fails inside a parent saga) |
 | FR-003-007 reconcile or mark manual for an ambiguous high-risk result | `reconcile::*`, `a_high_risk_step_without_a_lookup_waits_for_an_operator_instead_of_retrying`, `asking_again_for_an_effect_that_may_have_happened_is_an_administrators_decision` |
 | NFR-003-SEC | tenant on every statement of every new table and the claim predicate; composite foreign keys; `review::another_tenant_cannot_decide...`, `us01::us01_another_tenant_cannot_read_a_plan...`, `breaker::the_breaker_belongs_to_one_tenant`; `saga:override` only for administrators; the security review (D71) |
-| NFR-003-DUR | `fault_003` (13 tests) and the domain property tests, extended with sagas |
+| NFR-003-DUR | `fault_sagas_compensations` (13 tests) and the domain property tests, extended with sagas |
 | NFR-003-OBS | the counters of D69 (`telemetry::...`), the audit records of D67, the journal events |
 | NFR-003-COMP | `worker.baseline.json` gained 15 lines and lost none; a message declared as protocol 1.0 decodes every lease; the migration is additive and reversible |
-| NFR-003-PERF | `tests/performance/reports/003-sagas-compensations.md` |
+| NFR-003-PERF | `tests/performance/reports/sagas-compensations.md` |
 
 | Success criterion | State |
 |---|---|
 | SC-003-001 E2E reserve→submit fails→release; ambiguous provider requires reconciliation; release failure triggers manual review | Met: `us02`, `us03`, `us04` against the engine as a process and real PostgreSQL |
-| SC-003-002 100% of US01..US04 pass in a reproducible automated suite | Met for the scenarios of the specification (`e2e_003`, 20 tests) |
+| SC-003-002 100% of US01..US04 pass in a reproducible automated suite | Met for the scenarios of the specification (`e2e_sagas_compensations`, 20 tests) |
 | SC-003-003 no violation of the Constitution gates and no silent loss of persisted state | Partial: no loss is provable by the tests above; the Constitution is still not in the repository (G1) |
 | SC-003-004 critical errors expose `code`, `trace_id` and remediation without leaking payload or secrets | Partial, as in 009: `code`, `traceId` and a stable message are proven (`us04_a_decision_that_makes_no_sense_is_refused_precisely`); no separate `remediation` field exists |
 

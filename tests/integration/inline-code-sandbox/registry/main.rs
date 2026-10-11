@@ -1,6 +1,6 @@
 //! Feature 005 registry suite against a real PostgreSQL: scripts, immutable versions, signed
 //! artifacts, the builds and test runs a runner takes under a lease, and what ran. The sandbox itself
-//! is in the `integration_005_sandbox` suite; here the runner is played by the test, which hands back
+//! is in the `integration_inline_code_sandbox_containers` suite; here the runner is played by the test, which hands back
 //! what a sandbox would.
 #![allow(clippy::expect_used, clippy::panic)] // helpers (not `#[test]` fns) fail the test by panicking
 

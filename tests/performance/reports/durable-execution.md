@@ -1,6 +1,6 @@
 # Baseline benchmark: durable execution (feature 002)
 
-Measured by `tests/performance/002-durable-execution/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
+Measured by `tests/performance/durable-execution/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
 
 ## Environment
 

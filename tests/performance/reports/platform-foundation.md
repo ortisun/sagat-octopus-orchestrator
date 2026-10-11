@@ -1,6 +1,6 @@
 # Baseline benchmark: platform foundation (feature 001)
 
-Measured by `tests/performance/001-platform-foundation/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
+Measured by `tests/performance/platform-foundation/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
 
 ## Environment
 

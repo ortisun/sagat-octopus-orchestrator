@@ -4,7 +4,7 @@
 //! The baseline `events.baseline.json` is the shape of every message when it was last released. A
 //! property may be added; it may not disappear, change its type, become required or lose an
 //! enumeration value. When a message is *intentionally* extended, regenerate the baseline with
-//! `SAGAT_UPDATE_BASELINE=1 cargo test -p sagat-tests --test contract_asyncapi_004` and review the
+//! `SAGAT_UPDATE_BASELINE=1 cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging` and review the
 //! diff: a removed line would be breaking.
 #![allow(clippy::expect_used, clippy::panic)]
 

@@ -1,6 +1,6 @@
 # Benchmark: SDKs against the worker protocol (feature 006)
 
-Produced by `tests/performance/006-sdk-multilanguage` (T006-034, NFR-006-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.
+Produced by `tests/performance/sdk-multilanguage` (T006-034, NFR-006-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.
 
 ## Hypotheses
 

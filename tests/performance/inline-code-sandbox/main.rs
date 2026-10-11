@@ -15,8 +15,8 @@
 //! looks like. Run on purpose:
 //!
 //! ```sh
-//! SAGAT_PERF_REPORT=tests/performance/reports/005-inline-code-sandbox.md \
-//!   cargo test -p sagat-tests --test perf_005 --release -- --ignored --nocapture
+//! SAGAT_PERF_REPORT=tests/performance/reports/inline-code-sandbox.md \
+//!   cargo test -p sagat-tests --test perf_inline_code_sandbox --release -- --ignored --nocapture
 //! ```
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
@@ -587,7 +587,7 @@ async fn script_sandbox_benchmark() {
     report.push_str("| A bounded environment (`environment()` above) | recorded |\n");
 
     let report = format!(
-        "# Benchmark: inline code sandbox (feature 005)\n\nProduced by `tests/performance/005-inline-code-sandbox` (T005-034, NFR-005-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.\n\n## Environment\n\n{}\n\n{report}",
+        "# Benchmark: inline code sandbox (feature 005)\n\nProduced by `tests/performance/inline-code-sandbox` (T005-034, NFR-005-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.\n\n## Environment\n\n{}\n\n{report}",
         environment()
     );
     println!("{report}");

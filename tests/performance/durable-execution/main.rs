@@ -6,8 +6,8 @@
 //! purpose:
 //!
 //! ```sh
-//! SAGAT_PERF_REPORT=tests/performance/reports/002-durable-execution.md \
-//!   cargo test -p sagat-tests --test perf_002 --release -- --ignored --nocapture
+//! SAGAT_PERF_REPORT=tests/performance/reports/durable-execution.md \
+//!   cargo test -p sagat-tests --test perf_durable_execution --release -- --ignored --nocapture
 //! ```
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
@@ -320,7 +320,7 @@ async fn ten_thousand_suspended_runs_cost_a_row_each_and_scheduling_stays_cheap(
     // A floor of a few milliseconds keeps noise on an already tiny number from reading as growth.
     let growth = ms(idle_p50) / ms(idle_p50_small).max(3.0);
     let mut report = format!(
-        "# Baseline benchmark: durable execution (feature 002)\n\nMeasured by `tests/performance/002-durable-execution/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Workload\n\n- {SUSPENDED} runs of `timer(1h) -> activity`, started with {LOAD_CONCURRENCY} concurrent callers; every one is suspended on a timer\n- {IDLE_TICKS} scheduler ticks with nothing due, then {DUE} timers made due at once and drained by repeated ticks\n- {} workers claiming (16 at a time) and completing the {DUE} resulting tasks while the other {} runs stay suspended\n\n## Results\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
+        "# Baseline benchmark: durable execution (feature 002)\n\nMeasured by `tests/performance/durable-execution/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Workload\n\n- {SUSPENDED} runs of `timer(1h) -> activity`, started with {LOAD_CONCURRENCY} concurrent callers; every one is suspended on a timer\n- {IDLE_TICKS} scheduler ticks with nothing due, then {DUE} timers made due at once and drained by repeated ticks\n- {} workers claiming (16 at a time) and completing the {DUE} resulting tasks while the other {} runs stay suspended\n\n## Results\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
         environment(),
         workers(),
         SUSPENDED - DUE

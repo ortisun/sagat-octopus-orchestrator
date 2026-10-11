@@ -25,15 +25,15 @@ npx --yes @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.ya
 cargo install cargo-audit --locked && cargo audit --deny warnings   # dependency advisories
 ```
 
-Each user story has its own file (`tests/e2e/001-platform-foundation/us01.rs` … `us04.rs`); the
-token matrix is `tests/contract/001-platform-foundation/auth.rs`; failure scenarios are in
-`tests/fault/001-platform-foundation/`.
+Each user story has its own file (`tests/e2e/platform-foundation/us01.rs` … `us04.rs`); the
+token matrix is `tests/contract/platform-foundation/auth.rs`; failure scenarios are in
+`tests/fault/platform-foundation/`.
 
 The baseline benchmark is ignored by default (it is slow and machine-specific):
 
 ```sh
-SAGAT_PERF_REPORT=tests/performance/reports/001-platform-foundation.md \
-  cargo test -p sagat-tests --test perf_001 --release --locked -- --ignored
+SAGAT_PERF_REPORT=tests/performance/reports/platform-foundation.md \
+  cargo test -p sagat-tests --test perf_platform_foundation --release --locked -- --ignored
 ```
 
 To reuse a PostgreSQL you already run instead of a container, set
@@ -97,7 +97,7 @@ every request, so removing one takes effect immediately.
 
 | Story | Scenario | Automated by |
 |---|---|---|
-| US01 | An administrator creates a workspace and a `dev` namespace; both are persisted and visible | `tests/e2e/001-platform-foundation/us01.rs` |
+| US01 | An administrator creates a workspace and a `dev` namespace; both are persisted and visible | `tests/e2e/platform-foundation/us01.rs` |
 | US02 | A client with a valid tenant token lists namespaces and gets only its own, plus a trace id | `…/us02.rs` |
 | US03 | Migrate (twice), seed, start; API and database are healthy | `…/us03.rs`, `scripts/smoke-compose.sh` |
 | US04 | A tenant A user asks for tenant B's resource: nothing is revealed, the attempt is audited | `…/us04.rs` |

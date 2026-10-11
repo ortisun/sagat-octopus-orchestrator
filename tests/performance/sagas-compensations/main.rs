@@ -11,8 +11,8 @@
 //! purpose:
 //!
 //! ```sh
-//! SAGAT_PERF_REPORT=tests/performance/reports/003-sagas-compensations.md \
-//!   cargo test -p sagat-tests --test perf_003 --release -- --ignored --nocapture
+//! SAGAT_PERF_REPORT=tests/performance/reports/sagas-compensations.md \
+//!   cargo test -p sagat-tests --test perf_sagas_compensations --release -- --ignored --nocapture
 //! ```
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
@@ -492,7 +492,7 @@ async fn sagas_cost_little_scale_with_workers_and_hold_nothing_while_they_wait()
 
     // ------------------------------------------------ the report
     let mut report = format!(
-        "# Benchmark: sagas and compensations (feature 003)\n\nMeasured by `tests/performance/003-sagas-compensations/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Latency\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
+        "# Benchmark: sagas and compensations (feature 003)\n\nMeasured by `tests/performance/sagas-compensations/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Latency\n\n| Operation | Samples | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|\n",
         environment()
     );
     for line in plan_rows

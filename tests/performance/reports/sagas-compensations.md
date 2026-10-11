@@ -1,6 +1,6 @@
 # Benchmark: sagas and compensations (feature 003)
 
-Measured by `tests/performance/003-sagas-compensations/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
+Measured by `tests/performance/sagas-compensations/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
 
 ## Environment
 

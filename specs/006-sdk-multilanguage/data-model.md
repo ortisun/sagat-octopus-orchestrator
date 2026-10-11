@@ -64,4 +64,4 @@ error: the lease lapses and the platform leases the step again) and a dropped du
 ## Migrations
 
 None. The compatibility rule is the protocol's: a minor version is additive; the server keeps the forms of every minor
-it accepts (protocol-negotiation scenario, `contract_grpc_006`).
+it accepts (protocol-negotiation scenario, `contract_grpc_sdk_multilanguage`).

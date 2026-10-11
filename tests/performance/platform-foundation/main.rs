@@ -4,8 +4,8 @@
 //! together with the environment, which the report records. Run on purpose:
 //!
 //! ```sh
-//! SAGAT_PERF_REPORT=tests/performance/reports/001-platform-foundation.md \
-//!   cargo test -p sagat-tests --test perf_001 --release -- --ignored --nocapture
+//! SAGAT_PERF_REPORT=tests/performance/reports/platform-foundation.md \
+//!   cargo test -p sagat-tests --test perf_platform_foundation --release -- --ignored --nocapture
 //! ```
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
@@ -199,7 +199,7 @@ async fn namespace_read_latency_meets_the_baseline_budget() {
     .await;
 
     let mut report = format!(
-        "# Baseline benchmark: platform foundation (feature 001)\n\nMeasured by `tests/performance/001-platform-foundation/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Workload\n\n- {NAMESPACES} namespaces in one tenant; authenticated requests (JWT verified on every request) with {CONCURRENCY} concurrent clients\n- {} s warm-up, then {} s measured per scenario\n- Rate limit and in-flight cap raised so they do not mask the system; database pool of 8 connections\n\n## Results\n\n| Scenario | Requests | Errors | Throughput | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",
+        "# Baseline benchmark: platform foundation (feature 001)\n\nMeasured by `tests/performance/platform-foundation/main.rs`. Hypotheses, not promises: figures are valid only for this environment.\n\n## Environment\n\n{}\n\n## Workload\n\n- {NAMESPACES} namespaces in one tenant; authenticated requests (JWT verified on every request) with {CONCURRENCY} concurrent clients\n- {} s warm-up, then {} s measured per scenario\n- Rate limit and in-flight cap raised so they do not mask the system; database pool of 8 connections\n\n## Results\n\n| Scenario | Requests | Errors | Throughput | p50 | p95 | p99 | max |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",
         environment(),
         WARMUP.as_secs(),
         MEASURE.as_secs()

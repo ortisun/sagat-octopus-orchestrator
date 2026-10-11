@@ -1,6 +1,6 @@
 # Benchmark: inline code sandbox (feature 005)
 
-Produced by `tests/performance/005-inline-code-sandbox` (T005-034, NFR-005-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.
+Produced by `tests/performance/inline-code-sandbox` (T005-034, NFR-005-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.
 
 ## Environment
 

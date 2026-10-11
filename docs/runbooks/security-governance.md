@@ -175,7 +175,7 @@ store and the guard they will use (gaps G35, G36).
 - **A secret value leaked.** `PUT` a new value now. `SELECT created_at, actor, reason FROM audit_records WHERE action = 'secret.resolved' AND resource_id LIKE '<namespace id>/%'` shows who was handed which secret and version, by run and node; revoke the identities involved (`DELETE .../worker-bindings/{subject}` closes their sessions and releases their leases at once).
 - **The key ring leaked.** Rotate the ring (section 3), then replace every secret value.
 - **A worker identity is compromised.** Remove its bindings in every namespace; its sessions are closed and the attempts it holds are reclaimed by the scheduler, and its late reports are refused as stale. Revoke the identity at the OIDC provider as well.
-- **A tenant's data may have been reached by another tenant.** This is a critical finding by definition (spec SC-009-001). Preserve `audit_records` and the logs, and run the cross-tenant battery against the deployed version (`cargo test -p sagat-tests --test contract_rest_009`).
+- **A tenant's data may have been reached by another tenant.** This is a critical finding by definition (spec SC-009-001). Preserve `audit_records` and the logs, and run the cross-tenant battery against the deployed version (`cargo test -p sagat-tests --test contract_rest_security_multitenancy`).
 - **A developer left.** Their published workflows stop resolving secrets at the next attempt (D46). Republish what is still needed as someone with access.
 
 ## 6. Observability

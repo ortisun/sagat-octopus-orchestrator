@@ -51,11 +51,11 @@ crates/api-http/src/routes/{scripts,runner}.rs     25 operations
 apps/control-plane                                 SAGAT_SCRIPT_SIGNING_KEY, SAGAT_SCRIPT_CEILING, `script-key`
 apps/sandbox-runner/                               the runner: builds, test runs and script steps in containers
 infra/docker/                                      the runner image and the `sandbox` compose profile
-tests/integration/005-inline-code-sandbox/{registry,sandbox}/   PostgreSQL (versions, leases, quotas, retention, migration) and real containers (isolation)
-tests/e2e/005-inline-code-sandbox/                 US01..US04 through the API, the worker protocol and the runner
-tests/fault/005-inline-code-sandbox/               runner death, restart, engine down, cancellation, room
-tests/contract/005-inline-code-sandbox/rest/       every operation against openapi.yaml
-tests/performance/005-inline-code-sandbox/         the benchmark; report in tests/performance/reports/
+tests/integration/inline-code-sandbox/{registry,sandbox}/   PostgreSQL (versions, leases, quotas, retention, migration) and real containers (isolation)
+tests/e2e/inline-code-sandbox/                 US01..US04 through the API, the worker protocol and the runner
+tests/fault/inline-code-sandbox/               runner death, restart, engine down, cancellation, room
+tests/contract/inline-code-sandbox/rest/       every operation against openapi.yaml
+tests/performance/inline-code-sandbox/         the benchmark; report in tests/performance/reports/
 ```
 
 ## Implementation phases

@@ -1,6 +1,6 @@
 # Benchmark: security and multi-tenancy controls (feature 009)
 
-Measured by `tests/performance/009-security-multitenancy/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
+Measured by `tests/performance/security-multitenancy/main.rs`. Hypotheses, not promises: figures are valid only for this environment.
 
 ## Environment
 

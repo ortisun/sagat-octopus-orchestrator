@@ -69,7 +69,7 @@ fn an_aspnet_core_service_registers_the_client_through_di_and_starts_a_run_with_
         return;
     }
     let scenario = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("e2e/006-sdk-multilanguage/scenarios/us01-aspnet.json");
+        .join("e2e/sdk-multilanguage/scenarios/us01-aspnet.json");
     harness::block_on(async {
         let failures = harness::ensure_prepared(&["dotnet"]).await;
         assert!(failures.is_empty(), "{failures:?}");
