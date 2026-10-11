@@ -24,7 +24,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
-      - run: cargo test --workspace --locked
+      # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
+      - run: cargo test --workspace --locked --no-fail-fast
 
   architecture:
     name: architecture rules
