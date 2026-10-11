@@ -24,7 +24,9 @@ public sealed class Script : IInlineScript {
 #[tokio::test]
 #[ignore = "real C# container benchmark: run explicitly in release mode"]
 async fn csharp_build_and_execution_benchmark() {
-    assert!(!cfg!(debug_assertions), "run this benchmark with --release");
+    if cfg!(debug_assertions) {
+        panic!("run this benchmark with --release");
+    }
     let mut report = format!(
         "# C# sandbox measurements\n\nDate: {}\n\n- Host: {}\n- Commit: {} (working-tree changes may be present)\n- Docker: {}\n- Images: {}\n- Load at start: {}\n- Rust profile: release\n- Policy: {:?}\n\nEach sample creates a new isolated container. Cold means the first sample in this process with images already present; warm samples reuse image layers, not containers or compiled results. Build measurements include compilation and artifact preparation in the sandbox adapter, but not platform signing, REST, PostgreSQL or build-cache lookup. Runtime measurements include creation, loading, execution and removal. This is a small local sample, not a production SLO.\n\n",
         sh("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]),
