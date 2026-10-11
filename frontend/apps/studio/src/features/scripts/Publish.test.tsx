@@ -242,7 +242,8 @@ describe('Versions', () => {
     await user.click(await eventually(() => screen.getByRole('tab', { name: 'Versions' })));
     await user.click(await eventually(() => screen.getByRole('button', { name: 'Open version 1 read-only' })));
     expect(await eventually(() => screen.getByRole('heading', { name: /Version 1/ }))).toHaveFocus();
-    expect(screen.getByText(/A version never changes; your draft is untouched/)).toBeInTheDocument();
+    // The heading is there while the version loads; what the page says about the version is there once it has.
+    expect(await eventually(() => screen.getByText(/A version never changes; your draft is untouched/))).toBeInTheDocument();
     const source = await eventually(() => screen.getByRole('textbox', { name: 'Source of version 1 (read-only)' }));
     expect(source).toHaveValue('export default () => "as published";\n');
     expect(source).toHaveAttribute('readonly');
