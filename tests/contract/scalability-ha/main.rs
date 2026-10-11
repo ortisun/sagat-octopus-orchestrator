@@ -145,12 +145,9 @@ fn selector_matches(selector: &Value, labels: &Value) -> bool {
                                 values.iter().any(|value| value.as_str() == candidate)
                             })
                     }
-                    Some("NotIn") => {
-                        candidate.is_some()
-                            && expression["values"].as_array().is_some_and(|values| {
-                                values.iter().all(|value| value.as_str() != candidate)
-                            })
-                    }
+                    Some("NotIn") => expression["values"].as_array().is_some_and(|values| {
+                        values.iter().all(|value| value.as_str() != candidate)
+                    }),
                     Some("Exists") => candidate.is_some(),
                     Some("DoesNotExist") => candidate.is_none(),
                     operator => panic!("unsupported selector operator {operator:?}"),
@@ -167,6 +164,7 @@ fn pod_only_peer_matches(
     labels: &Value,
 ) -> bool {
     peer.get("namespaceSelector").is_none()
+        && peer.get("podSelector").is_some()
         && policy_namespace == pod_namespace
         && selector_matches(&peer["podSelector"], labels)
 }
@@ -440,6 +438,12 @@ fn the_ha_worker_is_admitted_to_platform_apis_only_by_its_release_identity() {
     );
     let labels = &worker["spec"]["template"]["metadata"]["labels"];
     assert_eq!(labels["app.kubernetes.io/instance"], "sagat");
+    assert!(!pod_only_peer_matches(
+        &serde_json::json!({"ipBlock": {"cidr": "10.0.0.0/24"}}),
+        "default",
+        "default",
+        labels
+    ));
 
     for (policy_name, port) in [
         ("sagat-octopus-orchestrator-control-plane", 8080),
