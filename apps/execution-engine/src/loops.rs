@@ -13,8 +13,8 @@ use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::PgRunStore;
 use sagat_scheduler::{
-    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, Monitor, MonitorRound,
-    OutboxDispatcher, ProjectionRound, Report, Scheduler, TelemetryProjector,
+    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, Keeper, Monitor,
+    MonitorRound, OutboxDispatcher, ProjectionRound, Report, Round, Scheduler, TelemetryProjector,
 };
 use tokio::sync::watch;
 
@@ -23,6 +23,7 @@ pub type EngineDispatcher = OutboxDispatcher<PgRunStore, NatsPublisher, SystemEn
 pub type EngineEvents = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type EngineProjector = TelemetryProjector<PgRunStore>;
 pub type EngineMonitor = Monitor<PgRunStore>;
+pub type EngineKeeper = Keeper<PgRunStore>;
 pub type EngineDeliveries = DeliveryWorker<
     PgRunStore,
     sagat_infra_connectors::webhook::GuardedSender<PgRunStore>,
@@ -36,6 +37,8 @@ pub struct Health {
     started: Instant,
     last_tick_ms: AtomicU64,
     stale_after: Duration,
+    last_round_ms: AtomicU64,
+    keeper_stale_after: Duration,
 }
 
 impl Health {
@@ -45,7 +48,32 @@ impl Health {
             started: Instant::now(),
             last_tick_ms: AtomicU64::new(0),
             stale_after,
+            last_round_ms: AtomicU64::new(0),
+            keeper_stale_after: stale_after,
         }
+    }
+
+    /// How long the shard keeper may go without finishing a round (a round that fails counts: the
+    /// loop is alive and the database is what is down) before `/livez` reports it.
+    #[must_use]
+    pub const fn with_keeper_stale_after(mut self, stale_after: Duration) -> Self {
+        self.keeper_stale_after = stale_after;
+        self
+    }
+
+    /// The keeper finished a round, well or badly.
+    pub fn keeper_rounded(&self) {
+        self.last_round_ms.store(self.now_ms(), Ordering::Relaxed);
+    }
+
+    /// Whether the keeper's loop is running (or has only just started): a replica whose loop ended
+    /// would go on holding shards it never renews, and nothing else would say so.
+    #[must_use]
+    pub fn keeper_alive(&self) -> bool {
+        let age = self
+            .now_ms()
+            .saturating_sub(self.last_round_ms.load(Ordering::Relaxed));
+        u128::from(age) < self.keeper_stale_after.as_millis()
     }
 
     fn now_ms(&self) -> u64 {
@@ -102,6 +130,47 @@ pub async fn run_scheduler<F, Fut>(
         }
     }
     tracing::info!("scheduler stopped");
+}
+
+/// Keeps the replica's shard leases every `every` until stopped, and gives them back when it stops
+/// so that the others take them at once (`leave`). A round that fails (the database is down) is
+/// retried at the next interval: the snapshot the passes read expires by itself in the meantime.
+pub async fn run_keeper<F, Fut, L, LeaveFut>(
+    mut round: F,
+    every: Duration,
+    leave: L,
+    stop: watch::Receiver<bool>,
+) where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Round, sagat_application::error::StoreError>>,
+    L: FnOnce() -> LeaveFut,
+    LeaveFut: Future<Output = ()>,
+{
+    while !*stop.borrow() {
+        match round().await {
+            Ok(done) => tracing::debug!(
+                replicas = done.replicas,
+                held = done.held,
+                acquired = done.acquired,
+                released = done.released,
+                lost = done.lost,
+                "shard leases kept"
+            ),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    runbook = "docs/runbooks/scaling.md#keeper-failing",
+                    "could not keep the shard leases; the passes stop by themselves when they run out"
+                );
+                metrics::counter!("scheduler_keeper_failures_total").increment(1);
+            }
+        }
+        if stop_during(jittered(every, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    leave().await;
+    tracing::info!("shard keeper stopped");
 }
 
 /// Purges expired records now and then.
@@ -384,6 +453,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_keeper_runs_its_rounds_survives_a_failing_one_and_leaves_once_when_stopped() {
+        let left = Arc::new(AtomicUsize::new(0));
+        let probe = Arc::clone(&left);
+        let rounds = calls_during(Duration::from_millis(400), move |calls, stop| {
+            run_keeper(
+                move || {
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(if n == 1 {
+                        Err(sagat_application::error::StoreError::Internal {
+                            detail: "the database is down".into(),
+                        })
+                    } else {
+                        Ok(Round::default())
+                    })
+                },
+                Duration::from_millis(100),
+                move || {
+                    probe.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(())
+                },
+                stop,
+            )
+        })
+        .await;
+        // 100 ms ±20 % over 400 ms: about four rounds, the failing one among them.
+        assert!((2..=6).contains(&rounds), "{rounds} rounds in 400 ms");
+        assert_eq!(left.load(Ordering::SeqCst), 1, "it gave the shards back");
+    }
+
+    #[tokio::test]
     async fn housekeeping_runs_at_once_and_then_only_every_interval() {
         let sweeps = calls_during(Duration::from_millis(500), |calls, stop| {
             run_housekeeping(
@@ -410,6 +509,21 @@ mod tests {
             Duration::from_millis(1200),
             "clamped"
         );
+    }
+
+    #[test]
+    fn the_keeper_is_alive_until_it_stops_rounding_whatever_its_rounds_found() {
+        let health =
+            Health::new(Duration::from_secs(30)).with_keeper_stale_after(Duration::from_millis(60));
+        assert!(health.keeper_alive(), "just started");
+        std::thread::sleep(Duration::from_millis(90));
+        assert!(!health.keeper_alive(), "no round for longer than the limit");
+        health.keeper_rounded();
+        assert!(
+            health.keeper_alive(),
+            "a round revives it, a failing one too"
+        );
+        assert!(health.scheduler_alive(), "the scheduler's limit is its own");
     }
 
     #[test]

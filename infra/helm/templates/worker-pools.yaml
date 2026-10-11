@@ -1,0 +1,103 @@
+{{- range $pool := .Values.workerPools }}
+{{- $ctx := dict "root" $ "component" (printf "worker-%s" $pool.name) }}
+{{- $scaled := and $pool.autoscaling $pool.autoscaling.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sagat.fullname" $ }}-worker-{{ $pool.name }}
+  labels:
+    {{- include "sagat.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: worker-{{ $pool.name }}
+    sagat.io/pool: {{ $pool.name | quote }}
+    {{- with $pool.language }}
+    sagat.io/language: {{ . | quote }}
+    {{- end }}
+spec:
+  {{- if not $scaled }}
+  replicas: {{ default 1 $pool.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sagat.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: worker-{{ $pool.name }}
+        sagat.io/pool: {{ $pool.name | quote }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ default 60 $pool.terminationGracePeriodSeconds }}
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      {{- with $.Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ $pool.image | quote }}
+          imagePullPolicy: {{ default $.Values.image.pullPolicy $pool.pullPolicy }}
+          {{- with $pool.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            # The pool a worker belongs to; it advertises it when it registers.
+            - {name: SAGAT_WORKER_POOL, value: {{ $pool.name | quote }}}
+            {{- with $pool.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $pool.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $pool.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- include "sagat.containerSecurity" $ | nindent 10 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 128Mi}}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if $scaled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "sagat.fullname" $ }}-worker-{{ $pool.name }}
+  labels:
+    {{- include "sagat.labels" $ | nindent 4 }}
+    sagat.io/pool: {{ $pool.name | quote }}
+spec:
+  scaleTargetRef: {name: {{ include "sagat.fullname" $ }}-worker-{{ $pool.name }}}
+  minReplicaCount: {{ default 1 $pool.autoscaling.minReplicaCount }}
+  maxReplicaCount: {{ default 10 $pool.autoscaling.maxReplicaCount }}
+  pollingInterval: {{ default 15 $pool.autoscaling.pollingInterval }}
+  cooldownPeriod: {{ default 300 $pool.autoscaling.cooldownPeriod }}
+  triggers:
+    # The steps ready for the pool's activities, per replica: more work than the replicas keep up with.
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ required "workerPoolAutoscaling.prometheusAddress is required" $.Values.workerPoolAutoscaling.prometheusAddress | quote }}
+        query: {{ printf "sum(pool_ready_steps%s)" (include "sagat.matchers" (dict "root" $ "pool" $pool.name)) | quote }}
+        threshold: {{ default 50 $pool.autoscaling.readyPerReplica | quote }}
+    # The oldest of them has waited too long: add replicas even if the queue is short.
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ $.Values.workerPoolAutoscaling.prometheusAddress | quote }}
+        query: {{ printf "max(pool_queue_lag_seconds%s)" (include "sagat.matchers" (dict "root" $ "pool" $pool.name)) | quote }}
+        threshold: {{ default 30 $pool.autoscaling.lagThresholdSeconds | quote }}
+{{- end }}
+{{- end }}

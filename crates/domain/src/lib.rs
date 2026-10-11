@@ -21,6 +21,7 @@ pub mod quota;
 pub mod saga;
 pub mod scripts;
 pub mod secrets;
+pub mod sharding;
 pub mod triggers;
 pub mod versioning;
 pub mod workflow;

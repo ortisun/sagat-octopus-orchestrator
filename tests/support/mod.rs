@@ -20,6 +20,7 @@ pub mod logs;
 pub mod nats;
 pub mod oidc;
 pub mod receiver;
+pub mod scale;
 pub mod scripts;
 pub mod signed;
 pub mod worker;

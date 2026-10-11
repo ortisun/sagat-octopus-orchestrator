@@ -290,6 +290,21 @@ mod dispatching {
     }
 
     impl OutboxStore for LosesConfirmation {
+        async fn due_outbox(
+            &self,
+            window: &sagat_application::maintenance::Window,
+        ) -> Result<Vec<sagat_application::maintenance::OutboxDue>, StoreError> {
+            self.inner.due_outbox(window).await
+        }
+
+        async fn claim_outbox_ids(
+            &self,
+            ids: &[Uuid],
+            visibility: Duration,
+        ) -> Result<Vec<OutboxMessage>, StoreError> {
+            self.inner.claim_outbox_ids(ids, visibility).await
+        }
+
         async fn claim_outbox(
             &self,
             limit: u32,

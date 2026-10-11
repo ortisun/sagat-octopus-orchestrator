@@ -1,0 +1,11 @@
+The Sagat Octopus Orchestrator is installed.
+
+  Control plane:   {{ include "sagat.fullname" . }}-control-plane:{{ .Values.controlPlane.service.port }}  (REST API{{ if .Values.controlPlane.studio }} and Studio at /studio/{{ end }})
+  Worker API:      {{ include "sagat.fullname" . }}-engine:{{ .Values.engine.grpc.port }}  (gRPC{{ if .Values.engine.grpc.tlsSecret }}, TLS{{ else if .Values.engine.grpc.allowPlaintextSecrets }}, plaintext: TLS must be terminated in front{{ else }}, plaintext{{ end }})
+
+The scheduler's work is split in 64 shards held by the {{ .Values.engine.replicas }} engine replica(s) under a lease of
+{{ .Values.engine.shardLeaseSeconds }} s. Check who holds what:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "sagat.fullname" . }}-engine | grep -i "scheduler shards"
+
+Migrations are not run by this chart. Before an upgrade, run them as the database owner (see docs/runbooks/scaling.md#upgrade).

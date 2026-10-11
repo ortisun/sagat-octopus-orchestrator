@@ -1,0 +1,85 @@
+# What the chart refuses to render, because the platform would refuse it at start (or because it
+# could not work): the changes laid over `base.yaml` and a fragment of the message that must say why.
+- name: no database secret
+  changes: {database: {existingSecret: ""}}
+  message: database.existingSecret
+- name: no issuer
+  changes: {oidc: {issuer: ""}}
+  message: oidc.issuer
+- name: an environment that does not exist
+  changes: {environment: qa}
+  message: environment must be
+- name: more replicas than shards
+  changes: {engine: {replicas: 65}}
+  message: cannot be more than 64
+- name: an autoscaler that goes past the shards
+  changes: {engine: {autoscaling: {keda: {maxReplicaCount: 100}}}}
+  message: cannot be more than 64
+- name: two autoscalers for the engine
+  changes: {engine: {autoscaling: {hpa: {enabled: true}}}}
+  message: at most one of
+- name: a lease too short
+  changes: {engine: {shardLeaseSeconds: 2}}
+  message: between 3 and 600
+- name: a lease too long
+  changes: {engine: {shardLeaseSeconds: 601}}
+  message: between 3 and 600
+- name: TLS and plaintext secrets at once
+  changes: {engine: {grpc: {tlsSecret: engine-tls}}}
+  message: contradict
+- name: a pool named twice
+  changes:
+    workerPools:
+      - {name: a, image: x, activities: [act.a]}
+      - {name: a, image: y, activities: [act.b]}
+  message: named twice
+- name: a pool name the engine would refuse
+  changes: {workerPools: [{name: Bad Name, image: x, activities: [a]}]}
+  message: lowercase
+- name: a pool that serves nothing
+  changes: {workerPools: [{name: a, image: x, activities: []}]}
+  message: serves no activity
+- name: a pool with no image
+  changes: {workerPools: [{name: a, activities: [act.a]}]}
+  message: has no image
+- name: a pool to scale with nothing to ask
+  changes:
+    workerPoolAutoscaling: {prometheusAddress: ""}
+    workerPools: [{name: a, image: x, activities: [a], autoscaling: {enabled: true}}]
+  message: prometheusAddress
+- name: an empty list of who may scrape the admin ports (an empty `from` means everybody)
+  changes: {networkPolicy: {metricsFrom: []}}
+  message: metricsFrom
+- name: secrets with an API nobody said was behind TLS
+  changes: {controlPlane: {allowPlaintextSecrets: false}}
+  message: controlPlane.allowPlaintextSecrets
+- name: secrets with a worker API nobody said was behind TLS
+  changes: {engine: {grpc: {allowPlaintextSecrets: false}}}
+  message: engine.grpc.tlsSecret
+- name: a batch of nothing
+  changes: {engine: {schedulerBatch: 0}}
+  message: between 1 and 5000
+- name: a batch the engine refuses
+  changes: {engine: {schedulerBatch: 5001}}
+  message: between 1 and 5000
+- name: a concurrency the engine would clamp
+  changes: {engine: {schedulerConcurrency: 65}}
+  message: between 1 and 64
+- name: a lease that is not a whole number
+  changes: {engine: {shardLeaseSeconds: 15.5}}
+  message: whole number
+- name: a pool name Kubernetes would refuse
+  changes: {workerPools: [{name: has_underscore, image: x, activities: [a]}]}
+  message: lowercase letters, digits and -
+- name: a pool name too long for the object names
+  changes: {workerPools: [{name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, image: x, activities: [a]}]}
+  message: too long
+- name: an activity with a separator in it
+  changes: {workerPools: [{name: a, image: x, activities: ["act,b"]}]}
+  message: separators
+- name: more pools than the engine measures
+  changes: {workerPools: [{name: p0, image: x, activities: [a0]}, {name: p1, image: x, activities: [a1]}, {name: p2, image: x, activities: [a2]}, {name: p3, image: x, activities: [a3]}, {name: p4, image: x, activities: [a4]}, {name: p5, image: x, activities: [a5]}, {name: p6, image: x, activities: [a6]}, {name: p7, image: x, activities: [a7]}, {name: p8, image: x, activities: [a8]}, {name: p9, image: x, activities: [a9]}, {name: p10, image: x, activities: [a10]}, {name: p11, image: x, activities: [a11]}, {name: p12, image: x, activities: [a12]}, {name: p13, image: x, activities: [a13]}, {name: p14, image: x, activities: [a14]}, {name: p15, image: x, activities: [a15]}, {name: p16, image: x, activities: [a16]}, {name: p17, image: x, activities: [a17]}, {name: p18, image: x, activities: [a18]}, {name: p19, image: x, activities: [a19]}, {name: p20, image: x, activities: [a20]}, {name: p21, image: x, activities: [a21]}, {name: p22, image: x, activities: [a22]}, {name: p23, image: x, activities: [a23]}, {name: p24, image: x, activities: [a24]}, {name: p25, image: x, activities: [a25]}, {name: p26, image: x, activities: [a26]}, {name: p27, image: x, activities: [a27]}, {name: p28, image: x, activities: [a28]}, {name: p29, image: x, activities: [a29]}, {name: p30, image: x, activities: [a30]}, {name: p31, image: x, activities: [a31]}, {name: p32, image: x, activities: [a32]}]}
+  message: at most 32 worker pools
+- name: connections the server would not hold
+  changes: {database: {maxConnections: 20, serverMaxConnections: 100}}
+  message: serverMaxConnections
