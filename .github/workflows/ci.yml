@@ -97,9 +97,10 @@ jobs:
       - name: conformance suite, user stories and faults, five languages
         run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
       # The hello-world of each SDK (examples/hello-world), run against a real platform: the five make the
-      # same run, whose journal is the one `sagat worker dev` makes.
-      - name: hello-world examples, five languages
-        run: cargo test -p sagat-tests --test e2e_developer_experience us03 --locked -- --ignored
+      # same run, whose journal is the one `sagat worker dev` makes; and the payment saga
+      # (examples/payment-saga) on a good day, a declined card and a lost answer.
+      - name: examples, five languages and the payment saga
+        run: cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored
 
   studio:
     name: studio (lint, types, unit tests, build, browser journeys)

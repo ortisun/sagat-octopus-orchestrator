@@ -46,17 +46,24 @@ fn selected() -> Vec<&'static str> {
     }
 }
 
-struct Finished {
-    code: Option<i32>,
-    out: String,
-    err: String,
+pub struct Finished {
+    pub code: Option<i32>,
+    pub out: String,
+    pub err: String,
 }
 
 /// Runs one of the scripts of an example, with the platform in its environment and nothing else
 /// of the test's: the token is in the environment of the child and never in an argument.
-async fn script(language: &str, name: &str, seconds: u64, setting: &[(&str, String)]) -> Finished {
+pub async fn script(
+    example: &str,
+    language: &str,
+    name: &str,
+    seconds: u64,
+    setting: &[(&str, String)],
+) -> Finished {
     let path = repo()
-        .join("examples/hello-world")
+        .join("examples")
+        .join(example)
         .join(language)
         .join(name);
     let mut command = Command::new(&path);
@@ -157,7 +164,7 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
 
     let mut runs: Vec<(&str, String)> = Vec::new();
     for language in &languages {
-        let prepared = script(language, "prepare.sh", 900, &setting).await;
+        let prepared = script("hello-world", language, "prepare.sh", 900, &setting).await;
         assert_eq!(
             prepared.code,
             Some(0),
@@ -165,7 +172,7 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
             prepared.out,
             prepared.err
         );
-        let ran = script(language, "run.sh", 180, &setting).await;
+        let ran = script("hello-world", language, "run.sh", 180, &setting).await;
         assert_eq!(
             ran.code,
             Some(0),
