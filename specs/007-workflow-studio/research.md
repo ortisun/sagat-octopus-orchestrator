@@ -274,7 +274,7 @@ dotted pattern but use the accessible control-border colour at full opacity; the
 The real-browser harness now has an explicit `SAGAT_STUDIO_NO_SANDBOX=1` development mode that excludes US02 and starts no sandbox
 runner. Default/CI execution still uses real containers. This is a limited validation path, not an implementation of a sandbox
 guarantee. Both restyled browser benchmarks passed in three cold rounds per scenario with the existing floors unchanged. Current results
-and the passing final browser checks are in `quickstart.md`; owner review is approved and US02 still requires a working sandbox in CI.
+and the passing final browser checks are in `quickstart.md`; owner review is approved and US02 passed with the real sandbox in the Studio CI job linked there.
 
 
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")

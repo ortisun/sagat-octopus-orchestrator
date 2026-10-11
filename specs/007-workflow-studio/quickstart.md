@@ -94,7 +94,7 @@ The final gate also found, in code written before this feature, what a run on Li
 
 ## Visual-direction validation — 2026-10-11
 
-This is the local worktree validation of the restyled Studio, not a GitHub CI result. The feature's REST contract and execution
+This record distinguishes local validation from the completed Studio CI job. The feature's REST contract and execution
 semantics are unchanged. The implementation and accessibility deviations are in [`design/README.md`](./design/README.md).
 
 | Check | Latest observed result |
@@ -119,8 +119,7 @@ token resolution, edge styling, master navigation and unknown duration. The sele
 
 Ten named captures from the passing suite are preserved in [`design/review/`](./design/README.md#owner-review-captures--2026-10-11).
 The initial expanded run had 16 passes and one dark Monaco contrast failure; the correction is covered by the final passing
-suite and 1 033 unit tests. Before closing T007-044, verify US02 with the real Docker sandbox in CI; owner visual approval is recorded below. No GitHub CI execution, real identity-provider
-sign-in, human screen-reader testing or additional browser/machine result is claimed for this restyle.
+suite and 1 033 local unit tests. The real-sandbox CI result below closes T007-044 together with owner approval. Human screen-reader testing remains outside this evidence.
 
 
 The final visual inspection also found that the initial wide header pushed the graph below the first screen and that React
@@ -135,3 +134,9 @@ reviews are technical evidence only and do not replace owner visual acceptance o
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
 after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
 automated CI evidence for this branch is recorded separately.
+
+## Real-sandbox CI evidence
+
+The [Studio job](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38156597169/job/114520746513) passed on commit `ace4060` (2026-10-11): **1 034 unit tests in 64 files**, lint, typecheck, generated API types and build; **19 browser journeys passed**, including US02 executing a script in the real sandbox. The two skipped cases are the opt-in benchmarks, which passed separately locally. This closes the sandbox validation gap of the partial local run and T007-044. Other jobs in that workflow were still running when this record was written.
+
+The feature-012 native onboarding harness also passed against this final feature-007 frontend via `SAGAT_STUDIO_DIST`, using the real CLI, TypeScript SDK, engine and development identity provider.

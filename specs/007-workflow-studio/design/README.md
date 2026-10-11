@@ -219,16 +219,15 @@ UUIDv7 runs; the full ID remains available in the detail and the tooltip.
 Full graph cards are 184 × 62px, edges are curved, and the canvas is dotted. Taken, pending and omitted paths stay solid, dashed
 and dotted respectively, including in forced colours; words and the Table view carry the same states. Review fixed missing
 graph-token definitions, insufficient contrast of omitted paths, the selected-step mobile cascade and master-list remounting.
-The workflow editor, Scripts and sign-in consume the same tokens. Their layouts and the light theme remain proposals requiring
-the owner's review (T007-043); the plain `S` monogram is provisional, not a final logo selection (G162).
+The workflow editor, Scripts and sign-in consume the same tokens. The owner approved their layouts and the light theme on 2026-10-11 (T007-043); the plain `S` monogram is provisional, not a final logo selection (G162).
 
 Final local validation records **1 033 passing Vitest tests in 64 files**, typecheck, lint, build, generated-API check and the
 dependency advisory gate. The expanded browser suite finished with **18 passed, zero failed and two skipped opt-in benchmarks**;
 light/dark/forced-colour checks, 320px reflow and system-font fallback passed. Both benchmarks passed separately in three cold
 rounds per scenario, with all six existing floors met and the report regenerated. The earlier dark Monaco contrast failure was
 corrected before this final run. US02 was explicitly excluded because Docker's sandbox runtime was unavailable; no sandbox
-execution or new GitHub CI pass is claimed. See [the validation record](../quickstart.md#visual-direction-validation--2026-10-11).
-Screenshots and automated axe checks do not replace the still-pending human comparison with the prototype.
+execution is claimed for that local run; the subsequent Studio CI job passed all 19 browser journeys including US02. See [the validation record](../quickstart.md#visual-direction-validation--2026-10-11).
+The owner explicitly approved the visual proposal after receiving the live Studio, reference and review captures.
 
 ## Owner review captures — 2026-10-11
 

@@ -66,10 +66,10 @@ T007-034 (the benchmark must measure the restyled Studio) and T007-035/036. Cont
 - [x] T007-041 [US03] Runs: list beside detail on a wide viewport, the URL of a run unchanged, two pages below the reflow width (D158); the strip of facts, the filters and the selected-step strip from what the API gives (FR-007-010, G164) in `features/runs/{RunsPage,RunDetailPage,RunHeader,NodePanel}.tsx` and `styles/runs.css`; `RunsPage` and `RunDetailPage` tests and `us03-analyze.spec.ts` pass.
 - [x] T007-042 [US03] Graph: the cards, edges and dotted canvas of the prototype in `features/runs/{RunNodeCard,GraphView}.tsx` and `styles/runs.css`, keeping a taken edge solid, a pending edge dashed and an omitted edge dotted, the visible focus ring and the forced-colours rules that `styles.test.ts` asserts.
 - [x] T007-043 [US01] [US02] Derive the workflow editor and the Scripts pages from the same tokens, without a reference design (G161): `styles/{workflows,scripts}.css` and the sign-in; the result is a proposal and is reviewed by the owner before it counts as done.
-- [ ] T007-044 Verify: axe-core in the journeys in light, dark and forced colours on every page, the US01..US04 and `SC-007-001` journeys unchanged in what they assert, the Runs screen compared with `design/runs-prototype.jpg` at 1470 × 812 by a person (a review, reported as one), and `npm run typecheck`, `lint`, `test` and `build` of the frontend.
+- [x] T007-044 Verify: axe-core in the journeys in light, dark and forced colours on every page, the US01..US04 and `SC-007-001` journeys unchanged in what they assert, the Runs screen compared with `design/runs-prototype.jpg` at 1470 × 812 by a person (a review, reported as one), and `npm run typecheck`, `lint`, `test` and `build` of the frontend.
 - [x] T007-045 Update `docs/traceability.md` and the Studio's README for FR-007-009/010 and SC-007-005 with the evidence of T007-039..044 and T007-046.
 
-Implementation evidence (2026-10-11; owner approval recorded; sandbox CI validation remains open):
+Implementation evidence (2026-10-11; owner approval and sandbox CI validation recorded):
 
 - **T007-039:** shared colour/type/spacing/radius/layout tokens, system light/dark preference and forced-colour mappings are in
   `styles/base.css`. `tokens.test.ts` checks contrast, theme parity, fonts/licence, colour literal ownership and resolution of
@@ -90,10 +90,9 @@ Implementation evidence (2026-10-11; owner approval recorded; sandbox CI validat
 - **T007-044:** **1 033 Vitest tests in 64 files**, lint/typecheck/build/API/advisory checks and Rust fmt/clippy/architecture passed
   locally. Final browser result: **18 passed, zero failed, two opt-in performance skips**; the skipped benchmarks passed separately
   (T007-034). Light/dark/forced-colour accessibility, 320px reflow and system-font fallback passed. **US02 was excluded** by explicit
-  partial mode because Docker's sandbox runtime was unavailable. The full sandbox journey and human visual comparison remain
-  open; ten PNGs are linked from `design/README.md`. Detailed results: `quickstart.md`.
+  partial mode because Docker's sandbox runtime was unavailable. CI then passed all 19 journeys including US02 with a real sandbox (two opt-in benchmarks skipped), and 1 034 unit tests. The owner approved the visual proposal. Ten PNGs are linked from `design/README.md`; details and CI link: `quickstart.md`.
 - **T007-045:** README, runbook, design/research record, quickstart and traceability describe the implementation, final local
-  results and remaining acceptance conditions. No new GitHub CI pass is claimed.
+  results, owner approval and the successful Studio CI job.
 
 ## Final Phase: Hardening / rollout
 - [x] T007-032 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/workflow-studio/`. — REST only: this feature adds no gRPC and no event contract; `tests/contract/workflow-studio/rest/conformance.rs` (the new operations on their normal and error paths against the OpenAPI) and `npm run check:api` (the generated types equal the contract).
@@ -117,10 +116,8 @@ First T007-039 increment (2026-10-11): shared palette and contrast regression te
 implemented on `feature/007-design-tokens`; see `design/README.md` for measured
 failures, deviations, validation and the coverage that was still open at that increment.
 
-The later restyle completes the technical evidence for T007-039..042/045/046. T007-043/044 retain owner acceptance and the local
-US02 sandbox rerun; implementation and screenshots alone do not close them.
+The later restyle, owner approval and real-sandbox CI journey complete T007-039..046.
 
 Owner acceptance, 2026-10-11: Marcelo reviewed the open local Studio and explicitly answered
 "Aprovo a proposta visual" for Runs, the light theme, workflow editor, Scripts and sign-in. This closes
-the owner-review portion of T007-043/044 and SC-007-005. T007-044 remains open only until the real-sandbox
-US02 browser journey passes for this branch in CI. No second visual approval is required for this proposal.
+the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 journey also passed in the Studio CI job on commit `ace4060`, completing T007-044. No second visual approval is required for this proposal.
