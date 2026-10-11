@@ -1,4 +1,5 @@
 //! What the journal of a run becomes as spans and measurements (FR-008-001, US01, US02).
+#![allow(clippy::expect_used, clippy::panic)] // helpers fail the test by panicking
 
 use std::collections::HashMap;
 

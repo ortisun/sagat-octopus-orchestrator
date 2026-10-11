@@ -1,6 +1,7 @@
 //! What an operator may do to a step that has not started: retry one whose retry is scheduled
 //! without waiting, and hold one for a person (FR-008-004, US04). Both race with the platform's own
 //! clock, and the first to act wins.
+#![allow(clippy::expect_used, clippy::panic)] // helpers fail the test by panicking
 
 mod common;
 

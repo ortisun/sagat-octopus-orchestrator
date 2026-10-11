@@ -1,4 +1,5 @@
 //! The cause a timeline shows next to a journal event (FR-008-002, US01-AC01).
+#![allow(clippy::expect_used, clippy::panic)] // helpers fail the test by panicking
 
 use sagat_domain::execution::{
     Cause, ChildOutcome, FailureCode, Fence, JoinOutcome, ReviewOutcome, RunEvent, RunStatus,
