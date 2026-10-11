@@ -96,6 +96,30 @@ how to operate it is `docs/runbooks/alerts.md` and `docs/runbooks/observability.
 - **D172 — The cause of a transition is the platform's own vocabulary.** `RunEvent::cause()`: a closed kind
   (`failure`, `retry`, `review`, `abort`, `unknown_outcome`, `reconciliation`, `stop`, `timeout`, `cancel`,
   `decision`, `request`, `outcome`) and the code that goes with it.
+- **D173 — An operator may act on a step that has not started, and the first commit wins.** `RETRY_STEP` also
+  accepts a step in `RETRY_WAIT` (it runs now instead of at `not_before`; the attempts before it stay), and
+  `MARK_MANUAL_REVIEW` holds a `READY` or `RETRY_WAIT` step that is not a lookup (`StepNeedsReview`, code
+  `MARKED_FOR_REVIEW`, no fence, so it needs the same decision as any review). The scheduler's own retry and
+  the operator's race on the run's row: the second to commit finds an illegal transition and answers `409`.
+- **D174 — `RERUN_AS_NEW` is for a run that has ended.** Same version, same input, a new run with
+  `runs.rerun_of` pointing at the old one; idempotent by the key, audited as `run.rerun`. A live run is refused
+  (`409`, "only a run that has ended"): cancel it first. The sagas suite that expected otherwise was changed
+  with this (`tests/e2e/sagas-compensations/us04.rs`).
+- **D175 — A worker identity is drained per namespace, and what it holds goes on.** A row in `worker_drains`;
+  the `use_session` update computes `draining`, a poll answers empty, registration and heartbeat are unchanged
+  (so a restarted worker is still drained), leases already held finish. `listWorkers` says when `inFlight` is 0.
+- **D176 — Reading the audit trail is audited, scrubbed, and withholds the denials.** `GET /audit` needs
+  `audit:read` (administrators). The reading is written in the transaction that reads it and collapses repeats;
+  a reason that has the shape of a credential is replaced on the way out (the trail keeps what was written).
+  `access.denied.cross_tenant` is **not returned**: it is written only when the identifier exists in another
+  tenant, so listing it was an existence oracle that the `404` takes care not to be. The cross-tenant battery of
+  009 found it the first time it met `GET /audit`; `AuditAction::WITHHELD_FROM_TENANT` is the list.
+- **D177 — Errors say what to do.** `remediation` is in the envelope, from a closed table keyed by the error
+  code (a sentence, never text taken from the request), and the Studio shows it.
+- **D178 — A run says how far its telemetry is.** `GET /runs/{id}/telemetry`: `CURRENT`, `CATCHING_UP`, `BEHIND`
+  (older than the lag budget), `NO_TRACE`, `UNTRACKED`. The timeline and the graph read the transactional read
+  models, so their own lag stays 0 (`projectionLagMs`); what lags is the export to the backend, and that is what
+  this reports.
 
 ### Gaps (G169–G1xx)
 
@@ -120,3 +144,26 @@ how to operate it is `docs/runbooks/alerts.md` and `docs/runbooks/observability.
 - **G177 — One projector and one monitor cap their own throughput.** Sharding by tenant is feature 010.
 - **G178 — The monitor looks at the whole platform every 30 s with aggregate queries**; their cost grows with the
   number of namespaces in a condition and not with history, but it is not benchmarked beyond the suite (T008-033).
+- **G179 — A rerun uses the version of the run it repeats.** There is no "rerun on the latest version"; the
+  caller starts a new run for that.
+- **G180 — The quota panel draws refusals, not usage against the limit.** `quota_exceeded_total` is there; a
+  gauge of usage per limit is not, because the exact count is taken under a lock on the write path (feature 009)
+  and sampling it would repeat it.
+- **G181 — The Studio has no control for draining a worker, and no list of alerts.** Both are API-only. The
+  timeline carries the operator actions that existed before (retry, cancel, pause, resume, signal) and the new
+  ones (retry now, hold for review, rerun).
+- **G182 — The audit trail has no retention or export.** Its growth is bounded only by the rules that collapse
+  repeats; partitioning is feature 010 together with G28. A tenant that needs the trail elsewhere pages the API.
+- **G183 — A tenant cannot see attempts to reach it from outside, nor its own probes of other tenants.** The
+  denials are kept (D176) and are read by whoever runs the platform in the database; an operator endpoint for
+  them is not built.
+- **G184 — Drain is by identity and namespace, not by version or by worker process.** Two processes sharing an
+  identity are drained together.
+- **G185 — The alerts are not tied to a run.** An alert names a namespace and a kind (and the oldest affected
+  item); the runs it concerns are found in the timeline and the dead-item lists.
+- **G186 — The detection of a stuck outbox reads every undelivered message.** Measured at about 9 µs a message
+  (150 ms at 17 000 rows, `tests/performance/reports/observability-operations.md`), so it grows with the failure it
+  is meant to find: a dispatcher that is down for an hour at the write rates of the benchmark leaves millions of
+  rows and a round that takes seconds. The other four detections are index-bound and take milliseconds. The
+  remedy is to examine at most the oldest N rows in the order of `event_outbox_pending_idx` and report the count as
+  "at least"; it is not done, because it changes what an alert says (`items`) and needs its own test.

@@ -134,10 +134,11 @@ even when nothing scrapes it (the recorder only expires series while rendering).
 | `http_load_shed_total` | counter | Overload |
 | `db_pool_connections{state}` | gauge | Pool saturation (`in_use` near `SAGAT_DB_MAX_CONNECTIONS`) |
 
-Starting points for alerts (suggestions, **not** shipped or tuned; pick thresholds from your own
-baseline): `/v1/ready` failing for more than a minute; 5xx ratio above your SLO; any sustained
-`jwks_refresh_total{outcome="error"}`; any `audit_denials_total{outcome="failed"}`; `in_use` at
-the pool maximum.
+Prometheus rules and a Grafana dashboard for the whole platform ship in `infra/observability/`
+(feature 008; see [`observability.md`](observability.md)). Their thresholds are starting points
+taken from the design and not from a production baseline: tune them. Conditions that concern one
+namespace (an outbox that does not drain, steps nobody serves) are alerts the engine raises
+itself, read with `GET /namespaces/{id}/alerts` ([`alerts.md`](alerts.md)).
 
 ## 6. Audit trail
 
@@ -153,8 +154,14 @@ ORDER BY created_at DESC
 LIMIT 100;
 ```
 
+- **Through the API (feature 008):** `GET /audit` (Admin) returns the tenant's trail, newest first,
+  narrowed by action, resource, actor and time. Reading it is itself recorded (`audit.read`) and a
+  credential-shaped string in a reason is replaced on the way out. See
+  [`observability.md`](observability.md) section 6.
 - Cross-tenant attempts are recorded in the **actor's** tenant, deduplicated per actor/resource in a
-  5-minute window, so a flood does not grow the table without bound.
+  5-minute window, so a flood does not grow the table without bound. **`GET /audit` does not return
+  them**: they exist only when the identifier belongs to another tenant, so listing them would tell
+  the reader whether an identifier exists elsewhere. Read them in the table.
 - `403` (permission denied inside one's own tenant) is **not** audited yet (research G9).
 - Records contain `trace_id`; the trace id may be chosen by the caller (G15), so treat it as a
   correlation hint, not as proof of origin.
@@ -192,7 +199,7 @@ repository**; do one before relying on this section.
 
 - **High availability.** One instance is what was tested. Rate limits are per process, so several
   instances multiply them; a shared limiter and HA procedures belong to feature 010.
-- **OTLP span export** is not implemented (feature 008). Logs, `X-Trace-Id` and the metrics above are.
-- **Alert rules and dashboards** are not shipped.
+- **OTLP span export** exists (feature 008) with the limits in [`observability.md`](observability.md): HTTP with JSON only, one projector at a time.
+- **Alert rules and dashboards** ship in `infra/observability/` but are not tuned to a production baseline, and alerts leave only by webhook (no pager or email integration, G175).
 - **Restore** and **failover** have not been rehearsed.
 - A development identity provider does not exist (G10): local use needs your own provider.
