@@ -585,6 +585,11 @@ impl DockerSandbox {
         }
         // The code has said what it had to say, or run out of time or room: end it, then see how.
         drop(attached);
+        // A container that is already gone when it is time to end it was ended by something else.
+        let ended_alone = match within(self.docker.inspect_container(name, None)).await {
+            Some(Ok(info)) => info.state.is_some_and(|state| state.running == Some(false)),
+            _ => false,
+        };
         let _ = within(self.docker.kill_container(
             name,
             None::<bollard::query_parameters::KillContainerOptions>,
@@ -610,7 +615,12 @@ impl DockerSandbox {
                         && !driven.timed_out
                         && !driven.flooded
                     {
-                        driven.oom = self.oom_flag_settles(name).await;
+                        // The engine's own word first. On some hosts it never comes (the kernel killed the
+                        // script, `exit 137`, and `OOMKilled` stays false): a container that had already died
+                        // by SIGKILL on its own, when nothing of ours had asked it to stop and it had said
+                        // nothing, is taken to have been killed for its memory, the one thing that kills a
+                        // script that way inside its sandbox. That is an inference, and the only one made.
+                        driven.oom = self.oom_flag_settles(name).await || ended_alone;
                     }
                     break;
                 }

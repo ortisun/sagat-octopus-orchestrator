@@ -57,12 +57,14 @@ async fn schedulers_that_notice_the_same_lost_lease_at_once_request_one_reconcil
 
 #[tokio::test]
 async fn a_lease_that_runs_out_while_the_answer_arrives_is_decided_once() {
-    let w = world().await;
-    let (wf, _) = w.publish(quick(settlement())).await;
-    let s = worker(&w).await;
     let mut both = 0;
     let mut neither = 0;
     for _ in 0..8 {
+        // A world of its own for every round: the step that lost the race is retried after a delay, and on a
+        // machine where the rounds are slower than the delay that retry is a second task in the next round.
+        let w = world().await;
+        let (wf, _) = w.publish(quick(settlement())).await;
+        let s = worker(&w).await;
         let run = w.start(wf, &json!({})).await;
         let reserve = w.one_task(&s).await;
         w.complete(&s, &reserve, &json!({})).await.expect("reserve");
