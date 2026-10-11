@@ -158,9 +158,11 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
   of the Dockerfile replayed in a scratch directory; and the real binaries (`dev-idp`, `control-plane`, `execution-engine`,
   `sagat`) started as processes with the same environment as compose, against a PostgreSQL: migrate, the seed twice, a token,
   `doctor` (all nine checks ok, the Studio included), publish, the Go example, `worker dev`. **The Dockerfile's new stages, the
-  `dev-idp` service and the volume ownership of `/data` are first proven by the `local-environment` job of CI.**
+  `dev-idp` service and the volume ownership of `/data` were then proven by the `local-environment` job of CI on PR #12 (passed, 10 min:
+  the images built, the stack up, a token from the provider accepted by the API, the namespace, the Studio, the Host refusal, and
+  `doctor`, publish and a run with the CLI).**
 - **G218 — Some tests run only in CI.** The five-language examples and the saga (five toolchains), and the script test with the real
-  container engine, are `#[ignore]`; the `sdks` job runs them. Locally the five languages and the saga were run (Node 26,
+  container engine, are `#[ignore]`; the `sdks` job runs them (**it did, on PR #12, and passed in 20 min, the real-engine script test included**). Locally the five languages and the saga were run (Node 26,
   Python 3.14, .NET 10, JDK 23; Go 1.24.2 with the 1.25.14 toolchain it fetches); the real-engine script test was not.
 - **G219 — The SDKs ship no fake context** for unit testing an activity. The quickstarts say to keep the effect behind an interface
   and to use `worker dev` or the example as the harness.

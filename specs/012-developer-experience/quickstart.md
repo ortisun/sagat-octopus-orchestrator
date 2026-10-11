@@ -123,6 +123,8 @@ Run on the machine where this was written (macOS arm64, PostgreSQL 18.6 for the 
 | The Studio: `check:api`, `lint`, `typecheck`, `npm test`, `build` | passed (863 tests; three autosave tests of feature 007 failed once while the workspace was being tested at the same time and passed alone: G237) |
 | The five-language examples and the saga | passed locally (Node 26, Python 3.14, Go 1.24.2→1.25.14, .NET 10, JDK 23) |
 
+**CI, on GitHub (PR #12): all 8 checks passed on the first run** — `rust` (the whole workspace, including the 63 container suites that cannot run here; 27 min), `sdks` (the five-language examples, the saga and the script test with the real sandbox, besides the SDK suites; 20 min), `local-environment` (the compose stack with the new dev-idp service, the Studio, the token, and the first day with the CLI; 10 min), `studio`, `contracts`, `architecture`, `observability` and `cargo audit`.
+
 **What could not be run here:** the container engine on this machine could not create containers (its metadata store is
 read-only), so 63 tests of earlier features that need a container engine (NATS, Kafka, ElasticMQ, the script sandbox) fail
 here for that reason and pass in CI; the new Dockerfile stages, the `dev-idp` service and the smoke test's new steps are first
