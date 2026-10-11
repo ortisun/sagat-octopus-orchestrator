@@ -378,7 +378,9 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
         ctx: &RequestContext,
     ) -> Result<Vec<AuditEntry>, AppError> {
         principal.authorize(Permission::AuditRead)?;
-        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE);
+        // A caller that asks for one more than its page, to know whether another follows, is
+        // answered with that one more.
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
         let reading = sagat_domain::audit::AuditRecord::by(
             principal,
             sagat_domain::audit::AuditAction::AuditRead,
@@ -520,7 +522,9 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
     ) -> Result<Vec<AlertRecord>, AppError> {
         principal.authorize(Permission::OpsRead)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE);
+        // A caller that asks for one more than its page, to know whether another follows, is
+        // answered with that one more.
+        let limit = limit.unwrap_or(50).clamp(1, MAX_PAGE_SIZE + 1);
         Ok(self
             .store
             .list_alerts(principal.tenant_id(), namespace, state, before, limit)

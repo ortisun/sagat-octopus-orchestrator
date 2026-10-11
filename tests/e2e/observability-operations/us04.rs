@@ -714,3 +714,34 @@ async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probe
         "{body}"
     );
 }
+
+#[tokio::test]
+async fn us04_a_page_of_the_biggest_size_says_when_there_is_more() {
+    let p = platform().await;
+    // More records than the largest page: each reading with a different filter is a record of its own.
+    for i in 0..205 {
+        let (status, _) = p
+            .rest(
+                Method::GET,
+                &format!("/audit?actor=nobody-{i}&limit=1"),
+                None,
+            )
+            .await;
+        assert_eq!(status, 200);
+    }
+    let (status, page) = p.rest(Method::GET, "/audit?limit=200", None).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["items"].as_array().expect("items").len(), 200);
+    let cursor = page["nextCursor"].as_str().expect("there is a next page");
+    let (_, rest) = p
+        .rest(
+            Method::GET,
+            &format!("/audit?limit=200&cursor={cursor}"),
+            None,
+        )
+        .await;
+    assert!(
+        !rest["items"].as_array().expect("items").is_empty(),
+        "the next page has the rest: {rest}"
+    );
+}
