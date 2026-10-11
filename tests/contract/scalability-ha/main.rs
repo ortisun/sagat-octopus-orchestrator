@@ -473,7 +473,31 @@ fn the_example_an_operator_starts_from_renders_and_the_engine_accepts_it() {
     let docs = render(&example);
     let engine = named(&docs, "Deployment", "sagat-octopus-orchestrator-engine");
     let env = env_of(engine);
-    let lookup = |name: &str| env.get(name).cloned();
+    // The example has the engine terminate TLS: the certificate and the key are files of a Secret the
+    // pod mounts, which the test stands in for with files of its own at the places the pod would read.
+    assert_eq!(
+        env.get("SAGAT_GRPC_TLS_CERT_FILE").map(String::as_str),
+        Some("/etc/sagat/tls/tls.crt")
+    );
+    let volumes = engine["spec"]["template"]["spec"]["volumes"]
+        .as_array()
+        .expect("volumes");
+    assert!(
+        volumes
+            .iter()
+            .any(|v| v["secret"]["secretName"] == "sagat-engine-tls"),
+        "the Secret with the certificate is mounted"
+    );
+    let dir = tempdir();
+    let fake = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    for file in ["tls.crt", "tls.key"] {
+        std::fs::write(dir.join(file), fake).expect("a stand-in for the mounted Secret");
+    }
+    let lookup = |name: &str| match name {
+        "SAGAT_GRPC_TLS_CERT_FILE" => Some(dir.join("tls.crt").to_string_lossy().into_owned()),
+        "SAGAT_GRPC_TLS_KEY_FILE" => Some(dir.join("tls.key").to_string_lossy().into_owned()),
+        other => env.get(other).cloned(),
+    };
     let config = sagat_execution_engine::EngineConfig::from_lookup(
         &lookup,
         sagat_control_plane::config::Environment::Prod,
@@ -522,4 +546,48 @@ fn the_queries_of_the_autoscalers_carry_the_installs_own_matchers_when_it_has_so
         bare.contains(&"max(scheduler_lag_seconds)".to_owned()),
         "{bare:?}"
     );
+}
+
+#[test]
+fn every_probe_of_the_chart_asks_for_a_path_its_process_serves() {
+    // The control plane answers /v1/health and /v1/ready on its API port and the engine /livez and
+    // /readyz on its admin port; a probe for the other's paths would keep a pod from ever starting.
+    let docs = render(&base());
+    for (deployment, source, prefix) in [
+        (
+            "sagat-octopus-orchestrator-control-plane",
+            "crates/api-http/src/lib.rs",
+            "/v1",
+        ),
+        (
+            "sagat-octopus-orchestrator-engine",
+            "apps/execution-engine/src/lib.rs",
+            "",
+        ),
+    ] {
+        let text = std::fs::read_to_string(repo().join(source)).expect(source);
+        let container =
+            &named(&docs, "Deployment", deployment)["spec"]["template"]["spec"]["containers"][0];
+        for probe in ["startupProbe", "livenessProbe", "readinessProbe"] {
+            let path = container[probe]["httpGet"]["path"].as_str().expect(probe);
+            let route = path
+                .strip_prefix(prefix)
+                .expect("under the process's prefix");
+            assert!(
+                text.contains(&format!(".route(\"{route}\"")),
+                "{deployment}'s {probe} asks for {path}, and {source} registers no route {route}"
+            );
+            let port = container[probe]["httpGet"]["port"]
+                .as_str()
+                .expect("a named port");
+            assert!(
+                container["ports"]
+                    .as_array()
+                    .expect("ports")
+                    .iter()
+                    .any(|declared| declared["name"] == port),
+                "{deployment}'s {probe} names the port {port}, which the container does not declare"
+            );
+        }
+    }
 }

@@ -56,8 +56,37 @@ app.kubernetes.io/component: {{ .component }}
 {{- if gt (int .Values.engine.replicas) 64 -}}
 {{- fail "engine.replicas cannot be more than 64: the scheduler has 64 shards and a replica beyond them holds none" -}}
 {{- end -}}
+{{- if gt (int .Values.database.serverMaxConnections) 0 -}}
+{{- $engine := int .Values.engine.replicas -}}
+{{- if .Values.engine.autoscaling.keda.enabled -}}{{- $engine = max $engine (int .Values.engine.autoscaling.keda.maxReplicaCount) -}}{{- end -}}
+{{- if .Values.engine.autoscaling.hpa.enabled -}}{{- $engine = max $engine (int .Values.engine.autoscaling.hpa.maxReplicas) -}}{{- end -}}
+{{- $peak := mul (add (int .Values.controlPlane.replicas) $engine) (int .Values.database.maxConnections) -}}
+{{- if gt $peak (int .Values.database.serverMaxConnections) -}}
+{{- fail (printf "the control plane (%d) and the engine (up to %d) with %d connections each would hold up to %d connections, and the server allows %d (database.serverMaxConnections): lower database.maxConnections or the ceiling of the autoscaler, or put a pooler in front of the server" (int .Values.controlPlane.replicas) $engine (int .Values.database.maxConnections) $peak (int .Values.database.serverMaxConnections)) -}}
+{{- end -}}
+{{- end -}}
+{{- range $name := list "shardLeaseSeconds" "schedulerConcurrency" "schedulerBatch" -}}
+{{- $value := index $.Values.engine $name -}}
+{{- if ne (toString $value) (toString (int $value)) -}}
+{{- fail (printf "engine.%s must be a whole number, not %v" $name $value) -}}
+{{- end -}}
+{{- end -}}
+{{- if or (lt (int .Values.engine.schedulerBatch) 1) (gt (int .Values.engine.schedulerBatch) 5000) -}}
+{{- fail "engine.schedulerBatch must be between 1 and 5000" -}}
+{{- end -}}
+{{- if or (lt (int .Values.engine.schedulerConcurrency) 1) (gt (int .Values.engine.schedulerConcurrency) 64) -}}
+{{- fail "engine.schedulerConcurrency must be between 1 and 64" -}}
+{{- end -}}
 {{- if or (lt (int .Values.engine.shardLeaseSeconds) 3) (gt (int .Values.engine.shardLeaseSeconds) 600) -}}
 {{- fail "engine.shardLeaseSeconds must be between 3 and 600" -}}
+{{- end -}}
+{{- if and .Values.secrets.existingSecret (ne .Values.environment "dev") -}}
+{{- if not .Values.controlPlane.allowPlaintextSecrets -}}
+{{- fail "secrets.existingSecret is set, so the API receives secret values and listens in plaintext: set controlPlane.allowPlaintextSecrets=true to state that TLS is terminated in front of it (the control plane refuses to start otherwise)" -}}
+{{- end -}}
+{{- if not (or .Values.engine.grpc.tlsSecret .Values.engine.grpc.allowPlaintextSecrets) -}}
+{{- fail "secrets.existingSecret is set, so the engine hands secret values to workers: set engine.grpc.tlsSecret (the engine terminates TLS) or engine.grpc.allowPlaintextSecrets=true if a mesh does (the engine refuses to start otherwise)" -}}
+{{- end -}}
 {{- end -}}
 {{- if and .Values.engine.grpc.tlsSecret .Values.engine.grpc.allowPlaintextSecrets -}}
 {{- fail "engine.grpc.tlsSecret and engine.grpc.allowPlaintextSecrets contradict each other" -}}
@@ -65,14 +94,28 @@ app.kubernetes.io/component: {{ .component }}
 {{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.metricsFrom) -}}
 {{- fail "networkPolicy.metricsFrom cannot be empty: an empty `from` lets everybody reach the unauthenticated metrics and probe ports; list who may scrape, or disable the policy" -}}
 {{- end -}}
+{{- if gt (len .Values.workerPools) 32 -}}
+{{- fail "at most 32 worker pools: each is two series of the engine's metrics (the engine refuses more)" -}}
+{{- end -}}
+{{- $activities := 0 -}}
 {{- $seen := dict -}}
 {{- range .Values.workerPools -}}
+{{- $activities = add $activities (len .activities) -}}
+{{- $pool := .name -}}
 {{- if hasKey $seen .name -}}
 {{- fail (printf "the worker pool %s is named twice" .name) -}}
 {{- end -}}
 {{- $_ := set $seen .name true -}}
-{{- if not (regexMatch "^[a-z0-9._-]{1,63}$" .name) -}}
-{{- fail (printf "the worker pool name %q must be 1 to 63 lowercase letters, digits or . _ -" .name) -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .name) -}}
+{{- fail (printf "the worker pool name %q must be lowercase letters, digits and -, starting and ending with a letter or a digit (it is part of the names of Kubernetes objects)" .name) -}}
+{{- end -}}
+{{- if gt (add (len (include "sagat.fullname" $)) (len "-worker-") (len .name)) 63 -}}
+{{- fail (printf "the worker pool name %q is too long: %s-worker-%s must be at most 63 characters" .name (include "sagat.fullname" $) .name) -}}
+{{- end -}}
+{{- range .activities -}}
+{{- if not (regexMatch "^[!-+.-:<>-~]{1,128}$" .) -}}
+{{- fail (printf "an activity of the worker pool %s is empty, longer than 128, or has a space or one of , ; = (printable ASCII without those separators)" $pool) -}}
+{{- end -}}
 {{- end -}}
 {{- if not .activities -}}
 {{- fail (printf "the worker pool %s serves no activity" .name) -}}
@@ -80,6 +123,9 @@ app.kubernetes.io/component: {{ .component }}
 {{- if not .image -}}
 {{- fail (printf "the worker pool %s has no image" .name) -}}
 {{- end -}}
+{{- end -}}
+{{- if gt $activities 512 -}}
+{{- fail "at most 512 activities in all the worker pools (the engine refuses more)" -}}
 {{- end -}}
 {{- end -}}
 

@@ -89,19 +89,21 @@ impl<S: MonitorStore> Monitor<S> {
             for kind in AlertKind::ALL {
                 metrics::gauge!("alerts_firing", "kind" => kind.as_str()).set(0.0);
             }
-            pool_gauges(
-                &self
-                    .settings
-                    .pools
-                    .iter()
-                    .map(|p| PoolLag {
-                        pool: p.name.clone(),
-                        ready: 0,
-                        oldest_seconds: 0.0,
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            pool_gauges(&self.zero_pools());
         }
+    }
+
+    /// Every pool with nothing waiting.
+    fn zero_pools(&self) -> Vec<PoolLag> {
+        self.settings
+            .pools
+            .iter()
+            .map(|p| PoolLag {
+                pool: p.name.clone(),
+                ready: 0,
+                oldest_seconds: 0.0,
+            })
+            .collect()
     }
 
     pub const fn new(store: S, settings: MonitorSettings) -> Self {
@@ -134,15 +136,22 @@ impl<S: MonitorStore> Monitor<S> {
         }
         self.exporting
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        // A sample that fails leaves the gauges at zero and not at the last value: the autoscalers read
+        // them, and a lag frozen at its last value would scale the engine for as long as the database
+        // cannot answer (when more replicas are the last thing it needs).
         match self.store.sample().await {
             Ok(sample) => gauges(&sample),
-            Err(error) => tracing::warn!(%error, "could not sample the queues"),
+            Err(error) => {
+                tracing::warn!(%error, "could not sample the queues; the gauges are zeroed");
+                gauges(&Sample::default());
+            }
         }
         if !self.settings.pools.is_empty() {
             match self.store.pool_lag(&self.settings.pools).await {
                 Ok(lags) => pool_gauges(&lags),
                 Err(error) => {
-                    tracing::warn!(%error, "could not sample the queues of the worker pools")
+                    tracing::warn!(%error, "could not sample the queues of the worker pools; the gauges are zeroed");
+                    pool_gauges(&self.zero_pools());
                 }
             }
         }
@@ -232,6 +241,7 @@ fn pool_gauges(lags: &[PoolLag]) {
 #[allow(clippy::cast_precision_loss)] // gauges
 fn gauges(sample: &Sample) {
     metrics::gauge!("outbox_oldest_age_seconds").set(sample.outbox_oldest_seconds);
+    metrics::gauge!("outbox_backlog").set(sample.outbox_backlog as f64);
     metrics::gauge!("ready_steps").set(sample.ready_steps as f64);
     metrics::gauge!("queue_lag_seconds").set(sample.ready_oldest_seconds);
     metrics::gauge!("leases_active").set(sample.leases_active as f64);

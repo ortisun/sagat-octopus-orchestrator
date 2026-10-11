@@ -17,7 +17,7 @@ CREATE TABLE scheduler_shards (
     shard       smallint    PRIMARY KEY CHECK (shard BETWEEN 0 AND 63),
     owner       text,
     generation  bigint      NOT NULL DEFAULT 0 CHECK (generation >= 0),
-    expires_at  timestamptz NOT NULL DEFAULT 'epoch',
+    expires_at  timestamptz NOT NULL DEFAULT 'epoch' CHECK (expires_at < 'infinity'),
     acquired_at timestamptz
 );
 INSERT INTO scheduler_shards (shard) SELECT generate_series(0, 63);
@@ -27,7 +27,7 @@ INSERT INTO scheduler_shards (shard) SELECT generate_series(0, 63);
 CREATE TABLE scheduler_members (
     owner       text        PRIMARY KEY,
     started_at  timestamptz NOT NULL,
-    expires_at  timestamptz NOT NULL
+    expires_at  timestamptz NOT NULL CHECK (expires_at < 'infinity')
 );
 
 -- How much of the scheduler's attention a tenant is given when others have work too: its share of a

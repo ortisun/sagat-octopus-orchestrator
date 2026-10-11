@@ -93,6 +93,10 @@ pub struct EngineConfig {
 
 /// The most candidates of one pass a scheduler acts on at once; each holds a database connection.
 const MAX_SCHEDULER_CONCURRENCY: usize = 64;
+/// The most candidates one pass asks for (`SAGAT_SCHEDULER_BATCH`) and messages one dispatch round claims
+/// (`SAGAT_OUTBOX_BATCH`): each query is `LIMIT batch` for every shard the replica holds, and a search for
+/// other tenants reads up to sixteen such pages, so a mistyped value is the database's load.
+const MAX_BATCH: u32 = 5_000;
 const MIN_SHARD_LEASE: Duration = Duration::from_secs(3);
 const MAX_SHARD_LEASE: Duration = Duration::from_secs(600);
 const MAX_REPLICA_ID: usize = 64;
@@ -428,9 +432,11 @@ impl EngineConfig {
                     u64::from(scheduler_defaults.batch),
                 )?,
             )?)
-            .map_err(|_| ConfigError::Invalid {
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
                 name: "SAGAT_SCHEDULER_BATCH",
-                reason: "is too large".to_owned(),
+                reason: format!("must be at most {MAX_BATCH}"),
             })?,
             concurrency: capacity(
                 get,
@@ -499,9 +505,11 @@ impl EngineConfig {
                     u64::from(dispatch_defaults.batch),
                 )?,
             )?)
-            .map_err(|_| ConfigError::Invalid {
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
                 name: "SAGAT_OUTBOX_BATCH",
-                reason: "is too large".to_owned(),
+                reason: format!("must be at most {MAX_BATCH}"),
             })?,
             discovery_rest,
             ..dispatch_defaults

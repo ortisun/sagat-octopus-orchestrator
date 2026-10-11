@@ -255,3 +255,108 @@ async fn the_runtime_role_keeps_the_counters_by_writing_runs_and_cannot_write_th
         }
     }
 }
+
+#[tokio::test]
+async fn a_temporary_table_cannot_stand_in_for_the_counters_or_borrow_the_function() {
+    use sagat_application::clock::SystemClock;
+    use sagat_application::execution::{DefinitionCache, Engine};
+    use sagat_application::runs::{RunService, StartRun};
+    use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+    use sagat_infra_postgres::{PgRunStore, PoolConfig, connect};
+
+    use crate::support::{RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD};
+
+    let w = world().await;
+    let (wf, _) = w.publish(chain("temp-shadow")).await;
+    let mut config = PoolConfig::new(w.db.url.replacen(
+        "postgres:postgres",
+        &format!("{RUNTIME_ROLE}:{RUNTIME_ROLE_PASSWORD}"),
+        1,
+    ));
+    config.max_connections = 2;
+    let pool = connect(&config).await.expect("connect as the runtime role");
+
+    // The function runs with its owner's rights, so what it names must be what the migration meant.
+    let (definer, settings): (bool, Vec<String>) = sqlx::query_as(
+        "SELECT prosecdef, coalesce(proconfig, '{}') FROM pg_proc WHERE proname = 'run_active_counts_track'",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the function");
+    assert!(definer);
+    assert_eq!(
+        settings,
+        vec!["search_path=pg_catalog, public, pg_temp".to_owned()],
+        "pg_temp is named, and last"
+    );
+
+    // 1. The role cannot attach the function to a table of its own: no EXECUTE for it.
+    let mut conn = pool.acquire().await.expect("connection");
+    sqlx::query("CREATE TEMP TABLE borrowed (LIKE runs INCLUDING DEFAULTS)")
+        .execute(&mut *conn)
+        .await
+        .expect("a temporary table of its own");
+    match sqlx::query(
+        "CREATE TRIGGER borrow AFTER INSERT ON pg_temp.borrowed FOR EACH ROW EXECUTE FUNCTION run_active_counts_track()",
+    )
+    .execute(&mut *conn)
+    .await
+    {
+        Err(sqlx::Error::Database(e)) => assert_eq!(e.code().as_deref(), Some("42501")),
+        other => panic!("expected a permission error, got {other:?}"),
+    }
+    drop(conn);
+
+    // 2. A temporary table with the counters' name, in the session that fires the trigger, is not the
+    //    table the function writes (its check would refuse any row, so a start would fail if it were).
+    let (a, b) = (
+        pool.acquire().await.expect("a"),
+        pool.acquire().await.expect("b"),
+    );
+    for mut conn in [a, b] {
+        sqlx::query(
+            "CREATE TEMP TABLE run_active_counts (tenant_id uuid, namespace_id uuid, slot smallint, \
+             active bigint CHECK (active < 0), PRIMARY KEY (tenant_id, namespace_id, slot))",
+        )
+        .execute(&mut *conn)
+        .await
+        .expect("a temporary table with the counters' name");
+    }
+    let cache = DefinitionCache::new(std::sync::Arc::new(JsonIrCodec), 8);
+    let service = RunService::new(
+        PgRunStore::new(pool.clone(), cache.clone()),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        cache,
+    );
+    let input = b"{}".to_vec();
+    for i in 0..3 {
+        service
+            .start(
+                &w.admin,
+                &StartRun {
+                    namespace: "payments",
+                    workflow: wf,
+                    version: None,
+                    input: &input,
+                    correlation_id: None,
+                    deadline: None,
+                    key: &format!("temp-shadow-{i:04}-xxxx"),
+                },
+                &ctx(),
+            )
+            .await
+            .expect("the start reaches the real counters, not the temporary table");
+    }
+    assert_counted(
+        &w,
+        "after three starts with a table of the same name in the session",
+    )
+    .await;
+    let kept: i64 =
+        sqlx::query_scalar("SELECT coalesce(sum(active), 0)::bigint FROM public.run_active_counts")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the counters");
+    assert_eq!(kept, 3);
+}

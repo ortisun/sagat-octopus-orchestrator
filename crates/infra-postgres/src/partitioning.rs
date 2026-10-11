@@ -108,7 +108,10 @@ impl ShardStore for PgRunStore {
                     Held {
                         owner: col(row, "owner")?,
                         generation: generation(col::<i64>(row, "generation")?)?,
-                        remaining: Duration::from_secs_f64(remaining.max(0.0)),
+                        // Never a panic: whatever the row says, a lease that is not a finite time ahead is not held.
+                        remaining: Duration::try_from_secs_f64(remaining)
+                            .unwrap_or(Duration::ZERO)
+                            .min(Duration::from_secs(86_400)),
                     },
                 ))
             })
@@ -169,12 +172,22 @@ impl ShardStore for PgRunStore {
             .iter()
             .map(|l| i64::try_from(l.generation).unwrap_or(i64::MAX))
             .collect();
+        // A shard whose row is locked is skipped, not waited for, as in `acquire` and `release`: an
+        // orphan of a connection that was cut off can hold the row `FOR SHARE` for as long as the
+        // server lets a transaction idle, and a statement that waited for it would hold the row locks
+        // of the shards it had already renewed (stalling their fences) and fail them all at the
+        // statement timeout. A skipped shard is renewed at the next round, or by the adoption of the
+        // leases the snapshot does not know, in the same one.
         let rows = sqlx::query(
-            "UPDATE scheduler_shards s \
+            "WITH mine AS ( \
+                 SELECT s.shard FROM scheduler_shards s \
+                   JOIN unnest($2::smallint[], $3::bigint[]) AS h(shard, generation) \
+                     ON s.shard = h.shard AND s.generation = h.generation \
+                  WHERE s.owner = $1 AND s.expires_at > clock_timestamp() \
+                  ORDER BY s.shard FOR UPDATE OF s SKIP LOCKED) \
+             UPDATE scheduler_shards s \
                 SET expires_at = clock_timestamp() + make_interval(secs => $4) \
-               FROM unnest($2::smallint[], $3::bigint[]) AS h(shard, generation) \
-              WHERE s.shard = h.shard AND s.generation = h.generation AND s.owner = $1 \
-                AND s.expires_at > clock_timestamp() \
+               FROM mine WHERE s.shard = mine.shard \
               RETURNING s.shard, s.generation",
         )
         .bind(owner)

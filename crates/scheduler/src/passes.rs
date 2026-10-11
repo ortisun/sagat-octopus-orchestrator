@@ -282,21 +282,23 @@ where
     /// Runs every pass once, over the shards this replica holds (all of them when it is alone).
     pub async fn tick(&self) -> Report {
         let mut report = Report::default();
-        let view = self.view();
-        if view.shards.is_empty() {
+        if self.view().shards.is_empty() {
             // A replica that holds nothing (it has not got its share yet, or it cannot reach the
             // database) has nothing to look at; the keeper is what changes that.
             return report;
         }
-        self.timers(&view, &mut report).await;
-        self.wait_deadlines(&view, &mut report).await;
-        self.retries(&view, &mut report).await;
-        self.leases(&view, &mut report).await;
-        self.deadlines(&view, &mut report).await;
-        self.hints(&view, &mut report).await;
-        self.children_start(&view, &mut report).await;
-        self.children_finish(&view, &mut report).await;
-        self.children_cancel(&view, &mut report).await;
+        // A view for each pass, read when the pass begins: a tick that runs long must go on with the
+        // leases the keeper has renewed since, not keep acting on the snapshot it began with until
+        // that runs out (every later action would be counted as fenced and the later passes starved).
+        self.timers(&self.view(), &mut report).await;
+        self.wait_deadlines(&self.view(), &mut report).await;
+        self.retries(&self.view(), &mut report).await;
+        self.leases(&self.view(), &mut report).await;
+        self.deadlines(&self.view(), &mut report).await;
+        self.hints(&self.view(), &mut report).await;
+        self.children_start(&self.view(), &mut report).await;
+        self.children_finish(&self.view(), &mut report).await;
+        self.children_cancel(&self.view(), &mut report).await;
         report
     }
 
@@ -551,16 +553,14 @@ where
             )
         })
         .await;
-        if discover
-            && let Ok((_, selection)) = &selected
-            && selection.found_nobody
-            && !self.settings.discovery_rest.is_zero()
-        {
-            let rest = fairness::rest(self.settings.discovery_rest, selection.discovery);
-            self.rests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(what, Instant::now() + rest);
+        if discover && let Ok((_, selection)) = &selected {
+            let rest = fairness::rest_after(self.settings.discovery_rest, selection);
+            if !rest.is_zero() {
+                self.rests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(what, Instant::now() + rest);
+            }
         }
         match selected {
             Ok((items, selection)) => {

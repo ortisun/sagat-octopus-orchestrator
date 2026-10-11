@@ -11,6 +11,7 @@ environment: prod
 database:
   existingSecret: sagat-db           # DATABASE_URL of the runtime role (sagat_app), sslmode=verify-full
   maxConnections: 20
+  serverMaxConnections: 400          # the server's max_connections: (3 + 12) x 20 = 300 at the autoscaler's ceiling, with room to spare
 
 oidc:
   issuer: https://idp.example.com/
@@ -26,13 +27,15 @@ nats:
 
 controlPlane:
   replicas: 3
-  allowPlaintextSecrets: true        # TLS is terminated by the ingress in front of the API
+  allowPlaintextSecrets: true        # TLS is terminated by the ingress in front of the API; keep the ingress-to-pod hop inside a mesh or a trusted network
 
 engine:
   replicas: 3                        # shards divide between them: 22, 21 and 21
   shardLeaseSeconds: 15
   grpc:
-    allowPlaintextSecrets: true      # TLS is terminated by the mesh in front of the worker API
+    # The engine terminates TLS itself, so the secret values it sends to workers never cross the cluster in the clear.
+    # (allowPlaintextSecrets: true is for a mesh that does it for you: it says that the hop is protected by something else.)
+    tlsSecret: sagat-engine-tls      # a kubernetes.io/tls Secret whose certificate names the engine's Service
   autoscaling:
     keda:
       enabled: true
@@ -51,7 +54,7 @@ workerPools:
     activities: [act.reserve, act.charge, act.notify]
     env:
       - {name: SAGAT_SERVER, value: "http://sagat-octopus-orchestrator-control-plane:8080/v1"}
-      - {name: SAGAT_GRPC, value: "http://sagat-octopus-orchestrator-engine:9000"}
+      - {name: SAGAT_GRPC, value: "https://sagat-octopus-orchestrator-engine:9000"}   # the worker must trust the certificate's issuer
       - name: SAGAT_TOKEN
         valueFrom: {secretKeyRef: {name: payments-worker-token, key: token}}
     resources:

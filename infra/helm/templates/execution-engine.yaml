@@ -205,6 +205,8 @@ spec:
     scaleDown:
       stabilizationWindowSeconds: 300
       policies: [{type: Pods, value: 1, periodSeconds: 120}]
+    scaleUp:
+      policies: [{type: Pods, value: 2, periodSeconds: 60}]
   metrics:
     - type: Resource
       resource:

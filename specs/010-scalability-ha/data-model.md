@@ -25,7 +25,7 @@ Data ownership follows the bounded contexts of `docs/architecture/overview.md`, 
 | `shard smallint PK` (0..63) | one row per shard, present from the migration and never removed (the runtime role cannot insert or delete) |
 | `owner text` | the replica's name with a random suffix chosen at start; `NULL` when never held |
 | `generation bigint` | goes up by one on every **takeover**; a renewal does not change it |
-| `expires_at timestamptz` | `-infinity` when never held; the lease is good while `expires_at > clock_timestamp()` |
+| `expires_at timestamptz` | `epoch` when never held (not `-infinity`: before PostgreSQL 17 a timestamp cannot be subtracted from an infinite one) and never `infinity` (a `CHECK`); the lease is good while `expires_at > clock_timestamp()` |
 | `acquired_at timestamptz` | when the current owner took it |
 
 States of a lease: **free** (never held, given back, or `expires_at` past), **held** (`expires_at` in the future). Transitions, each one statement that the database serialises on the row:
@@ -33,7 +33,7 @@ States of a lease: **free** (never held, given back, or `expires_at` past), **he
 | Transition | Statement | Result |
 |---|---|---|
 | take | `UPDATE ... SET owner = $1, generation = generation + 1, expires_at = now + ttl WHERE shard = ANY($2) AND expires_at <= clock_timestamp()` | the replicas racing for a shard cannot both win it: the second finds it held |
-| renew | `UPDATE ... SET expires_at = now + ttl WHERE owner = $1 AND generation = $2 AND expires_at > clock_timestamp()` | only by the owner, at the generation it holds, and only while it is good |
+| renew | `UPDATE ... SET expires_at = now + ttl WHERE owner = $1 AND generation = $2 AND expires_at > clock_timestamp()`, over the rows it can lock without waiting (`FOR UPDATE SKIP LOCKED`) | only by the owner, at the generation it holds, and only while it is good; a row held `FOR SHARE` by an action (or by an orphan of a cut-off connection) is renewed at the next round, and the others are not held up by it |
 | give back | `UPDATE ... SET expires_at = now WHERE owner = $1 AND generation = $2` | the next round of another replica takes it at once |
 | fence | `SELECT shard ... WHERE shard = $1 AND generation = $2 AND owner = $3 AND expires_at > clock_timestamp() FOR SHARE` in the transaction of the action | a takeover (an `UPDATE ... FOR UPDATE SKIP LOCKED`) skips a shard whose row an action holds, takes the free ones, and takes the skipped one at the next round; pools end a transaction idle for more than 60 s |
 

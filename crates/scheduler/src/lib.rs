@@ -22,7 +22,7 @@ mod telemetry;
 
 pub use deliveries::{DeliveryRound, DeliverySettings, DeliveryWorker};
 pub use events::{EventDispatchSettings, EventDispatcher, EventRound};
-pub use fairness::{DEFAULT_WEIGHT, ROUNDS, Selection, Weights, rest, select, share};
+pub use fairness::{DEFAULT_WEIGHT, ROUNDS, Selection, Weights, rest, rest_after, select, share};
 pub use monitor::{Monitor, MonitorRound, MonitorSettings};
 pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{Report, Scheduler, SchedulerSettings};

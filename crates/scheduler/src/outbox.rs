@@ -149,8 +149,8 @@ where
             },
         )
         .await?;
-        if discover && selection.found_nobody && !self.settings.discovery_rest.is_zero() {
-            let rest = fairness::rest(self.settings.discovery_rest, selection.discovery);
+        let rest = fairness::rest_after(self.settings.discovery_rest, &selection);
+        if discover && !rest.is_zero() {
             *self
                 .rest_until
                 .lock()
@@ -235,9 +235,8 @@ where
             // same ids: a duplicate the broker drops, never a loss.
             tracing::warn!(%error, count = delivered.len(), "could not confirm delivered messages");
         }
-        if let Ok(backlog) = self.store.outbox_backlog().await {
-            metrics::gauge!("outbox_backlog").set(backlog as f64);
-        }
+        // The backlog is a gauge of the whole outbox, set by the monitor (one replica) and not counted
+        // by every dispatcher at every round: that cost grew with the replicas and the backlog.
         outcome
     }
 

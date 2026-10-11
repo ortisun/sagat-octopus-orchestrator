@@ -81,7 +81,7 @@ ENVIRONMENT (serve):
     SAGAT_COMPENSATION_BREAKER_MAX_OPEN_SECS  longest it stays open (doubles per failure) [300]
     SAGAT_POLL_IDLE_RETRY_MS          retry hint when nothing is ready [500]
     SAGAT_SCHEDULER_INTERVAL_MS       pause between idle scheduler ticks [500]
-    SAGAT_SCHEDULER_BATCH             candidates per pass per tick    [200]
+    SAGAT_SCHEDULER_BATCH             candidates per pass per tick (1-5000) [200]
     SAGAT_SCHEDULER_CONCURRENCY       candidates of one pass acted on at once (1-64) [8]
     SAGAT_SCHEDULER_FAIRNESS          share each pass between tenants by weight; false takes the oldest
                                       candidates only (a diagnostic, for measuring) [true]
@@ -101,7 +101,7 @@ ENVIRONMENT (serve):
     SAGAT_NATS_STREAM                 stream name                     [SAGAT]
     SAGAT_NATS_CREDENTIALS_FILE       .creds file for NATS authentication
     SAGAT_NATS_REQUIRE_TLS            refuse plaintext NATS           [true outside dev]
-    SAGAT_OUTBOX_BATCH                messages per dispatch round     [100]
+    SAGAT_OUTBOX_BATCH                messages per dispatch round (1-5000) [100]
     SAGAT_OUTBOX_POLL_MS              pause between idle dispatch rounds [250]
     SAGAT_ADMIN_ADDR                  /metrics, /livez, /readyz listener, or 'off' [127.0.0.1:9091]
 

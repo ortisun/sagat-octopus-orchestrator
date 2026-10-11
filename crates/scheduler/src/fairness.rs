@@ -14,8 +14,12 @@
 //!    not skipped), so the caller **rests** it for a while ([`rest`]: the base time, or ten times what
 //!    the discovery took, whichever is longer, so the discovery never costs more than a tenth of the
 //!    pass's time): the pass then shares the first page only, and a tenant that arrives behind a burst
-//!    is found when the rest is over. A discovery that finds somebody is not rested: the next pass
-//!    looks again, because the tenants found are the ones that have work.
+//!    is found when the rest is over. A discovery that finds somebody is rested only when it was
+//!    costly ([`rest_after`]): the tenants found are the ones that have work, so the next pass looks
+//!    again at once while looking is cheap, and breathes for twice what the search took when it is not.
+//!    A discovery that **fails** (its statement timed out on a backlog too large to read in the time
+//!    the pool allows) shares what the pages before it showed and is rested like one that found nobody;
+//!    the pass never takes nothing because the search for others failed.
 //!    The list of tenants left out is at most [`MAX_EXCLUDED`] long.
 //! 3. The batch is then **shared out by weighted max-min fairness** over what each tenant showed:
 //!    a tenant that has less than its share gets all it has, and what it leaves goes to the others
@@ -49,6 +53,27 @@ pub const DEFAULT_WEIGHT: u16 = 1;
 pub const MAX_REST: Duration = Duration::from_secs(60);
 /// A rested discovery is rested for this many times what it took: the share of the pass's time it may use.
 const REST_FACTOR: u32 = 10;
+/// A search that found somebody and took less than this is not rested at all: looking again is cheap.
+const CHEAP_SEARCH: Duration = Duration::from_millis(100);
+
+/// How long to rest the search for other tenants after a selection: the rest of a search that found
+/// nobody new or failed is [`rest`]; one that found somebody is not rested while it was cheap
+/// (under 100 ms), and after that for twice what it took, so that looking costs a third of the pass
+/// at the most while the burst and the tenant behind it are both served. Nothing is rested that did
+/// not look (a short first page, or a rest still running), and a zero `base` is "never rest".
+#[must_use]
+pub fn rest_after(base: Duration, selection: &Selection) -> Duration {
+    if base.is_zero() || !(selection.pages > 1 || selection.failed) {
+        return Duration::ZERO;
+    }
+    if selection.found_nobody || selection.failed {
+        rest(base, selection.discovery)
+    } else if selection.discovery < CHEAP_SEARCH {
+        Duration::ZERO
+    } else {
+        selection.discovery.saturating_mul(2).min(MAX_REST)
+    }
+}
 
 /// How long to rest the search for other tenants after a discovery that took `spent` and found nobody:
 /// at least `base`, and at least [`REST_FACTOR`] times `spent`, so that the cost of looking is bounded
@@ -97,6 +122,9 @@ pub struct Selection {
     pub found_nobody: bool,
     /// What the pages after the first took: the cost of looking for other tenants (see [`rest`]).
     pub discovery: Duration,
+    /// A page after the first failed (its statement timed out, the connection broke): the selection
+    /// shares what the pages before it showed, and the caller rests the search.
+    pub failed: bool,
 }
 
 /// Shares `budget` between demands by weighted max-min fairness: a demand that is no more than its
@@ -117,14 +145,22 @@ pub fn share(budget: u32, demands: &[(u16, u32)]) -> Vec<u32> {
             .partition(|&&i| u64::from(demands[i].1) * total <= left * u64::from(demands[i].0));
         if small.is_empty() {
             let mut remainder = left;
+            let mut fractions: Vec<(usize, u64)> = Vec::with_capacity(active.len());
             for &i in &active {
-                let part = left * u64::from(demands[i].0) / total;
+                let exact = left * u64::from(demands[i].0);
+                let part = exact / total;
                 given[i] += u32::try_from(part).unwrap_or(u32::MAX);
                 remainder -= part;
+                fractions.push((i, exact % total));
             }
-            let mut by_weight = active.clone();
-            by_weight.sort_by_key(|&i| std::cmp::Reverse(demands[i].0));
-            for i in by_weight {
+            // The remainder (fewer than there are demands) goes to the largest fractions, the heavier
+            // first among equal ones, then in the order given: a tenant whose exact share is 0.96
+            // is given one before a tenant whose share is 15.31 is given a sixteenth, so a light tenant
+            // among many heavy ones is not left with nothing at every pass.
+            fractions.sort_by_key(|&(i, fraction)| {
+                (std::cmp::Reverse(fraction), std::cmp::Reverse(demands[i].0))
+            });
+            for (i, _) in fractions {
                 if remainder == 0 {
                     break;
                 }
@@ -238,8 +274,19 @@ where
         let asked = Instant::now();
         let fetched = fetch(excluded.clone()).await;
         selection.discovery += asked.elapsed();
-        page = fetched?;
-        selection.pages += 1;
+        match fetched {
+            Ok(next) => {
+                page = next;
+                selection.pages += 1;
+            }
+            Err(error) => {
+                // Nothing is lost by the failure: the pages already read are shared, and the
+                // caller rests the search instead of repeating it at the next tick.
+                tracing::warn!(%error, "the search for other tenants failed; sharing what the first pages showed");
+                selection.failed = true;
+                break;
+            }
+        }
     }
     // Somebody the first page did not show means the discovery was worth its cost.
     selection.found_nobody = selection.pages > 1 && order.len() == on_first_page;
@@ -460,6 +507,101 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_search_that_fails_shares_what_was_read_and_asks_for_a_rest() {
+        // A burst so large that the search for the others times out: the pass takes its page of the
+        // burst, as it did before fairness, and does not take nothing (nor repeat the search at once).
+        let items: Vec<Item> = (0..1_000).map(|n| (tenant(1), n)).collect();
+        let (picked, selection) = select(
+            200,
+            true,
+            &Weights::default(),
+            |i: &Item| i.0,
+            |i| i.1,
+            |excluded: Vec<TenantId>| {
+                let result = if excluded.is_empty() {
+                    Ok(items.iter().take(200).copied().collect())
+                } else {
+                    Err(StoreError::Unavailable {
+                        detail: "timed out".to_owned(),
+                    })
+                };
+                std::future::ready(result)
+            },
+        )
+        .await
+        .expect("a later page failing is not the selection failing");
+        assert_eq!(picked.len(), 200);
+        assert!(selection.failed);
+        let base = Duration::from_secs(2);
+        assert!(
+            rest_after(base, &selection) >= base,
+            "rested, not repeated at the next tick"
+        );
+
+        // The first page failing is the selection failing: nothing was read.
+        let nothing = select(
+            200,
+            true,
+            &Weights::default(),
+            |i: &Item| i.0,
+            |i| i.1,
+            |_: Vec<TenantId>| {
+                std::future::ready(Err::<Vec<Item>, _>(StoreError::Unavailable {
+                    detail: "timed out".to_owned(),
+                }))
+            },
+        )
+        .await;
+        assert!(nothing.is_err());
+    }
+
+    #[test]
+    fn a_search_that_found_somebody_is_rested_only_when_it_was_costly() {
+        let base = Duration::from_secs(2);
+        let searched = |discovery: Duration, found_nobody: bool| Selection {
+            pages: 2,
+            discovery,
+            found_nobody,
+            ..Selection::default()
+        };
+        // Nothing was searched (a short first page, or a rest was running): nothing to rest.
+        assert_eq!(
+            rest_after(
+                base,
+                &Selection {
+                    pages: 1,
+                    ..Selection::default()
+                }
+            ),
+            Duration::ZERO
+        );
+        // Cheap and found somebody: look again at once.
+        assert_eq!(
+            rest_after(base, &searched(Duration::from_millis(40), false)),
+            Duration::ZERO
+        );
+        // Costly and found somebody: breathe for twice what it took (a third of the time at most).
+        assert_eq!(
+            rest_after(base, &searched(Duration::from_millis(400), false)),
+            Duration::from_millis(800)
+        );
+        // Found nobody: the longer of the base and ten times the cost.
+        assert_eq!(
+            rest_after(base, &searched(Duration::from_millis(40), true)),
+            base
+        );
+        assert_eq!(
+            rest_after(base, &searched(Duration::from_secs(1), true)),
+            Duration::from_secs(10)
+        );
+        // Never rest: nothing is rested.
+        assert_eq!(
+            rest_after(Duration::ZERO, &searched(Duration::from_secs(1), true)),
+            Duration::ZERO
+        );
+    }
+
     #[test]
     fn a_rest_costs_a_tenth_of_the_time_and_is_never_unbounded() {
         let base = Duration::from_secs(2);
@@ -521,6 +663,21 @@ mod tests {
         assert_eq!(share(0, &[(1, 5)]), vec![0]);
         assert_eq!(share(10, &[]), Vec::<u32>::new());
         assert_eq!(share(10, &[(1, 0), (1, 3)]), vec![0, 3]);
+    }
+
+    #[test]
+    fn a_light_tenant_among_many_heavy_ones_is_given_its_fraction_before_they_are_given_theirs() {
+        // 13 tenants of weight 16 and one of weight 1 share 200: the heavy ones are owed 15.31 each
+        // and the light one 0.96. The five left over go to the largest fractions, and the light one
+        // has the largest.
+        let mut demands = vec![(16_u16, 1_000_u32); 13];
+        demands.push((1, 1_000));
+        let given = share(200, &demands);
+        assert_eq!(given.iter().sum::<u32>(), 200);
+        assert_eq!(given[13], 1, "the light tenant is not left with nothing");
+        assert!(given[..13].iter().all(|g| (15..=16).contains(g)));
+        // Among equal fractions the heavier goes first, then the order given.
+        assert_eq!(share(32, &[(1, 99), (1, 99), (4, 99)]), vec![5, 5, 22]);
     }
 
     #[test]

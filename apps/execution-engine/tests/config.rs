@@ -152,7 +152,8 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     assert_eq!(config.scheduler.batch, 7);
     assert_eq!(config.scheduler.concurrency, 3);
     assert_eq!(config.shards.ttl, Duration::from_secs(21));
-    assert_eq!(config.shards.interval(), Duration::from_secs(7));
+    // A fifth of the lease: two rounds in a row can fail before it ends.
+    assert_eq!(config.shards.interval(), Duration::from_millis(4_200));
     assert_eq!(config.dispatch.batch, 9);
     assert_eq!(config.grpc.max_connections, 11);
     assert_eq!(config.grpc.max_connections_per_peer, 3);
@@ -612,4 +613,19 @@ fn too_many_pools_or_activities_are_refused() {
     let ok: String = (0..32).map(|n| format!("p{n}=act.a;")).collect();
     let ok: &'static str = Box::leak(ok.into_boxed_str());
     assert!(parse(&[("SAGAT_WORKER_POOLS", ok)]).is_ok());
+}
+
+#[test]
+fn a_batch_a_database_should_not_be_asked_for_is_refused_by_name() {
+    for name in ["SAGAT_SCHEDULER_BATCH", "SAGAT_OUTBOX_BATCH"] {
+        assert!(parse(&[(name, "5000")]).is_ok(), "{name} at the limit");
+        match parse(&[(name, "5001")]).expect_err(name) {
+            ConfigError::Invalid { name: reported, .. } => assert_eq!(reported, name),
+            other => panic!("{name}: {other:?}"),
+        }
+        assert!(
+            parse(&[(name, "4294967295")]).is_err(),
+            "{name} far beyond it"
+        );
+    }
 }

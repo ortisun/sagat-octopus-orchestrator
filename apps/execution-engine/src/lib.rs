@@ -226,9 +226,10 @@ pub async fn serve(
         let _ = stop_tx.send(true);
     });
 
-    let health = Arc::new(Health::new(
-        (engine.tick_interval * 10).max(engine.liveness_grace),
-    ));
+    let health = Arc::new(
+        Health::new((engine.tick_interval * 10).max(engine.liveness_grace))
+            .with_keeper_stale_after((engine.shards.ttl * 3).max(engine.liveness_grace)),
+    );
     // The first round before anything ticks, so the scheduler does not begin by finding nothing to
     // look at; if the database is not there yet the loop below tries again.
     match keeper.round().await {
@@ -245,9 +246,15 @@ pub async fn serve(
         tokio::spawn(loops::run_keeper(
             {
                 let keeper = Arc::clone(&keeper);
+                let health = Arc::clone(&health);
                 move || {
                     let keeper = Arc::clone(&keeper);
-                    async move { keeper.round().await }
+                    let health = Arc::clone(&health);
+                    async move {
+                        let round = keeper.round().await;
+                        health.keeper_rounded();
+                        round
+                    }
                 }
             },
             engine.shards.interval(),
@@ -409,20 +416,26 @@ pub async fn serve(
     outcome
 }
 
-/// `/livez` (the scheduler loop is ticking) and `/readyz` (and the database is usable).
+/// `/livez` (the scheduler loop is ticking and the shard keeper is rounding) and `/readyz` (and the
+/// database is usable).
 fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
     let live = {
         let health = Arc::clone(&health);
         move || {
             let health = Arc::clone(&health);
             async move {
-                if health.scheduler_alive() {
-                    (StatusCode::OK, "alive")
-                } else {
+                if !health.scheduler_alive() {
                     (
                         StatusCode::SERVICE_UNAVAILABLE,
                         "the scheduler loop stopped ticking",
                     )
+                } else if !health.keeper_alive() {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "the shard keeper stopped rounding",
+                    )
+                } else {
+                    (StatusCode::OK, "alive")
                 }
             }
         }
@@ -435,6 +448,12 @@ fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "the scheduler loop stopped ticking",
+                );
+            }
+            if !health.keeper_alive() {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the shard keeper stopped rounding",
                 );
             }
             match tokio::time::timeout(Duration::from_secs(2), store.ready()).await {

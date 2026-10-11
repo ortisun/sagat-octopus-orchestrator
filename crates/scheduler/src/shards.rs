@@ -36,10 +36,13 @@ pub struct KeeperSettings {
 }
 
 impl KeeperSettings {
-    /// How often to run a round: a third of the lease, so that two rounds can fail before it ends.
+    /// How often to run a round: a fifth of the lease. The loop waits this long (up to a fifth more,
+    /// with the jitter) *after* a round, which itself takes time, so a third would leave room for one
+    /// round to fail and not for two; a fifth leaves it for two, and the lease is renewed from the
+    /// round that begins at most `ttl / 5 * 1.2` after the last good one.
     #[must_use]
     pub fn interval(&self) -> Duration {
-        self.ttl / 3
+        self.ttl / 5
     }
 }
 
@@ -241,7 +244,6 @@ impl<S: ShardStore> Keeper<S> {
         } else {
             self.store.renew(owner, &before, ttl).await?
         };
-        let lost = before.len().saturating_sub(renewed.len());
         let mut held: BTreeMap<Shard, u64> =
             renewed.iter().map(|l| (l.shard, l.generation)).collect();
         // What was renewed is the database's for another lease: say so at once, so that a later step
@@ -270,6 +272,12 @@ impl<S: ShardStore> Keeper<S> {
                 held.insert(lease.shard, lease.generation);
             }
         }
+        // Lost is what the database no longer lets this replica act on after the adoption: a shard
+        // that was skipped for a moment (an action had its row locked) and adopted just now is not.
+        let lost = before
+            .iter()
+            .filter(|lease| !held.contains_key(&lease.shard))
+            .count();
         let plan = sharding::plan(owner, replicas, &table);
 
         // Stop using the shards before giving them back, never the other way round.
@@ -377,6 +385,9 @@ mod tests {
         down: Mutex<bool>,
         /// The next `acquire` changes the leases and then fails: the answer is lost on its way back.
         lose_the_answer: Mutex<bool>,
+        /// Shards whose row is locked by an action in flight: a renewal skips each of them once
+        /// (`FOR UPDATE SKIP LOCKED`), and the lock is gone by the next call.
+        locked_once: Mutex<std::collections::BTreeSet<Shard>>,
     }
 
     #[derive(Default)]
@@ -500,6 +511,9 @@ mod tests {
             let now = state.now;
             let mut kept = Vec::new();
             for lease in held {
+                if self.0.locked_once.lock().unwrap().remove(&lease.shard) {
+                    continue;
+                }
                 if let Some(slot) = state.slots.get_mut(&lease.shard)
                     && slot.0.as_deref() == Some(owner)
                     && slot.1 == lease.generation
@@ -599,6 +613,49 @@ mod tests {
         store.advance(TTL);
         rounds(&[&b], &store, 2).await;
         assert_eq!(b.placement().owned(), ShardSet::all());
+    }
+
+    #[tokio::test]
+    async fn a_shard_skipped_by_the_renewal_for_a_moment_is_adopted_in_the_same_round_and_not_lost()
+    {
+        let store = Shared::new();
+        let a = keeper(&store, "a");
+        a.round().await.unwrap();
+        let busy = Shard::new(5).unwrap();
+        // An action holds the row of shard 5 `FOR SHARE` as the renewal passes: the renewal does not
+        // wait for it and does not renew it; the lock is gone when the keeper reads the table and
+        // renews the leases it holds and its snapshot does not know.
+        store.0.locked_once.lock().unwrap().insert(busy);
+        store.advance(KeeperSettings { ttl: TTL }.interval());
+        let round = a.round().await.unwrap();
+        assert_eq!(round.lost, 0, "it was skipped, not lost");
+        assert_eq!(round.held, usize::from(SHARDS));
+        assert!(a.placement().owned().contains(busy));
+        assert_eq!(
+            store.owner_of(busy).unwrap().1,
+            1,
+            "no takeover, same generation"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_failed_rounds_in_a_row_do_not_lose_the_leases() {
+        // The interval is a fifth of the lease: with the pause after a round and its jitter, a replica
+        // whose database fails for two rounds still renews before the lease ends.
+        let store = Shared::new();
+        let a = keeper(&store, "a");
+        a.round().await.unwrap();
+        let slowest = KeeperSettings { ttl: TTL }.interval().mul_f64(1.2);
+        store.down(true);
+        for _ in 0..2 {
+            store.advance(slowest);
+            assert!(a.round().await.is_err());
+        }
+        store.down(false);
+        store.advance(slowest);
+        let round = a.round().await.unwrap();
+        assert_eq!(round.lost, 0, "renewed in time: {round:?}");
+        assert_eq!(round.held, usize::from(SHARDS));
     }
 
     #[tokio::test]

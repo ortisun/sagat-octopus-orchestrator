@@ -24,6 +24,10 @@ database:
   # A Secret with the key DATABASE_URL: postgres://sagat_app:...@host:5432/sagat?sslmode=verify-full
   existingSecret: ""
   maxConnections: 20           # per replica; replicas * this must stay under max_connections of the server
+  # The server's max_connections, if you want the chart to hold you to it: it refuses to render when the
+  # control plane plus the engine at the most the autoscaler allows, times maxConnections, are more. 0: not checked.
+  # (Anyone who can make timers fall due together raises the lag the engine scales on: the ceiling must be one the server holds.)
+  serverMaxConnections: 0
   statementTimeoutMs: 5000
 
 oidc:

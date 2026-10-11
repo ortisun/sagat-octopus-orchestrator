@@ -687,7 +687,7 @@ async fn a_noisy_tenant_and_a_quiet_one() {
 
     let mut body = format!("{}\n", environment(&w).await);
     body.push_str(&format!(
-        "Tenant A starts {noisy_runs} timers and tenant B {quiet_runs} (B's are the younger), and every one of them falls due at the same instant: A has {:.0}% of the work. One replica, concurrency 8, batch 200. `lateness` is the time from becoming due to the `timer.fired` event. With fairness off a pass takes the oldest 200 candidates, as before feature 010.\n\n",
+        "Tenant A starts {noisy_runs} timers and tenant B {quiet_runs} (B's are the younger), and every one of them falls due at the same instant: A has {:.0}% of the work. One replica, concurrency 8, batch 200. `lateness` is the time from becoming due to the `timer.fired` event. With fairness off a pass takes the oldest 200 candidates, as before feature 010. The table is vacuumed before each policy, so that the dead index entries of the timers the previous policy fired do not weigh on the next one.\n\n",
         100.0 * noisy_runs as f64 / (noisy_runs + quiet_runs) as f64
     ));
     body.push_str("| Policy | Tenant | Timers | Lateness p50 | p95 | p99 | Last fired after |\n|---|---|---:|---:|---:|---:|---:|\n");
@@ -706,6 +706,14 @@ async fn a_noisy_tenant_and_a_quiet_one() {
                 .await
                 .expect("weight");
         }
+        // Each policy starts from a table the previous one left clean. The timers it fired leave
+        // dead entries in the partial indexes that a pass reads through until vacuum removes them
+        // (autovacuum does, in production); left there they make every later policy slower than
+        // the one before whatever its weights, which a first run of this scenario showed.
+        sqlx::query("VACUUM (ANALYZE) steps, runs")
+            .execute(&w.db.pool)
+            .await
+            .expect("vacuum");
         // Every timer of both tenants due now.
         sqlx::query("UPDATE steps SET due_at = clock_timestamp() - interval '1 second' WHERE waiting_kind = 'TIMER' AND due_at > clock_timestamp() + interval '30 minutes'")
             .execute(&w.db.pool)

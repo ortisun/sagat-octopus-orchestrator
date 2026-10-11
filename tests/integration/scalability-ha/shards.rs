@@ -474,6 +474,73 @@ async fn an_action_cut_off_in_the_middle_does_not_hold_its_shard_for_longer_than
 }
 
 #[tokio::test]
+async fn a_renewal_does_not_wait_for_a_shard_an_orphan_holds_and_renews_the_others() {
+    // The orphan of a connection that was cut off holds a shard's row `FOR SHARE`. The renewal of
+    // the replica's shards must not wait for it (it would hold the rows it had already renewed, and
+    // fail them all at the statement timeout): it renews the rest and the orphaned shard at the next round.
+    let w = world().await;
+    let leases = w
+        .store
+        .acquire(
+            "alpha",
+            &[shard(30), shard(31), shard(32)],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire");
+    assert_eq!(leases.len(), 3);
+    let mut orphan = w.db.pool.begin().await.expect("begin");
+    sqlx::query("SELECT shard FROM scheduler_shards WHERE shard = 31 FOR SHARE")
+        .execute(&mut *orphan)
+        .await
+        .expect("the fence's lock");
+
+    let started = std::time::Instant::now();
+    let renewed = tokio::time::timeout(
+        Duration::from_secs(3),
+        w.store.renew("alpha", &leases, Duration::from_secs(30)),
+    )
+    .await
+    .expect("the renewal does not wait for the orphan")
+    .expect("renew");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(
+        renewed.iter().map(|l| l.shard).collect::<Vec<_>>(),
+        vec![shard(30), shard(32)],
+        "the shards that are free are renewed, the one the orphan holds is not"
+    );
+
+    drop(orphan);
+    let again = w
+        .store
+        .renew("alpha", &leases, Duration::from_secs(30))
+        .await
+        .expect("renew");
+    assert_eq!(again.len(), 3, "the next round renews it");
+}
+
+#[tokio::test]
+async fn a_lease_cannot_be_made_to_last_for_ever() {
+    // The runtime role can write the lease tables (G259): a value the keeper cannot take as a time
+    // must not be one it can write, or one UPDATE would stop every replica that restarts from acquiring.
+    let w = world().await;
+    for statement in [
+        "UPDATE scheduler_shards SET expires_at = 'infinity' WHERE shard = 40",
+        "INSERT INTO scheduler_members (owner, started_at, expires_at) VALUES ('x', now(), 'infinity')",
+    ] {
+        match sqlx::query(statement).execute(&w.db.pool).await {
+            Err(sqlx::Error::Database(e)) => {
+                assert_eq!(e.code().as_deref(), Some("23514"), "{statement}")
+            }
+            other => panic!("{statement}: expected a check violation, got {other:?}"),
+        }
+    }
+    // And the epoch of a shard never held is a time the keeper reads as "free".
+    let table = w.store.leases().await.expect("leases");
+    assert!(table.values().all(|held| held.remaining.is_zero()));
+}
+
+#[tokio::test]
 async fn the_weights_of_the_tenants_are_read_and_bounded() {
     let w = world().await;
     assert!(w.store.tenant_weights().await.expect("weights").is_empty());

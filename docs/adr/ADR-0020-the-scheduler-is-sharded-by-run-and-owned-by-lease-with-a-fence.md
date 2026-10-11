@@ -43,8 +43,11 @@ reported to its parent, so its shard is the parent's.
 **2. A replica works on the shards it holds a lease on.** The lease is a row (`scheduler_shards`: owner, generation,
 expiry) and every time in it is the database's clock. A replica announces itself (`scheduler_members`) apart from the
 leases, so one that holds nothing yet is counted and the others give it its share: `ceil(64 / replicas alive)`. The keeper (a loop
-in every engine, every `lease / 3`) renews what it holds, gives back the highest shards beyond its share and takes the
-lowest free ones. A **takeover raises the generation by one; a renewal does not**, and a lease that ran out cannot be
+in every engine, every `lease / 5`, so that two rounds in a row can fail before a lease ends: the pause comes after a
+round, and with its jitter a third would leave room for one) renews what it holds, gives back the highest shards beyond its
+share and takes the lowest free ones. The renewal, like the takeover and the release, skips a row that is locked instead of
+waiting for it, and a shard it skipped is renewed in the same round when the keeper adopts the leases its snapshot does not
+know (a lock held by an orphan of a cut-off connection must not fail the renewal of every other shard). A **takeover raises the generation by one; a renewal does not**, and a lease that ran out cannot be
 renewed, only taken again with a new generation. A clean stop gives the shards back so that the others take them at
 once. The lease is 15 s by default (3 to 600): a crashed replica's work waits that long and no longer.
 
@@ -76,7 +79,8 @@ for evidence (research G240).
 of candidates is short, everything was taken and nobody can be hiding behind anybody (one query, the common case).
 Otherwise the pass pages through the tenants, leaving out of each next query the ones that already show their share, at
 most 16 pages, and then shares the batch: a tenant with less than its share gets all it has, the rest is split by
-weight, a lone tenant gets the whole batch, and inside a tenant the oldest goes first. Weights are 1 to 16, default 1, set
+weight, a lone tenant gets the whole batch, and inside a tenant the oldest goes first (what is left over after the weights are applied goes to the largest fractions, so a
+tenant whose share is 0.96 of a candidate is not left with none at every pass by tenants whose shares are 15.31). Weights are 1 to 16, default 1, set
 by the platform operator (`control-plane scheduling-weight`, audited) and read by the engine with the leases. The share
 is a budget **per pass**, not a rate: the quotas of feature 009 bound what a tenant may hold and are unchanged. When more
 tenants than a pass can find have work, the ones not found are found as the others drain
@@ -96,7 +100,11 @@ its visibility timeout, as before.
 shards held, the replicas alive and the handovers, the passes count what the fence refused and what fairness held
 back, and a **pool** of workers is a name the operator gives to a set of activities (`SAGAT_WORKER_POOLS`) whose queue
 (`pool_ready_steps`, `pool_queue_lag_seconds`) the monitor measures across tenants. A monitor that loses its lease sets
-its gauges to zero, so two replicas never export two answers to one question. The chart (`infra/helm`) scales the
+its gauges to zero, so two replicas never export two answers to one question, and one whose sample fails sets them to zero
+too (a lag frozen at its last value would scale the engine for as long as the database cannot answer); the outbox backlog
+is one of them and is counted by the monitor only, not by every dispatcher at every round. The engine's `/livez` fails when
+the keeper stops rounding, as it does when the scheduler stops ticking (a round that fails counts: the loop is alive and
+the database is what is down). The chart (`infra/helm`) scales the
 engine with KEDA on the lag and the pools on their queue, never past 64 replicas, one at a time and slowly, with
 a disruption budget that keeps a replica, and refuses at render time what the platform would refuse at start.
 
@@ -113,19 +121,28 @@ the number of runs waiting: the benchmark could not make a hundred thousand wait
 not at all. A trigger on `runs` keeps sixteen counters per namespace in the same transaction as the change they count
 (`run_active_counts`, by the run's identifier, so runs that finish together do not wait for one row); the check reads
 at most sixteen rows. The lock stays, so the quota is still exact when starts race for the last places, and the
-runtime role can read the counters and cannot write them (the function is `SECURITY DEFINER`).
+runtime role can read the counters and cannot write them (the function is `SECURITY DEFINER`, with a search path that
+names `pg_temp` last, every name qualified, and no `EXECUTE` for anybody else: a role that could put a temporary table of
+the same name in front of the counters, or attach the function to a table of its own, would write them with the rights
+of the owner; the security review found it and a test holds it).
 
-**10. A pass rests its search for other tenants after a search that found nobody new, for as long as the search cost.**
-Leaving a tenant out of a query filters its rows rather than skipping them, so a search that finds nobody has read the
-whole backlog of the tenants it left out; repeated at every tick of a burst of a hundred thousand timers that is
-quadratic. A search that met no tenant the first page did not already show is rested: the pass shares the first page only,
-for `SAGAT_SCHEDULER_DISCOVERY_REST_MS` (two seconds) or ten times what the search took, whichever is longer, up to a
-minute. The search therefore never costs more than about a tenth of the pass's time, whatever the size of the backlog it had
-to read, and a tenant that arrives behind a burst waits for the rest to be over before it is found. A search that found
-somebody is **not** rested: the tenants found are the ones that have work, and the next pass looks again (the first version
-rested after any search whose last page was empty, which is every search that ends, and starved the tenant it had just found
-until the rest was over: the benchmark's noisy-neighbour scenario showed it). What remains is one read of the backlog of the
-tenants left out per rest, a limit that is stated (research G264) and is what a tenant-first index would remove.
+**10. A pass spends on looking for other tenants a bounded share of its time.** Leaving a tenant out of a query filters
+its rows rather than skipping them, so a search that has to get past the backlog of the tenants it left out reads the whole
+of that backlog; repeated at every tick of a burst of a hundred thousand timers that is quadratic. After a search the
+pass rests it (shares the first page only) for a time that depends on what the search found and cost:
+
+- **found nobody new** (no tenant the first page did not already show) or **failed** (a page timed out on a backlog too
+  large to read in the time the pool allows; the pass shares what the pages before it showed and does not take nothing):
+  the longer of `SAGAT_SCHEDULER_DISCOVERY_REST_MS` (two seconds) and ten times what the search took, up to a minute, so
+  the search costs a tenth of the pass's time at most;
+- **found somebody**: nothing while the search was cheap (under 100 ms), so a tenant behind a burst is served at the next
+  tick; twice what it took when it was not, so that the search costs a third of the time at most while the burst and the
+  tenant behind it are both served.
+
+A tenant that arrives behind a burst while the search is resting waits for the rest to be over. The first version rested
+after any search whose last page was empty, which is every search that ends, and starved the tenant it had just found
+until the rest was over (the benchmark's noisy-neighbour scenario showed it). What remains is a read of the backlog of the
+tenants left out per search, a limit that is stated (research G264) and is what a tenant-first index would remove.
 
 ## Consequences
 

@@ -37,6 +37,8 @@ pub struct Health {
     started: Instant,
     last_tick_ms: AtomicU64,
     stale_after: Duration,
+    last_round_ms: AtomicU64,
+    keeper_stale_after: Duration,
 }
 
 impl Health {
@@ -46,7 +48,32 @@ impl Health {
             started: Instant::now(),
             last_tick_ms: AtomicU64::new(0),
             stale_after,
+            last_round_ms: AtomicU64::new(0),
+            keeper_stale_after: stale_after,
         }
+    }
+
+    /// How long the shard keeper may go without finishing a round (a round that fails counts: the
+    /// loop is alive and the database is what is down) before `/livez` reports it.
+    #[must_use]
+    pub const fn with_keeper_stale_after(mut self, stale_after: Duration) -> Self {
+        self.keeper_stale_after = stale_after;
+        self
+    }
+
+    /// The keeper finished a round, well or badly.
+    pub fn keeper_rounded(&self) {
+        self.last_round_ms.store(self.now_ms(), Ordering::Relaxed);
+    }
+
+    /// Whether the keeper's loop is running (or has only just started): a replica whose loop ended
+    /// would go on holding shards it never renews, and nothing else would say so.
+    #[must_use]
+    pub fn keeper_alive(&self) -> bool {
+        let age = self
+            .now_ms()
+            .saturating_sub(self.last_round_ms.load(Ordering::Relaxed));
+        u128::from(age) < self.keeper_stale_after.as_millis()
     }
 
     fn now_ms(&self) -> u64 {
@@ -482,6 +509,21 @@ mod tests {
             Duration::from_millis(1200),
             "clamped"
         );
+    }
+
+    #[test]
+    fn the_keeper_is_alive_until_it_stops_rounding_whatever_its_rounds_found() {
+        let health =
+            Health::new(Duration::from_secs(30)).with_keeper_stale_after(Duration::from_millis(60));
+        assert!(health.keeper_alive(), "just started");
+        std::thread::sleep(Duration::from_millis(90));
+        assert!(!health.keeper_alive(), "no round for longer than the limit");
+        health.keeper_rounded();
+        assert!(
+            health.keeper_alive(),
+            "a round revives it, a failing one too"
+        );
+        assert!(health.scheduler_alive(), "the scheduler's limit is its own");
     }
 
     #[test]

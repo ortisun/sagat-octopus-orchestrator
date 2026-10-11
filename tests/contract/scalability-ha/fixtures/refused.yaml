@@ -50,3 +50,36 @@
 - name: an empty list of who may scrape the admin ports (an empty `from` means everybody)
   changes: {networkPolicy: {metricsFrom: []}}
   message: metricsFrom
+- name: secrets with an API nobody said was behind TLS
+  changes: {controlPlane: {allowPlaintextSecrets: false}}
+  message: controlPlane.allowPlaintextSecrets
+- name: secrets with a worker API nobody said was behind TLS
+  changes: {engine: {grpc: {allowPlaintextSecrets: false}}}
+  message: engine.grpc.tlsSecret
+- name: a batch of nothing
+  changes: {engine: {schedulerBatch: 0}}
+  message: between 1 and 5000
+- name: a batch the engine refuses
+  changes: {engine: {schedulerBatch: 5001}}
+  message: between 1 and 5000
+- name: a concurrency the engine would clamp
+  changes: {engine: {schedulerConcurrency: 65}}
+  message: between 1 and 64
+- name: a lease that is not a whole number
+  changes: {engine: {shardLeaseSeconds: 15.5}}
+  message: whole number
+- name: a pool name Kubernetes would refuse
+  changes: {workerPools: [{name: has_underscore, image: x, activities: [a]}]}
+  message: lowercase letters, digits and -
+- name: a pool name too long for the object names
+  changes: {workerPools: [{name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, image: x, activities: [a]}]}
+  message: too long
+- name: an activity with a separator in it
+  changes: {workerPools: [{name: a, image: x, activities: ["act,b"]}]}
+  message: separators
+- name: more pools than the engine measures
+  changes: {workerPools: [{name: p0, image: x, activities: [a0]}, {name: p1, image: x, activities: [a1]}, {name: p2, image: x, activities: [a2]}, {name: p3, image: x, activities: [a3]}, {name: p4, image: x, activities: [a4]}, {name: p5, image: x, activities: [a5]}, {name: p6, image: x, activities: [a6]}, {name: p7, image: x, activities: [a7]}, {name: p8, image: x, activities: [a8]}, {name: p9, image: x, activities: [a9]}, {name: p10, image: x, activities: [a10]}, {name: p11, image: x, activities: [a11]}, {name: p12, image: x, activities: [a12]}, {name: p13, image: x, activities: [a13]}, {name: p14, image: x, activities: [a14]}, {name: p15, image: x, activities: [a15]}, {name: p16, image: x, activities: [a16]}, {name: p17, image: x, activities: [a17]}, {name: p18, image: x, activities: [a18]}, {name: p19, image: x, activities: [a19]}, {name: p20, image: x, activities: [a20]}, {name: p21, image: x, activities: [a21]}, {name: p22, image: x, activities: [a22]}, {name: p23, image: x, activities: [a23]}, {name: p24, image: x, activities: [a24]}, {name: p25, image: x, activities: [a25]}, {name: p26, image: x, activities: [a26]}, {name: p27, image: x, activities: [a27]}, {name: p28, image: x, activities: [a28]}, {name: p29, image: x, activities: [a29]}, {name: p30, image: x, activities: [a30]}, {name: p31, image: x, activities: [a31]}, {name: p32, image: x, activities: [a32]}]}
+  message: at most 32 worker pools
+- name: connections the server would not hold
+  changes: {database: {maxConnections: 20, serverMaxConnections: 100}}
+  message: serverMaxConnections

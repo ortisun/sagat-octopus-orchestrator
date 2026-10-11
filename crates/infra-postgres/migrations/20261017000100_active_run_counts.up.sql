@@ -30,11 +30,11 @@ SELECT tenant_id, namespace_id, (get_byte(uuid_send(id), 15) & 15)::smallint, co
   FROM runs WHERE finished_at IS NULL GROUP BY 1, 2, 3;
 
 CREATE FUNCTION run_active_counts_track() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     delta   integer;
-    changed runs;
+    changed public.runs;
 BEGIN
     IF TG_OP = 'INSERT' THEN
         delta := 1;
@@ -54,14 +54,21 @@ BEGIN
         -- The time it finished at was corrected: still finished.
         RETURN NULL;
     END IF;
-    INSERT INTO run_active_counts (tenant_id, namespace_id, slot, active)
+    -- Every name is qualified and pg_temp is last in the path: a function that runs with its owner's
+    -- rights must not find a table of the same name that the caller made in its own temporary schema
+    -- (which is searched first for relations unless the path says otherwise).
+    INSERT INTO public.run_active_counts AS c (tenant_id, namespace_id, slot, active)
     VALUES (changed.tenant_id, changed.namespace_id,
             (get_byte(uuid_send(changed.id), 15) & 15)::smallint, greatest(delta, 0))
     ON CONFLICT (tenant_id, namespace_id, slot)
-    DO UPDATE SET active = greatest(run_active_counts.active + delta, 0);
+    DO UPDATE SET active = greatest(c.active + delta, 0);
     RETURN NULL;
 END
 $$;
+
+-- Only the triggers below may run it: a role that can execute it could attach it to a table of its own
+-- (a temporary one) and move any tenant's counters with the rights of the owner.
+REVOKE ALL ON FUNCTION run_active_counts_track() FROM PUBLIC;
 
 CREATE TRIGGER runs_count_started AFTER INSERT ON runs
     FOR EACH ROW WHEN (NEW.finished_at IS NULL) EXECUTE FUNCTION run_active_counts_track();
