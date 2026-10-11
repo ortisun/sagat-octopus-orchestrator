@@ -1,0 +1,19 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "hello-world",
+    "description": "The smallest workflow with two steps: compose a greeting, then deliver it."
+  },
+  "entrypoint": "compose",
+  "triggers": [{ "kind": "manual" }],
+  "inputSchema": {
+    "type": "object",
+    "required": ["name"],
+    "properties": { "name": { "type": "string" } }
+  },
+  "nodes": [
+    { "id": "compose", "type": "activity", "activity": "greeting.compose", "next": "deliver" },
+    { "id": "deliver", "type": "activity", "activity": "greeting.deliver" }
+  ]
+}

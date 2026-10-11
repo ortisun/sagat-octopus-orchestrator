@@ -12,12 +12,19 @@
 
 pub mod args;
 pub mod client;
+pub mod diagnostics;
+pub mod doctor;
 mod export;
 pub mod manifest;
+pub mod mocks;
+pub mod new;
 mod remote;
+mod script;
 mod sync;
 mod validate;
 mod versions;
+mod worker;
+mod workflow;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,6 +44,8 @@ pub const EXIT_PENDING: u8 = 3;
 pub const EXIT_BREAKING: u8 = 4;
 /// `diff --check` found differences.
 pub const EXIT_DIFFERENCES: u8 = 5;
+/// `workflow run --wait` (or `script test`) did not see the end within the time it was given.
+pub const EXIT_TIMEOUT: u8 = 6;
 
 /// What the process provides besides the arguments.
 #[derive(Debug, Clone, Default)]
@@ -134,6 +143,14 @@ impl Io<'_> {
 
 /// The largest token file read.
 const MAX_TOKEN_BYTES: u64 = 16 * 1024;
+
+/// Where the documentation is published, if somebody said (`SAGAT_DOCS_URL`): the links in the help
+/// of a problem then lead there, and to the file in the repository otherwise.
+pub(crate) fn docs_base() -> Option<String> {
+    std::env::var("SAGAT_DOCS_URL")
+        .ok()
+        .filter(|v| v.starts_with("https://") || v.starts_with("http://"))
+}
 
 fn resolve(env: &Env, path: &Path) -> PathBuf {
     if path.is_absolute() {
@@ -293,6 +310,121 @@ pub async fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn 
             reason,
             approve,
         } => versions::decide(&common, env, &request, &reason, approve, &mut io).await,
+        Command::WorkflowValidate { file } => {
+            workflow::validate(&common, env, &file, &mut io).await
+        }
+        Command::WorkflowPublish {
+            file,
+            notes,
+            dry_run,
+            accept_breaking,
+        } => {
+            workflow::publish(
+                &common,
+                env,
+                &file,
+                notes.as_deref(),
+                dry_run,
+                accept_breaking,
+                &mut io,
+            )
+            .await
+        }
+        Command::WorkflowRun {
+            name,
+            input,
+            wait,
+            timeout,
+            key,
+        } => {
+            workflow::run(
+                &common,
+                env,
+                &workflow::RunAsk {
+                    name: &name,
+                    input: input.as_deref(),
+                    wait,
+                    timeout,
+                    key: key.as_deref(),
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::WorkflowRuns { name, limit } => {
+            workflow::runs(&common, env, &name, limit, &mut io).await
+        }
+        Command::WorkflowInspect { run } => workflow::inspect(&common, env, &run, &mut io).await,
+        Command::WorkflowCancel { run, reason } => {
+            workflow::cancel(&common, env, &run, &reason, &mut io).await
+        }
+        Command::Doctor { json, nats } => {
+            doctor::run(&common, env, json, nats.as_deref(), &mut io).await
+        }
+        Command::WorkerDev {
+            mocks,
+            workflow,
+            bind,
+            idle_exit,
+            max_tasks,
+            show_payloads,
+        } => {
+            worker::dev(
+                &common,
+                env,
+                &worker::Ask {
+                    mocks: &mocks,
+                    workflow: workflow.as_deref(),
+                    bind,
+                    idle_exit,
+                    max_tasks,
+                    show_payloads,
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::New {
+            template,
+            dir,
+            force,
+        } => new::run(env, template.as_deref(), dir.as_deref(), force, &mut io),
+        Command::ScriptTest {
+            file,
+            input,
+            language,
+            name,
+            timeout,
+        } => {
+            script::test(
+                &common,
+                env,
+                &file,
+                input.as_deref(),
+                language.as_deref(),
+                name.as_deref(),
+                timeout,
+                &mut io,
+            )
+            .await
+        }
+        Command::ScriptPublish {
+            file,
+            language,
+            name,
+            timeout,
+        } => {
+            script::publish(
+                &common,
+                env,
+                &file,
+                language.as_deref(),
+                name.as_deref(),
+                timeout,
+                &mut io,
+            )
+            .await
+        }
     };
     match result {
         Ok(code) => code,

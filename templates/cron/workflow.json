@@ -1,0 +1,13 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "nightly-report",
+    "description": "Runs the report every day at 02:00 Lisbon time."
+  },
+  "entrypoint": "report",
+  "triggers": [{ "kind": "cron", "cron": "0 2 * * *", "timezone": "Europe/Lisbon" }],
+  "nodes": [
+    { "id": "report", "type": "activity", "activity": "reports.nightly" }
+  ]
+}

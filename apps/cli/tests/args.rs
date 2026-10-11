@@ -191,3 +191,245 @@ fn text_that_reorders_or_hides_other_text_is_not_shown_and_a_new_line_is_not_for
         "fix PUBLISH v9 by root x"
     );
 }
+
+const RUN: &str = "01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8";
+
+#[test]
+fn the_commands_for_one_workflow_take_the_words_and_flags_they_document() {
+    assert_eq!(
+        parse(&argv("workflow validate flows/checkout.json"))
+            .expect("parses")
+            .command,
+        Command::WorkflowValidate {
+            file: "flows/checkout.json".into()
+        }
+    );
+    assert_eq!(
+        parse(&argv(
+            "workflow publish checkout.yaml --notes first-release --dry-run --accept-breaking"
+        ))
+        .expect("parses")
+        .command,
+        Command::WorkflowPublish {
+            file: "checkout.yaml".into(),
+            notes: Some("first-release".into()),
+            dry_run: true,
+            accept_breaking: true
+        }
+    );
+    assert_eq!(
+        parse(&argv(
+            "workflow run checkout --input @in.json --wait --timeout 30 --key k-0123456789"
+        ))
+        .expect("parses")
+        .command,
+        Command::WorkflowRun {
+            name: "checkout".into(),
+            input: Some("@in.json".into()),
+            wait: true,
+            timeout: 30,
+            key: Some("k-0123456789".into())
+        }
+    );
+    assert_eq!(
+        parse(&argv("workflow run checkout"))
+            .expect("parses")
+            .command,
+        Command::WorkflowRun {
+            name: "checkout".into(),
+            input: None,
+            wait: false,
+            timeout: 300,
+            key: None
+        }
+    );
+    assert_eq!(
+        parse(&argv(&format!("workflow inspect {RUN}")))
+            .expect("parses")
+            .command,
+        Command::WorkflowInspect { run: RUN.into() }
+    );
+    assert_eq!(
+        parse(&argv(&format!(
+            "workflow cancel {RUN} --reason changed-our-minds"
+        )))
+        .expect("parses")
+        .command,
+        Command::WorkflowCancel {
+            run: RUN.into(),
+            reason: "changed-our-minds".into()
+        }
+    );
+    assert_eq!(
+        parse(&argv("workflow runs checkout --limit 500"))
+            .expect("parses")
+            .command,
+        Command::WorkflowRuns {
+            name: "checkout".into(),
+            limit: 200
+        }
+    );
+}
+
+#[test]
+fn input_that_is_json_survives_the_equals_form_and_spaces() {
+    let args = vec![
+        "workflow".to_owned(),
+        "run".to_owned(),
+        "x-flow".to_owned(),
+        r#"--input={"name":"Ada Lovelace","n":[1,2]}"#.to_owned(),
+    ];
+    match parse(&args).expect("parses").command {
+        Command::WorkflowRun { input, .. } => assert_eq!(
+            input.as_deref(),
+            Some(r#"{"name":"Ada Lovelace","n":[1,2]}"#)
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn scripts_workers_doctor_and_templates_have_their_commands() {
+    assert_eq!(
+        parse(&argv(
+            "script test enrich.ts --input {} --language typescript --name enrich --timeout 20"
+        ))
+        .expect("parses")
+        .command,
+        Command::ScriptTest {
+            file: "enrich.ts".into(),
+            input: Some("{}".into()),
+            language: Some("typescript".into()),
+            name: Some("enrich".into()),
+            timeout: 20
+        }
+    );
+    assert_eq!(
+        parse(&argv("script publish enrich.py"))
+            .expect("parses")
+            .command,
+        Command::ScriptPublish {
+            file: "enrich.py".into(),
+            language: None,
+            name: None,
+            timeout: 150
+        }
+    );
+    assert_eq!(
+        parse(&argv("worker dev --mocks m.yaml --workflow w.json --bind --idle-exit 5 --max-tasks 3 --show-payloads --grpc http://127.0.0.1:19000")).expect("parses"),
+        sagat_cli::args::Invocation {
+            common: sagat_cli::args::Common { grpc: Some("http://127.0.0.1:19000".into()), ..Default::default() },
+            command: Command::WorkerDev {
+                mocks: "m.yaml".into(),
+                workflow: Some("w.json".into()),
+                bind: true,
+                idle_exit: Some(5),
+                max_tasks: Some(3),
+                show_payloads: true
+            }
+        }
+    );
+    assert_eq!(
+        parse(&argv("doctor --json --nats nats://127.0.0.1:14222"))
+            .expect("parses")
+            .command,
+        Command::Doctor {
+            json: true,
+            nats: Some("nats://127.0.0.1:14222".into())
+        }
+    );
+    assert_eq!(
+        parse(&argv("new compensation ./payments --force"))
+            .expect("parses")
+            .command,
+        Command::New {
+            template: Some("compensation".into()),
+            dir: Some("./payments".into()),
+            force: true
+        }
+    );
+    assert_eq!(
+        parse(&argv("new --list")).expect("parses").command,
+        Command::New {
+            template: None,
+            dir: None,
+            force: false
+        }
+    );
+}
+
+#[test]
+fn the_new_commands_name_what_is_wrong() {
+    for (line, mentions) in [
+        ("workflow", "workflow needs a command"),
+        (
+            "workflow frobnicate",
+            "'workflow frobnicate' is not a command",
+        ),
+        ("workflow validate", "the document (a file) is required"),
+        (
+            "workflow validate a.json b.json",
+            "unexpected argument 'b.json'",
+        ),
+        ("workflow run", "the name of the workflow is required"),
+        (
+            "workflow run checkout --timeout 0",
+            "--timeout is a number of seconds",
+        ),
+        (
+            "workflow run checkout --timeout 999999",
+            "--timeout is a number of seconds",
+        ),
+        ("workflow inspect not-an-id", "the run is given by its id"),
+        ("workflow inspect ../../x", "the run is given by its id"),
+        (
+            "workflow cancel 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8",
+            "--reason is required",
+        ),
+        ("script", "script needs a command"),
+        ("script frobnicate", "'script frobnicate' is not a command"),
+        ("script test", "the script (a file) is required"),
+        ("worker", "worker needs a command"),
+        ("worker dev", "--mocks is required"),
+        ("worker nap", "'worker nap' is not a command"),
+        ("new", "a template is required"),
+        ("doctor extra", "unexpected argument 'extra'"),
+        ("validate extra", "unexpected argument 'extra'"),
+    ] {
+        let error = parse(&argv(line)).expect_err(line);
+        assert!(error.0.contains(mentions), "{line}: {}", error.0);
+    }
+}
+
+#[test]
+fn the_usage_names_every_command_the_parser_takes() {
+    for command in [
+        "doctor",
+        "new <TEMPLATE>",
+        "workflow validate",
+        "workflow publish",
+        "workflow run",
+        "workflow runs",
+        "workflow inspect",
+        "workflow cancel",
+        "script test",
+        "script publish",
+        "worker dev",
+        "validate",
+        "diff",
+        "export",
+        "publish",
+        "promote",
+        "rollback",
+        "history",
+        "requests",
+        "approve",
+        "reject",
+    ] {
+        assert!(
+            sagat_cli::args::USAGE.contains(command),
+            "the usage does not mention {command}"
+        );
+    }
+    assert!(sagat_cli::args::USAGE.contains("6 the run did not finish in time"));
+}

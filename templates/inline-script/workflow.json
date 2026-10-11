@@ -1,0 +1,20 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "enrich-order",
+    "description": "Runs a small script in the sandbox to enrich an order, then hands the result to a worker."
+  },
+  "entrypoint": "enrich",
+  "triggers": [{ "kind": "manual" }],
+  "nodes": [
+    {
+      "id": "enrich",
+      "type": "script",
+      "language": "typescript",
+      "artifactDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "next": "store"
+    },
+    { "id": "store", "type": "activity", "activity": "orders.store" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "on-order-created",
+    "description": "Starts a run for every order.created event published through the API."
+  },
+  "entrypoint": "handle",
+  "triggers": [{ "kind": "event", "source": "api", "eventType": "order.created" }],
+  "nodes": [
+    { "id": "handle", "type": "activity", "activity": "orders.handle" }
+  ]
+}

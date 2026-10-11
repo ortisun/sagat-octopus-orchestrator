@@ -1,0 +1,3 @@
+activities:
+  orders.handle:
+    echo: true

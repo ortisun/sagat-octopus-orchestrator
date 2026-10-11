@@ -3677,15 +3677,19 @@ dependencies = [
 name = "sagat-cli"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "reqwest",
  "rustls",
+ "sagat-api-grpc",
  "sagat-application",
+ "sagat-domain",
  "sagat-infra-ir",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.11.0",
  "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -4984,6 +4988,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "rustls-native-certs",
  "socket2",
  "sync_wrapper",
  "tokio",
