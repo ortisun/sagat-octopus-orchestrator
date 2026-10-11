@@ -22,14 +22,18 @@ workerPoolAutoscaling: {prometheusAddress: "http://prometheus.monitoring:9090"}
 networkPolicy:
   apiFrom:
     - podSelector:
-        matchLabels: {app.kubernetes.io/name: sagat-octopus-orchestrator}
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
         matchExpressions:
           - key: app.kubernetes.io/component
             operator: In
             values: [worker-render, worker-export]
   workersFrom:
     - podSelector:
-        matchLabels: {app.kubernetes.io/name: sagat-octopus-orchestrator}
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
         matchExpressions:
           - key: app.kubernetes.io/component
             operator: In

@@ -28,6 +28,13 @@ fn base() -> Value {
     serde_yaml_ng::from_str(&fixture("base.yaml")).expect("base.yaml is YAML")
 }
 
+fn ha_example() -> Value {
+    let path = repo().join("infra/helm/examples/ha.yaml");
+    let yaml = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    serde_yaml_ng::from_str(&yaml).expect("HA example is YAML")
+}
+
 /// `base()` with `changes` laid over it (objects are merged, anything else replaced).
 fn with(changes: &Value) -> Value {
     fn merge(into: &mut Value, from: &Value) {
@@ -119,6 +126,49 @@ fn has_rule_for_port(policy: &Value, direction: &str, port: u64, protocol: &str)
             })
         })
     })
+}
+
+fn selector_matches(selector: &Value, labels: &Value) -> bool {
+    let exact = selector["matchLabels"]
+        .as_object()
+        .is_none_or(|required| required.iter().all(|(key, value)| labels[key] == *value));
+    let expressions = selector["matchExpressions"]
+        .as_array()
+        .is_none_or(|required| {
+            required.iter().all(|expression| {
+                let key = expression["key"].as_str().expect("selector expression key");
+                let candidate = labels[key].as_str();
+                match expression["operator"].as_str() {
+                    Some("In") => {
+                        candidate.is_some()
+                            && expression["values"].as_array().is_some_and(|values| {
+                                values.iter().any(|value| value.as_str() == candidate)
+                            })
+                    }
+                    Some("NotIn") => {
+                        candidate.is_some()
+                            && expression["values"].as_array().is_some_and(|values| {
+                                values.iter().all(|value| value.as_str() != candidate)
+                            })
+                    }
+                    Some("Exists") => candidate.is_some(),
+                    Some("DoesNotExist") => candidate.is_none(),
+                    operator => panic!("unsupported selector operator {operator:?}"),
+                }
+            })
+        });
+    exact && expressions
+}
+
+fn pod_only_peer_matches(
+    peer: &Value,
+    policy_namespace: &str,
+    pod_namespace: &str,
+    labels: &Value,
+) -> bool {
+    peer.get("namespaceSelector").is_none()
+        && policy_namespace == pod_namespace
+        && selector_matches(&peer["podSelector"], labels)
 }
 
 /// The environment of the first container, name to value (a reference to a Secret or a field is
@@ -378,6 +428,47 @@ fn the_admin_ports_answer_the_monitoring_namespace_only() {
         }
     })));
     assert!(of_kind(&off, "NetworkPolicy").is_empty());
+}
+
+#[test]
+fn the_ha_worker_is_admitted_to_platform_apis_only_by_its_release_identity() {
+    let docs = render(&ha_example());
+    let worker = named(
+        &docs,
+        "Deployment",
+        "sagat-octopus-orchestrator-worker-payments",
+    );
+    let labels = &worker["spec"]["template"]["metadata"]["labels"];
+    assert_eq!(labels["app.kubernetes.io/instance"], "sagat");
+
+    for (policy_name, port) in [
+        ("sagat-octopus-orchestrator-control-plane", 8080),
+        ("sagat-octopus-orchestrator-engine", 9000),
+    ] {
+        let policy = named(&docs, "NetworkPolicy", policy_name);
+        let peers = rule_for_port(policy, "ingress", port, "TCP")["from"]
+            .as_array()
+            .expect("API ingress peers");
+        let admitted = |namespace: &str, candidate: &Value| {
+            peers
+                .iter()
+                .any(|peer| pod_only_peer_matches(peer, "default", namespace, candidate))
+        };
+        assert!(
+            admitted("default", labels),
+            "{policy_name} must admit the worker labels rendered by this release"
+        );
+
+        let mut other_release = labels.clone();
+        other_release["app.kubernetes.io/instance"] = Value::String("other".to_owned());
+        assert!(!admitted("default", &other_release));
+
+        let mut other_component = labels.clone();
+        other_component["app.kubernetes.io/component"] =
+            Value::String("worker-untrusted".to_owned());
+        assert!(!admitted("default", &other_component));
+        assert!(!admitted("other", labels));
+    }
 }
 
 #[test]

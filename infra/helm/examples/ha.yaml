@@ -87,10 +87,20 @@ networkPolicy:
         matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
       podSelector:
         matchLabels: {app.kubernetes.io/name: ingress-nginx}
-  workersFrom:
-    # A podSelector-only peer is limited to this release namespace.
+    # This example assumes the documented `helm install sagat ...` release name. Keep these
+    # identity labels aligned if the release is renamed.
     - podSelector:
-        matchLabels: {sagat.io/pool: payments}
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
+          app.kubernetes.io/component: worker-payments
+  workersFrom:
+    # A podSelector-only peer is also limited to this release namespace.
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
+          app.kubernetes.io/component: worker-payments
   egress:
     dnsTo:
       - namespaceSelector:
