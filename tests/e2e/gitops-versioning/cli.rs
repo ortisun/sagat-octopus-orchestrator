@@ -349,3 +349,47 @@ async fn the_tool_says_what_is_missing_and_never_sends_a_token_where_it_would_be
         .expect(2)
         .mentions("USAGE");
 }
+
+#[tokio::test]
+async fn a_reason_that_would_rewrite_the_terminal_is_refused_by_the_platform() {
+    let p = platform().await;
+    p.grant(p.tenant, "dev1", Role::Developer).await;
+    p.grant(p.tenant, "dev2", Role::Developer).await;
+    let (_, workspaces) = rest_in(&p, "alice", DEV, Method::GET, "/workspaces", None).await;
+    let workspace = workspaces["items"][0]["id"].as_str().expect("workspace");
+    let (status, _) = rest_in(
+        &p,
+        "alice",
+        DEV,
+        Method::POST,
+        &format!("/workspaces/{workspace}/namespaces"),
+        Some(&json!({"slug": PROD, "environment": "prod"})),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let dir = Dir::new();
+    dir.document("checkout", &flow("checkout", "one"));
+    dir.manifest(PROD, &["checkout"]);
+    cli(&p, &dir, "dev1", &["publish"]).await.expect(3);
+    let listed = cli(&p, &dir, "dev1", &["requests", "--workflow", "checkout"]).await;
+    let request = listed.out.split_whitespace().next().expect("id").to_owned();
+
+    // The platform refuses a reason with control characters in it: an escape sequence that clears
+    // the screen, a carriage return that would hide the start of a line. The tool shows nothing of the
+    // kind either (`printable`, tested in the crate of the tool), in case it ever talks to a platform
+    // that does not.
+    let reason = "\u{1b}[2J\u{1b}[31mlooks right\u{1b}[0m\rAPPROVED BY SECURITY";
+    let (status, answer) = rest_in(
+        &p,
+        "dev2",
+        PROD,
+        Method::POST,
+        &format!("/publication-requests/{request}/approve"),
+        Some(&json!({"reason": reason})),
+    )
+    .await;
+    assert_eq!(status, 422, "{answer}");
+    let shown = cli(&p, &dir, "dev1", &["requests", "--workflow", "checkout"]).await;
+    shown.expect(0);
+    assert!(!shown.all().contains('\u{1b}') && !shown.all().contains('\r'));
+}

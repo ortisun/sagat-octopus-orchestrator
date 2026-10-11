@@ -69,15 +69,40 @@ pub(crate) struct Io<'a> {
     err: &'a mut dyn Write,
 }
 
+/// A line as it may be shown on a terminal. Much of what is printed was written by somebody else (a
+/// reason typed by an approver, a name or a message from the platform): a control character in it
+/// (an escape sequence that rewrites the screen, a carriage return that hides the start of the
+/// line) is shown as `?`. New lines and tabs are the layout of the tool's own text and stay.
+#[must_use]
+pub fn printable(line: &str) -> std::borrow::Cow<'_, str> {
+    if line
+        .chars()
+        .all(|c| !c.is_control() || c == '\n' || c == '\t')
+    {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    std::borrow::Cow::Owned(
+        line.chars()
+            .map(|c| {
+                if c.is_control() && c != '\n' && c != '\t' {
+                    '?'
+                } else {
+                    c
+                }
+            })
+            .collect(),
+    )
+}
+
 impl Io<'_> {
     /// A line of the result.
     pub(crate) fn say(&mut self, line: impl AsRef<str>) {
-        let _ = writeln!(self.out, "{}", line.as_ref());
+        let _ = writeln!(self.out, "{}", printable(line.as_ref()));
     }
 
     /// A line the person must see even when the result is piped away.
     pub(crate) fn warn(&mut self, line: impl AsRef<str>) {
-        let _ = writeln!(self.err, "{}", line.as_ref());
+        let _ = writeln!(self.err, "{}", printable(line.as_ref()));
     }
 }
 

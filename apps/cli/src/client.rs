@@ -79,6 +79,9 @@ impl std::fmt::Display for CallError {
     }
 }
 
+/// The most of an answer this tool reads: a page of drafts of the largest size the platform keeps.
+const MAX_ANSWER: usize = 128 * 1024 * 1024;
+
 /// The platform, a token and a namespace.
 pub struct Client {
     http: reqwest::Client,
@@ -196,10 +199,20 @@ impl Client {
             })
         })?;
         let status = response.status().as_u16();
-        let bytes = response
-            .bytes()
+        let mut response = response;
+        let mut bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?;
+            .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?
+        {
+            if bytes.len() + chunk.len() > MAX_ANSWER {
+                return Err(CallError::Transport(
+                    "the answer is larger than this tool reads".to_owned(),
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         Ok((status, value))
     }

@@ -141,3 +141,19 @@ fn a_token_cannot_be_given_as_an_argument() {
         assert!(parse(&argv(line)).is_err(), "{line}");
     }
 }
+
+#[test]
+fn what_is_shown_on_a_terminal_has_no_control_characters_but_the_layout() {
+    use sagat_cli::printable;
+    assert_eq!(
+        printable("plain text, with accents é and tabs\t"),
+        "plain text, with accents é and tabs\t"
+    );
+    assert_eq!(
+        printable("\u{1b}[2J\u{1b}[31mred\u{1b}[0m"),
+        "?[2J?[31mred?[0m"
+    );
+    assert_eq!(printable("hidden\rAPPROVED"), "hidden?APPROVED");
+    assert_eq!(printable("a\u{7f}b\u{85}c\u{0}d"), "a?b?c?d");
+    assert_eq!(printable("two\nlines"), "two\nlines");
+}

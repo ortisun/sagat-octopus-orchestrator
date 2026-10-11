@@ -12,7 +12,9 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde_json::{Map, Number, Value};
+use std::cell::Cell;
 
 /// The `apiVersion` of the manifest.
 pub const API_VERSION: &str = "sagat-octopus-orchestrator.io/v1";
@@ -90,17 +92,128 @@ pub fn stays_below(file: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
+/// What a document may expand to once YAML aliases are followed, counted as 16 bytes a node and the
+/// bytes of every string. A document of [`MAX_BYTES`] without aliases cannot come near it; a "billion
+/// laughs" document is stopped long before it fills the memory of a pipeline.
+const MAX_EXPANDED: usize = 32 * 1024 * 1024;
+
+/// Reads YAML into a JSON value, refusing one that expands beyond [`MAX_EXPANDED`].
+fn yaml_value(text: &str) -> Result<Value, String> {
+    let spent = Cell::new(0usize);
+    let deserializer = serde_yaml_ng::Deserializer::from_str(text);
+    let mut documents = deserializer.into_iter();
+    let value = match documents.next() {
+        Some(document) => Bounded(&spent)
+            .deserialize(document)
+            .map_err(|e| e.to_string())?,
+        None => Value::Null,
+    };
+    if documents.next().is_some() {
+        return Err("more than one YAML document in the file".to_owned());
+    }
+    Ok(value)
+}
+
+struct Bounded<'a>(&'a Cell<usize>);
+
+impl<'de> DeserializeSeed<'de> for Bounded<'_> {
+    type Value = Value;
+
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl Bounded<'_> {
+    fn spend<E: de::Error>(&self, bytes: usize) -> Result<(), E> {
+        let used = self.0.get().saturating_add(16).saturating_add(bytes);
+        if used > MAX_EXPANDED {
+            return Err(E::custom(
+                "the document expands to more than the platform could take (YAML aliases that repeat themselves?)",
+            ));
+        }
+        self.0.set(used);
+        Ok(())
+    }
+}
+
+impl<'de> Visitor<'de> for Bounded<'_> {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("any value")
+    }
+
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Value, E> {
+        self.spend(0)?;
+        Ok(Value::Bool(v))
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Value, E> {
+        self.spend(0)?;
+        Ok(Value::from(v))
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Value, E> {
+        self.spend(0)?;
+        Ok(Value::from(v))
+    }
+
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Value, E> {
+        self.spend(0)?;
+        Ok(Number::from_f64(v).map_or(Value::Null, Value::Number))
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Value, E> {
+        self.spend(v.len())?;
+        Ok(Value::String(v.to_owned()))
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Value, E> {
+        self.spend(0)?;
+        Ok(Value::Null)
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Value, E> {
+        self.visit_unit()
+    }
+
+    fn visit_some<D: de::Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        self.spend(0)?;
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element_seed(Bounded(self.0))? {
+            items.push(item);
+        }
+        Ok(Value::Array(items))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        self.spend(0)?;
+        let mut entries = Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            self.spend(key.len())?;
+            entries.insert(key, map.next_value_seed(Bounded(self.0))?);
+        }
+        Ok(Value::Object(entries))
+    }
+}
+
 impl Manifest {
     /// Reads a manifest from `text`, as JSON or as YAML.
     ///
     /// # Errors
     /// A [`Problem`] naming what could not be read.
     pub fn parse(text: &str, yaml: bool) -> Result<Self, Problem> {
-        if yaml {
-            serde_yaml_ng::from_str(text).map_err(|e| problem("manifest", e.to_string()))
+        let value = if yaml {
+            yaml_value(text).map_err(|e| problem("manifest", e))?
         } else {
-            serde_json::from_str(text).map_err(|e| problem("manifest", e.to_string()))
-        }
+            serde_json::from_str::<Value>(text).map_err(|e| problem("manifest", e.to_string()))?
+        };
+        serde_json::from_value(value).map_err(|e| problem("manifest", e.to_string()))
     }
 
     /// Everything wrong with the manifest as written, found in one pass.
@@ -251,7 +364,7 @@ pub fn load(path: &Path) -> Result<(Manifest, Vec<Loaded>), Vec<Problem>> {
             }
         };
         let value: Result<Value, String> = if is_yaml(&file) {
-            serde_yaml_ng::from_str(&text).map_err(|e| e.to_string())
+            yaml_value(&text)
         } else {
             serde_json::from_str(&text).map_err(|e| e.to_string())
         };

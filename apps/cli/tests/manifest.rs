@@ -232,3 +232,47 @@ fn a_manifest_that_does_not_exist_is_said_so() {
     let problems = problems_of(&dir, "nowhere.yaml").join("\n");
     assert!(problems.contains("nowhere.yaml"), "{problems}");
 }
+
+#[test]
+fn a_yaml_document_that_expands_without_end_is_stopped_not_followed() {
+    // Each level repeats the one before ten times: a thousand million nodes from a few hundred bytes.
+    let mut text = String::from(
+        "metadata:\n  name: checkout\nlevel0: &l0 [lol, lol, lol, lol, lol, lol, lol, lol, lol, lol]\n",
+    );
+    for level in 1..=9 {
+        let before = vec![format!("*l{}", level - 1); 10].join(", ");
+        text.push_str(&format!("level{level}: &l{level} [{before}]\n"));
+    }
+    text.push_str("bomb: *l9\n");
+    let dir = Dir::new();
+    dir.write("workflows/checkout.yaml", &text);
+    dir.write(
+        "m.yaml",
+        &manifest_text("  - name: checkout\n    file: workflows/checkout.yaml\n"),
+    );
+    let started = std::time::Instant::now();
+    let problems = problems_of(&dir, "m.yaml").join("\n");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "it took {:?}",
+        started.elapsed()
+    );
+    // The YAML reader has a limit of its own on how often an alias may be repeated and stops it first;
+    // the tool's bound on what a document expands to is the second line.
+    assert!(
+        problems.contains("repetition limit exceeded") || problems.contains("expands to more than"),
+        "{problems}"
+    );
+
+    // An anchor that is used the way people use them is fine.
+    let mut fine =
+        String::from("metadata:\n  name: checkout\ndefaults: &d {retries: 3}\nuses: *d\n");
+    fine.push_str("kind: workflow\n");
+    dir.write("workflows/checkout.yaml", &fine);
+    let (_, loaded) = manifest::load(&dir.0.join("m.yaml")).expect("loads");
+    assert_eq!(loaded[0].value["uses"]["retries"], 3);
+
+    // And so is a manifest in YAML with two documents, which is not one.
+    let two = format!("{}---\nsecond: true\n", manifest_text(""));
+    assert!(Manifest::parse(&two, true).is_err());
+}
