@@ -36,7 +36,7 @@ Enable safe adoption by product, backend and operations teams without manually c
 - Latency and overhead benchmarks on the critical path defined for this feature.
 - Detail compliance and retention requirements according to the deployment environment.
 
-## What was decided while building it (D206–D228) and what is left (G215–G237)
+## What was decided while building it (D206–D228) and what is left (G215–G238)
 
 Numbering continues after feature 011 (D183–D205, G193–G214). The decision is
 [ADR-0019](../../docs/adr/ADR-0019-the-first-day-runs-on-the-real-engine-with-canned-answers-and-a-development-identity-provider.md);
@@ -206,3 +206,8 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
   closed) while `docker compose up -d` succeeds.
 - **G237 — The Studio's autosave unit tests are timing-sensitive.** Three of them failed once while the whole workspace was being
   tested at the same time and passed on a quiet machine (feature 007's, unchanged here).
+- **G238 — The tooling sends no telemetry of its own.** There is no metric of onboarding (how many first days, how long, where they
+  stopped), no span from the tool, and no log it keeps: `FR-012-006` is met by diagnostics (`doctor`, the errors page) and by a
+  benchmark, not by instrumentation. The calls the tool makes are request spans of the platform like any other, and a run it starts
+  has a trace id it shows; what a person did, and where they got stuck, is not recorded anywhere. Whether to measure it at all is a
+  product decision (it would be a tool that phones home).
