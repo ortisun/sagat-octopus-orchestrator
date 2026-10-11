@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use sagat_application::entropy::Entropy;
 use sagat_application::maintenance::{EventPublisher, OutboxMessage, OutboxStore, PublishError};
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// Tunable limits of the dispatcher.
@@ -99,14 +100,18 @@ where
         let mut delivered: Vec<Uuid> = Vec::with_capacity(claimed.len());
         let mut outcome = Dispatched::default();
         for message in &claimed {
-            let published = match subject_of(message) {
-                Ok(subject) => {
-                    self.publisher
-                        .publish(&subject, &message.id.to_string(), &message.payload)
-                        .await
+            let published = async {
+                match subject_of(message) {
+                    Ok(subject) => {
+                        self.publisher
+                            .publish(&subject, &message.id.to_string(), &message.payload)
+                            .await
+                    }
+                    Err(rejected) => Err(rejected),
                 }
-                Err(rejected) => Err(rejected),
-            };
+            }
+            .instrument(publish_span(message))
+            .await;
             match published {
                 Ok(()) => {
                     delivered.push(message.id);
@@ -160,6 +165,29 @@ where
         let half = uncapped / 2;
         half + half.mul_f64(self.entropy.unit().clamp(0.0, 1.0))
     }
+}
+
+/// The span of publishing one message, in the trace of the run it is about when the message says
+/// which (a `task.ready` hint does: it carries the run and its trace).
+fn publish_span(message: &OutboxMessage) -> tracing::Span {
+    let fields: Option<serde_json::Value> = serde_json::from_slice(&message.payload).ok();
+    let text = |name: &str| {
+        fields
+            .as_ref()
+            .and_then(|f| f.get(name))
+            .and_then(serde_json::Value::as_str)
+    };
+    let parent = text("runId")
+        .and_then(|run| Uuid::parse_str(run).ok())
+        .map(|run| sagat_telemetry::run_span_id(run).to_string());
+    tracing::info_span!(
+        "outbox.publish",
+        event = known(&message.event_type),
+        trace_id = text("traceId"),
+        parent_span_id = parent,
+        otel.kind = "producer",
+        attempt = message.attempt_count,
+    )
 }
 
 /// The metric label of an event type: a closed set, never caller-controlled text.

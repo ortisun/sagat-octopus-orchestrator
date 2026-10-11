@@ -235,9 +235,9 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id) \
+                 depth, root_run_id, trace_parent_span) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16)",
+                         $12, $13, $14, $15, $16, $17)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -255,6 +255,7 @@ impl RunStore for PgRunStore {
             .bind(info.parent.as_ref().map(|p| p.cancel_policy.as_str()))
             .bind(i16::from(info.depth))
             .bind(info.root.as_uuid())
+            .bind(info.parent_span.as_deref())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -401,7 +402,7 @@ impl RunStore for PgRunStore {
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-                    cancel_policy, depth \
+                    cancel_policy, depth, trace_parent_span \
              FROM runs \
              WHERE tenant_id = $1 AND namespace_id = $2 \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -677,19 +678,20 @@ async fn claim_reservation(
 
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
-     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth \
+     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
+     trace_parent_span \
      FROM runs WHERE tenant_id = $1 AND id = $2";
 
 const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE";
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE SKIP LOCKED";
 
 fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
@@ -721,6 +723,7 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             started_by: col(row, "started_by")?,
             correlation_id: col(row, "correlation_id")?,
             trace_id: col(row, "trace_id")?,
+            parent_span: col(row, "trace_parent_span")?,
             deadline_at: col(row, "deadline_at")?,
             created_at: col(row, "created_at")?,
             parent: parent_link(row)?,
@@ -1479,6 +1482,7 @@ impl PgRunTx {
             "namespaceId": self.info.namespace_id.to_string(),
             "runId": self.info.run_id.to_string(),
             "status": status.as_str(),
+            "traceId": self.info.trace_id,
         }))
         .execute(&mut *self.tx)
         .await
@@ -1499,6 +1503,8 @@ impl PgRunTx {
                 "runId": self.info.run_id.to_string(),
                 "workflow": self.def.name().as_str(),
                 "status": status.as_str(),
+                // So a subscriber can put what it does about the run in the run's trace.
+                "traceId": self.info.trace_id,
             },
         });
         crate::outbound::fan_out(

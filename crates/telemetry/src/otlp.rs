@@ -510,6 +510,9 @@ struct Open {
 
 #[derive(Default)]
 struct Fields {
+    /// `otel.sampled = false` keeps a span (and the spans under it) out of the export whatever the
+    /// ratio says: the span of a poll that belongs to no trace worth keeping.
+    sampled: Option<bool>,
     trace_id: Option<TraceId>,
     span_id: Option<SpanId>,
     parent: Option<SpanId>,
@@ -568,6 +571,10 @@ impl Visit for Fields {
         self.set_attribute(field.name(), value);
     }
     fn record_bool(&mut self, field: &Field, value: bool) {
+        if field.name() == "otel.sampled" {
+            self.sampled = Some(value);
+            return;
+        }
         self.set_attribute(field.name(), AttrValue::Bool(value));
     }
     fn record_f64(&mut self, field: &Field, value: f64) {
@@ -631,6 +638,7 @@ where
             }
             (None, None) => return,
         };
+        let sampled = sampled && fields.sampled.unwrap_or(true);
         span.extensions_mut().insert(Open {
             trace_id,
             span_id: fields.span_id.unwrap_or_else(SpanId::generate),
@@ -717,7 +725,11 @@ impl OtlpConfig {
         get: &dyn Fn(&str) -> Option<String>,
         default_service: &str,
     ) -> Result<Option<Self>, OtlpConfigError> {
-        let var = |name: &str| get(name).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let var = |name: &str| {
+            get(name)
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        };
         if var("OTEL_SDK_DISABLED").is_some_and(|v| v.eq_ignore_ascii_case("true")) {
             return Ok(None);
         }
@@ -735,13 +747,21 @@ impl OtlpConfig {
             return Err(invalid(name, "must be an http:// or https:// URL"));
         }
         let authority = endpoint.split("://").nth(1).unwrap_or_default();
-        if authority.split('/').next().unwrap_or_default().contains('@') {
+        if authority
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .contains('@')
+        {
             return Err(invalid(
                 name,
                 "must not carry a user name or password; use OTEL_EXPORTER_OTLP_HEADERS",
             ));
         }
-        for protocol_var in ["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "OTEL_EXPORTER_OTLP_PROTOCOL"] {
+        for protocol_var in [
+            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+        ] {
             if let Some(protocol) = var(protocol_var).filter(|p| p != "http/json") {
                 return Err(invalid(
                     "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -751,13 +771,22 @@ impl OtlpConfig {
         }
         let service = var("OTEL_SERVICE_NAME").unwrap_or_else(|| default_service.to_owned());
         let mut config = Self::new(endpoint, service);
-        if let Some(headers) = var("OTEL_EXPORTER_OTLP_TRACES_HEADERS").or_else(|| var("OTEL_EXPORTER_OTLP_HEADERS")) {
+        if let Some(headers) =
+            var("OTEL_EXPORTER_OTLP_TRACES_HEADERS").or_else(|| var("OTEL_EXPORTER_OTLP_HEADERS"))
+        {
             for pair in headers.split(',').map(str::trim).filter(|p| !p.is_empty()) {
                 let (key, value) = pair
                     .split_once('=')
                     .filter(|(k, _)| !k.trim().is_empty())
-                    .ok_or_else(|| invalid("OTEL_EXPORTER_OTLP_HEADERS", "expected name=value pairs separated by commas"))?;
-                config.headers.push((key.trim().to_owned(), value.trim().to_owned()));
+                    .ok_or_else(|| {
+                        invalid(
+                            "OTEL_EXPORTER_OTLP_HEADERS",
+                            "expected name=value pairs separated by commas",
+                        )
+                    })?;
+                config
+                    .headers
+                    .push((key.trim().to_owned(), value.trim().to_owned()));
             }
         }
         let ratio_arg = var("OTEL_TRACES_SAMPLER_ARG");
@@ -766,11 +795,18 @@ impl OtlpConfig {
             Some("always_off" | "parentbased_always_off") => 0.0,
             Some("traceidratio" | "parentbased_traceidratio") => ratio_arg
                 .as_deref()
-                .ok_or_else(|| invalid("OTEL_TRACES_SAMPLER_ARG", "the ratio is required by this sampler"))?
+                .ok_or_else(|| {
+                    invalid(
+                        "OTEL_TRACES_SAMPLER_ARG",
+                        "the ratio is required by this sampler",
+                    )
+                })?
                 .parse::<f64>()
                 .ok()
                 .filter(|r| (0.0..=1.0).contains(r))
-                .ok_or_else(|| invalid("OTEL_TRACES_SAMPLER_ARG", "must be a number from 0 to 1"))?,
+                .ok_or_else(|| {
+                    invalid("OTEL_TRACES_SAMPLER_ARG", "must be a number from 0 to 1")
+                })?,
             Some(other) => {
                 return Err(invalid(
                     "OTEL_TRACES_SAMPLER",
@@ -783,14 +819,24 @@ impl OtlpConfig {
                 .parse::<usize>()
                 .ok()
                 .filter(|n| (16..=65_536).contains(n))
-                .ok_or_else(|| invalid("SAGAT_OTLP_QUEUE_CAPACITY", "must be a number from 16 to 65536"))?;
+                .ok_or_else(|| {
+                    invalid(
+                        "SAGAT_OTLP_QUEUE_CAPACITY",
+                        "must be a number from 16 to 65536",
+                    )
+                })?;
         }
         if let Some(raw) = var("OTEL_EXPORTER_OTLP_TIMEOUT") {
             let millis = raw
                 .parse::<u64>()
                 .ok()
                 .filter(|n| (100..=60_000).contains(n))
-                .ok_or_else(|| invalid("OTEL_EXPORTER_OTLP_TIMEOUT", "must be milliseconds from 100 to 60000"))?;
+                .ok_or_else(|| {
+                    invalid(
+                        "OTEL_EXPORTER_OTLP_TIMEOUT",
+                        "must be milliseconds from 100 to 60000",
+                    )
+                })?;
             config.timeout = Duration::from_millis(millis);
         }
         Ok(Some(config))

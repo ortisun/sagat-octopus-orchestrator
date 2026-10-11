@@ -120,6 +120,8 @@ pub struct ClaimedEvent {
     pub received_at: OffsetDateTime,
     /// Dispatches that failed before this one.
     pub attempts: u32,
+    /// The trace the event was published in, when its publisher sent one.
+    pub trace: Option<crate::identity::TraceLink>,
 }
 
 /// An event as expressions and runs see it: the envelope and the data, with the instants already

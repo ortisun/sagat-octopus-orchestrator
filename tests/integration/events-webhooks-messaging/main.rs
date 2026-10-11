@@ -83,6 +83,7 @@ impl Signed {
 
     pub fn request<'a>(&'a self, event_type: Option<&'a str>) -> WebhookRequest<'a> {
         WebhookRequest {
+            trace: None,
             signature: Some(&self.signature),
             timestamp: Some(&self.timestamp),
             event_id: Some(&self.event_id),

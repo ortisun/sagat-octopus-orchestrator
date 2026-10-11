@@ -104,6 +104,7 @@ pub struct World {
 pub fn ctx() -> RequestContext {
     RequestContext {
         trace_id: Some("0af7651916cd43dd8448eb211c80319c".into()),
+        span_id: None,
     }
 }
 

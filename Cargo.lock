@@ -3889,6 +3889,8 @@ dependencies = [
  "metrics",
  "sagat-application",
  "sagat-domain",
+ "sagat-telemetry",
+ "serde_json",
  "time",
  "tracing",
  "uuid",

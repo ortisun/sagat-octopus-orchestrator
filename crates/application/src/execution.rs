@@ -257,6 +257,10 @@ pub struct RunInfo {
     pub started_by: String,
     pub correlation_id: Option<String>,
     pub trace_id: Option<String>,
+    /// The span the run's own span hangs from: the request that started it, or the request that
+    /// published the event that did. None for a child run (its parent's span is its parent) and for
+    /// a run created before spans were recorded.
+    pub parent_span: Option<String>,
     pub deadline_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     /// The run that started this one, when it is a child (`FR-002-009`).

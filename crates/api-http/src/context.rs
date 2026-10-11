@@ -7,7 +7,7 @@ use axum::extract::{MatchedPath, Request};
 use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::middleware::Next;
 use axum::response::Response;
-use sagat_telemetry::{TraceContext, TraceId};
+use sagat_telemetry::{SpanId, TraceContext, TraceId};
 use serde::Serialize;
 use serde_json::Value;
 use tracing::Instrument;
@@ -16,6 +16,10 @@ use crate::error::{ErrorCode, ErrorParts};
 
 static TRACE_ID_HEADER: HeaderName = HeaderName::from_static("x-trace-id");
 static NOSNIFF: HeaderValue = HeaderValue::from_static("nosniff");
+
+/// The span of the request itself: what the work it starts (a run, a published event) hangs from.
+#[derive(Debug, Clone, Copy)]
+pub struct IngressSpan(pub SpanId);
 
 /// The route template a request matched (low-cardinality label for logs and metrics).
 #[derive(Debug, Clone)]
@@ -72,9 +76,23 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
     );
     let trace_id = trace.trace_id();
     request.extensions_mut().insert(trace);
+    // The id is chosen here, not by the exporter, so that the handler can record it on what it
+    // starts: a run's span hangs from the request that started it.
+    let ingress = SpanId::generate();
+    request.extensions_mut().insert(IngressSpan(ingress));
 
     let method = method_label(request.method());
-    let span = tracing::info_span!("http.request", trace_id = %trace_id, method);
+    let span = tracing::info_span!(
+        "http.request",
+        trace_id = %trace_id,
+        span_id = %ingress,
+        parent_span_id = trace.parent_span_id().map(|p| p.to_string()),
+        otel.kind = "server",
+        method,
+        http.route = tracing::field::Empty,
+        http.status_code = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
     let started = Instant::now();
 
     let response = next.run(request).instrument(span.clone()).await;
@@ -83,6 +101,11 @@ pub async fn request_context(mut request: Request, next: Next) -> Response {
         .get::<RouteTemplate>()
         .map_or_else(|| "unmatched".to_owned(), |r| r.0.clone());
     let response = finalize(response, trace_id);
+    span.record("http.route", route.as_str());
+    span.record("http.status_code", response.status().as_u16());
+    if response.status().is_server_error() {
+        span.record("otel.status_code", "error");
+    }
 
     // Low-cardinality labels only: the route TEMPLATE, never the path, tenant or subject, and a
     // method from a closed set (the server accepts any token as a method).

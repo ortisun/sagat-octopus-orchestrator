@@ -684,7 +684,7 @@ where
             })
         })?;
         let key = decoded.envelope.key.clone();
-        let event = crate::events::new_event(
+        let mut event = crate::events::new_event(
             principal.tenant_id(),
             connector.namespace_id,
             decoded.envelope,
@@ -692,6 +692,7 @@ where
             decoded.body,
             sagat_domain::events::DEFAULT_DEDUPE_TTL,
         );
+        event.trace = ctx.link();
         let audit = AuditRecord::by(
             principal,
             AuditAction::ConnectorMessageRedriven,

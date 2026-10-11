@@ -400,6 +400,7 @@ where
             started_by: principal.subject().as_str().to_owned(),
             correlation_id: request.correlation_id.map(str::to_owned),
             trace_id: ctx.trace_id.clone(),
+            parent_span: ctx.span_id.clone(),
             deadline_at: request.deadline,
             created_at: now,
             parent: None,

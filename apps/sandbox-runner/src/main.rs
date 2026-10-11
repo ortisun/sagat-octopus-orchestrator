@@ -55,8 +55,9 @@ async fn run(command: Command) -> Result<(), String> {
         Some("pretty") => LogFormat::Pretty,
         Some(_) => return Err("SAGAT_LOG_FORMAT is json or pretty".to_owned()),
     };
-    let telemetry_config = sagat_control_plane::config::telemetry(&env_lookup, "sagat-sandbox-runner", log_format)
-        .map_err(|e| e.to_string())?;
+    let telemetry_config =
+        sagat_control_plane::config::telemetry(&env_lookup, "sagat-sandbox-runner", log_format)
+            .map_err(|e| e.to_string())?;
     let telemetry = sagat_telemetry::init(telemetry_config);
     let result = serve(&telemetry).await;
     telemetry

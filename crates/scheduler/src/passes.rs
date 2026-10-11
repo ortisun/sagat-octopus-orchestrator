@@ -20,6 +20,7 @@ use sagat_domain::execution::{
 use sagat_domain::identity::TenantId;
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
+use tracing::Instrument;
 
 /// Delivered outbox messages deleted per housekeeping round.
 const PURGE_BATCH: u32 = 5_000;
@@ -269,23 +270,38 @@ where
             else {
                 return Ok(Outcome::Skipped);
             };
-            if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
-                return Ok(Outcome::Skipped);
-            }
-            match self.engine.run(&mut tx, effects, command).await {
-                Ok(()) => {
-                    tx.commit().await.map_err(EngineError::Store)?;
-                    Ok(Outcome::Done)
+            // The work belongs to the trace of the run it acts on, under the run's span (D162):
+            // what the scheduler did to a run is read next to what the run did.
+            let trace = tx.info().trace_id.clone();
+            let span = tracing::info_span!(
+                "scheduler.action",
+                kind,
+                run_id = %run,
+                tenant_id = %tenant,
+                trace_id = trace.as_deref(),
+                parent_span_id = %sagat_telemetry::run_span_id(run.as_uuid()),
+            );
+            async {
+                if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
+                    return Ok(Outcome::Skipped);
                 }
-                // The domain refused: the state moved since the candidate query (a worker
-                // answered, a signal arrived, the run was cancelled). Dropping `tx` rolls back.
-                Err(EngineError::Execution(error))
-                    if !matches!(error, ExecutionError::Invariant(_)) =>
-                {
-                    Ok(Outcome::Skipped)
+                match self.engine.run(&mut tx, effects, command).await {
+                    Ok(()) => {
+                        tx.commit().await.map_err(EngineError::Store)?;
+                        Ok(Outcome::Done)
+                    }
+                    // The domain refused: the state moved since the candidate query (a worker
+                    // answered, a signal arrived, the run was cancelled). Dropping `tx` rolls back.
+                    Err(EngineError::Execution(error))
+                        if !matches!(error, ExecutionError::Invariant(_)) =>
+                    {
+                        Ok(Outcome::Skipped)
+                    }
+                    Err(other) => Err(other),
                 }
-                Err(other) => Err(other),
             }
+            .instrument(span)
+            .await
         }
         .await;
         let outcome = outcome.unwrap_or_else(|error: EngineError| {
@@ -651,6 +667,7 @@ where
                 .to_owned(),
             correlation_id: parent.info.correlation_id.clone(),
             trace_id: parent.info.trace_id.clone(),
+            parent_span: None,
             deadline_at,
             created_at: pending.as_of,
             parent: Some(ParentLink {

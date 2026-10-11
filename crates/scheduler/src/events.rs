@@ -405,6 +405,13 @@ where
             })?;
         let run_id = RunId::generate();
         let now = OffsetDateTime::now_utc();
+        // The run continues the trace of the event that started it when its publisher sent one
+        // (G79); a run started by the clock, or by an event with no trace, begins a trace of its own,
+        // so that every run can be followed from its first step to its last.
+        let (trace_id, parent_span) = match firing.event.and_then(|event| event.trace.as_ref()) {
+            Some(link) => (link.trace_id.clone(), link.parent_span.clone()),
+            None => (sagat_telemetry::TraceId::generate().to_string(), None),
+        };
         let info = RunInfo {
             run_id,
             tenant_id: tenant,
@@ -415,7 +422,8 @@ where
                 .as_str()
                 .to_owned(),
             correlation_id: None,
-            trace_id: None,
+            trace_id: Some(trace_id.clone()),
+            parent_span,
             deadline_at: None,
             created_at: now,
             parent: None,
@@ -428,7 +436,7 @@ where
             ResourceType::Run,
             run_id.to_string(),
             firing.reason.clone(),
-            None,
+            Some(trace_id),
             now,
         );
         let limits = RunLimits::of(&self.store, tenant, trigger.namespace_id).await?;
