@@ -26,6 +26,28 @@ use crate::pool::BeginSafely;
 /// The name of the monitor's lease.
 pub const MONITOR_LEASE: &str = "operations-monitor";
 
+/// The audit read. Newest first by the columns of `audit_records_tenant_created_idx`, so that the
+/// read of one tenant walks that tenant's records and not the table: ordering by the primary key
+/// walks it backwards across every tenant until it has found a page.
+pub const READ_AUDIT_SQL: &str = "SELECT id, actor, action, resource_type, resource_id, reason, trace_id, created_at \
+     FROM audit_records \
+     WHERE tenant_id = $1 \
+       AND ($2::text IS NULL OR action = $2) \
+       AND ($3::text IS NULL OR resource_type = $3) \
+       AND ($4::text IS NULL OR resource_id = $4) \
+       AND ($5::text IS NULL OR actor = $5) \
+       AND ($6::timestamptz IS NULL OR created_at >= $6) \
+       AND ($7::timestamptz IS NULL OR created_at < $7) \
+       AND ($8::uuid IS NULL OR (created_at, id) < ( \
+            SELECT c.created_at, c.id FROM audit_records c WHERE c.id = $8 AND c.tenant_id = $1)) \
+       AND NOT (action = ANY($10)) \
+     ORDER BY created_at DESC, id DESC LIMIT $9";
+
+/// The key of the lock that couples a drain with the polls that lease for the identity.
+pub(crate) fn drain_lock_key(tenant: TenantId, namespace: NamespaceId, subject: &str) -> String {
+    format!("drain:{tenant}:{namespace}:{subject}")
+}
+
 fn secs(duration: Duration) -> f64 {
     duration.as_secs_f64()
 }
@@ -603,6 +625,13 @@ impl WorkerAdmin for PgRunStore {
         audit: &sagat_domain::audit::AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        // Waits for the polls that are deciding whether to lease for this identity, and keeps the
+        // later ones out until it commits: none is handed work after this call returns.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(drain_lock_key(tenant, namespace, &record.subject))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         sqlx::query(
             "INSERT INTO worker_drains (tenant_id, namespace_id, subject, reason, drained_by) \
              VALUES ($1, $2, $3, $4, $5) \
@@ -629,6 +658,11 @@ impl WorkerAdmin for PgRunStore {
         audit: &sagat_domain::audit::AuditRecord,
     ) -> Result<bool, StoreError> {
         let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(drain_lock_key(tenant, namespace, subject))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         let removed = sqlx::query(
             "DELETE FROM worker_drains WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
         )
@@ -658,38 +692,25 @@ impl AuditStore for PgRunStore {
         reading: &sagat_domain::audit::AuditRecord,
     ) -> Result<Vec<AuditEntry>, StoreError> {
         let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
-        let rows = sqlx::query(
-            "SELECT id, actor, action, resource_type, resource_id, reason, trace_id, created_at \
-             FROM audit_records \
-             WHERE tenant_id = $1 \
-               AND ($2::text IS NULL OR action = $2) \
-               AND ($3::text IS NULL OR resource_type = $3) \
-               AND ($4::text IS NULL OR resource_id = $4) \
-               AND ($5::text IS NULL OR actor = $5) \
-               AND ($6::timestamptz IS NULL OR created_at >= $6) \
-               AND ($7::timestamptz IS NULL OR created_at < $7) \
-               AND ($8::uuid IS NULL OR id < $8) \
-               AND NOT (action = ANY($10)) \
-             ORDER BY id DESC LIMIT $9",
-        )
-        .bind(tenant.as_uuid())
-        .bind(filter.action.as_deref())
-        .bind(filter.resource_type.as_deref())
-        .bind(filter.resource_id.as_deref())
-        .bind(filter.actor.as_deref())
-        .bind(filter.from)
-        .bind(filter.to)
-        .bind(before)
-        .bind(i64::from(limit))
-        .bind(
-            sagat_domain::audit::AuditAction::WITHHELD_FROM_TENANT
-                .iter()
-                .map(|action| action.as_str())
-                .collect::<Vec<_>>(),
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        let rows = sqlx::query(READ_AUDIT_SQL)
+            .bind(tenant.as_uuid())
+            .bind(filter.action.as_deref())
+            .bind(filter.resource_type.as_deref())
+            .bind(filter.resource_id.as_deref())
+            .bind(filter.actor.as_deref())
+            .bind(filter.from)
+            .bind(filter.to)
+            .bind(before)
+            .bind(i64::from(limit))
+            .bind(
+                sagat_domain::audit::AuditAction::WITHHELD_FROM_TENANT
+                    .iter()
+                    .map(|action| action.as_str())
+                    .collect::<Vec<_>>(),
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?;
         // The reading is on the trail in the same transaction that reads it (and so is not in what it
         // read: the next reading sees it).
         crate::identity::insert_audit(&mut tx, reading).await?;

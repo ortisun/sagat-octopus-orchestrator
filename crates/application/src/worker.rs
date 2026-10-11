@@ -693,6 +693,12 @@ where
         else {
             return Ok(Vec::new()); // locked by someone else, or gone
         };
+        // The identity may have been drained after the poll looked at its session: the check is
+        // made again here, under the lock a drain waits for, so a drain that has returned has
+        // stopped every poll that had not leased yet.
+        if tx.worker_drained(&session.subject).await? {
+            return Ok(Vec::new());
+        }
         let ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {
             let (def, state) = tx.parts();
             state

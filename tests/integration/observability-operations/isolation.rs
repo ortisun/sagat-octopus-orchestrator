@@ -342,3 +342,128 @@ async fn reading_the_trail_is_recorded_again_once_the_window_of_the_same_reading
     read_at(time::Duration::minutes(31)).await;
     assert_eq!(recorded().await, 2);
 }
+
+#[tokio::test]
+async fn a_drain_cannot_return_while_a_poll_that_found_the_worker_serving_is_still_leasing() {
+    use sagat_application::execution::RunTx;
+    use sagat_application::runs::{Lock, RunStore};
+
+    let w = world().await;
+    let (wf, _) = w
+        .publish(document("draining", "a", vec![activity("a")]))
+        .await;
+    let run = w.start(wf, &json!({})).await;
+    let tenant = w.admin.tenant_id();
+
+    // A poll is in the middle of leasing the run: it has looked and the worker is not drained.
+    let mut leasing = w
+        .store
+        .begin(tenant, run, Lock::SkipLocked)
+        .await
+        .expect("begin")
+        .expect("the run is free");
+    assert!(
+        !leasing
+            .worker_drained("worker-1")
+            .await
+            .expect("looks at the drain"),
+        "nobody has drained it yet"
+    );
+
+    // An operator drains the worker at that moment. The call must not return before the lease is
+    // decided, or work would be handed out after it had.
+    let store = w.store.clone();
+    let namespace = w.namespace.id();
+    let admin = w.admin.clone();
+    let drain = tokio::spawn(async move {
+        let record = DrainRecord {
+            subject: "worker-1".to_owned(),
+            reason: "rolling the deploy".to_owned(),
+            drained_by: "olivia".to_owned(),
+            drained_at: now(),
+        };
+        let audit = AuditRecord::by(
+            &admin,
+            AuditAction::WorkerDrained,
+            ResourceType::Worker,
+            "worker-1",
+            None,
+            now(),
+        );
+        store.drain_worker(tenant, namespace, &record, &audit).await
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !drain.is_finished(),
+        "the drain waits for the poll that already looked"
+    );
+
+    leasing.commit().await.expect("the lease is decided");
+    drain
+        .await
+        .expect("the task")
+        .expect("and then the drain goes through");
+
+    // Every poll that looks from now on finds it drained.
+    let mut after = w
+        .store
+        .begin(tenant, run, Lock::SkipLocked)
+        .await
+        .expect("begin")
+        .expect("the run is free");
+    assert!(after.worker_drained("worker-1").await.expect("looks"));
+}
+
+#[tokio::test]
+async fn reading_the_trail_of_a_small_tenant_does_not_walk_the_trail_of_every_other() {
+    let w = world().await;
+    // Many tenants, a lot of records, and the one that reads has a few.
+    sqlx::query(
+        "INSERT INTO tenants (id, slug, created_at) \
+         SELECT gen_random_uuid(), 'crowd-' || g, now() FROM generate_series(1, 150) g",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("tenants");
+    sqlx::query(
+        "INSERT INTO audit_records (id, tenant_id, actor, action, resource_type, resource_id, created_at) \
+         SELECT ('00000000-0000-7000-8000-' || lpad(to_hex(g), 12, '0'))::uuid, \
+                (SELECT id FROM tenants WHERE slug = 'crowd-' || (1 + g % 150)), \
+                'alice', 'workflow.created', 'workflow', 'w' || g, now() - make_interval(secs => 90000 - g) \
+         FROM generate_series(1, 90000) g",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("records");
+    sqlx::query("ANALYZE audit_records")
+        .execute(&w.db.pool)
+        .await
+        .expect("analyze");
+
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "EXPLAIN {}",
+        sagat_infra_postgres::READ_AUDIT_SQL
+    )))
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(None::<&str>)
+    .bind(None::<&str>)
+    .bind(None::<&str>)
+    .bind(None::<&str>)
+    .bind(None::<time::OffsetDateTime>)
+    .bind(None::<time::OffsetDateTime>)
+    .bind(None::<uuid::Uuid>)
+    .bind(51_i64)
+    .bind(vec!["access.denied.cross_tenant".to_owned()])
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("plan");
+    let plan = plan.join("\n");
+    assert!(
+        plan.contains("audit_records_tenant_created_idx"),
+        "the read goes by the index of the tenant: {plan}"
+    );
+    assert!(
+        !plan.contains("audit_records_pkey"),
+        "and not backwards along every tenant's records: {plan}"
+    );
+}

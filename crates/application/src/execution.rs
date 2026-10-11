@@ -400,6 +400,15 @@ pub trait RunTx: Send {
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
 
+    /// Whether the worker identity `subject` is being drained in this run's namespace. It takes
+    /// the drain's lock in shared mode, held to the end of the transaction, and a drain takes it
+    /// exclusively: a drain does not return while a transaction that found the worker serving is
+    /// still deciding whether to lease, so no work is handed out after the drain has returned.
+    fn worker_drained(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// The activity patterns `subject` is bound to in this run's namespace. Read on the
     /// transaction's own connection: a caller that holds one connection and waits for a second
     /// from the same pool can starve it under load.

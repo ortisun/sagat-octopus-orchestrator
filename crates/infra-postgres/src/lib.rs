@@ -31,7 +31,7 @@ mod workers;
 pub use definitions::PgDefinitionStore;
 pub use execution::{PgRunStore, PgRunTx};
 pub use identity::PgIdentityStore;
-pub use operations::MONITOR_LEASE;
+pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
 pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use sqlx::PgPool;

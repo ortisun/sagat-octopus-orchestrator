@@ -745,3 +745,54 @@ async fn us04_a_page_of_the_biggest_size_says_when_there_is_more() {
         "the next page has the rest: {rest}"
     );
 }
+
+#[tokio::test]
+async fn us04_a_namespace_has_a_bounded_number_of_drained_identities() {
+    let p = platform().await;
+    let ns = p.namespace_id().await;
+    let reason = json!({"reason": "a drain for every pod of the fleet"});
+    for i in 0..500 {
+        let (status, body) = p
+            .rest(
+                Method::POST,
+                &format!("/namespaces/{ns}/workers/pod-{i}/drain"),
+                Some(&reason),
+            )
+            .await;
+        assert_eq!(status, 200, "{i}: {body}");
+    }
+    let (status, body) = p
+        .rest(
+            Method::POST,
+            &format!("/namespaces/{ns}/workers/one-more/drain"),
+            Some(&reason),
+        )
+        .await;
+    assert_eq!(status, 422, "{body}");
+    // One that is drained already can still be drained again, with another reason.
+    let (status, body) = p
+        .rest(
+            Method::POST,
+            &format!("/namespaces/{ns}/workers/pod-7/drain"),
+            Some(&json!({"reason": "the second reason is the one that stands"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    // And lifting one makes room.
+    let (status, _) = p
+        .rest(
+            Method::POST,
+            &format!("/namespaces/{ns}/workers/pod-3/undrain"),
+            Some(&reason),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let (status, body) = p
+        .rest(
+            Method::POST,
+            &format!("/namespaces/{ns}/workers/one-more/drain"),
+            Some(&reason),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+}

@@ -69,6 +69,9 @@ pub const MAX_PER_TENANT: u32 = 100;
 /// Most groups one detection query returns.
 pub const MAX_CANDIDATES: u32 = 1000;
 
+/// Most worker identities a namespace has drained at once. The list of them shows this many.
+pub const MAX_DRAINS_PER_NAMESPACE: usize = 500;
+
 /// How many alerts of a kind one look may produce, in a namespace, for a tenant, and in all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
@@ -499,6 +502,16 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
         let reason = justification(reason)?;
         let subject = worker_subject(subject)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        // A drain is a row that stays until someone lifts it: a namespace holds a bounded number.
+        let held = self
+            .store
+            .list_drains(principal.tenant_id(), namespace)
+            .await?;
+        if held.len() >= MAX_DRAINS_PER_NAMESPACE && !held.iter().any(|d| d.subject == subject) {
+            return Err(AppError::NotAllowed(
+                "too many worker identities are drained in this namespace; let some take work again",
+            ));
+        }
         let now = self.clock.now();
         let record = DrainRecord {
             subject: subject.to_owned(),

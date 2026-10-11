@@ -1082,6 +1082,28 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn worker_drained(&mut self, subject: &str) -> Result<bool, StoreError> {
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+            .bind(crate::operations::drain_lock_key(
+                self.info.tenant_id,
+                self.info.namespace_id,
+                subject,
+            ))
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM worker_drains \
+                            WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(subject)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
         sqlx::query_scalar(
             "SELECT pattern FROM worker_bindings \
