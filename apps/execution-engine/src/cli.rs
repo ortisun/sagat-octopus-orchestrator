@@ -85,6 +85,9 @@ ENVIRONMENT (serve):
     SAGAT_SCHEDULER_CONCURRENCY       candidates of one pass acted on at once (1-64) [8]
     SAGAT_SCHEDULER_FAIRNESS          share each pass between tenants by weight; false takes the oldest
                                       candidates only (a diagnostic, for measuring) [true]
+    SAGAT_SCHEDULER_DISCOVERY_REST_MS how long a pass (and the outbox dispatcher) rests its search for
+                                      other tenants after one that found nobody; a tenant that arrives
+                                      behind a burst waits at most this long (0: never rests, max 60000) [2000]
     SAGAT_SHARD_LEASE_SECS            how long a replica's hold on its scheduler shards lasts
                                       without being renewed; a crashed replica's work is taken
                                       over this long after it stops (3-600) [15]

@@ -9,7 +9,11 @@
 //!    nobody can be hiding behind anybody: that is the common case, and it costs one query.
 //! 2. Otherwise the pass **discovers** the tenants that have work. A tenant that already shows more
 //!    candidates than its share of the batch is left out of the next query (the exclusion list), so
-//!    that the next page shows who else has work. At most [`ROUNDS`] pages are read.
+//!    that the next page shows who else has work. At most [`ROUNDS`] pages are read. A discovery that
+//!    finds nobody has read the whole backlog of the tenants it left out (their rows are filtered, not
+//!    skipped), so the caller may **rest** it for a while: the pass then shares the first page only,
+//!    and a tenant that arrives behind a burst is found when the rest is over.
+//!    The list of tenants left out is at most [`MAX_EXCLUDED`] long.
 //! 3. The batch is then **shared out by weighted max-min fairness** over what each tenant showed:
 //!    a tenant that has less than its share gets all it has, and what it leaves goes to the others
 //!    in proportion to their weights. Inside a tenant the oldest candidates go first.
@@ -32,6 +36,9 @@ use sagat_domain::identity::TenantId;
 /// The pages one selection may read (the first one included): the number of tenants it can
 /// discover behind tenants that have more than their share.
 pub const ROUNDS: usize = 16;
+/// The most tenants one selection leaves out of its queries: the list travels with every one of them,
+/// and a page of many tenants with little each would otherwise add them all.
+pub const MAX_EXCLUDED: usize = 256;
 /// The weight of a tenant nobody has weighted.
 pub const DEFAULT_WEIGHT: u16 = 1;
 
@@ -65,6 +72,9 @@ pub struct Selection {
     pub limited: usize,
     /// The pages ran out while the last one was still full: there may be tenants not found.
     pub exhausted: bool,
+    /// The discovery left tenants out and the last page it asked for was empty: nobody else has work,
+    /// and finding that out cost a read of the backlog of the tenants left out.
+    pub found_nobody: bool,
 }
 
 /// Shares `budget` between demands by weighted max-min fairness: a demand that is no more than its
@@ -112,12 +122,14 @@ pub fn share(budget: u32, demands: &[(u16, u32)]) -> Vec<u32> {
 }
 
 /// Picks up to `batch` candidates fairly. `fetch(excluded)` reads a page of the oldest candidates
-/// of tenants that are not in `excluded`; it must return at most `batch` of them.
+/// of tenants that are not in `excluded`; it must return at most `batch` of them. With `discover`
+/// false only the first page is read and shared (the caller has rested the discovery).
 ///
 /// # Errors
 /// Whatever `fetch` returns.
 pub async fn select<T, K, F, Fut>(
     batch: u32,
+    discover: bool,
     weights: &Weights,
     tenant: impl Fn(&T) -> TenantId,
     key: impl Fn(&T) -> K,
@@ -163,7 +175,7 @@ where
             shown.entry(owner).or_default().push((met, item));
             met += 1;
         }
-        if !full {
+        if !full || !discover {
             break;
         }
         // A tenant that shows at least its share of the batch cannot be given more than that
@@ -193,12 +205,13 @@ where
         if !progressed {
             break;
         }
-        if selection.pages >= ROUNDS {
+        if selection.pages >= ROUNDS || excluded.len() >= MAX_EXCLUDED {
             selection.exhausted = true;
             break;
         }
         page = fetch(excluded.clone()).await?;
         selection.pages += 1;
+        selection.found_nobody = page.is_empty();
     }
 
     let demands: Vec<(u16, u32)> = order
@@ -261,6 +274,7 @@ mod tests {
     async fn pick(items: Vec<Item>, batch: u32, weights: &Weights) -> (Vec<Item>, Selection) {
         select(
             batch,
+            true,
             weights,
             |i: &Item| i.0,
             |i| i.1,
@@ -361,6 +375,48 @@ mod tests {
         let (picked, selection) = pick(items, 100, &Weights::default()).await;
         assert_eq!(picked.len(), 100);
         assert!(selection.pages <= ROUNDS);
+    }
+
+    #[tokio::test]
+    async fn a_discovery_that_finds_nobody_says_so_and_a_rested_one_reads_one_page() {
+        // One tenant with a burst: leaving it out shows nobody, which is worth knowing (and not worth
+        // doing again at the next tick).
+        let items: Vec<Item> = (0..1_000).map(|n| (tenant(1), n)).collect();
+        let (picked, selection) = pick(items.clone(), 200, &Weights::default()).await;
+        assert_eq!(picked.len(), 200);
+        assert!(selection.found_nobody);
+        assert_eq!(selection.pages, 2);
+
+        // Rested: the first page is shared and no second query is made.
+        let queries = std::cell::Cell::new(0);
+        let (picked, selection) = select(
+            200,
+            false,
+            &Weights::default(),
+            |i: &Item| i.0,
+            |i| i.1,
+            |excluded: Vec<TenantId>| {
+                queries.set(queries.get() + 1);
+                let page = items
+                    .iter()
+                    .filter(|(t, _)| !excluded.contains(t))
+                    .take(200)
+                    .copied()
+                    .collect();
+                std::future::ready(Ok::<_, StoreError>(page))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(queries.get(), 1);
+        assert_eq!(picked.len(), 200);
+        assert_eq!((selection.pages, selection.found_nobody), (1, false));
+
+        // A discovery that does find somebody is not "nobody".
+        let mut items: Vec<Item> = (0..1_000).map(|n| (tenant(1), n)).collect();
+        items.extend((1_000..1_005).map(|n| (tenant(2), n)));
+        let (_, selection) = pick(items, 200, &Weights::default()).await;
+        assert!(!selection.found_nobody);
     }
 
     #[test]

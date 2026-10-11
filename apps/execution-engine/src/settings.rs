@@ -96,6 +96,9 @@ const MAX_SCHEDULER_CONCURRENCY: usize = 64;
 const MIN_SHARD_LEASE: Duration = Duration::from_secs(3);
 const MAX_SHARD_LEASE: Duration = Duration::from_secs(600);
 const MAX_REPLICA_ID: usize = 64;
+/// The longest a search for other tenants may be rested: a tenant that arrives behind a burst waits
+/// for it.
+const MAX_DISCOVERY_REST_MS: u64 = 60_000;
 /// Pools whose queues are measured, and activities in all of them: each pool is two series.
 const MAX_POOLS: usize = 32;
 const MAX_POOL_ACTIVITIES: usize = 512;
@@ -150,6 +153,10 @@ fn worker_pools(get: Lookup<'_>) -> Result<Vec<WorkerPool>, ConfigError> {
                 bad.len()
             )));
         }
+        // An activity named twice in a pool is one.
+        let mut list = list;
+        let mut seen = std::collections::BTreeSet::new();
+        list.retain(|a| seen.insert(a.clone()));
         activities += list.len();
         pools.push(WorkerPool {
             name: name.to_owned(),
@@ -438,6 +445,19 @@ impl EngineConfig {
             },
             ..scheduler_defaults
         };
+        // How long a pass rests its search for other tenants after one that found nobody (0: never).
+        let discovery_rest = Duration::from_millis(
+            optional(
+                get,
+                "SAGAT_SCHEDULER_DISCOVERY_REST_MS",
+                u64::try_from(scheduler_defaults.discovery_rest.as_millis()).unwrap_or(2_000),
+            )?
+            .min(MAX_DISCOVERY_REST_MS),
+        );
+        let scheduler = SchedulerSettings {
+            discovery_rest,
+            ..scheduler
+        };
         let shard_defaults = KeeperSettings::default();
         let shards = KeeperSettings {
             ttl: seconds(get, "SAGAT_SHARD_LEASE_SECS", shard_defaults.ttl)?,
@@ -483,6 +503,7 @@ impl EngineConfig {
                 name: "SAGAT_OUTBOX_BATCH",
                 reason: "is too large".to_owned(),
             })?,
+            discovery_rest,
             ..dispatch_defaults
         };
         let outbox_poll = Duration::from_millis(positive(

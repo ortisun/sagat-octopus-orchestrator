@@ -62,9 +62,12 @@ pub(crate) async fn ensure_room_for_run(
     tenant_limit: u64,
 ) -> Result<(), StoreError> {
     lock(conn, QuotaResource::ActiveRuns, tenant, Some(namespace)).await?;
+    // Read from the counters the database keeps with the runs (`run_active_counts`): at most sixteen
+    // rows, whatever the number of runs. Counting the runs cost a start one index entry per active
+    // run, which is what stopped a million waits from being made.
     let in_namespace: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM runs \
-         WHERE tenant_id = $1 AND namespace_id = $2 AND finished_at IS NULL",
+        "SELECT coalesce(sum(active), 0)::bigint FROM run_active_counts \
+         WHERE tenant_id = $1 AND namespace_id = $2",
     )
     .bind(tenant.as_uuid())
     .bind(namespace.as_uuid())
@@ -74,7 +77,7 @@ pub(crate) async fn ensure_room_for_run(
     judge(QuotaResource::ActiveRuns, in_namespace, namespace_limit)?;
     lock(conn, QuotaResource::TenantActiveRuns, tenant, None).await?;
     let in_tenant: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM runs WHERE tenant_id = $1 AND finished_at IS NULL",
+        "SELECT coalesce(sum(active), 0)::bigint FROM run_active_counts WHERE tenant_id = $1",
     )
     .bind(tenant.as_uuid())
     .fetch_one(&mut *conn)
@@ -586,8 +589,8 @@ impl QuotaStore for PgRunStore {
         let count: i64 = match resource {
             QuotaResource::ActiveRuns => {
                 sqlx::query_scalar(
-                    "SELECT count(*) FROM runs WHERE tenant_id = $1 AND namespace_id = $2 \
-                       AND finished_at IS NULL",
+                    "SELECT coalesce(sum(active), 0)::bigint FROM run_active_counts \
+                     WHERE tenant_id = $1 AND namespace_id = $2",
                 )
                 .bind(tenant.as_uuid())
                 .bind(namespace)
@@ -596,7 +599,8 @@ impl QuotaStore for PgRunStore {
             }
             QuotaResource::TenantActiveRuns => {
                 sqlx::query_scalar(
-                    "SELECT count(*) FROM runs WHERE tenant_id = $1 AND finished_at IS NULL",
+                    "SELECT coalesce(sum(active), 0)::bigint FROM run_active_counts \
+                     WHERE tenant_id = $1",
                 )
                 .bind(tenant.as_uuid())
                 .fetch_one(&self.pool)

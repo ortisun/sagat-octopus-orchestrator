@@ -15,6 +15,12 @@ pub struct PoolConfig {
     pub acquire_timeout: Duration,
     /// Server-side cap per statement; a stuck query is cancelled instead of pinning a connection.
     pub statement_timeout: Duration,
+    /// Server-side cap on how long a transaction may sit open between two statements; zero turns it
+    /// off. A process that dies or is cut off in the middle of an action leaves its transaction open
+    /// on the server until the server notices the connection is gone (hours, by default), and the
+    /// locks it holds with it: among them the `FOR SHARE` that fences a scheduler action, which a
+    /// takeover of the shard waits for.
+    pub idle_in_transaction_timeout: Duration,
 }
 
 impl PoolConfig {
@@ -25,6 +31,7 @@ impl PoolConfig {
             max_connections: 10,
             acquire_timeout: Duration::from_secs(3),
             statement_timeout: Duration::from_secs(5),
+            idle_in_transaction_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -36,6 +43,10 @@ impl std::fmt::Debug for PoolConfig {
             .field("max_connections", &self.max_connections)
             .field("acquire_timeout", &self.acquire_timeout)
             .field("statement_timeout", &self.statement_timeout)
+            .field(
+                "idle_in_transaction_timeout",
+                &self.idle_in_transaction_timeout,
+            )
             .finish()
     }
 }
@@ -45,12 +56,19 @@ impl std::fmt::Debug for PoolConfig {
 /// # Errors
 /// An invalid URL or a failure to establish the first connection.
 pub async fn connect(config: &PoolConfig) -> Result<PgPool, sqlx::Error> {
+    let mut settings = vec![(
+        "statement_timeout",
+        format!("{}ms", config.statement_timeout.as_millis()),
+    )];
+    if !config.idle_in_transaction_timeout.is_zero() {
+        settings.push((
+            "idle_in_transaction_session_timeout",
+            format!("{}ms", config.idle_in_transaction_timeout.as_millis()),
+        ));
+    }
     let options = PgConnectOptions::from_str(&config.url)?
         .application_name("sagat-octopus-orchestrator")
-        .options([(
-            "statement_timeout",
-            format!("{}ms", config.statement_timeout.as_millis()),
-        )]);
+        .options(settings);
     PgPoolOptions::new()
         .max_connections(config.max_connections)
         .acquire_timeout(config.acquire_timeout)

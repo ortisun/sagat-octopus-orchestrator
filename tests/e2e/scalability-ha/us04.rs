@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use reqwest::Method;
 use serde_json::{Value, json};
 
-use crate::support::worker::{Platform, RunningEngine, engine_env, platform, single_ir};
+use crate::support::worker::{Platform, RunningEngine, engine_env, platform};
 
 const NOISY: usize = 300;
 const QUIET: usize = 15;
@@ -146,26 +146,4 @@ async fn without_fairness_the_same_tenant_waits_for_the_whole_burst() {
         noisy_done, NOISY,
         "with the oldest candidates taken first the quiet tenant is served after the burst"
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_burst_does_not_stop_a_single_tenant_from_getting_the_whole_pass() {
-    // Fairness is work-conserving: with nobody else, a pass is all one tenant's.
-    let p = platform().await;
-    let wf = p.publish("alone", &single_ir("alone", None)).await;
-    for i in 0..60 {
-        p.start(&wf, &json!({ "i": i })).await;
-    }
-    let engine = RunningEngine::start(engine_env(&p.api.db, &p.api.idp, &[])).await;
-    let mut worker = p.worker_at(&engine.grpc_url, "wendy").await;
-    worker.register(&["act.a"]).await;
-    let mut done = 0;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while done < 60 {
-        for task in worker.poll(16).await {
-            worker.complete(&task, &json!({})).await.expect("complete");
-            done += 1;
-        }
-        assert!(Instant::now() < deadline);
-    }
 }

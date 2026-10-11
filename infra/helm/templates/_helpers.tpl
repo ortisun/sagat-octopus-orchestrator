@@ -62,6 +62,9 @@ app.kubernetes.io/component: {{ .component }}
 {{- if and .Values.engine.grpc.tlsSecret .Values.engine.grpc.allowPlaintextSecrets -}}
 {{- fail "engine.grpc.tlsSecret and engine.grpc.allowPlaintextSecrets contradict each other" -}}
 {{- end -}}
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.metricsFrom) -}}
+{{- fail "networkPolicy.metricsFrom cannot be empty: an empty `from` lets everybody reach the unauthenticated metrics and probe ports; list who may scrape, or disable the policy" -}}
+{{- end -}}
 {{- $seen := dict -}}
 {{- range .Values.workerPools -}}
 {{- if hasKey $seen .name -}}
@@ -137,4 +140,12 @@ securityContext:
   valueFrom:
     secretKeyRef: {name: {{ .Values.secrets.existingSecret | quote }}, key: SAGAT_SECRETS_KEYS}
 {{- end }}
+{{- end -}}
+
+{{/* The matchers of a query: pool="x" and the install's own, in braces. */}}
+{{- define "sagat.matchers" -}}
+{{- $all := list -}}
+{{- if .pool }}{{ $all = append $all (printf "pool=%q" .pool) }}{{ end -}}
+{{- if .root.Values.metrics.selector }}{{ $all = append $all .root.Values.metrics.selector }}{{ end -}}
+{{- if $all }}{{ printf "{%s}" (join "," $all) }}{{ end -}}
 {{- end -}}

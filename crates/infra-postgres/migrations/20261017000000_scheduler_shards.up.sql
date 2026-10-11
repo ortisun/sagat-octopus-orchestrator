@@ -10,13 +10,14 @@ CREATE FUNCTION run_shard(id uuid) RETURNS smallint
     LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
     AS $$ SELECT (get_byte(uuid_send(id), 15) & 63)::smallint $$;
 
--- One row per shard, always present. A shard is free when `expires_at` is past; `generation` goes up
+-- One row per shard, always present. A shard is free when `expires_at` is past (a shard never held has
+-- the epoch, not -infinity: before PostgreSQL 17 a timestamp cannot be subtracted from an infinite one); `generation` goes up
 -- every time a different owner (or the same one after the lease ran out) takes it, never on a renewal.
 CREATE TABLE scheduler_shards (
     shard       smallint    PRIMARY KEY CHECK (shard BETWEEN 0 AND 63),
     owner       text,
     generation  bigint      NOT NULL DEFAULT 0 CHECK (generation >= 0),
-    expires_at  timestamptz NOT NULL DEFAULT '-infinity',
+    expires_at  timestamptz NOT NULL DEFAULT 'epoch',
     acquired_at timestamptz
 );
 INSERT INTO scheduler_shards (shard) SELECT generate_series(0, 63);
@@ -41,29 +42,48 @@ CREATE TABLE tenant_scheduling (
 -- What each pass of the scheduler asks, shard first: a replica looks at its own shards only, and
 -- within a shard the oldest due item is the first entry of the index. They are partial, as the
 -- indexes they sit next to are, so a suspended run costs a row and nothing in the hot path.
-CREATE INDEX steps_timer_shard_idx ON steps (run_shard(run_id), due_at)
+CREATE INDEX IF NOT EXISTS steps_timer_shard_idx ON steps (run_shard(run_id), due_at)
     WHERE status = 'WAITING' AND waiting_kind = 'TIMER';
-CREATE INDEX steps_wait_deadline_shard_idx ON steps (run_shard(run_id), due_at)
+CREATE INDEX IF NOT EXISTS steps_wait_deadline_shard_idx ON steps (run_shard(run_id), due_at)
     WHERE status = 'WAITING' AND waiting_kind = 'EVENT';
-CREATE INDEX steps_retry_shard_idx ON steps (run_shard(run_id), next_attempt_at)
+CREATE INDEX IF NOT EXISTS steps_retry_shard_idx ON steps (run_shard(run_id), next_attempt_at)
     WHERE status = 'RETRY_WAIT';
-CREATE INDEX steps_lease_expiry_shard_idx ON steps (run_shard(run_id), lease_expires_at)
+CREATE INDEX IF NOT EXISTS steps_lease_expiry_shard_idx ON steps (run_shard(run_id), lease_expires_at)
     WHERE status IN ('LEASED', 'RUNNING');
-CREATE INDEX steps_attempt_deadline_shard_idx ON steps (run_shard(run_id), attempt_deadline_at)
+CREATE INDEX IF NOT EXISTS steps_attempt_deadline_shard_idx ON steps (run_shard(run_id), attempt_deadline_at)
     WHERE status IN ('LEASED', 'RUNNING') AND attempt_deadline_at IS NOT NULL;
-CREATE INDEX steps_rehint_shard_idx ON steps (run_shard(run_id), last_hinted_at)
+CREATE INDEX IF NOT EXISTS steps_rehint_shard_idx ON steps (run_shard(run_id), last_hinted_at)
     WHERE status = 'READY' AND hint_count < 5;
-CREATE INDEX steps_child_pending_shard_idx ON steps (run_shard(run_id), updated_at)
+CREATE INDEX IF NOT EXISTS steps_child_pending_shard_idx ON steps (run_shard(run_id), updated_at)
     WHERE status = 'WAITING' AND waiting_kind = 'CHILD' AND child_started = false;
-CREATE INDEX runs_deadline_shard_idx ON runs (run_shard(id), deadline_at)
+CREATE INDEX IF NOT EXISTS runs_deadline_shard_idx ON runs (run_shard(id), deadline_at)
     WHERE finished_at IS NULL AND stop_reason IS NULL AND deadline_at IS NOT NULL;
 -- A child that ended is acted on in its parent: the shard is the parent's.
-CREATE INDEX runs_unsettled_children_shard_idx ON runs (run_shard(parent_run_id), finished_at)
+CREATE INDEX IF NOT EXISTS runs_unsettled_children_shard_idx ON runs (run_shard(parent_run_id), finished_at)
     WHERE parent_run_id IS NOT NULL AND parent_settled = false AND finished_at IS NOT NULL;
-CREATE INDEX runs_children_to_cancel_shard_idx ON runs (run_shard(id), id)
+CREATE INDEX IF NOT EXISTS runs_children_to_cancel_shard_idx ON runs (run_shard(id), id)
     WHERE parent_cancel AND finished_at IS NULL AND stop_reason IS NULL;
-CREATE INDEX event_outbox_pending_shard_idx ON event_outbox (run_shard(aggregate_id), next_attempt_at)
+CREATE INDEX IF NOT EXISTS event_outbox_pending_shard_idx ON event_outbox (run_shard(aggregate_id), next_attempt_at)
     WHERE delivered_at IS NULL;
+
+-- `IF NOT EXISTS` lets an operator build these CONCURRENTLY first on a large database; a build that
+-- failed leaves an index that exists and is INVALID, which the planner never uses, so it is refused here.
+DO $valid$
+DECLARE
+    broken text;
+BEGIN
+    SELECT string_agg(c.relname, ', ') INTO broken
+      FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE NOT i.indisvalid AND c.relname IN (
+         'steps_timer_shard_idx', 'steps_wait_deadline_shard_idx', 'steps_retry_shard_idx',
+         'steps_lease_expiry_shard_idx', 'steps_attempt_deadline_shard_idx', 'steps_rehint_shard_idx',
+         'steps_child_pending_shard_idx', 'runs_deadline_shard_idx', 'runs_unsettled_children_shard_idx',
+         'runs_children_to_cancel_shard_idx', 'event_outbox_pending_shard_idx');
+    IF broken IS NOT NULL THEN
+        RAISE EXCEPTION 'invalid index left by a failed concurrent build, drop it and run again: %', broken;
+    END IF;
+END
+$valid$;
 
 DO $grants$
 BEGIN

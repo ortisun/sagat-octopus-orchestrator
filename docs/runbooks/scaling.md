@@ -11,7 +11,7 @@ A suspended run costs one row, so what grows with the number of waits is not mem
 - **A replica works only on the shards it holds.** The lease on a shard is a row of `scheduler_shards` (`owner`, `generation`, `expires_at`). Every time in it is the database's clock, so replicas with skewed clocks agree on who holds what.
 - **The share is `ceil(64 / replicas alive)`.** A replica announces itself in `scheduler_members` every round, so one that holds nothing yet is counted and the others give it its share: with two replicas, 32 and 32; with three, 22, 22 and 20.
 - **A takeover raises the generation**; a renewal does not. The keeper (one loop per engine, every `lease / 3`) renews what it holds, gives back the highest shards beyond its share, and takes the lowest free ones up to it.
-- **Every action is fenced.** The transaction in which a replica changes a run first reads the shard's row `FOR SHARE` and proceeds only if it still holds the generation it believes it does. A takeover is an `UPDATE` of that row, so it waits for the transactions that found the lease good, and the ones that start after it find the new generation. A replica that was paused for longer than its lease, or cut off from the database, finds out when it wakes up, and changes nothing (`scheduler_fenced_total` counts the attempts).
+- **Every action is fenced.** The transaction in which a replica changes a run first reads the shard's row `FOR SHARE` and proceeds only if it still holds the generation it believes it does. A takeover is an `UPDATE` of that row that skips it while it is locked: it never overtakes a transaction that found the lease good, it takes the free shards of its call, and it takes the skipped one at the next round; the transactions that start after it find the new generation. A replica that was paused for longer than its lease, or cut off from the database, finds out when it wakes up, and changes nothing (`scheduler_fenced_total` counts the attempts).
 - **A replica that cannot reach the database stops by itself.** What it believes it holds expires on its own clock a little before the database would let another take it, so it selects no work without having to be told.
 - **The passes are idempotent under the run's lock regardless.** The fence bounds how much redundant work a split brain could do; it is not what makes the result correct. An engine of a version before 0.4.0 that is still running during an upgrade works on every shard, and the result is the same: only redundant.
 
@@ -20,7 +20,7 @@ What a handover costs, in time, is on the next table (the measured values are in
 | Event | The work of the shards waits |
 |---|---|
 | a replica stops cleanly (SIGTERM) | one keeper round of the others, `lease / 3` (5 s by default) |
-| a replica crashes or is partitioned | up to `lease` (15 s by default) plus one round |
+| a replica crashes or is partitioned | up to `lease` (15 s by default) plus one round; a shard whose row an action of the dead replica still holds locked is taken only when the server ends that transaction (`idle_in_transaction_session_timeout`, 60 s) |
 | a replica joins | until the others' next round (`lease / 3`) |
 
 Nothing is lost while a shard waits: timers are rows, the passes catch up as soon as the shard has an owner, and a timer fires late and not never.
@@ -33,7 +33,8 @@ Nothing is lost while a shard waits: timers are rows, the passes catch up as soo
 | `SAGAT_SHARD_LEASE_SECS` | 15 | Shorter takes over sooner and loses shards to a pause of the process; longer waits longer after a crash. 3 to 600. |
 | `SAGAT_SCHEDULER_CONCURRENCY` | 8 | Candidates of one pass acted on at the same time, each in its own transaction on its own connection. Raise it with a burst of due timers to let a replica use the database; never above what `SAGAT_DB_MAX_CONNECTIONS` can carry. |
 | `SAGAT_SCHEDULER_BATCH` | 200 | Candidates examined per pass per tick. |
-| `SAGAT_DB_MAX_CONNECTIONS` | 20 | `replicas × connections` must stay under the server's `max_connections`, with room for the control plane and the migrations. Put a pooler in front of the server before the product passes it. |
+| `SAGAT_DB_MAX_CONNECTIONS` | 10 (the chart sets 20) | `replicas × connections` must stay under the server's `max_connections`, with room for the control plane and the migrations. The engine uses no more concurrency than this less two (it says so when it clamps). Put a pooler in front of the server before the product passes it. |
+| `SAGAT_SCHEDULER_DISCOVERY_REST_MS` | 2000 | How long a pass (and the outbox dispatcher) rests its search for other tenants after one that found nobody; see below. 0 never rests. |
 
 **The database is the ceiling.** Every transition is a commit with its journal rows and its outbox row; adding engine replicas moves the work between processes and does not make the server's commits cheaper. When the passes are late and the replicas are not busy, look at the database (`db_pool_connections{state="in_use"}`, the server's CPU and WAL write rate) before adding replicas.
 
@@ -47,22 +48,36 @@ Nothing is lost while a shard waits: timers are rows, the passes catch up as soo
 SAGAT_WEIGHT_TENANT_ID=<tenant id> SAGAT_WEIGHT_VALUE=4 control-plane scheduling-weight     # 1..16, or default
 ```
 
-The weights are read by the engine every keeper round (5 s). The share is a budget **per pass**, not a rate limit; the quotas of a tenant (active runs per namespace and per tenant) are where they were, in [`control-plane.md`](control-plane.md).
+It writes a table the runtime role cannot, so it is run with the owner role from an operator's machine, as `quota-ceiling` is, and not from a pod of the chart. The weights are read by the engine every keeper round (5 s). Leaving a tenant out of a query filters its rows instead of skipping them, so a search that finds nobody has read the whole backlog of the tenants it left out; after such a search the pass rests it for `SAGAT_SCHEDULER_DISCOVERY_REST_MS` and shares only the first page of the oldest, and a tenant that arrives behind a burst is found when the rest is over. The share is a budget **per pass**, not a rate limit; the quotas of a tenant (active runs per namespace and per tenant) are where they were, in [`control-plane.md`](control-plane.md).
 
 ## 3. Upgrade
 
-1. Run the migrations as the database owner, once, **before** any new engine starts: `control-plane migrate` (a Job in Kubernetes; the chart does not run it, so that a rolling upgrade never races its own schema change). The migrations of feature 010 only add tables and indexes; the old indexes stay, so engines of the previous version keep working while the upgrade rolls.
+1. Run the migrations as the database owner, once, **before** any new engine starts: `control-plane migrate` (a Job in Kubernetes; the chart does not run it, so that a rolling upgrade never races its own schema change). The migrations of feature 010 only add tables, triggers and indexes; the old indexes stay, so engines of the previous version keep working while the upgrade rolls. Two things to know on a large database: the eleven shard indexes are built inside the migration (build them `CONCURRENTLY` first, same names, and check none is invalid: `data-model.md`), and the migration that adds the counters of active runs takes a `SHARE ROW EXCLUSIVE` lock on `runs` while it counts the unfinished ones (reads go on, writes wait for the count: a few seconds for a million runs; run it in a quiet moment). Engines of the previous version go on counting the runs for their quota, which is correct and slow; the counters are read by the new ones.
 2. Roll the engines (the chart surges one at a time, `maxUnavailable: 0`). A new replica announces itself and takes shards as the old ones give theirs back or lose them with their pods. During the roll, old and new replicas work on the same shards: that is redundant and correct.
 3. Roll the control plane.
 
 To go back, roll the engines back. The previous version does not use the new tables and the old indexes are still there, so leave the schema as it is: the down migration exists and is tested, but no command runs it, and undoing a schema is a decision to take with whoever owns the database.
+
+## 4. On Kubernetes: the chart
+
+`infra/helm` installs the control plane, the engine and, if you list them, pools of your workers; PostgreSQL, NATS and the identity provider are yours. Start from [`infra/helm/examples/ha.yaml`](../../infra/helm/examples/ha.yaml).
+
+```sh
+helm lint infra/helm -f infra/helm/examples/ha.yaml
+helm install sagat infra/helm -f my-values.yaml          # after the migrations (section 3)
+```
+
+- It **refuses at render time** what the platform would refuse at start: a database Secret or OIDC settings missing, more than 64 engine replicas (or an autoscaler allowed to go past 64), a lease outside 3 to 600 s, both autoscalers, TLS and plaintext secrets at once, a pool named twice or serving nothing, and an empty `networkPolicy.metricsFrom` (an empty `from` in a NetworkPolicy means everybody, and the metrics and probe ports have no authentication).
+- Pods run as a non-root user with a read-only root filesystem, no capabilities, the runtime-default seccomp profile and no service-account token. The engine's pods are told their own name (`SAGAT_REPLICA_ID`), surge one at a time, are spread over zones and nodes, and are held by a disruption budget that keeps one replica.
+- `metrics.selector` adds label matchers (`namespace="prod"`) to every query the autoscalers ask, so that two installs that share a Prometheus do not drive each other. The ports 9090 and 9091 answer only the namespaces `networkPolicy.metricsFrom` names.
+- The chart was rendered and read back by a test (`contract_scalability_ha`) and never installed in a cluster (G247): try KEDA's triggers and your CNI's policies in a cluster that is not production.
 
 ## shards-unowned
 
 **`SagatShardsUnowned`.** `sum(scheduler_shards_owned)` is below 64 for two minutes: some shards are held by no replica, and the timers, retries, waits and deadlines of the runs in them are not being fired. Runs are safe; they are late.
 
 - **Confirm:** `scheduler_shards_owned` by `instance`; `SELECT shard, owner, generation, expires_at FROM scheduler_shards WHERE expires_at < now() OR owner IS NULL ORDER BY 1;` and `SELECT * FROM scheduler_members;` for who is alive.
-- **Likely causes:** no engine is running (`SagatEngineDown` fires too); the engines cannot reach the database (`SagatKeeperFailing`); the lease is shorter than the pauses of the process; all the replicas are starting (the first round takes a few seconds).
+- **Likely causes:** a shard held by an action that never finished (a node lost in the middle of one: `SELECT pid, state, now() - xact_start FROM pg_stat_activity WHERE state = 'idle in transaction'`; the server ends it after 60 s); no engine is running (`SagatEngineDown` fires too); the engines cannot reach the database (`SagatKeeperFailing`); the lease is shorter than the pauses of the process; all the replicas are starting (the first round takes a few seconds).
 - **Do:** start an engine and give it the database. Nothing needs to be repaired: a free shard is taken at the next round. If the replicas are alive and the shards stay free, read the engines' log for `could not keep the shard leases`.
 - **Over when:** the sum is 64.
 

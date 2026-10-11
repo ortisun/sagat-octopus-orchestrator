@@ -35,12 +35,14 @@ use futures_util::StreamExt;
 use futures_util::stream;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::Engine;
+use sagat_application::runs::StartRun;
 use sagat_domain::identity::Role;
+use sagat_domain::quota::QuotaResource;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
 use serde_json::json;
-use support::engine::{Sched, World, activity, document, timer_node, with, world};
+use support::engine::{Sched, World, activity, ctx, document, timer_node, with};
 
 // ---------------------------------------------------------------------------------- knobs
 
@@ -61,7 +63,7 @@ const API_POOL: u32 = 20;
 
 /// Callers starting runs at the same time.
 fn load_concurrency() -> usize {
-    env_usize("SAGAT_PERF_LOAD_CONCURRENCY", 48)
+    env_usize("SAGAT_PERF_LOAD_CONCURRENCY", 80)
 }
 
 // ---------------------------------------------------------------------------------- numbers
@@ -177,6 +179,41 @@ fn section(title: &str, body: &str) {
 
 // ---------------------------------------------------------------------------------- populations
 
+/// A world whose tenants may hold as many unfinished runs as the scenarios start. The platform
+/// refuses more than a namespace's quota of active runs (10 000 by default), which is the right
+/// answer in production and not what a benchmark of waiting wants: the operator grants a ceiling
+/// (`control-plane quota-ceiling`) and the tenant's administrator sets its limit, as they would.
+async fn world() -> World {
+    const ROOM: u64 = 5_000_000;
+    let w = support::engine::world().await;
+    for (admin, namespace) in [
+        (&w.admin, w.namespace.id()),
+        (&w.other_admin, w.other_namespace.id()),
+    ] {
+        for resource in [QuotaResource::ActiveRuns, QuotaResource::TenantActiveRuns] {
+            w.quotas
+                .grant_ceiling(admin.tenant_id(), resource, Some(ROOM))
+                .await
+                .expect("grant the ceiling");
+        }
+        w.quotas
+            .set(
+                admin,
+                Some(namespace),
+                QuotaResource::ActiveRuns,
+                ROOM,
+                &ctx(),
+            )
+            .await
+            .expect("set the namespace's limit");
+        w.quotas
+            .set(admin, None, QuotaResource::TenantActiveRuns, ROOM, &ctx())
+            .await
+            .expect("set the tenant's limit");
+    }
+    w
+}
+
 /// The workflow of every population: a timer of an hour, then an activity.
 async fn sleeper(w: &World, name: &str) -> sagat_domain::definition::WorkflowId {
     let (wf, _) = w
@@ -192,7 +229,9 @@ async fn sleeper(w: &World, name: &str) -> sagat_domain::definition::WorkflowId 
     wf
 }
 
-/// Starts runs `from..to` of `wf` with `load_concurrency()` callers; returns how long each took.
+/// Starts runs `from..to` of `wf` with `load_concurrency()` callers, through the services of several
+/// API replicas (each with a pool of its own, as separate processes have: the pool of the world is
+/// eight connections and would be the limit); returns how long each start took.
 async fn start_runs(
     w: &World,
     wf: sagat_domain::definition::WorkflowId,
@@ -200,13 +239,36 @@ async fn start_runs(
     from: usize,
     to: usize,
 ) -> Vec<Duration> {
+    let mut apis = Vec::new();
+    for _ in 0..env_usize("SAGAT_PERF_LOAD_API_REPLICAS", 6) {
+        apis.push(Arc::new(w.replica_with_pool(16).await));
+    }
+    let admin = w.admin.clone();
     stream::iter(from..to)
-        .map(|i| async move {
-            let t = Instant::now();
-            w.start_with(wf, &json!({ "i": i }), &format!("{tag}-{i:08}"), None)
-                .await
-                .expect("start");
-            t.elapsed()
+        .map(|i| {
+            let api = Arc::clone(&apis[i % apis.len()]);
+            let admin = admin.clone();
+            async move {
+                let t = Instant::now();
+                let input = serde_json::to_vec(&json!({ "i": i })).expect("json");
+                api.runs
+                    .start(
+                        &admin,
+                        &StartRun {
+                            namespace: "payments",
+                            workflow: wf,
+                            version: None,
+                            input: &input,
+                            correlation_id: None,
+                            deadline: None,
+                            key: &format!("{tag}-{i:08}"),
+                        },
+                        &ctx(),
+                    )
+                    .await
+                    .expect("start");
+                t.elapsed()
+            }
         })
         .buffer_unordered(load_concurrency())
         .collect()
@@ -265,6 +327,36 @@ async fn plan_of(w: &World, sql: &str) -> String {
         .fetch_all(&w.db.pool)
         .await
         .expect("explain");
+    rows.join("\n")
+}
+
+/// The plan PostgreSQL makes for the due-timer query as a prepared statement without the values.
+async fn generic_plan(w: &World) -> String {
+    use sqlx::Executor;
+    let mut conn = w.db.pool.acquire().await.expect("a connection");
+    for statement in [
+        "SET plan_cache_mode = force_generic_plan",
+        "PREPARE due_timers(bigint, smallint[], uuid[]) AS \
+         SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+         CROSS JOIN LATERAL ( \
+             SELECT tenant_id, run_id, node, due_at FROM steps \
+             WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'TIMER' \
+               AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
+             ORDER BY due_at LIMIT $1) t \
+         ORDER BY t.due_at LIMIT $1",
+    ] {
+        conn.execute(statement).await.expect("prepare");
+    }
+    let rows: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY ON) \
+         EXECUTE due_timers(200, ARRAY[0, 17, 33, 63]::smallint[], ARRAY[]::uuid[])",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .expect("explain");
+    conn.execute("DEALLOCATE due_timers")
+        .await
+        .expect("deallocate");
     rows.join("\n")
 }
 
@@ -453,6 +545,14 @@ async fn waits_at_scale() {
         )
         .await;
         plans.push_str(&format!("\nPlan of the due-timer query over four shards, {size} suspended runs:\n\n```\n{plan}\n```\n"));
+        if size == max_waits() {
+            // The store asks it with parameters, as a prepared statement: after a few executions
+            // PostgreSQL may switch to a generic plan, which does not know the values. This is that plan.
+            plans.push_str(&format!(
+                "\nThe same query as a prepared statement with a generic plan (what a connection settles on after a few executions):\n\n```\n{}\n```\n",
+                generic_plan(&w).await
+            ));
+        }
     }
     let sizes_of_indexes: Vec<(String, i64)> = sqlx::query_as(
         "SELECT indexrelid::regclass::text, pg_relation_size(indexrelid)::bigint \
@@ -533,7 +633,7 @@ async fn firing_scales_with_concurrency_and_replicas() {
             .execute(&w.db.pool)
             .await
             .expect("members");
-        sqlx::query("UPDATE scheduler_shards SET expires_at = '-infinity', owner = NULL")
+        sqlx::query("UPDATE scheduler_shards SET expires_at = 'epoch', owner = NULL")
             .execute(&w.db.pool)
             .await
             .expect("shards");
@@ -654,7 +754,7 @@ async fn a_noisy_tenant_and_a_quiet_one() {
             .execute(&w.db.pool)
             .await
             .expect("members");
-        sqlx::query("UPDATE scheduler_shards SET expires_at = '-infinity', owner = NULL")
+        sqlx::query("UPDATE scheduler_shards SET expires_at = 'epoch', owner = NULL")
             .execute(&w.db.pool)
             .await
             .expect("shards");

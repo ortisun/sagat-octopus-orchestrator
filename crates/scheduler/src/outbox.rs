@@ -32,6 +32,9 @@ pub struct DispatchSettings {
     pub base_backoff: Duration,
     /// Longest delay between two attempts of one message.
     pub max_backoff: Duration,
+    /// How long a dispatcher with a placement rests its search for other tenants after one that found
+    /// nobody (see `SchedulerSettings::discovery_rest`); zero: never.
+    pub discovery_rest: Duration,
 }
 
 impl Default for DispatchSettings {
@@ -41,6 +44,7 @@ impl Default for DispatchSettings {
             visibility: Duration::from_secs(30),
             base_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
+            discovery_rest: Duration::from_secs(2),
         }
     }
 }
@@ -69,6 +73,8 @@ pub struct OutboxDispatcher<S, P, R> {
     /// Which shards this replica dispatches for; without it the dispatcher takes the oldest due
     /// messages of any shard.
     placement: Option<Placement>,
+    /// Until when the search for other tenants is rested.
+    rest_until: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl<S, P, R> std::fmt::Debug for OutboxDispatcher<S, P, R> {
@@ -90,6 +96,7 @@ where
             entropy,
             settings,
             placement: None,
+            rest_until: std::sync::Mutex::new(None),
         }
     }
 
@@ -120,8 +127,14 @@ where
         }
         let limit = self.settings.batch;
         let store = &self.store;
+        let discover = self
+            .rest_until
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none_or(|until| until <= std::time::Instant::now());
         let (chosen, selection) = fairness::select(
             limit,
+            discover,
             snapshot.weights(),
             |due: &sagat_application::maintenance::OutboxDue| due.tenant_id,
             |due| due.id,
@@ -136,6 +149,13 @@ where
             },
         )
         .await?;
+        if discover && selection.found_nobody && !self.settings.discovery_rest.is_zero() {
+            *self
+                .rest_until
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(std::time::Instant::now() + self.settings.discovery_rest);
+        }
         if selection.limited > 0 {
             metrics::counter!("scheduler_fairness_limited_total", "pass" => "outbox")
                 .increment(selection.limited as u64);

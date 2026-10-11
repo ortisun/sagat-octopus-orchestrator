@@ -79,6 +79,31 @@ impl<S> std::fmt::Debug for Monitor<S> {
 }
 
 impl<S: MonitorStore> Monitor<S> {
+    /// Sets to zero what this process exported while it held the lease, once.
+    fn forget(&self) {
+        if self
+            .exporting
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            gauges(&Sample::default());
+            for kind in AlertKind::ALL {
+                metrics::gauge!("alerts_firing", "kind" => kind.as_str()).set(0.0);
+            }
+            pool_gauges(
+                &self
+                    .settings
+                    .pools
+                    .iter()
+                    .map(|p| PoolLag {
+                        pool: p.name.clone(),
+                        ready: 0,
+                        oldest_seconds: 0.0,
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+
     pub const fn new(store: S, settings: MonitorSettings) -> Self {
         Self {
             store,
@@ -95,29 +120,15 @@ impl<S: MonitorStore> Monitor<S> {
             Ok(true) => {}
             Ok(false) => {
                 round.passive = true;
-                if self
-                    .exporting
-                    .swap(false, std::sync::atomic::Ordering::Relaxed)
-                {
-                    gauges(&Sample::default());
-                    pool_gauges(
-                        &self
-                            .settings
-                            .pools
-                            .iter()
-                            .map(|p| PoolLag {
-                                pool: p.name.clone(),
-                                ready: 0,
-                                oldest_seconds: 0.0,
-                            })
-                            .collect::<Vec<_>>(),
-                    );
-                }
+                self.forget();
                 return round;
             }
             Err(error) => {
                 tracing::warn!(%error, "could not take the monitor's lease");
                 round.unseen = u32::try_from(AlertKind::ALL.len()).unwrap_or(u32::MAX);
+                // It does not know whether it still holds the lease, and a gauge keeps its value for
+                // as long as the process lives: better none than a stale one that others read.
+                self.forget();
                 return round;
             }
         }

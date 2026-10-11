@@ -16,45 +16,16 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-/// The values the tests install the chart with: what an operator has to give it.
+fn fixture(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("contract/scalability-ha/fixtures")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The values the tests install the chart with: `fixtures/base.yaml`.
 fn base() -> Value {
-    serde_json::json!({
-        "database": {"existingSecret": "sagat-db"},
-        "oidc": {
-            "issuer": "https://idp.example/",
-            "audience": "sagat",
-            "jwksUri": "https://idp.example/jwks.json"
-        },
-        "secrets": {"existingSecret": "sagat-keys"},
-        "nats": {"url": "nats://nats.nats:4222", "credentialsSecret": "nats-creds"},
-        "controlPlane": {"allowPlaintextSecrets": true},
-        "engine": {
-            "shardLeaseSeconds": 21,
-            "schedulerConcurrency": 6,
-            "schedulerBatch": 150,
-            "grpc": {"allowPlaintextSecrets": true},
-            "autoscaling": {"keda": {
-                "enabled": true,
-                "prometheusAddress": "http://prometheus.monitoring:9090",
-                "maxReplicaCount": 32
-            }}
-        },
-        "workerPoolAutoscaling": {"prometheusAddress": "http://prometheus.monitoring:9090"},
-        "workerPools": [
-            {
-                "name": "render",
-                "language": "python",
-                "image": "registry.example.com/team/render:1.0.0",
-                "activities": ["act.render", "act.upscale"],
-                "autoscaling": {"enabled": true, "maxReplicaCount": 20}
-            },
-            {
-                "name": "export",
-                "image": "registry.example.com/team/export:1.0.0",
-                "activities": ["act.export"]
-            }
-        ]
-    })
+    serde_yaml_ng::from_str(&fixture("base.yaml")).expect("base.yaml is YAML")
 }
 
 /// `base()` with `changes` laid over it (objects are merged, anything else replaced).
@@ -385,6 +356,7 @@ fn the_autoscalers_scale_on_metrics_the_platform_emits_and_on_nothing_else() {
     let docs = render(&base());
     let emitted = emitted();
     let identifier = Regex::new(r"[a-z][a-z0-9_]*").expect("regex");
+    let matchers = Regex::new(r"\{[^}]*\}").expect("regex");
     let functions = ["max", "sum", "min", "avg", "pool"];
     let mut queries = 0;
     for scaled in of_kind(&docs, "ScaledObject") {
@@ -393,9 +365,7 @@ fn the_autoscalers_scale_on_metrics_the_platform_emits_and_on_nothing_else() {
             let query = trigger["metadata"]["query"].as_str().expect("query");
             queries += 1;
             // Drop the label matchers, then every remaining word is a function or a metric.
-            let bare = Regex::new(r"\{[^}]*\}")
-                .expect("regex")
-                .replace_all(query, "");
+            let bare = matchers.replace_all(query, "");
             for word in identifier.find_iter(&bare).map(|m| m.as_str()) {
                 assert!(
                     functions.contains(&word) || emitted.contains(word),
@@ -428,74 +398,22 @@ fn the_autoscalers_scale_on_metrics_the_platform_emits_and_on_nothing_else() {
 
 #[test]
 fn the_chart_refuses_what_the_platform_would_refuse() {
-    let refused = |changes: Value, expected: &str| {
-        let why = helm(&with(&changes)).expect_err(expected);
+    let cases: Vec<Value> =
+        serde_yaml_ng::from_str(&fixture("refused.yaml")).expect("refused.yaml is YAML");
+    assert!(
+        cases.len() >= 14,
+        "the list of refusals shrank to {}",
+        cases.len()
+    );
+    for case in &cases {
+        let name = case["name"].as_str().expect("a name");
+        let expected = case["message"].as_str().expect("a message");
+        let why = helm(&with(&case["changes"])).expect_err(name);
         assert!(
             why.contains(expected),
-            "expected the render to fail with {expected:?}, got: {why}"
+            "{name}: expected the render to fail with {expected:?}, got: {why}"
         );
-    };
-    refused(
-        serde_json::json!({"database": {"existingSecret": ""}}),
-        "database.existingSecret",
-    );
-    refused(serde_json::json!({"oidc": {"issuer": ""}}), "oidc.issuer");
-    refused(
-        serde_json::json!({"environment": "qa"}),
-        "environment must be",
-    );
-    // A replica beyond the 64 shards holds none.
-    refused(
-        serde_json::json!({"engine": {"replicas": 65}}),
-        "cannot be more than 64",
-    );
-    refused(
-        serde_json::json!({"engine": {"autoscaling": {"keda": {"maxReplicaCount": 100}}}}),
-        "cannot be more than 64",
-    );
-    refused(
-        serde_json::json!({"engine": {"autoscaling": {"hpa": {"enabled": true}}}}),
-        "at most one of",
-    );
-    refused(
-        serde_json::json!({"engine": {"shardLeaseSeconds": 2}}),
-        "between 3 and 600",
-    );
-    refused(
-        serde_json::json!({"engine": {"shardLeaseSeconds": 601}}),
-        "between 3 and 600",
-    );
-    refused(
-        serde_json::json!({"engine": {"grpc": {"tlsSecret": "engine-tls"}}}),
-        "contradict",
-    );
-    refused(
-        serde_json::json!({"workerPools": [
-            {"name": "a", "image": "x", "activities": ["act.a"]},
-            {"name": "a", "image": "y", "activities": ["act.b"]}
-        ]}),
-        "named twice",
-    );
-    refused(
-        serde_json::json!({"workerPools": [{"name": "Bad Name", "image": "x", "activities": ["a"]}]}),
-        "lowercase",
-    );
-    refused(
-        serde_json::json!({"workerPools": [{"name": "a", "image": "x", "activities": []}]}),
-        "serves no activity",
-    );
-    refused(
-        serde_json::json!({"workerPools": [{"name": "a", "activities": ["act.a"]}]}),
-        "has no image",
-    );
-    // A pool that wants to be scaled, with nothing to ask.
-    refused(
-        serde_json::json!({
-            "workerPoolAutoscaling": {"prometheusAddress": ""},
-            "workerPools": [{"name": "a", "image": "x", "activities": ["a"], "autoscaling": {"enabled": true}}]
-        }),
-        "prometheusAddress",
-    );
+    }
 }
 
 #[test]
@@ -545,4 +463,63 @@ fn no_candidate_query_bounds_an_index_range_with_a_volatile_clock() {
             );
         }
     }
+}
+
+#[test]
+fn the_example_an_operator_starts_from_renders_and_the_engine_accepts_it() {
+    let text =
+        std::fs::read_to_string(repo().join("infra/helm/examples/ha.yaml")).expect("example");
+    let example: Value = serde_yaml_ng::from_str(&text).expect("the example is YAML");
+    let docs = render(&example);
+    let engine = named(&docs, "Deployment", "sagat-octopus-orchestrator-engine");
+    let env = env_of(engine);
+    let lookup = |name: &str| env.get(name).cloned();
+    let config = sagat_execution_engine::EngineConfig::from_lookup(
+        &lookup,
+        sagat_control_plane::config::Environment::Prod,
+    )
+    .unwrap_or_else(|why| panic!("the engine refuses the example's configuration: {why}"));
+    assert_eq!(config.monitor.settings.pools.len(), 1);
+    assert_eq!(config.monitor.settings.pools[0].name, "payments");
+    // The example asks for more engines than the shards it divides: three, 22 + 21 + 21.
+    assert!(
+        example["engine"]["replicas"]
+            .as_u64()
+            .is_some_and(|n| n <= 64)
+    );
+    // And what it scales is scaled on what the platform emits (the same check as for the test values).
+    assert_eq!(of_kind(&docs, "ScaledObject").len(), 2);
+}
+
+#[test]
+fn the_queries_of_the_autoscalers_carry_the_installs_own_matchers_when_it_has_some() {
+    let docs = render(&with(
+        &serde_json::json!({"metrics": {"selector": "namespace=\"prod\""}}),
+    ));
+    let queries: Vec<String> = of_kind(&docs, "ScaledObject")
+        .iter()
+        .flat_map(|s| s["spec"]["triggers"].as_array().expect("triggers").clone())
+        .filter_map(|t| t["metadata"]["query"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(queries.len(), 3, "{queries:?}");
+    for query in &queries {
+        assert!(query.contains(r#"namespace="prod""#), "{query}");
+    }
+    assert!(
+        queries
+            .iter()
+            .any(|q| q.contains(r#"pool="render",namespace="prod""#)),
+        "{queries:?}"
+    );
+    // And without it they are what they were.
+    let plain = render(&base());
+    let bare: Vec<String> = of_kind(&plain, "ScaledObject")
+        .iter()
+        .flat_map(|s| s["spec"]["triggers"].as_array().expect("triggers").clone())
+        .filter_map(|t| t["metadata"]["query"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        bare.contains(&"max(scheduler_lag_seconds)".to_owned()),
+        "{bare:?}"
+    );
 }

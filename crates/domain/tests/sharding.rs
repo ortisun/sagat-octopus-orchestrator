@@ -13,7 +13,7 @@ use uuid::Uuid;
 fn a_shard_is_a_function_of_the_identifier_and_the_sql_function_is_the_same() {
     // The same byte the SQL function reads: get_byte(uuid_send(id), 15) & 63.
     let id = Uuid::parse_str("01a12b51-158b-7147-b9b3-847882a5c9ff").expect("uuid");
-    assert_eq!(Shard::of(id).index(), 0xff & 63);
+    assert_eq!(Shard::of(id).index(), 63, "0xff & 63");
     let again = Uuid::parse_str("01a12b51-158b-7147-b9b3-847882a5c940").expect("uuid");
     assert_eq!(Shard::of(again).index(), 0);
     assert_eq!(Shard::of(id), Shard::of(id));

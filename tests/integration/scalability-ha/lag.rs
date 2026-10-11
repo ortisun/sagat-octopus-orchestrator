@@ -82,10 +82,20 @@ async fn the_queue_of_a_pool_is_what_is_ready_for_the_activities_it_serves_acros
         .await
         .expect("age");
 
+    // A paused run's ready step waits for nobody: it is not in the queue of the pool.
+    let paused = w.start(wf, &json!({})).await;
+    w.operate_run(paused, sagat_application::runs::RunOperation::Pause)
+        .await;
+    sqlx::query("UPDATE steps SET ready_at = clock_timestamp() - interval '40 seconds' WHERE status = 'READY'")
+        .execute(&w.db.pool)
+        .await
+        .expect("age");
+
     let pools = [
         WorkerPool {
             name: "front".into(),
-            activities: vec!["act.a".into()],
+            // Named twice: counted once.
+            activities: vec!["act.a".into(), "act.a".into()],
         },
         WorkerPool {
             name: "idle".into(),

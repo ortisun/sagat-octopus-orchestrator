@@ -27,15 +27,26 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sagat-bench-XXXXXX")"
 DATA="$WORK/pgdata"
 REPORT="${SAGAT_PERF_REPORT:-tests/performance/reports/scalability-ha.md}"
 
-"$PGBIN/initdb" -D "$DATA" -U postgres --auth=trust --encoding=UTF8 >/dev/null
+# Whatever happens from here on, the server is stopped and the directory removed.
+cleanup() {
+  [ -f "$DATA/postmaster.pid" ] && "$PGBIN/pg_ctl" -D "$DATA" -m fast stop >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# The server listens on the loopback of a machine others may use: it asks for a password, a random one
+# that exists only in this process and in a file only this user reads.
+PASSWORD="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+(umask 077; printf '%s' "$PASSWORD" > "$WORK/password")
+"$PGBIN/initdb" -D "$DATA" -U postgres --auth=scram-sha-256 --pwfile="$WORK/password" \
+  --encoding=UTF8 --locale=C >/dev/null
 "$PGBIN/pg_ctl" -D "$DATA" -l "$WORK/postgres.log" -w \
   -o "-p $PORT -c listen_addresses=127.0.0.1 \
       -c shared_buffers=${SAGAT_BENCH_SHARED_BUFFERS:-2GB} -c effective_cache_size=${SAGAT_BENCH_CACHE:-16GB} \
       -c work_mem=16MB -c max_connections=400 -c max_wal_size=16GB -c checkpoint_timeout=15min \
       -c wal_level=replica -c fsync=on -c synchronous_commit=on -c full_page_writes=on" start
-trap '"$PGBIN/pg_ctl" -D "$DATA" -m fast stop >/dev/null; rm -rf "$WORK"' EXIT
 
-export SAGAT_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$PORT/postgres"
+export SAGAT_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/postgres"
 export SAGAT_PERF_REPORT="$REPORT"
 cat >"$REPORT" <<HEAD
 # Performance and scalability report: feature 010 (scalability and high availability)

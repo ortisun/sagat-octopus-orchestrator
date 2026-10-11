@@ -11,7 +11,8 @@ OIDC settings and the backup procedure are the same.
 | Piece | Where | Notes |
 |---|---|---|
 | Worker API | `execution-engine serve`, `SAGAT_GRPC_ADDR`, default `127.0.0.1:9000` | gRPC over HTTP/2. TLS (and mTLS) can be terminated by the engine itself with `SAGAT_GRPC_TLS_*`, or by the ingress or mesh in front (then say so with `SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS=true` if secrets are configured). Authenticated like the REST API: bearer JWT, member of a tenant, role `worker` (or `admin`), **and bound** to the namespace and activities it serves (`docs/runbooks/security-governance.md`) |
-| Scheduler loop | same process | Fires timers, wait deadlines and retries, reclaims lost leases, enforces run deadlines, renews lost wake-up hints, creates child runs, reports ended children to their parents, cancels children of stopped parents. Safe to run in several replicas |
+| Scheduler loop | same process | Fires timers, wait deadlines and retries, reclaims lost leases, enforces run deadlines, renews lost wake-up hints, creates child runs, reports ended children to their parents, cancels children of stopped parents. **Each replica works only on the shards of the work it holds a lease on** (64 shards, divided between the replicas alive), shares each pass between the tenants by weight, and fences every action against its lease: [`scaling.md`](scaling.md) |
+| Shard keeper | same process, every `SAGAT_SHARD_LEASE_SECS / 3` (5 s) | Announces the replica, renews its leases, gives back the shards beyond its share and takes the free ones; gives them back on `SIGTERM`. Sets `scheduler_shards_owned`, `scheduler_replicas` |
 | Housekeeping | same process, every `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300) | Purges idempotency records (7 d), expired worker sessions (1 h after expiry) and delivered outbox messages (24 h, 5000 per round) |
 | Outbox dispatcher | same process, only when `SAGAT_NATS_URL` is set | Publishes `task.ready` hints (`sagat.v1.task.ready.<tenant>.<activity>`) and `run.finished` events (`sagat.v1.run.finished.<tenant>`) to JetStream, at-least-once |
 | Telemetry projector | same process, one at a time (a lease row in `engine_leases`) | Turns what is new in the journal of each run into spans and measurements and hands the spans to the OTLP collector; settings `SAGAT_TELEMETRY_*`, see [`observability.md`](observability.md) |
@@ -33,10 +34,11 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 - **Start order:** `control-plane migrate` (owner role), then engines and API with the runtime role.
 - **Stop:** `SIGTERM` stops the gRPC server (in-flight calls drain), then the loops, then closes the
   pool. Workers whose call is cut off retry with the same idempotency key.
-- **Scale:** run as many replicas as you like. Claims are `FOR UPDATE SKIP LOCKED`, scheduler
-  commands are re-checked under the run's lock, outbox messages are claimed with a visibility
-  timeout. More replicas add claim and complete capacity; they do **not** yet multiply how fast
-  timers fire (every replica reads the same oldest candidates; see G22 and the benchmark report).
+- **Scale:** run up to 64 replicas (a replica beyond the 64 shards holds none). The scheduler's work is
+  divided between them by shard, so a second replica adds capacity, until the database is the limit;
+  claims are `FOR UPDATE SKIP LOCKED` and the outbox is divided by shard as well. How many, how long a
+  lease, what the autoscaler should watch and what each alert of the scheduler means:
+  [`scaling.md`](scaling.md); what was measured: `tests/performance/reports/scalability-ha.md`.
 - **Upgrade:** `migrate` first (additive migrations), then roll the engines. A run that is waiting
   for a timer, an event or a child during the roll continues with the new binary: its state is rows.
 - **Upgrading from a build before feature 009:** after `migrate`, bind your worker identities (`PUT /namespaces/{id}/worker-bindings/{subject}`, see `security-governance.md`) before rolling the engines, or the workers are refused at registration.
@@ -100,6 +102,12 @@ SELECT count(*) FILTER (WHERE delivered_at IS NULL) AS pending, max(attempt_coun
 | `grpc_connections_closed_total` | `reason` | Connections closed because the peer was silent (`silent`: never sent a byte; `idle`: silent for `SAGAT_GRPC_IDLE_TIMEOUT_SECS`) |
 | `scheduler_actions_total` | `kind`, `outcome` | What the loop did: `timer`, `wait_timeout`, `retry`, `lease`, `deadline`, `rehint`, `child_start`, `child_finish`, `child_cancel`; `done`, `skipped` (someone else got there first), `failed` |
 | `child_runs_started_total` | | Child runs created |
+| `scheduler_actions_total{outcome="fenced"}`, `scheduler_fenced_total` | `kind` | Actions refused because the replica no longer holds the run's shard at the generation it believed (feature 010) |
+| `scheduler_shards_owned`, `scheduler_replicas` | | Shards this replica holds (their sum over the replicas is 64), and replicas alive |
+| `scheduler_shards_acquired_total`, `scheduler_shards_released_total`, `scheduler_shards_lost_total`, `scheduler_keeper_failures_total` | | Handovers, leases lost while away, rounds of the keeper that failed |
+| `scheduler_lag_seconds` | `pass` | Set by the monitor: how long the oldest overdue item of each pass (`timers`, `wait_deadlines`, `retries`, `leases`, `deadlines`) has been overdue |
+| `scheduler_fairness_limited_total`, `scheduler_fairness_exhausted_total` | `pass` | Tenants given less than they showed in a pass; passes that ran out of pages looking for tenants |
+| `pool_ready_steps`, `pool_queue_lag_seconds` | `pool` | Set by the monitor for the pools of workers the operator names in `SAGAT_WORKER_POOLS`: steps ready for their activities, across tenants, and how long the oldest has waited |
 | `saga_transitions_total`, `saga_outcomes_total`, `compensation_attempts_total`, `reconciliations_total`, `operator_decisions_total`, `compensation_breaker_opened_total` | closed sets | Sagas (feature 003); meaning in [`sagas.md`](sagas.md) |
 | `ready_steps`, `queue_lag_seconds`, `leases_active`, `leases_expired`, `outbox_backlog`, `outbox_oldest_age_seconds`, `inbox_pending_events`, `inbox_oldest_age_seconds`, `dead_items{kind}`, `runs_active{status}`, `compensating_runs`, `workers_registered`, `alerts_firing{kind}` | | Gauges set by the monitor (feature 008) |
 | `step_attempts_total{outcome}`, `step_attempt_duration_seconds`, `step_schedule_latency_seconds`, `runs_terminal_total{status}`, `run_duration_seconds` | | Made by the projector from the journal; they lag the transitions by `telemetry_projection_lag_seconds` |
@@ -128,16 +136,21 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
 | NATS down | Publishing fails and backs off (1 s doubling to 60 s with jitter); the outbox grows; workers that poll are unaffected |
 | PostgreSQL down | Calls fail with `UNAVAILABLE` and `retry-after-ms`; the loops log and retry; `/readyz` fails; nothing is acknowledged that was not committed |
 | Timer, cancellation and signal race | The first commit wins under the run's lock; the loser is a benign no-op |
+| An engine replica dies | Its shards have no owner until its lease runs out (`SAGAT_SHARD_LEASE_SECS`, 15 s) and another replica takes them; the timers, retries and deadlines of those runs fire late and once. A clean stop (`SIGTERM`) gives the shards back and costs one keeper round |
+| An engine replica is paused or cut off past its lease | It stops selecting work by itself when its own clock says the lease ran out, and anything it had already chosen is refused by the fence (`scheduler_fenced_total`); it takes shards again with a new generation when it can |
+| The database fails over | The pools replace their connections; replicas whose leases are not the new primary's take them again (the fence names the owner as well as the generation, so a generation that repeats is harmless); [`disaster-recovery.md`](disaster-recovery.md) |
 
 ## 7. Not covered (read before relying on this)
 
-- **Fairness between tenants is partial (G32).** Each tenant has its own call budget and the engine
-  caps connections and calls as a whole, but the database pool and the scheduler batches are shared:
-  weighted claims are feature 010.
+- **Fairness between tenants is of the scheduler's passes and the outbox (feature 010, ADR-0020).** The
+  worker claim path is still oldest-first across the tenant's own steps (a worker belongs to one tenant),
+  and the database pool is shared by everything in a process. Quotas per queue (per activity) do not
+  exist (G245).
 - Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
 - A blob store for payloads over 256 KiB (G19), run results (G21), `foreach` and `humanApproval` nodes (G20).
-- Scaling the scheduler beyond about 100 timers per second per loop and disjoint candidates across
-  replicas (G22), partitioning/retention of `run_events` (G28): feature 010.
+- Partitioning and retention of `run_events` (G28) are not built: the journal grows with the runs
+  (feature 010 measured the cost of a wait and of a transition, `tests/performance/reports/scalability-ha.md`,
+  and left the partitioning for evidence, G241).
 - Sagas and compensation (feature 003), inbound events and webhooks (004): the engine only emits
   `task.ready` and `run.finished`, and signals arrive through the REST API.
 - OTLP span export is OTLP/HTTP with JSON only (G169); a backend that takes only protobuf needs a Collector in front. One projector and one monitor cap their own throughput (G177): sharding is feature 010. The audit trail has no retention (G182, G28).

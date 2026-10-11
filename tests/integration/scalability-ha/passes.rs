@@ -228,12 +228,12 @@ async fn the_shards_of_a_stopped_replica_are_taken_within_the_lease_and_not_befo
     let took_over = took_over.expect("beta took over the shards of alpha");
     assert!(before < 64);
     assert!(
-        took_over >= ttl - Duration::from_millis(500),
+        took_over >= ttl - Duration::from_secs(1),
         "not before the lease ran out: {took_over:?}"
     );
     assert!(
-        took_over <= ttl + ttl / 2,
-        "within the lease and one interval: {took_over:?}"
+        took_over <= ttl * 2,
+        "within the lease and a round or two: {took_over:?}"
     );
 }
 

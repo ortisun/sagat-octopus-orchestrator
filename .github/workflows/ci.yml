@@ -214,6 +214,43 @@ jobs:
         run: |
           for f in infra/observability/dashboards/*.json; do python3 -m json.tool "$f" > /dev/null; done
 
+  scale:
+    name: scale and recovery (chart, load harness at a small size, disaster-recovery drill)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The contract test of the chart (`contract_scalability_ha`) renders it with `helm template` in the
+      # workspace run above; this lints it with the example an operator starts from.
+      - run: helm lint infra/helm -f infra/helm/examples/ha.yaml
+      - run: for script in tests/performance/scalability-ha/run.sh infra/dr/drill.sh; do bash -n "$script"; done
+      # The scenarios of the benchmark at a size CI can afford, against a PostgreSQL the script starts
+      # itself: proof that the harness runs and that its assertions hold, not a measurement (the figures of
+      # the report are from a quiet machine, tests/performance/reports/scalability-ha.md).
+      - name: load harness, small
+        env:
+          SAGAT_PERF_MAX_WAITS: "2000"
+          SAGAT_PERF_FIRING_WAITS: "3000"
+          SAGAT_PERF_FIRING_BURST: "300"
+          SAGAT_PERF_NOISY: "300"
+          SAGAT_PERF_QUIET: "60"
+          SAGAT_PERF_TRANSITION_RUNS: "60"
+          SAGAT_PERF_REPORT: ${{ runner.temp }}/scalability-ha.md
+        run: |
+          tests/performance/scalability-ha/run.sh
+          cat "$SAGAT_PERF_REPORT"
+      # The point-in-time restore (journal digest before and after, every run replayed) and the failover
+      # to a synchronous standby (no acknowledged run missing), on clusters the script starts itself.
+      - name: disaster-recovery drill, small
+        env:
+          SAGAT_DR_RUNS: "300"
+          SAGAT_DR_REPORT: ${{ runner.temp }}/disaster-recovery.md
+        run: |
+          infra/dr/drill.sh
+          cat "$SAGAT_DR_REPORT"
+
   dependencies:
     name: dependency advisories (cargo audit)
     runs-on: ubuntu-latest

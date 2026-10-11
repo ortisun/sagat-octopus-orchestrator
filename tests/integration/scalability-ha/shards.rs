@@ -381,16 +381,18 @@ async fn the_fence_is_good_for_the_current_lease_and_for_nothing_else() {
 }
 
 #[tokio::test]
-async fn a_takeover_waits_for_the_transaction_that_found_the_lease_good() {
+async fn a_takeover_never_overtakes_the_transaction_that_found_the_lease_good() {
     // The fence is only worth something if the shard cannot change hands between the check and the
-    // commit of the action: the takeover is an update of the row the check holds `FOR SHARE`.
+    // commit of the action. The takeover does not wait for the action (a node lost in the middle of
+    // one would hold the shard for as long as the server takes to notice): it skips the shard, takes
+    // the free ones in the same call, and asks for the skipped one again at the next round.
     let w = world().await;
     let (wf, _) = w.publish(chain("fenced-race")).await;
     let run = w.start(wf, &json!({})).await;
     let tenant = w.admin.tenant_id();
     let lease = w
         .store
-        .acquire("alpha", &[shard(11)], Duration::from_millis(1_500))
+        .acquire("alpha", &[shard(11)], Duration::from_secs(3))
         .await
         .expect("acquire")
         .remove(0);
@@ -407,30 +409,68 @@ async fn a_takeover_waits_for_the_transaction_that_found_the_lease_good() {
         "good when it was checked"
     );
 
-    // The lease runs out while the action is still going; the other replica goes for the shard.
-    tokio::time::sleep(Duration::from_millis(1_700)).await;
+    // The lease runs out while the action is still going; the other replica goes for the shard and
+    // for another one that is free.
+    tokio::time::sleep(Duration::from_millis(3_300)).await;
     let rival = w.replica().await;
-    let takeover = tokio::spawn(async move {
-        rival
-            .store
-            .acquire("beta", &[shard(11)], TTL)
-            .await
-            .expect("acquire")
-    });
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(
-        !takeover.is_finished(),
-        "the takeover must wait for the action that found the lease good"
+    let started = std::time::Instant::now();
+    let got = tokio::time::timeout(
+        Duration::from_secs(3),
+        rival.store.acquire("beta", &[shard(11), shard(12)], TTL),
+    )
+    .await
+    .expect("the takeover does not wait for the action")
+    .expect("acquire");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(
+        got.iter().map(|l| l.shard).collect::<Vec<_>>(),
+        vec![shard(12)],
+        "the free shard is taken, the one the action holds is not"
     );
     assert_eq!(row(&w, shard(11)).await.0.as_deref(), Some("alpha"));
 
-    // The action finishes (here it only ends); the takeover goes through with a new generation.
+    // The action ends; the next round takes the shard, with a new generation.
     drop(tx);
-    let taken = tokio::time::timeout(Duration::from_secs(5), takeover)
+    let taken = rival
+        .store
+        .acquire("beta", &[shard(11)], TTL)
         .await
-        .expect("the takeover goes through once the action is over")
-        .expect("join");
+        .expect("acquire");
     assert_eq!(taken[0].generation, lease.generation + 1);
+}
+
+#[tokio::test]
+async fn an_action_cut_off_in_the_middle_does_not_hold_its_shard_for_longer_than_the_server_lets_it_idle()
+ {
+    // A node is lost after the fence and before the commit: the server keeps the transaction, and the
+    // lock it holds, until it notices the connection is gone. The pools cap how long a transaction may
+    // sit idle, so the shard is free again after that.
+    use sagat_infra_postgres::{PoolConfig, connect};
+
+    let w = world().await;
+    let mut config = PoolConfig::new(w.db.url.clone());
+    config.max_connections = 2;
+    config.idle_in_transaction_timeout = Duration::from_millis(800);
+    let pool = connect(&config).await.expect("pool");
+    let mut tx = pool.begin().await.expect("begin");
+    sqlx::query("SELECT shard FROM scheduler_shards WHERE shard = 20 FOR SHARE")
+        .execute(&mut *tx)
+        .await
+        .expect("the fence's lock");
+    // The holder goes silent (here it is just not used again) and the server cuts it off.
+    tokio::time::sleep(Duration::from_millis(1_800)).await;
+    let taken = tokio::time::timeout(
+        Duration::from_secs(3),
+        w.store.acquire("beta", &[shard(20)], TTL),
+    )
+    .await
+    .expect("the shard is free once the idle transaction was ended")
+    .expect("acquire");
+    assert_eq!(taken.len(), 1);
+    assert!(
+        sqlx::query("SELECT 1").execute(&mut *tx).await.is_err(),
+        "the server ended it"
+    );
 }
 
 #[tokio::test]

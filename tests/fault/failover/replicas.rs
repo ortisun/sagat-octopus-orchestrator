@@ -13,7 +13,7 @@ use crate::support::scale::{TTL, keeper, scheduler, sleepers};
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_replica_that_dies_in_the_middle_of_a_pass_leaves_nothing_half_done() {
     let w = world().await;
-    let runs = sleepers(&w, "chaos-crash", 400).await;
+    let runs = sleepers(&w, "chaos-crash", 600).await;
     let alpha = keeper(&w, "alpha", TTL);
     alpha.round().await.expect("alpha");
     let doomed = scheduler(
@@ -26,19 +26,32 @@ async fn a_replica_that_dies_in_the_middle_of_a_pass_leaves_nothing_half_done() 
         Some(alpha.placement().clone()),
     );
 
-    // alpha is killed while it is firing: the pass is dropped where it stands, transactions open.
+    // alpha is killed while it is firing: the pass is dropped where it stands, transactions open. It
+    // is killed when some timers have fired and not all, however fast the machine is.
     let pass = tokio::spawn(async move { doomed.tick().await });
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let done = loop {
+        let n: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM run_events WHERE event_type = 'timer.fired'")
+                .fetch_one(&w.db.pool)
+                .await
+                .expect("count");
+        if n >= 20 || pass.is_finished() || std::time::Instant::now() > deadline {
+            break n;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    };
     pass.abort();
     let _ = pass.await;
-    let done: i64 =
+    let done: i64 = done.max(
         sqlx::query_scalar("SELECT count(*) FROM run_events WHERE event_type = 'timer.fired'")
             .fetch_one(&w.db.pool)
             .await
-            .expect("count");
+            .expect("count"),
+    );
     assert!(
-        done < 400,
-        "the pass finished before it was killed ({done}): nothing was tested"
+        (1..600).contains(&done),
+        "the pass had fired {done} of 600 when it was killed: it must be in the middle"
     );
 
     // Its leases run out; beta takes over and finishes the work.

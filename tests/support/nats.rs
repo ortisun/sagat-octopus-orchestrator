@@ -26,7 +26,7 @@ pub struct TestNats {
 /// process of the test, on a port it chose and with a store of its own, killed with the test. The
 /// second is for a machine that cannot run containers; it is the same server and the same flags.
 enum Backend {
-    Container(#[allow(dead_code)] ContainerAsync<Nats>),
+    Container(#[allow(dead_code)] Box<ContainerAsync<Nats>>),
     Process {
         child: std::process::Child,
         _store: std::path::PathBuf,
@@ -64,7 +64,7 @@ pub async fn start() -> TestNats {
         .await
         .expect("mapped NATS port");
     TestNats {
-        _server: Backend::Container(container),
+        _server: Backend::Container(Box::new(container)),
         addr: SocketAddr::from(([127, 0, 0, 1], port)),
     }
 }

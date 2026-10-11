@@ -90,14 +90,14 @@ spec:
       metricType: AverageValue
       metadata:
         serverAddress: {{ required "workerPoolAutoscaling.prometheusAddress is required" $.Values.workerPoolAutoscaling.prometheusAddress | quote }}
-        query: sum(pool_ready_steps{pool={{ $pool.name | quote }}})
+        query: {{ printf "sum(pool_ready_steps%s)" (include "sagat.matchers" (dict "root" $ "pool" $pool.name)) | quote }}
         threshold: {{ default 50 $pool.autoscaling.readyPerReplica | quote }}
     # The oldest of them has waited too long: add replicas even if the queue is short.
     - type: prometheus
       metricType: AverageValue
       metadata:
         serverAddress: {{ $.Values.workerPoolAutoscaling.prometheusAddress | quote }}
-        query: max(pool_queue_lag_seconds{pool={{ $pool.name | quote }}})
+        query: {{ printf "max(pool_queue_lag_seconds%s)" (include "sagat.matchers" (dict "root" $ "pool" $pool.name)) | quote }}
         threshold: {{ default 30 $pool.autoscaling.lagThresholdSeconds | quote }}
 {{- end }}
 {{- end }}

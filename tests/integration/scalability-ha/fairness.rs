@@ -50,6 +50,8 @@ async fn count_fired(w: &World, runs: &[RunId]) -> usize {
 fn settings(batch: u32) -> SchedulerSettings {
     SchedulerSettings {
         batch,
+        // These tests tick again and again and expect every tick to look for the other tenants.
+        discovery_rest: std::time::Duration::ZERO,
         ..SchedulerSettings::default()
     }
 }
@@ -107,25 +109,22 @@ async fn weights_decide_the_split_when_both_tenants_have_more_than_a_pass_takes(
 #[tokio::test]
 async fn equal_weights_split_a_pass_equally_and_a_lone_tenant_still_gets_all_of_it() {
     let w = world().await;
-    let a = sleepers(&w, "even-a", 50).await;
-    let b = sleepers_of_other_tenant(&w, "even-b", 50).await;
+    let a = sleepers(&w, "even-a", 90).await;
+    let b = sleepers_of_other_tenant(&w, "even-b", 20).await;
     let scheduler = scheduler(&w, settings(40), None);
 
+    // Both have more than half the pass: each gets half.
     assert_eq!(scheduler.tick().await.timers_fired, 40);
     assert_eq!(count_fired(&w, &a).await, 20);
     assert_eq!(count_fired(&w, &b).await, 20);
 
-    // Once one of them is done the other is not held to half.
-    while count_fired(&w, &b).await < 50 {
-        scheduler.tick().await;
-    }
-    let before = count_fired(&w, &a).await;
+    // B is done; A has 70 left and nobody else: the whole pass is A's, not half of it.
     let report = scheduler.tick().await;
-    assert_eq!(
-        report.timers_fired as usize,
-        50 - before,
-        "the rest of a single tenant's work goes in one pass: {report:?}"
-    );
+    assert_eq!(report.timers_fired, 40, "{report:?}");
+    assert_eq!(count_fired(&w, &a).await, 60);
+    assert_eq!(count_fired(&w, &b).await, 20);
+    assert_eq!(scheduler.tick().await.timers_fired, 30);
+    assert_eq!(count_fired(&w, &a).await, 90);
 }
 
 #[tokio::test]

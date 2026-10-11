@@ -22,7 +22,7 @@ fn forward_migrations() -> i64 {
     i64::try_from(count).expect("count fits")
 }
 
-const TABLES: [&str; 28] = [
+const TABLES: [&str; 29] = [
     "tenants",
     "workspaces",
     "namespaces",
@@ -55,6 +55,7 @@ const TABLES: [&str; 28] = [
     "scheduler_shards",
     "scheduler_members",
     "tenant_scheduling",
+    "run_active_counts",
 ];
 
 #[tokio::test]
@@ -121,6 +122,16 @@ async fn rollback_removes_everything_and_forward_restores_it() {
     assert!(
         !leftover_shard_fn,
         "rollback must also drop the function the shard indexes are built on"
+    );
+    let leftover_counter_fn: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'run_active_counts_track')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("query");
+    assert!(
+        !leftover_counter_fn,
+        "rollback must also drop the function that keeps the count of active runs"
     );
 
     migrate(&db.pool).await.expect("forward again");

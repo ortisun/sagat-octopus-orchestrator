@@ -544,14 +544,24 @@ impl MonitorStore for PgRunStore {
             })
             .unzip();
         // One pass over the ready steps, grouped by the activity they wait for, then the activities
-        // are added up into the pools the operator named.
+        // are added up into the pools the operator named. A step counts only if a worker could take
+        // it: the same conditions as the claim (a paused run, a run being stopped and a compensation
+        // behind an open breaker are not waiting for a worker), or a tenant could pin a pool's scaler
+        // by pausing runs.
         let rows = sqlx::query(
             "WITH g AS ( \
-                 SELECT activity, count(*) AS n, min(ready_at) AS oldest FROM steps \
-                 WHERE status = 'READY' GROUP BY activity) \
+                 SELECT st.activity, count(*) AS n, min(st.ready_at) AS oldest \
+                   FROM steps st JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
+                  WHERE st.status = 'READY' AND NOT r.paused \
+                    AND (r.stop_reason IS NULL OR st.kind <> 'FORWARD') \
+                    AND NOT (st.kind = 'COMPENSATION' AND EXISTS ( \
+                         SELECT 1 FROM compensation_breakers b \
+                          WHERE b.tenant_id = st.tenant_id AND b.namespace_id = st.namespace_id \
+                            AND b.activity = st.activity AND b.opened_until > now())) \
+                  GROUP BY st.activity) \
              SELECT m.pool, coalesce(sum(g.n), 0)::bigint AS n, \
                     coalesce(extract(epoch FROM clock_timestamp() - min(g.oldest)), 0)::float8 AS oldest \
-               FROM unnest($1::text[], $2::text[]) AS m(pool, activity) \
+               FROM (SELECT DISTINCT pool, activity FROM unnest($1::text[], $2::text[]) AS u(pool, activity)) m \
                LEFT JOIN g ON g.activity = m.activity \
               GROUP BY m.pool",
         )

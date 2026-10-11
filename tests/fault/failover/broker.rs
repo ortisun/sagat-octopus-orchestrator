@@ -26,6 +26,7 @@ async fn a_dispatcher_that_dies_while_the_broker_is_down_is_replaced_and_every_h
         visibility: Duration::from_secs(2),
         base_backoff: Duration::from_millis(100),
         max_backoff: Duration::from_millis(300),
+        ..DispatchSettings::default()
     };
 
     // alpha is the dispatcher, with every shard.

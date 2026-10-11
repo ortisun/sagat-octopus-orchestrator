@@ -38,15 +38,23 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/sagat-dr-XXXXXX")"
 REPORT="${SAGAT_DR_REPORT:-tests/performance/reports/disaster-recovery.md}"
 RUNS="${SAGAT_DR_RUNS:-3000}"
 BASE_PORT="${SAGAT_DR_BASE_PORT:-55460}"
+case "$RUNS$BASE_PORT" in *[!0-9]*) echo "SAGAT_DR_RUNS and SAGAT_DR_BASE_PORT are numbers" >&2; exit 2;; esac
 PIDS=()
 cleanup() {
-  for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
+  for pid in "${PIDS[@]:-}"; do pkill -P "$pid" 2>/dev/null || true; kill "$pid" 2>/dev/null || true; done
   for data in "$WORK"/*/data; do
     [ -f "$data/postmaster.pid" ] && pg_ctl -D "$data" -m immediate stop >/dev/null 2>&1 || true
   done
   [ "${SAGAT_DR_KEEP:-}" = 1 ] && echo "kept: $WORK" || rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+# The clusters listen on the loopback of a machine others may use, so they ask for a password: a random
+# one that exists in this process, in the environment of what it starts, and in a file only this user
+# reads (the standby's walreceiver reads the same file).
+PASSWORD="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+(umask 077; printf '%s' "$PASSWORD" > "$WORK/password"; printf '127.0.0.1:*:*:postgres:%s\n' "$PASSWORD" > "$WORK/pgpass")
+export PGPASSWORD="$PASSWORD" PGPASSFILE="$WORK/pgpass"
 
 now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
@@ -57,7 +65,7 @@ make_cluster() {
   local name="$1" port="$2"; shift 2
   local data="$WORK/$name/data"
   mkdir -p "$WORK/$name"
-  initdb -D "$data" -U postgres --auth=trust --encoding=UTF8 >/dev/null
+  initdb -D "$data" -U postgres --auth=scram-sha-256 --pwfile="$WORK/password" --encoding=UTF8 --locale=C >/dev/null
   {
     echo "port = $port"
     echo "listen_addresses = '127.0.0.1'"
@@ -76,7 +84,7 @@ make_cluster() {
 start() { pg_ctl -D "$1" -l "$1/../log" -w start >/dev/null; }
 
 run_test() { # $1 test name; the environment carries the rest
-  cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored --nocapture --exact "$1"
+  cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored --nocapture --exact "dr::$1"
 }
 
 SUMMARY=""
@@ -89,7 +97,7 @@ ARCH="$WORK/archive"; mkdir -p "$ARCH"
 D1=$(make_cluster primary "$P1" "archive_mode = on" \
   "archive_command = 'test ! -f $ARCH/%f && cp %p $ARCH/%f'" "archive_timeout = 30s" "max_wal_size = 2GB")
 start "$D1"
-export SAGAT_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$P1/postgres"
+export SAGAT_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$P1/postgres"
 export SAGAT_DR_DIR="$WORK/signals"; mkdir -p "$SAGAT_DR_DIR"
 export SAGAT_DR_RUNS="$RUNS"
 run_test dr_workload > "$WORK/workload.log" 2>&1 &
@@ -113,7 +121,7 @@ touch "$SAGAT_DR_DIR/target.set"
 wait_for c.done
 runs_after=$(psqlc -p "$P1" -d "$DB" -c "SELECT count(*) FROM runs")
 log "phase C done ($((runs_after - runs_at_target)) runs after the point); the operator's mistake"
-psqlc -p "$P1" -d "$DB" -c "DROP SCHEMA public CASCADE" >/dev/null
+PGOPTIONS="-c client_min_messages=warning" psqlc -p "$P1" -d "$DB" -c "DROP SCHEMA public CASCADE" >/dev/null
 last_wal=$(psqlc -p "$P1" -c "SELECT pg_walfile_name(pg_current_wal_lsn())")
 psqlc -p "$P1" -c "SELECT pg_switch_wal()" >/dev/null
 for _ in $(seq 1 120); do
@@ -151,7 +159,7 @@ digest_after=$(psqlc -p "$P2" -d "$DB" -f infra/dr/journal_digest.sql)
 t_digest=$(now)
 if [ "$digest_before" = "$digest_after" ]; then identical=yes; else identical=NO; fi
 log "journal digest identical: $identical"
-verify=$(SAGAT_DR_URL="postgres://postgres:postgres@127.0.0.1:$P2/$DB" run_test dr_verify 2>&1 | sed -n 's/^verified=/verified=/p' | head -1)
+verify=$(SAGAT_DR_URL="postgres://postgres:$PASSWORD@127.0.0.1:$P2/$DB" run_test dr_verify 2>&1 | sed -n 's/^verified=/verified=/p' | head -1)
 t_verified=$(now)
 pg_ctl -D "$DR" -m fast stop >/dev/null
 
@@ -208,7 +216,7 @@ failover() { # $1 label, $2 synchronous_standby_names ('' = asynchronous), $3 po
   done
   local mode; mode=$(psqlc -p "$pp" -c "SELECT sync_state FROM pg_stat_replication LIMIT 1")
   log "2/2 failover, standby $label (the primary reports it as: $mode)"
-  export SAGAT_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$pp/postgres"
+  export SAGAT_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$pp/postgres"
   export SAGAT_DR_DIR="$WORK/signals-$label"; mkdir -p "$SAGAT_DR_DIR"
   run_test dr_acked_workload > "$WORK/acked-$label.log" 2>&1 &
   local load=$!; PIDS+=($!)
@@ -228,10 +236,11 @@ failover() { # $1 label, $2 synchronous_standby_names ('' = asynchronous), $3 po
   touch "$SAGAT_DR_DIR/stop"; wait "$load" 2>/dev/null || true
   local db; db=$(cat "$SAGAT_DR_DIR/db")
   local out
-  out=$(SAGAT_DR_URL="postgres://postgres:postgres@127.0.0.1:$sp/$db" SAGAT_DR_ACKED="$SAGAT_DR_DIR/acked" \
+  out=$(SAGAT_DR_URL="postgres://postgres:$PASSWORD@127.0.0.1:$sp/$db" SAGAT_DR_ACKED="$SAGAT_DR_DIR/acked" \
         run_test dr_verify 2>&1 | grep -E '^(verified|acknowledged)=' | tr '\n' ' ')
   pg_ctl -D "$ds" -m fast stop >/dev/null
-  add "| $label | $mode | $(secs "$t_kill" "$t_promoted") s | ${out:-not run} |"
+  # (This runs in a subshell, so the row goes to a file the main script reads.)
+  echo "| $label | $mode | $(secs "$t_kill" "$t_promoted") s | ${out:-not run} |" >> "$WORK/failover-rows"
   echo "$out"
 }
 add ""
@@ -241,6 +250,7 @@ add "| Standby | State reported by the primary | Time to promote (RTO of the dat
 add "|---|---|---:|---|"
 sync_out=$(failover synchronous "FIRST 1 (standby1)" 10)
 async_out=$(failover asynchronous "" 20)
+SUMMARY+="$(cat "$WORK/failover-rows")"$'\n'
 add ""
 case "$sync_out" in *"lost=0"*) ;; *) echo "A SYNCHRONOUS STANDBY LOST ACKNOWLEDGED RUNS: $sync_out" >&2; echo "$SUMMARY" >> "$REPORT"; exit 1;; esac
 case "$sync_out" in *"failed=0"*) ;; *) echo "THE PROMOTED RUNS DO NOT REPLAY: $sync_out" >&2; exit 1;; esac

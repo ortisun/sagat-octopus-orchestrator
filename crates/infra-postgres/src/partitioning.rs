@@ -92,7 +92,9 @@ impl ShardStore for PgRunStore {
     async fn leases(&self) -> Result<BTreeMap<Shard, Held>, StoreError> {
         let rows = sqlx::query(
             "SELECT shard, owner, generation, \
-                    GREATEST(extract(epoch FROM expires_at - clock_timestamp()), 0)::float8 AS remaining \
+                    CASE WHEN expires_at > clock_timestamp() \
+                         THEN extract(epoch FROM expires_at - clock_timestamp())::float8 \
+                         ELSE 0::float8 END AS remaining \
              FROM scheduler_shards",
         )
         .fetch_all(self.pool())
@@ -122,11 +124,19 @@ impl ShardStore for PgRunStore {
         if shards.is_empty() {
             return Ok(Vec::new());
         }
+        // A shard whose row is locked is skipped, not waited for: a transaction that found the lease
+        // good and was then cut off (a node lost in the middle of an action) holds the row `FOR SHARE`
+        // until the server closes it, and waiting would hold up the others that are free in the same
+        // call. A skipped shard is asked for again at the next round.
         let rows = sqlx::query(
-            "UPDATE scheduler_shards s \
+            "WITH free AS ( \
+                 SELECT shard FROM scheduler_shards \
+                  WHERE shard = ANY($2::smallint[]) AND expires_at <= clock_timestamp() \
+                  ORDER BY shard FOR UPDATE SKIP LOCKED) \
+             UPDATE scheduler_shards s \
                 SET owner = $1, generation = s.generation + 1, acquired_at = clock_timestamp(), \
                     expires_at = clock_timestamp() + make_interval(secs => $3) \
-              WHERE s.shard = ANY($2::smallint[]) AND s.expires_at <= clock_timestamp() \
+               FROM free WHERE s.shard = free.shard \
               RETURNING s.shard, s.generation",
         )
         .bind(owner)
@@ -193,11 +203,17 @@ impl ShardStore for PgRunStore {
             .iter()
             .map(|l| i64::try_from(l.generation).unwrap_or(i64::MAX))
             .collect();
+        // A shard whose row is locked (an action of this replica is still fencing against it) is left
+        // to run out: giving it back is an optimisation, and waiting for it would hold up a stop.
         sqlx::query(
-            "UPDATE scheduler_shards s SET expires_at = clock_timestamp() \
-               FROM unnest($2::smallint[], $3::bigint[]) AS h(shard, generation) \
-              WHERE s.shard = h.shard AND s.generation = h.generation AND s.owner = $1 \
-                AND s.expires_at > clock_timestamp()",
+            "WITH mine AS ( \
+                 SELECT s.shard FROM scheduler_shards s \
+                   JOIN unnest($2::smallint[], $3::bigint[]) AS h(shard, generation) \
+                     ON s.shard = h.shard AND s.generation = h.generation \
+                  WHERE s.owner = $1 AND s.expires_at > clock_timestamp() \
+                  ORDER BY s.shard FOR UPDATE OF s SKIP LOCKED) \
+             UPDATE scheduler_shards s SET expires_at = clock_timestamp() \
+               FROM mine WHERE s.shard = mine.shard",
         )
         .bind(owner)
         .bind(shards)

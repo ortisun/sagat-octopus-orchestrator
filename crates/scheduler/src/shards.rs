@@ -201,6 +201,26 @@ impl<S: ShardStore> Keeper<S> {
     /// # Errors
     /// The store's: the round stopped where it failed and the next one starts over.
     pub async fn round(&self) -> Result<Round, StoreError> {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "scheduler.keeper.round",
+            owner = %self.placement.owner(),
+            held = tracing::field::Empty,
+            acquired = tracing::field::Empty,
+            released = tracing::field::Empty,
+        );
+        let result = self.keep().instrument(span).await;
+        if result.is_err() {
+            // The gauges say what this replica can act on now, which is what its snapshot says (the
+            // snapshot runs out by itself), and that it does not know how many replicas there are.
+            #[allow(clippy::cast_precision_loss)] // a gauge
+            metrics::gauge!("scheduler_shards_owned").set(self.placement.owned().len() as f64);
+            metrics::gauge!("scheduler_replicas").set(0.0);
+        }
+        result
+    }
+
+    async fn keep(&self) -> Result<Round, StoreError> {
         // Every deadline is measured from before the first call, so the snapshot never outlives the
         // lease the database granted: it was granted after this instant.
         let started = Instant::now();
@@ -224,8 +244,32 @@ impl<S: ShardStore> Keeper<S> {
         let lost = before.len().saturating_sub(renewed.len());
         let mut held: BTreeMap<Shard, u64> =
             renewed.iter().map(|l| (l.shard, l.generation)).collect();
+        // What was renewed is the database's for another lease: say so at once, so that a later step
+        // that fails does not leave the snapshot shorter than the leases.
+        let valid_until = started + ttl;
+        self.placement.publish(Snapshot {
+            leases: held.clone(),
+            weights: weights.clone(),
+            valid_until,
+        });
 
         let table = self.store.leases().await?;
+        // Leases the database says are this replica's and the snapshot does not know: the answer to
+        // an `acquire` was lost on its way back. The name is unique to this process, so they are its
+        // own; they are renewed (so that they last as long as the snapshot says) and adopted.
+        let unknown: Vec<Lease> = table
+            .iter()
+            .filter(|(shard, held_by)| held_by.is_held_by(owner) && !held.contains_key(shard))
+            .map(|(shard, held_by)| Lease {
+                shard: *shard,
+                generation: held_by.generation,
+            })
+            .collect();
+        if !unknown.is_empty() {
+            for lease in self.store.renew(owner, &unknown, ttl).await? {
+                held.insert(lease.shard, lease.generation);
+            }
+        }
         let plan = sharding::plan(owner, replicas, &table);
 
         // Stop using the shards before giving them back, never the other way round.
@@ -239,7 +283,6 @@ impl<S: ShardStore> Keeper<S> {
                 })
             })
             .collect();
-        let valid_until = started + ttl;
         self.placement.publish(Snapshot {
             leases: held.clone(),
             weights: weights.clone(),
@@ -269,6 +312,10 @@ impl<S: ShardStore> Keeper<S> {
             valid_until,
         });
 
+        let span = tracing::Span::current();
+        span.record("held", round.held);
+        span.record("acquired", round.acquired);
+        span.record("released", round.released);
         metrics::gauge!("scheduler_shards_owned").set(round.held as f64);
         metrics::gauge!("scheduler_replicas").set(round.replicas as f64);
         metrics::counter!("scheduler_shards_acquired_total").increment(round.acquired as u64);
@@ -277,7 +324,18 @@ impl<S: ShardStore> Keeper<S> {
         if round.lost > 0 {
             tracing::warn!(
                 lost = round.lost,
+                runbook = "docs/runbooks/scaling.md#shard-fencing",
                 "shard leases were lost: the replica was away for longer than the lease, or a shard was given to another"
+            );
+        }
+        // A handover is an event worth a line; a round that changed nothing is not.
+        if round.acquired > 0 || round.released > 0 {
+            tracing::info!(
+                held = round.held,
+                acquired = round.acquired,
+                released = round.released,
+                replicas = round.replicas,
+                "scheduler shards changed hands"
             );
         }
         Ok(round)
@@ -317,6 +375,8 @@ mod tests {
     struct Fake {
         state: Mutex<State>,
         down: Mutex<bool>,
+        /// The next `acquire` changes the leases and then fails: the answer is lost on its way back.
+        lose_the_answer: Mutex<bool>,
     }
 
     #[derive(Default)]
@@ -420,6 +480,12 @@ mod tests {
                         generation: slot.1,
                     });
                 }
+            }
+            drop(state);
+            if std::mem::take(&mut *self.0.lose_the_answer.lock().unwrap()) {
+                return Err(StoreError::Unavailable {
+                    detail: "the answer was lost".into(),
+                });
             }
             Ok(got)
         }
@@ -616,6 +682,43 @@ mod tests {
             .lease_of(Shard::new(0).unwrap(), Instant::now())
             .unwrap();
         assert_eq!(lease.generation, 2);
+    }
+
+    #[tokio::test]
+    async fn leases_whose_acquire_answer_was_lost_are_adopted_and_not_left_to_run_out() {
+        let store = Shared::new();
+        let a = keeper(&store, "a");
+        *store.0.lose_the_answer.lock().unwrap() = true;
+        assert!(a.round().await.is_err());
+        // The database holds every shard for `a`; `a` has been told nothing and works on none.
+        assert!(a.placement().owned().is_empty());
+        assert_eq!(
+            store.owner_of(Shard::new(5).unwrap()),
+            Some(("a".to_owned(), 1))
+        );
+
+        // The next round finds them in the table, renews them and works on them: no wait for a lease
+        // to run out, no new generation.
+        let round = a.round().await.unwrap();
+        assert_eq!(round.held, usize::from(SHARDS));
+        assert_eq!(a.placement().owned(), ShardSet::all());
+        let lease = a
+            .placement()
+            .snapshot()
+            .lease_of(Shard::new(5).unwrap(), Instant::now())
+            .unwrap();
+        assert_eq!(lease.generation, 1);
+        // Another replica of the same name would be a mistake the name's random suffix prevents; a
+        // lease held by someone else is never adopted.
+        let b = keeper(&store, "b");
+        b.round().await.unwrap();
+        assert!(
+            !b.placement()
+                .owned()
+                .iter()
+                .any(|s| a.placement().owned().contains(s))
+                || b.placement().owned().is_empty()
+        );
     }
 
     #[tokio::test]

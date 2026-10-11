@@ -1,6 +1,6 @@
 # ADR-0020 — The scheduler's work is sharded by run and owned by lease with a fence in the action's transaction, a pass shares its batch between tenants by weight, and what scales is measured before it is promised
 
-Status: **Accepted** | Date: 2026-10-12 | Feature: 010 | Builds on ADR-0003 (PostgreSQL is the source of truth, the broker carries hints), ADR-0004 (external effects are at least once), ADR-0005 (a transition and what it causes commit together), ADR-0009 (every action is applied under the run's lock and re-checked by the domain) and ADR-0017 (conditions are found by looking, metrics carry no tenant, run or activity)
+Status: **Accepted** | Date: 2026-10-12 | Feature: 010 | Builds on ADR-0002 (PostgreSQL is the authority and the outbox carries the wake-ups), ADR-0004 (external effects are at least once), ADR-0009 (single region first: this is high availability inside one region) and ADR-0017 (conditions are found by looking, metrics carry no tenant, run or activity)
 
 ## Context
 
@@ -50,8 +50,12 @@ once. The lease is 15 s by default (3 to 600): a crashed replica's work waits th
 
 **3. Every action is fenced inside its own transaction.** Before the scheduler changes a run it reads the shard's row
 `FOR SHARE` and proceeds only if the owner, the generation *and* the expiry are what it believes. A takeover is an
-`UPDATE` of that row, which waits for the transactions that found the lease good, and the ones that start after it
-find the new generation. The owner in the check is the replica's name with a random suffix chosen at start, so a
+`UPDATE` of that row that **skips a row that is locked**: it cannot overtake a transaction that found the lease good
+(that one commits first), it takes the shards that are free in the same call, and it asks for the skipped one again at
+the next round; the transactions that start after it find the new generation. It does not wait, because a node lost in
+the middle of an action leaves its transaction, and the lock with it, on the server until the server ends it, and a
+takeover that waited would wait as long: the pools cap how long a transaction may sit idle (`idle_in_transaction_session_timeout`, 60 s),
+which is the longest a shard can be held by an action that never finished. The owner in the check is the replica's name with a random suffix chosen at start, so a
 generation that is reused (a database restored to an earlier point, a promoted asynchronous standby that lost the last
 takeover) can never be mistaken for the one it replaced. A replica that cannot reach the database stops by itself: its
 snapshot of what it holds expires on its own monotonic clock a little before the database would let another replica
@@ -82,8 +86,10 @@ oldest candidates only, as a diagnostic for measuring what fairness does.
 **6. The candidates of a pass are acted on concurrently** (`SAGAT_SCHEDULER_CONCURRENCY`, 8), each in its own
 transaction on its own connection, under the run's lock as before. The outbox dispatcher is divided the same way: it
 looks at the due messages of its shards, chooses them fairly and claims the ones it chose by id with `SKIP LOCKED`,
-so the messages of one run are published by one dispatcher in the order they were written, and a message claimed by a
-dispatcher that died is published by the next owner after its visibility timeout, as before.
+so the messages of one run are published, normally, by one dispatcher in the order they were written (a failed
+publish that backs off, or a handover while a message is claimed, can reorder them: the hints are idempotent and
+nothing may rely on the order), and a message claimed by a dispatcher that died is published by the next owner after
+its visibility timeout, as before.
 
 **7. What scales is observed without a tenant, a run or an activity on a metric** (ADR-0017). The monitor sets
 `scheduler_lag_seconds{pass}` (how long the oldest overdue item of each pass has been overdue), the keeper sets the
@@ -101,6 +107,21 @@ load level of the specification was not reached. Backup, point-in-time recovery 
 clusters (`infra/dr/drill.sh`), and the RPO and RTO of the drill are reported as what the procedure took on that
 machine, not published as an objective: that needs the operator's replication and restore.
 
+**9. The quota of active runs is read from counters the database keeps, not counted.** Every start counted the
+runs that had not finished, under a lock that serialises the starts of a namespace, so the cost of a start grew with
+the number of runs waiting: the benchmark could not make a hundred thousand waits in the time it should, and a million
+not at all. A trigger on `runs` keeps sixteen counters per namespace in the same transaction as the change they count
+(`run_active_counts`, by the run's identifier, so runs that finish together do not wait for one row); the check reads
+at most sixteen rows. The lock stays, so the quota is still exact when starts race for the last places, and the
+runtime role can read the counters and cannot write them (the function is `SECURITY DEFINER`).
+
+**10. A pass rests its search for other tenants after a search that found nobody.** Leaving a tenant out of a query
+filters its rows rather than skipping them, so a search that finds nobody has read the whole backlog of the tenants it
+left out; repeated at every tick of a burst of a hundred thousand timers that is quadratic. After such a search the
+pass shares the first page only for two seconds (`SAGAT_SCHEDULER_DISCOVERY_REST_MS`), and a tenant that arrives behind a
+burst is found when the rest is over. The cost that remains, one read of the backlog of the tenants left out per
+rest, is a limit that is stated (research G264) and is what a tenant-first index would remove.
+
 ## Consequences
 
 - A second engine replica now adds capacity to the scheduler: the work is divided by shard, and the measured
@@ -108,8 +129,8 @@ machine, not published as an objective: that needs the operator's replication an
   replicas do not raise; read replicas and partitioning of the journal are the next levers and are not built.
 - A handover costs time: up to a lease after a crash, one keeper round after a clean stop or a join. Nothing is lost
   meanwhile: a timer is a row and fires late.
-- The fence adds one indexed read with a shared row lock to every scheduler action, and a takeover waits for the
-  actions in flight. Both are measured in the report.
+- The fence adds one indexed read with a shared row lock to every scheduler action, and a shard held by an action in
+  flight is taken at a later round. Both are measured in the report.
 - Fairness changes the order in which a pass takes work and nothing else: every candidate is still applied under the
   run's lock and re-checked by the domain. A tenant that has the whole batch to itself still gets it.
 - The shard indexes are in addition to the old ones, so a database carries both until the old ones are dropped.

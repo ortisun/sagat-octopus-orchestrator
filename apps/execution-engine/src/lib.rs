@@ -112,12 +112,25 @@ pub async fn serve(
     ));
     let keeper: Arc<EngineKeeper> =
         Arc::new(Keeper::new(store.clone(), placement.clone(), engine.shards));
+    // The candidates of a pass are acted on at the same time, each on a connection of its own, and the
+    // keeper needs one to renew the leases: never as many at once as the pool has.
+    let mut scheduler_settings = engine.scheduler;
+    let room = usize::try_from(config.database.max_connections.saturating_sub(2)).unwrap_or(1);
+    if scheduler_settings.concurrency > room.max(1) {
+        tracing::warn!(
+            configured = scheduler_settings.concurrency,
+            used = room.max(1),
+            pool = config.database.max_connections,
+            "SAGAT_SCHEDULER_CONCURRENCY is more than the pool can carry next to the keeper; using less"
+        );
+        scheduler_settings.concurrency = room.max(1);
+    }
     let scheduler: Arc<EngineScheduler> = Arc::new(
         Scheduler::new(
             store.clone(),
             Engine::new(JsonEvaluator),
             SystemEntropy,
-            engine.scheduler,
+            scheduler_settings,
         )
         .with_children(cache.clone())
         .with_placement(placement.clone()),

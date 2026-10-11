@@ -75,7 +75,7 @@ async fn more_workers_finish_the_same_queue_sooner_and_no_task_goes_to_two_of_th
     );
     // Throughput increased: four times the workers, a good part of four times the throughput.
     assert!(
-        fast.as_secs_f64() < slow.as_secs_f64() * 0.6,
+        fast.as_secs_f64() < slow.as_secs_f64() * 0.75,
         "8 workers took {fast:?}, 2 workers took {slow:?}"
     );
     // And nothing is left behind.

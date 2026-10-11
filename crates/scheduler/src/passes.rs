@@ -41,6 +41,12 @@ const PURGE_ROUNDS: u32 = 20;
 pub struct SchedulerSettings {
     /// Candidates examined per pass per tick.
     pub batch: u32,
+    /// How long a pass rests its search for other tenants after a search that found nobody (zero:
+    /// never rests). Finding out that the tenants a pass left out are the only ones with work costs a
+    /// read of their whole backlog; with one tenant's burst of a hundred thousand timers that is
+    /// every tick for as long as it drains. During the rest the pass shares the first page of the
+    /// oldest candidates, so a tenant that arrives behind a burst is found when the rest is over.
+    pub discovery_rest: Duration,
     /// Whether a pass takes its candidates fairly between tenants (the default). Off, it takes the
     /// oldest `batch` of the shards it holds, as before feature 010: a diagnostic, to measure what
     /// fairness does (`tests/performance/scalability-ha`), not a mode to run in.
@@ -62,6 +68,7 @@ impl Default for SchedulerSettings {
         Self {
             batch: 200,
             fair: true,
+            discovery_rest: Duration::from_secs(2),
             concurrency: 8,
             rehint_after: Duration::from_secs(30),
             idempotency_retention: Duration::from_secs(7 * 24 * 3600),
@@ -208,6 +215,8 @@ pub struct Scheduler<S, E, R> {
     definitions: Option<DefinitionCache>,
     /// Which shards this replica works on; without it the scheduler is the only replica.
     placement: Option<Placement>,
+    /// Until when each pass rests its search for other tenants (see [`SchedulerSettings::discovery_rest`]).
+    rests: std::sync::Mutex<std::collections::BTreeMap<&'static str, Instant>>,
 }
 
 impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
@@ -230,6 +239,7 @@ where
             settings,
             definitions: None,
             placement: None,
+            rests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
     }
 
@@ -522,7 +532,14 @@ where
                 Vec::new()
             });
         }
-        let selected = fairness::select(limit, &view.weights, tenant, key, |exclude| {
+        let now = Instant::now();
+        let discover = self
+            .rests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(what)
+            .is_none_or(|until| *until <= now);
+        let selected = fairness::select(limit, discover, &view.weights, tenant, key, |exclude| {
             query(
                 store,
                 Window {
@@ -533,6 +550,16 @@ where
             )
         })
         .await;
+        if discover
+            && let Ok((_, selection)) = &selected
+            && selection.found_nobody
+            && !self.settings.discovery_rest.is_zero()
+        {
+            self.rests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(what, Instant::now() + self.settings.discovery_rest);
+        }
         match selected {
             Ok((items, selection)) => {
                 if selection.limited > 0 {
@@ -817,33 +844,41 @@ where
             .await;
         let outcomes = self
             .each(pending, |child| async move {
-                let outcome = match self.start_child(view, definitions, &child).await {
-                    Ok(outcome) => outcome,
+                let (outcome, counted) = match self.start_child(view, definitions, &child).await {
+                    Ok(done) => done,
                     Err(error) => {
                         tracing::error!(%error, run = %child.step.run_id, node = %child.step.node, "starting a child run failed");
-                        Outcome::Failed
+                        (Outcome::Failed, false)
                     }
                 };
-                metrics::counter!("scheduler_actions_total", "kind" => "child_start", "outcome" => outcome.label())
-                    .increment(1);
-                if outcome == Outcome::Fenced {
-                    metrics::counter!("scheduler_fenced_total", "kind" => "child_start")
+                if !counted {
+                    metrics::counter!("scheduler_actions_total", "kind" => "child_start", "outcome" => outcome.label())
                         .increment(1);
+                    if outcome == Outcome::Fenced {
+                        metrics::counter!("scheduler_fenced_total", "kind" => "child_start")
+                            .increment(1);
+                    }
                 }
-                outcome
+                (outcome, counted)
             })
             .await;
-        for outcome in outcomes {
-            Self::tally(report, outcome, |r| r.children_started += 1);
+        for (outcome, told_the_parent) in outcomes {
+            if told_the_parent {
+                Self::tally(report, outcome, |r| r.children_finished += 1);
+            } else {
+                Self::tally(report, outcome, |r| r.children_started += 1);
+            }
         }
     }
 
+    /// Starts the child a step reserved. The flag says that the answer is the parent's step being told
+    /// that the child cannot be (the action was counted, as a `child_finish`, when it was applied).
     async fn start_child(
         &self,
         view: &View,
         definitions: &DefinitionCache,
         pending: &PendingChild,
-    ) -> Result<Outcome, EngineError> {
+    ) -> Result<(Outcome, bool), EngineError> {
         let tenant = pending.step.tenant_id;
         let parent_id = pending.step.run_id;
         let node = &pending.step.node;
@@ -851,17 +886,17 @@ where
         // candidate was found through it. (The child's own shard is whoever owns the child's id.)
         let hold = view.hold_for(parent_id);
         if matches!(hold, Hold::Lost) {
-            return Ok(Outcome::Fenced);
+            return Ok((Outcome::Fenced, false));
         }
         let Some(parent) = self.store.get(tenant, parent_id).await? else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
         let Some(parent_version) = self
             .store
             .get_version_by_id(tenant, parent.info.version_id)
             .await?
         else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
         let parent_definition = definitions
             .get_or_parse(parent.info.version_id, &parent_version.document)
@@ -869,7 +904,7 @@ where
                 detail: "a stored version no longer parses".into(),
             })?;
         let Some(parent_node) = parent_definition.node(node) else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
         let NodeKind::Child {
             workflow,
@@ -878,7 +913,7 @@ where
             ..
         } = parent_node.kind()
         else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
 
         // The child workflow lives in the parent's namespace; the lookup is scoped by tenant and
@@ -906,8 +941,8 @@ where
         };
         let Some((workflow_record, version_record)) = target else {
             // The child cannot exist: tell the parent step now instead of waiting forever.
-            return Ok(self
-                .finish_with(
+            return Ok((
+                self.finish_with(
                     view,
                     tenant,
                     parent_id,
@@ -915,7 +950,9 @@ where
                     pending.child,
                     ChildOutcome::Failed(FailureCode::child_not_found()),
                 )
-                .await);
+                .await,
+                true,
+            ));
         };
         let definition = definitions
             .get_or_parse(version_record.version.id(), &version_record.document)
@@ -980,37 +1017,40 @@ where
             },
         };
         match self.store.create(new).await {
-            Ok(Applied::Replayed(_)) => Ok(Outcome::Skipped),
+            Ok(Applied::Replayed(_)) => Ok((Outcome::Skipped, false)),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
-            Err(StoreError::MissingReference) => Ok(Outcome::Skipped),
+            Err(StoreError::MissingReference) => Ok((Outcome::Skipped, false)),
             // Either way the step fails instead of waiting. Waiting for room would leave the
             // blocked reservations at the head of the oldest-first queue, where a full namespace of
             // one tenant would keep every other tenant's children from starting (G32, feature
             // 010); the failure code lets the workflow tell the two apart and route on it.
-            Err(StoreError::QuotaExceeded { what }) => Ok({
-                let code = if what == sagat_application::execution::TREE_LIMIT {
-                    // The tree is as large as a tree may get.
-                    FailureCode::child_limit_exceeded()
-                } else {
-                    // The namespace or the tenant is at its quota of active runs.
-                    FailureCode::child_quota_exceeded()
-                };
-                self.finish_with(
-                    view,
-                    tenant,
-                    parent_id,
-                    node.clone(),
-                    pending.child,
-                    ChildOutcome::Failed(code),
-                )
-                .await
-            }),
+            Err(StoreError::QuotaExceeded { what }) => Ok((
+                {
+                    let code = if what == sagat_application::execution::TREE_LIMIT {
+                        // The tree is as large as a tree may get.
+                        FailureCode::child_limit_exceeded()
+                    } else {
+                        // The namespace or the tenant is at its quota of active runs.
+                        FailureCode::child_quota_exceeded()
+                    };
+                    self.finish_with(
+                        view,
+                        tenant,
+                        parent_id,
+                        node.clone(),
+                        pending.child,
+                        ChildOutcome::Failed(code),
+                    )
+                    .await
+                },
+                true,
+            )),
             Err(other) => Err(other.into()),
             Ok(Applied::Done(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
                 // while it was reading must not leave a child run behind (dropping rolls it back).
                 if !view.holds(&mut tx, &hold).await? {
-                    return Ok(Outcome::Fenced);
+                    return Ok((Outcome::Fenced, false));
                 }
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());
                 self.engine
@@ -1022,7 +1062,7 @@ where
                     .await?;
                 tx.commit().await?;
                 metrics::counter!("child_runs_started_total").increment(1);
-                Ok(Outcome::Done)
+                Ok((Outcome::Done, false))
             }
         }
     }

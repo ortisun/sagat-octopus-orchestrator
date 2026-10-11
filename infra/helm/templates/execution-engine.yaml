@@ -186,7 +186,7 @@ spec:
       metadata:
         serverAddress: {{ required "engine.autoscaling.keda.prometheusAddress is required" $e.autoscaling.keda.prometheusAddress | quote }}
         # The scheduler is late: the oldest overdue timer, wait, retry, lease or deadline.
-        query: max(scheduler_lag_seconds)
+        query: {{ printf "max(scheduler_lag_seconds%s)" (include "sagat.matchers" (dict "root" . "pool" "")) | quote }}
         threshold: {{ $e.autoscaling.keda.lagThresholdSeconds | quote }}
 {{- end }}
 {{- if $e.autoscaling.hpa.enabled }}

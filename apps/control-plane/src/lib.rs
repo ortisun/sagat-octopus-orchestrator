@@ -102,6 +102,11 @@ fn pool_config(db: &DatabaseConfig, statement_timeout: Duration) -> PoolConfig {
     let mut config = PoolConfig::new(db.url.clone());
     config.max_connections = db.max_connections;
     config.statement_timeout = statement_timeout;
+    // A pool with no statement cap is the migrations': one statement may be long, and nothing about it
+    // is idle.
+    if statement_timeout.is_zero() {
+        config.idle_in_transaction_timeout = Duration::ZERO;
+    }
     config
 }
 
