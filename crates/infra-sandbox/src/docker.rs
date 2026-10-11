@@ -984,7 +984,7 @@ impl Sandbox for DockerSandbox {
                 })];
                 components.extend(package_components);
                 let sbom = serde_json::to_vec(&json!({
-                    "bomFormat": "CycloneDX", "specVersion": "1.5",
+                    "bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
                     "metadata": {"component": {"type": "application", "name": "script", "version": "1"}},
                     "components": components,
                 }))

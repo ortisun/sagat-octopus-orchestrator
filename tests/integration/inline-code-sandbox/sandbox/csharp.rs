@@ -8,6 +8,12 @@ use super::{Host, quick, sandbox};
 
 const STUDIO_LANGUAGES: &str =
     include_str!("../../../../frontend/apps/studio/src/features/scripts/languages.ts");
+const CYCLONEDX_1_5_SCHEMA: &str =
+    include_str!("../../../contract/inline-code-sandbox/cyclonedx-bom-1.5.schema.json");
+const CYCLONEDX_JSF_SCHEMA: &str =
+    include_str!("../../../contract/inline-code-sandbox/cyclonedx-jsf-0.82.schema.json");
+const CYCLONEDX_SPDX_SCHEMA: &str =
+    include_str!("../../../contract/inline-code-sandbox/cyclonedx-spdx.schema.json");
 
 const LOCK: &str = r#"{
   "version": 1,
@@ -155,6 +161,28 @@ public sealed class Script : IInlineScript
     assert!(bundle["files"]["script.dll"].as_str().is_some());
     assert!(bundle["files"]["Newtonsoft.Json.dll"].as_str().is_some());
     let sbom: Value = serde_json::from_slice(&built.sbom).expect("SBOM");
+    let sbom_schema: Value = serde_json::from_str(CYCLONEDX_1_5_SCHEMA).expect("CycloneDX schema");
+    let jsf_schema: Value = serde_json::from_str(CYCLONEDX_JSF_SCHEMA).expect("JSF schema");
+    let spdx_schema: Value = serde_json::from_str(CYCLONEDX_SPDX_SCHEMA).expect("SPDX schema");
+    let registry = jsonschema::Registry::new()
+        .add(
+            "http://cyclonedx.org/schema/jsf-0.82.schema.json",
+            jsf_schema,
+        )
+        .expect("JSF schema URI")
+        .add("http://cyclonedx.org/schema/spdx.schema.json", spdx_schema)
+        .expect("SPDX schema URI")
+        .prepare()
+        .expect("JSF schema registry");
+    let validator = jsonschema::options()
+        .with_registry(&registry)
+        .build(&sbom_schema)
+        .expect("official CycloneDX 1.5 schema compiles");
+    let errors: Vec<_> = validator
+        .iter_errors(&sbom)
+        .map(|error| error.to_string())
+        .collect();
+    assert!(errors.is_empty(), "invalid CycloneDX 1.5 SBOM: {errors:?}");
     let components = sbom["components"].as_array().expect("components");
     let package = components
         .iter()
