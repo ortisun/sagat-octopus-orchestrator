@@ -28,7 +28,7 @@ Everything below was run against this repository. The pieces that are **not** bu
    docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env up -d --build
    ```
 
-   Publishing workflows and starting runs needs an access token from your OIDC provider (the repository ships no development issuer, gap G10); the workers' identity needs the `worker` role in the tenant. Anything that can mint such a token can drive the REST API (`openapi.yaml`) and the worker protocol (`worker.proto`, for example with `grpcurl`).
+   Publishing workflows and starting runs needs an access token from your OIDC provider (for the local stack, `sagat dev token` asks the development issuer of feature 012; gap G10 is closed); the workers' identity needs the `worker` role in the tenant. Anything that can mint such a token can drive the REST API (`openapi.yaml`) and the worker protocol (`worker.proto`, for example with `grpcurl`).
 
 4. **The benchmark** (10k suspended runs, scheduling latency):
 

@@ -1,0 +1,3 @@
+apiVersion: sagat-octopus-orchestrator.io/v1
+kind: Manifest
+workflows: []

@@ -3604,7 +3604,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sagat-api-grpc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "metrics",
  "prost",
@@ -3629,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-api-http"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3657,7 +3657,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-application"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.4.3",
  "hmac 0.13.0",
@@ -3674,8 +3674,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-cli"
+version = "0.3.0"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest",
+ "rustls",
+ "sagat-api-grpc",
+ "sagat-application",
+ "sagat-domain",
+ "sagat-infra-ir",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "sagat-control-plane"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3694,8 +3713,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "sagat-dev-idp"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "jsonwebtoken",
+ "p256",
+ "reqwest",
+ "rustls",
+ "sagat-domain",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sagat-domain"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
@@ -3706,7 +3746,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-execution-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "metrics",
@@ -3728,7 +3768,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-connectors"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -3753,7 +3793,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-egress"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "reqwest",
  "rustls",
@@ -3765,7 +3805,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-expr"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cel",
  "proptest",
@@ -3775,7 +3815,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-ir"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3792,7 +3832,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-nats"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-nats",
  "sagat-application",
@@ -3803,7 +3843,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-postgres"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "metrics",
  "sagat-application",
@@ -3820,7 +3860,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-sandbox"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bollard",
  "futures-util",
@@ -3838,7 +3878,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-schema"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jsonschema",
  "sagat-application",
@@ -3848,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-secrets"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -3860,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-sandbox-runner"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3885,7 +3925,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-scheduler"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "metrics",
@@ -3900,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-telemetry"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "metrics",
@@ -3919,7 +3959,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-tests"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-nats",
  "axum",
@@ -3939,7 +3979,9 @@ dependencies = [
  "sagat-api-grpc",
  "sagat-api-http",
  "sagat-application",
+ "sagat-cli",
  "sagat-control-plane",
+ "sagat-dev-idp",
  "sagat-domain",
  "sagat-execution-engine",
  "sagat-infra-connectors",
@@ -4968,6 +5010,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "rustls-native-certs",
  "socket2",
  "sync_wrapper",
  "tokio",

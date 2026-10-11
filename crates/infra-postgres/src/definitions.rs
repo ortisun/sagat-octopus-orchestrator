@@ -7,8 +7,8 @@
 
 use crate::pool::BeginSafely;
 use sagat_application::definitions::{
-    Applied, DefinitionStore, Idempotency, StoredPlan, StoredPlanEntry, VersionRecord,
-    WorkflowRecord,
+    Applied, DefinitionStore, Idempotency, PublishContext, StoredPlan, StoredPlanEntry,
+    VersionRecord, WorkflowRecord,
 };
 use sagat_application::dispatch::TriggerRegistration;
 use sagat_application::error::StoreError;
@@ -69,7 +69,7 @@ macro_rules! select_workflow {
 /// Makes `triggers` the ones in force for the workflow: the triggers of the version it succeeds that
 /// are not in the new one stop matching, and one that is kept keeps its id (and so the memory of
 /// which events already started a run) and its place in the schedule.
-async fn register_triggers(
+pub(crate) async fn register_triggers(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workflow: &Workflow,
     version: WorkflowVersionId,
@@ -163,8 +163,8 @@ impl DefinitionStore for PgDefinitionStore {
             sqlx::query(
                 "INSERT INTO workflows \
                  (id, tenant_id, namespace_id, name, draft_revision, draft, active_version_id, \
-                  created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8)",
+                  created_at, updated_at, draft_edited_by) \
+                 VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9)",
             )
             .bind(workflow.id().as_uuid())
             .bind(workflow.tenant_id().as_uuid())
@@ -174,6 +174,7 @@ impl DefinitionStore for PgDefinitionStore {
             .bind(&draft)
             .bind(workflow.created_at())
             .bind(workflow.updated_at())
+            .bind(audit.actor().as_str())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -260,7 +261,8 @@ impl DefinitionStore for PgDefinitionStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // The check and the write are one statement: no other editor can slip in between.
         let updated = sqlx::query(
-            "UPDATE workflows SET draft = $4, draft_revision = draft_revision + 1, updated_at = $5 \
+            "UPDATE workflows SET draft = $4, draft_revision = draft_revision + 1, updated_at = $5, \
+                    draft_edited_by = $6 \
              WHERE tenant_id = $1 AND id = $2 AND draft_revision = $3",
         )
         .bind(tenant.as_uuid())
@@ -268,6 +270,7 @@ impl DefinitionStore for PgDefinitionStore {
         .bind(to_i64(expected_revision)?)
         .bind(&draft)
         .bind(now)
+        .bind(audit.actor().as_str())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?
@@ -288,7 +291,31 @@ impl DefinitionStore for PgDefinitionStore {
                 }),
             };
         }
+        // What was asked to be approved is not what the draft is now.
+        let superseded: Vec<Uuid> = sqlx::query_scalar(
+            "UPDATE publication_requests SET state = 'SUPERSEDED', updated_at = $3 \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND state IN ('PENDING', 'APPROVED') \
+             RETURNING id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(now)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
         insert_audit(&mut tx, audit).await?;
+        for request in superseded {
+            let ended = audit.follow_up(
+                sagat_domain::audit::AuditAction::PublicationSuperseded,
+                sagat_domain::audit::ResourceType::PublicationRequest,
+                request.to_string(),
+                format!(
+                    "the draft was saved again at revision {}",
+                    expected_revision + 1
+                ),
+            );
+            insert_audit(&mut tx, &ended).await?;
+        }
         let record = fetch_workflow(&mut *tx, tenant, id).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(record)
@@ -305,6 +332,7 @@ impl DefinitionStore for PgDefinitionStore {
         release_notes: Option<&str>,
         plans: &[SagaPlan],
         triggers: &[TriggerRegistration],
+        context: &PublishContext,
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -330,6 +358,12 @@ impl DefinitionStore for PgDefinitionStore {
             else {
                 return Ok(None);
             };
+            // The same publication, made by a request that committed while this one waited for the
+            // lock, is this one: answered as it was, whatever it left behind (a request that is
+            // published now, a draft that has moved on).
+            if let Some(resource) = replay(&mut tx, tenant, idempotency, &hash).await? {
+                return Ok(Some(Applied::Replayed(resource)));
+            }
             let workflow = bare_workflow(&locked)?;
             if workflow.draft_revision() != draft_revision {
                 return Err(StoreError::RevisionConflict {
@@ -386,6 +420,22 @@ impl DefinitionStore for PgDefinitionStore {
                 }
                 (version, true)
             };
+            crate::versioning::record_publication(
+                &mut tx,
+                &crate::versioning::Published {
+                    tenant,
+                    workflow: id,
+                    previous_active: workflow.active_version(),
+                    version: version.id(),
+                    created,
+                    draft_revision,
+                    digest,
+                    context,
+                    actor: principal.subject().as_str(),
+                    now,
+                },
+            )
+            .await?;
             sqlx::query(
                 "UPDATE workflows SET active_version_id = $3, updated_at = $4 \
                  WHERE tenant_id = $1 AND id = $2",
@@ -415,6 +465,14 @@ impl DefinitionStore for PgDefinitionStore {
         Err(StoreError::Unavailable {
             detail: "idempotency record kept changing under concurrent requests".into(),
         })
+    }
+
+    async fn publication_policy(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<Option<sagat_domain::versioning::ApprovalPolicy>, StoreError> {
+        crate::versioning::effective_policy(&self.pool, tenant, namespace).await
     }
 
     async fn get_version(
@@ -660,7 +718,7 @@ where
         .transpose()
 }
 
-fn bare_workflow(row: &PgRow) -> Result<Workflow, StoreError> {
+pub(crate) fn bare_workflow(row: &PgRow) -> Result<Workflow, StoreError> {
     let name: String = col(row, "name")?;
     let revision: i64 = col(row, "draft_revision")?;
     Ok(Workflow::restore(

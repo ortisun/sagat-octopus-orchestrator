@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.io/schemas/manifest/v1.json",
+  "title": "Sagat manifest",
+  "description": "Which workflows a namespace has and where their documents are, kept in Git and read by `sagat` (feature 011). This schema holds what a single manifest says on its own; the checks that need more than one field or the files (no name or file listed twice, a document that is the workflow it is listed as, a file that stays below the directory of the manifest after links are followed) are made by the tool and are described in the quickstart.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "namespace", "workflows"],
+  "properties": {
+    "apiVersion": { "const": "sagat-octopus-orchestrator.io/v1" },
+    "kind": { "const": "Manifest" },
+    "namespace": { "$ref": "#/$defs/slug" },
+    "workflows": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "description": "Lower case letters, digits and single hyphens, starting with a letter, not ending in a hyphen, 3 to 63 characters: what the platform accepts as a name.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "file"],
+      "properties": {
+        "name": { "$ref": "#/$defs/slug" },
+        "file": {
+          "description": "A relative path below the directory of the manifest, to a JSON or YAML workflow document.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^(?!/)(?!(.*/)?\\.\\.(/|$)).+$"
+        },
+        "releaseNotes": { "type": "string", "maxLength": 2048 }
+      }
+    }
+  }
+}

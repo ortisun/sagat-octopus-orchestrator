@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Sagat Octopus Orchestrator Control & Execution API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
@@ -33,6 +33,8 @@ tags:
   - name: Operations
   - name: Governance
     description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
+  - name: Versions
+    description: Approvals before a publication, the active version of a workflow and its history, and promotion between environments (feature 011).
 paths:
   /health:
     get:
@@ -61,6 +63,22 @@ paths:
       tags: [Identity]
       responses:
         '200': {description: 'Resolved identity of the caller', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /version:
+    get:
+      operationId: getPlatformVersion
+      summary: Say which build, which API and which worker protocols this platform speaks
+      tags: [Identity]
+      x-implemented: '012'
+      description: >-
+        Needs a token and no permission. A client compares it with what it was written for (`sagat doctor` does):
+        `version` is the build, `apiVersion` the path prefix, `workerProtocol` the lowest and highest protocol a
+        worker may offer. A platform older than feature 012 answers `404 ROUTE_NOT_FOUND`.
+      responses:
+        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PlatformVersion'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -265,7 +283,7 @@ paths:
       summary: Publish an immutable workflow version and make it active
       tags: [Workflows]
       x-implemented: '002'
-      description: Validates the draft against the workflow schema, the graph rules and the expression subset. A document with no engine yet (foreach, humanApproval) is refused with a reason. A `script` node pins the digest of a ready script artifact of the tenant (`UNKNOWN_SCRIPT` otherwise) and runs as the activity `script.sha256-<hex>`. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
+      description: Validates the draft against the workflow schema, the graph rules and the expression subset. A namespace that asks for approvals (production by default, see `getPublicationPolicy`) refuses it with `409 APPROVAL_REQUIRED`, and the draft goes through `openPublicationRequest` instead. A document with no engine yet (foreach, humanApproval) is refused with a reason. A `script` node pins the digest of a ready script artifact of the tenant (`UNKNOWN_SCRIPT` otherwise) and runs as the activity `script.sha256-<hex>`. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
       parameters:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1106,6 +1124,279 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/publication-policy:
+    get:
+      operationId: getPublicationPolicy
+      summary: How many approvals a publication into the namespace needs
+      tags: [Versions]
+      x-implemented: '011'
+      description: |
+        Needs `definition:read`. One approval in a production namespace and none elsewhere until an administrator sets it (`source` says which). The author of a request is never one of the approvers, whatever the number.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: setPublicationPolicy
+      summary: Set how many approvals a publication into the namespace needs
+      tags: [Versions]
+      x-implemented: '011'
+      description: |
+        Needs `publication:manage` (administrators). From 0 to 3. It applies to what is published after it is set: a request that was approved under a lower number needs the extra approvals before it is published. Audited with the justification in `reason`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetPublicationPolicy'}
+      responses:
+        '200': {description: 'The policy now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/publication-requests:
+    post:
+      operationId: openPublicationRequest
+      summary: Ask for the draft to be approved and published
+      tags: [Versions]
+      x-implemented: '011'
+      description: |
+        Needs `definition:publish`. The draft must be publishable as it stands at `draftRevision` (the checks of publishing run now, so nobody is asked to approve what cannot be published). The request names that revision and the digest of the document; approvers see exactly that. There is one open request per workflow: `409 REQUEST_OPEN` names it. Editing the draft afterwards supersedes the request.
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OpenPublicationRequest'}
+      responses:
+        '201': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    get:
+      operationId: listPublicationRequests
+      summary: The requests to publish a workflow, newest first
+      tags: [Versions]
+      x-implemented: '011'
+      description: Needs `definition:read`. Narrowed by `state`.
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {name: state, in: query, required: false, schema: {type: string, enum: [PENDING, APPROVED, REJECTED, WITHDRAWN, SUPERSEDED, PUBLISHED]}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of requests', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequestPage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /publication-requests/{requestId}:
+    get:
+      operationId: getPublicationRequest
+      summary: A request to publish, with what each person decided
+      tags: [Versions]
+      x-implemented: '011'
+      description: Needs `definition:read`.
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+      responses:
+        '200': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /publication-requests/{requestId}/approve:
+    post:
+      operationId: approvePublicationRequest
+      summary: Approve a request to publish
+      tags: [Versions]
+      x-implemented: '011'
+      description: |
+        Needs `publication:approve`. Never the author of the request nor the person who saved the document it is about (`403 AUTHOR_CANNOT_DECIDE`), and a person decides once (`409 ALREADY_DECIDED`). The request is `APPROVED` when it has as many approvals as the policy asked for. Audited with the justification in `reason`.
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Reason'}
+      responses:
+        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /publication-requests/{requestId}/reject:
+    post:
+      operationId: rejectPublicationRequest
+      summary: Reject a request to publish
+      tags: [Versions]
+      x-implemented: '011'
+      description: Needs `publication:approve`. One rejection ends the request whatever the others said. Same rules as approving.
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Reason'}
+      responses:
+        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /publication-requests/{requestId}/withdraw:
+    post:
+      operationId: withdrawPublicationRequest
+      summary: Take a request to publish back
+      tags: [Versions]
+      x-implemented: '011'
+      description: Needs `definition:publish`, and only the author of the request (`403 NOT_THE_AUTHOR`). Final.
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+      responses:
+        '200': {description: 'The withdrawn request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /publication-requests/{requestId}/publish:
+    post:
+      operationId: publishPublicationRequest
+      summary: Publish an approved request
+      tags: [Versions]
+      x-implemented: '011'
+      description: |
+        Needs `definition:publish`. Publishes the draft at the revision the request names, as the version its approvers saw, and makes it active. Refused (`409`) if the request is not approved, if the policy now asks for more approvals than it has (`NOT_ENOUGH_APPROVALS`), or if the draft moved on (the request is then `SUPERSEDED`). Repeating a committed request with the same Idempotency-Key returns its original version with created=false, even after the draft changes; it does not move the pointer or publish the new draft. A different key cannot republish a final request. The change of the active version records the request, so the history says who asked, who approved and who published.
+      parameters:
+        - {$ref: '#/components/parameters/RequestId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '201': {description: 'The version published', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/activations:
+    get:
+      operationId: listWorkflowActivations
+      summary: The history of the active version of a workflow, newest first
+      tags: [Versions]
+      x-implemented: '011'
+      description: >-
+        Needs `definition:read`. Every publication, promotion, rollback and activation, with who did it, why, and for a publication through a request, which request. Append-only: the database refuses to change or remove a row. The newest row is the active version.
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationPage'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/active-version:
+    put:
+      operationId: activateWorkflowVersion
+      summary: Point new runs at a version that was published already
+      tags: [Versions]
+      x-implemented: '011'
+      description: |
+        Needs `version:activate` (operators and administrators). A rollback when the version is older than the active one, the way forward again otherwise. Nothing is rewritten: the versions are as they were, the runs in flight keep the version they started with, the event triggers become those of the version, and the change is a row of the history. `expectedVersion`, the version the caller saw active, makes the change refused (`409 ACTIVE_VERSION_CHANGED`) if someone moved it meanwhile. A change that breaks what callers and emitters rely on (a trigger gone, an input property gone, retyped or newly required, an output property gone) is refused (`409 BREAKING_CHANGE`, with the codes) unless `acceptBreaking` is set. Asking for the version that is active is answered `200` with `changed: false`. Audited with the justification in `reason`.
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ActivateVersion'}
+      responses:
+        '200': {description: 'The change, or the unchanged state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/versions/{versionNumber}/promote:
+    post:
+      operationId: promoteWorkflowVersion
+      summary: Publish a version into another namespace as the same document
+      tags: [Versions]
+      x-implemented: '011'
+      description: |
+        Needs `definition:publish` and `definition:write`. Takes the document of the version, byte for byte, and publishes it into the namespace `namespaceId` as the workflow of the same name (created if it is not there), so that what was tried in one environment is exactly what reaches the next. The target must be another namespace of the same environment or a later one (dev, staging, production). It stops at what the target does not have (a secret) and at a draft with changes nobody published (`409 DRAFT_HAS_CHANGES`), which it never overwrites; a change that breaks callers and emitters of the target needs `acceptBreaking`. If the target namespace asks for approvals, a request bound to that document is opened (`202`, `outcome: REQUESTED`); otherwise it is published at once (`201`, `PUBLISHED`); if the target runs this document already nothing changes (`200`, `ALREADY_ACTIVE`). The history of the target says where the version came from.
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {$ref: '#/components/parameters/VersionNumber'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PromoteVersion'}
+      responses:
+        '200': {description: 'The target runs this document already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '201': {description: 'Published into the target', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '202': {description: 'A request is waiting for approvals', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -2304,6 +2595,11 @@ components:
       in: path
       required: true
       schema: {type: integer, minimum: 1}
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
     RunId:
       name: runId
       in: path
@@ -2392,6 +2688,19 @@ components:
       required: [status]
       properties:
         status: {type: string, enum: [ok]}
+    PlatformVersion:
+      type: object
+      required: [service, version, apiVersion, workerProtocol]
+      properties:
+        service: {type: string, const: sagat-octopus-orchestrator}
+        version: {type: string, description: 'The build, as `control-plane version` prints it.'}
+        apiVersion: {type: string, const: v1}
+        workerProtocol:
+          type: object
+          required: [minimum, maximum]
+          properties:
+            minimum: {type: string, pattern: '^1\.[0-9]+$'}
+            maximum: {type: string, pattern: '^1\.[0-9]+$'}
     AuthContext:
       type: object
       required: [tenant, subject, role, permissions, traceId]
@@ -2501,6 +2810,7 @@ components:
           properties:
             releaseNotes: {type: [string, 'null']}
             document: {$ref: '#/components/schemas/JsonObject'}
+            scripts: {type: array, items: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}, description: 'The digests of the script artifacts the version pins (feature 011), sorted. Present when a single version is read.'}
     VersionPage:
       type: object
       required: [items]
@@ -3660,6 +3970,129 @@ components:
       required: [recorded]
       properties:
         recorded: {type: boolean}
+    PublicationPolicy:
+      type: object
+      required: [namespaceId, environment, requiredApprovals, source]
+      properties:
+        namespaceId: {type: string, format: uuid}
+        environment: {type: string, enum: [dev, staging, prod]}
+        requiredApprovals: {type: integer, minimum: 0, maximum: 3}
+        source: {type: string, enum: [default, set], description: '`default`: what the environment asks for until someone sets it (one in production, none elsewhere).'}
+        setBy: {type: [string, 'null']}
+        setAt: {type: [string, 'null'], format: date-time}
+    SetPublicationPolicy:
+      type: object
+      additionalProperties: false
+      required: [requiredApprovals, reason]
+      properties:
+        requiredApprovals: {type: integer, minimum: 0, maximum: 3}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+    OpenPublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [draftRevision]
+      properties:
+        draftRevision: {type: integer, format: int64, minimum: 1}
+        releaseNotes: {type: string, maxLength: 2048}
+    PublicationDecision:
+      type: object
+      required: [by, verdict, reason, at]
+      properties:
+        by: {type: string}
+        verdict: {type: string, enum: [APPROVED, REJECTED]}
+        reason: {type: string}
+        at: {type: string, format: date-time}
+    PublicationRequest:
+      type: object
+      required: [id, workflowId, namespaceId, kind, state, draftRevision, digest, requestedBy, requestedAt, requiredApprovals, approvals, decisions]
+      properties:
+        id: {type: string, format: uuid}
+        workflowId: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        kind: {type: string, enum: [PUBLISH, PROMOTE]}
+        state: {type: string, enum: [PENDING, APPROVED, REJECTED, WITHDRAWN, SUPERSEDED, PUBLISHED]}
+        draftRevision: {type: integer, format: int64}
+        digest: {type: string, pattern: '^[0-9a-f]{64}$', description: 'Of the document the approvers saw.'}
+        releaseNotes: {type: [string, 'null']}
+        promotedFromVersionId: {type: [string, 'null'], format: uuid, description: 'For a promotion: the version whose document this publishes.'}
+        requestedBy: {type: string}
+        editedBy: {type: [string, 'null'], description: 'Who saved the document the request is about (the last person to save the draft at that revision), when the platform knows; a draft saved before it kept that has no one. Neither they nor the requester may decide the request.'}
+        requestedAt: {type: string, format: date-time}
+        requiredApprovals: {type: integer, minimum: 0, maximum: 3, description: 'What the policy asked for when the request was opened; the policy in force is read again when it is published.'}
+        approvals: {type: integer, minimum: 0}
+        decisions: {type: array, items: {$ref: '#/components/schemas/PublicationDecision'}}
+        published:
+          type: [object, 'null']
+          required: [versionId, by, at]
+          properties:
+            versionId: {type: string, format: uuid}
+            by: {type: string}
+            at: {type: string, format: date-time}
+    PublicationRequestPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/PublicationRequest'}}
+        nextCursor: {type: [string, 'null']}
+    ActivateVersion:
+      type: object
+      additionalProperties: false
+      required: [version, reason]
+      properties:
+        version: {type: integer, minimum: 1}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+        expectedVersion: {type: integer, minimum: 1, description: 'The version the caller saw active; the change is refused if it is not any more.'}
+        acceptBreaking: {type: boolean, default: false, description: 'The caller accepts that callers and emitters of the workflow may fail.'}
+    Activation:
+      type: object
+      required: [id, workflowId, version, versionId, kind, actor, at]
+      properties:
+        id: {type: string, format: uuid}
+        workflowId: {type: string, format: uuid}
+        version: {type: integer, minimum: 1}
+        versionId: {type: string, format: uuid}
+        previousVersion: {type: [integer, 'null'], minimum: 1}
+        kind: {type: string, enum: [PUBLISH, PROMOTE, ROLLBACK, ACTIVATE]}
+        reason: {type: [string, 'null']}
+        actor: {type: string}
+        requestId: {type: [string, 'null'], format: uuid}
+        promotedFrom:
+          type: [object, 'null']
+          required: [namespaceId, workflowId, version]
+          properties:
+            namespaceId: {type: string, format: uuid}
+            workflowId: {type: string, format: uuid}
+            version: {type: integer, minimum: 1}
+        at: {type: string, format: date-time}
+    ActivationResult:
+      allOf:
+        - $ref: '#/components/schemas/Activation'
+        - type: object
+          required: [changed]
+          properties:
+            changed: {type: boolean, description: 'False when the version was the active one already.'}
+    ActivationPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Activation'}}
+        nextCursor: {type: [string, 'null']}
+    PromoteVersion:
+      type: object
+      additionalProperties: false
+      required: [namespaceId, reason]
+      properties:
+        namespaceId: {type: string, format: uuid}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+        acceptBreaking: {type: boolean, default: false}
+    Promotion:
+      type: object
+      required: [outcome]
+      properties:
+        outcome: {type: string, enum: [PUBLISHED, REQUESTED, ALREADY_ACTIVE]}
+        version: {oneOf: [{$ref: '#/components/schemas/WorkflowVersion'}, {type: 'null'}]}
+        request: {oneOf: [{$ref: '#/components/schemas/PublicationRequest'}, {type: 'null'}]}
+        activeVersion: {type: [integer, 'null'], minimum: 1}
   responses:
     PayloadTooLarge: {description: 'The body is larger than this endpoint takes', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     BadRequest: {description: 'A required header is missing or the body is not valid JSON', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

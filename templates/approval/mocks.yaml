@@ -1,0 +1,9 @@
+activities:
+  approvals.ask:
+    output: { asked: true }
+  changes.apply:
+    output: { applied: true }
+  changes.decline:
+    output: { applied: false }
+  changes.expire:
+    output: { applied: false, expired: true }

@@ -10,8 +10,9 @@
 - Docker (the integration tests start PostgreSQL 16 with Testcontainers; the local environment uses
   Docker Compose).
 - Node.js 22 (only for the contract checks: OpenAPI lint and JSON Schema validation).
-- An OIDC provider for real tokens. **Pending:** a development identity provider shipped with the
-  repository (gap G10). Until then use your own provider, or the fake provider the test suites use.
+- An OIDC provider for real tokens. For the local stack, feature 012 ships a development identity
+  provider (gap G10, closed): `sagat dev token` asks it (see `docs/quickstarts/README.md`). A shared
+  environment uses its own provider.
 
 ## 1. Run the tests
 
@@ -113,7 +114,7 @@ every request, so removing one takes effect immediately.
 
 Recorded in [`research.md`](./research.md): no token revocation list (G7), create operations are not
 idempotent through `Idempotency-Key` (G8), `403`s are not audited (G9), no OTLP span export (G6;
-logs, trace ids and Prometheus metrics exist), no development identity provider (G10), and rate
+logs, trace ids and Prometheus metrics exist), and rate
 limits that are per process (G13; a shared limiter is feature 010). Access-token `typ` enforcement
 is available but off by default (G14). Operations: [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md).
 

@@ -19,6 +19,7 @@ pub mod identity;
 pub mod maintenance;
 pub mod operations;
 pub mod outbound;
+pub mod publishing;
 pub mod quotas;
 pub mod runs;
 pub mod sandbox;

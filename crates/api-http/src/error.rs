@@ -48,6 +48,34 @@ impl ErrorCode {
             (Self::Conflict, "REVISION_CONFLICT") => {
                 "Read the resource again, apply your change to what is there now and send it with the new revision."
             }
+            (Self::Conflict, "APPROVAL_REQUIRED") => {
+                "This namespace asks for approvals: open a publication request for the draft, ask someone else to approve it, and publish the request."
+            }
+            (Self::Conflict, "BREAKING_CHANGE") => {
+                "Read the findings: if callers and emitters of the workflow may fail and you accept that, send the call again with acceptBreaking set; otherwise choose another version."
+            }
+            (Self::Conflict, "ACTIVE_VERSION_CHANGED") => {
+                "Read the workflow again: the active version moved while you were deciding."
+            }
+            (Self::Conflict, "REQUEST_OPEN") => {
+                "Decide or withdraw the request that is open for this workflow before opening another."
+            }
+            (Self::Conflict, "DRAFT_HAS_CHANGES") => {
+                "The workflow in the target namespace has a draft with changes that were not published: publish or discard them, then promote again."
+            }
+            (Self::Conflict, "REQUEST_NOT_APPROVED") => {
+                "The request stopped being approved while it was being published (decided, withdrawn, superseded, or the namespace asks for more): read it again."
+            }
+            (Self::Conflict, "REQUEST_STATE" | "ALREADY_DECIDED") => {
+                "Read the request again: it is in a state that does not allow this, or you have already decided it."
+            }
+            (Self::Conflict, "NOT_ENOUGH_APPROVALS") => {
+                "Ask for the approvals the namespace requires now, then publish the request."
+            }
+            (Self::Forbidden, "AUTHOR_CANNOT_DECIDE") => {
+                "Ask another person who may approve publications to decide this request."
+            }
+            (Self::Forbidden, "NOT_THE_AUTHOR") => "Only the author of a request takes it back.",
             (Self::Conflict, "STATE_CONFLICT") => {
                 "Read the resource again: someone else may have already done this, or it is in a state that does not allow it."
             }
@@ -305,6 +333,86 @@ impl From<AuthError> for ApiError {
     }
 }
 
+impl From<sagat_application::error::Refusal> for ApiError {
+    fn from(refusal: sagat_application::error::Refusal) -> Self {
+        use sagat_application::error::Refusal;
+        use sagat_domain::versioning::VersioningError;
+        let conflict = |message: String, details: Value| {
+            let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
+            e.parts.details = Some(details);
+            e
+        };
+        let refused = match refusal {
+            Refusal::ApprovalRequired { required } => conflict(
+                "publishing into this namespace needs approval".to_owned(),
+                json!({ "reason": "APPROVAL_REQUIRED", "requiredApprovals": required }),
+            ),
+            Refusal::BreakingChange { findings, codes } => conflict(
+                "the change breaks what callers and emitters of the workflow rely on".to_owned(),
+                json!({ "reason": "BREAKING_CHANGE", "findings": findings, "codes": codes }),
+            ),
+            Refusal::ActiveChanged { current } => conflict(
+                "the active version is not the one you saw".to_owned(),
+                json!({ "reason": "ACTIVE_VERSION_CHANGED", "currentVersion": current }),
+            ),
+            Refusal::RequestOpen { request } => conflict(
+                "a publication request is open for this workflow".to_owned(),
+                json!({ "reason": "REQUEST_OPEN", "requestId": request.to_string() }),
+            ),
+            Refusal::DraftHasChanges => conflict(
+                "the draft of the target has changes that were not published".to_owned(),
+                json!({ "reason": "DRAFT_HAS_CHANGES" }),
+            ),
+            Refusal::Request(error) => match error {
+                VersioningError::NotInState(state) => conflict(
+                    format!("the request is {state}"),
+                    json!({ "reason": "REQUEST_STATE", "state": state.as_str() }),
+                ),
+                VersioningError::AlreadyDecided => conflict(
+                    "you have already decided this request".to_owned(),
+                    json!({ "reason": "ALREADY_DECIDED" }),
+                ),
+                VersioningError::NotEnoughApprovals { have, need } => conflict(
+                    format!("{have} of {need} approvals"),
+                    json!({ "reason": "NOT_ENOUGH_APPROVALS", "approvals": have, "required": need }),
+                ),
+                VersioningError::AuthorCannotDecide => {
+                    let mut e = Self::new(
+                        StatusCode::FORBIDDEN,
+                        ErrorCode::Forbidden,
+                        "the author of a request cannot decide it",
+                    );
+                    e.parts.details = Some(json!({ "reason": "AUTHOR_CANNOT_DECIDE" }));
+                    e
+                }
+                VersioningError::NotTheAuthor => {
+                    let mut e = Self::new(
+                        StatusCode::FORBIDDEN,
+                        ErrorCode::Forbidden,
+                        "only the author can withdraw a request",
+                    );
+                    e.parts.details = Some(json!({ "reason": "NOT_THE_AUTHOR" }));
+                    e
+                }
+                VersioningError::PolicyOutOfRange => {
+                    Self::validation("a policy asks for at most 3 approvals")
+                }
+            },
+        };
+        // The reasons are a closed set (the table above), so the label cannot grow with the data.
+        let reason = refused
+            .parts
+            .details
+            .as_ref()
+            .and_then(|d| d.get("reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("VALIDATION")
+            .to_owned();
+        metrics::counter!("publication_refusals_total", "reason" => reason).increment(1);
+        refused
+    }
+}
+
 impl From<AppError> for ApiError {
     fn from(error: AppError) -> Self {
         match error {
@@ -319,6 +427,7 @@ impl From<AppError> for ApiError {
                 e
             }
             AppError::NotFound => Self::not_found(),
+            AppError::Versioning(refusal) => Self::from(refusal),
             AppError::SecretUnavailable { name } => {
                 let mut e = Self::new(
                     StatusCode::FORBIDDEN,
@@ -354,6 +463,9 @@ impl From<AppError> for ApiError {
                     }
                     ConflictKind::ConnectorSlug => "a connector with this slug already exists",
                     ConflictKind::ScriptName => "a script with this name already exists",
+                    ConflictKind::RequestNotApproved => {
+                        "the request is not approved with what the namespace asks for now"
+                    }
                 };
                 let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
                 e.parts.details = Some(match kind {
@@ -363,6 +475,16 @@ impl From<AppError> for ApiError {
                         json!({ "field": "name" })
                     }
                     ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
+                    ConflictKind::RequestNotApproved => {
+                        // It is a refusal of the publishing rules like the others, found by the
+                        // transaction that would have made it instead of by the check before it.
+                        metrics::counter!(
+                            "publication_refusals_total",
+                            "reason" => "REQUEST_NOT_APPROVED"
+                        )
+                        .increment(1);
+                        json!({ "reason": "REQUEST_NOT_APPROVED" })
+                    }
                     _ => json!({ "field": "slug" }),
                 });
                 e

@@ -71,6 +71,21 @@ pub enum AuditAction {
     WorkerUndrained,
     /// An operator settled a step with an unknown outcome (or a compensation done elsewhere).
     SagaStepResolved,
+    /// An administrator set how many approvals a namespace asks for before something is published.
+    PublicationPolicyChanged,
+    /// Someone asked for a publication to be approved, and what each person decided about it.
+    PublicationRequested,
+    PublicationApproved,
+    PublicationRejected,
+    PublicationWithdrawn,
+    /// A request was ended because the draft it was about was saved again.
+    PublicationSuperseded,
+    /// Somebody tried to decide their own request, or to withdraw somebody else's. Written once
+    /// per person, request and reason in a window: whoever can reach the endpoint can repeat it.
+    PublicationDenied,
+    /// The pointer to the active version of a workflow moved without a publication: a rollback, or
+    /// the way forward again.
+    WorkflowActivated,
     /// A webhook endpoint was created, changed or deleted.
     EventEndpointCreated,
     EventEndpointChanged,
@@ -134,6 +149,7 @@ impl AuditAction {
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
+                | Self::PublicationDenied
         )
     }
 
@@ -144,7 +160,7 @@ impl AuditAction {
     #[must_use]
     pub const fn repeat_window(self) -> Option<std::time::Duration> {
         match self {
-            Self::AuditRead => Some(std::time::Duration::from_secs(300)),
+            Self::AuditRead | Self::PublicationDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
     }
@@ -196,6 +212,14 @@ impl AuditAction {
             Self::SagaStepRetried => "saga.step_retried",
             Self::SagaStepSkipped => "saga.step_skipped",
             Self::SagaStepResolved => "saga.step_resolved",
+            Self::PublicationPolicyChanged => "publication.policy_changed",
+            Self::PublicationRequested => "publication.requested",
+            Self::PublicationApproved => "publication.approved",
+            Self::PublicationRejected => "publication.rejected",
+            Self::PublicationWithdrawn => "publication.withdrawn",
+            Self::PublicationSuperseded => "publication.superseded",
+            Self::PublicationDenied => "publication.denied",
+            Self::WorkflowActivated => "workflow.activated",
             Self::EventEndpointCreated => "event.endpoint_created",
             Self::EventEndpointChanged => "event.endpoint_changed",
             Self::EventEndpointDeleted => "event.endpoint_deleted",
@@ -252,6 +276,8 @@ pub enum ResourceType {
     Script,
     /// A version of a script, as `script-id/number`.
     ScriptVersion,
+    /// A request to publish a workflow into a namespace that asks for approvals.
+    PublicationRequest,
 }
 
 impl ResourceType {
@@ -276,6 +302,7 @@ impl ResourceType {
             Self::Connector => "connector",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
+            Self::PublicationRequest => "publication_request",
         }
     }
 }
@@ -321,6 +348,29 @@ impl AuditRecord {
             reason: None,
             trace_id,
             created_at: now,
+        }
+    }
+
+    /// A second record of the same transaction, about another resource, by the same actor at the
+    /// same time and in the same trace: the requests that saving a draft ended, one for each.
+    #[must_use]
+    pub fn follow_up(
+        &self,
+        action: AuditAction,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: AuditId::generate(),
+            tenant_id: self.tenant_id,
+            actor: self.actor.clone(),
+            action,
+            resource_type,
+            resource_id: resource_id.into(),
+            reason: Some(reason.into()),
+            trace_id: self.trace_id.clone(),
+            created_at: self.created_at,
         }
     }
 

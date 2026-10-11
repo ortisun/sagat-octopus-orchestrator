@@ -1,0 +1,5 @@
+apiVersion: sagat-octopus-orchestrator.io/v1
+kind: Manifest
+namespace: billing-dev
+workflows:
+  checkout: a.json

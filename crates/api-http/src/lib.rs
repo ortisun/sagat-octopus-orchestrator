@@ -26,6 +26,7 @@ mod dto_exec;
 mod dto_gov;
 mod dto_ops;
 mod dto_scripts;
+mod dto_versioning;
 pub mod error;
 pub mod exec;
 mod extract;
@@ -195,6 +196,7 @@ where
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_in_flight.max(1)));
     let api = Router::new()
         .route("/auth/context", get(identity::auth_context))
+        .route("/version", get(identity::platform_version))
         .route(
             "/workspaces",
             get(identity::list_workspaces::<S, C>).post(identity::create_workspace::<S, C>),
@@ -606,6 +608,7 @@ where
 
     let identity_routes = Router::new()
         .route("/auth/context", get(identity::auth_context))
+        .route("/version", get(identity::platform_version))
         .route(
             "/workspaces",
             get(identity::list_workspaces::<S, C>).post(identity::create_workspace::<S, C>),
@@ -627,7 +630,58 @@ where
         .route_layer(shed())
         .with_state(core.clone());
 
+    // Approvals, the active version and promotion are served when the instance has the service.
+    let versioning_routes = if state.publishing().is_some() {
+        use axum::routing::{post, put};
+        use routes::versioning as ver;
+        Router::new()
+            .route(
+                "/namespaces/{namespace_id}/publication-policy",
+                get(ver::get_policy::<B<S, C, P, X, E>>).put(ver::set_policy::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/workflows/{workflow_id}/publication-requests",
+                get(ver::list_requests::<B<S, C, P, X, E>>)
+                    .post(ver::open_request::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/publication-requests/{request_id}",
+                get(ver::get_request::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/publication-requests/{request_id}/approve",
+                post(ver::approve_request::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/publication-requests/{request_id}/reject",
+                post(ver::reject_request::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/publication-requests/{request_id}/withdraw",
+                post(ver::withdraw_request::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/publication-requests/{request_id}/publish",
+                post(ver::publish_request::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/workflows/{workflow_id}/activations",
+                get(ver::list_activations::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/workflows/{workflow_id}/active-version",
+                put(ver::activate_version::<B<S, C, P, X, E>>),
+            )
+            .route(
+                "/workflows/{workflow_id}/versions/{number}/promote",
+                post(ver::promote_version::<B<S, C, P, X, E>>),
+            )
+    } else {
+        Router::new()
+    };
+
     let exec_routes = Router::new()
+        .merge(versioning_routes)
         .route(
             "/workflows",
             get(ex::list_workflows::<B<S, C, P, X, E>>)

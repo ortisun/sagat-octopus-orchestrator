@@ -1,0 +1,39 @@
+[package]
+name = "sagat-dev-idp"
+description = "A development identity provider: signs the tokens the local stack accepts. For SAGAT_ENV=dev only; it is not part of any production image."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "sagat_dev_idp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dev-idp"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+base64 = "0.22"
+getrandom = "0.3"
+jsonwebtoken.workspace = true
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+sagat-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "io-util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json"] }
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

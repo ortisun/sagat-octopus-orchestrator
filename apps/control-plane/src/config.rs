@@ -684,6 +684,34 @@ impl SeedConfig {
     }
 }
 
+/// The workspace and the namespace `seed-dev` leaves for the development tenant, from
+/// `SAGAT_SEED_NAMESPACE` (unset or empty: none), `SAGAT_SEED_WORKSPACE` and
+/// `SAGAT_SEED_ENVIRONMENT`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceSeed {
+    pub workspace_slug: String,
+    pub namespace_slug: String,
+    pub environment: String,
+}
+
+impl NamespaceSeed {
+    /// # Errors
+    /// [`ConfigError::Invalid`] for an empty workspace or environment.
+    pub fn from_lookup(get: Lookup<'_>) -> Result<Option<Self>, ConfigError> {
+        let Some(namespace_slug) = get("SAGAT_SEED_NAMESPACE")
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            workspace_slug: optional(get, "SAGAT_SEED_WORKSPACE", "dev".to_owned())?,
+            namespace_slug,
+            environment: optional(get, "SAGAT_SEED_ENVIRONMENT", "dev".to_owned())?,
+        }))
+    }
+}
+
 /// Whether the (unauthenticated) metrics listener can be reached from a network, that is, whether
 /// it is bound to anything but a loopback address. IPv4-mapped IPv6 addresses count as the IPv4
 /// address they carry.

@@ -22,6 +22,7 @@ use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
 use sagat_application::operations::OperationsService;
 use sagat_application::outbound::OutboundService;
+use sagat_application::publishing::PublishingService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
 use sagat_application::scripts::{RunnerService, ScriptService};
@@ -44,8 +45,8 @@ pub mod config;
 const DEFINITION_CACHE_ENTRIES: usize = 256;
 
 use config::{
-    CeilingConfig, Config, ConfigError, DatabaseConfig, Environment, ProvisionConfig, SeedConfig,
-    ServeConfig,
+    CeilingConfig, Config, ConfigError, DatabaseConfig, Environment, NamespaceSeed,
+    ProvisionConfig, SeedConfig, ServeConfig,
 };
 
 /// A command failed. `exit_code` follows the convention: 2 for a problem the operator must fix in
@@ -173,6 +174,108 @@ pub async fn seed_dev(config: &Config, seed: &SeedConfig) -> Result<SeedOutcome,
     };
     pool.close().await;
     Ok(outcome)
+}
+
+/// Leaves a workspace and a namespace for the tenant `seed-dev` made, as its administrator would
+/// (so it is audited like any other creation). Idempotent: what exists is kept. Run it after
+/// [`seed_dev`].
+///
+/// # Errors
+/// [`RunError::Refused`] unless `SAGAT_ENV=dev` and when the tenant or its administrator is not
+/// there; [`RunError::Config`] for a slug or environment that is not valid.
+pub async fn seed_dev_namespace(
+    config: &Config,
+    seed: &SeedConfig,
+    wanted: &NamespaceSeed,
+) -> Result<SeedOutcome, RunError> {
+    use sagat_application::error::AppError;
+    use sagat_application::identity::{PageRequest, RequestContext};
+    if config.environment != Environment::Dev {
+        return Err(RunError::Refused("seed-dev only runs when SAGAT_ENV=dev"));
+    }
+    let invalid = |name: &'static str, reason: String| ConfigError::Invalid { name, reason };
+    // Everything that can be wrong with what was asked is found before anything is made.
+    let workspace_slug = Slug::parse(&wanted.workspace_slug)
+        .map_err(|e| invalid("SAGAT_SEED_WORKSPACE", e.to_string()))?;
+    let namespace_slug = Slug::parse(&wanted.namespace_slug)
+        .map_err(|e| invalid("SAGAT_SEED_NAMESPACE", e.to_string()))?;
+    wanted
+        .environment
+        .parse::<sagat_domain::identity::Environment>()
+        .map_err(|_| {
+            invalid(
+                "SAGAT_SEED_ENVIRONMENT",
+                "not an environment (dev, staging or prod)".to_owned(),
+            )
+        })?;
+
+    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let service = IdentityService::new(PgIdentityStore::new(pool.clone()), SystemClock);
+    let result = async {
+        let session = service
+            .authenticate(&seed.tenant_slug, &seed.admin_subject)
+            .await
+            .map_err(|e| match e {
+                AppError::Unauthenticated => {
+                    RunError::Refused("run seed-dev first: the tenant has no such administrator")
+                }
+                other => RunError::Database(other.to_string()),
+            })?;
+        let principal = session.principal;
+        let context = RequestContext::default();
+        let page = PageRequest {
+            limit: Some(200),
+            cursor: None,
+        };
+        let database = |e: AppError| RunError::Database(e.to_string());
+        let namespaces = service
+            .list_namespaces(&principal, &page)
+            .await
+            .map_err(database)?;
+        if namespaces.items.iter().any(|n| n.slug() == &namespace_slug) {
+            return Ok(SeedOutcome::AlreadyPresent);
+        }
+        let find_workspace = || async {
+            let all = service.list_workspaces(&principal, &page).await?;
+            Ok::<_, AppError>(all.items.into_iter().find(|w| w.slug() == &workspace_slug))
+        };
+        let workspace = match find_workspace().await.map_err(database)? {
+            Some(existing) => existing,
+            None => match service
+                .create_workspace(&principal, workspace_slug.as_str(), &context)
+                .await
+            {
+                Ok(made) => made,
+                // Another seed made it between the list and the create: it is there now.
+                Err(AppError::Conflict(_)) => {
+                    find_workspace()
+                        .await
+                        .map_err(database)?
+                        .ok_or(RunError::Database(
+                            "the workspace is there and cannot be found".to_owned(),
+                        ))?
+                }
+                Err(other) => return Err(database(other)),
+            },
+        };
+        match service
+            .create_namespace(
+                &principal,
+                workspace.id(),
+                namespace_slug.as_str(),
+                &wanted.environment,
+                &context,
+            )
+            .await
+        {
+            Ok(_) => Ok(SeedOutcome::Created),
+            Err(AppError::Conflict(_)) => Ok(SeedOutcome::AlreadyPresent),
+            Err(other) => Err(database(other)),
+        }
+    }
+    .await;
+    pool.close().await;
+    result
 }
 
 /// Creates a tenant and its first administrator in any environment. Audited atomically with the
@@ -421,13 +524,15 @@ pub async fn serve_with_admin(
             ),
         );
     }
+    let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec);
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
             .with_lag_budget(serve.telemetry_lag_budget),
     )
-    .with_stream_limits(serve.streams);
+    .with_stream_limits(serve.streams)
+    .with_publishing(publishing);
     let mut app = router_with_governance(exec, governance, serve.limits);
     // The Studio is static files on the API's own origin: no CORS, no second listener.
     if let Some(studio) = serve.studio.clone() {

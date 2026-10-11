@@ -134,7 +134,7 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
 - **Fairness between tenants is partial (G32).** Each tenant has its own call budget and the engine
   caps connections and calls as a whole, but the database pool and the scheduler batches are shared:
   weighted claims are feature 010.
-- A dev token issuer (G10). Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
+- Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
 - A blob store for payloads over 256 KiB (G19), run results (G21), `foreach` and `humanApproval` nodes (G20).
 - Scaling the scheduler beyond about 100 timers per second per loop and disjoint candidates across
   replicas (G22), partitioning/retention of `run_events` (G28): feature 010.

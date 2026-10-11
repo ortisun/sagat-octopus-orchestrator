@@ -1,0 +1,8 @@
+apiVersion: sagat-octopus-orchestrator.io/v1
+kind: Manifest
+namespace: abc
+workflows:
+  - name: a-b-c-d-1-2-3
+    file: a.json
+  - name: zzz
+    file: dir/with.dots/in.it/zzz.yml

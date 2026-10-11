@@ -1,0 +1,23 @@
+# The payment provider, as a file. Run the saga, then change `payment.charge` and run it again.
+activities:
+  limit.reserve:
+    output: { reservationId: r-1 }
+  payment.charge:
+    # The provider refuses the card, for good: the saga undoes the reservation.
+    fail: { code: CARD_DECLINED, retryable: false, message: "the card was declined" }
+    # Try instead, one at a time:
+    #   output: { chargeId: ch-1 }                       # it works
+    #   sequence:                                        # it times out once, then works (a retry)
+    #     - fail: { code: PROVIDER_TIMEOUT, retryable: true }
+    #     - output: { chargeId: ch-1 }
+  customer.notify:
+    echo: true
+compensations:
+  limit.release:
+    output: { released: true }
+  payment.refund:
+    output: { refunded: true }
+reconcilers:
+  # Asked when a charge's answer was lost: did it happen? (applied | not_applied | unknown)
+  payment.find-charge:
+    effect: not_applied

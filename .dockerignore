@@ -4,3 +4,10 @@ target
 **/.DS_Store
 infra/docker/.env
 node_modules
+# Whatever a developer built on the host is not part of an image: the stages install and build their own.
+**/node_modules
+**/dist
+**/.venv
+**/.env
+**/.env.*
+!infra/docker/.env.example

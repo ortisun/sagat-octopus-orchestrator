@@ -3,6 +3,7 @@
 #   docker build -f infra/docker/Dockerfile --target control-plane   -t sagat-octopus-orchestrator/control-plane:dev .
 #   docker build -f infra/docker/Dockerfile --target execution-engine -t sagat-octopus-orchestrator/execution-engine:dev .
 #   docker build -f infra/docker/Dockerfile --target sandbox-runner   -t sagat-octopus-orchestrator/sandbox-runner:dev .
+#   docker build -f infra/docker/Dockerfile --target dev-idp          -t sagat-octopus-orchestrator/dev-idp:dev .
 # Without --target the last stage (the control plane) is built.
 
 ARG RUST_VERSION=1.98.0
@@ -30,7 +31,21 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p sagat-control-plane --bin control-plane \
         -p sagat-execution-engine --bin execution-engine \
         -p sagat-sandbox-runner --bin sandbox-runner \
-    && cp target/release/control-plane target/release/execution-engine target/release/sandbox-runner /
+        -p sagat-dev-idp --bin dev-idp \
+    && cp target/release/control-plane target/release/execution-engine target/release/sandbox-runner target/release/dev-idp /
+
+# The Studio, built once and shipped as files: the control plane serves them only when told where
+# they are (SAGAT_STUDIO_DIR), so an image that is not given the variable serves none.
+FROM node:22-bookworm-slim AS studio
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json frontend/tsconfig.base.json frontend/.npmrc ./
+COPY frontend/apps/studio/package.json apps/studio/package.json
+COPY frontend/e2e/package.json e2e/package.json
+RUN npm ci --ignore-scripts --no-audit --no-fund --workspace @sagat/studio
+COPY frontend/apps/studio apps/studio
+# The generated API types are committed; the build only needs the contract to have been read once.
+COPY specs/001-platform-foundation/contracts specs/001-platform-foundation/contracts
+RUN npm run build --workspace @sagat/studio
 
 FROM debian:bookworm-slim AS runtime
 # CA certificates are needed to reach the OIDC provider's JWKS endpoint over HTTPS.
@@ -51,6 +66,22 @@ HEALTHCHECK --interval=10s --timeout=4s --start-period=10s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/execution-engine"]
 CMD ["serve"]
 
+# The development identity provider: signs a token for anyone who asks, so it is a stage of its own
+# and in no other image. It refuses to run unless SAGAT_ENV=dev. Its key is kept in /data so that
+# tokens outlive a restart; the compose file mounts a volume there.
+FROM runtime AS dev-idp
+COPY --from=builder /dev-idp /usr/local/bin/dev-idp
+RUN mkdir /data && chown 10001 /data
+USER 10001
+# The container is reached by the other containers of the stack, not by the host's network:
+# compose publishes the port on the loopback of the host only.
+ENV SAGAT_DEV_IDP_ADDR=0.0.0.0:9100 SAGAT_DEV_IDP_EXPOSED=true SAGAT_DEV_IDP_KEY_FILE=/data/key
+EXPOSE 9100
+HEALTHCHECK --interval=10s --timeout=4s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/dev-idp", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/dev-idp"]
+CMD ["serve"]
+
 # The sandbox runner: builds and runs the scripts of one tenant in containers of its own. It needs
 # the container engine's socket, which makes it root-equivalent on its host: see
 # docs/runbooks/scripts.md before running it anywhere that holds anything else. It is not started
@@ -68,6 +99,8 @@ CMD ["serve"]
 # The control plane (the default target: it is the last stage).
 FROM runtime AS control-plane
 COPY --from=builder /control-plane /usr/local/bin/control-plane
+# The Studio's files; nothing serves them until SAGAT_STUDIO_DIR=/srv/studio is set.
+COPY --from=studio /src/frontend/apps/studio/dist /srv/studio
 USER 10001
 ENV SAGAT_BIND_ADDR=0.0.0.0:8080
 EXPOSE 8080
