@@ -18,6 +18,8 @@ use crate::trace::{TraceId, decode_hex};
 const RUN_DOMAIN: u64 = 0x5241_4E52_5553_4F4E;
 /// The same, for an attempt.
 const ATTEMPT_DOMAIN: u64 = 0x4154_5445_4D50_5421;
+/// Mixed into the id of a span derived from one event of a run's journal.
+const EVENT_DOMAIN: u64 = 0x4A4F_5552_4E41_4C21;
 /// Odd, so that multiplying by it is a bijection on `u64`: two attempts never share an id.
 const ATTEMPT_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 
@@ -89,6 +91,14 @@ pub fn run_span_id(run: Uuid) -> SpanId {
 pub fn attempt_span_id(step: Uuid, attempt: u32) -> SpanId {
     let mix = (u64::from(attempt) + 1).wrapping_mul(ATTEMPT_MIX);
     SpanId::from_u64(low_bits(step) ^ ATTEMPT_DOMAIN ^ mix)
+}
+
+/// The span that starts at the event `seq` of a run's journal (a timer, a wait): the same for the
+/// same event, different for every event of the run.
+#[must_use]
+pub fn event_span_id(run: Uuid, seq: u64) -> SpanId {
+    let mix = seq.wrapping_add(1).wrapping_mul(ATTEMPT_MIX);
+    SpanId::from_u64(low_bits(run) ^ EVENT_DOMAIN ^ mix)
 }
 
 /// The `traceparent` header of `span` in `trace`.

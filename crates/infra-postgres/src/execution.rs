@@ -1222,6 +1222,27 @@ impl RunTx for PgRunTx {
                 _ => {}
             }
         }
+        if !events.is_empty() {
+            // The journal moved: the telemetry projection will turn what is new into spans. The write
+            // is one upsert of a row of its own; nothing the projector does waits for this
+            // transaction or makes it wait (D160).
+            let head = i64::try_from(self.persisted + events.len() as u64)
+                .map_err(|_| corrupt("sequence"))?;
+            sqlx::query(
+                "INSERT INTO telemetry_pending (tenant_id, run_id, head_seq, applied_seq, behind_since) \
+                 VALUES ($1, $2, $3, 0, clock_timestamp()) \
+                 ON CONFLICT (tenant_id, run_id) DO UPDATE \
+                   SET behind_since = CASE WHEN telemetry_pending.applied_seq >= telemetry_pending.head_seq \
+                                           THEN clock_timestamp() ELSE telemetry_pending.behind_since END, \
+                       head_seq = GREATEST(telemetry_pending.head_seq, EXCLUDED.head_seq)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .bind(head)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        }
         if let Some(renewal) = &effects.renewal {
             touched.insert(renewal.node.clone());
         }

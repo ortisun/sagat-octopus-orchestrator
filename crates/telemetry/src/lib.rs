@@ -25,5 +25,5 @@ pub use otlp::{
     SpanEvent, SpanKind, SpanLink, SpanSink, SpanStatus, start,
 };
 pub use redact::{MAX_VALUE_CHARS, REDACTED, is_sensitive_name, scrub};
-pub use span::{SpanId, attempt_span_id, keeps, run_span_id, traceparent};
+pub use span::{SpanId, attempt_span_id, event_span_id, keeps, run_span_id, traceparent};
 pub use trace::{TraceContext, TraceId};

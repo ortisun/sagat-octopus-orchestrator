@@ -15,8 +15,20 @@ use sagat_control_plane::config::{
 };
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
-    DeliverySettings, DispatchSettings, EventDispatchSettings, SchedulerSettings,
+    DeliverySettings, DispatchSettings, EventDispatchSettings, ProjectorSettings, SchedulerSettings,
 };
+use sagat_telemetry::OtlpConfig;
+
+/// The projection of the journal into spans and measurements (ADR-0017).
+#[derive(Debug, Clone)]
+pub struct TelemetrySettings {
+    /// Where spans go (the standard `OTEL_*` variables); `None`: the measurements are made and the
+    /// spans are not sent.
+    pub otlp: Option<OtlpConfig>,
+    pub projector: ProjectorSettings,
+    /// Pause between rounds when the last one found nothing to do.
+    pub poll: Duration,
+}
 
 /// Everything `serve` needs beyond the shared database settings.
 #[derive(Debug, Clone)]
@@ -53,6 +65,8 @@ pub struct EngineConfig {
     pub delivery_poll: Duration,
     /// How often the connectors are looked at, to start and stop their consumers.
     pub connector_refresh: Duration,
+    /// The telemetry projector: how often it looks, how much it takes, where it exports.
+    pub telemetry: TelemetrySettings,
     /// `None`: hints are not published (workers poll; the outbox accumulates).
     pub nats: Option<NatsConfig>,
     /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
@@ -389,6 +403,35 @@ impl EngineConfig {
             optional(get, "SAGAT_CONNECTOR_REFRESH_SECS", 5u64)?,
         )?);
 
+        let projector_defaults = ProjectorSettings::default();
+        let telemetry = TelemetrySettings {
+            otlp: OtlpConfig::from_lookup(get, "sagat-execution-engine")?,
+            projector: ProjectorSettings {
+                batch_runs: u32::try_from(positive(
+                    "SAGAT_TELEMETRY_BATCH_RUNS",
+                    optional(
+                        get,
+                        "SAGAT_TELEMETRY_BATCH_RUNS",
+                        u64::from(projector_defaults.batch_runs),
+                    )?,
+                )?)
+                .map_err(|_| ConfigError::Invalid {
+                    name: "SAGAT_TELEMETRY_BATCH_RUNS",
+                    reason: "is too large".to_owned(),
+                })?,
+                lag_budget: seconds(
+                    get,
+                    "SAGAT_TELEMETRY_LAG_BUDGET_SECS",
+                    projector_defaults.lag_budget,
+                )?,
+                ..projector_defaults
+            },
+            poll: Duration::from_millis(positive(
+                "SAGAT_TELEMETRY_POLL_MS",
+                optional(get, "SAGAT_TELEMETRY_POLL_MS", 1000u64)?,
+            )?),
+        };
+
         let nats = match get("SAGAT_NATS_URL")
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
@@ -449,6 +492,7 @@ impl EngineConfig {
             deliveries,
             delivery_poll,
             connector_refresh,
+            telemetry,
             nats,
             secrets,
         })

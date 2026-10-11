@@ -24,6 +24,7 @@ mod quotas;
 mod scripts;
 mod secrets;
 mod signals;
+mod telemetry;
 mod workers;
 
 pub use definitions::PgDefinitionStore;
@@ -32,6 +33,7 @@ pub use identity::PgIdentityStore;
 pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
 pub use privilege::{LeastPrivilegeError, PrivilegeFinding};
 pub use sqlx::PgPool;
+pub use telemetry::PROJECTOR_LEASE;
 /// The query that finds the runs a worker may claim, exposed so a test can check its plan.
 #[doc(hidden)]
 pub use workers::CLAIMABLE as CLAIMABLE_SQL;

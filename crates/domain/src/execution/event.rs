@@ -356,6 +356,15 @@ pub enum ChildOutcome {
     Failed(FailureCode),
 }
 
+/// Why an event happened: a closed `kind` (a failure, a retry, a review, a stop, an operator's
+/// decision, a request, the outcome of the run) and the `code` that goes with it. What a timeline
+/// shows next to a transition (US01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cause {
+    pub kind: &'static str,
+    pub code: String,
+}
+
 /// Names one attempt of one step. A completion or failure is only valid for the attempt and
 /// generation that currently holds the lease (fencing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -645,6 +654,55 @@ impl RunEvent {
             _ => {}
         }
         nodes
+    }
+
+    /// Why this happened, when the event is the result of something going wrong, an operator's
+    /// choice or the clock: the cause a timeline shows next to it.
+    #[must_use]
+    pub fn cause(&self) -> Option<Cause> {
+        let cause = |kind: &'static str, code: &str| {
+            Some(Cause {
+                kind,
+                code: code.to_owned(),
+            })
+        };
+        match self {
+            Self::StepFailed { code, .. } => cause("failure", code.as_str()),
+            Self::StepRetryScheduled { code, .. } => cause("retry", code.as_str()),
+            Self::StepNeedsReview { code, .. } => cause("review", code.as_str()),
+            Self::SagaAborting { cause: code, .. } => cause("abort", code.as_str()),
+            Self::ReconciliationRequested { cause: code, .. } => {
+                cause("unknown_outcome", code.as_str())
+            }
+            Self::ReconciliationConcluded { verdict, .. } => {
+                cause("reconciliation", verdict.as_str())
+            }
+            Self::RunStopRequested { reason, code } => cause(
+                "stop",
+                code.as_ref()
+                    .map_or_else(|| reason.as_str(), FailureCode::as_str),
+            ),
+            Self::WaitTimedOut { .. } => cause("timeout", "WAIT_TIMED_OUT"),
+            Self::StepCancelRequested { .. } => cause("cancel", "REQUESTED"),
+            Self::StepRetryRequested { .. } => cause("decision", "RETRY"),
+            Self::StepSkipped { .. } => cause("decision", "SKIP"),
+            Self::StepResolved { outcome, .. } => match outcome {
+                ReviewOutcome::Succeeded => cause("decision", "SUCCEEDED"),
+                ReviewOutcome::Failed(code) => cause("decision", code.as_str()),
+            },
+            Self::ChildFinished {
+                outcome: ChildOutcome::Failed(code),
+                ..
+            } => cause("failure", code.as_str()),
+            Self::ParallelJoined {
+                outcome: JoinOutcome::Failed,
+                ..
+            } => cause("failure", "BRANCH_FAILED"),
+            Self::RunPaused => cause("request", "PAUSE"),
+            Self::RunResumed => cause("request", "RESUME"),
+            Self::RunFinished { status } => cause("outcome", status.as_str()),
+            _ => None,
+        }
     }
 
     /// The attempt number this event refers to, if it is attempt-bound.

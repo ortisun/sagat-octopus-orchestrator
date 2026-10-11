@@ -25,4 +25,5 @@ pub mod script_signing;
 pub mod scripts;
 pub mod secrets;
 pub mod signing;
+pub mod telemetry;
 pub mod worker;

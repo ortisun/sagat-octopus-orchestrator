@@ -19,8 +19,8 @@ pub use command::{
 };
 pub use error::ExecutionError;
 pub use event::{
-    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry, ReconcileResult,
-    ReviewOutcome, RunEvent, StopReason,
+    Cause, ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry,
+    ReconcileResult, ReviewOutcome, RunEvent, StopReason,
 };
 pub use plan::{Evaluation, Plan, plan};
 pub use state::{
