@@ -23,3 +23,7 @@ public sealed class Script : IInlineScript
 
 `IOctopus` is the only route to an HTTP request or a leased secret. The runtime container itself has
 no network. `IdempotencyKey` is stable for every attempt of one workflow step.
+
+The image build verifies the selected archive's SHA-512 and managed DLL's SHA-256. Catalog restore
+uses NuGet audit in `all` mode, treats `NU1901` through `NU1904` as errors, and prints the direct and
+transitive vulnerability report in the image build log.

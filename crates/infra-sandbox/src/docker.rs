@@ -962,11 +962,21 @@ impl Sandbox for DockerSandbox {
                 );
                 let package_components: Vec<Value> = packages
                     .iter()
-                    .map(|package| {
-                        json!({
-                            "type": "library", "name": package.id, "version": package.version,
-                            "hashes": [{"alg": "SHA-512", "content": package.content_hash}],
-                        })
+                    .flat_map(|package| {
+                        [
+                            json!({
+                                "type": "library", "name": package.id, "version": package.version,
+                                "hashes": [{"alg": "SHA-512", "content": package.archive_sha512}],
+                                "properties": [{
+                                    "name": "nuget:contentHash", "value": package.content_hash
+                                }],
+                            }),
+                            json!({
+                                "type": "file", "name": format!("{}.dll", package.id),
+                                "version": package.version,
+                                "hashes": [{"alg": "SHA-256", "content": package.assembly_sha256}],
+                            }),
+                        ]
                     })
                     .collect();
                 let mut components = vec![json!({

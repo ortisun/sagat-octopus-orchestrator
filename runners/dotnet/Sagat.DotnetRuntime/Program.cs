@@ -1,11 +1,15 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Sagat.ScriptContract;
 
 internal static class Program
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     public static async Task<int> Main()
     {
@@ -135,13 +139,13 @@ internal sealed class Octopus(TextWriter channel, string? idempotencyKey) : IOct
         try
         {
             var id = Interlocked.Increment(ref _nextId);
-            var fields = JsonSerializer.SerializeToElement(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            var fields = JsonSerializer.SerializeToElement(request, Program.Json);
             var message = new Dictionary<string, object?> { ["id"] = id };
             foreach (var property in fields.EnumerateObject())
             {
                 message[property.Name] = property.Value.Clone();
             }
-            await channel.WriteLineAsync(JsonSerializer.Serialize(message));
+            await channel.WriteLineAsync(JsonSerializer.Serialize(message, Program.Json));
             await channel.FlushAsync(cancellationToken);
             while (true)
             {

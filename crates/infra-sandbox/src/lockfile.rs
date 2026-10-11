@@ -10,6 +10,9 @@ pub const NEWTONSOFT_JSON_ID: &str = "Newtonsoft.Json";
 pub const NEWTONSOFT_JSON_VERSION: &str = "13.0.4";
 pub const NEWTONSOFT_JSON_CONTENT_HASH: &str =
     "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A==";
+pub const NEWTONSOFT_JSON_ARCHIVE_SHA512: &str = "6d1faff84ff227a83b195dae5f0d8ead44a36187e32e438b0bc243e24092db79ac2daa672ad7493c1240ef97f01c7fbe12b21f7de22acd82132f102eaf82805c";
+pub const NEWTONSOFT_JSON_ASSEMBLY_SHA256: &str =
+    "a28c251dfe36d881e9e2462e171441b8b0ec156fe3f452602c9149b1b9efe05b";
 
 /// A package whose exact bytes are present in the immutable C# builder image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +20,8 @@ pub struct ApprovedPackage {
     pub id: String,
     pub version: String,
     pub content_hash: String,
+    pub archive_sha512: String,
+    pub assembly_sha256: String,
 }
 
 fn csharp_dependencies(value: &Value) -> Result<&serde_json::Map<String, Value>, String> {
@@ -70,6 +75,8 @@ fn approved_csharp(lockfile: &Lockfile) -> Result<Vec<ApprovedPackage>, String> 
         id: NEWTONSOFT_JSON_ID.to_owned(),
         version: NEWTONSOFT_JSON_VERSION.to_owned(),
         content_hash: NEWTONSOFT_JSON_CONTENT_HASH.to_owned(),
+        archive_sha512: NEWTONSOFT_JSON_ARCHIVE_SHA512.to_owned(),
+        assembly_sha256: NEWTONSOFT_JSON_ASSEMBLY_SHA256.to_owned(),
     }])
 }
 
@@ -243,6 +250,8 @@ mod tests {
                 id: NEWTONSOFT_JSON_ID.to_owned(),
                 version: NEWTONSOFT_JSON_VERSION.to_owned(),
                 content_hash: NEWTONSOFT_JSON_CONTENT_HASH.to_owned(),
+                archive_sha512: NEWTONSOFT_JSON_ARCHIVE_SHA512.to_owned(),
+                assembly_sha256: NEWTONSOFT_JSON_ASSEMBLY_SHA256.to_owned(),
             }])
         );
         assert_eq!(accept(Language::CSharp, Some(&packages)), Ok(()));

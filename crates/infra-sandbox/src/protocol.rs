@@ -256,6 +256,8 @@ mod tests {
             id: "Newtonsoft.Json".to_owned(),
             version: "13.0.4".to_owned(),
             content_hash: "hash".to_owned(),
+            archive_sha512: "archive".to_owned(),
+            assembly_sha256: "assembly".to_owned(),
         };
         let message = build_message("source", Some("{\"version\":1}"), &[package]);
         let value: Value = serde_json::from_slice(&message).expect("json line");
