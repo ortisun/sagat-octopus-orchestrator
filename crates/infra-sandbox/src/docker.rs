@@ -71,9 +71,10 @@ const LOG_FLOOD_FACTOR: usize = 16;
 /// A line of the channel is at most the largest result plus its framing.
 const MAX_LINE: usize = MAX_RESULT_BYTES + 16 * 1024;
 const KILL_GRACE: Duration = Duration::from_secs(2);
-/// How many times, and how far apart, a 137 without the out-of-memory flag is looked at again (a quarter of a second).
-const OOM_FLAG_ATTEMPTS: u32 = 10;
-const OOM_FLAG_PAUSE: Duration = Duration::from_millis(25);
+/// How many times, and how far apart, a 137 without the out-of-memory flag is looked at again (two seconds in all: on
+/// a loaded machine the engine's event has been seen to come later than a quarter of a second).
+const OOM_FLAG_ATTEMPTS: u32 = 40;
+const OOM_FLAG_PAUSE: Duration = Duration::from_millis(50);
 /// Requests and secrets a script may ask its supervisor for in one run. Past it every ask is refused:
 /// a script in a loop must not make the supervisor do the same work as many times as it can ask.
 const MAX_HOST_CALLS: usize = 100;

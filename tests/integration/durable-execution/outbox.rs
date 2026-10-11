@@ -245,7 +245,20 @@ mod dispatching {
         let (wf, _) = w.publish(chain("outage")).await;
         w.start(wf, &json!({})).await;
         let broker = RecordingBroker::default();
-        let dispatcher = dispatcher(w.store.clone(), &broker);
+        // A backoff long enough that the queries between the two rounds, on a slow machine, are well inside
+        // it (the delay is at least half of the base): the test is about waiting, not about how fast a
+        // database answers.
+        let dispatcher = OutboxDispatcher::new(
+            w.store.clone(),
+            broker.clone(),
+            SystemEntropy,
+            DispatchSettings {
+                visibility: Duration::from_millis(300),
+                base_backoff: Duration::from_millis(1_500),
+                max_backoff: Duration::from_millis(1_500),
+                ..DispatchSettings::default()
+            },
+        );
 
         broker.set_down(true);
         let round = dispatcher.run_once().await;
@@ -263,7 +276,7 @@ mod dispatching {
         );
 
         broker.set_down(false);
-        tokio::time::sleep(Duration::from_millis(450)).await;
+        tokio::time::sleep(Duration::from_millis(1_700)).await;
         let round = dispatcher.run_once().await;
         assert_eq!((round.published, round.failed), (1, 0));
         assert_eq!(pending(&w).await, 0);

@@ -32,7 +32,7 @@ async fn audit_rows(
 ) -> Vec<(String, String, String, Option<String>)> {
     sqlx::query_as(
         "SELECT a.action, a.actor, a.resource_id, a.trace_id FROM audit_records a \
-         JOIN tenants t ON t.id = a.tenant_id WHERE t.slug = $1 ORDER BY a.id",
+         JOIN tenants t ON t.id = a.tenant_id WHERE t.slug = $1 ORDER BY a.created_at, a.id",
     )
     .bind(tenant_slug)
     .fetch_all(pool)

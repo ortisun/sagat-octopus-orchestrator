@@ -125,7 +125,7 @@ async fn each_attempt_is_audited_in_the_actors_tenant_and_correlates_with_its_tr
         let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
             "SELECT a.action, a.actor, a.resource_id, a.trace_id, t.slug \
              FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
-             WHERE a.action = 'access.denied.cross_tenant' ORDER BY a.id",
+             WHERE a.action = 'access.denied.cross_tenant' ORDER BY a.created_at, a.id",
         )
         .fetch_all(&api.db.pool)
         .await
@@ -162,7 +162,7 @@ async fn each_attempt_is_audited_in_the_actors_tenant_and_correlates_with_its_tr
 
     // Tenant B's trail has only its own two creations.
     let b_actions: Vec<String> = sqlx::query_scalar(
-        "SELECT a.action FROM audit_records a JOIN tenants t ON t.id = a.tenant_id WHERE t.slug = 'globex' ORDER BY a.id",
+        "SELECT a.action FROM audit_records a JOIN tenants t ON t.id = a.tenant_id WHERE t.slug = 'globex' ORDER BY a.created_at, a.id",
     )
     .fetch_all(&api.db.pool)
     .await
