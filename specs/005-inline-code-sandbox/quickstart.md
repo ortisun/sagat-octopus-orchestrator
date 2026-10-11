@@ -37,7 +37,16 @@ cargo test -p sagat-tests --test contract_rest_inline_code_sandbox
 # The benchmark (on purpose; release mode)
 SAGAT_PERF_REPORT=tests/performance/reports/inline-code-sandbox.md \
   cargo test -p sagat-tests --test perf_inline_code_sandbox --release -- --ignored --nocapture
+
+# The focused C# build/runtime benchmark writes its own report
+SAGAT_CSHARP_PERF_REPORT=tests/performance/reports/inline-code-sandbox-csharp.md \
+  cargo test -p sagat-tests --test perf_inline_code_sandbox --release \
+  csharp::csharp_build_and_execution_benchmark -- --ignored --nocapture
 ```
+
+The checked-in results are the [feature baseline](../../tests/performance/reports/inline-code-sandbox.md)
+and the [focused C# measurements](../../tests/performance/reports/inline-code-sandbox-csharp.md).
+Both reports describe local measurements and their environment rather than production SLOs.
 
 ### What the C# completion run said (2026-10-11, this machine, Colima/Docker 29, PostgreSQL 16)
 
