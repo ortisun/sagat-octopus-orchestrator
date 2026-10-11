@@ -40,11 +40,17 @@ PASSWORD="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 (umask 077; printf '%s' "$PASSWORD" > "$WORK/password")
 "$PGBIN/initdb" -D "$DATA" -U postgres --auth=scram-sha-256 --pwfile="$WORK/password" \
   --encoding=UTF8 --locale=C >/dev/null
-"$PGBIN/pg_ctl" -D "$DATA" -l "$WORK/postgres.log" -w \
-  -o "-p $PORT -c listen_addresses=127.0.0.1 \
+# (The socket goes in the directory of this run: a packaged PostgreSQL, Debian's for one, names a
+# directory only its own user may write, and the server would not start for anybody else.)
+if ! "$PGBIN/pg_ctl" -D "$DATA" -l "$WORK/postgres.log" -w \
+  -o "-p $PORT -c listen_addresses=127.0.0.1 -c unix_socket_directories=$WORK \
       -c shared_buffers=${SAGAT_BENCH_SHARED_BUFFERS:-2GB} -c effective_cache_size=${SAGAT_BENCH_CACHE:-16GB} \
       -c work_mem=16MB -c max_connections=400 -c max_wal_size=16GB -c checkpoint_timeout=15min \
-      -c wal_level=replica -c fsync=on -c synchronous_commit=on -c full_page_writes=on" start
+      -c wal_level=replica -c fsync=on -c synchronous_commit=on -c full_page_writes=on" start; then
+  echo "the PostgreSQL of the benchmark did not start; its log:" >&2
+  cat "$WORK/postgres.log" >&2 || true
+  exit 1
+fi
 
 export SAGAT_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/postgres"
 export SAGAT_PERF_REPORT="$REPORT"

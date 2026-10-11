@@ -81,7 +81,13 @@ make_cluster() {
   } >> "$data/postgresql.conf"
   echo "$data"
 }
-start() { pg_ctl -D "$1" -l "$1/../log" -w start >/dev/null; }
+start() {
+  if ! pg_ctl -D "$1" -l "$1/../log" -w start >/dev/null; then
+    echo "a PostgreSQL of the drill did not start; its log:" >&2
+    cat "$1/../log" >&2 || true
+    return 1
+  fi
+}
 
 run_test() { # $1 test name; the environment carries the rest
   cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored --nocapture --exact "dr::$1"
