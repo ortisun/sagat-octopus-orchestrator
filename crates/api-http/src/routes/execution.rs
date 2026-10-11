@@ -304,7 +304,20 @@ pub async fn get_version<B: Exec>(
             &caller.ctx,
         )
         .await?;
-    Ok(Json(VersionBody::from(&record)))
+    let mut body = VersionBody::from(&record);
+    if let Some(publishing) = state.publishing() {
+        body.scripts = Some(
+            publishing
+                .dependencies(
+                    &caller.session.principal,
+                    parse_id::<WorkflowId>(&id)?,
+                    number,
+                    &caller.ctx,
+                )
+                .await?,
+        );
+    }
+    Ok(Json(body))
 }
 
 // ------------------------------------------------------------------------------ runs

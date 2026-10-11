@@ -29,6 +29,7 @@ reqwest = { workspace = true, features = ["json", "form"] }
 sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
+sagat-cli.workspace = true
 sagat-control-plane.workspace = true
 sagat-domain.workspace = true
 sagat-execution-engine.workspace = true
@@ -251,3 +252,28 @@ path = "integration/observability-operations/main.rs"
 [[test]]
 name = "perf_observability_operations"
 path = "performance/observability-operations/main.rs"
+
+[[test]]
+name = "integration_gitops_versioning"
+path = "integration/gitops-versioning/main.rs"
+
+[[test]]
+name = "contract_rest_gitops_versioning"
+path = "contract/gitops-versioning/rest/main.rs"
+
+[[test]]
+name = "e2e_gitops_versioning"
+path = "e2e/gitops-versioning/main.rs"
+
+[[test]]
+name = "fault_gitops_versioning"
+path = "fault/gitops-versioning/main.rs"
+
+[[test]]
+name = "contract_manifest_gitops_versioning"
+path = "contract/gitops-versioning/manifest/main.rs"
+
+[[test]]
+name = "perf_gitops_versioning"
+path = "performance/gitops-versioning/main.rs"
+

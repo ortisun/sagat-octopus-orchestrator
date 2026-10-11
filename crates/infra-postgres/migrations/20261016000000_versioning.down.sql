@@ -1,0 +1,10 @@
+DROP TABLE workflow_version_scripts;
+DROP TABLE workflow_activations;
+DROP FUNCTION workflow_activations_reject_mutation();
+DROP TABLE publication_decisions;
+DROP TABLE publication_requests;
+DROP FUNCTION publication_requests_freeze_identity();
+DROP TABLE publication_policies;
+ALTER TABLE workflow_versions DROP CONSTRAINT workflow_versions_tenant_workflow_id_uniq;
+ALTER TABLE workflows DROP CONSTRAINT workflows_tenant_namespace_id_uniq;
+ALTER TABLE workflows DROP COLUMN draft_edited_by;

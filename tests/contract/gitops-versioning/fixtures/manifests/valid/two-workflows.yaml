@@ -1,0 +1,9 @@
+apiVersion: sagat-octopus-orchestrator.io/v1
+kind: Manifest
+namespace: billing-dev
+workflows:
+  - name: checkout
+    file: workflows/checkout.json
+    releaseNotes: First release of the checkout flow.
+  - name: refund
+    file: ./workflows/refund.yaml

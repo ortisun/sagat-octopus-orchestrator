@@ -1,6 +1,6 @@
 # Implementation Plan: GitOps, versioning and definition promotion
 
-**Branch:** `011-gitops-versioning` | **Date:** 2026-10-07 | **Spec:** [`spec.md`](./spec.md)
+**Branch:** `feature/011-gitops-versioning` | **Date:** 2026-10-07 | **Spec:** [`spec.md`](./spec.md)
 
 ## Summary
 
@@ -36,16 +36,19 @@ These checks indicate conformance **of the design**, not approval of the impleme
 ## Project Structure
 
 ```text
-crates/domain/src/versioning.rs
-crates/application/src/publishing.rs
-crates/script-registry/src/registry.rs
-crates/api-http/src/routes/versions.rs
-tools/cli/src/commands/publish.rs
-frontend/apps/studio/src/features/workflows/VersionDiff.tsx
-tests/contract/
-tests/integration/
-tests/fault/
+crates/domain/src/versioning.rs                      the policy, the request and its rules (built)
+crates/application/src/publishing.rs                 the use cases: policy, requests, activation, promotion (built)
+crates/infra-postgres/src/versioning.rs              the adapter, and migrations/20261016000000_versioning (built)
+crates/api-http/src/routes/versioning.rs             the REST operations (built; the plan said routes/versions.rs)
+apps/cli/                                            the `sagat` command line (built; the plan said tools/cli/)
+crates/script-registry/src/registry.rs               not used: artifacts are pinned by digest from the versions (G205)
+frontend/apps/studio/src/features/workflows/VersionDiff.tsx   not built (G198)
+specs/011-gitops-versioning/contracts/manifest.schema.json
+tests/contract/gitops-versioning/{rest,manifest,fixtures}/
+tests/integration/gitops-versioning/
+tests/fault/gitops-versioning/
 tests/e2e/gitops-versioning/
+tests/performance/gitops-versioning/  and  tests/performance/reports/gitops-versioning.md
 ```
 
 ## Implementation phases
@@ -78,6 +81,10 @@ tests/e2e/gitops-versioning/
 | DB transactional outbox | Extra reads/writes | Avoid losing a wakeup after commit |
 | Multi-SDK via proto | More CI and tests | Real parity and low coupling |
 
+## Benchmark (T011-033)
+
+`tests/performance/gitops-versioning/main.rs` measures publication as the document grows, the switch of the pointer with and without triggers, runs started while it moves, contention on one workflow and across workflows, a long history, the approval path and `sagat` over HTTP for a manifest of fifty workflows; the hypotheses it holds the system to and the figures are in `tests/performance/reports/gitops-versioning.md`.
+
 ## Delivery Gate
 
-V2→V3 with a suspended V2 run resumes correctly; rollback only affects new runs.
+V2→V3 with a suspended V2 run resumes correctly; rollback only affects new runs. Proved by `tests/e2e/gitops-versioning/us02.rs` (a run waiting on version 1 resumes with version 1's activity after version 2 is published, and a run started after it uses version 2) and `us04.rs` (a rollback moves the pointer and rewrites nothing; the run in flight keeps its version).

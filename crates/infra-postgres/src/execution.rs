@@ -1943,6 +1943,7 @@ impl DefinitionStore for PgRunStore {
         release_notes: Option<&str>,
         plans: &[sagat_domain::saga::SagaPlan],
         triggers: &[sagat_application::dispatch::TriggerRegistration],
+        context: &sagat_application::definitions::PublishContext,
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
@@ -1958,11 +1959,20 @@ impl DefinitionStore for PgRunStore {
                 release_notes,
                 plans,
                 triggers,
+                context,
                 audit,
                 idempotency,
                 now,
             )
             .await
+    }
+
+    async fn publication_policy(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<Option<sagat_domain::versioning::ApprovalPolicy>, StoreError> {
+        self.definitions.publication_policy(tenant, namespace).await
     }
 
     async fn get_version(

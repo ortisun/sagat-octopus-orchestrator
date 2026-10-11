@@ -173,9 +173,9 @@ const ALL_ROLES: [Role; 6] = [
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
         DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
-        NamespaceRead, OpsRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart, ScriptBuild,
-        ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
-        WorkerExecute, WorkerManage, WorkspaceRead,
+        NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunRead, RunSignal,
+        RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead,
+        SecretUse, VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Permission::ALL.to_vec(),
@@ -198,6 +198,7 @@ fn expected(role: Role) -> Vec<Permission> {
                 ScriptWrite,
                 ScriptPublish,
                 OpsRead,
+                PublicationApprove,
             ]
         }
         Role::Operator => vec![
@@ -214,6 +215,8 @@ fn expected(role: Role) -> Vec<Permission> {
             ScriptRead,
             OpsRead,
             WorkerManage,
+            PublicationApprove,
+            VersionActivate,
         ],
         Role::Viewer => vec![
             WorkspaceRead,
@@ -256,6 +259,8 @@ fn only_admin_can_create_scopes_manage_members_or_read_audit() {
         Permission::QuotaManage,
         Permission::EgressManage,
         Permission::WorkerBind,
+        // Who sets how many approvals a namespace asks for.
+        Permission::PublicationManage,
     ] {
         assert!(Role::Admin.grants(restricted));
         for role in [

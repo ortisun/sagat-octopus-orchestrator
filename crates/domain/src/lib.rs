@@ -22,4 +22,5 @@ pub mod saga;
 pub mod scripts;
 pub mod secrets;
 pub mod triggers;
+pub mod versioning;
 pub mod workflow;

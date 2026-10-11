@@ -84,6 +84,20 @@ fn body_of(operation: &str) -> Option<Value> {
         "recordScriptExecution" => {
             json!({"namespaceId": "{namespaceId}", "digest": format!("sha256:{}", "ab".repeat(32)), "status": "FAILED", "denied": ["attacker"]})
         }
+        // Feature 011: an administrator of another tenant changing what the victim publishes.
+        "setPublicationPolicy" => {
+            json!({"requiredApprovals": 0, "reason": "cross-tenant battery probe"})
+        }
+        "openPublicationRequest" => json!({"draftRevision": 1}),
+        "approvePublicationRequest" | "rejectPublicationRequest" => {
+            json!({"reason": "cross-tenant battery probe"})
+        }
+        "activateWorkflowVersion" => {
+            json!({"version": 1, "reason": "cross-tenant battery probe", "acceptBreaking": true})
+        }
+        "promoteWorkflowVersion" => {
+            json!({"namespaceId": "{namespaceId}", "reason": "cross-tenant battery probe", "acceptBreaking": true})
+        }
         // Feature 008: an administrator of another tenant draining the victim's worker.
         "drainWorker" | "undrainWorker" => {
             json!({"reason": "cross-tenant battery probe"})
@@ -136,7 +150,13 @@ impl Victim {
 fn is_resource_id(name: &str) -> bool {
     matches!(
         name,
-        "workspaceId" | "namespaceId" | "workflowId" | "runId" | "scriptId" | "executionId"
+        "workspaceId"
+            | "namespaceId"
+            | "workflowId"
+            | "runId"
+            | "scriptId"
+            | "executionId"
+            | "requestId"
     )
 }
 
@@ -259,6 +279,17 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     .await;
     assert_eq!(status, 202, "{run}");
     let run = run["runId"].as_str().expect("run id").to_owned();
+    // A request to publish of the victim's (the namespace asks for no approval: born approved).
+    let (status, request) = send(
+        &api,
+        "POST",
+        &format!("/workflows/{wf}/publication-requests"),
+        alice,
+        Some(&json!({"draftRevision": 1})),
+    )
+    .await;
+    assert_eq!(status, 201, "{request}");
+    let request = request["id"].as_str().expect("request id").to_owned();
     for (method, path, body) in [
         (
             "PUT",
@@ -340,6 +371,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             ("namespaceId", ns.clone()),
             ("workflowId", wf.clone()),
             ("runId", run.clone()),
+            ("requestId", request.clone()),
             ("versionNumber", "1".to_owned()),
             ("signalName", "payment.confirmed".to_owned()),
             ("resource", "workflows".to_owned()),
@@ -348,7 +380,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ]),
     };
     let before = snapshot(&api, &victim).await;
-    let victim_ids: Vec<&String> = vec![&ws, &ns, &wf, &run, &script, &test_run];
+    let victim_ids: Vec<&String> = vec![&ws, &ns, &wf, &run, &script, &test_run, &request];
 
     // Operations nobody has built yet are listed by name, so they cannot be forgotten later.
     let not_built: BTreeSet<&str> = ["publishEvent", "receiveSignedWebhook"]

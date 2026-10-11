@@ -47,6 +47,8 @@ use super::{TestDb, migrated_db, now, slug, subject, two_tenants};
 pub type Runs = RunService<PgRunStore, SystemClock, JsonEvaluator>;
 pub type Workers = WorkerService<PgRunStore, SystemClock, JsonEvaluator, SystemEntropy>;
 pub type Defs = DefinitionService<PgRunStore, SystemClock, JsonIrCodec>;
+pub type Publishing =
+    sagat_application::publishing::PublishingService<PgRunStore, SystemClock, JsonIrCodec>;
 pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type EventLoop = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type Quotas = QuotaService<PgRunStore, SystemClock>;
@@ -64,6 +66,7 @@ pub struct World {
     pub db: TestDb,
     pub store: PgRunStore,
     pub defs: Defs,
+    pub publishing: Publishing,
     pub runs: Runs,
     pub quotas: Quotas,
     pub bindings: Bindings,
@@ -134,8 +137,8 @@ pub async fn world_with_breaker(
     });
     let db = migrated_db().await;
     let t = two_tenants(&db).await;
-    let namespace = namespace_in(&t.store, &t.admin_a, "payments").await;
-    let other_namespace = namespace_in(&t.store, &t.admin_b, "payments").await;
+    let namespace = namespace_in(&t.store, &t.admin_a, "payments", Environment::Dev).await;
+    let other_namespace = namespace_in(&t.store, &t.admin_b, "payments", Environment::Dev).await;
     let codec = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, 64);
     let store = PgRunStore::new(db.pool.clone(), cache.clone()).with_breaker(breaker);
@@ -148,6 +151,7 @@ pub async fn world_with_breaker(
     let signing_key = signer.public_key();
     let world = World {
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
+        publishing: Publishing::new(store.clone(), SystemClock, JsonIrCodec),
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
         quotas: QuotaService::new(store.clone(), SystemClock),
         bindings: BindingService::new(store.clone(), SystemClock),
@@ -236,6 +240,7 @@ async fn namespace_in(
     identity: &sagat_infra_postgres::PgIdentityStore,
     p: &Principal,
     name: &str,
+    environment: Environment,
 ) -> Namespace {
     let ws = Workspace::create(
         p,
@@ -263,7 +268,7 @@ async fn namespace_in(
         &ws,
         NamespaceId::generate(),
         slug(name),
-        Environment::Dev,
+        environment,
         now(),
     )
     .expect("namespace");
@@ -680,10 +685,16 @@ impl World {
 
     /// Another namespace of the first tenant (and its workspace).
     pub async fn add_namespace(&self, name: &str) -> Namespace {
+        self.add_namespace_in(name, Environment::Dev).await
+    }
+
+    /// A namespace of the first tenant in the given environment, with a workspace of its own.
+    pub async fn add_namespace_in(&self, name: &str, environment: Environment) -> Namespace {
         namespace_in(
             &sagat_infra_postgres::PgIdentityStore::new(self.db.pool.clone()),
             &self.admin,
             name,
+            environment,
         )
         .await
     }

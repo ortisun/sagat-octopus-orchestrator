@@ -59,6 +59,27 @@ pub fn unknown_script_problems(
 /// Longest release note.
 pub const MAX_RELEASE_NOTES: usize = 2048;
 
+/// Release notes are text for people to read, in the history of a workflow among other places: up
+/// to [`MAX_RELEASE_NOTES`] bytes, with new lines and tabs but no other control character and none
+/// of the format characters that reorder or hide text.
+pub(crate) fn check_release_notes(notes: Option<&str>) -> Result<(), AppError> {
+    let Some(notes) = notes else {
+        return Ok(());
+    };
+    if notes.len() > MAX_RELEASE_NOTES {
+        return Err(AppError::NotAllowed("release notes are too long"));
+    }
+    if !notes
+        .chars()
+        .all(|c| crate::operations::is_plain(c) || c == '\n' || c == '\t')
+    {
+        return Err(AppError::NotAllowed(
+            "release notes are plain text: no control or format characters",
+        ));
+    }
+    Ok(())
+}
+
 /// One problem found in a workflow document. `path` is a JSON pointer; `message` never contains
 /// values from the document beyond a clipped fragment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,6 +372,17 @@ pub struct StoredPlanEntry {
     pub after: Vec<sagat_domain::workflow::NodeId>,
 }
 
+/// What a publication is on behalf of, recorded with the change of the active pointer it makes
+/// (FR-011-005): a request that was approved, a version promoted from another namespace, the
+/// reason given, and the script artifacts the document pins.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublishContext {
+    pub request: Option<sagat_domain::versioning::RequestId>,
+    pub promoted_from: Option<WorkflowVersionId>,
+    pub reason: Option<String>,
+    pub scripts: Vec<sagat_domain::scripts::Digest>,
+}
+
 /// What publishing returned.
 #[derive(Debug, Clone)]
 pub struct Published {
@@ -421,6 +453,11 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
     /// of a new version with it, registers its `triggers` as the ones in force for the workflow
     /// (replacing those of the version it succeeds), audits and records `idempotency`, all in one
     /// transaction. `None` when the workflow does not exist.
+    ///
+    /// `context` says what the publication is on behalf of; the same transaction records the
+    /// change of the active pointer (when it moves), the artifacts the version pins and, for a
+    /// request, that it was published. A request is published only if it is approved and has the
+    /// approvals the policy in force asks for: that is read again inside the transaction.
     #[allow(clippy::too_many_arguments)]
     fn publish(
         &self,
@@ -433,10 +470,19 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
         release_notes: Option<&str>,
         plans: &[SagaPlan],
         triggers: &[TriggerRegistration],
+        context: &PublishContext,
         audit: &AuditRecord,
         idempotency: &Idempotency,
         now: OffsetDateTime,
     ) -> impl Future<Output = Result<Option<Applied<(WorkflowVersion, bool)>>, StoreError>> + Send;
+
+    /// How many approvals a publication into the namespace needs now: what an administrator set,
+    /// or the default of its environment. `None` when the namespace does not exist in `tenant`.
+    fn publication_policy(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<Option<sagat_domain::versioning::ApprovalPolicy>, StoreError>> + Send;
 
     fn get_version(
         &self,
@@ -660,12 +706,15 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         Ok(paginate(rows, limit, |r| r.workflow.id().to_string()))
     }
 
-    /// Publishes the draft as an immutable version and makes it active.
+    /// Publishes the draft as an immutable version and makes it active, into a namespace that asks
+    /// for no approval.
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `definition:publish`; [`AppError::NotFound`];
     /// [`AppError::RevisionConflict`] when the draft moved on; [`AppError::InvalidDefinition`]
-    /// when the document cannot be published; [`AppError::IdempotencyKeyReused`].
+    /// when the document cannot be published; [`AppError::IdempotencyKeyReused`];
+    /// [`AppError::Versioning`] with `ApprovalRequired` when the namespace asks for approvals
+    /// (the draft goes through a publication request).
     pub async fn publish(
         &self,
         principal: &Principal,
@@ -676,9 +725,44 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         ctx: &RequestContext,
     ) -> Result<Published, AppError> {
         principal.authorize(Permission::DefinitionPublish)?;
-        if release_notes.is_some_and(|n| n.len() > MAX_RELEASE_NOTES) {
-            return Err(AppError::NotAllowed("release notes are too long"));
+        let record = self.get_workflow(principal, id, ctx).await?;
+        let policy = self
+            .store
+            .publication_policy(principal.tenant_id(), record.workflow.namespace_id())
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if policy.asks() {
+            return Err(AppError::Versioning(
+                crate::error::Refusal::ApprovalRequired {
+                    required: policy.required(),
+                },
+            ));
         }
+        self.publish_through(
+            principal,
+            id,
+            draft_revision,
+            release_notes,
+            key,
+            ctx,
+            PublishContext::default(),
+        )
+        .await
+    }
+
+    /// Checks that the draft is publishable as it stands at `draft_revision`: the revision, the
+    /// schema and the graph, the secrets the caller may use and the scripts that were built. What
+    /// publishing and opening a request both stand on.
+    ///
+    /// # Errors
+    /// As [`Self::publish`], without the policy.
+    pub(crate) async fn prepare(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        draft_revision: u64,
+        ctx: &RequestContext,
+    ) -> Result<(WorkflowRecord, ParsedDefinition), AppError> {
         let record = self.get_workflow(principal, id, ctx).await?;
         if record.workflow.draft_revision() != draft_revision {
             return Err(AppError::RevisionConflict {
@@ -700,6 +784,33 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
         self.check_scripts(principal, &parsed.definition).await?;
+        Ok((record, parsed))
+    }
+
+    /// Publishes without asking the policy: the caller has done what the policy asks (an approved
+    /// request, a promotion that needed none). The store checks a request again inside the
+    /// transaction.
+    ///
+    /// # Errors
+    /// As [`Self::publish`], without the policy.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn publish_through(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        draft_revision: u64,
+        release_notes: Option<&str>,
+        key: &str,
+        ctx: &RequestContext,
+        mut context: PublishContext,
+    ) -> Result<Published, AppError> {
+        principal.authorize(Permission::DefinitionPublish)?;
+        check_release_notes(release_notes)?;
+        let (_, parsed) = self.prepare(principal, id, draft_revision, ctx).await?;
+        context.scripts = parsed.definition.script_digests().into_iter().collect();
+        if context.reason.is_none() {
+            context.reason = release_notes.map(str::to_owned);
+        }
         let now = self.clock.now();
         let version_id = WorkflowVersionId::generate();
         let audit = AuditRecord::by(
@@ -710,16 +821,12 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             ctx.trace_id.clone(),
             now,
         )
-        .with_reason(format!("digest {}", parsed.digest));
-        let idempotency = Idempotency {
-            scope: format!("workflow.publish:{id}"),
-            key: key.to_owned(),
-            fingerprint: fingerprint(&[
-                &draft_revision.to_be_bytes(),
-                parsed.digest.as_bytes(),
-                release_notes.unwrap_or_default().as_bytes(),
-            ]),
-        };
+        .with_reason(match context.request {
+            Some(request) => format!("digest {}, by request {request}", parsed.digest),
+            None => format!("digest {}", parsed.digest),
+        });
+        let idempotency =
+            publication_idempotency(id, draft_revision, parsed.digest, release_notes, key);
         let outcome = self
             .store
             .publish(
@@ -732,6 +839,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 release_notes,
                 &compensation_plans(&parsed.definition),
                 &triggers_of(id, &parsed.definition),
+                &context,
                 &audit,
                 &idempotency,
                 now,
@@ -1082,6 +1190,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             }
         }
         AppError::NotFound
+    }
+}
+
+/// The identity of a publication, also available from an immutable publication request after
+/// its draft has changed. Keep writes and recovery on the same fingerprint.
+pub(crate) fn publication_idempotency(
+    id: WorkflowId,
+    revision: u64,
+    digest: Digest,
+    notes: Option<&str>,
+    key: &str,
+) -> Idempotency {
+    Idempotency {
+        scope: format!("workflow.publish:{id}"),
+        key: key.to_owned(),
+        fingerprint: fingerprint(&[
+            &revision.to_be_bytes(),
+            digest.as_bytes(),
+            notes.unwrap_or_default().as_bytes(),
+        ]),
     }
 }
 

@@ -6,6 +6,7 @@ use sagat_application::clock::Clock;
 use sagat_application::definitions::{DefinitionService, DefinitionStore, IrCodec};
 use sagat_application::execution::ExpressionEvaluator;
 use sagat_application::identity::IdentityStore;
+use sagat_application::publishing::{PublishingService, PublishingStore};
 use sagat_application::runs::{RunService, RunStore};
 
 use crate::concurrency::TenantConcurrency;
@@ -17,13 +18,17 @@ use crate::{AppState, TokenVerifier};
 /// Everything the definition and run handlers need, behind one type so handlers have one generic
 /// parameter instead of five.
 pub trait Exec: Core {
-    type Store: DefinitionStore + RunStore + 'static;
-    type Clock: Clock + 'static;
-    type Codec: IrCodec + 'static;
+    type Store: DefinitionStore + RunStore + PublishingStore + Clone + 'static;
+    type Clock: Clock + Clone + 'static;
+    type Codec: IrCodec + Clone + 'static;
     type Eval: ExpressionEvaluator + 'static;
 
     fn definitions(&self) -> &DefinitionService<Self::Store, Self::Clock, Self::Codec>;
     fn runs(&self) -> &RunService<Self::Store, Self::Clock, Self::Eval>;
+
+    /// `None` when the instance does not serve approvals, the active version and promotion: those
+    /// routes are then not served at all.
+    fn publishing(&self) -> Option<&PublishingService<Self::Store, Self::Clock, Self::Codec>>;
 
     /// The open server-sent streams (D142).
     fn streams(&self) -> &Arc<StreamRegistry>;
@@ -33,6 +38,7 @@ pub trait Exec: Core {
 pub struct ExecState<S, C, P, X, E> {
     pub core: AppState<S, C>,
     definitions: Arc<DefinitionService<P, C, X>>,
+    publishing: Option<Arc<PublishingService<P, C, X>>>,
     runs: Arc<RunService<P, C, E>>,
     streams: Arc<StreamRegistry>,
 }
@@ -47,9 +53,17 @@ impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
         Self {
             core,
             definitions: Arc::new(definitions),
+            publishing: None,
             runs: Arc::new(runs),
             streams: StreamRegistry::new(StreamLimits::default()),
         }
+    }
+
+    /// Serves the approval, active-version and promotion routes, backed by `publishing`.
+    #[must_use]
+    pub fn with_publishing(mut self, publishing: PublishingService<P, C, X>) -> Self {
+        self.publishing = Some(Arc::new(publishing));
+        self
     }
 
     /// Replaces the limits of server-sent streams (the defaults are in [`StreamLimits`]).
@@ -65,6 +79,7 @@ impl<S, C, P, X, E> Clone for ExecState<S, C, P, X, E> {
         Self {
             core: self.core.clone(),
             definitions: Arc::clone(&self.definitions),
+            publishing: self.publishing.clone(),
             runs: Arc::clone(&self.runs),
             streams: Arc::clone(&self.streams),
         }
@@ -108,8 +123,9 @@ impl<S, C, P, X, E> Exec for ExecState<S, C, P, X, E>
 where
     S: IdentityStore + 'static,
     C: Clock + 'static,
-    P: DefinitionStore + RunStore + 'static,
-    X: IrCodec + 'static,
+    C: Clone,
+    P: DefinitionStore + RunStore + PublishingStore + Clone + 'static,
+    X: IrCodec + Clone + 'static,
     E: ExpressionEvaluator + 'static,
 {
     type Store = P;
@@ -123,6 +139,10 @@ where
 
     fn runs(&self) -> &RunService<P, C, E> {
         &self.runs
+    }
+
+    fn publishing(&self) -> Option<&PublishingService<P, C, X>> {
+        self.publishing.as_deref()
     }
 
     fn streams(&self) -> &Arc<StreamRegistry> {

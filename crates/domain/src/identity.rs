@@ -329,11 +329,19 @@ pub enum Permission {
     /// Fetch a built artifact and ask for what a running script is allowed to ask for (a request
     /// to the outside, an execution record). Held by the runner of the sandbox and by nobody else.
     ScriptExecute,
+    /// Approve or reject a request to publish a workflow into a namespace that asks for approvals
+    /// (`FR-011-003`). The author of a request can never decide it, whatever they hold.
+    PublicationApprove,
+    /// Set how many approvals a namespace asks for before something is published into it.
+    PublicationManage,
+    /// Point new runs of a workflow at another version that was published already: a rollback, or
+    /// the way forward again (`FR-011-002`). Not publishing: nothing new is made.
+    VersionActivate,
 }
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 35] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -366,6 +374,9 @@ impl Permission {
         Self::ScriptExecute,
         Self::OpsRead,
         Self::WorkerManage,
+        Self::PublicationApprove,
+        Self::PublicationManage,
+        Self::VersionActivate,
     ];
 
     #[must_use]
@@ -403,6 +414,9 @@ impl Permission {
             Self::ScriptExecute => "script:execute",
             Self::OpsRead => "ops:read",
             Self::WorkerManage => "worker:manage",
+            Self::PublicationApprove => "publication:approve",
+            Self::PublicationManage => "publication:manage",
+            Self::VersionActivate => "version:activate",
         }
     }
 }
@@ -446,9 +460,10 @@ impl Role {
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
             DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
-            EventRead, NamespaceRead, OpsRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart,
-            ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead,
-            SecretUse, WorkerExecute, WorkerManage, WorkspaceRead,
+            EventRead, NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunRead,
+            RunSignal, RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
+            ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
+            WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
@@ -470,6 +485,7 @@ impl Role {
                 ScriptWrite,
                 ScriptPublish,
                 OpsRead,
+                PublicationApprove,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -485,6 +501,8 @@ impl Role {
                 ScriptRead,
                 OpsRead,
                 WorkerManage,
+                PublicationApprove,
+                VersionActivate,
             ],
             Self::Viewer => &[
                 WorkspaceRead,
