@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/hero.png" alt="Sagat Octopus, workflow orchestrator: a purple octopus with a red headband and an eye patch, its bandaged tentacles on a three-step workflow of a start block, a step and an end block that loops back." width="600">
+</p>
+
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
 
 > **Status:** specification with implementation in progress: features 001 (platform foundation), 002 (durable execution), 003 (sagas and compensations, apart from the SDK DSL, Studio screens and dashboards, which belong to other features), 004 (triggers, webhooks and messaging, apart from OIDC/mTLS webhook profiles, outbound broker producers and Studio screens), 005 (inline TypeScript and Python scripts in a sandbox, apart from C#, dependency installation and the Studio editor) and 009 (security and multi-tenant governance, apart from a Helm chart, which belongs to another feature) are built and tested (see [`docs/traceability.md`](docs/traceability.md)); the other features are still only specified. **Name:** provisional. **Language:** English (en). **Date:** 2026-10-07.
@@ -25,16 +29,16 @@ Inspired by **Temporal** (history and recovery), **Restate** (journal and durabl
 cargo test --workspace --locked          # needs Docker: integration tests start PostgreSQL 16
 scripts/smoke-compose.sh                 # builds the images, starts PostgreSQL + NATS + API + engine, checks health
 # baseline benchmark of feature 002 (10k suspended runs), on purpose:
-SAGAT_PERF_REPORT=tests/performance/reports/002-durable-execution.md \
-  cargo test -p sagat-tests --test perf_002 --release -- --ignored --nocapture
+SAGAT_PERF_REPORT=tests/performance/reports/durable-execution.md \
+  cargo test -p sagat-tests --test perf_durable_execution --release -- --ignored --nocapture
 # the security battery of feature 009 (cross-tenant, secret leak, quota racing, SSRF on the egress guard):
-cargo test -p sagat-tests --test contract_rest_009 --test e2e_009 --test integration_009 --test fault_009
+cargo test -p sagat-tests --test contract_rest_security_multitenancy --test e2e_security_multitenancy --test integration_security_multitenancy --test fault_security_multitenancy
 # sagas, compensations and reconciliation (feature 003): stories, PostgreSQL, contracts, failure injection:
-cargo test -p sagat-tests --test e2e_003 --test integration_003 --test contract_rest_003 --test contract_grpc_003 --test fault_003
+cargo test -p sagat-tests --test e2e_sagas_compensations --test integration_sagas_compensations --test contract_rest_sagas_compensations --test contract_grpc_sagas_compensations --test fault_sagas_compensations
 # events, webhooks and messaging (feature 004): signed webhooks, triggers and waits, cron, Kafka/SQS/NATS in containers, outbound deliveries:
-cargo test -p sagat-tests --test e2e_004 --test integration_004 --test contract_rest_004 --test contract_asyncapi_004 --test fault_004
+cargo test -p sagat-tests --test e2e_events_webhooks_messaging --test integration_events_webhooks_messaging --test contract_rest_events_webhooks_messaging --test contract_asyncapi_events_webhooks_messaging --test fault_events_webhooks_messaging
 # inline scripts (feature 005): registry, signing and leases on PostgreSQL; the sandbox in real containers; the stories through the runner:
-cargo test -p sagat-tests --test integration_005 --test integration_005_sandbox --test e2e_005 --test contract_rest_005 --test fault_005
+cargo test -p sagat-tests --test integration_inline_code_sandbox --test integration_inline_code_sandbox_containers --test e2e_inline_code_sandbox --test contract_rest_inline_code_sandbox --test fault_inline_code_sandbox
 ```
 
 The full procedure, the environment variables and what is not built yet are in

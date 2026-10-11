@@ -92,7 +92,7 @@ The V1 decision above is what the engine does. The details that the diagrams lea
 
 ## As implemented (feature 003)
 
-Protocol 1.2 adds three fields to `TaskLease` and no rpc. They are additive: a worker that ignores them runs a compensation as the ordinary activity it names (checked against a message declared as protocol 1.0 in `tests/contract/003-sagas-compensations/grpc/protocol.rs`).
+Protocol 1.2 adds three fields to `TaskLease` and no rpc. They are additive: a worker that ignores them runs a compensation as the ordinary activity it names (checked against a message declared as protocol 1.0 in `tests/contract/sagas-compensations/grpc/protocol.rs`).
 
 - **Task kinds.** `task_kind` is `FORWARD` (an empty value means this), `COMPENSATION` (undo a step; the activity is the one the workflow declared in `compensateWith`) or `RECONCILIATION` (find out whether a step happened; the activity is `reconcileWith`). `task_id` is `run/node/generation` as before, with the node `reserve~c` or `reserve~r`; every other rpc takes it unchanged.
 - **Target.** For a compensation or a lookup, `target_node` is the forward step it is about and `target_idempotency_key` the key that step's own attempts carried, which is what identifies the *effect* at the provider ("undo the payment you know as this"). `idempotency_key` is the key of this compensation (`compensation:{compensation_id}:{run}`) or this lookup (`reconciliation:{run}:{forward}`): the same on every attempt and every restart. Send it to the provider; a provider that deduplicates by key then performs the effect once, however often the platform asks. The input (`input_json`) is the same document as for forward work, so a compensation reads the output of the step it undoes under `steps.<node>.output`.

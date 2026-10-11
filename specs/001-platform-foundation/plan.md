@@ -47,7 +47,7 @@ proto/sagat_octopus_orchestrator/v1/worker.proto
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/001-platform-foundation/
+tests/e2e/platform-foundation/
 ```
 
 ## Implementation phases

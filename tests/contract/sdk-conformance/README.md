@@ -196,7 +196,7 @@ run, a wait that nothing wakes, `control` to move time).
 `run.sh <mode> <config.json> <out.json>` with a mode other than `build` and `run` is an SDK's own acceptance
 test against the real platform. There is one, for `US01-AC01`:
 
-**`aspnet`** (C# only; `tests/e2e/006-sdk-multilanguage/scenarios/us01-aspnet.json` is its scenario, whose
+**`aspnet`** (C# only; `tests/e2e/sdk-multilanguage/scenarios/us01-aspnet.json` is its scenario, whose
 workflows are published as for any scenario and are in `config.json`). The runner starts a minimal ASP.NET Core
 service on a loopback port that registers the SDK with `AddSagatOctopusOrchestrator` (`apiUrl`, `namespace` and
 `clientToken` of the config) and has `POST /orders`, a handler that takes `ISagatClient` from dependency

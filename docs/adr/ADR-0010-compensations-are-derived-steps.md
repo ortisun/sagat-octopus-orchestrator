@@ -29,4 +29,4 @@ ADR-0005 decides that a compensation plan is persisted per saga, in reverse topo
 
 ## Review criteria
 
-Open a new ADR with benchmark data (`tests/performance/reports/003-sagas-compensations.md`), failure tests, operational cost and compatibility with runs in flight if compensations ever need to run outside the step machinery (for example as a bulk operation over many runs), or if the breaker needs a key finer than an activity name (G55).
+Open a new ADR with benchmark data (`tests/performance/reports/sagas-compensations.md`), failure tests, operational cost and compatibility with runs in flight if compensations ever need to run outside the step machinery (for example as a bulk operation over many runs), or if the breaker needs a key finer than an activity name (G55).

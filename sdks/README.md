@@ -37,8 +37,8 @@ not automated** and no package has a licence yet (`UNLICENSED`): see `docs/runbo
 
 ```text
 cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture      # the five languages, every scenario (Docker)
-cargo test -p sagat-tests --test e2e_006 --test fault_006 -- --ignored            # the user stories and the faults
-cargo test -p sagat-tests --test perf_006 --release -- --ignored    # the benchmark
+cargo test -p sagat-tests --test e2e_sdk_multilanguage --test fault_sdk_multilanguage -- --ignored            # the user stories and the faults
+cargo test -p sagat-tests --test perf_sdk_multilanguage --release -- --ignored    # the benchmark
 ```
 
 These three are `#[ignore]` in `cargo test --workspace` because they need the five toolchains (Node, Python, Go, .NET and a JDK) and Docker; the `sdks` job of CI runs them with `--ignored`. A scenario changes no golden by itself: `SAGAT_SDK_BLESS=1` rewrites them and the diff must be read.

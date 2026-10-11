@@ -45,7 +45,7 @@ infra/docker/compose.yaml
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/012-developer-experience/
+tests/e2e/developer-experience/
 ```
 
 ## Implementation phases

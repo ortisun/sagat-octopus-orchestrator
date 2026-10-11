@@ -12,17 +12,17 @@ Everything below was run against this repository. The pieces that are **not** bu
 1. **The user stories, the contracts and the failures**, against real PostgreSQL, real brokers, a fake OIDC provider and real HTTP receivers:
 
    ```sh
-   cargo test -p sagat-tests --test e2e_004            # US01–US04 through REST, the public webhook route, the engine as a process, three real brokers
-   cargo test -p sagat-tests --test integration_004    # ingress, dispatch, cron, outbound deliveries, the sender, connectors (84 tests)
-   cargo test -p sagat-tests --test contract_rest_004  # every event operation against the OpenAPI document, normal and error paths
-   cargo test -p sagat-tests --test contract_asyncapi_004  # the AsyncAPI document: complete, only grown since the baseline, and what is really sent conforms to it
-   cargo test -p sagat-tests --test fault_004          # dispatchers cut off at every await, racing dispatchers, a worker that died after sending, connections killed under load
+   cargo test -p sagat-tests --test e2e_events_webhooks_messaging            # US01–US04 through REST, the public webhook route, the engine as a process, three real brokers
+   cargo test -p sagat-tests --test integration_events_webhooks_messaging    # ingress, dispatch, cron, outbound deliveries, the sender, connectors (84 tests)
+   cargo test -p sagat-tests --test contract_rest_events_webhooks_messaging  # every event operation against the OpenAPI document, normal and error paths
+   cargo test -p sagat-tests --test contract_asyncapi_events_webhooks_messaging  # the AsyncAPI document: complete, only grown since the baseline, and what is really sent conforms to it
+   cargo test -p sagat-tests --test fault_events_webhooks_messaging          # dispatchers cut off at every await, racing dispatchers, a worker that died after sending, connections killed under load
    cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-egress -p sagat-infra-connectors -p sagat-infra-postgres -p sagat-scheduler
    ```
 
 2. **Receiving an event by hand** (the recipe, with a test vector for an implementation, is in [`docs/runbooks/events.md`](../../docs/runbooks/events.md) section 1): store the secret, create the endpoint, sign `octopus-event-in-v1\n{timestamp}\n{id}\n{type}\n{subject}\n{key}\n` and the body, `POST /v1/webhooks/{id}`.
 
-3. **Failure injection** (`tests/fault/004-events-webhooks-messaging/`, plus the failure tests of the integration suite). Each states an invariant that must hold whatever was cut off:
+3. **Failure injection** (`tests/fault/events-webhooks-messaging/`, plus the failure tests of the integration suite). Each states an invariant that must hold whatever was cut off:
 
    | Class | Test | What it does |
    |---|---|---|
@@ -43,8 +43,8 @@ Everything below was run against this repository. The pieces that are **not** bu
 4. **The benchmark** (ingress over HTTP, dispatcher scaling, the cost of waiting, fan-out and rate of deliveries, connector ingest):
 
    ```sh
-   SAGAT_PERF_REPORT=tests/performance/reports/004-events-webhooks-messaging.md \
-     cargo test -p sagat-tests --test perf_004 --release -- --ignored --nocapture
+   SAGAT_PERF_REPORT=tests/performance/reports/events-webhooks-messaging.md \
+     cargo test -p sagat-tests --test perf_events_webhooks_messaging --release -- --ignored --nocapture
    ```
 
 5. **Operating it:** [`docs/runbooks/events.md`](../../docs/runbooks/events.md).
@@ -64,22 +64,22 @@ Everything below was run against this repository. The pieces that are **not** bu
 |---|---|
 | FR-004-001 manual/API, webhook, event, cron, message and signal triggers | triggers registered at publish (`dispatch::the_triggers_in_force_are_those_of_the_active_version`, `crates/domain/tests/workflow.rs`), the `api` source (`ingress::publishing_through_the_api_…`), `cron::*`, `us01`, `us03`; direct signals are feature 002's |
 | FR-004-002 one inbox per tenant/source/event_id with configurable deduplication TTL | the primary key of `inbox_events`; `ingress::the_same_source_and_event_id_in_two_namespaces_are_two_events`, `the_deduplication_window_ends_and_the_same_id_is_a_new_event`, `an_event_published_through_the_api_may_have_a_short_window_and_not_a_silly_one`; the window rules in `crates/domain/src/events.rs` |
-| FR-004-003 event_type+correlation subscriptions with timeout and atomic competition between event and timer | `dispatch::*` (wake, lookback, race with the timeout), `fault_004` |
+| FR-004-003 event_type+correlation subscriptions with timeout and atomic competition between event and timer | `dispatch::*` (wake, lookback, race with the timeout), `fault_events_webhooks_messaging` |
 | FR-004-004 HMAC/timestamp/nonce on webhooks; OIDC/mTLS per profile | HMAC, timestamp window and nonce (the event id) built and tested (`ingress::*`, `crates/application/src/signing.rs` unit tests with independent vectors); OIDC/mTLS **not built** (G75) |
 | FR-004-005 inbound/outbound adapters for NATS, Kafka and SQS with ack/offset after persistence | inbound built for all three (`us03`, `connectors::*`); outbound producers **not built** (G77) |
 | FR-004-006 outbound HTTP webhook with signing, retry jitter, TLS, rate limit, DLQ, redrive, endpoint status | `outbound::*`, `us04`, `sender::*`; TLS is the scheme of the URL and the egress policy's (`http` only when the namespace allows it) |
 | FR-004-007 AsyncAPI versioned for messages and a schema evolution policy | `events.asyncapi.yaml` 0.2.0, `events.baseline.json`, `asyncapi/*` (4 tests), `docs/event-schema-evolution.md` |
 | FR-004-008 backpressure, size limits, retention, safe filters and quotas per tenant/connector | the 10 000-event backlog (`ingress::a_full_backlog_refuses_new_events_and_still_answers_duplicates`, `connectors::a_full_backlog_leaves_the_message_with_the_broker_…`), the body limit, windows and purge (`dispatch::expired_events_are_purged_but_one_still_waiting_…`), expression limits (feature 002's evaluator), quotas (`ingress::endpoints_are_scoped_to_their_tenant_and_to_a_namespace_quota`, `connectors::a_connector_is_administered_…`) |
 | NFR-004-SEC | tenant on every statement and composite foreign keys of every new table; `dispatch::events_never_cross_a_tenant_boundary`; the uniform 401; no secret, signature, payload, URL path or receiver body in any record (`outbound::what_the_receiver_says_is_never_stored`, `us04::a_reader_sees_…`, `telemetry::*`); two independent reviews (D94) |
-| NFR-004-DUR | `fault_004`, the integration crash tests, the transactional boundaries of D84/D88/D90 |
-| NFR-004-OBS | `e2e_004 telemetry::events_webhooks_and_dispatches_are_counted_without_naming_anyone`; counters, gauges and histograms listed in the runbook; audit records |
+| NFR-004-DUR | `fault_events_webhooks_messaging`, the integration crash tests, the transactional boundaries of D84/D88/D90 |
+| NFR-004-OBS | `e2e_events_webhooks_messaging telemetry::events_webhooks_and_dispatches_are_counted_without_naming_anyone`; counters, gauges and histograms listed in the runbook; audit records |
 | NFR-004-COMP | additive, reversible migration; AsyncAPI only grown; OpenAPI additive; the workflow schema gained optional fields |
-| NFR-004-PERF | `tests/performance/reports/004-events-webhooks-messaging.md` |
+| NFR-004-PERF | `tests/performance/reports/events-webhooks-messaging.md` |
 
 | Success criterion | State |
 |---|---|
-| SC-004-001 signed webhooks, duplicates, retries, out-of-order and event/timeout race in integration tests | Met: `integration_004`, `fault_004` |
-| SC-004-002 100% of US01..US04 pass in a reproducible automated suite | Met for the scenarios of the specification (`e2e_004`, 11 tests, with real brokers) |
+| SC-004-001 signed webhooks, duplicates, retries, out-of-order and event/timeout race in integration tests | Met: `integration_events_webhooks_messaging`, `fault_events_webhooks_messaging` |
+| SC-004-002 100% of US01..US04 pass in a reproducible automated suite | Met for the scenarios of the specification (`e2e_events_webhooks_messaging`, 11 tests, with real brokers) |
 | SC-004-003 no violation of the Constitution gates and no silent loss of persisted state | Partial: no loss is provable by the tests above; only principle II has an automated gate (architecture check); the ratification date of the constitution is still to be confirmed |
 | SC-004-004 critical errors expose `code`, `trace_id` and remediation without leaking | Partial, as in 003 and 009: `code`, `traceId` and a stable `details.reason` are proven; no separate `remediation` field |
 

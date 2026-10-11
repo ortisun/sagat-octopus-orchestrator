@@ -46,7 +46,7 @@ crates/api-http/src/routes/webhooks.rs
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/004-events-webhooks-messaging/
+tests/e2e/events-webhooks-messaging/
 ```
 
 **As built.** The structure above was a proposal. The inbox and the matcher are not a crate: the rules are in the domain, the services in the application and the SQL in the persistence adapter, as for every other feature; the broker clients are adapters in a crate of their own (decision D78, ADR-0012, gap G73).

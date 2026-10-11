@@ -53,7 +53,7 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   the server required `attempt >= 1` in every request, so a worker of 1.0 could not keep a lease and its task was
   leased again until the run failed with `LEASE_EXPIRED`. Now an absent attempt (0, for a heartbeat only) is the
   step's own; the lease token and the generation in the task id still fence the lease; a negative attempt is
-  refused. Contract tests: `tests/contract/006-sdk-multilanguage/grpc/negotiation.rs` (failed on the old code).
+  refused. Contract tests: `tests/contract/sdk-multilanguage/grpc/negotiation.rs` (failed on the old code).
 - **D123 — `worker_registrations_total{protocol}`** counts registrations by the version they were served at, so an
   operator can tell when an old minor can be dropped. Refusals stay in `grpc_requests_total`.
 - **D124 — A workflow is started by name or by id.** The OpenAPI takes `workflowId`; the SDKs resolve a name

@@ -89,7 +89,7 @@ pub fn spawn_pool_metrics(pool: PgPool, interval: Duration) -> tokio::task::Join
 /// in a task of its own, which finishes whatever the caller does; if the caller is gone, the
 /// transaction it returns is dropped there and rolled back as it should be.
 ///
-/// Remove this when `sqlx` begins cancel-safely (`tests/fault/004-events-webhooks-messaging/
+/// Remove this when `sqlx` begins cancel-safely (`tests/fault/events-webhooks-messaging/
 /// cancellation.rs` has a test that will say so).
 pub trait BeginSafely {
     /// # Errors
