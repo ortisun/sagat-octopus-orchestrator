@@ -151,3 +151,76 @@ async fn a_tenant_never_reaches_another_tenants_runs() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_operator_sets_and_withdraws_a_weight_and_each_change_is_audited() {
+    use sagat_application::error::AppError;
+    use sagat_domain::identity::TenantId;
+
+    let w = world().await;
+    let tenant = w.admin.tenant_id();
+    let stored = || async {
+        sqlx::query_scalar::<_, i16>("SELECT weight FROM tenant_scheduling WHERE tenant_id = $1")
+            .bind(tenant.as_uuid())
+            .fetch_optional(&w.db.pool)
+            .await
+            .expect("weight")
+    };
+    assert_eq!(stored().await, None);
+
+    w.quotas
+        .set_scheduling_weight(tenant, Some(7))
+        .await
+        .expect("set");
+    assert_eq!(stored().await, Some(7));
+    w.quotas
+        .set_scheduling_weight(tenant, Some(2))
+        .await
+        .expect("change");
+    assert_eq!(stored().await, Some(2), "a second call changes it");
+    w.quotas
+        .set_scheduling_weight(tenant, None)
+        .await
+        .expect("withdraw");
+    assert_eq!(stored().await, None);
+
+    // Every change left a record of who (the operator) did what to which tenant.
+    let reasons: Vec<String> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE tenant_id = $1 AND resource_id = 'scheduling-weight' ORDER BY created_at, id",
+    )
+    .bind(tenant.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        reasons,
+        [
+            "scheduling weight = 7",
+            "scheduling weight = 2",
+            "scheduling weight withdrawn"
+        ]
+    );
+
+    // Out of range is refused and leaves nothing behind; so is a tenant that does not exist.
+    for bad in [0_u16, 17, 1000] {
+        assert!(matches!(
+            w.quotas.set_scheduling_weight(tenant, Some(bad)).await,
+            Err(AppError::NotAllowed(_))
+        ));
+    }
+    assert!(matches!(
+        w.quotas
+            .set_scheduling_weight(TenantId::generate(), Some(2))
+            .await,
+        Err(AppError::NotFound)
+    ));
+    assert_eq!(stored().await, None);
+    let after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND resource_id = 'scheduling-weight'",
+    )
+    .bind(tenant.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(after, 3, "a refused change is not recorded as a change");
+}

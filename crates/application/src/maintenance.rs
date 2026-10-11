@@ -231,6 +231,14 @@ pub struct OutboxMessage {
     pub created_at: OffsetDateTime,
 }
 
+/// A message that is due and has not been claimed: what a dispatcher looks at before choosing which
+/// to take (`FR-010-002`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutboxDue {
+    pub id: Uuid,
+    pub tenant_id: TenantId,
+}
+
 /// The transactional outbox, read by a dispatcher. Delivery is at-least-once: a message claimed but
 /// never confirmed becomes visible again after `visibility`, so a dispatcher that crashes after
 /// publishing and before confirming causes a duplicate, never a loss.
@@ -239,6 +247,21 @@ pub trait OutboxStore: Send + Sync {
     fn claim_outbox(
         &self,
         limit: u32,
+        visibility: Duration,
+    ) -> impl Future<Output = Result<Vec<OutboxMessage>, StoreError>> + Send;
+
+    /// The oldest due messages of the shards in `window`, without claiming them: what a dispatcher
+    /// that owns some shards chooses from. Messages of one aggregate (a run) are in one shard.
+    fn due_outbox(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<OutboxDue>, StoreError>> + Send;
+
+    /// Claims those of `ids` that are still due and that no other dispatcher has claimed, as
+    /// [`Self::claim_outbox`] does for the oldest.
+    fn claim_outbox_ids(
+        &self,
+        ids: &[Uuid],
         visibility: Duration,
     ) -> impl Future<Output = Result<Vec<OutboxMessage>, StoreError>> + Send;
 

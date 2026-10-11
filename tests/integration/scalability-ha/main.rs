@@ -7,5 +7,7 @@
 mod support;
 
 mod fairness;
+mod lag;
+mod outbox;
 mod passes;
 mod shards;

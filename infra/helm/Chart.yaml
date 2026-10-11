@@ -1,0 +1,16 @@
+apiVersion: v2
+name: sagat-octopus-orchestrator
+description: >-
+  The Sagat Octopus Orchestrator on Kubernetes: the control plane (REST API and Studio), the
+  execution engine (worker API, scheduler shards, outbox) and, optionally, pools of workers that
+  scale on the length of their queue. PostgreSQL, NATS and the identity provider are not part of the
+  chart: they are the operator's.
+type: application
+# The chart is versioned with the platform; the release process sets both (see docs/runbooks/scaling.md).
+version: 0.3.0
+appVersion: "0.3.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/tentativafc/sagat-octopus-orchestrator
+sources:
+  - https://github.com/tentativafc/sagat-octopus-orchestrator
+keywords: [workflow, orchestration, saga, durable-execution]

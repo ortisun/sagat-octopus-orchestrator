@@ -130,7 +130,11 @@ pub async fn run_keeper<F, Fut, L, LeaveFut>(
                 "shard leases kept"
             ),
             Err(error) => {
-                tracing::warn!(%error, "could not keep the shard leases; the passes stop by themselves when they run out");
+                tracing::warn!(
+                    %error,
+                    runbook = "docs/runbooks/scaling.md#keeper-failing",
+                    "could not keep the shard leases; the passes stop by themselves when they run out"
+                );
                 metrics::counter!("scheduler_keeper_failures_total").increment(1);
             }
         }

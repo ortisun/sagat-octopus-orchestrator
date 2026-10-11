@@ -1,0 +1,131 @@
+{{- $cp := .Values.controlPlane }}
+{{- $ctx := dict "root" . "component" "control-plane" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sagat.fullname" . }}-control-plane
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  {{- if not $cp.autoscaling.enabled }}
+  replicas: {{ $cp.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels:
+        {{- include "sagat.labels" . | nindent 8 }}
+        app.kubernetes.io/component: control-plane
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "sagat.fullname" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 40
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: {{ include "sagat.image" (dict "root" . "repository" .Values.image.controlPlane) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [serve]
+          env:
+            {{- include "sagat.oidcEnv" . | nindent 12 }}
+            - {name: SAGAT_BIND_ADDR, value: "0.0.0.0:8080"}
+            # Metrics and probes: unauthenticated, so the NetworkPolicy keeps them to the monitoring namespace.
+            - {name: SAGAT_ADMIN_ADDR, value: "0.0.0.0:9090"}
+            - {name: SAGAT_SHUTDOWN_GRACE_SECS, value: "30"}
+            {{- if $cp.allowPlaintextSecrets }}
+            - {name: SAGAT_API_ALLOW_PLAINTEXT_SECRETS, value: "true"}
+            {{- end }}
+            {{- if $cp.studio }}
+            - {name: SAGAT_STUDIO_DIR, value: /srv/studio}
+            {{- else }}
+            - {name: SAGAT_STUDIO_DIR, value: ""}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: admin, containerPort: 9090}
+          startupProbe:
+            httpGet: {path: /livez, port: admin}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /livez, port: admin}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /readyz, port: admin}
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            {{- toYaml $cp.resources | nindent 12 }}
+          {{- include "sagat.containerSecurity" . | nindent 10 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "sagat.topologySpread" $ctx | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sagat.fullname" . }}-control-plane
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  type: {{ $cp.service.type }}
+  selector:
+    {{- include "sagat.selector" $ctx | nindent 4 }}
+  ports:
+    - {name: http, port: {{ $cp.service.port }}, targetPort: http}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sagat.fullname" . }}-control-plane
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ $cp.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+{{- if $cp.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "sagat.fullname" . }}-control-plane
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "sagat.fullname" . }}-control-plane}
+  minReplicas: {{ $cp.autoscaling.minReplicas }}
+  maxReplicas: {{ $cp.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: {{ $cp.autoscaling.targetCPUUtilizationPercentage }}}
+{{- end }}

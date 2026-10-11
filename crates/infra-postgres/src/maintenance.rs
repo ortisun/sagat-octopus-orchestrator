@@ -1,15 +1,20 @@
 //! Candidate queries for the scheduler and the transactional outbox.
 //!
-//! Every comparison uses `clock_timestamp()` on the database, so schedulers on machines with
-//! different clocks agree on what is due. The queries only *find* candidates; the authority is the
+//! Every comparison uses the database's clock (`now()`), so schedulers on machines with different
+//! clocks agree on what is due. It is `now()` and not `clock_timestamp()` because the planner can
+//! use a stable function as the bound of an index range and cannot use a volatile one: with
+//! `clock_timestamp()` the filter on a deadline is applied to every entry of the index, in order,
+//! until the limit is reached, so a pass with nothing due reads every waiting step. With `now()`
+//! (the start of the statement, which is when these candidate queries are asked) it reads the
+//! entries that are due and stops. The queries only *find* candidates; the authority is the
 //! run's row lock, taken by the caller, under which the domain re-checks the condition.
 
 use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::maintenance::{
-    EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxMessage, OutboxStore, PendingChild,
-    RunRef, StepRef, Window,
+    EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxDue, OutboxMessage, OutboxStore,
+    PendingChild, RunRef, StepRef, Window,
 };
 use sagat_domain::execution::{Fence, RunId};
 use sagat_domain::identity::TenantId;
@@ -40,6 +45,29 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
     })
 }
 
+/// The messages of the rows a claim returned, in the order they were written.
+fn outbox_messages(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<OutboxMessage>, StoreError> {
+    let mut out = rows
+        .iter()
+        .map(|row| {
+            let payload: serde_json::Value = col(row, "payload")?;
+            let attempts: i32 = col(row, "attempt_count")?;
+            Ok(OutboxMessage {
+                id: col(row, "id")?,
+                tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+                aggregate_id: col(row, "aggregate_id")?,
+                event_type: col(row, "event_type")?,
+                routing_key: col(row, "routing_key")?,
+                payload: serde_json::to_vec(&payload).map_err(|_| corrupt("outbox payload"))?,
+                attempt_count: u32::try_from(attempts).map_err(|_| corrupt("attempts"))?,
+                created_at: col(row, "created_at")?,
+            })
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    out.sort_by_key(|m| m.created_at);
+    Ok(out)
+}
+
 /// The window as the three parameters every candidate query takes: how many, the shards to look at
 /// and the tenants to leave out.
 fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
@@ -63,7 +91,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, due_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'TIMER' \
-                   AND due_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                   AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
         )
@@ -85,7 +113,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, due_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'EVENT' \
-                   AND due_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                   AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
         )
@@ -107,7 +135,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, next_attempt_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'RETRY_WAIT' \
-                   AND next_attempt_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                   AND next_attempt_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY next_attempt_at LIMIT $1) t \
              ORDER BY t.next_attempt_at LIMIT $1",
         )
@@ -132,7 +160,7 @@ impl MaintenanceStore for PgRunStore {
                     SELECT tenant_id, run_id, node, attempt, generation, 'TIMED_OUT' AS cause, \
                            attempt_deadline_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
-                      AND attempt_deadline_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                      AND attempt_deadline_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY attempt_deadline_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1) \
              UNION ALL \
@@ -142,7 +170,7 @@ impl MaintenanceStore for PgRunStore {
                     SELECT tenant_id, run_id, node, attempt, generation, 'EXPIRED' AS cause, \
                            lease_expires_at AS at FROM steps \
                     WHERE run_shard(run_id) = sh.s AND status IN ('LEASED', 'RUNNING') \
-                      AND lease_expires_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                      AND lease_expires_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                     ORDER BY lease_expires_at LIMIT $1) t \
               ORDER BY t.at LIMIT $1)",
         )
@@ -187,7 +215,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, id, deadline_at FROM runs \
                  WHERE run_shard(id) = sh.s AND finished_at IS NULL AND stop_reason IS NULL \
-                   AND deadline_at <= clock_timestamp() AND tenant_id <> ALL($3::uuid[]) \
+                   AND deadline_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY deadline_at LIMIT $1) t \
              ORDER BY t.deadline_at LIMIT $1",
         )
@@ -213,7 +241,7 @@ impl MaintenanceStore for PgRunStore {
              CROSS JOIN LATERAL ( \
                  SELECT tenant_id, run_id, node, last_hinted_at FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'READY' AND hint_count < 5 \
-                   AND last_hinted_at <= clock_timestamp() - $4 * interval '1 microsecond' \
+                   AND last_hinted_at <= now() - $4 * interval '1 microsecond' \
                    AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY last_hinted_at LIMIT $1) t \
              ORDER BY t.last_hinted_at LIMIT $1",
@@ -321,7 +349,7 @@ impl MaintenanceStore for PgRunStore {
 
     async fn purge_idempotency(&self, older_than: Duration) -> Result<u64, StoreError> {
         sqlx::query(
-            "DELETE FROM command_dedupe WHERE created_at < clock_timestamp() - $1 * interval '1 microsecond'",
+            "DELETE FROM command_dedupe WHERE created_at < now() - $1 * interval '1 microsecond'",
         )
         .bind(micros(older_than))
         .execute(self.pool())
@@ -335,7 +363,7 @@ impl MaintenanceStore for PgRunStore {
             "DELETE FROM event_outbox WHERE id IN ( \
                  SELECT id FROM event_outbox \
                  WHERE delivered_at IS NOT NULL \
-                   AND delivered_at < clock_timestamp() - $1 * interval '1 microsecond' \
+                   AND delivered_at < now() - $1 * interval '1 microsecond' \
                  ORDER BY delivered_at LIMIT $2)",
         )
         .bind(micros(older_than))
@@ -352,13 +380,11 @@ impl MaintenanceStore for PgRunStore {
 
     async fn purge_sessions(&self) -> Result<u64, StoreError> {
         // Kept for an hour after expiry so a late report still finds its session's identity.
-        sqlx::query(
-            "DELETE FROM worker_sessions WHERE expires_at < clock_timestamp() - interval '1 hour'",
-        )
-        .execute(self.pool())
-        .await
-        .map(|r| r.rows_affected())
-        .map_err(store_error)
+        sqlx::query("DELETE FROM worker_sessions WHERE expires_at < now() - interval '1 hour'")
+            .execute(self.pool())
+            .await
+            .map(|r| r.rows_affected())
+            .map_err(store_error)
     }
 }
 
@@ -367,7 +393,7 @@ impl PgRunStore {
     pub(crate) async fn purge_script_records_impl(&self, limit: u32) -> Result<u64, StoreError> {
         let executions = sqlx::query(
             "DELETE FROM script_executions WHERE id IN ( \
-                 SELECT id FROM script_executions WHERE expires_at < clock_timestamp() \
+                 SELECT id FROM script_executions WHERE expires_at < now() \
                  ORDER BY expires_at LIMIT $1)",
         )
         .bind(i64::from(limit))
@@ -379,7 +405,7 @@ impl PgRunStore {
             "DELETE FROM script_test_runs WHERE id IN ( \
                  SELECT id FROM script_test_runs \
                  WHERE finished_at IS NOT NULL \
-                   AND finished_at + make_interval(days => retention_days) < clock_timestamp() \
+                   AND finished_at + make_interval(days => retention_days) < now() \
                  ORDER BY finished_at LIMIT $1)",
         )
         .bind(i64::from(limit))
@@ -400,7 +426,7 @@ impl OutboxStore for PgRunStore {
         let rows = sqlx::query(
             "WITH due AS ( \
                  SELECT id FROM event_outbox \
-                 WHERE delivered_at IS NULL AND next_attempt_at <= clock_timestamp() \
+                 WHERE delivered_at IS NULL AND next_attempt_at <= now() \
                  ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED) \
              UPDATE event_outbox o \
                 SET next_attempt_at = clock_timestamp() + $2 * interval '1 microsecond', \
@@ -414,25 +440,61 @@ impl OutboxStore for PgRunStore {
         .fetch_all(self.pool())
         .await
         .map_err(store_error)?;
-        let mut out = rows
-            .iter()
-            .map(|row| {
-                let payload: serde_json::Value = col(row, "payload")?;
-                let attempts: i32 = col(row, "attempt_count")?;
-                Ok(OutboxMessage {
-                    id: col(row, "id")?,
-                    tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
-                    aggregate_id: col(row, "aggregate_id")?,
-                    event_type: col(row, "event_type")?,
-                    routing_key: col(row, "routing_key")?,
-                    payload: serde_json::to_vec(&payload).map_err(|_| corrupt("outbox payload"))?,
-                    attempt_count: u32::try_from(attempts).map_err(|_| corrupt("attempts"))?,
-                    created_at: col(row, "created_at")?,
-                })
+        outbox_messages(&rows)
+    }
+
+    async fn due_outbox(&self, window: &Window) -> Result<Vec<OutboxDue>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT t.id, t.tenant_id FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 SELECT id, tenant_id, next_attempt_at FROM event_outbox \
+                 WHERE run_shard(aggregate_id) = sh.s AND delivered_at IS NULL \
+                   AND next_attempt_at <= now() AND tenant_id <> ALL($3::uuid[]) \
+                 ORDER BY next_attempt_at LIMIT $1) t \
+             ORDER BY t.next_attempt_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            Ok(OutboxDue {
+                id: col(row, "id")?,
+                tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
             })
-            .collect::<Result<Vec<_>, StoreError>>()?;
-        out.sort_by_key(|m| m.created_at);
-        Ok(out)
+        })
+        .collect()
+    }
+
+    async fn claim_outbox_ids(
+        &self,
+        ids: &[Uuid],
+        visibility: Duration,
+    ) -> Result<Vec<OutboxMessage>, StoreError> {
+        // The conditions are asked again here: the message may have been delivered, or claimed by
+        // another dispatcher, since it was looked at. A message locked by one is skipped.
+        let rows = sqlx::query(
+            "WITH due AS ( \
+                 SELECT id FROM event_outbox \
+                 WHERE id = ANY($1) AND delivered_at IS NULL AND next_attempt_at <= now() \
+                 ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED) \
+             UPDATE event_outbox o \
+                SET next_attempt_at = clock_timestamp() + $2 * interval '1 microsecond', \
+                    attempt_count = o.attempt_count + 1 \
+               FROM due WHERE o.id = due.id \
+             RETURNING o.id, o.tenant_id, o.aggregate_id, o.event_type, o.routing_key, o.payload, \
+                       o.attempt_count, o.created_at",
+        )
+        .bind(ids)
+        .bind(micros(visibility))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        outbox_messages(&rows)
     }
 
     async fn mark_delivered(&self, ids: &[Uuid]) -> Result<(), StoreError> {

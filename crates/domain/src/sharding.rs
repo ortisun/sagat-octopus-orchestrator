@@ -19,6 +19,11 @@ use uuid::Uuid;
 /// A power of two no larger than 64, so that a set of shards is one machine word.
 pub const SHARDS: u8 = 64;
 
+/// The largest scheduling weight a tenant can be given (the smallest, and the default, is 1): a
+/// tenant of weight 16 gets sixteen times the share of a pass that a tenant of weight 1 gets when
+/// both have more work than the pass takes.
+pub const MAX_WEIGHT: u16 = 16;
+
 const _: () = assert!(SHARDS.is_power_of_two() && SHARDS <= 64);
 
 /// One of the [`SHARDS`] shards.

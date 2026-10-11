@@ -1,0 +1,213 @@
+{{- $e := .Values.engine }}
+{{- $ctx := dict "root" . "component" "execution-engine" }}
+{{- $autoscaled := or $e.autoscaling.keda.enabled $e.autoscaling.hpa.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sagat.fullname" . }}-engine
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execution-engine
+spec:
+  {{- if not $autoscaled }}
+  replicas: {{ $e.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+  strategy:
+    # A new replica takes shards only after the old ones give theirs back, so surge one at a time.
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels:
+        {{- include "sagat.labels" . | nindent 8 }}
+        app.kubernetes.io/component: execution-engine
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "sagat.fullname" . }}
+      automountServiceAccountToken: false
+      # Long enough for the engine to stop its loops, give its shards back and drain its calls.
+      terminationGracePeriodSeconds: {{ $e.terminationGracePeriodSeconds }}
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: execution-engine
+          image: {{ include "sagat.image" (dict "root" . "repository" .Values.image.executionEngine) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [serve]
+          env:
+            {{- include "sagat.oidcEnv" . | nindent 12 }}
+            - {name: SAGAT_GRPC_ADDR, value: "0.0.0.0:{{ $e.grpc.port }}"}
+            - {name: SAGAT_ADMIN_ADDR, value: "0.0.0.0:9091"}
+            # The name the replica holds its shards under; the process adds a random suffix.
+            - name: SAGAT_REPLICA_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            - {name: SAGAT_SHARD_LEASE_SECS, value: {{ $e.shardLeaseSeconds | quote }}}
+            - {name: SAGAT_SCHEDULER_CONCURRENCY, value: {{ $e.schedulerConcurrency | quote }}}
+            - {name: SAGAT_SCHEDULER_BATCH, value: {{ $e.schedulerBatch | quote }}}
+            {{- if .Values.workerPools }}
+            - {name: SAGAT_WORKER_POOLS, value: {{ include "sagat.workerPools" . | quote }}}
+            {{- end }}
+            {{- if $e.grpc.allowPlaintextSecrets }}
+            - {name: SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS, value: "true"}
+            {{- end }}
+            {{- if $e.grpc.tlsSecret }}
+            - {name: SAGAT_GRPC_TLS_CERT_FILE, value: /etc/sagat/tls/tls.crt}
+            - {name: SAGAT_GRPC_TLS_KEY_FILE, value: /etc/sagat/tls/tls.key}
+            {{- end }}
+            {{- if .Values.nats.url }}
+            - {name: SAGAT_NATS_URL, value: {{ .Values.nats.url | quote }}}
+            - {name: SAGAT_NATS_REQUIRE_TLS, value: {{ .Values.nats.requireTls | quote }}}
+            {{- if .Values.nats.credentialsSecret }}
+            - {name: SAGAT_NATS_CREDENTIALS_FILE, value: /etc/sagat/nats/nats.creds}
+            {{- end }}
+            {{- end }}
+          ports:
+            - {name: grpc, containerPort: {{ $e.grpc.port }}}
+            - {name: admin, containerPort: 9091}
+          startupProbe:
+            httpGet: {path: /livez, port: admin}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /livez, port: admin}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /readyz, port: admin}
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            {{- toYaml $e.resources | nindent 12 }}
+          {{- include "sagat.containerSecurity" . | nindent 10 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- if $e.grpc.tlsSecret }}
+            - {name: tls, mountPath: /etc/sagat/tls, readOnly: true}
+            {{- end }}
+            {{- if and .Values.nats.url .Values.nats.credentialsSecret }}
+            - {name: nats-creds, mountPath: /etc/sagat/nats, readOnly: true}
+            {{- end }}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        {{- if $e.grpc.tlsSecret }}
+        - name: tls
+          secret: {secretName: {{ $e.grpc.tlsSecret | quote }}, defaultMode: 0440}
+        {{- end }}
+        {{- if and .Values.nats.url .Values.nats.credentialsSecret }}
+        - name: nats-creds
+          secret: {secretName: {{ .Values.nats.credentialsSecret | quote }}, defaultMode: 0440}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "sagat.topologySpread" $ctx | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sagat.fullname" . }}-engine
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execution-engine
+spec:
+  selector:
+    {{- include "sagat.selector" $ctx | nindent 4 }}
+  ports:
+    - {name: grpc, port: {{ $e.grpc.port }}, targetPort: grpc, appProtocol: kubernetes.io/h2c}
+---
+# The pods' own addresses, for the metrics scrape (the replicas are separate series on purpose).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sagat.fullname" . }}-engine-admin
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: execution-engine
+spec:
+  clusterIP: None
+  selector:
+    {{- include "sagat.selector" $ctx | nindent 4 }}
+  ports:
+    - {name: admin, port: 9091, targetPort: admin}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sagat.fullname" . }}-engine
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+spec:
+  # A voluntary disruption never takes the last replica: its shards would wait for the lease.
+  minAvailable: {{ $e.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+{{- if $e.autoscaling.keda.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "sagat.fullname" . }}-engine
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef: {name: {{ include "sagat.fullname" . }}-engine}
+  minReplicaCount: {{ $e.autoscaling.keda.minReplicaCount }}
+  maxReplicaCount: {{ $e.autoscaling.keda.maxReplicaCount }}
+  pollingInterval: {{ $e.autoscaling.keda.pollingInterval }}
+  cooldownPeriod: {{ $e.autoscaling.keda.cooldownPeriod }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        # Taking a shard over costs a lease; do not flap.
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies: [{type: Pods, value: 1, periodSeconds: 120}]
+        scaleUp:
+          policies: [{type: Pods, value: 2, periodSeconds: 60}]
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ required "engine.autoscaling.keda.prometheusAddress is required" $e.autoscaling.keda.prometheusAddress | quote }}
+        # The scheduler is late: the oldest overdue timer, wait, retry, lease or deadline.
+        query: max(scheduler_lag_seconds)
+        threshold: {{ $e.autoscaling.keda.lagThresholdSeconds | quote }}
+{{- end }}
+{{- if $e.autoscaling.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "sagat.fullname" . }}-engine
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "sagat.fullname" . }}-engine}
+  minReplicas: {{ $e.autoscaling.hpa.minReplicas }}
+  maxReplicas: {{ $e.autoscaling.hpa.maxReplicas }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies: [{type: Pods, value: 1, periodSeconds: 120}]
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: {{ $e.autoscaling.hpa.targetCPUUtilizationPercentage }}}
+{{- end }}

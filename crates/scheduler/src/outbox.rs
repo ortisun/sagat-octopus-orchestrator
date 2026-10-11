@@ -10,9 +10,15 @@
 use std::time::Duration;
 
 use sagat_application::entropy::Entropy;
-use sagat_application::maintenance::{EventPublisher, OutboxMessage, OutboxStore, PublishError};
+use sagat_application::error::StoreError;
+use sagat_application::maintenance::{
+    EventPublisher, OutboxMessage, OutboxStore, PublishError, Window,
+};
 use tracing::Instrument;
 use uuid::Uuid;
+
+use crate::fairness;
+use crate::shards::Placement;
 
 /// Tunable limits of the dispatcher.
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +66,9 @@ pub struct OutboxDispatcher<S, P, R> {
     publisher: P,
     entropy: R,
     settings: DispatchSettings,
+    /// Which shards this replica dispatches for; without it the dispatcher takes the oldest due
+    /// messages of any shard.
+    placement: Option<Placement>,
 }
 
 impl<S, P, R> std::fmt::Debug for OutboxDispatcher<S, P, R> {
@@ -80,17 +89,74 @@ where
             publisher,
             entropy,
             settings,
+            placement: None,
         }
+    }
+
+    /// Makes the dispatcher one of several replicas: it dispatches the messages of the shards the
+    /// placement says it holds, taking them fairly between tenants (`FR-010-001`, `FR-010-002`). The
+    /// messages of one run are in one shard, so one dispatcher publishes them, in the order they
+    /// were written. A message of a shard whose owner is gone is published by its next owner: the
+    /// visibility timeout of a claim that was never confirmed has the same effect as before.
+    #[must_use]
+    pub fn with_placement(mut self, placement: Placement) -> Self {
+        self.placement = Some(placement);
+        self
+    }
+
+    /// The next messages to publish: the oldest of any shard, or, for a replica with a placement,
+    /// a fair choice among the due messages of its shards.
+    async fn claim(&self) -> Result<Vec<OutboxMessage>, StoreError> {
+        let Some(placement) = &self.placement else {
+            return self
+                .store
+                .claim_outbox(self.settings.batch, self.settings.visibility)
+                .await;
+        };
+        let snapshot = placement.snapshot();
+        let shards = snapshot.shards(std::time::Instant::now());
+        if shards.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = self.settings.batch;
+        let store = &self.store;
+        let (chosen, selection) = fairness::select(
+            limit,
+            snapshot.weights(),
+            |due: &sagat_application::maintenance::OutboxDue| due.tenant_id,
+            |due| due.id,
+            |exclude| async move {
+                store
+                    .due_outbox(&Window {
+                        shards,
+                        exclude,
+                        limit,
+                    })
+                    .await
+            },
+        )
+        .await?;
+        if selection.limited > 0 {
+            metrics::counter!("scheduler_fairness_limited_total", "pass" => "outbox")
+                .increment(selection.limited as u64);
+        }
+        if selection.exhausted {
+            metrics::counter!("scheduler_fairness_exhausted_total", "pass" => "outbox")
+                .increment(1);
+        }
+        if chosen.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<Uuid> = chosen.iter().map(|due| due.id).collect();
+        self.store
+            .claim_outbox_ids(&ids, self.settings.visibility)
+            .await
     }
 
     /// Claims one batch and publishes it. Never fails: what cannot be published is recorded and
     /// retried, and a store error is logged and counted as a round that did nothing.
     pub async fn run_once(&self) -> Dispatched {
-        let claimed = match self
-            .store
-            .claim_outbox(self.settings.batch, self.settings.visibility)
-            .await
-        {
+        let claimed = match self.claim().await {
             Ok(claimed) => claimed,
             Err(error) => {
                 tracing::warn!(%error, "could not claim outbox messages");
@@ -293,6 +359,24 @@ mod tests {
     struct NoStore;
 
     impl OutboxStore for NoStore {
+        async fn due_outbox(
+            &self,
+            _: &Window,
+        ) -> Result<
+            Vec<sagat_application::maintenance::OutboxDue>,
+            sagat_application::error::StoreError,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn claim_outbox_ids(
+            &self,
+            _: &[Uuid],
+            _: Duration,
+        ) -> Result<Vec<OutboxMessage>, sagat_application::error::StoreError> {
+            Ok(Vec::new())
+        }
+
         async fn claim_outbox(
             &self,
             _: u32,

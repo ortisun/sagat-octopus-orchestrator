@@ -8,6 +8,7 @@ use sagat_api_grpc::GrpcConfig;
 use sagat_api_grpc::TlsConfig;
 use sagat_api_http::{AuthConfig, RateLimitConfig};
 use sagat_application::execution::BreakerPolicy;
+use sagat_application::operations::WorkerPool;
 use sagat_application::worker::WorkerSettings;
 use sagat_control_plane::config::{
     ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, optional,
@@ -95,6 +96,73 @@ const MAX_SCHEDULER_CONCURRENCY: usize = 64;
 const MIN_SHARD_LEASE: Duration = Duration::from_secs(3);
 const MAX_SHARD_LEASE: Duration = Duration::from_secs(600);
 const MAX_REPLICA_ID: usize = 64;
+/// Pools whose queues are measured, and activities in all of them: each pool is two series.
+const MAX_POOLS: usize = 32;
+const MAX_POOL_ACTIVITIES: usize = 512;
+
+/// `SAGAT_WORKER_POOLS`: `name=activity,activity;name=activity`. The name is what the pool's gauges
+/// are labelled with, so it is the operator's, short and made of letters, digits and `. _ -`; an
+/// activity is a name a workflow uses, with no separator in it.
+fn worker_pools(get: Lookup<'_>) -> Result<Vec<WorkerPool>, ConfigError> {
+    const NAME: &str = "SAGAT_WORKER_POOLS";
+    let invalid = |reason: String| ConfigError::Invalid { name: NAME, reason };
+    let Some(spec) = get(NAME)
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    let mut pools: Vec<WorkerPool> = Vec::new();
+    let mut activities = 0;
+    for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let (name, list) = part
+            .split_once('=')
+            .ok_or_else(|| invalid("each pool is name=activity,activity".to_owned()))?;
+        let name = name.trim();
+        if name.is_empty()
+            || name.len() > 64
+            || !name.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+            })
+        {
+            return Err(invalid(
+                "a pool name is 1 to 64 lowercase letters, digits or . _ -".to_owned(),
+            ));
+        }
+        if pools.iter().any(|p| p.name == name) {
+            return Err(invalid(format!("the pool {name} is named twice")));
+        }
+        let list: Vec<String> = list
+            .split(',')
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if list.is_empty() {
+            return Err(invalid(format!("the pool {name} serves no activity")));
+        }
+        if let Some(bad) = list
+            .iter()
+            .find(|a| a.len() > 128 || !a.bytes().all(|b| b.is_ascii_graphic()))
+        {
+            return Err(invalid(format!(
+                "an activity of the pool {name} is too long or has a character that is not printable ASCII ({} bytes)",
+                bad.len()
+            )));
+        }
+        activities += list.len();
+        pools.push(WorkerPool {
+            name: name.to_owned(),
+            activities: list,
+        });
+    }
+    if pools.len() > MAX_POOLS || activities > MAX_POOL_ACTIVITIES {
+        return Err(invalid(format!(
+            "at most {MAX_POOLS} pools and {MAX_POOL_ACTIVITIES} activities in all"
+        )));
+    }
+    Ok(pools)
+}
 
 /// `SAGAT_REPLICA_ID`: printable ASCII without spaces, short; `engine` when it is not set.
 fn replica_name(get: Lookup<'_>) -> Result<String, ConfigError> {
@@ -363,6 +431,11 @@ impl EngineConfig {
                 scheduler_defaults.concurrency,
             )?
             .min(MAX_SCHEDULER_CONCURRENCY),
+            // On unless it is said to be off: it is a diagnostic to turn off, never a thing to turn on.
+            fair: match get("SAGAT_SCHEDULER_FAIRNESS").as_deref().map(str::trim) {
+                None | Some("") => true,
+                Some(_) => flag(get, "SAGAT_SCHEDULER_FAIRNESS")?,
+            },
             ..scheduler_defaults
         };
         let shard_defaults = KeeperSettings::default();
@@ -526,6 +599,7 @@ impl EngineConfig {
                     .map(|v| v.trim().to_owned())
                     .filter(|v| !v.is_empty())
                     .unwrap_or(monitor_defaults.runbook_base),
+                pools: worker_pools(get)?,
                 retention: Duration::from_secs(
                     positive(
                         "SAGAT_ALERT_RETENTION_DAYS",

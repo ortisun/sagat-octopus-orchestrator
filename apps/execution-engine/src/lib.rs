@@ -120,7 +120,7 @@ pub async fn serve(
             engine.scheduler,
         )
         .with_children(cache.clone())
-        .with_placement(placement),
+        .with_placement(placement.clone()),
     );
     let events: Arc<EngineEvents> = Arc::new(
         EventDispatcher::new(
@@ -164,12 +164,10 @@ pub async fn serve(
                     sagat_infra_nats::NatsError::Connect => "could not set up the NATS client",
                 })
             })?;
-            Some(Arc::new(OutboxDispatcher::new(
-                store.clone(),
-                publisher,
-                SystemEntropy,
-                engine.dispatch,
-            )))
+            Some(Arc::new(
+                OutboxDispatcher::new(store.clone(), publisher, SystemEntropy, engine.dispatch)
+                    .with_placement(placement.clone()),
+            ))
         }
         None => {
             tracing::warn!(

@@ -419,6 +419,41 @@ impl QuotaStore for PgRunStore {
         stored_limits(rows)
     }
 
+    async fn put_scheduling_weight(
+        &self,
+        tenant: TenantId,
+        weight: Option<u16>,
+        audit: &AuditRecord,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        match weight {
+            Some(weight) => {
+                sqlx::query(
+                    "INSERT INTO tenant_scheduling (tenant_id, weight, updated_at) \
+                     VALUES ($1, $2, clock_timestamp()) \
+                     ON CONFLICT (tenant_id) DO UPDATE SET \
+                         weight = EXCLUDED.weight, updated_at = clock_timestamp()",
+                )
+                .bind(tenant.as_uuid())
+                .bind(i16::try_from(weight).map_err(|_| StoreError::Internal {
+                    detail: "a scheduling weight does not fit".into(),
+                })?)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
+            None => {
+                sqlx::query("DELETE FROM tenant_scheduling WHERE tenant_id = $1")
+                    .bind(tenant.as_uuid())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(store_error)?;
+            }
+        }
+        insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
+
     async fn put_ceiling(
         &self,
         tenant: TenantId,

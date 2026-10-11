@@ -41,6 +41,10 @@ const PURGE_ROUNDS: u32 = 20;
 pub struct SchedulerSettings {
     /// Candidates examined per pass per tick.
     pub batch: u32,
+    /// Whether a pass takes its candidates fairly between tenants (the default). Off, it takes the
+    /// oldest `batch` of the shards it holds, as before feature 010: a diagnostic, to measure what
+    /// fairness does (`tests/performance/scalability-ha`), not a mode to run in.
+    pub fair: bool,
     /// Candidates of one pass that are acted on at the same time (each in its own transaction).
     /// One at a time costs a round trip of latency per candidate; this is what lets a replica
     /// fire the timers of a burst at the rate the database allows instead (`FR-010-002`).
@@ -57,6 +61,7 @@ impl Default for SchedulerSettings {
     fn default() -> Self {
         Self {
             batch: 200,
+            fair: true,
             concurrency: 8,
             rehint_after: Duration::from_secs(30),
             idempotency_retention: Duration::from_secs(7 * 24 * 3600),
@@ -501,6 +506,22 @@ where
         Fut: Future<Output = Result<Vec<T>, StoreError>>,
     {
         let (shards, limit, store) = (view.shards, self.settings.batch, &self.store);
+        if !self.settings.fair {
+            let oldest = query(
+                store,
+                Window {
+                    shards,
+                    exclude: Vec::new(),
+                    limit,
+                },
+            )
+            .await;
+            return oldest.unwrap_or_else(|error| {
+                tracing::warn!(%error, what, "a scheduler query failed");
+                report.failed += 1;
+                Vec::new()
+            });
+        }
         let selected = fairness::select(limit, &view.weights, tenant, key, |exclude| {
             query(
                 store,

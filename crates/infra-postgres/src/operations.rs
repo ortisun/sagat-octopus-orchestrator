@@ -1,8 +1,8 @@
 //! The monitor's store: what finds the conditions that need a person, keeps the alerts in step with
 //! them, and totals the queues for the gauges (FR-008-003, FR-008-005).
 //!
-//! Every comparison uses `clock_timestamp()` on the database, so monitors on machines with different
-//! clocks agree. The detection queries are aggregates that return counts and ages per namespace and
+//! Every comparison uses the database's clock (`now()`, so that the planner can bound an index range
+//! with it), so monitors on machines with different clocks agree. The detection queries are aggregates that return counts and ages per namespace and
 //! read nothing of a payload.
 
 use std::time::Duration;
@@ -10,7 +10,8 @@ use std::time::Duration;
 use sagat_application::error::StoreError;
 use sagat_application::operations::{
     AlertReader, AlertRecord, AuditEntry, AuditFilter, AuditStore, Bounds, Candidate, Detection,
-    DrainRecord, MonitorStore, Reconciled, Sample, Short, Thresholds, WorkerAdmin, WorkerView,
+    DrainRecord, MonitorStore, PoolLag, Reconciled, Sample, Short, Thresholds, WorkerAdmin,
+    WorkerPool, WorkerView,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::operations::{AlertKind, AlertState, Severity};
@@ -152,7 +153,7 @@ impl MonitorStore for PgRunStore {
                                          THEN (payload->>'namespaceId')::uuid END AS ns \
                              FROM event_outbox \
                              WHERE delivered_at IS NULL \
-                               AND created_at < clock_timestamp() - make_interval(secs => $1)) o \
+                               AND created_at < now() - make_interval(secs => $1)) o \
                        JOIN namespaces n ON n.tenant_id = o.tenant_id AND n.id = o.ns \
                        GROUP BY o.tenant_id, o.ns) g",
                 true,
@@ -162,7 +163,7 @@ impl MonitorStore for PgRunStore {
                         extract(epoch FROM clock_timestamp() - min(lease_expires_at))::float8 AS oldest \
                  FROM steps \
                  WHERE status IN ('LEASED', 'RUNNING') \
-                   AND lease_expires_at < clock_timestamp() - make_interval(secs => $1) \
+                   AND lease_expires_at < now() - make_interval(secs => $1) \
                  GROUP BY tenant_id, namespace_id",
                 true,
             ),
@@ -175,12 +176,12 @@ impl MonitorStore for PgRunStore {
                  FROM steps st \
                  JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
                  WHERE st.status = 'READY' \
-                   AND st.ready_at < clock_timestamp() - make_interval(secs => $1) \
+                   AND st.ready_at < now() - make_interval(secs => $1) \
                    AND NOT r.paused \
                    AND CASE WHEN st.kind = 'COMPENSATION' \
                             THEN NOT EXISTS (SELECT 1 FROM compensation_breakers b \
                                  WHERE b.tenant_id = st.tenant_id AND b.namespace_id = st.namespace_id \
-                                   AND b.activity = st.activity AND b.opened_until > clock_timestamp()) \
+                                   AND b.activity = st.activity AND b.opened_until > now()) \
                             ELSE (r.stop_reason IS NULL OR st.kind <> 'FORWARD') END \
                  GROUP BY st.tenant_id, st.namespace_id, coalesce(st.activity, '')",
                 true,
@@ -190,7 +191,7 @@ impl MonitorStore for PgRunStore {
                         extract(epoch FROM clock_timestamp() - min(updated_at))::float8 AS oldest \
                  FROM runs \
                  WHERE status = 'MANUAL_REVIEW' \
-                   AND updated_at < clock_timestamp() - make_interval(secs => $1) \
+                   AND updated_at < now() - make_interval(secs => $1) \
                  GROUP BY tenant_id, namespace_id",
                 true,
             ),
@@ -449,7 +450,7 @@ impl MonitorStore for PgRunStore {
         )
         .await?;
         let leases = sqlx::query(
-            "SELECT count(*) AS active, count(*) FILTER (WHERE lease_expires_at < clock_timestamp()) AS expired \
+            "SELECT count(*) AS active, count(*) FILTER (WHERE lease_expires_at < now()) AS expired \
              FROM steps WHERE status IN ('LEASED', 'RUNNING')",
         )
         .fetch_one(pool)
@@ -459,11 +460,33 @@ impl MonitorStore for PgRunStore {
             "SELECT (SELECT count(*) FROM inbox_events WHERE status = 'DEAD') AS events, \
                     (SELECT count(*) FROM webhook_deliveries WHERE status = 'DEAD') AS deliveries, \
                     (SELECT count(*) FROM connector_dead_letters) AS letters, \
-                    (SELECT count(*) FROM worker_sessions WHERE expires_at > clock_timestamp()) AS workers",
+                    (SELECT count(*) FROM worker_sessions WHERE expires_at > now()) AS workers",
         )
         .fetch_one(pool)
         .await
         .map_err(store_error)?;
+        let overdue = sqlx::query(
+            "SELECT \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(due_at)), 0)::float8 FROM steps \
+                 WHERE status = 'WAITING' AND waiting_kind = 'TIMER' AND due_at <= now()) AS timers, \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(due_at)), 0)::float8 FROM steps \
+                 WHERE status = 'WAITING' AND waiting_kind = 'EVENT' AND due_at <= now()) AS waits, \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(next_attempt_at)), 0)::float8 FROM steps \
+                 WHERE status = 'RETRY_WAIT' AND next_attempt_at <= now()) AS retries, \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(lease_expires_at)), 0)::float8 FROM steps \
+                 WHERE status IN ('LEASED', 'RUNNING') AND lease_expires_at <= now()) AS leases, \
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(deadline_at)), 0)::float8 FROM runs \
+                 WHERE finished_at IS NULL AND stop_reason IS NULL AND deadline_at <= now()) AS deadlines",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)?;
+        let late = |name: &str| -> Result<f64, StoreError> {
+            Ok(overdue
+                .try_get::<f64, _>(name)
+                .map_err(store_error)?
+                .max(0.0))
+        };
         let runs = sqlx::query(
             "SELECT status, count(*) AS n FROM runs WHERE finished_at IS NULL GROUP BY status",
         )
@@ -498,14 +521,65 @@ impl MonitorStore for PgRunStore {
             runs_by_status,
             compensating_runs,
             workers: to_u64(&dead, "workers")?,
+            overdue: sagat_application::operations::Overdue {
+                timers: late("timers")?,
+                wait_deadlines: late("waits")?,
+                retries: late("retries")?,
+                leases: late("leases")?,
+                deadlines: late("deadlines")?,
+            },
         })
+    }
+
+    async fn pool_lag(&self, pools: &[WorkerPool]) -> Result<Vec<PoolLag>, StoreError> {
+        if pools.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (names, activities): (Vec<&str>, Vec<&str>) = pools
+            .iter()
+            .flat_map(|p| {
+                p.activities
+                    .iter()
+                    .map(move |a| (p.name.as_str(), a.as_str()))
+            })
+            .unzip();
+        // One pass over the ready steps, grouped by the activity they wait for, then the activities
+        // are added up into the pools the operator named.
+        let rows = sqlx::query(
+            "WITH g AS ( \
+                 SELECT activity, count(*) AS n, min(ready_at) AS oldest FROM steps \
+                 WHERE status = 'READY' GROUP BY activity) \
+             SELECT m.pool, coalesce(sum(g.n), 0)::bigint AS n, \
+                    coalesce(extract(epoch FROM clock_timestamp() - min(g.oldest)), 0)::float8 AS oldest \
+               FROM unnest($1::text[], $2::text[]) AS m(pool, activity) \
+               LEFT JOIN g ON g.activity = m.activity \
+              GROUP BY m.pool",
+        )
+        .bind(&names)
+        .bind(&activities)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        let mut lags: Vec<PoolLag> = rows
+            .iter()
+            .map(|row| {
+                Ok(PoolLag {
+                    pool: col(row, "pool")?,
+                    ready: u64::try_from(col::<i64>(row, "n")?).unwrap_or(0),
+                    oldest_seconds: col::<f64>(row, "oldest")?.max(0.0),
+                })
+            })
+            .collect::<Result<_, StoreError>>()?;
+        // The operator's order, so that a report reads the way the configuration does.
+        lags.sort_by_key(|lag| pools.iter().position(|p| p.name == lag.pool));
+        Ok(lags)
     }
 
     async fn purge_alerts(&self, retention: Duration, limit: u32) -> Result<u64, StoreError> {
         let removed = sqlx::query(
             "DELETE FROM operational_alerts WHERE id IN ( \
                  SELECT id FROM operational_alerts \
-                 WHERE state = 'RESOLVED' AND resolved_at < clock_timestamp() - make_interval(secs => $1) \
+                 WHERE state = 'RESOLVED' AND resolved_at < now() - make_interval(secs => $1) \
                  LIMIT $2)",
         )
         .bind(secs(retention))
@@ -561,7 +635,7 @@ impl WorkerAdmin for PgRunStore {
                     EXISTS (SELECT 1 FROM worker_drains d WHERE d.tenant_id = s.tenant_id \
                         AND d.namespace_id = s.namespace_id AND d.subject = s.subject) AS draining \
              FROM worker_sessions s \
-             WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.expires_at > clock_timestamp() \
+             WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.expires_at > now() \
              ORDER BY s.created_at DESC, s.id LIMIT $3",
         )
         .bind(tenant.as_uuid())

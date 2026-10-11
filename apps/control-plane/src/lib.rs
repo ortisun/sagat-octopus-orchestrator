@@ -46,7 +46,7 @@ const DEFINITION_CACHE_ENTRIES: usize = 256;
 
 use config::{
     CeilingConfig, Config, ConfigError, DatabaseConfig, Environment, NamespaceSeed,
-    ProvisionConfig, SeedConfig, ServeConfig,
+    ProvisionConfig, SeedConfig, ServeConfig, WeightConfig,
 };
 
 /// A command failed. `exit_code` follows the convention: 2 for a problem the operator must fix in
@@ -341,6 +341,40 @@ pub async fn grant_quota_ceiling(config: &Config, request: &CeilingConfig) -> Re
         }
         Err(sagat_application::error::AppError::NotAllowed(reason)) => {
             Err(invalid("SAGAT_CEILING_VALUE", reason).into())
+        }
+        Err(error) => Err(RunError::Database(error.to_string())),
+    }
+}
+
+/// Sets the weight of a tenant in the scheduler's passes, or withdraws it, and audits it.
+///
+/// # Errors
+/// [`RunError::Config`] for an identifier that is not valid or a weight out of range;
+/// [`RunError::Refused`] when the tenant does not exist; [`RunError::Database`] otherwise.
+pub async fn set_scheduling_weight(
+    config: &Config,
+    request: &WeightConfig,
+) -> Result<(), RunError> {
+    let invalid = |name: &'static str, reason: &str| ConfigError::Invalid {
+        name,
+        reason: reason.to_owned(),
+    };
+    let tenant = request
+        .tenant_id
+        .parse::<TenantId>()
+        .map_err(|_| invalid("SAGAT_WEIGHT_TENANT_ID", "expected a tenant id (a UUID)"))?;
+    let pool = open_pool(&config.database, config.database.statement_timeout).await?;
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 1);
+    let service = QuotaService::new(PgRunStore::new(pool.clone(), cache), SystemClock);
+    let result = service.set_scheduling_weight(tenant, request.value).await;
+    pool.close().await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(sagat_application::error::AppError::NotFound) => {
+            Err(RunError::Refused("no tenant has that id"))
+        }
+        Err(sagat_application::error::AppError::NotAllowed(reason)) => {
+            Err(invalid("SAGAT_WEIGHT_VALUE", reason).into())
         }
         Err(error) => Err(RunError::Database(error.to_string())),
     }

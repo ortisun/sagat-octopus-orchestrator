@@ -8,7 +8,9 @@
 
 use std::time::Duration;
 
-use sagat_application::operations::{Bounds, MonitorStore, Reconciled, Sample, Thresholds};
+use sagat_application::operations::{
+    Bounds, MonitorStore, PoolLag, Reconciled, Sample, Thresholds, WorkerPool,
+};
 use sagat_domain::operations::AlertKind;
 
 /// Tunable limits of the monitor.
@@ -21,6 +23,8 @@ pub struct MonitorSettings {
     pub runbook_base: String,
     /// Resolved alerts are kept this long.
     pub retention: Duration,
+    /// The pools of workers whose queues are measured (`FR-010-004`); none by default.
+    pub pools: Vec<WorkerPool>,
 }
 
 impl Default for MonitorSettings {
@@ -30,6 +34,7 @@ impl Default for MonitorSettings {
             bounds: Bounds::default(),
             runbook_base: "docs/runbooks/alerts.md".to_owned(),
             retention: Duration::from_secs(30 * 24 * 3600),
+            pools: Vec::new(),
         }
     }
 }
@@ -61,6 +66,10 @@ const LIVE_STATUSES: [&str; 6] = [
 pub struct Monitor<S> {
     store: S,
     settings: MonitorSettings,
+    /// Whether this process set the gauges on its last round: when another process takes the lease
+    /// they are zeroed here, because a gauge keeps its last value for as long as the process lives
+    /// and two replicas would then export two answers to the same question.
+    exporting: std::sync::atomic::AtomicBool,
 }
 
 impl<S> std::fmt::Debug for Monitor<S> {
@@ -71,7 +80,11 @@ impl<S> std::fmt::Debug for Monitor<S> {
 
 impl<S: MonitorStore> Monitor<S> {
     pub const fn new(store: S, settings: MonitorSettings) -> Self {
-        Self { store, settings }
+        Self {
+            store,
+            settings,
+            exporting: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     /// One round: samples the queues, looks for every kind of condition and reconciles its alerts.
@@ -82,6 +95,24 @@ impl<S: MonitorStore> Monitor<S> {
             Ok(true) => {}
             Ok(false) => {
                 round.passive = true;
+                if self
+                    .exporting
+                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+                {
+                    gauges(&Sample::default());
+                    pool_gauges(
+                        &self
+                            .settings
+                            .pools
+                            .iter()
+                            .map(|p| PoolLag {
+                                pool: p.name.clone(),
+                                ready: 0,
+                                oldest_seconds: 0.0,
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
                 return round;
             }
             Err(error) => {
@@ -90,9 +121,19 @@ impl<S: MonitorStore> Monitor<S> {
                 return round;
             }
         }
+        self.exporting
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         match self.store.sample().await {
             Ok(sample) => gauges(&sample),
             Err(error) => tracing::warn!(%error, "could not sample the queues"),
+        }
+        if !self.settings.pools.is_empty() {
+            match self.store.pool_lag(&self.settings.pools).await {
+                Ok(lags) => pool_gauges(&lags),
+                Err(error) => {
+                    tracing::warn!(%error, "could not sample the queues of the worker pools")
+                }
+            }
         }
         for kind in AlertKind::ALL {
             let detection = match self
@@ -166,6 +207,16 @@ fn announce(changed: &Reconciled, runbook_base: &str) {
     }
 }
 
+/// The gauges of the worker pools: the only label is the name the operator gave the pool.
+#[allow(clippy::cast_precision_loss)] // gauges
+fn pool_gauges(lags: &[PoolLag]) {
+    for lag in lags {
+        metrics::gauge!("pool_ready_steps", "pool" => lag.pool.clone()).set(lag.ready as f64);
+        metrics::gauge!("pool_queue_lag_seconds", "pool" => lag.pool.clone())
+            .set(lag.oldest_seconds);
+    }
+}
+
 /// The gauges of a sample. No label is a tenant, a namespace, a run or an activity.
 #[allow(clippy::cast_precision_loss)] // gauges
 fn gauges(sample: &Sample) {
@@ -180,6 +231,15 @@ fn gauges(sample: &Sample) {
     metrics::gauge!("dead_items", "kind" => "connectors").set(sample.dead_letters as f64);
     metrics::gauge!("workers_registered").set(sample.workers as f64);
     metrics::gauge!("compensating_runs").set(sample.compensating_runs as f64);
+    // How late each pass of the scheduler is: what the engine's replicas scale on, and what an
+    // alert watches (a pass that is minutes behind with every shard owned needs more replicas; one
+    // with a shard unowned needs a replica back).
+    let late = &sample.overdue;
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "timers").set(late.timers);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "wait_deadlines").set(late.wait_deadlines);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "retries").set(late.retries);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "leases").set(late.leases);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "deadlines").set(late.deadlines);
     for status in LIVE_STATUSES {
         let n = sample
             .runs_by_status

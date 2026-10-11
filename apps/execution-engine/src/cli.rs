@@ -83,10 +83,14 @@ ENVIRONMENT (serve):
     SAGAT_SCHEDULER_INTERVAL_MS       pause between idle scheduler ticks [500]
     SAGAT_SCHEDULER_BATCH             candidates per pass per tick    [200]
     SAGAT_SCHEDULER_CONCURRENCY       candidates of one pass acted on at once (1-64) [8]
+    SAGAT_SCHEDULER_FAIRNESS          share each pass between tenants by weight; false takes the oldest
+                                      candidates only (a diagnostic, for measuring) [true]
     SAGAT_SHARD_LEASE_SECS            how long a replica's hold on its scheduler shards lasts
                                       without being renewed; a crashed replica's work is taken
                                       over this long after it stops (3-600) [15]
     SAGAT_REPLICA_ID                  names the replica in the shard leases (e.g. the pod name) [engine]
+    SAGAT_WORKER_POOLS                pools whose queue lag is measured: name=activity,activity;name=...
+                                      (gauges pool_queue_lag_seconds and pool_ready_steps, by pool)
     SAGAT_HOUSEKEEPING_INTERVAL_SECS  purge expired records every     [300]
     SAGAT_LIVENESS_GRACE_SECS         /livez fails when no scheduler tick finished for this long [30]
     SAGAT_NATS_URL                    JetStream URL; unset disables hint publishing (the outbox

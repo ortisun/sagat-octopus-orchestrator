@@ -511,6 +511,23 @@ fn the_shard_lease_is_bounded_and_the_replica_is_named_safely() {
     let defaults = parse(&[]).expect("config");
     assert_eq!(defaults.shards.ttl, Duration::from_secs(15));
     assert_eq!(defaults.scheduler.concurrency, 8);
+    assert!(
+        defaults.scheduler.fair,
+        "fairness is on unless it is turned off"
+    );
+    assert!(
+        !parse(&[("SAGAT_SCHEDULER_FAIRNESS", "false")])
+            .expect("config")
+            .scheduler
+            .fair
+    );
+    assert!(
+        parse(&[("SAGAT_SCHEDULER_FAIRNESS", "true")])
+            .expect("config")
+            .scheduler
+            .fair
+    );
+    assert!(parse(&[("SAGAT_SCHEDULER_FAIRNESS", "maybe")]).is_err());
     assert_eq!(defaults.replica, "engine");
     // Shorter and a pause loses the shards; longer and a crash leaves its work waiting for minutes.
     for bad in ["2", "601"] {
@@ -536,4 +553,56 @@ fn the_shard_lease_is_bounded_and_the_replica_is_named_safely() {
             other => panic!("{bad}: {other:?}"),
         }
     }
+}
+
+#[test]
+fn worker_pools_are_named_by_the_operator_and_bounded() {
+    assert!(
+        parse(&[])
+            .expect("config")
+            .monitor
+            .settings
+            .pools
+            .is_empty()
+    );
+    let config = parse(&[(
+        "SAGAT_WORKER_POOLS",
+        " gpu = act.render , act.upscale ; batch=act.export;",
+    )])
+    .expect("config");
+    let pools = config.monitor.settings.pools;
+    assert_eq!(pools.len(), 2);
+    assert_eq!(pools[0].name, "gpu");
+    assert_eq!(pools[0].activities, ["act.render", "act.upscale"]);
+    assert_eq!(pools[1].name, "batch");
+    for bad in [
+        "no-equals-sign",
+        "=act.a",
+        "UPPER=act.a",
+        "has space=act.a",
+        "empty=",
+        "empty=, ,",
+        "twice=act.a;twice=act.b",
+        "ünï=act.a",
+        "p=act\u{1}",
+    ] {
+        match parse(&[("SAGAT_WORKER_POOLS", bad)]).expect_err(bad) {
+            ConfigError::Invalid { name, .. } => assert_eq!(name, "SAGAT_WORKER_POOLS"),
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn too_many_pools_or_activities_are_refused() {
+    let many: String = (0..33).map(|n| format!("p{n}=act.a;")).collect();
+    let too_many: &'static str = Box::leak(many.into_boxed_str());
+    assert!(parse(&[("SAGAT_WORKER_POOLS", too_many)]).is_err());
+    let list: String = (0..513).map(|n| format!("act.{n},")).collect();
+    let spec: &'static str = Box::leak(format!("big={list}").into_boxed_str());
+    assert!(parse(&[("SAGAT_WORKER_POOLS", spec)]).is_err());
+    // Exactly at the limits is fine.
+    let ok: String = (0..32).map(|n| format!("p{n}=act.a;")).collect();
+    let ok: &'static str = Box::leak(ok.into_boxed_str());
+    assert!(parse(&[("SAGAT_WORKER_POOLS", ok)]).is_ok());
 }

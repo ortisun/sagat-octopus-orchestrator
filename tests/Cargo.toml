@@ -298,3 +298,23 @@ path = "e2e/developer-experience/main.rs"
 [[test]]
 name = "integration_scalability_ha"
 path = "integration/scalability-ha/main.rs"
+
+[[test]]
+name = "contract_scalability_ha"
+path = "contract/scalability-ha/main.rs"
+
+[[test]]
+name = "perf_scalability_ha"
+path = "performance/scalability-ha/main.rs"
+
+[[test]]
+name = "fault_failover"
+path = "fault/failover/main.rs"
+
+[[test]]
+name = "fault_scalability_ha"
+path = "fault/scalability-ha/main.rs"
+
+[[test]]
+name = "e2e_scalability_ha"
+path = "e2e/scalability-ha/main.rs"

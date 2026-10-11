@@ -18,8 +18,29 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
 pub struct TestNats {
-    _container: ContainerAsync<Nats>,
+    _server: Backend,
     pub addr: SocketAddr,
+}
+
+/// What runs the server: a container, or (when `SAGAT_TEST_NATS_BIN` names a `nats-server`) a child
+/// process of the test, on a port it chose and with a store of its own, killed with the test. The
+/// second is for a machine that cannot run containers; it is the same server and the same flags.
+enum Backend {
+    Container(#[allow(dead_code)] ContainerAsync<Nats>),
+    Process {
+        child: std::process::Child,
+        _store: std::path::PathBuf,
+    },
+}
+
+impl Drop for Backend {
+    fn drop(&mut self) {
+        if let Backend::Process { child, _store } = self {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(_store);
+        }
+    }
 }
 
 impl TestNats {
@@ -30,6 +51,9 @@ impl TestNats {
 
 /// Starts a NATS server with JetStream enabled.
 pub async fn start() -> TestNats {
+    if let Some(binary) = std::env::var_os("SAGAT_TEST_NATS_BIN") {
+        return start_process(&binary);
+    }
     let container = Nats::default()
         .with_cmd(&NatsServerCmd::default().with_jetstream())
         .start()
@@ -40,7 +64,49 @@ pub async fn start() -> TestNats {
         .await
         .expect("mapped NATS port");
     TestNats {
-        _container: container,
+        _server: Backend::Container(container),
+        addr: SocketAddr::from(([127, 0, 0, 1], port)),
+    }
+}
+
+/// `nats-server -js` on a free port, with its own store; returns when it accepts connections.
+fn start_process(binary: &std::ffi::OsStr) -> TestNats {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let store = std::env::temp_dir().join(format!("sagat-nats-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&store).expect("a store for NATS");
+    let mut child = Command::new(binary)
+        .args(["-js", "-a", "127.0.0.1", "-p", "-1", "-sd"])
+        .arg(&store)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start nats-server (SAGAT_TEST_NATS_BIN)");
+    // The server logs the port it chose, then "Server is ready" once JetStream is up.
+    let mut lines = BufReader::new(child.stderr.take().expect("stderr")).lines();
+    let (mut port, mut ready) = (None, false);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !ready && std::time::Instant::now() < deadline {
+        let Some(Ok(line)) = lines.next() else { break };
+        if let Some(rest) = line.split("Listening for client connections on ").nth(1) {
+            port = rest
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.trim().parse::<u16>().ok());
+        }
+        ready = line.contains("Server is ready");
+    }
+    let port = port
+        .filter(|_| ready)
+        .expect("nats-server did not become ready");
+    // Keep reading so the pipe never fills and blocks the server.
+    std::thread::spawn(move || for _ in lines {});
+    TestNats {
+        _server: Backend::Process {
+            child,
+            _store: store,
+        },
         addr: SocketAddr::from(([127, 0, 0, 1], port)),
     }
 }

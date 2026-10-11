@@ -15,6 +15,8 @@ pub enum Command {
     ResealSecrets,
     /// Grant a tenant a quota ceiling, or withdraw it, then exit. Values are explicit.
     QuotaCeiling,
+    /// Set the weight of a tenant in the scheduler's passes, or withdraw it, then exit.
+    SchedulingWeight,
     /// Print a new signing key for scripts (`SAGAT_SCRIPT_SIGNING_KEY`) and exit. Needs no database.
     ScriptKey,
     /// Probe the local API's liveness endpoint; for container health checks.
@@ -40,6 +42,7 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
         Some("provision-tenant") => Command::ProvisionTenant,
         Some("reseal-secrets") => Command::ResealSecrets,
         Some("quota-ceiling") => Command::QuotaCeiling,
+        Some("scheduling-weight") => Command::SchedulingWeight,
         Some("script-key") => Command::ScriptKey,
         Some("healthcheck") => Command::Healthcheck,
         Some("help" | "--help" | "-h") => Command::Help,
@@ -65,6 +68,7 @@ COMMANDS:
     provision-tenant  Create a tenant and its first admin (any environment; values are explicit)
     reseal-secrets  Re-seal stored secrets under the active key of SAGAT_SECRETS_KEYS (after a key rotation)
     quota-ceiling  Grant a tenant a quota ceiling (SAGAT_CEILING_TENANT_ID, _RESOURCE, _VALUE; a number or default)
+    scheduling-weight  Set a tenant's weight in the scheduler's passes, 1 to 16 (SAGAT_WEIGHT_TENANT_ID, SAGAT_WEIGHT_VALUE; a number or default)
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
@@ -108,6 +112,12 @@ ENVIRONMENT (serve):
     SAGAT_OIDC_REQUIRED_TYP           required JOSE typ; at+jwt and application/at+jwt are the
                                       same type, case-insensitive, whitespace trimmed [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
+    SAGAT_SECRETS_KEYS                key ring that seals secrets: id:base64,id2:base64; without it the
+                                      secret routes do not exist. The engine needs the same ring
+    SAGAT_API_ALLOW_PLAINTEXT_SECRETS  with a key ring, outside dev, say that TLS is terminated in
+                                      front of this API (it receives secret values) [false]
+    SAGAT_STUDIO_DIR                  directory of the built Studio, served under /studio/; unset or empty:
+                                      the Studio is not served (the image ships it in /srv/studio)
     SAGAT_SCRIPT_SIGNING_KEY          Ed25519 key (PKCS#8, base64) that signs artifacts; without it the
                                       script routes do not exist (make one with `script-key`)
     SAGAT_SCRIPT_CEILING              the most any script may be given, as
