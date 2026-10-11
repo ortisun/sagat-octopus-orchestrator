@@ -71,6 +71,16 @@ pub enum AuditAction {
     WorkerUndrained,
     /// An operator settled a step with an unknown outcome (or a compensation done elsewhere).
     SagaStepResolved,
+    /// An administrator set how many approvals a namespace asks for before something is published.
+    PublicationPolicyChanged,
+    /// Someone asked for a publication to be approved, and what each person decided about it.
+    PublicationRequested,
+    PublicationApproved,
+    PublicationRejected,
+    PublicationWithdrawn,
+    /// The pointer to the active version of a workflow moved without a publication: a rollback, or
+    /// the way forward again.
+    WorkflowActivated,
     /// A webhook endpoint was created, changed or deleted.
     EventEndpointCreated,
     EventEndpointChanged,
@@ -196,6 +206,12 @@ impl AuditAction {
             Self::SagaStepRetried => "saga.step_retried",
             Self::SagaStepSkipped => "saga.step_skipped",
             Self::SagaStepResolved => "saga.step_resolved",
+            Self::PublicationPolicyChanged => "publication.policy_changed",
+            Self::PublicationRequested => "publication.requested",
+            Self::PublicationApproved => "publication.approved",
+            Self::PublicationRejected => "publication.rejected",
+            Self::PublicationWithdrawn => "publication.withdrawn",
+            Self::WorkflowActivated => "workflow.activated",
             Self::EventEndpointCreated => "event.endpoint_created",
             Self::EventEndpointChanged => "event.endpoint_changed",
             Self::EventEndpointDeleted => "event.endpoint_deleted",
@@ -252,6 +268,8 @@ pub enum ResourceType {
     Script,
     /// A version of a script, as `script-id/number`.
     ScriptVersion,
+    /// A request to publish a workflow into a namespace that asks for approvals.
+    PublicationRequest,
 }
 
 impl ResourceType {
@@ -276,6 +294,7 @@ impl ResourceType {
             Self::Connector => "connector",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
+            Self::PublicationRequest => "publication_request",
         }
     }
 }

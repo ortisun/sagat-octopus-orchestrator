@@ -592,7 +592,7 @@ impl<S: AlertReader + WorkerAdmin + AuditStore, C: Clock> OperationsService<S, C
 }
 
 /// An operator's reason, trimmed, 8 to 2000 characters of plain text.
-fn justification(reason: &str) -> Result<&str, AppError> {
+pub(crate) fn justification(reason: &str) -> Result<&str, AppError> {
     let reason = reason.trim();
     let length = reason.chars().count();
     if !(crate::runs::MIN_JUSTIFICATION..=crate::runs::MAX_JUSTIFICATION).contains(&length)

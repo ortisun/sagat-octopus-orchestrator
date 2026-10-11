@@ -2,6 +2,7 @@
 
 use sagat_domain::identity::{IdentityError, Permission};
 use sagat_domain::scripts::ScriptError;
+use sagat_domain::versioning::{RequestId, VersioningError};
 
 use crate::definitions::IrError;
 
@@ -23,6 +24,31 @@ pub enum ConflictKind {
     ConnectorSlug,
     /// A script with that name already exists in the namespace.
     ScriptName,
+    /// A request to publish was published without the approvals it needs.
+    RequestNotApproved,
+}
+
+/// Why a publication, an approval or a change of the active version was refused (feature 011).
+/// Each is a state of the platform the caller can act on, not a malformed request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The namespace asks for approvals: the draft goes through a request, not a direct publish.
+    ApprovalRequired { required: u8 },
+    /// A rule of the request's life (the author deciding, a second decision, a final request).
+    Request(VersioningError),
+    /// The change breaks what callers and emitters rely on, and the caller did not say they accept it.
+    BreakingChange {
+        /// How many findings the comparison made.
+        findings: usize,
+        /// The codes of the first few, so the caller knows what they would be accepting.
+        codes: Vec<&'static str>,
+    },
+    /// The version that was active when the caller looked is not any more.
+    ActiveChanged { current: Option<u32> },
+    /// A request is open for the workflow already; there is one at a time.
+    RequestOpen { request: RequestId },
+    /// The target of a promotion has changes in its draft that were not published.
+    DraftHasChanges,
 }
 
 /// Failure reported by a storage adapter. `detail` is for logs only and must never be returned to
@@ -99,6 +125,9 @@ pub enum AppError {
     /// A limit was reached (for example the size of a child-run tree); `what` names it.
     #[error("limit reached: {0}")]
     QuotaExceeded(&'static str),
+    /// Publishing, approving or activating was refused because of where the platform stands.
+    #[error("refused: {0:?}")]
+    Versioning(Refusal),
     /// A dependency is temporarily unavailable; the caller may retry.
     #[error("service temporarily unavailable")]
     Unavailable,

@@ -20,6 +20,10 @@ uuid_id!(
     /// Identifier of a [`PublicationRequest`].
     RequestId
 );
+uuid_id!(
+    /// Identifier of one change of the active pointer of a workflow.
+    ActivationId
+);
 
 /// The most approvals a namespace can ask for: a policy is a few people, not a committee.
 pub const MAX_REQUIRED_APPROVALS: u8 = 3;

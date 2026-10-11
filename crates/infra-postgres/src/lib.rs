@@ -26,6 +26,7 @@ mod scripts;
 mod secrets;
 mod signals;
 mod telemetry;
+mod versioning;
 mod workers;
 
 pub use definitions::PgDefinitionStore;
