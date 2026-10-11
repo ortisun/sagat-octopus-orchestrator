@@ -110,7 +110,13 @@ async fn a_version_records_the_artifacts_it_pins_and_an_artifact_in_use_cannot_b
         .await
         .expect_err("in use");
     let (code, constraint) = db_error(refused);
-    assert_eq!(code, "23001", "restrict_violation");
+    // What PostgreSQL calls a refusal by `ON DELETE RESTRICT` depends on its version: 18 reports
+    // `restrict_violation` (23001), 16 reports `foreign_key_violation` (23503). That the
+    // constraint is the one named is what is proved.
+    assert!(
+        code == "23001" || code == "23503",
+        "a restrict or foreign key violation, got {code}"
+    );
     assert_eq!(
         constraint.as_deref(),
         Some("workflow_version_scripts_artifact_fk")
