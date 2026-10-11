@@ -252,6 +252,12 @@ sync_out=$(failover synchronous "FIRST 1 (standby1)" 10)
 async_out=$(failover asynchronous "" 20)
 SUMMARY+="$(cat "$WORK/failover-rows")"$'\n'
 add ""
+add "What these rows say, and what they do not:"
+add ""
+add "- The synchronous standby loses nothing, as it must: the primary does not acknowledge a commit before the standby has it, so what the platform acknowledged is there (RPO zero for acknowledged work). The drill fails if that ever stops being true."
+add "- The asynchronous standby lost nothing *here*, on a loopback where it is never behind. That does not show that an asynchronous standby is safe: its RPO is the replication lag at the moment of the loss, which a loopback does not have. Measure the lag on your network (\`pg_stat_replication\`) and treat the loss of the last seconds of acknowledged runs as possible."
+add "- The time to promote is the database's (the kill until the promoted standby answers). The platform's own recovery after it is the keeper's: another replica takes the dead replica's shards when its lease ends (15 s by default) and the passes are idempotent (docs/runbooks/scaling.md); the engine reconnects by itself."
+add ""
 case "$sync_out" in *"lost=0"*) ;; *) echo "A SYNCHRONOUS STANDBY LOST ACKNOWLEDGED RUNS: $sync_out" >&2; echo "$SUMMARY" >> "$REPORT"; exit 1;; esac
 case "$sync_out" in *"failed=0"*) ;; *) echo "THE PROMOTED RUNS DO NOT REPLAY: $sync_out" >&2; exit 1;; esac
 
