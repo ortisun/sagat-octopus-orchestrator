@@ -212,6 +212,39 @@ async fn a_script_is_tried_and_published_from_a_file_and_the_digest_pins_it_in_a
 }
 
 #[tokio::test]
+async fn an_existing_script_after_the_first_page_is_updated_instead_of_created_again() {
+    let lab = lab_on(Options::default(), Scripted(Mode::Echoes), |_| {}).await;
+    let serving = Serving::start(&lab);
+    for number in 0..=200 {
+        lab.script(
+            &format!("page-{number:03}"),
+            "typescript",
+            "export default () => 'old';\n",
+        )
+        .await;
+    }
+
+    let dir = Dir::new();
+    dir.write("page-200.ts", "export default () => 'new';\n");
+    script_cli(&lab, &dir, &["script", "test", "page-200.ts"])
+        .await
+        .expect(0)
+        .mentions("replaced the source of script page-200")
+        .omits("created script");
+
+    let (status, page) = lab
+        .call(
+            reqwest::Method::GET,
+            &format!("/namespaces/{}/scripts?after=page-199&limit=2", lab.ns),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["items"][0]["name"], "page-200");
+    serving.end().await;
+}
+
+#[tokio::test]
 async fn a_script_that_runs_out_of_time_and_a_source_that_does_not_build_say_what_to_do() {
     let lab = lab_on(Options::default(), Scripted(Mode::Overruns), |_| {}).await;
     let serving = Serving::start(&lab);

@@ -63,7 +63,7 @@ Enable safe adoption by product, backend and operations teams without manually c
 
 ## Functional Requirements
 
-- **FR-012-001**: The system MUST provide the CLI `df workflow validate|publish|run|inspect|cancel`, `df script test|publish`, `df worker dev`.
+- **FR-012-001**: The system MUST provide the CLI `sagat workflow validate|publish|run|inspect|cancel`, `sagat script test|publish`, `sagat worker dev`.
 - **FR-012-002**: The system MUST create TS, Go, Python, C# and Java quickstarts and a saga business example.
 - **FR-012-003**: The system MUST offer docker-compose with services and reproducible fixtures, with an optional local emulator consistent with the real semantics.
 - **FR-012-004**: The system MUST provide templates for workflows, event trigger, cron, approval, compensation and inline script.

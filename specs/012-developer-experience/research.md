@@ -153,17 +153,18 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
 - **G216 — No prebuilt `sagat`, no published SDK, no hosted documentation.** The tool is installed with
   `cargo install --path apps/cli --locked` (a Rust toolchain), the SDKs are used from the checkout, and the pages are files in the
   repository (`SAGAT_DOCS_URL` turns the `docs:` line of an error into a link when somebody hosts them).
-- **G217 — The compose stack was not run on the machine where it was written.** The container engine there could not create
+- **G217 — Closed by CI; the compose stack was not run on the machine where it was written.** The container engine there could not create
   containers (its metadata store is read-only). What was done instead: `docker compose config` on the file; the Studio stage
   of the Dockerfile replayed in a scratch directory; and the real binaries (`dev-idp`, `control-plane`, `execution-engine`,
   `sagat`) started as processes with the same environment as compose, against a PostgreSQL: migrate, the seed twice, a token,
   `doctor` (all nine checks ok, the Studio included), publish, the Go example, `worker dev`. **The Dockerfile's new stages, the
-  `dev-idp` service and the volume ownership of `/data` were then proven by the `local-environment` job of CI on PR #12 (passed, 10 min:
-  the images built, the stack up, a token from the provider accepted by the API, the namespace, the Studio, the Host refusal, and
-  `doctor`, publish and a run with the CLI).**
-- **G218 — Some tests run only in CI.** The five-language examples and the saga (five toolchains), and the script test with the real
-  container engine, are `#[ignore]`; the `sdks` job runs them (**it did, on PR #12, and passed in 20 min, the real-engine script test included**). Locally the five languages and the saga were run (Node 26,
-  Python 3.14, .NET 10, JDK 23; Go 1.24.2 with the 1.25.14 toolchain it fetches); the real-engine script test was not.
+  `dev-idp` service and the volume ownership of `/data` were proven by the `local-environment` job in CI run
+  [38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785), including the CLI → TypeScript SDK → Studio browser journey.**
+- **G218 — Closed by CI; some tests run only there.** The five-language examples and the saga (five toolchains), and the script test with the real
+  container engine, are `#[ignore]`; the `sdks` job runs them. Locally the five languages and the saga were run (Node 26,
+  Python 3.14, .NET 10, JDK 23; Go 1.24.2 with the 1.25.14 toolchain it fetches). CI run
+  [38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785) passed all of them,
+  including the real-engine script sandbox.
 - **G219 — The SDKs ship no fake context** for unit testing an activity. The quickstarts say to keep the effect behind an interface
   and to use `worker dev` or the example as the harness.
 - **G220 — The development provider has no browser flow.** The Studio takes a pasted token. A token lasts at most an hour, and a
@@ -208,8 +209,4 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
   closed) while `docker compose up -d` succeeds.
 - **G237 — The Studio's autosave unit tests are timing-sensitive.** Three of them failed once while the whole workspace was being
   tested at the same time and passed on a quiet machine (feature 007's, unchanged here).
-- **G238 — The tooling sends no telemetry of its own.** There is no metric of onboarding (how many first days, how long, where they
-  stopped), no span from the tool, and no log it keeps: `FR-012-006` is met by diagnostics (`doctor`, the errors page) and by a
-  benchmark, not by instrumentation. The calls the tool makes are request spans of the platform like any other, and a run it starts
-  has a trace id it shows; what a person did, and where they got stuck, is not recorded anywhere. Whether to measure it at all is a
-  product decision (it would be a tool that phones home).
+- **G238 — Closed for opt-in command instrumentation, not a newcomer study.** The CLI now propagates a W3C trace context through REST and gRPC even when exporting is disabled. `OTEL_EXPORTER_OTLP_ENDPOINT` opts into OTLP/HTTP JSON command spans, completion logs and duration gauge points; a trace-specific endpoint exports spans only. `SAGAT_ONBOARDING_TELEMETRY_FILE` optionally records local completion logs and duration points. Command, stage and outcome are closed labels; token, payload, file path, endpoint, namespace ID and tenant ID are excluded. Tenant context is only a bounded classification, not verified identity. `apps/cli/tests/telemetry.rs` captures the wire signals and checks redaction, opt-in, correlation and failure flushing. This does not identify people or measure their reading time; G215 stays open.

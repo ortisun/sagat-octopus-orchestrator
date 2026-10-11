@@ -123,6 +123,29 @@ pub struct SpanData {
     pub status: SpanStatus,
 }
 
+/// One structured log record correlated with a span.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogData {
+    pub trace_id: TraceId,
+    pub span_id: SpanId,
+    pub unix_nano: u64,
+    pub event_name: String,
+    pub body: String,
+    pub error: bool,
+    pub attributes: Vec<(String, AttrValue)>,
+}
+
+/// One instantaneous numeric measurement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GaugeData {
+    pub name: String,
+    pub description: String,
+    pub unit: String,
+    pub unix_nano: u64,
+    pub value: f64,
+    pub attributes: Vec<(String, AttrValue)>,
+}
+
 /// Most attributes written on a span; the rest are cut.
 pub const MAX_ATTRIBUTES: usize = 48;
 /// Most events and links written on a span.
@@ -215,8 +238,16 @@ fn encode_span(span: &SpanData) -> Value {
 pub struct OtlpConfig {
     /// The full URL spans are posted to (`.../v1/traces`).
     pub endpoint: String,
+    /// The full URL logs are posted to when the common OTLP endpoint was configured.
+    pub logs_endpoint: Option<String>,
+    /// The full URL metrics are posted to when the common OTLP endpoint was configured.
+    pub metrics_endpoint: Option<String>,
     /// Headers sent with every request, such as an API key. Never logged.
     pub headers: Vec<(String, String)>,
+    /// Headers sent only to the logs endpoint. Never logged.
+    pub logs_headers: Vec<(String, String)>,
+    /// Headers sent only to the metrics endpoint. Never logged.
+    pub metrics_headers: Vec<(String, String)>,
     pub service_name: String,
     pub service_version: String,
     /// The share of traces kept, decided from the trace id (see [`keeps`]).
@@ -239,7 +270,11 @@ impl OtlpConfig {
     pub fn new(endpoint: impl Into<String>, service_name: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            logs_endpoint: None,
+            metrics_endpoint: None,
             headers: Vec::new(),
+            logs_headers: Vec::new(),
+            metrics_headers: Vec::new(),
             service_name: service_name.into(),
             service_version: env!("CARGO_PKG_VERSION").to_owned(),
             sample_ratio: 1.0,
@@ -256,7 +291,23 @@ impl fmt::Debug for OtlpConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OtlpConfig")
             .field("endpoint", &crate::redact::scrub(&self.endpoint))
+            .field(
+                "logs_endpoint",
+                &self.logs_endpoint.as_deref().map(crate::redact::scrub),
+            )
+            .field(
+                "metrics_endpoint",
+                &self.metrics_endpoint.as_deref().map(crate::redact::scrub),
+            )
             .field("headers", &format_args!("{} (hidden)", self.headers.len()))
+            .field(
+                "logs_headers",
+                &format_args!("{} (hidden)", self.logs_headers.len()),
+            )
+            .field(
+                "metrics_headers",
+                &format_args!("{} (hidden)", self.metrics_headers.len()),
+            )
             .field("service_name", &self.service_name)
             .field("sample_ratio", &self.sample_ratio)
             .field("queue_capacity", &self.queue_capacity)
@@ -353,6 +404,65 @@ impl OtlpClient {
         serde_json::to_vec(&body).unwrap_or_default()
     }
 
+    /// The OTLP/HTTP JSON request body for one structured log record.
+    #[must_use]
+    pub fn encode_log(&self, log: &LogData) -> Vec<u8> {
+        let severity = if log.error {
+            (17, "ERROR")
+        } else {
+            (9, "INFO")
+        };
+        let body = json!({
+            "resourceLogs": [{
+                "resource": *self.resource,
+                "scopeLogs": [{
+                    "scope": { "name": "sagat-telemetry", "version": env!("CARGO_PKG_VERSION") },
+                    "logRecords": [{
+                        "timeUnixNano": log.unix_nano.to_string(),
+                        "observedTimeUnixNano": log.unix_nano.to_string(),
+                        "severityNumber": severity.0,
+                        "severityText": severity.1,
+                        "body": { "stringValue": scrub(&log.body) },
+                        "attributes": attributes(&log.attributes),
+                        "traceId": log.trace_id.to_string(),
+                        "spanId": log.span_id.to_string(),
+                        "eventName": scrub(&log.event_name),
+                    }]
+                }]
+            }]
+        });
+        serde_json::to_vec(&body).unwrap_or_default()
+    }
+
+    /// The OTLP/HTTP JSON request body for one gauge point.
+    #[must_use]
+    pub fn encode_gauge(&self, gauge: &GaugeData) -> Vec<u8> {
+        let value = if gauge.value.is_finite() {
+            gauge.value
+        } else {
+            0.0
+        };
+        let body = json!({
+            "resourceMetrics": [{
+                "resource": *self.resource,
+                "scopeMetrics": [{
+                    "scope": { "name": "sagat-telemetry", "version": env!("CARGO_PKG_VERSION") },
+                    "metrics": [{
+                        "name": scrub(&gauge.name),
+                        "description": scrub(&gauge.description),
+                        "unit": scrub(&gauge.unit),
+                        "gauge": { "dataPoints": [{
+                            "attributes": attributes(&gauge.attributes),
+                            "timeUnixNano": gauge.unix_nano.to_string(),
+                            "asDouble": value,
+                        }]}
+                    }]
+                }]
+            }]
+        });
+        serde_json::to_vec(&body).unwrap_or_default()
+    }
+
     /// Sends `spans`, trying again while the failure is one that may pass.
     ///
     /// # Errors
@@ -361,7 +471,48 @@ impl OtlpClient {
         if spans.is_empty() {
             return Ok(());
         }
-        let body = self.encode(spans);
+        self.export_body(
+            &self.config.endpoint,
+            &self.config.headers,
+            self.encode(spans),
+        )
+        .await
+    }
+
+    /// Sends one log when a common OTLP endpoint configured the logs signal.
+    ///
+    /// # Errors
+    /// [`ExportError`] once the record is refused or the retries are used up.
+    pub async fn export_log(&self, log: &LogData) -> Result<(), ExportError> {
+        let Some(endpoint) = &self.config.logs_endpoint else {
+            return Ok(());
+        };
+        self.export_body(endpoint, &self.config.logs_headers, self.encode_log(log))
+            .await
+    }
+
+    /// Sends one gauge point when a common OTLP endpoint configured the metrics signal.
+    ///
+    /// # Errors
+    /// [`ExportError`] once the point is refused or the retries are used up.
+    pub async fn export_gauge(&self, gauge: &GaugeData) -> Result<(), ExportError> {
+        let Some(endpoint) = &self.config.metrics_endpoint else {
+            return Ok(());
+        };
+        self.export_body(
+            endpoint,
+            &self.config.metrics_headers,
+            self.encode_gauge(gauge),
+        )
+        .await
+    }
+
+    async fn export_body(
+        &self,
+        endpoint: &str,
+        headers: &[(String, String)],
+        body: Vec<u8>,
+    ) -> Result<(), ExportError> {
         let mut delay = BACKOFF_START;
         let mut last = ExportError::Unavailable("not tried".to_owned());
         for attempt in 0..=self.config.retries {
@@ -371,10 +522,10 @@ impl OtlpClient {
             }
             let mut request = self
                 .http
-                .post(&self.config.endpoint)
+                .post(endpoint)
                 .header("content-type", "application/json")
                 .body(body.clone());
-            for (name, value) in &self.config.headers {
+            for (name, value) in headers {
                 request = request.header(name, value);
             }
             match request.send().await {
@@ -724,6 +875,23 @@ fn invalid(name: &'static str, reason: impl Into<String>) -> OtlpConfigError {
     }
 }
 
+fn parse_headers(
+    name: &'static str,
+    raw: Option<String>,
+) -> Result<Vec<(String, String)>, OtlpConfigError> {
+    let mut headers = Vec::new();
+    if let Some(raw) = raw {
+        for pair in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (key, value) = pair
+                .split_once('=')
+                .filter(|(key, _)| !key.trim().is_empty())
+                .ok_or_else(|| invalid(name, "expected name=value pairs separated by commas"))?;
+            headers.push((key.trim().to_owned(), value.trim().to_owned()));
+        }
+    }
+    Ok(headers)
+}
+
 impl OtlpConfig {
     /// The exporter the environment asks for, with the standard `OTEL_*` variables: none when no
     /// endpoint is set (or `OTEL_SDK_DISABLED=true`), which is the default.
@@ -746,9 +914,10 @@ impl OtlpConfig {
         if var("OTEL_SDK_DISABLED").is_some_and(|v| v.eq_ignore_ascii_case("true")) {
             return Ok(None);
         }
+        let common_endpoint = var("OTEL_EXPORTER_OTLP_ENDPOINT");
         let (name, endpoint) = if let Some(full) = var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
             ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", full)
-        } else if let Some(base) = var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        } else if let Some(base) = &common_endpoint {
             (
                 "OTEL_EXPORTER_OTLP_ENDPOINT",
                 format!("{}/v1/traces", base.trim_end_matches('/')),
@@ -784,24 +953,24 @@ impl OtlpConfig {
         }
         let service = var("OTEL_SERVICE_NAME").unwrap_or_else(|| default_service.to_owned());
         let mut config = Self::new(endpoint, service);
-        if let Some(headers) =
-            var("OTEL_EXPORTER_OTLP_TRACES_HEADERS").or_else(|| var("OTEL_EXPORTER_OTLP_HEADERS"))
-        {
-            for pair in headers.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-                let (key, value) = pair
-                    .split_once('=')
-                    .filter(|(k, _)| !k.trim().is_empty())
-                    .ok_or_else(|| {
-                        invalid(
-                            "OTEL_EXPORTER_OTLP_HEADERS",
-                            "expected name=value pairs separated by commas",
-                        )
-                    })?;
-                config
-                    .headers
-                    .push((key.trim().to_owned(), value.trim().to_owned()));
-            }
+        if let Some(base) = common_endpoint {
+            let base = base.trim_end_matches('/');
+            config.logs_endpoint = Some(format!("{base}/v1/logs"));
+            config.metrics_endpoint = Some(format!("{base}/v1/metrics"));
         }
+        let common_headers = var("OTEL_EXPORTER_OTLP_HEADERS");
+        config.headers = parse_headers(
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            var("OTEL_EXPORTER_OTLP_TRACES_HEADERS").or_else(|| common_headers.clone()),
+        )?;
+        config.logs_headers = parse_headers(
+            "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+            var("OTEL_EXPORTER_OTLP_LOGS_HEADERS").or_else(|| common_headers.clone()),
+        )?;
+        config.metrics_headers = parse_headers(
+            "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+            var("OTEL_EXPORTER_OTLP_METRICS_HEADERS").or(common_headers),
+        )?;
         let ratio_arg = var("OTEL_TRACES_SAMPLER_ARG");
         config.sample_ratio = match var("OTEL_TRACES_SAMPLER").as_deref() {
             None | Some("always_on" | "parentbased_always_on") => 1.0,

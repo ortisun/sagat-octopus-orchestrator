@@ -10,6 +10,7 @@ mod support;
 mod dev_environment;
 mod diagnostics;
 mod doctor;
+mod onboarding_browser;
 mod saga;
 mod scripts;
 mod stories;

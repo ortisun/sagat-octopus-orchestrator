@@ -9,7 +9,7 @@
 - [x] Versioning, migration and compatibility with live runs are defined.
 - [x] The journal and outbox preserve state after a crash, if applicable.
 - [x] API/OpenAPI, Proto and AsyncAPI were reviewed for impacts.
-- [x] SC-012-### criteria have been validated with metrics or automated scenarios.
+- [ ] SC-012-### criteria have been validated with metrics or automated scenarios. — SC-012-001 still requires a newcomer study (G215).
 - [x] The roadmap, ADRs and traceability match the design.
 - [x] Pending risks were recorded before merge.
 
