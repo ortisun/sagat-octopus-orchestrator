@@ -117,3 +117,5 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-012-###` and criteria `SC-012-###` must be mapped to tasks and tests in `tasks.md` before each implementation starts.
+
+Implementation status (2026-10-11): foundation audit and diagnostic fixture evidence are in `research.md`. The existing CLI uses `apps/cli` and binary `sagat`; the `df` name in FR-012-001 remains an explicit unresolved contract issue. No story or success criterion is closed by the foundation unit tests.

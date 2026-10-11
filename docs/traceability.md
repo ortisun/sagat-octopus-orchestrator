@@ -276,3 +276,11 @@ the fix and passed afterwards. It asserts one version, one activation, a final `
 version on replay and refusal of a different key. The REST conformance test checks `created=false`, the same
 version identifier, and continued tenant/permission enforcement. Contract, generated Studio types, spec,
 data model and GitOps runbook describe this behavior.
+
+### 012 developer experience — foundation (2026-10-11)
+
+T012-001 and T012-003: requirement/gap audit and ownership documented in
+`specs/012-developer-experience/{research,data-model}.md`. FR-012-001 and
+SC-012-004 have an initial diagnostic corpus, executed by
+`apps/cli/tests/contract_fixtures.rs`; CLI package: 47 tests pass. This is local
+validation only. T012-002, remote contracts, SDK journeys and all SCs remain open.

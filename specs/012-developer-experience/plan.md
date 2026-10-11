@@ -36,7 +36,7 @@ These checks indicate conformance **of the design**, not approval of the impleme
 ## Project Structure
 
 ```text
-tools/cli/src/main.rs
+apps/cli/src/main.rs
 examples/payment-saga/
 examples/hello-world/
 docs/quickstarts/
@@ -81,3 +81,7 @@ tests/e2e/developer-experience/
 ## Delivery Gate
 
 A new team member executes their first runs in TS and C# following only the documentation; CLI tests cover invalid workflows.
+
+## Existing implementation dependency
+
+Reuse the CLI and publication API from completed feature 011 (ADR-0018). No separate persistence or emulator implementation is introduced.

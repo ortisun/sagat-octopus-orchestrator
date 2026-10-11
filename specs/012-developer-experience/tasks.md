@@ -4,12 +4,12 @@
 **Format:** `[ID] [P?] [US?] Description with exact paths`. Run each phase's gates sequentially.
 
 ## Phase 1: Setup / contracts
-- [ ] T012-001 Check FR-012-001..FR-012-006, SCs and ADRs; record gaps in `specs/012-developer-experience/research.md`.
+- [x] T012-001 Check FR-012-001..FR-012-006, SCs and ADRs; record gaps in `specs/012-developer-experience/research.md`.
 - [ ] T012-002 [P] Define fixtures and contract validation in `tests/contract/developer-experience/fixtures/`.
-- [ ] T012-003 [P] Document types, transitions and invariants in `specs/012-developer-experience/data-model.md`.
+- [x] T012-003 [P] Document types, transitions and invariants in `specs/012-developer-experience/data-model.md`.
 
 ## Phase 2: Foundation
-- [ ] T012-004 Create the necessary domain contracts/interfaces in `tools/cli/src/main.rs` and invariant tests.
+- [ ] T012-004 Create the necessary domain contracts/interfaces in `apps/cli/src/main.rs` and invariant tests.
 - [ ] T012-005 Implement ports/use cases in the appropriate module based on `specs/012-developer-experience/plan.md`.
 - [ ] T012-006 Write additive migrations and rollback/forward tests in `crates/infra-postgres/migrations/`.
 - [ ] T012-007 Create PostgreSQL integration tests and tenant isolation tests in `tests/integration/developer-experience/`.
@@ -17,7 +17,7 @@
 ## Phase 3: US01 — Start first workflow quickly (P1)
 **Independent test:** Given a developer follows the quickstart; When they run compose + CLI + SDK; Then a two-step workflow executes and is visible in Studio.
 - [ ] T012-008 [P] [US01] Write Given/When/Then test for starting the first workflow quickly in `tests/e2e/developer-experience/us01.rs`.
-- [ ] T012-009 [US01] Implement domain path and error handling for starting the first workflow quickly in `tools/cli/src/main.rs`.
+- [ ] T012-009 [US01] Implement domain path and error handling for starting the first workflow quickly in `apps/cli/src/main.rs`.
 - [ ] T012-010 [US01] Integrate adapters and persistence for scenario US01 in `crates/application/` and `crates/infra-postgres/`.
 - [ ] T012-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to scenario US01 in `crates/telemetry/`.
 - [ ] T012-012 [US01] Run and document duplicate, timeout, worker failure and tenant boundary tests for US01 in `tests/fault/developer-experience/`.
@@ -48,9 +48,9 @@
 
 ## Phase: Engineering design details (story-linked hardening)
 
-- [ ] T012-028 [US01] Create Rust CLI `df workflow validate|publish|run|inspect` in `tools/cli/src/`.
+- [ ] T012-028 [US01] Create Rust CLI `df workflow validate|publish|run|inspect` in `apps/cli/src/`.
 - [ ] T012-029 [US01] Write TS/Go/Python/C#/Java quickstarts with mocks and test harness in `docs/quickstarts/`.
-- [ ] T012-030 [US01] Implement self-check of environment, broker and protocol version in `tools/cli/src/commands/doctor.rs`.
+- [ ] T012-030 [US01] Implement self-check of environment, broker and protocol version in `apps/cli/src/commands/doctor.rs`.
 
 ## Final Phase: Hardening / rollout
 - [ ] T012-031 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/developer-experience/`.
@@ -69,3 +69,5 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+Foundation evidence (2026-10-11): see `research.md` and `data-model.md`. T012-002 has an initial diagnostic corpus at `tests/contract/developer-experience/fixtures/diagnostics.json`, executed by `apps/cli/tests/contract_fixtures.rs`; remains open for remote and SDK contracts. Story and release gates remain open.

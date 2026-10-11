@@ -1,27 +1,37 @@
-# Data Model: CLI, quickstarts, local testing and documentation
+# Data model: developer experience
 
-## Context
+## Ownership and boundaries (T012-003)
 
-Enable safe adoption by product, backend and operations teams without manually configuring complex infrastructure.
+This feature introduces no durable business entity. Workflow versions, runs,
+journal events, timers and outbox records remain owned by their existing domains.
+The CLI uses public REST/gRPC contracts and the platform IR codec; it never writes
+PostgreSQL directly and never implements a local reducer or compensation scheduler.
 
-Data ownership follows the bounded contexts of `docs/architecture/overview.md`, with the reference physical schema in `specs/001-platform-foundation/data-model.md` and illustrative SQL in `contracts/schema.sql`.
+| Type / artifact | Owner | Invariant |
+|---|---|---|
+| `Env`, invocation and common options | `apps/cli/src/{lib,args}.rs` | Token comes from the environment, never a command argument. Namespace does not replace server tenant authorization. |
+| Workflow document | canonical 001 schema / shared IR codec | The same validation semantics apply locally and on the server. |
+| Diagnostic | `apps/cli/src/diagnostics.rs` | Stable platform code, location and remediation; docs links use the shared catalog. Unknown remote codes must not invent semantics. |
+| Template and mock answers | `apps/cli/src/{new,mocks}.rs` | Local fixtures, not durable state or production credentials. Mocks still run through the real worker protocol. |
+| Version response | canonical OpenAPI `/v1/version` | Compatibility comes from the server protocol range, not a guessed release match. |
 
-## Entities and observable state
+## Observable transitions
 
-- **Definition/Version/Artifact:** immutable after publication; tenant and namespace required.
-- **Run/Step/Attempt:** stable identifiers, version, status, timestamps, deadlines, parent/correlation.
-- **JournalEvent:** append-only seq per Run, event_type, payload_ref, causation/correlation and actor.
-- **Inbox/Outbox:** uniqueness for dedupe and delivery; next_attempt_at; last_error without PII.
-- **Lease/Subscription/Timer:** fencing generation, validity, deadline and transition status.
-- **SagaEntry/Compensation:** state, dependency order, idempotency key, reason and outcome.
+Commands parse configuration, validate input, call an existing service where needed,
+and render its result. Only that service commits state, scheduling and outbox atomically.
+A client timeout does not prove cancellation or that a remote mutation failed; inspect
+server state and reuse supported idempotency keys before retrying external effects.
+Published versions remain immutable and compensation/reconciliation follows 003.
 
-## Invariants
+Exit statuses already exported by `sagat_cli`: 0 done, 1 failed, 2 usage,
+3 pending approval, 4 breaking change refused, 5 differences, 6 wait timeout.
+A successful local validation does not establish permissions, available secrets,
+script build completion, publication or workflow completion.
 
-- Every tenant-scoped record validates the security context.
-- No in-place update of a published version.
-- Every operational state change records a sequenced event and information for reconstruction.
-- Large payloads go to the blob store with digest and non-sensitive references.
+## Security, telemetry and persistence
 
-## Migrations
-
-Additive migrations first; expand/contract for existing schemas; `CONCURRENTLY` indexes where applicable on large databases; idempotent and measured backfill. See the feature plan and ADRs.
+Never persist bearer tokens, payloads or secrets in diagnostics. Server correlation,
+typed errors, audit records and OTel remain the source of operational evidence.
+Cross-tenant and redaction integration tests are still required before story closure.
+No migration is introduced by this foundation; any later storage need requires a
+specific ownership decision and additive migration tests.
