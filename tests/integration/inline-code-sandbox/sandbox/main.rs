@@ -3,6 +3,7 @@
 //! (pulled on first use); there is no way to prove an isolation property without a real container.
 #![allow(clippy::expect_used, clippy::panic)] // helpers (not `#[test]` fns) fail the test by panicking
 
+mod csharp;
 mod isolation;
 mod lifecycle;
 

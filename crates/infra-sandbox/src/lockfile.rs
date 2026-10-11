@@ -1,10 +1,84 @@
-//! What a lockfile pins. The platform accepts a lockfile (it is part of the identity of a build)
-//! but does not yet install anything from a registry: a lockfile that pins a package is refused,
-//! with the reason, rather than ignored. That is a pending decision (see the gaps of feature 005),
-//! not a promise.
+//! What a lockfile pins. TypeScript and Python remain framework-only. C# may reference only the
+//! exact managed packages already present in its immutable builder image: the standard NuGet lock
+//! must match the closed catalog by target, id, version and content hash, with no registry access
+//! while a customer build runs.
 
 use sagat_domain::scripts::{Language, Lockfile};
 use serde_json::Value;
+
+pub const NEWTONSOFT_JSON_ID: &str = "Newtonsoft.Json";
+pub const NEWTONSOFT_JSON_VERSION: &str = "13.0.4";
+pub const NEWTONSOFT_JSON_CONTENT_HASH: &str =
+    "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A==";
+pub const NEWTONSOFT_JSON_ARCHIVE_SHA512: &str = "6d1faff84ff227a83b195dae5f0d8ead44a36187e32e438b0bc243e24092db79ac2daa672ad7493c1240ef97f01c7fbe12b21f7de22acd82132f102eaf82805c";
+pub const NEWTONSOFT_JSON_ASSEMBLY_SHA256: &str =
+    "a28c251dfe36d881e9e2462e171441b8b0ec156fe3f452602c9149b1b9efe05b";
+
+/// A package whose exact bytes are present in the immutable C# builder image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovedPackage {
+    pub id: String,
+    pub version: String,
+    pub content_hash: String,
+    pub archive_sha512: String,
+    pub assembly_sha256: String,
+}
+
+fn csharp_dependencies(value: &Value) -> Result<&serde_json::Map<String, Value>, String> {
+    let root = value
+        .as_object()
+        .ok_or_else(|| "a packages.lock.json is a JSON object".to_owned())?;
+    if root.len() != 2 || root.get("version").and_then(Value::as_u64) != Some(1) {
+        return Err("a C# lockfile has only version 1 and dependencies".to_owned());
+    }
+    let groups = root
+        .get("dependencies")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "a C# lockfile has dependency groups".to_owned())?;
+    if groups.len() != 1 || !groups.contains_key("net10.0") {
+        return Err("the C# lockfile must have exactly the net10.0 dependency group".to_owned());
+    }
+    groups
+        .get("net10.0")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "the net10.0 dependency group is an object".to_owned())
+}
+
+fn approved_csharp(lockfile: &Lockfile) -> Result<Vec<ApprovedPackage>, String> {
+    let value: Value = serde_json::from_str(lockfile.as_str().trim())
+        .map_err(|_| "the lockfile is not valid JSON".to_owned())?;
+    let dependencies = csharp_dependencies(&value)?;
+    if dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+    if dependencies.len() != 1 || !dependencies.contains_key(NEWTONSOFT_JSON_ID) {
+        return Err("the lockfile names a package outside the immutable C# catalog".to_owned());
+    }
+    let package = dependencies
+        .get(NEWTONSOFT_JSON_ID)
+        .and_then(Value::as_object)
+        .ok_or_else(|| "a locked package is an object".to_owned())?;
+    let expected_keys = ["type", "requested", "resolved", "contentHash"];
+    if package.len() != expected_keys.len()
+        || expected_keys.iter().any(|key| !package.contains_key(*key))
+        || package.get("type").and_then(Value::as_str) != Some("Direct")
+        || package.get("requested").and_then(Value::as_str) != Some("[13.0.4, 13.0.4]")
+        || package.get("resolved").and_then(Value::as_str) != Some(NEWTONSOFT_JSON_VERSION)
+        || package.get("contentHash").and_then(Value::as_str) != Some(NEWTONSOFT_JSON_CONTENT_HASH)
+    {
+        return Err(
+            "Newtonsoft.Json must be a direct exact 13.0.4 package with its approved SHA-512"
+                .to_owned(),
+        );
+    }
+    Ok(vec![ApprovedPackage {
+        id: NEWTONSOFT_JSON_ID.to_owned(),
+        version: NEWTONSOFT_JSON_VERSION.to_owned(),
+        content_hash: NEWTONSOFT_JSON_CONTENT_HASH.to_owned(),
+        archive_sha512: NEWTONSOFT_JSON_ARCHIVE_SHA512.to_owned(),
+        assembly_sha256: NEWTONSOFT_JSON_ASSEMBLY_SHA256.to_owned(),
+    }])
+}
 
 /// The packages `lockfile` pins.
 ///
@@ -44,6 +118,11 @@ pub fn packages(language: Language, lockfile: &Lockfile) -> Result<Vec<String>, 
                     .to_owned()
             })
             .collect()),
+        Language::CSharp => {
+            let value: Value = serde_json::from_str(text)
+                .map_err(|_| "the lockfile is not valid JSON".to_owned())?;
+            Ok(csharp_dependencies(&value)?.keys().cloned().collect())
+        }
         _ => Err("no lockfile format is known for this language".to_owned()),
     }
 }
@@ -56,6 +135,12 @@ pub fn accept(language: Language, lockfile: Option<&Lockfile>) -> Result<(), Str
     let Some(lockfile) = lockfile else {
         return Ok(());
     };
+    if lockfile.as_str().trim().is_empty() {
+        return Ok(());
+    }
+    if language == Language::CSharp {
+        return approved_csharp(lockfile).map(drop);
+    }
     let pinned = packages(language, lockfile)?;
     if pinned.is_empty() {
         Ok(())
@@ -71,6 +156,25 @@ pub fn accept(language: Language, lockfile: Option<&Lockfile>) -> Result<(), Str
                 .collect::<Vec<_>>()
                 .join(", ")
         ))
+    }
+}
+
+/// Packages the C# builder may reference. Every returned package has already been matched against
+/// the closed image catalog; other languages currently accept framework-only builds.
+pub fn approved(
+    language: Language,
+    lockfile: Option<&Lockfile>,
+) -> Result<Vec<ApprovedPackage>, String> {
+    let Some(lockfile) = lockfile else {
+        return Ok(Vec::new());
+    };
+    if lockfile.as_str().trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    if language == Language::CSharp {
+        approved_csharp(lockfile)
+    } else {
+        accept(language, Some(lockfile)).map(|()| Vec::new())
     }
 }
 
@@ -120,5 +224,99 @@ mod tests {
         assert!(accept(Language::TypeScript, Some(&lock("not json"))).is_err());
         assert!(accept(Language::TypeScript, Some(&lock("[1]"))).is_err());
         assert!(accept(Language::Go, Some(&lock("x"))).is_err());
+    }
+
+    #[test]
+    fn an_exact_allowlisted_csharp_package_is_accepted_offline() {
+        let packages = lock(
+            r#"{
+              "version": 1,
+              "dependencies": {
+                "net10.0": {
+                  "Newtonsoft.Json": {
+                    "type": "Direct",
+                    "requested": "[13.0.4, 13.0.4]",
+                    "resolved": "13.0.4",
+                    "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+                  }
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(
+            approved(Language::CSharp, Some(&packages)),
+            Ok(vec![ApprovedPackage {
+                id: NEWTONSOFT_JSON_ID.to_owned(),
+                version: NEWTONSOFT_JSON_VERSION.to_owned(),
+                content_hash: NEWTONSOFT_JSON_CONTENT_HASH.to_owned(),
+                archive_sha512: NEWTONSOFT_JSON_ARCHIVE_SHA512.to_owned(),
+                assembly_sha256: NEWTONSOFT_JSON_ASSEMBLY_SHA256.to_owned(),
+            }])
+        );
+        assert_eq!(accept(Language::CSharp, Some(&packages)), Ok(()));
+        assert_eq!(accept(Language::CSharp, None), Ok(()));
+        assert_eq!(accept(Language::CSharp, Some(&lock(""))), Ok(()));
+    }
+
+    #[test]
+    fn a_csharp_lockfile_cannot_float_substitute_or_hide_a_package() {
+        let base = serde_json::json!({
+            "version": 1,
+            "dependencies": {"net10.0": {
+                "Newtonsoft.Json": {
+                    "type": "Direct",
+                    "requested": "[13.0.4, 13.0.4]",
+                    "resolved": "13.0.4",
+                    "contentHash": NEWTONSOFT_JSON_CONTENT_HASH
+                }
+            }}
+        });
+        let mut cases: Vec<(&str, Value)> = Vec::new();
+        for (what, pointer, replacement) in [
+            (
+                "a floating request",
+                "/dependencies/net10.0/Newtonsoft.Json/requested",
+                serde_json::json!("[13.0.4, )"),
+            ),
+            (
+                "another version",
+                "/dependencies/net10.0/Newtonsoft.Json/resolved",
+                serde_json::json!("13.0.3"),
+            ),
+            (
+                "another archive",
+                "/dependencies/net10.0/Newtonsoft.Json/contentHash",
+                serde_json::json!("sha512-no"),
+            ),
+            (
+                "a transitive disguise",
+                "/dependencies/net10.0/Newtonsoft.Json/type",
+                serde_json::json!("Transitive"),
+            ),
+        ] {
+            let mut value = base.clone();
+            *value.pointer_mut(pointer).expect("pointer") = replacement;
+            cases.push((what, value));
+        }
+        let mut unknown = base.clone();
+        unknown["dependencies"]["net10.0"]["Other.Package"] = serde_json::json!({
+            "type": "Direct", "requested": "[1.0.0]", "resolved": "1.0.0",
+            "contentHash": "sha512-no"
+        });
+        cases.push(("an unknown package", unknown));
+        let mut target = base.clone();
+        let dependencies = target["dependencies"].as_object_mut().expect("groups");
+        let group = dependencies.remove("net10.0").expect("net10 group");
+        dependencies.insert("net9.0".to_owned(), group);
+        cases.push(("another target framework", target));
+
+        for (what, value) in cases {
+            let lockfile = lock(&serde_json::to_string(&value).expect("json"));
+            assert!(
+                approved(Language::CSharp, Some(&lockfile)).is_err(),
+                "accepted {what}"
+            );
+        }
     }
 }

@@ -13,6 +13,7 @@ import * as monaco from 'monaco-editor/editor/editor.api';
 // tokenizer when a model of that language exists. The CSS and HTML services, the language-server
 // client and the other eighty languages are not part of the bundle.
 import 'monaco-editor/features/register.all';
+import 'monaco-editor/languages/definitions/csharp/register';
 import 'monaco-editor/languages/definitions/python/register';
 import 'monaco-editor/languages/definitions/typescript/register';
 import { jsonDefaults } from 'monaco-editor/languages/features/json/register';

@@ -1,22 +1,92 @@
-//! US03 — inline C#. Not built in this delivery: Roslyn and an isolated .NET host are the largest
-//! piece of the feature and nothing in the other languages' path depends on them. What is proven
-//! here is that the platform says so, in a stable way, instead of accepting a script it cannot run
-//! (see the gap recorded in `specs/005-inline-code-sandbox/research.md`).
+//! US03 — an author can test, publish, and run a C# script against an exactly pinned dependency.
 
 use reqwest::Method;
 use serde_json::json;
 
 use crate::support::scripts::lab;
 
+const LOCK: &str = r#"{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "Newtonsoft.Json": {
+        "type": "Direct",
+        "requested": "[13.0.4, 13.0.4]",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      }
+    }
+  }
+}"#;
+
+const SOURCE: &str = r#"
+using System.Text.Json;
+using Newtonsoft.Json.Linq;
+using Sagat.ScriptContract;
+
+public sealed class Script : IInlineScript
+{
+    public ValueTask<JsonElement> RunAsync(JsonElement input, IOctopus octopus, CancellationToken cancellationToken)
+    {
+        var value = JObject.Parse(input.GetRawText()).Value<int>("n");
+        return ValueTask.FromResult(JsonSerializer.SerializeToElement(new
+        {
+            answer = value + 1,
+            idempotencyKey = octopus.IdempotencyKey
+        }));
+    }
+}
+"#;
+
 #[tokio::test]
-async fn a_csharp_script_is_refused_with_a_reason_a_client_can_branch_on() {
+async fn csharp_with_an_allowlisted_nuget_package_is_tested_published_and_run_by_a_workflow() {
     let lab = lab().await;
-    for language in ["csharp", "go", "java"] {
+    let script = lab
+        .script_with(
+            "csharp-newtonsoft",
+            "csharp",
+            SOURCE,
+            json!({"lockfile": LOCK}),
+        )
+        .await;
+
+    let tested = lab.test(&script, &json!({"n": 1})).await;
+    assert_eq!(tested["status"], "SUCCEEDED", "{tested}");
+    assert_eq!(tested["result"]["answer"], 2, "{tested}");
+
+    let version = lab.publish(&script).await;
+    assert_eq!(version["status"], "READY", "{version}");
+    assert!(
+        version["toolchain"]
+            .as_str()
+            .is_some_and(|toolchain| toolchain.contains("build=sha256:")
+                && toolchain.contains(";runtime=sha256:")
+                && toolchain.ends_with(";protocol=artifact-v2")),
+        "{version}"
+    );
+    let digest = version["artifactDigest"].as_str().expect("digest");
+    let workflow = lab
+        .workflow("uses-csharp", digest, json!({"input": {"n": 41}}))
+        .await;
+    let run = lab.p.start(&workflow, &json!({})).await;
+    assert_eq!(lab.drive(&run).await, "SUCCEEDED");
+    let output = lab.output(&run, "s").await.expect("output");
+    assert_eq!(
+        output["answer"], 1,
+        "an entry script receives the node input"
+    );
+    assert_eq!(output["idempotencyKey"], format!("{run}:s"));
+}
+
+#[tokio::test]
+async fn languages_without_a_runner_are_refused_with_a_stable_reason() {
+    let lab = lab().await;
+    for language in ["go", "java"] {
         let (status, body) = lab
             .call(
                 Method::POST,
                 &format!("/namespaces/{}/scripts", lab.ns),
-                Some(&json!({"name": "later", "language": language, "source": "x"})),
+                Some(&json!({"name": format!("later-{language}"), "language": language, "source": "x"})),
             )
             .await;
         assert_eq!(status, 422, "{language}: {body}");
@@ -25,14 +95,4 @@ async fn a_csharp_script_is_refused_with_a_reason_a_client_can_branch_on() {
             "{language}: {body}"
         );
     }
-    // The languages that exist are named by the workflow schema, so a document that says
-    // `csharp` for a script node is still a document; what it pins has to be built.
-    let (status, body) = lab
-        .call(
-            Method::POST,
-            &format!("/namespaces/{}/scripts", lab.ns),
-            Some(&json!({"name": "nonsense", "language": "cobol", "source": "x"})),
-        )
-        .await;
-    assert_eq!(status, 422, "{body}");
 }

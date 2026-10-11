@@ -65,7 +65,7 @@ pub enum ScriptError {
     InvalidRetention,
     #[error("a limit is above what the platform allows")]
     AboveCeiling,
-    #[error("the language is not built yet: typescript and python are")]
+    #[error("the language is not built yet: typescript, python and csharp are")]
     LanguageNotBuilt,
     #[error("the artifact does not describe the version it is reported for")]
     BundleMismatch,
@@ -107,7 +107,7 @@ impl Language {
     /// Whether the platform has a builder and a runner for it.
     #[must_use]
     pub const fn is_built(self) -> bool {
-        matches!(self, Self::TypeScript | Self::Python)
+        matches!(self, Self::TypeScript | Self::Python | Self::CSharp)
     }
 
     /// The extension of the file the source is written to.
@@ -935,7 +935,11 @@ mod tests {
             "cobol".parse::<Language>(),
             Err(ScriptError::UnknownLanguage)
         );
-        assert!(Language::TypeScript.is_built() && Language::Python.is_built());
+        assert!(
+            Language::TypeScript.is_built()
+                && Language::Python.is_built()
+                && Language::CSharp.is_built()
+        );
         assert!(!Language::Go.is_built() && !Language::Java.is_built());
     }
 

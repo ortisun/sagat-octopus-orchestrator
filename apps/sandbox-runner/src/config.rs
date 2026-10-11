@@ -181,6 +181,16 @@ impl RunnerConfig {
             images: Images {
                 typescript: optional(get, "SAGAT_RUNNER_IMAGE_TYPESCRIPT", defaults.typescript)?,
                 python: optional(get, "SAGAT_RUNNER_IMAGE_PYTHON", defaults.python)?,
+                csharp_build: optional(
+                    get,
+                    "SAGAT_RUNNER_IMAGE_CSHARP_BUILD",
+                    defaults.csharp_build,
+                )?,
+                csharp_runtime: optional(
+                    get,
+                    "SAGAT_RUNNER_IMAGE_CSHARP_RUNTIME",
+                    defaults.csharp_runtime,
+                )?,
             },
             admin_addr,
             sweep_after: Duration::from_secs(optional(get, "SAGAT_RUNNER_SWEEP_AFTER_SECS", 3600)?),

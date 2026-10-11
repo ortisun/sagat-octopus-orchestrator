@@ -2925,7 +2925,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             source: string;
             lockfile?: string;
             inputSchema?: Record<string, never>;
@@ -2948,7 +2948,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             policy: components["schemas"]["ScriptPolicyView"];
             retentionDays: number;
             revision: number;
@@ -2992,7 +2992,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             source: string;
@@ -3028,7 +3028,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             policy: components["schemas"]["ScriptPolicyView"];

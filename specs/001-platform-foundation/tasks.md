@@ -5,8 +5,8 @@
 
 ## Phase 1: Setup / contracts
 - [x] T001-001 Check FR-001-001..FR-001-007, SCs and ADRs; record gaps in `specs/001-platform-foundation/research.md`.
-- [ ] T001-002 [P] Define fixtures and contract validation in `tests/contract/platform-foundation/fixtures/`.
-  _Partly done: the contract is validated against a running server by `tests/contract/platform-foundation/rest/` and the auth matrix, with no static fixtures directory. The IR example is validated in CI. Static fixtures arrive with the IR in feature 002._
+- [x] T001-002 [P] Define fixtures and contract validation in `tests/contract/platform-foundation/fixtures/`.
+  _Evidence: synthetic workspace/namespace/error and `TaskReady` fixtures are validated against the exact OpenAPI operation or AsyncAPI message schema by `tests/contract/platform-foundation/fixtures.rs`; negative cases reject a client-selected tenant and an event without its tenant._
 - [x] T001-003 [P] Document types, transitions and invariants in `specs/001-platform-foundation/data-model.md`.
 
 ## Phase 2: Foundation
@@ -51,11 +51,12 @@
 
 - [x] T001-028 [US01] Define the schema of `tenant` and `namespace` with scoped FKs in `crates/infra-postgres/migrations/` and reject tenant spoofing in tests.
 - [x] T001-029 [US01] Add OIDC/JWKS, authz and request context middleware in `crates/api-http/src/auth/`, `context.rs` and `extract.rs`.
-- [ ] T001-030 [US01] Create CI for lint/clippy/fmt, migrations up and OpenAPI/protobuf validation in `.github/workflows/ci.yml`.
+- [x] T001-030 [US01] Create CI for lint/clippy/fmt, migrations up and OpenAPI/protobuf validation in `.github/workflows/ci.yml`.
+  _Evidence: `rust` runs fmt, clippy and the locked workspace tests (including the real PostgreSQL migration-twice test); `contracts` lints OpenAPI, compiles `worker.proto`, validates AsyncAPI and validates the IR example; `local-environment` repeats migrations in the compose smoke test._
 
 ## Final Phase: Hardening / rollout
-- [ ] T001-031 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/platform-foundation/`.
-  _REST: done (`rest/`, live conformance). AsyncAPI: validated (0 errors) locally and in CI. gRPC: `worker.proto` compiles, but the compatibility check (`buf breaking`) is not wired yet; it needs a baseline and arrives with the worker protocol server in feature 002._
+- [x] T001-031 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/platform-foundation/`.
+  _Evidence (2026-10-11): platform fixtures/auth 27/27 and live REST conformance 3/3 passed; `crates/api-grpc/tests/compatibility.rs` compiled the descriptor and compared it with `worker.baseline.json` (2/2); the AsyncAPI compatibility/live conformance suite compared `events.baseline.json` and exercised emitted messages (4/4). No baseline changed._
 - [x] T001-032 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`.
 - [x] T001-033 Run the benchmark defined in `specs/001-platform-foundation/plan.md` and publish the report in `tests/performance/reports/platform-foundation.md`.
 - [x] T001-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/001-platform-foundation/quickstart.md`.

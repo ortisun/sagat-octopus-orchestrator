@@ -1,0 +1,7 @@
+{
+  "code": "NOT_FOUND",
+  "message": "resource not found",
+  "retryable": false,
+  "traceId": "0123456789abcdef0123456789abcdef",
+  "remediation": "Check the resource identifier and your tenant scope."
+}
