@@ -45,7 +45,7 @@ infra/observability/dashboards/
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/008-observability-operations/
+tests/e2e/observability-operations/
 ```
 
 ## Implementation phases

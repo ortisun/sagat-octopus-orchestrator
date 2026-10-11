@@ -1,0 +1,38 @@
+{
+  "canonical": {
+    "idle": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"wait\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"errors-idle-flow\"},\"nodes\":[{\"activity\":\"errors.nobody\",\"id\":\"wait\",\"type\":\"activity\"}]}",
+    "one": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"errors-flow\"},\"nodes\":[{\"activity\":\"errors.work\",\"id\":\"work\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "idle": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "wait",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "errors-idle-flow"
+      },
+      "nodes": [
+        {
+          "activity": "errors.nobody",
+          "id": "wait",
+          "type": "activity"
+        }
+      ]
+    },
+    "one": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "errors-flow"
+      },
+      "nodes": [
+        {
+          "activity": "errors.work",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

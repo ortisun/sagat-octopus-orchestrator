@@ -1,0 +1,43 @@
+{
+  "name": "@sagat-octopus-orchestrator/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the Sagat Octopus Orchestrator: a client for runs and events, a worker host for activities, sagas and reconciliations, and typed builders of the workflow IR.",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist/src",
+    "proto",
+    "README.md"
+  ],
+  "scripts": {
+    "sync": "node scripts/sync-shared.mjs",
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/test/**/*.js\"",
+    "conformance": "node dist/conformance/runner.js"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.2",
+    "@grpc/proto-loader": "^0.7.13"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.6.3"
+  },
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ortisun/sagat-octopus-orchestrator.git",
+    "directory": "sdks/typescript"
+  },
+  "private": false
+}

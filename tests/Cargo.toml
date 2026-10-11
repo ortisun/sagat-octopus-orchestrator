@@ -1,0 +1,217 @@
+[package]
+name = "sagat-tests"
+description = "Cross-crate integration, fault, contract and end-to-end test suites (paths follow specs/*/plan.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+async-nats.workspace = true
+axum.workspace = true
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rskafka = { version = "0.6", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+jsonschema = { version = "0.58", default-features = false }
+hmac = "0.13"
+jsonwebtoken.workspace = true
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+h2 = "0.4"
+rcgen = "0.13"
+regex = "1"
+reqwest = { workspace = true, features = ["json", "form"] }
+sagat-api-grpc.workspace = true
+sagat-api-http.workspace = true
+sagat-application.workspace = true
+sagat-control-plane.workspace = true
+sagat-domain.workspace = true
+sagat-execution-engine.workspace = true
+sagat-infra-connectors = { workspace = true, features = ["unguarded-for-tests"] }
+sagat-infra-egress.workspace = true
+sagat-infra-ir.workspace = true
+sagat-infra-nats.workspace = true
+sagat-infra-postgres.workspace = true
+sagat-infra-sandbox.workspace = true
+sagat-infra-schema.workspace = true
+sagat-infra-secrets.workspace = true
+sagat-sandbox-runner.workspace = true
+sagat-scheduler.workspace = true
+sagat-telemetry.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+serde_yaml_ng = "0.10"
+sqlx.workspace = true
+testcontainers-modules.workspace = true
+time.workspace = true
+uuid.workspace = true
+tonic.workspace = true
+prost.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[test]]
+name = "integration_platform_foundation"
+path = "integration/platform-foundation/main.rs"
+
+[[test]]
+name = "contract_platform_foundation"
+path = "contract/platform-foundation/main.rs"
+
+[[test]]
+name = "e2e_platform_foundation"
+path = "e2e/platform-foundation/main.rs"
+
+[[test]]
+name = "fault_platform_foundation"
+path = "fault/platform-foundation/main.rs"
+
+[[test]]
+name = "contract_rest_platform_foundation"
+path = "contract/platform-foundation/rest/main.rs"
+
+[[test]]
+name = "perf_platform_foundation"
+path = "performance/platform-foundation/main.rs"
+
+[[test]]
+name = "integration_durable_execution"
+path = "integration/durable-execution/main.rs"
+
+[[test]]
+name = "contract_rest_durable_execution"
+path = "contract/durable-execution/rest/main.rs"
+
+[[test]]
+name = "contract_grpc_durable_execution"
+path = "contract/durable-execution/grpc/main.rs"
+
+[[test]]
+name = "sdk_conformance"
+path = "contract/sdk-conformance/main.rs"
+
+[[test]]
+name = "contract_grpc_sdk_multilanguage"
+path = "contract/sdk-multilanguage/grpc/main.rs"
+
+[[test]]
+name = "e2e_durable_execution"
+path = "e2e/durable-execution/main.rs"
+
+[[test]]
+name = "integration_security_multitenancy"
+path = "integration/security-multitenancy/main.rs"
+
+[[test]]
+name = "contract_rest_security_multitenancy"
+path = "contract/security-multitenancy/rest/main.rs"
+
+[[test]]
+name = "e2e_security_multitenancy"
+path = "e2e/security-multitenancy/main.rs"
+
+[[test]]
+name = "contract_grpc_security_multitenancy"
+path = "contract/security-multitenancy/grpc/main.rs"
+
+[[test]]
+name = "perf_security_multitenancy"
+path = "performance/security-multitenancy/main.rs"
+
+[[test]]
+name = "fault_security_multitenancy"
+path = "fault/security-multitenancy/main.rs"
+
+[[test]]
+name = "perf_durable_execution"
+path = "performance/durable-execution/main.rs"
+
+[[test]]
+name = "integration_sagas_compensations"
+path = "integration/sagas-compensations/main.rs"
+
+[[test]]
+name = "e2e_sagas_compensations"
+path = "e2e/sagas-compensations/main.rs"
+
+[[test]]
+name = "fault_sagas_compensations"
+path = "fault/sagas-compensations/main.rs"
+
+[[test]]
+name = "contract_rest_sagas_compensations"
+path = "contract/sagas-compensations/rest/main.rs"
+
+[[test]]
+name = "contract_grpc_sagas_compensations"
+path = "contract/sagas-compensations/grpc/main.rs"
+
+[[test]]
+name = "perf_sagas_compensations"
+path = "performance/sagas-compensations/main.rs"
+
+[[test]]
+name = "integration_events_webhooks_messaging"
+path = "integration/events-webhooks-messaging/main.rs"
+
+[[test]]
+name = "contract_rest_events_webhooks_messaging"
+path = "contract/events-webhooks-messaging/rest/main.rs"
+
+[[test]]
+name = "e2e_events_webhooks_messaging"
+path = "e2e/events-webhooks-messaging/main.rs"
+
+[[test]]
+name = "contract_asyncapi_events_webhooks_messaging"
+path = "contract/events-webhooks-messaging/asyncapi/main.rs"
+
+[[test]]
+name = "fault_events_webhooks_messaging"
+path = "fault/events-webhooks-messaging/main.rs"
+
+[[test]]
+name = "perf_events_webhooks_messaging"
+path = "performance/events-webhooks-messaging/main.rs"
+
+[[test]]
+name = "integration_inline_code_sandbox_containers"
+path = "integration/inline-code-sandbox/sandbox/main.rs"
+
+[[test]]
+name = "integration_inline_code_sandbox"
+path = "integration/inline-code-sandbox/registry/main.rs"
+
+[[test]]
+name = "e2e_inline_code_sandbox"
+path = "e2e/inline-code-sandbox/main.rs"
+
+[[test]]
+name = "contract_rest_inline_code_sandbox"
+path = "contract/inline-code-sandbox/rest/main.rs"
+
+[[test]]
+name = "fault_inline_code_sandbox"
+path = "fault/inline-code-sandbox/main.rs"
+
+[[test]]
+name = "perf_inline_code_sandbox"
+path = "performance/inline-code-sandbox/main.rs"
+
+[[test]]
+name = "e2e_sdk_multilanguage"
+path = "e2e/sdk-multilanguage/main.rs"
+
+[[test]]
+name = "fault_sdk_multilanguage"
+path = "fault/sdk-multilanguage/main.rs"
+
+[[test]]
+name = "perf_sdk_multilanguage"
+path = "performance/sdk-multilanguage/main.rs"

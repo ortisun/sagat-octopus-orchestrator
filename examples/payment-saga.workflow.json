@@ -3,7 +3,7 @@
   "kind": "Workflow",
   "metadata": {
     "name": "corporate-payment",
-    "description": "Example saga with reservation/compensation and confirmation"
+    "description": "Example saga that reserves the limit, submits the payment, compensates the reservation if the submission fails, and reconciles a submission whose response was lost"
   },
   "entrypoint": "validate",
   "triggers": [
@@ -32,7 +32,15 @@
       "id": "validate",
       "type": "activity",
       "activity": "payment.validate",
-      "next": "reserve"
+      "next": "settlement"
+    },
+    {
+      "id": "settlement",
+      "type": "saga",
+      "begin": "reserve",
+      "next": "wait_confirmation",
+      "onCompensationFailure": "manual_review",
+      "cancelPolicy": "compensate_completed"
     },
     {
       "id": "reserve",
@@ -47,6 +55,13 @@
         "initialDelayMs": 500,
         "maxDelayMs": 10000,
         "jitter": true
+      },
+      "compensationRetry": {
+        "maxAttempts": 5,
+        "strategy": "exponential",
+        "initialDelayMs": 2000,
+        "maxDelayMs": 60000,
+        "jitter": true
       }
     },
     {
@@ -56,14 +71,14 @@
       "compensateWith": "payment.return.request",
       "reconcileWith": "payment.lookup.status",
       "idempotencyTemplate": "submit:${input.paymentId}",
-      "next": "wait_confirmation",
       "retry": {
         "maxAttempts": 3,
         "strategy": "exponential",
         "initialDelayMs": 1000,
         "maxDelayMs": 30000,
         "jitter": true
-      }
+      },
+      "highRisk": true
     },
     {
       "id": "wait_confirmation",

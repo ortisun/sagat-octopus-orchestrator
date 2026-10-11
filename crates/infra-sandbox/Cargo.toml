@@ -1,0 +1,28 @@
+[package]
+name = "sagat-infra-sandbox"
+description = "Adapter that builds and runs untrusted scripts: one container per build and per run, with no network, no capabilities, a read-only filesystem and hard limits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bollard = "0.20"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+metrics.workspace = true
+sagat-application.workspace = true
+sagat-domain.workspace = true
+sagat-infra-schema.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+sha2 = "0.11"
+tokio = { workspace = true, features = ["time", "rt", "sync", "macros", "io-util"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

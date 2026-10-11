@@ -1,0 +1,44 @@
+{
+  "canonical": {
+    "big": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"big\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"oversize-flow\"},\"nodes\":[{\"activity\":\"ser.big\",\"id\":\"big\",\"type\":\"activity\"}]}",
+    "echo": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"first\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"serialization-flow\"},\"nodes\":[{\"activity\":\"ser.first\",\"id\":\"first\",\"next\":\"second\",\"type\":\"activity\"},{\"activity\":\"ser.second\",\"id\":\"second\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "big": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "big",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "oversize-flow"
+      },
+      "nodes": [
+        {
+          "activity": "ser.big",
+          "id": "big",
+          "type": "activity"
+        }
+      ]
+    },
+    "echo": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "first",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "serialization-flow"
+      },
+      "nodes": [
+        {
+          "activity": "ser.first",
+          "id": "first",
+          "next": "second",
+          "type": "activity"
+        },
+        {
+          "activity": "ser.second",
+          "id": "second",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

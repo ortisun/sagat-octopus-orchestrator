@@ -45,7 +45,7 @@ frontend/apps/studio/src/features/workflows/VersionDiff.tsx
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/011-gitops-versioning/
+tests/e2e/gitops-versioning/
 ```
 
 ## Implementation phases

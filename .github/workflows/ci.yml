@@ -1,0 +1,147 @@
+name: ci
+
+on:
+  push:
+    branches: [main, develop, "release/**", "hotfix/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust:
+    name: rust (fmt, clippy, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
+      # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
+      - run: cargo test --workspace --locked --no-fail-fast
+
+  architecture:
+    name: architecture rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - run: python3 -m unittest discover -s scripts/tests -v
+      - run: python3 scripts/check-architecture.py
+
+  sdks:
+    name: sdks (unit tests, conformance suite, user stories, faults)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+      # The C# SDK targets net8.0 and net10.0; global.json asks for the 10.0.4xx SDK.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      # The unit tests of each SDK run offline against fakes; the commands are the ones in its README.
+      - name: TypeScript SDK
+        working-directory: sdks/typescript
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
+      - name: Python SDK
+        working-directory: sdks/python
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --require-hashes -r requirements-dev.lock.txt
+          .venv/bin/python -m pytest
+          .venv/bin/mypy
+          .venv/bin/ruff check .
+      - name: Go SDK
+        working-directory: sdks/go
+        run: |
+          go test -race ./...
+          go vet ./...
+          test -z "$(gofmt -l .)"
+      - name: C# SDK
+        working-directory: sdks/dotnet
+        run: |
+          dotnet test
+          dotnet format --verify-no-changes
+      - name: Java SDK
+        working-directory: sdks/java
+        run: ./mvnw -q verify
+      # These three targets play every SDK against a real platform (PostgreSQL through Testcontainers, the
+      # engine and the API in the test process). They are #[ignore] in the workspace run above because they
+      # need the five toolchains.
+      - name: conformance suite, user stories and faults, five languages
+        run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
+
+  contracts:
+    name: contracts (OpenAPI, protobuf, JSON Schema)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: OpenAPI lint
+        run: npx --yes @redocly/cli@1 lint specs/001-platform-foundation/contracts/openapi.yaml
+      - name: Protobuf compiles
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+          protoc --proto_path=specs/001-platform-foundation/contracts \
+                 --descriptor_set_out=/dev/null \
+                 specs/001-platform-foundation/contracts/worker.proto
+      - name: AsyncAPI is valid
+        # The exact version that `npx @asyncapi/cli@3` resolved on 2026-10-08 (3.6.0), with install
+        # scripts disabled, so a new release or a compromised dependency script cannot change what
+        # CI executes unnoticed. Transitive dependencies are still resolved at run time (npx has no
+        # lockfile); bump the version deliberately and re-run this step locally when you do.
+        run: npx --yes --ignore-scripts @asyncapi/cli@3.6.0 validate specs/001-platform-foundation/contracts/events.asyncapi.yaml
+      - name: Workflow example validates against the IR schema
+        run: |
+          npx --yes -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats \
+            -s specs/001-platform-foundation/contracts/workflow.schema.json \
+            -d examples/payment-saga.workflow.json
+
+  local-environment:
+    name: local environment (docker compose smoke test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Builds the image, starts PostgreSQL + NATS + control plane, checks health, runs the seed
+      # twice and tears everything down (see scripts/smoke-compose.sh).
+      - run: scripts/smoke-compose.sh
+
+  dependencies:
+    name: dependency advisories (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      # The one ignored advisory and why is in .cargo/audit.toml and research.md (G16).
+      - run: cargo audit --deny warnings

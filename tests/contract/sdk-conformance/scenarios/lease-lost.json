@@ -1,0 +1,117 @@
+{
+  "name": "lease-lost",
+  "description": "US02/edge: a worker that goes silent loses its lease; when its heartbeat finds out, its activity is cancelled with the reason lease-lost and its result is dropped, not reported. The retry waits for its delay (10 min, moved by the control endpoint); a second worker is given the step and the run completes once, on the second attempt. The first worker is stopped before the second is started and the delay elapsed, so that it cannot be the one to take the retry.",
+  "server": {
+    "leaseTtlSeconds": 3
+  },
+  "workflows": {
+    "work": {
+      "name": "lease-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "lease.work",
+          "options": {
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 600000,
+              "maxDelayMs": 600000,
+              "strategy": "fixed",
+              "jitter": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "lease-w1",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 150,
+      "activities": {
+        "lease.work": {
+          "behavior": {
+            "hang": true
+          }
+        }
+      }
+    },
+    "w2": {
+      "workerName": "lease-w2",
+      "maxInflight": 1,
+      "autostart": false,
+      "heartbeatIntervalMs": 150,
+      "activities": {
+        "lease.work": {
+          "behavior": {
+            "returns": {
+              "second": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start",
+      "op": "start",
+      "workflow": "work",
+      "input": {
+        "n": 1
+      }
+    },
+    {
+      "id": "leased",
+      "op": "awaitJournal",
+      "run": "start",
+      "eventType": "step.started",
+      "stepId": "work",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "silent",
+      "op": "control",
+      "action": "expireLease",
+      "run": "start",
+      "node": "work"
+    },
+    {
+      "id": "first-notices",
+      "op": "awaitWorkerLog",
+      "worker": "w1",
+      "count": 1,
+      "timeoutMs": 20000
+    },
+    {
+      "id": "first-stops",
+      "op": "stopWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "second",
+      "op": "startWorker",
+      "worker": "w2"
+    },
+    {
+      "id": "retry",
+      "op": "control",
+      "action": "elapseRetryDelay",
+      "run": "start",
+      "node": "work"
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "start",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "journal",
+      "op": "events",
+      "run": "start"
+    }
+  ]
+}

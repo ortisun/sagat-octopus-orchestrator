@@ -44,7 +44,22 @@ crates/api-http/src/routes/saga_operations.rs
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/003-sagas-compensations/
+tests/e2e/sagas-compensations/
+```
+
+**As built.** The structure above was a proposal. The coordinator is not a crate: it is a function of the run state, so it lives where the state is reduced (decision D59–D60, ADR-0010, gap G51).
+
+```text
+crates/domain/src/saga.rs                      policies, outcomes, the plan of a definition
+crates/domain/src/workflow.rs                  the saga node, derived nodes <id>~c / <id>~r, validation
+crates/domain/src/execution/sagas.rs           the coordinator: advance(definition, state, stop)
+crates/domain/src/execution/{state,plan,command,event,error}.rs   statuses, events, operator and lookup commands
+crates/application/src/{execution,worker,runs,definitions}.rs    keys, task kinds and targets, review, plans, breaker policy
+crates/infra-postgres/src/{execution,definitions,workers,breaker,signals}.rs
+crates/infra-postgres/migrations/20261011000000_sagas.{up,down}.sql
+crates/api-http/src/routes/execution.rs        decisions on the operations route; GET …/compensation-plans
+crates/api-grpc/src/service.rs                 task_kind / target on the lease
+tests/{integration,e2e,fault,contract,performance}/003-sagas-compensations/
 ```
 
 ## Implementation phases

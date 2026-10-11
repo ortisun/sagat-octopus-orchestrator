@@ -1,0 +1,40 @@
+[package]
+name = "sagat-sandbox-runner"
+description = "Sandbox runner process: takes builds, test runs and script steps from the control plane and runs them in containers. Holds the container engine and no database."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "sagat_sandbox_runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sandbox-runner"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+base64 = "0.22"
+metrics.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+sagat-api-grpc.workspace = true
+sagat-api-http.workspace = true
+sagat-application.workspace = true
+sagat-control-plane.workspace = true
+sagat-domain.workspace = true
+sagat-infra-egress.workspace = true
+sagat-infra-sandbox.workspace = true
+sagat-telemetry.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+tonic.workspace = true
+tracing.workspace = true
+uuid.workspace = true

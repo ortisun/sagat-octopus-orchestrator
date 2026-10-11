@@ -11,6 +11,14 @@
 - E2E: author→publish→trigger→run→saga compensation→visualize; inline code TypeScript and C#; human approval.
 - Load/stress: partitioning, active steps, 10k/100k/1M waits, pools/quotas, high fanout, huge DAG and backpressure.
 
+## Where the tests live and what they are called
+
+`tests/<kind>/<feature>/` with `<kind>` one of `e2e`, `integration`, `contract`, `fault` and `performance`, and `<feature>` the
+feature's name without its number (`tests/e2e/sdk-multilanguage/`). The Cargo targets of the `sagat-tests` crate are named the same
+way, kind first (`e2e_sdk_multilanguage`, `contract_rest_security_multitenancy`), and a benchmark's report is
+`tests/performance/reports/<feature>.md`. A number says nothing a name does not, and it makes a path hard to type and to read; the
+number of a feature is kept where it is an identifier (`specs/NNN-slug/`, `FR-NNN-xxx`, `T0NN-xxx`).
+
 ## Critical matrix
 
 | Scenario | Expected invariant |

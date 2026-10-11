@@ -1,0 +1,35 @@
+[package]
+name = "sagat-api-http"
+description = "HTTP adapter: Axum router, JWT/OIDC authentication, error envelope and identity routes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+base64 = "0.22"
+hyper.workspace = true
+hyper-util.workspace = true
+jsonwebtoken.workspace = true
+metrics.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+sagat-application.workspace = true
+sagat-domain.workspace = true
+sagat-telemetry.workspace = true
+serde.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time = { workspace = true, features = ["formatting", "parsing", "serde", "serde-well-known"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "net", "macros"] }
+tower-http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

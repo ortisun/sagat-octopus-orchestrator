@@ -1,0 +1,100 @@
+{
+  "name": "worker-transport-faults",
+  "description": "US02 edge / FR-006-005: the worker protocol survives a network that fails. A registration whose first attempt never leaves is repeated. A poll refused UNAVAILABLE twice is followed by another after the SDK's own pause, and a poll answered UNAUTHENTICATED (the session is gone) makes the host register again and go on. A heartbeat refused twice is tried again on the next beat and the lease is kept (attempt 1). A completion refused UNAVAILABLE twice is repeated with the same key and the step is completed once. `faultsApplied` says each fault was reached.",
+  "server": {
+    "leaseTtlSeconds": 3
+  },
+  "workflows": {
+    "one": {
+      "name": "transport-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "net.work"
+        }
+      ]
+    }
+  },
+  "faults": [
+    {
+      "channel": "grpc",
+      "match": "RegisterWorker",
+      "action": "failBefore",
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "PollTasks",
+      "action": "status",
+      "code": "UNAVAILABLE",
+      "times": 2
+    },
+    {
+      "channel": "grpc",
+      "match": "PollTasks",
+      "action": "status",
+      "code": "UNAUTHENTICATED",
+      "after": 2,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "Heartbeat",
+      "action": "status",
+      "code": "UNAVAILABLE",
+      "times": 2
+    },
+    {
+      "channel": "grpc",
+      "match": "CompleteStep",
+      "action": "status",
+      "code": "UNAVAILABLE",
+      "times": 2
+    }
+  ],
+  "workers": {
+    "w1": {
+      "workerName": "net-worker",
+      "maxInflight": 1,
+      "autostart": false,
+      "heartbeatIntervalMs": 150,
+      "activities": {
+        "net.work": {
+          "behavior": {
+            "sleepMs": 1200,
+            "returns": {
+              "done": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "run",
+      "op": "start",
+      "workflow": "one",
+      "input": {
+        "n": 1
+      }
+    },
+    {
+      "id": "worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "run",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "journal",
+      "op": "events",
+      "run": "run"
+    }
+  ]
+}

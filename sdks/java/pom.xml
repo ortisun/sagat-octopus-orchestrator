@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>dev.sagatoctopusorchestrator</groupId>
+  <artifactId>sagat-octopus-orchestrator-sdk-parent</artifactId>
+  <version>0.1.0</version>
+  <packaging>pom</packaging>
+
+  <name>Sagat Octopus Orchestrator Java SDK (parent)</name>
+  <description>Java SDK for the Sagat Octopus Orchestrator: client, worker host and workflow builders.</description>
+  <url>https://github.com/ortisun/sagat-octopus-orchestrator</url>
+
+  <!-- The repository has no published licence yet; this mirrors the other SDK manifests (UNLICENSED). -->
+  <licenses>
+    <license>
+      <name>UNLICENSED</name>
+      <comments>All rights reserved until the repository publishes a licence.</comments>
+    </license>
+  </licenses>
+  <scm>
+    <url>https://github.com/ortisun/sagat-octopus-orchestrator</url>
+    <connection>scm:git:https://github.com/ortisun/sagat-octopus-orchestrator.git</connection>
+  </scm>
+
+  <modules>
+    <module>sdk</module>
+    <module>conformance</module>
+  </modules>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.build.outputTimestamp>2026-10-10T00:00:00Z</project.build.outputTimestamp>
+    <!-- The library supports Java 17 and newer; only JDK 23 is run in this repository's environment. -->
+    <maven.compiler.release>17</maven.compiler.release>
+
+    <!-- Dependencies: every version is at least two weeks old (checked against Maven Central dates). -->
+    <grpc.version>1.83.1</grpc.version>
+    <!-- The version grpc-protobuf 1.83.1 depends on; protoc below must be the same release. -->
+    <protobuf.version>3.25.9</protobuf.version>
+    <jackson.version>2.22.3</jackson.version>
+    <junit.version>5.14.4</junit.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.grpc</groupId>
+        <artifactId>grpc-bom</artifactId>
+        <version>${grpc.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.google.protobuf</groupId>
+        <artifactId>protobuf-java</artifactId>
+        <version>${protobuf.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-clean-plugin</artifactId>
+          <version>3.5.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-resources-plugin</artifactId>
+          <version>3.5.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.15.0</version>
+          <configuration>
+            <release>${maven.compiler.release}</release>
+            <showWarnings>true</showWarnings>
+            <compilerArgs>
+              <arg>-Xlint:all,-processing,-serial</arg>
+            </compilerArgs>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.5.6</version>
+          <configuration>
+            <!-- Not UTC and not the zone of any CI machine: code that formats or parses an instant in local time fails. -->
+            <argLine>-Duser.timezone=Asia/Kolkata -Dfile.encoding=UTF-8 -XX:+UseSerialGC</argLine>
+            <environmentVariables>
+              <TZ>Asia/Kolkata</TZ>
+            </environmentVariables>
+            <systemPropertyVariables>
+              <java.util.logging.config.file>${project.basedir}/src/test/resources/logging.properties</java.util.logging.config.file>
+            </systemPropertyVariables>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>3.5.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <version>3.10.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.xolstice.maven.plugins</groupId>
+          <artifactId>protobuf-maven-plugin</artifactId>
+          <version>0.6.1</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>

@@ -1,0 +1,98 @@
+{
+  "canonical": {
+    "flaky": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"flaky\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"flaky-flow\"},\"nodes\":[{\"activity\":\"retry.flaky\",\"id\":\"flaky\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}",
+    "permanent": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"permanent\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"permanent-flow\"},\"nodes\":[{\"activity\":\"retry.permanent\",\"id\":\"permanent\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}",
+    "throws": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"throws\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"throws-flow\"},\"nodes\":[{\"activity\":\"retry.throws\",\"id\":\"throws\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":2,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}",
+    "unknown": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"unknown\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"unknown-flow\"},\"nodes\":[{\"activity\":\"retry.unknown\",\"id\":\"unknown\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "flaky": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "flaky",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "flaky-flow"
+      },
+      "nodes": [
+        {
+          "activity": "retry.flaky",
+          "id": "flaky",
+          "retry": {
+            "initialDelayMs": 50,
+            "jitter": false,
+            "maxAttempts": 3,
+            "maxDelayMs": 50,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "permanent": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "permanent",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "permanent-flow"
+      },
+      "nodes": [
+        {
+          "activity": "retry.permanent",
+          "id": "permanent",
+          "retry": {
+            "initialDelayMs": 50,
+            "jitter": false,
+            "maxAttempts": 3,
+            "maxDelayMs": 50,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "throws": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "throws",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "throws-flow"
+      },
+      "nodes": [
+        {
+          "activity": "retry.throws",
+          "id": "throws",
+          "retry": {
+            "initialDelayMs": 50,
+            "jitter": false,
+            "maxAttempts": 2,
+            "maxDelayMs": 50,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "unknown": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "unknown",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "unknown-flow"
+      },
+      "nodes": [
+        {
+          "activity": "retry.unknown",
+          "id": "unknown",
+          "retry": {
+            "initialDelayMs": 50,
+            "jitter": false,
+            "maxAttempts": 3,
+            "maxDelayMs": 50,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

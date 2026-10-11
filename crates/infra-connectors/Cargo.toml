@@ -1,0 +1,39 @@
+[package]
+name = "sagat-infra-connectors"
+description = "Adapters between the event gateway and the outside: guarded outbound webhooks and message brokers (NATS, Kafka, SQS)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# A broker guard that permits everything, for tests that reach brokers on this machine.
+unguarded-for-tests = []
+
+[dependencies]
+async-nats.workspace = true
+aws-credential-types = "1"
+aws-sigv4 = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+metrics.workspace = true
+quick-xml = "0.42"
+reqwest.workspace = true
+rskafka = { version = "0.6", default-features = false, features = ["compression-gzip", "compression-lz4", "compression-snappy", "compression-zstd", "transport-tls"] }
+rustls.workspace = true
+sagat-application.workspace = true
+sagat-domain.workspace = true
+sagat-infra-egress.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["time", "rt", "sync", "macros"] }
+tracing.workspace = true
+url = "2"
+uuid.workspace = true
+webpki-roots = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net"] }

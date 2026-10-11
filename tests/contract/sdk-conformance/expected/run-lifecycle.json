@@ -1,0 +1,538 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": "corr-{{unique}}",
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<given-trace>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "duplicate",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": "corr-{{unique}}",
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<given-trace>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "with-deadline",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<createdAt+3600s>",
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "changed",
+      "ok": false,
+      "op": "start"
+    },
+    {
+      "id": "get",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": "corr-{{unique}}",
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<given-trace>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "waiting",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "items": [
+          "<uuid:4>",
+          "<uuid:1>"
+        ]
+      }
+    },
+    {
+      "id": "waiting-paged",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "items": [
+          "<uuid:4>",
+          "<uuid:1>"
+        ]
+      }
+    },
+    {
+      "id": "worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.2"
+      }
+    },
+    {
+      "id": "done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": "corr-{{unique}}",
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<given-trace>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "after",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": "corr-{{unique}}",
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<given-trace>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "journal",
+      "ok": true,
+      "op": "events",
+      "result": {
+        "events": [
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.started"
+          },
+          {
+            "attempt": null,
+            "stepId": "first",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "first",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "first",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "first",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": "second",
+            "type": "step.released"
+          },
+          {
+            "attempt": 1,
+            "stepId": "second",
+            "type": "step.leased"
+          },
+          {
+            "attempt": 1,
+            "stepId": "second",
+            "type": "step.completed"
+          },
+          {
+            "attempt": null,
+            "stepId": "second",
+            "type": "step.routed"
+          },
+          {
+            "attempt": null,
+            "stepId": null,
+            "type": "run.finished"
+          }
+        ]
+      }
+    },
+    {
+      "id": "finished",
+      "ok": true,
+      "op": "list",
+      "result": {
+        "items": [
+          "<uuid:1>"
+        ]
+      }
+    },
+    {
+      "id": "by-name",
+      "ok": true,
+      "op": "workflowByName",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "by-name-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "error": {
+        "code": "UNAUTHENTICATED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The token was refused: check its issuer, audience, tenant claim and expiry, and that the token provider returns a fresh one.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 401,
+        "traceId": "<trace:4>"
+      },
+      "id": "no-token",
+      "ok": false,
+      "op": "get"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:5>"
+      },
+      "id": "other-tenant",
+      "ok": false,
+      "op": "get"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:6>"
+      },
+      "id": "other-tenant-start",
+      "ok": false,
+      "op": "start"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "first",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "second",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:7>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "wait",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "RUNNING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "first",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "second",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "lifecycle.first",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:first",
+        "input": {
+          "amount": "19.99",
+          "nested": {
+            "note": null,
+            "tags": [
+              "a",
+              "b"
+            ]
+          },
+          "orderId": "o-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "first",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<given-trace>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "lifecycle.second",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:second",
+        "input": {
+          "amount": "19.99",
+          "nested": {
+            "note": null,
+            "tags": [
+              "a",
+              "b"
+            ]
+          },
+          "orderId": "o-{{unique}}"
+        },
+        "kind": "activity",
+        "node": "second",
+        "outcome": "returned",
+        "steps": {
+          "first": {
+            "amount": "19.99",
+            "first": true,
+            "list": [
+              1,
+              "two",
+              null
+            ],
+            "nothing": null,
+            "ratio": 0.5
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<given-trace>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "lifecycle.first",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:first",
+        "input": {
+          "orderId": "by-name"
+        },
+        "kind": "activity",
+        "node": "first",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "lifecycle.second",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:7>:second",
+        "input": {
+          "orderId": "by-name"
+        },
+        "kind": "activity",
+        "node": "second",
+        "outcome": "returned",
+        "steps": {
+          "first": {
+            "amount": "19.99",
+            "first": true,
+            "list": [
+              1,
+              "two",
+              null
+            ],
+            "nothing": null,
+            "ratio": 0.5
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:3>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

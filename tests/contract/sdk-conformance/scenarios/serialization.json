@@ -1,0 +1,112 @@
+{
+  "name": "serialization",
+  "description": "T006-031: what a run carries comes back as it went in, in every language: decimals as strings, integers up to 2^53-1, binary fractions, unicode, escapes, nulls and empty containers pass through two steps unchanged; the instants of a run are UTC with a Z (the runners run under TZ=Asia/Kolkata); an output over 256 KiB is a canonical PAYLOAD_TOO_LARGE failure of the step, not a truncated or a dropped one.",
+  "workflows": {
+    "echo": {
+      "name": "serialization-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "first",
+          "activity": "ser.first"
+        },
+        {
+          "op": "step",
+          "id": "second",
+          "activity": "ser.second"
+        }
+      ]
+    },
+    "big": {
+      "name": "oversize-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "big",
+          "activity": "ser.big"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "ser-worker",
+      "maxInflight": 1,
+      "autostart": false,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "ser.first": {
+          "behavior": {
+            "echoInput": true
+          }
+        },
+        "ser.second": {
+          "behavior": {
+            "echo": true
+          }
+        },
+        "ser.big": {
+          "behavior": {
+            "returnsText": 300000
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "echo",
+      "op": "start",
+      "workflow": "echo",
+      "deadlineInMs": 3600000,
+      "input": {
+        "decimal": "12345678901234567890.123456789",
+        "money": "19.90",
+        "maxSafe": 9007199254740991,
+        "negative": -42,
+        "fraction": 0.1,
+        "half": 0.5,
+        "zero": 0,
+        "text": "ação € 😀",
+        "escapes": "quote \" backslash \\ tab \t newline \n",
+        "nothing": null,
+        "emptyObject": {},
+        "emptyList": [],
+        "list": [
+          1,
+          "two",
+          null,
+          {
+            "deep": [
+              true,
+              false
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "echo-done",
+      "op": "waitForCompletion",
+      "run": "echo",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "big",
+      "op": "start",
+      "workflow": "big",
+      "input": {}
+    },
+    {
+      "id": "big-done",
+      "op": "waitForCompletion",
+      "run": "big",
+      "timeoutMs": 30000
+    }
+  ]
+}

@@ -44,7 +44,7 @@ crates/api-http/src/routes/runs.rs
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/007-workflow-studio/
+tests/e2e/workflow-studio/
 ```
 
 ## Implementation phases

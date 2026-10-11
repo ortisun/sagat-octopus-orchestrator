@@ -1,0 +1,136 @@
+{
+  "name": "errors",
+  "description": "SC-006-004: every critical error is one canonical SagatError with a code, the trace id of the server's answer, a retryable flag and a remediation, and none of them repeats a payload or a token. Errors the SDK raises about its own input are raised before anything is sent. The runs that the key tests start use a workflow nobody serves, so the state the platform ends with does not depend on when the worker polls.",
+  "workflows": {
+    "one": {
+      "name": "errors-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "errors.work"
+        }
+      ]
+    },
+    "idle": {
+      "name": "errors-idle-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "wait",
+          "activity": "errors.nobody"
+        }
+      ]
+    }
+  },
+  "faults": [
+    {
+      "channel": "http",
+      "match": "POST /runs/",
+      "action": "failBefore",
+      "after": 2,
+      "times": 20
+    }
+  ],
+  "workers": {
+    "w1": {
+      "workerName": "errors-worker",
+      "maxInflight": 2,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "errors.work": {
+          "behavior": {
+            "returns": {
+              "ok": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start",
+      "op": "start",
+      "workflow": "one",
+      "input": {
+        "secret-looking": "sk_live_should_not_come_back"
+      }
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "start",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "no-token",
+      "op": "start",
+      "workflow": "one",
+      "input": {},
+      "token": "bad"
+    },
+    {
+      "id": "other-tenant",
+      "op": "start",
+      "workflow": "one",
+      "input": {},
+      "token": "other"
+    },
+    {
+      "id": "short-key",
+      "op": "start",
+      "workflow": "one",
+      "input": {},
+      "idempotencyKey": "short"
+    },
+    {
+      "id": "bad-trace",
+      "op": "start",
+      "workflow": "one",
+      "input": {},
+      "traceparent": "not-a-traceparent"
+    },
+    {
+      "id": "reused-key",
+      "op": "start",
+      "workflow": "idle",
+      "input": {
+        "marker": "payload-marker-first"
+      },
+      "idempotencyKey": "errors-{{unique}}-key-1"
+    },
+    {
+      "id": "reused-key-again",
+      "op": "start",
+      "workflow": "idle",
+      "input": {
+        "marker": "payload-marker-second"
+      },
+      "idempotencyKey": "errors-{{unique}}-key-1"
+    },
+    {
+      "id": "cancel-finished",
+      "op": "cancel",
+      "run": "start",
+      "reason": "cancelling something that finished"
+    },
+    {
+      "id": "cancel-short-reason",
+      "op": "cancel",
+      "run": "start",
+      "reason": "x"
+    },
+    {
+      "id": "unreachable",
+      "op": "cancel",
+      "run": "start",
+      "reason": "this never reaches the server"
+    }
+  ],
+  "mustNotLeak": [
+    "sk_live_should_not_come_back",
+    "payload-marker-first",
+    "payload-marker-second"
+  ]
+}

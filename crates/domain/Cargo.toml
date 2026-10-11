@@ -1,0 +1,21 @@
+[package]
+name = "sagat-domain"
+description = "Pure domain model: no web, database, broker or serialization-format dependencies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+# Wipes secret values from memory when they are dropped; pure, no I/O.
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }

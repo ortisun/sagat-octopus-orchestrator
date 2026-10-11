@@ -1,0 +1,486 @@
+{
+ "name": "perf-slow",
+ "description": "32 runs of a step that takes two seconds, one worker with 8 in flight and a lease of 3 s: backpressure (never more than 8 at once, so no faster than 8 s) and the heartbeats that keep the leases.",
+ "server": {
+  "leaseTtlSeconds": 3
+ },
+ "workflows": {
+  "one": {
+   "name": "perf-one",
+   "program": [
+    {
+     "op": "step",
+     "id": "work",
+     "activity": "perf.slow"
+    }
+   ]
+  }
+ },
+ "workers": {
+  "w1": {
+   "workerName": "perf-w1",
+   "maxInflight": 8,
+   "autostart": true,
+   "activities": {
+    "perf.slow": {
+     "behavior": {
+      "sleepMs": 2000,
+      "returns": {
+       "ok": true
+      }
+     }
+    }
+   }
+  }
+ },
+ "steps": [
+  {
+   "id": "s00",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 0
+   }
+  },
+  {
+   "id": "s01",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 1
+   }
+  },
+  {
+   "id": "s02",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 2
+   }
+  },
+  {
+   "id": "s03",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 3
+   }
+  },
+  {
+   "id": "s04",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 4
+   }
+  },
+  {
+   "id": "s05",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 5
+   }
+  },
+  {
+   "id": "s06",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 6
+   }
+  },
+  {
+   "id": "s07",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 7
+   }
+  },
+  {
+   "id": "s08",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 8
+   }
+  },
+  {
+   "id": "s09",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 9
+   }
+  },
+  {
+   "id": "s10",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 10
+   }
+  },
+  {
+   "id": "s11",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 11
+   }
+  },
+  {
+   "id": "s12",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 12
+   }
+  },
+  {
+   "id": "s13",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 13
+   }
+  },
+  {
+   "id": "s14",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 14
+   }
+  },
+  {
+   "id": "s15",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 15
+   }
+  },
+  {
+   "id": "s16",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 16
+   }
+  },
+  {
+   "id": "s17",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 17
+   }
+  },
+  {
+   "id": "s18",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 18
+   }
+  },
+  {
+   "id": "s19",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 19
+   }
+  },
+  {
+   "id": "s20",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 20
+   }
+  },
+  {
+   "id": "s21",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 21
+   }
+  },
+  {
+   "id": "s22",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 22
+   }
+  },
+  {
+   "id": "s23",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 23
+   }
+  },
+  {
+   "id": "s24",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 24
+   }
+  },
+  {
+   "id": "s25",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 25
+   }
+  },
+  {
+   "id": "s26",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 26
+   }
+  },
+  {
+   "id": "s27",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 27
+   }
+  },
+  {
+   "id": "s28",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 28
+   }
+  },
+  {
+   "id": "s29",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 29
+   }
+  },
+  {
+   "id": "s30",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 30
+   }
+  },
+  {
+   "id": "s31",
+   "op": "start",
+   "workflow": "one",
+   "input": {
+    "n": 31
+   }
+  },
+  {
+   "id": "d00",
+   "op": "waitForCompletion",
+   "run": "s00",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d01",
+   "op": "waitForCompletion",
+   "run": "s01",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d02",
+   "op": "waitForCompletion",
+   "run": "s02",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d03",
+   "op": "waitForCompletion",
+   "run": "s03",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d04",
+   "op": "waitForCompletion",
+   "run": "s04",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d05",
+   "op": "waitForCompletion",
+   "run": "s05",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d06",
+   "op": "waitForCompletion",
+   "run": "s06",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d07",
+   "op": "waitForCompletion",
+   "run": "s07",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d08",
+   "op": "waitForCompletion",
+   "run": "s08",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d09",
+   "op": "waitForCompletion",
+   "run": "s09",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d10",
+   "op": "waitForCompletion",
+   "run": "s10",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d11",
+   "op": "waitForCompletion",
+   "run": "s11",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d12",
+   "op": "waitForCompletion",
+   "run": "s12",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d13",
+   "op": "waitForCompletion",
+   "run": "s13",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d14",
+   "op": "waitForCompletion",
+   "run": "s14",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d15",
+   "op": "waitForCompletion",
+   "run": "s15",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d16",
+   "op": "waitForCompletion",
+   "run": "s16",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d17",
+   "op": "waitForCompletion",
+   "run": "s17",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d18",
+   "op": "waitForCompletion",
+   "run": "s18",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d19",
+   "op": "waitForCompletion",
+   "run": "s19",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d20",
+   "op": "waitForCompletion",
+   "run": "s20",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d21",
+   "op": "waitForCompletion",
+   "run": "s21",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d22",
+   "op": "waitForCompletion",
+   "run": "s22",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d23",
+   "op": "waitForCompletion",
+   "run": "s23",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d24",
+   "op": "waitForCompletion",
+   "run": "s24",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d25",
+   "op": "waitForCompletion",
+   "run": "s25",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d26",
+   "op": "waitForCompletion",
+   "run": "s26",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d27",
+   "op": "waitForCompletion",
+   "run": "s27",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d28",
+   "op": "waitForCompletion",
+   "run": "s28",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d29",
+   "op": "waitForCompletion",
+   "run": "s29",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d30",
+   "op": "waitForCompletion",
+   "run": "s30",
+   "timeoutMs": 120000
+  },
+  {
+   "id": "d31",
+   "op": "waitForCompletion",
+   "run": "s31",
+   "timeoutMs": 120000
+  }
+ ]
+}

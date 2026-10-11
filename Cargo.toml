@@ -1,0 +1,80 @@
+[workspace]
+resolver = "3"
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/control-plane", "apps/execution-engine", "apps/sandbox-runner", "tests"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+repository = "https://github.com/ortisun/sagat-octopus-orchestrator"
+publish = false
+
+# Dependencies are declared once here and inherited with `workspace = true`.
+# Layering rules (enforced by scripts/check-architecture.py) restrict which crate may use what.
+[workspace.dependencies]
+sagat-domain = { path = "crates/domain" }
+sagat-application = { path = "crates/application" }
+sagat-infra-postgres = { path = "crates/infra-postgres" }
+sagat-telemetry = { path = "crates/telemetry" }
+sagat-api-http = { path = "crates/api-http" }
+sagat-api-grpc = { path = "crates/api-grpc" }
+sagat-infra-nats = { path = "crates/infra-nats" }
+sagat-infra-egress = { path = "crates/infra-egress" }
+sagat-infra-connectors = { path = "crates/infra-connectors" }
+sagat-infra-secrets = { path = "crates/infra-secrets" }
+sagat-infra-expr = { path = "crates/infra-expr" }
+sagat-infra-ir = { path = "crates/infra-ir" }
+sagat-infra-sandbox = { path = "crates/infra-sandbox" }
+sagat-infra-schema = { path = "crates/infra-schema" }
+sagat-scheduler = { path = "crates/scheduler" }
+sagat-control-plane = { path = "apps/control-plane" }
+sagat-execution-engine = { path = "apps/execution-engine" }
+sagat-sandbox-runner = { path = "apps/sandbox-runner" }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "macros", "uuid", "time", "json"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "nats", "kafka", "elasticmq", "watchdog"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path"] }
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "service", "server", "http1"] }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+# Only for `MetricKindMask` (idle expiry of series); the exporter already depends on it.
+metrics-util = { version = "0.20", default-features = false }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tower-http = { version = "0.7", default-features = false, features = ["catch-panic", "limit", "timeout"] }
+tokio = { version = "1", default-features = false }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "json", "env-filter", "ansi"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
+# gRPC (worker protocol). The .proto is compiled by `protox` (pure Rust) so builds need no `protoc`.
+# NATS JetStream (outbox hints). Only the JetStream client is needed.
+async-nats = { version = "0.50", default-features = false, features = ["jetstream", "ring", "nkeys", "server_2_10"] }
+tonic = { version = "0.14", features = ["tls-ring"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+prost = "0.14"
+protox = "0.10"
+tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
+uuid = { version = "1", default-features = false, features = ["std", "v4", "v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Release builds keep unwinding on purpose: the HTTP layer contains handler panics (CatchPanicLayer).
+[profile.release]
+lto = "thin"
+strip = "symbols"

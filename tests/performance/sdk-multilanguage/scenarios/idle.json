@@ -1,0 +1,67 @@
+{
+ "name": "perf-idle",
+ "description": "Three workers (16 in flight each) with nothing to do for eight seconds: the platform counts the PollTasks they make. A worker that polls in a loop would make hundreds.",
+ "workflows": {
+  "one": {
+   "name": "perf-one",
+   "program": [
+    {
+     "op": "step",
+     "id": "work",
+     "activity": "perf.work"
+    }
+   ]
+  }
+ },
+ "workers": {
+  "w1": {
+   "workerName": "perf-idle-1",
+   "maxInflight": 16,
+   "autostart": true,
+   "activities": {
+    "perf.work": {
+     "behavior": {
+      "returns": {
+       "ok": true
+      }
+     }
+    }
+   }
+  },
+  "w2": {
+   "workerName": "perf-idle-2",
+   "maxInflight": 16,
+   "autostart": true,
+   "activities": {
+    "perf.work": {
+     "behavior": {
+      "returns": {
+       "ok": true
+      }
+     }
+    }
+   }
+  },
+  "w3": {
+   "workerName": "perf-idle-3",
+   "maxInflight": 16,
+   "autostart": true,
+   "activities": {
+    "perf.work": {
+     "behavior": {
+      "returns": {
+       "ok": true
+      }
+     }
+    }
+   }
+  }
+ },
+ "steps": [
+  {
+   "id": "idle",
+   "op": "sleep",
+   "ms": 8000
+  }
+ ]
+}

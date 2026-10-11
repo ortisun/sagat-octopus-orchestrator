@@ -1,0 +1,279 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "echo",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<createdAt+3600s>",
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "worker",
+      "ok": true,
+      "op": "startWorker",
+      "result": {
+        "protocolVersion": "1.2"
+      }
+    },
+    {
+      "id": "echo-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<createdAt+3600s>",
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "big",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    },
+    {
+      "id": "big-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "FAILED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:5>",
+        "workflowId": "<uuid:6>"
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": "PAYLOAD_TOO_LARGE",
+          "forward": null,
+          "id": "big",
+          "kind": "FORWARD",
+          "status": "FAILED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "FAILED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "first",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "second",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "ser.first",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:first",
+        "input": {
+          "decimal": "12345678901234567890.123456789",
+          "emptyList": [],
+          "emptyObject": {},
+          "escapes": "quote \" backslash \\ tab \t newline \n",
+          "fraction": 0.1,
+          "half": 0.5,
+          "list": [
+            1,
+            "two",
+            null,
+            {
+              "deep": [
+                true,
+                false
+              ]
+            }
+          ],
+          "maxSafe": 9007199254740991,
+          "money": "19.90",
+          "negative": -42,
+          "nothing": null,
+          "text": "ação € 😀",
+          "zero": 0
+        },
+        "kind": "activity",
+        "node": "first",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "ser.second",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:second",
+        "input": {
+          "decimal": "12345678901234567890.123456789",
+          "emptyList": [],
+          "emptyObject": {},
+          "escapes": "quote \" backslash \\ tab \t newline \n",
+          "fraction": 0.1,
+          "half": 0.5,
+          "list": [
+            1,
+            "two",
+            null,
+            {
+              "deep": [
+                true,
+                false
+              ]
+            }
+          ],
+          "maxSafe": 9007199254740991,
+          "money": "19.90",
+          "negative": -42,
+          "nothing": null,
+          "text": "ação € 😀",
+          "zero": 0
+        },
+        "kind": "activity",
+        "node": "second",
+        "outcome": "returned",
+        "steps": {
+          "first": {
+            "decimal": "12345678901234567890.123456789",
+            "emptyList": [],
+            "emptyObject": {},
+            "escapes": "quote \" backslash \\ tab \t newline \n",
+            "fraction": 0.1,
+            "half": 0.5,
+            "list": [
+              1,
+              "two",
+              null,
+              {
+                "deep": [
+                  true,
+                  false
+                ]
+              }
+            ],
+            "maxSafe": 9007199254740991,
+            "money": "19.90",
+            "negative": -42,
+            "nothing": null,
+            "text": "ação € 😀",
+            "zero": 0
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:1>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "ser.big",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:4>:big",
+        "input": {},
+        "kind": "activity",
+        "node": "big",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:2>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

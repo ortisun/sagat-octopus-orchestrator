@@ -1,0 +1,114 @@
+{
+  "name": "worker-shutdown",
+  "description": "SPEC §6.4/§6.8: a host that is stopped while its handler runs cancels the handler's token with the reason `shutdown`; a handler that then raises its cancellation error is NOT reported (a deploy must not fail a step for good): the lease lapses and a second worker is given the step, which completes on its second attempt.",
+  "server": {
+    "leaseTtlSeconds": 3
+  },
+  "workflows": {
+    "work": {
+      "name": "shutdown-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "shutdown.work",
+          "options": {
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 50,
+              "maxDelayMs": 50,
+              "strategy": "fixed",
+              "jitter": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "shutdown-w1",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 150,
+      "activities": {
+        "shutdown.work": {
+          "behavior": {
+            "hang": true,
+            "onCancel": {
+              "raises": true
+            }
+          }
+        }
+      }
+    },
+    "w2": {
+      "workerName": "shutdown-w2",
+      "maxInflight": 1,
+      "autostart": false,
+      "heartbeatIntervalMs": 150,
+      "activities": {
+        "shutdown.work": {
+          "behavior": {
+            "returns": {
+              "second": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start",
+      "op": "start",
+      "workflow": "work",
+      "input": {
+        "n": 1
+      }
+    },
+    {
+      "id": "running",
+      "op": "awaitJournal",
+      "run": "start",
+      "eventType": "step.started",
+      "stepId": "work",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "deploy",
+      "op": "stopWorker",
+      "worker": "w1",
+      "timeoutMs": 300
+    },
+    {
+      "id": "w1-ended",
+      "op": "awaitWorkerLog",
+      "worker": "w1",
+      "count": 1,
+      "timeoutMs": 20000
+    },
+    {
+      "id": "lapse",
+      "op": "control",
+      "action": "expireLease",
+      "run": "start",
+      "node": "work"
+    },
+    {
+      "id": "second",
+      "op": "startWorker",
+      "worker": "w2"
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "start",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "journal",
+      "op": "events",
+      "run": "start"
+    }
+  ]
+}

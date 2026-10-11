@@ -1,0 +1,196 @@
+{
+  "name": "signals-and-events",
+  "description": "US01/US02: a step that waits for an event is woken by a signal to the run or by an event published to the namespace; a signal nobody waits for is a canonical conflict; the same event id twice is a duplicate; a wait that times out takes its timeout branch. The runs are released one after the other, 700 ms apart, because a worker is leased its tasks in the order they became ready.",
+  "workflows": {
+    "waiting": {
+      "name": "waiting-flow",
+      "program": [
+        {
+          "op": "waitForEvent",
+          "id": "paid",
+          "options": {
+            "eventType": "payment.confirmed",
+            "correlationExpr": "input.orderId",
+            "timeoutMs": 600000,
+            "onTimeout": "gave-up"
+          }
+        },
+        {
+          "op": "step",
+          "id": "fulfil",
+          "activity": "events.fulfil"
+        },
+        {
+          "op": "end",
+          "id": "fulfilled"
+        },
+        {
+          "op": "step",
+          "id": "gave-up",
+          "activity": "events.give-up"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "events-worker",
+      "maxInflight": 1,
+      "autostart": false,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "events.fulfil": {
+          "behavior": {
+            "echo": true
+          }
+        },
+        "events.give-up": {
+          "behavior": {
+            "returns": {
+              "gaveUp": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "by-event",
+      "op": "start",
+      "workflow": "waiting",
+      "input": {
+        "orderId": "ord-event-{{unique}}"
+      }
+    },
+    {
+      "id": "by-signal",
+      "op": "start",
+      "workflow": "waiting",
+      "input": {
+        "orderId": "ord-signal-{{unique}}"
+      }
+    },
+    {
+      "id": "by-timeout",
+      "op": "start",
+      "workflow": "waiting",
+      "input": {
+        "orderId": "ord-timeout-{{unique}}"
+      }
+    },
+    {
+      "id": "settle",
+      "op": "sleep",
+      "ms": 600
+    },
+    {
+      "id": "nobody-waits-for-this",
+      "op": "signal",
+      "run": "by-signal",
+      "name": "no.such.signal",
+      "payload": {
+        "x": 1
+      }
+    },
+    {
+      "id": "signal",
+      "op": "signal",
+      "run": "by-signal",
+      "name": "payment.confirmed",
+      "payload": {
+        "paid": "12.50"
+      }
+    },
+    {
+      "id": "after-signal",
+      "op": "sleep",
+      "ms": 700
+    },
+    {
+      "id": "event",
+      "op": "publishEvent",
+      "type": "payment.confirmed",
+      "eventId": "evt-{{unique}}-1",
+      "correlationKey": "ord-event-{{unique}}",
+      "data": {
+        "paid": "7.00"
+      }
+    },
+    {
+      "id": "event-again",
+      "op": "publishEvent",
+      "type": "payment.confirmed",
+      "eventId": "evt-{{unique}}-1",
+      "correlationKey": "ord-event-{{unique}}",
+      "data": {
+        "paid": "7.00"
+      }
+    },
+    {
+      "id": "event-unwanted",
+      "op": "publishEvent",
+      "type": "payment.confirmed",
+      "eventId": "evt-{{unique}}-2",
+      "correlationKey": "nobody-{{unique}}",
+      "data": {
+        "paid": "1.00"
+      }
+    },
+    {
+      "id": "after-event-unwanted",
+      "op": "sleep",
+      "ms": 700
+    },
+    {
+      "id": "timeout",
+      "op": "control",
+      "action": "elapseTimer",
+      "run": "by-timeout",
+      "node": "paid"
+    },
+    {
+      "id": "after-timeout",
+      "op": "sleep",
+      "ms": 700
+    },
+    {
+      "id": "worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "event-done",
+      "op": "waitForCompletion",
+      "run": "by-event",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "signal-done",
+      "op": "waitForCompletion",
+      "run": "by-signal",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "timeout-done",
+      "op": "waitForCompletion",
+      "run": "by-timeout",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "event-journal",
+      "op": "events",
+      "run": "by-event"
+    },
+    {
+      "id": "signal-journal",
+      "op": "events",
+      "run": "by-signal"
+    },
+    {
+      "id": "timeout-journal",
+      "op": "events",
+      "run": "by-timeout"
+    }
+  ]
+}

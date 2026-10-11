@@ -47,7 +47,7 @@ apps/execution-engine/src/main.rs
 tests/contract/
 tests/integration/
 tests/fault/
-tests/e2e/002-durable-execution/
+tests/e2e/durable-execution/
 ```
 
 ## Implementation phases

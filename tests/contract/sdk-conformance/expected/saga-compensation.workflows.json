@@ -1,0 +1,121 @@
+{
+  "canonical": {
+    "not-applied": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"pay2\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"not-applied-flow\"},\"nodes\":[{\"activity\":\"saga.pay2\",\"id\":\"pay2\",\"reconcileWith\":\"saga.lookup-none\",\"retry\":{\"initialDelayMs\":50,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":50,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}",
+    "reconcile": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"pay\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"reconcile-flow\"},\"nodes\":[{\"activity\":\"saga.pay\",\"id\":\"pay\",\"next\":\"receipt\",\"reconcileWith\":\"saga.lookup\",\"retry\":{\"maxAttempts\":1},\"type\":\"activity\"},{\"activity\":\"saga.receipt\",\"id\":\"receipt\",\"type\":\"activity\"}]}",
+    "saga": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"tx\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"saga-flow\"},\"nodes\":[{\"begin\":\"reserve\",\"cancelPolicy\":\"compensate_completed\",\"id\":\"tx\",\"next\":\"notify\",\"type\":\"saga\"},{\"activity\":\"saga.notify\",\"id\":\"notify\",\"type\":\"activity\"},{\"activity\":\"saga.reserve\",\"compensateWith\":\"saga.release\",\"id\":\"reserve\",\"next\":\"charge\",\"type\":\"activity\"},{\"activity\":\"saga.charge\",\"compensateWith\":\"saga.refund\",\"id\":\"charge\",\"next\":\"ship\",\"type\":\"activity\"},{\"activity\":\"saga.ship\",\"id\":\"ship\",\"retry\":{\"maxAttempts\":1},\"type\":\"activity\"}]}",
+    "undecided": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"pay3\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"undecided-flow\"},\"nodes\":[{\"activity\":\"saga.pay3\",\"id\":\"pay3\",\"reconcileWith\":\"saga.lookup-unknown\",\"retry\":{\"maxAttempts\":1},\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "not-applied": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "pay2",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "not-applied-flow"
+      },
+      "nodes": [
+        {
+          "activity": "saga.pay2",
+          "id": "pay2",
+          "reconcileWith": "saga.lookup-none",
+          "retry": {
+            "initialDelayMs": 50,
+            "jitter": false,
+            "maxAttempts": 3,
+            "maxDelayMs": 50,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "reconcile": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "pay",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "reconcile-flow"
+      },
+      "nodes": [
+        {
+          "activity": "saga.pay",
+          "id": "pay",
+          "next": "receipt",
+          "reconcileWith": "saga.lookup",
+          "retry": {
+            "maxAttempts": 1
+          },
+          "type": "activity"
+        },
+        {
+          "activity": "saga.receipt",
+          "id": "receipt",
+          "type": "activity"
+        }
+      ]
+    },
+    "saga": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "tx",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "saga-flow"
+      },
+      "nodes": [
+        {
+          "begin": "reserve",
+          "cancelPolicy": "compensate_completed",
+          "id": "tx",
+          "next": "notify",
+          "type": "saga"
+        },
+        {
+          "activity": "saga.notify",
+          "id": "notify",
+          "type": "activity"
+        },
+        {
+          "activity": "saga.reserve",
+          "compensateWith": "saga.release",
+          "id": "reserve",
+          "next": "charge",
+          "type": "activity"
+        },
+        {
+          "activity": "saga.charge",
+          "compensateWith": "saga.refund",
+          "id": "charge",
+          "next": "ship",
+          "type": "activity"
+        },
+        {
+          "activity": "saga.ship",
+          "id": "ship",
+          "retry": {
+            "maxAttempts": 1
+          },
+          "type": "activity"
+        }
+      ]
+    },
+    "undecided": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "pay3",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "undecided-flow"
+      },
+      "nodes": [
+        {
+          "activity": "saga.pay3",
+          "id": "pay3",
+          "reconcileWith": "saga.lookup-unknown",
+          "retry": {
+            "maxAttempts": 1
+          },
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

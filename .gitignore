@@ -1,0 +1,28 @@
+# Build output
+/target/
+
+# Local environment and secrets (never commit)
+.env
+.env.*
+!.env.example
+/infra/docker/runner.token
+
+# Tooling state that is not part of the project
+/.agents/solomon/state/
+.DS_Store
+*.swp
+
+# Isolated worktrees created by agents
+/.claude/worktrees/
+
+# SDK build output and toolchain state
+/sdks/*/node_modules/
+/sdks/*/dist/
+/sdks/python/.venv/
+/sdks/python/**/__pycache__/
+/sdks/python/*.egg-info/
+/sdks/go/bin/
+/sdks/dotnet/**/bin/
+/sdks/dotnet/**/obj/
+/sdks/java/**/target/
+/sdks/**/.conformance/

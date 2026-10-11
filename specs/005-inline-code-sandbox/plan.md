@@ -35,17 +35,27 @@ These checks indicate conformance **of the design**, not approval of the impleme
 
 ## Project Structure
 
+The plan proposed `crates/script-registry`, `crates/sandbox`, `apps/worker-supervisor` and a Studio editor. As built (ADR-0013, G109, G110), by the same rule as feature 004: a crate boundary has to buy isolation, and these would have had to import the whole run state or the whole application layer for none.
+
 ```text
-crates/script-registry/src/builds.rs
-crates/script-registry/src/registry.rs
-crates/sandbox/src/policy.rs
-crates/sandbox/src/supervisor.rs
-apps/worker-supervisor/src/main.rs
-frontend/apps/studio/src/features/scripts/Editor.tsx
-tests/contract/
-tests/integration/
-tests/fault/
-tests/e2e/005-inline-code-sandbox/
+crates/domain/src/scripts.rs                       languages, source, lockfile, digest, limits and policy, versions, failures, redaction
+crates/domain/src/{identity,audit,quota}.rs        script:* permissions, the runner role, script.* audit, scripts / script_jobs quotas
+crates/application/src/scripts.rs                  ScriptService (authors), RunnerService (the runner), ports ScriptStore / RunnerStore / ScriptLookup
+crates/application/src/sandbox.rs                  Sandbox and HostCalls ports, the build key
+crates/application/src/script_signing.rs           Ed25519 signer and verifier of artifacts
+crates/infra-sandbox/                              the container driver, the JSON-line protocol, the lockfile policy, the shims (Node, Python)
+crates/infra-schema/                               JSON Schema: check a schema, validate without echoing, infer from a value
+crates/infra-postgres/src/scripts.rs               the SQL; migration 20261014000000_scripts
+crates/infra-ir/src/convert.rs                     a script node becomes the activity script.sha256-<hex>
+crates/api-http/src/routes/{scripts,runner}.rs     25 operations
+apps/control-plane                                 SAGAT_SCRIPT_SIGNING_KEY, SAGAT_SCRIPT_CEILING, `script-key`
+apps/sandbox-runner/                               the runner: builds, test runs and script steps in containers
+infra/docker/                                      the runner image and the `sandbox` compose profile
+tests/integration/inline-code-sandbox/{registry,sandbox}/   PostgreSQL (versions, leases, quotas, retention, migration) and real containers (isolation)
+tests/e2e/inline-code-sandbox/                 US01..US04 through the API, the worker protocol and the runner
+tests/fault/inline-code-sandbox/               runner death, restart, engine down, cancellation, room
+tests/contract/inline-code-sandbox/rest/       every operation against openapi.yaml
+tests/performance/inline-code-sandbox/         the benchmark; report in tests/performance/reports/
 ```
 
 ## Implementation phases

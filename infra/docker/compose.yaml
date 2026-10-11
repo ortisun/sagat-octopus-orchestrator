@@ -1,0 +1,201 @@
+# Local development environment (FR-001-005, US03).
+#
+#   cp infra/docker/.env.example infra/docker/.env      # then edit
+#   docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env up -d --build
+#
+# Everything is published on 127.0.0.1 only, on non-default host ports so it never collides with a
+# PostgreSQL, NATS or web server already running on this machine.
+#
+# NOT for production: development credentials, single instances, no TLS.
+
+name: sagat-octopus-orchestrator
+
+# Schema changes and development data run as the database owner ...
+x-owner-database-url: &owner-database-url
+  DATABASE_URL: postgres://${POSTGRES_USER:-sagat}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/docker/.env}@postgres:5432/${POSTGRES_DB:-sagat}
+
+# ... while the API serves requests as the least-privilege runtime role (created by postgres-init).
+x-app-database-url: &app-database-url
+  DATABASE_URL: postgres://sagat_app:${SAGAT_APP_PASSWORD:?set SAGAT_APP_PASSWORD in infra/docker/.env}@postgres:5432/${POSTGRES_DB:-sagat}
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp"]
+  # A runaway or abused process must not take the host down with it.
+  mem_limit: 512m
+  pids_limit: 256
+
+x-control-plane: &control-plane
+  <<: *hardening
+  image: sagat-octopus-orchestrator/control-plane:dev
+  build:
+    context: ../..
+    dockerfile: infra/docker/Dockerfile
+    target: control-plane
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sagat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in infra/docker/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-sagat}
+      SAGAT_APP_PASSWORD: ${SAGAT_APP_PASSWORD:?set SAGAT_APP_PASSWORD in infra/docker/.env}
+    ports:
+      - "127.0.0.1:${SAGAT_PG_PORT:-15432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs only when the volume is first created: after changing it, `docker compose down -v`.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sagat} -d ${POSTGRES_DB:-sagat}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Message broker. The execution engine publishes its task hints and run events here (JetStream);
+  # PostgreSQL stays the source of truth, so the stack works (by polling) even if this is down.
+  nats:
+    image: nats:2.14.6-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "127.0.0.1:${SAGAT_NATS_PORT:-14222}:4222"
+      - "127.0.0.1:${SAGAT_NATS_MONITOR_PORT:-18222}:8222"
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot job: applies pending migrations and exits. Idempotent; safe to run on every `up`.
+  migrate:
+    <<: *control-plane
+    command: ["migrate"]
+    environment:
+      <<: *owner-database-url
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  control-plane:
+    <<: *control-plane
+    environment:
+      <<: *app-database-url
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_OIDC_ISSUER: ${SAGAT_OIDC_ISSUER:?set SAGAT_OIDC_ISSUER in infra/docker/.env}
+      SAGAT_OIDC_AUDIENCE: ${SAGAT_OIDC_AUDIENCE:?set SAGAT_OIDC_AUDIENCE in infra/docker/.env}
+      SAGAT_OIDC_JWKS_URI: ${SAGAT_OIDC_JWKS_URI:?set SAGAT_OIDC_JWKS_URI in infra/docker/.env}
+      SAGAT_OIDC_TENANT_CLAIM: ${SAGAT_OIDC_TENANT_CLAIM:-tenant}
+      SAGAT_ALLOW_INSECURE_JWKS_HTTP: ${SAGAT_ALLOW_INSECURE_JWKS_HTTP:-false}
+      SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      # The key ring of the secret store (empty: the secret routes do not exist). The same ring
+      # must be given to the engine. Outside SAGAT_ENV=dev the API insists on being told that TLS
+      # is terminated in front of it, because it receives secret values.
+      SAGAT_SECRETS_KEYS: ${SAGAT_SECRETS_KEYS:-}
+      SAGAT_API_ALLOW_PLAINTEXT_SECRETS: ${SAGAT_API_ALLOW_PLAINTEXT_SECRETS:-false}
+      # The key that signs the artifacts of scripts (empty: the script routes do not exist). Make
+      # one with `docker run --rm sagat-octopus-orchestrator/control-plane:dev script-key`.
+      SAGAT_SCRIPT_SIGNING_KEY: ${SAGAT_SCRIPT_SIGNING_KEY:-}
+      SAGAT_SCRIPT_CEILING: ${SAGAT_SCRIPT_CEILING:-}
+    ports:
+      - "127.0.0.1:${SAGAT_API_PORT:-18080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The execution engine: the worker gRPC API, the scheduler loop and the NATS outbox dispatcher.
+  # Several replicas are safe. It authenticates workers with the same OIDC settings as the API.
+  execution-engine:
+    <<: *hardening
+    image: sagat-octopus-orchestrator/execution-engine:dev
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+      target: execution-engine
+    environment:
+      <<: *app-database-url
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_OIDC_ISSUER: ${SAGAT_OIDC_ISSUER:?set SAGAT_OIDC_ISSUER in infra/docker/.env}
+      SAGAT_OIDC_AUDIENCE: ${SAGAT_OIDC_AUDIENCE:?set SAGAT_OIDC_AUDIENCE in infra/docker/.env}
+      SAGAT_OIDC_JWKS_URI: ${SAGAT_OIDC_JWKS_URI:?set SAGAT_OIDC_JWKS_URI in infra/docker/.env}
+      SAGAT_OIDC_TENANT_CLAIM: ${SAGAT_OIDC_TENANT_CLAIM:-tenant}
+      SAGAT_ALLOW_INSECURE_JWKS_HTTP: ${SAGAT_ALLOW_INSECURE_JWKS_HTTP:-false}
+      SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      SAGAT_NATS_URL: nats://nats:4222
+      # The local broker has no TLS; outside SAGAT_ENV=dev the engine insists on it by default.
+      SAGAT_NATS_REQUIRE_TLS: ${SAGAT_NATS_REQUIRE_TLS:-false}
+      # The same key ring as the control plane, so workers can receive the secrets of their steps.
+      # The worker API here is plaintext HTTP/2; outside SAGAT_ENV=dev say that TLS is in front.
+      SAGAT_SECRETS_KEYS: ${SAGAT_SECRETS_KEYS:-}
+      SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS: ${SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS:-false}
+    ports:
+      - "127.0.0.1:${SAGAT_GRPC_PORT:-19000}:9000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The sandbox runner (profile `sandbox`, not started by default): it builds and runs scripts in
+  # containers of their own, through the engine's socket. THE SOCKET IS ROOT ON THE HOST THAT OWNS
+  # IT: this is a development convenience, not a deployment. Read docs/runbooks/scripts.md. It needs
+  # the token of a `runner` identity in infra/docker/runner.token and the group id of the socket.
+  sandbox-runner:
+    image: sagat-octopus-orchestrator/sandbox-runner:dev
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+      target: sandbox-runner
+    profiles: ["sandbox"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    # Compose reads the variables of every service, started or not, so this cannot be required: the
+    # default is a group that has no access to the socket, and a runner started without the real one
+    # stops with "the container engine could not be reached" instead of being given root's group.
+    group_add: ["${SAGAT_DOCKER_GID:-65534}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./runner.token:/run/secrets/runner.token:ro
+    environment:
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      SAGAT_RUNNER_API_URL: http://control-plane:8080/v1
+      SAGAT_RUNNER_GRPC_URL: http://execution-engine:9000
+      SAGAT_RUNNER_TOKEN_FILE: /run/secrets/runner.token
+      SAGAT_RUNNER_NAMESPACES: ${SAGAT_RUNNER_NAMESPACES:-}
+      SAGAT_RUNNER_TRUSTED_KEYS: ${SAGAT_RUNNER_TRUSTED_KEYS:-}
+    depends_on:
+      - control-plane
+      - execution-engine
+    restart: unless-stopped
+
+  # Development data: `docker compose --profile seed run --rm seed`. Idempotent.
+  seed:
+    <<: *control-plane
+    command: ["seed-dev"]
+    profiles: ["seed"]
+    environment:
+      <<: *owner-database-url
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_SEED_TENANT: ${SAGAT_SEED_TENANT:-dev}
+      SAGAT_SEED_ADMIN_SUBJECT: ${SAGAT_SEED_ADMIN_SUBJECT:-dev-admin}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  pgdata:
+  natsdata:

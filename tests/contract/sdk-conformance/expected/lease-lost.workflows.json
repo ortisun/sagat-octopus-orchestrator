@@ -1,0 +1,29 @@
+{
+  "canonical": {
+    "work": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lease-flow\"},\"nodes\":[{\"activity\":\"lease.work\",\"id\":\"work\",\"retry\":{\"initialDelayMs\":600000,\"jitter\":false,\"maxAttempts\":3,\"maxDelayMs\":600000,\"strategy\":\"fixed\"},\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "work": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lease-flow"
+      },
+      "nodes": [
+        {
+          "activity": "lease.work",
+          "id": "work",
+          "retry": {
+            "initialDelayMs": 600000,
+            "jitter": false,
+            "maxAttempts": 3,
+            "maxDelayMs": 600000,
+            "strategy": "fixed"
+          },
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

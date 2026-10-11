@@ -1,0 +1,205 @@
+{
+  "name": "failures-and-retries",
+  "description": "US02/US03: an activity that fails on purpose is retried by the server's policy and not by the SDK; the code and the retryable flag reach the run (the graph of each run is compared: node status, attempts, failureCode); an ordinary error is recorded as ACTIVITY_ERROR and retried like a retryable failure; OUTCOME_UNKNOWN is never retried blindly. That the safe message of an ordinary error holds its type and none of its text is a unit test of each SDK: the platform keeps only the code.",
+  "workflows": {
+    "flaky": {
+      "name": "flaky-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "flaky",
+          "activity": "retry.flaky",
+          "options": {
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 50,
+              "maxDelayMs": 50,
+              "strategy": "fixed",
+              "jitter": false
+            }
+          }
+        }
+      ]
+    },
+    "permanent": {
+      "name": "permanent-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "permanent",
+          "activity": "retry.permanent",
+          "options": {
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 50,
+              "maxDelayMs": 50,
+              "strategy": "fixed",
+              "jitter": false
+            }
+          }
+        }
+      ]
+    },
+    "throws": {
+      "name": "throws-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "throws",
+          "activity": "retry.throws",
+          "options": {
+            "retry": {
+              "maxAttempts": 2,
+              "initialDelayMs": 50,
+              "maxDelayMs": 50,
+              "strategy": "fixed",
+              "jitter": false
+            }
+          }
+        }
+      ]
+    },
+    "unknown": {
+      "name": "unknown-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "unknown",
+          "activity": "retry.unknown",
+          "options": {
+            "retry": {
+              "maxAttempts": 3,
+              "initialDelayMs": 50,
+              "maxDelayMs": 50,
+              "strategy": "fixed",
+              "jitter": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "failures-worker",
+      "maxInflight": 4,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "retry.flaky": {
+          "behavior": {
+            "failsUntilAttempt": 3,
+            "fails": {
+              "code": "PROVIDER_BUSY",
+              "message": "try again",
+              "retryable": true
+            },
+            "returns": {
+              "recovered": true
+            }
+          }
+        },
+        "retry.permanent": {
+          "behavior": {
+            "fails": {
+              "code": "INSUFFICIENT_FUNDS",
+              "message": "the account has no funds",
+              "retryable": false
+            }
+          }
+        },
+        "retry.throws": {
+          "behavior": {
+            "throws": "card 4111111111111111 declined for ada@example.com"
+          }
+        },
+        "retry.unknown": {
+          "behavior": {
+            "outcomeUnknown": "the provider timed out after the request was sent"
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "flaky",
+      "op": "start",
+      "workflow": "flaky",
+      "input": {
+        "case": "flaky"
+      }
+    },
+    {
+      "id": "flaky-done",
+      "op": "waitForCompletion",
+      "run": "flaky",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "flaky-journal",
+      "op": "events",
+      "run": "flaky"
+    },
+    {
+      "id": "permanent",
+      "op": "start",
+      "workflow": "permanent",
+      "input": {
+        "case": "permanent"
+      }
+    },
+    {
+      "id": "permanent-done",
+      "op": "waitForCompletion",
+      "run": "permanent",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "permanent-journal",
+      "op": "events",
+      "run": "permanent"
+    },
+    {
+      "id": "throws",
+      "op": "start",
+      "workflow": "throws",
+      "input": {
+        "case": "throws"
+      }
+    },
+    {
+      "id": "throws-done",
+      "op": "waitForCompletion",
+      "run": "throws",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "throws-journal",
+      "op": "events",
+      "run": "throws"
+    },
+    {
+      "id": "unknown",
+      "op": "start",
+      "workflow": "unknown",
+      "input": {
+        "case": "unknown"
+      }
+    },
+    {
+      "id": "unknown-wait",
+      "op": "sleep",
+      "ms": 1500
+    },
+    {
+      "id": "unknown-state",
+      "op": "get",
+      "run": "unknown"
+    },
+    {
+      "id": "unknown-journal",
+      "op": "events",
+      "run": "unknown"
+    }
+  ]
+}

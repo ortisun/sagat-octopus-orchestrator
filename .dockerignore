@@ -1,0 +1,6 @@
+target
+.git
+.agents
+**/.DS_Store
+infra/docker/.env
+node_modules
