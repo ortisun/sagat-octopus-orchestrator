@@ -9,9 +9,8 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::operations::{
-    AlertReader, AlertRecord, AuditEntry, AuditFilter, AuditStore, Candidate, DrainRecord,
-    MAX_CANDIDATES, MAX_PER_NAMESPACE, MonitorStore, Reconciled, Sample, Thresholds, WorkerAdmin,
-    WorkerView,
+    AlertReader, AlertRecord, AuditEntry, AuditFilter, AuditStore, Bounds, Candidate, Detection,
+    DrainRecord, MonitorStore, Reconciled, Sample, Short, Thresholds, WorkerAdmin, WorkerView,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::operations::{AlertKind, AlertState, Severity};
@@ -118,12 +117,11 @@ impl MonitorStore for PgRunStore {
         &self,
         kind: AlertKind,
         thresholds: &Thresholds,
-    ) -> Result<Vec<Candidate>, StoreError> {
-        let threshold = secs(thresholds.of(kind));
-        let per_namespace = i64::from(MAX_PER_NAMESPACE);
-        let limit = i64::from(MAX_CANDIDATES);
-        let sql = match kind {
-            AlertKind::OutboxStuck => {
+        bounds: &Bounds,
+    ) -> Result<Detection, StoreError> {
+        // The groups of the kind: a tenant, a namespace, what it is about, how many, how old.
+        let (groups, uses_threshold) = match kind {
+            AlertKind::OutboxStuck => (
                 "SELECT g.tenant_id, g.ns AS namespace_id, ''::text AS subject, g.items, g.oldest \
                  FROM (SELECT o.tenant_id, o.ns, count(*) AS items, \
                               extract(epoch FROM clock_timestamp() - min(o.created_at))::float8 AS oldest \
@@ -134,37 +132,47 @@ impl MonitorStore for PgRunStore {
                              WHERE delivered_at IS NULL \
                                AND created_at < clock_timestamp() - make_interval(secs => $1)) o \
                        JOIN namespaces n ON n.tenant_id = o.tenant_id AND n.id = o.ns \
-                       GROUP BY o.tenant_id, o.ns) g \
-                 ORDER BY g.oldest DESC LIMIT $2"
-            }
-            AlertKind::LeaseNotReaped => {
+                       GROUP BY o.tenant_id, o.ns) g",
+                true,
+            ),
+            AlertKind::LeaseNotReaped => (
                 "SELECT tenant_id, namespace_id, ''::text AS subject, count(*) AS items, \
                         extract(epoch FROM clock_timestamp() - min(lease_expires_at))::float8 AS oldest \
                  FROM steps \
                  WHERE status IN ('LEASED', 'RUNNING') \
                    AND lease_expires_at < clock_timestamp() - make_interval(secs => $1) \
-                 GROUP BY tenant_id, namespace_id ORDER BY oldest DESC LIMIT $2"
-            }
-            AlertKind::StepUnclaimed => {
-                "SELECT tenant_id, namespace_id, subject, items, oldest FROM ( \
-                     SELECT tenant_id, namespace_id, subject, items, oldest, \
-                            row_number() OVER (PARTITION BY tenant_id, namespace_id ORDER BY oldest DESC) AS rank \
-                     FROM (SELECT tenant_id, namespace_id, coalesce(activity, '') AS subject, count(*) AS items, \
-                                  extract(epoch FROM clock_timestamp() - min(ready_at))::float8 AS oldest \
-                           FROM steps \
-                           WHERE status = 'READY' AND ready_at < clock_timestamp() - make_interval(secs => $1) \
-                           GROUP BY tenant_id, namespace_id, coalesce(activity, '')) g) ranked \
-                 WHERE rank <= $2 ORDER BY oldest DESC LIMIT $3"
-            }
-            AlertKind::ReviewPending => {
+                 GROUP BY tenant_id, namespace_id",
+                true,
+            ),
+            // A step is "unclaimed" when a worker that served it would be given it: the conditions
+            // are those of the claim (`CLAIMABLE`). A run that is paused, a forward step of a run
+            // that is stopping, a compensation behind an open breaker are held back on purpose.
+            AlertKind::StepUnclaimed => (
+                "SELECT st.tenant_id, st.namespace_id, coalesce(st.activity, '') AS subject, count(*) AS items, \
+                        extract(epoch FROM clock_timestamp() - min(st.ready_at))::float8 AS oldest \
+                 FROM steps st \
+                 JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
+                 WHERE st.status = 'READY' \
+                   AND st.ready_at < clock_timestamp() - make_interval(secs => $1) \
+                   AND NOT r.paused \
+                   AND CASE WHEN st.kind = 'COMPENSATION' \
+                            THEN NOT EXISTS (SELECT 1 FROM compensation_breakers b \
+                                 WHERE b.tenant_id = st.tenant_id AND b.namespace_id = st.namespace_id \
+                                   AND b.activity = st.activity AND b.opened_until > clock_timestamp()) \
+                            ELSE (r.stop_reason IS NULL OR st.kind <> 'FORWARD') END \
+                 GROUP BY st.tenant_id, st.namespace_id, coalesce(st.activity, '')",
+                true,
+            ),
+            AlertKind::ReviewPending => (
                 "SELECT tenant_id, namespace_id, ''::text AS subject, count(*) AS items, \
                         extract(epoch FROM clock_timestamp() - min(updated_at))::float8 AS oldest \
                  FROM runs \
                  WHERE status = 'MANUAL_REVIEW' \
                    AND updated_at < clock_timestamp() - make_interval(secs => $1) \
-                 GROUP BY tenant_id, namespace_id ORDER BY oldest DESC LIMIT $2"
-            }
-            AlertKind::DeadItems => {
+                 GROUP BY tenant_id, namespace_id",
+                true,
+            ),
+            AlertKind::DeadItems => (
                 "SELECT tenant_id, namespace_id, subject, items, oldest FROM ( \
                      SELECT tenant_id, namespace_id, 'events'::text AS subject, count(*) AS items, \
                             extract(epoch FROM clock_timestamp() - min(received_at))::float8 AS oldest \
@@ -176,34 +184,86 @@ impl MonitorStore for PgRunStore {
                      UNION ALL \
                      SELECT tenant_id, namespace_id, 'connectors', count(*), \
                             extract(epoch FROM clock_timestamp() - min(received_at))::float8 \
-                     FROM connector_dead_letters GROUP BY tenant_id, namespace_id) d \
-                 ORDER BY oldest DESC LIMIT $1"
-            }
+                     FROM connector_dead_letters GROUP BY tenant_id, namespace_id) d",
+                false,
+            ),
         };
-        // Each statement takes exactly the parameters it uses, in this order.
+        // The bounds are enforced where the rows are ranked: the oldest first within a namespace and
+        // within a tenant, one row more than allowed so that it is known when a look stopped short,
+        // and then the oldest of what is left across everyone. One tenant with thousands of groups
+        // cannot fill the look and hide the others'.
+        let first = if uses_threshold { 2 } else { 1 };
+        let sql = format!(
+            "SELECT tenant_id, namespace_id, subject, items, oldest, nr FROM ( \
+                 SELECT d.*, row_number() OVER (PARTITION BY tenant_id ORDER BY oldest DESC) AS tr FROM ( \
+                     SELECT g.*, row_number() OVER (PARTITION BY tenant_id, namespace_id ORDER BY oldest DESC) AS nr \
+                     FROM ({groups}) g) d \
+                 WHERE nr <= ${ns} + 1) t \
+             WHERE tr <= ${tenant} + 1 \
+             ORDER BY oldest DESC LIMIT ${total} + 1",
+            ns = first,
+            tenant = first + 1,
+            total = first + 2,
+        );
         let query = sqlx::query(sqlx::AssertSqlSafe(sql));
-        let query = match kind {
-            AlertKind::OutboxStuck | AlertKind::LeaseNotReaped | AlertKind::ReviewPending => {
-                query.bind(threshold).bind(limit)
-            }
-            AlertKind::StepUnclaimed => query.bind(threshold).bind(per_namespace).bind(limit),
-            AlertKind::DeadItems => query.bind(limit),
+        let query = if uses_threshold {
+            query.bind(secs(thresholds.of(kind)))
+        } else {
+            query
         };
-        query
+        let rows = query
+            .bind(i64::from(bounds.per_namespace))
+            .bind(i64::from(bounds.per_tenant))
+            .bind(i64::from(bounds.total))
             .fetch_all(self.pool())
             .await
-            .map_err(store_error)?
-            .iter()
-            .map(|row| candidate_from_row(kind, row))
-            .collect()
+            .map_err(store_error)?;
+
+        let mut detection = Detection::default();
+        let mut per_tenant: std::collections::HashMap<TenantId, u32> =
+            std::collections::HashMap::new();
+        let cut = |detection: &mut Detection, short: Short| {
+            if !detection.short.contains(&short) {
+                detection.short.push(short);
+            }
+        };
+        // Rows come oldest first.
+        for row in &rows {
+            let candidate = candidate_from_row(kind, row)?;
+            let rank: i64 = col(row, "nr")?;
+            if rank > i64::from(bounds.per_namespace) {
+                cut(
+                    &mut detection,
+                    Short::Namespace(candidate.tenant_id, candidate.namespace_id),
+                );
+                continue;
+            }
+            let held = per_tenant.entry(candidate.tenant_id).or_default();
+            if *held >= bounds.per_tenant {
+                cut(&mut detection, Short::Tenant(candidate.tenant_id));
+                continue;
+            }
+            if detection.seen.len() >= bounds.total as usize {
+                cut(&mut detection, Short::Everything);
+                break;
+            }
+            *held += 1;
+            detection.seen.push(candidate);
+        }
+        // The query itself stopped at its limit: there may be more that it did not return.
+        if rows.len() > bounds.total as usize {
+            cut(&mut detection, Short::Everything);
+        }
+        Ok(detection)
     }
 
     async fn reconcile(
         &self,
         kind: AlertKind,
-        seen: &[Candidate],
+        detection: &Detection,
         runbook_base: &str,
     ) -> Result<Reconciled, StoreError> {
+        let seen = &detection.seen;
         let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
         let started: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *tx)
@@ -252,18 +312,58 @@ impl MonitorStore for PgRunStore {
                 out.fired.push(alert_from_row(&row)?);
             }
         }
-        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "UPDATE operational_alerts SET state = 'RESOLVED', resolved_at = clock_timestamp() \
-             WHERE kind = $1 AND state = 'FIRING' AND last_seen_at < $2 RETURNING {ALERT_COLUMNS}"
-        )))
-        .bind(kind.as_str())
-        .bind(started)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        // An alert that was not seen is resolved, except where the look did not see everything: an
+        // alert beyond a bound is no less real for not having been returned.
+        let everything = detection.short.contains(&Short::Everything);
+        let tenants: Vec<Uuid> = detection
+            .short
+            .iter()
+            .filter_map(|s| match s {
+                Short::Tenant(t) => Some(t.as_uuid()),
+                _ => None,
+            })
+            .collect();
+        let (short_tenants, short_namespaces): (Vec<Uuid>, Vec<Uuid>) = detection
+            .short
+            .iter()
+            .filter_map(|s| match s {
+                Short::Namespace(t, n) => Some((t.as_uuid(), n.as_uuid())),
+                _ => None,
+            })
+            .unzip();
+        let rows = if everything {
+            Vec::new()
+        } else {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE operational_alerts a SET state = 'RESOLVED', resolved_at = clock_timestamp() \
+                 WHERE a.kind = $1 AND a.state = 'FIRING' AND a.last_seen_at < $2 \
+                   AND a.tenant_id <> ALL($3::uuid[]) \
+                   AND NOT EXISTS (SELECT 1 FROM unnest($4::uuid[], $5::uuid[]) AS s(tenant_id, namespace_id) \
+                                   WHERE s.tenant_id = a.tenant_id AND s.namespace_id = a.namespace_id) \
+                 RETURNING {ALERT_COLUMNS}"
+            )))
+            .bind(kind.as_str())
+            .bind(started)
+            .bind(&tenants)
+            .bind(&short_tenants)
+            .bind(&short_namespaces)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?
+        };
         for row in &rows {
             out.resolved.push(alert_from_row(row)?);
         }
+        out.firing = u64::try_from(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM operational_alerts WHERE kind = $1 AND state = 'FIRING'",
+            )
+            .bind(kind.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?,
+        )
+        .unwrap_or(0);
         // Each change is announced to the namespace's subscribers in the same transaction.
         let now: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *tx)

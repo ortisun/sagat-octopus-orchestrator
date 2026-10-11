@@ -468,6 +468,7 @@ impl EngineConfig {
                         monitor_defaults.thresholds.review,
                     )?,
                 },
+                bounds: monitor_defaults.bounds,
                 runbook_base: get("SAGAT_RUNBOOK_BASE_URL")
                     .map(|v| v.trim().to_owned())
                     .filter(|v| !v.is_empty())

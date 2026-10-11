@@ -8,13 +8,15 @@
 
 use std::time::Duration;
 
-use sagat_application::operations::{MonitorStore, Reconciled, Sample, Thresholds};
+use sagat_application::operations::{Bounds, MonitorStore, Reconciled, Sample, Thresholds};
 use sagat_domain::operations::AlertKind;
 
 /// Tunable limits of the monitor.
 #[derive(Debug, Clone)]
 pub struct MonitorSettings {
     pub thresholds: Thresholds,
+    /// How many alerts of a kind a look may produce.
+    pub bounds: Bounds,
     /// The URL or path of `alerts.md`, to which each alert's anchor is appended.
     pub runbook_base: String,
     /// Resolved alerts are kept this long.
@@ -25,6 +27,7 @@ impl Default for MonitorSettings {
     fn default() -> Self {
         Self {
             thresholds: Thresholds::default(),
+            bounds: Bounds::default(),
             runbook_base: "docs/runbooks/alerts.md".to_owned(),
             retention: Duration::from_secs(30 * 24 * 3600),
         }
@@ -92,8 +95,12 @@ impl<S: MonitorStore> Monitor<S> {
             Err(error) => tracing::warn!(%error, "could not sample the queues"),
         }
         for kind in AlertKind::ALL {
-            let seen = match self.store.detect(kind, &self.settings.thresholds).await {
-                Ok(seen) => seen,
+            let detection = match self
+                .store
+                .detect(kind, &self.settings.thresholds, &self.settings.bounds)
+                .await
+            {
+                Ok(detection) => detection,
                 Err(error) => {
                     tracing::warn!(%error, kind = kind.as_str(), "could not look for an alert condition");
                     metrics::counter!("alert_checks_failed_total", "kind" => kind.as_str())
@@ -104,13 +111,13 @@ impl<S: MonitorStore> Monitor<S> {
             };
             match self
                 .store
-                .reconcile(kind, &seen, &self.settings.runbook_base)
+                .reconcile(kind, &detection, &self.settings.runbook_base)
                 .await
             {
                 Ok(changed) => {
                     #[allow(clippy::cast_precision_loss)] // a gauge
                     metrics::gauge!("alerts_firing", "kind" => kind.as_str())
-                        .set(seen.len() as f64);
+                        .set(changed.firing as f64);
                     round.fired += u32::try_from(changed.fired.len()).unwrap_or(u32::MAX);
                     round.resolved += u32::try_from(changed.resolved.len()).unwrap_or(u32::MAX);
                     announce(&changed, &self.settings.runbook_base);

@@ -9,7 +9,7 @@ use std::time::Duration;
 use reqwest::Method;
 use sagat_application::error::StoreError;
 use sagat_application::operations::{
-    Candidate, MAX_PER_NAMESPACE, MonitorStore, Reconciled, Sample, Thresholds,
+    Bounds, Detection, MAX_PER_NAMESPACE, MonitorStore, Reconciled, Sample, Thresholds,
 };
 use sagat_domain::operations::AlertKind;
 use sagat_infra_postgres::PgRunStore;
@@ -35,22 +35,23 @@ impl MonitorStore for Blinkable {
         &self,
         kind: AlertKind,
         thresholds: &Thresholds,
-    ) -> Result<Vec<Candidate>, StoreError> {
+        bounds: &Bounds,
+    ) -> Result<Detection, StoreError> {
         if self.broken.load(Ordering::SeqCst) && self.blind_to == Some(kind) {
             return Err(StoreError::Unavailable {
                 detail: "the query timed out".to_owned(),
             });
         }
-        self.inner.detect(kind, thresholds).await
+        self.inner.detect(kind, thresholds, bounds).await
     }
 
     async fn reconcile(
         &self,
         kind: AlertKind,
-        seen: &[Candidate],
+        detection: &Detection,
         runbook: &str,
     ) -> Result<Reconciled, StoreError> {
-        self.inner.reconcile(kind, seen, runbook).await
+        self.inner.reconcile(kind, detection, runbook).await
     }
 
     async fn sample(&self) -> Result<Sample, StoreError> {

@@ -63,8 +63,50 @@ impl Thresholds {
 /// Most alerts of one kind kept for one namespace in one look: a namespace with a thousand
 /// activities nobody serves has a few alerts and not a thousand.
 pub const MAX_PER_NAMESPACE: u32 = 25;
+/// Most alerts of one kind kept for one tenant in one look: one tenant, however many namespaces it
+/// has, cannot crowd the others out of the look.
+pub const MAX_PER_TENANT: u32 = 100;
 /// Most groups one detection query returns.
 pub const MAX_CANDIDATES: u32 = 1000;
+
+/// How many alerts of a kind one look may produce, in a namespace, for a tenant, and in all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    pub per_namespace: u32,
+    pub per_tenant: u32,
+    pub total: u32,
+}
+
+impl Default for Bounds {
+    fn default() -> Self {
+        Self {
+            per_namespace: MAX_PER_NAMESPACE,
+            per_tenant: MAX_PER_TENANT,
+            total: MAX_CANDIDATES,
+        }
+    }
+}
+
+/// A part of the platform where a look stopped short of everything it found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Short {
+    /// More groups than a namespace is given alerts for.
+    Namespace(TenantId, NamespaceId),
+    /// More groups than a tenant is given alerts for.
+    Tenant(TenantId),
+    /// More groups than a look is given in all.
+    Everything,
+}
+
+/// What looking for one kind of condition found, and where it did not see everything.
+///
+/// An alert that is firing and not in `seen` is resolved, unless the look stopped short where it
+/// is: not having seen it is then no sign that it is gone.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Detection {
+    pub seen: Vec<Candidate>,
+    pub short: Vec<Short>,
+}
 
 /// A condition seen in a namespace.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +165,8 @@ impl AlertRecord {
 pub struct Reconciled {
     pub fired: Vec<AlertRecord>,
     pub resolved: Vec<AlertRecord>,
+    /// How many alerts of the kind are firing now, in all.
+    pub firing: u64,
 }
 
 /// A look at the platform's queues, for gauges: the totals the dashboards draw (FR-008-003).
@@ -163,15 +207,17 @@ pub trait MonitorStore: Send + Sync {
         &self,
         kind: AlertKind,
         thresholds: &Thresholds,
-    ) -> impl Future<Output = Result<Vec<Candidate>, StoreError>> + Send;
+        bounds: &Bounds,
+    ) -> impl Future<Output = Result<Detection, StoreError>> + Send;
 
     /// Makes the alerts of `kind` match what was seen: a candidate with no alert (or a resolved one)
-    /// begins to fire; a firing alert with no candidate is resolved. Every change is written with
-    /// the obligation to tell the namespace's subscribers, in the same transaction.
+    /// begins to fire; a firing alert with no candidate is resolved, except where the look stopped
+    /// short. Every change is written with the obligation to tell the namespace's subscribers, in
+    /// the same transaction.
     fn reconcile(
         &self,
         kind: AlertKind,
-        seen: &[Candidate],
+        detection: &Detection,
         runbook_base: &str,
     ) -> impl Future<Output = Result<Reconciled, StoreError>> + Send;
 

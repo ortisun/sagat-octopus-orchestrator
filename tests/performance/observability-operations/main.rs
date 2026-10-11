@@ -511,7 +511,7 @@ async fn the_note_costs_a_writer_little_the_projector_keeps_up_and_the_monitor_s
         for _ in 0..ROUNDS_PER_LEVEL {
             let t = Instant::now();
             w.store
-                .detect(kind, &worst_case.thresholds)
+                .detect(kind, &worst_case.thresholds, &worst_case.bounds)
                 .await
                 .expect("detect");
             samples.push(t.elapsed());
