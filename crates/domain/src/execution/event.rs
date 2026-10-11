@@ -203,6 +203,12 @@ impl FailureCode {
         Self::system("SECRET_IN_OUTPUT")
     }
 
+    /// An operator held the step for a person to decide, before it ran.
+    #[must_use]
+    pub fn marked_for_review() -> Self {
+        Self::system("MARKED_FOR_REVIEW")
+    }
+
     /// Completing the step would make the run retain more output than allowed.
     #[must_use]
     pub fn run_data_limit() -> Self {
@@ -354,6 +360,15 @@ pub enum ChildOutcome {
     Succeeded,
     /// The child did not succeed (or could not be started); the code says why.
     Failed(FailureCode),
+}
+
+/// Why an event happened: a closed `kind` (a failure, a retry, a review, a stop, an operator's
+/// decision, a request, the outcome of the run) and the `code` that goes with it. What a timeline
+/// shows next to a transition (US01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cause {
+    pub kind: &'static str,
+    pub code: String,
 }
 
 /// Names one attempt of one step. A completion or failure is only valid for the attempt and
@@ -623,6 +638,76 @@ impl RunEvent {
             | Self::RunResumed
             | Self::RunStopRequested { .. }
             | Self::RunFinished { .. } => None,
+        }
+    }
+
+    /// Every step this event creates or changes: the one it names and the ones it activates (the
+    /// next steps of a routing, the branches of a fork, the first step of a saga, the undo of each
+    /// planned entry, the lookup of a step that may have happened). The runtime graph a client holds
+    /// stays equal to the platform's only if a change is reported for each of them (D141).
+    #[must_use]
+    pub fn changed_nodes(&self) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = self.node().cloned().into_iter().collect();
+        match self {
+            Self::RunStarted { entrypoint } => nodes.push(entrypoint.clone()),
+            Self::StepRouted { activated, .. } => nodes.extend(activated.iter().cloned()),
+            Self::ParallelForked { branches, .. } => nodes.extend(branches.iter().cloned()),
+            Self::SagaEntered { begin, .. } => nodes.push(begin.clone()),
+            Self::CompensationPlanned { entries, .. } => {
+                nodes.extend(entries.iter().map(|entry| entry.node.compensation()));
+            }
+            Self::ReconciliationRequested { node, .. } => nodes.push(node.reconciliation()),
+            _ => {}
+        }
+        nodes
+    }
+
+    /// Why this happened, when the event is the result of something going wrong, an operator's
+    /// choice or the clock: the cause a timeline shows next to it.
+    #[must_use]
+    pub fn cause(&self) -> Option<Cause> {
+        let cause = |kind: &'static str, code: &str| {
+            Some(Cause {
+                kind,
+                code: code.to_owned(),
+            })
+        };
+        match self {
+            Self::StepFailed { code, .. } => cause("failure", code.as_str()),
+            Self::StepRetryScheduled { code, .. } => cause("retry", code.as_str()),
+            Self::StepNeedsReview { code, .. } => cause("review", code.as_str()),
+            Self::SagaAborting { cause: code, .. } => cause("abort", code.as_str()),
+            Self::ReconciliationRequested { cause: code, .. } => {
+                cause("unknown_outcome", code.as_str())
+            }
+            Self::ReconciliationConcluded { verdict, .. } => {
+                cause("reconciliation", verdict.as_str())
+            }
+            Self::RunStopRequested { reason, code } => cause(
+                "stop",
+                code.as_ref()
+                    .map_or_else(|| reason.as_str(), FailureCode::as_str),
+            ),
+            Self::WaitTimedOut { .. } => cause("timeout", "WAIT_TIMED_OUT"),
+            Self::StepCancelRequested { .. } => cause("cancel", "REQUESTED"),
+            Self::StepRetryRequested { .. } => cause("decision", "RETRY"),
+            Self::StepSkipped { .. } => cause("decision", "SKIP"),
+            Self::StepResolved { outcome, .. } => match outcome {
+                ReviewOutcome::Succeeded => cause("decision", "SUCCEEDED"),
+                ReviewOutcome::Failed(code) => cause("decision", code.as_str()),
+            },
+            Self::ChildFinished {
+                outcome: ChildOutcome::Failed(code),
+                ..
+            } => cause("failure", code.as_str()),
+            Self::ParallelJoined {
+                outcome: JoinOutcome::Failed,
+                ..
+            } => cause("failure", "BRANCH_FAILED"),
+            Self::RunPaused => cause("request", "PAUSE"),
+            Self::RunResumed => cause("request", "RESUME"),
+            Self::RunFinished { status } => cause("outcome", status.as_str()),
+            _ => None,
         }
     }
 

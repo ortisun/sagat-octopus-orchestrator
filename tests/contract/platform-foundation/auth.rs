@@ -39,13 +39,17 @@ async fn a_valid_token_yields_the_subject_and_the_tenant_claim() {
 
     let claims = v.verify(&idp.token("alice", "acme").build()).await;
 
+    let claims = claims.expect("a valid token verifies");
     assert_eq!(
-        claims,
-        Ok(VerifiedClaims {
-            subject: "alice".into(),
-            tenant: "acme".into()
-        })
+        (claims.subject.as_str(), claims.tenant.as_str()),
+        ("alice", "acme")
     );
+    // The expiry is the token's own `exp`, in the future.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    assert!(claims.expires_at > now, "{} <= {now}", claims.expires_at);
 }
 
 #[tokio::test]

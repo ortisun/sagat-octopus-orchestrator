@@ -13,10 +13,16 @@
 
 mod deliveries;
 mod events;
+mod monitor;
 mod outbox;
 mod passes;
+mod telemetry;
 
 pub use deliveries::{DeliveryRound, DeliverySettings, DeliveryWorker};
 pub use events::{EventDispatchSettings, EventDispatcher, EventRound};
+pub use monitor::{Monitor, MonitorRound, MonitorSettings};
 pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{Report, Scheduler, SchedulerSettings};
+pub use telemetry::{
+    ProjectionRound, ProjectorSettings, TelemetryProjector, state as projection_state,
+};

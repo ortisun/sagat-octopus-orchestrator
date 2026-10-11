@@ -97,6 +97,47 @@ jobs:
       - name: conformance suite, user stories and faults, five languages
         run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
 
+  studio:
+    name: studio (lint, types, unit tests, build, browser journeys)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      # The lockfile is the record: exact versions, no install scripts (frontend/.npmrc).
+      - name: dependencies
+        working-directory: frontend
+        run: npm ci
+      # The journeys' workers use the TypeScript SDK (frontend/e2e depends on it by path), so it is built before the
+      # journeys' code is type-checked: its dist/ is what the package exports.
+      - name: TypeScript SDK
+        run: bash sdks/typescript/conformance/prepare.sh
+      # Production and tooling both; a low advisory is recorded in research.md (G152), moderate and above fail the build.
+      - name: advisories
+        working-directory: frontend
+        run: npm audit --audit-level=moderate
+      - name: lint, types, unit tests, build, generated API types
+        working-directory: frontend
+        run: |
+          npm run lint
+          npm run typecheck
+          npm run typecheck --workspace @sagat/e2e
+          npm test
+          npm run build
+          npm run check:api
+      - name: Chromium for Playwright
+        working-directory: frontend/e2e
+        run: npx playwright install --with-deps chromium
+      # The journeys (US01..US04, SC-007-001, accessibility, security, sign-in) in a real browser against the real
+      # platform (PostgreSQL through Testcontainers, the API serving the Studio, the engine, a sandbox runner). They are
+      # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
+      - name: browser journeys
+        run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
+
   contracts:
     name: contracts (OpenAPI, protobuf, JSON Schema)
     runs-on: ubuntu-latest
@@ -134,6 +175,34 @@ jobs:
       # Builds the image, starts PostgreSQL + NATS + control plane, checks health, runs the seed
       # twice and tears everything down (see scripts/smoke-compose.sh).
       - run: scripts/smoke-compose.sh
+
+  observability:
+    name: observability files (Prometheus rules and configuration, Collector configuration, dashboards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The files the compose overlay mounts, checked by the pinned images that will read them. The
+      # cargo tests check that what they say exists (every metric is one the code emits, every alert
+      # points to a runbook section); this checks that the tools accept them.
+      - name: promtool check config (loads the rules as well)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/infra/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro" \
+            prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+      - name: promtool check rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro" \
+            prom/prometheus:v3.15.0 check rules /etc/prometheus/alerts.yaml
+      - name: OpenTelemetry Collector validate
+        run: |
+          docker run --rm \
+            -v "$PWD/infra/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:0.161.0 validate --config=/etc/otelcol/config.yaml
+      - name: Grafana dashboards are JSON
+        run: |
+          for f in infra/observability/dashboards/*.json; do python3 -m json.tool "$f" > /dev/null; done
 
   dependencies:
     name: dependency advisories (cargo audit)

@@ -2,7 +2,7 @@
 
 use sagat_application::definitions::{StoredPlan, VersionRecord, WorkflowRecord};
 use sagat_application::execution::RunRecord;
-use sagat_application::runs::{GraphSnapshot, JournalEntry};
+use sagat_application::runs::{GraphChanges, GraphSnapshot, JournalEntry};
 use sagat_domain::definition::WorkflowVersion;
 use sagat_domain::workflow::{Node, NodeKind};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,89 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 // ----------------------------------------------------------------------------- definitions
+
+// ------------------------------------------------------------------- validation and diff
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidateBody {
+    /// The document to check; absent, the stored draft.
+    #[serde(default)]
+    pub ir: Option<Value>,
+}
+
+fn problem_body(problem: &sagat_application::definitions::Problem) -> Value {
+    json!({
+        "severity": problem.severity.as_str(),
+        "code": problem.code,
+        "message": problem.message,
+        "nodeId": problem.node,
+        "path": problem.path,
+    })
+}
+
+/// What a dry-run validation found.
+pub fn validation_body(validation: &sagat_application::definitions::Validation) -> Value {
+    json!({
+        "valid": validation.is_valid(),
+        "digest": validation.digest,
+        "problems": validation.problems.iter().map(problem_body).collect::<Vec<_>>(),
+        "warnings": validation.warnings.iter().map(problem_body).collect::<Vec<_>>(),
+    })
+}
+
+fn diff_side(side: sagat_application::diff::DiffSide) -> Value {
+    use sagat_application::diff::DiffSide;
+    match side {
+        DiffSide::Version(number) => {
+            json!({ "kind": "version", "number": number, "revision": null })
+        }
+        DiffSide::Draft(revision) => {
+            json!({ "kind": "draft", "number": null, "revision": revision })
+        }
+        DiffSide::Empty => json!({ "kind": "empty", "number": null, "revision": null }),
+    }
+}
+
+fn finding_body(finding: &sagat_application::diff::DiffFinding) -> Value {
+    json!({
+        "code": finding.code,
+        "message": finding.message,
+        "nodeId": finding.node,
+        "path": finding.path,
+    })
+}
+
+fn edge_body(edge: &sagat_application::diff::DiffEdge) -> Value {
+    json!({ "from": edge.from, "to": edge.to, "kind": edge.kind })
+}
+
+/// The differences between two documents of a workflow.
+pub fn diff_body(diff: &sagat_application::diff::DefinitionDiff) -> Value {
+    let d = &diff.diff;
+    json!({
+        "from": diff_side(diff.from),
+        "to": diff_side(diff.to),
+        "identical": d.identical,
+        "nodes": {
+            "added": d.nodes_added,
+            "removed": d.nodes_removed,
+            "changed": d.nodes_changed.iter()
+                .map(|c| json!({ "id": c.id, "fields": c.fields }))
+                .collect::<Vec<_>>(),
+        },
+        "edges": {
+            "added": d.edges_added.iter().map(edge_body).collect::<Vec<_>>(),
+            "removed": d.edges_removed.iter().map(edge_body).collect::<Vec<_>>(),
+        },
+        "changes": d.changes.iter()
+            .map(|c| json!({ "path": c.path, "change": c.change.as_str() }))
+            .collect::<Vec<_>>(),
+        "changesOmitted": d.changes_omitted,
+        "breaking": d.breaking.iter().map(finding_body).collect::<Vec<_>>(),
+        "attention": d.attention.iter().map(finding_body).collect::<Vec<_>>(),
+    })
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,6 +247,9 @@ pub struct OperationResultBody {
     pub accepted: bool,
     pub run_status: String,
     pub run_version: u64,
+    /// For `RERUN_AS_NEW`: the run that was started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +281,9 @@ pub struct RunBody {
     pub finished_at: Option<OffsetDateTime>,
     /// The run and step that started this one, when it is a child run.
     pub parent: Option<ParentBody>,
+    /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerun_of: Option<String>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
 }
@@ -228,6 +317,7 @@ impl From<&RunRecord> for RunBody {
                 node: p.node.to_string(),
                 cancel_policy: p.cancel_policy.as_str(),
             }),
+            rerun_of: r.info.rerun_of.map(|r| r.to_string()),
             depth: r.info.depth,
         }
     }
@@ -245,6 +335,18 @@ pub struct JournalEventBody {
     pub actor: String,
     pub trace_id: Option<String>,
     pub payload_ref: Option<String>,
+    /// Why it happened, when it has a cause.
+    pub cause: Option<CauseBody>,
+    /// The span of the attempt the event belongs to.
+    pub span_id: Option<String>,
+}
+
+/// Why a transition happened: a closed kind and the code that goes with it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CauseBody {
+    pub kind: &'static str,
+    pub code: String,
 }
 
 impl From<&JournalEntry> for JournalEventBody {
@@ -258,24 +360,108 @@ impl From<&JournalEntry> for JournalEventBody {
             actor: e.actor.clone(),
             trace_id: e.trace_id.clone(),
             payload_ref: e.payload_ref.clone(),
+            cause: e.cause.as_ref().map(|c| CauseBody {
+                kind: c.kind,
+                code: c.code.clone(),
+            }),
+            span_id: e.span_id.clone(),
         }
     }
+}
+
+/// How far a run's spans and measurements have got in relation to its journal.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTelemetryBody {
+    pub run_id: String,
+    pub trace_id: Option<String>,
+    /// `CURRENT`, `CATCHING_UP`, `BEHIND`, `NO_TRACE` or `UNTRACKED`.
+    pub state: &'static str,
+    /// The journal's last sequence and the last whose spans were taken, when the run is tracked.
+    pub head_seq: Option<u64>,
+    pub applied_seq: Option<u64>,
+    /// For how long the run has had changes that are not projected, in milliseconds.
+    pub lag_ms: u64,
+    /// How late spans may be before the state is `BEHIND`.
+    pub budget_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptBody {
+    pub node: String,
+    pub attempt: u32,
+    pub generation: u64,
+    pub span_id: String,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub ready_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub leased_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub ended_at: Option<OffsetDateTime>,
+    /// `open`, `succeeded`, `failed`, `retry`, `review`, `unknown_outcome` or `cancelled`.
+    pub outcome: &'static str,
+    pub code: Option<String>,
+    /// From ready to leased, in milliseconds, when the journal says when it became ready.
+    pub schedule_latency_ms: Option<u64>,
+}
+
+impl From<&sagat_application::telemetry::Attempt> for AttemptBody {
+    fn from(a: &sagat_application::telemetry::Attempt) -> Self {
+        Self {
+            node: a.node.clone(),
+            attempt: a.attempt,
+            generation: a.generation,
+            span_id: a.span.to_string(),
+            ready_at: a.ready_at,
+            leased_at: a.leased_at,
+            ended_at: a.ended_at,
+            outcome: a.outcome.as_str(),
+            code: a.code.clone(),
+            schedule_latency_ms: a.ready_at.map(|ready| {
+                u64::try_from((a.leased_at - ready).whole_milliseconds().max(0)).unwrap_or(0)
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptListBody {
+    pub run_id: String,
+    pub trace_id: Option<String>,
+    pub items: Vec<AttemptBody>,
 }
 
 /// The definition's graph overlaid with the run's step states. Nodes that did not start yet are
 /// `NOT_STARTED`; the editor can draw the planned graph and the runtime state in one picture.
 pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
+    json!({
+        "runId": graph.run.info.run_id.to_string(),
+        "status": graph.run.status.as_str(),
+        "projectionSeq": graph.run.version,
+        "projectionLagMs": 0,
+        "nodes": runtime_nodes(graph, |_| true),
+        "edges": runtime_edges(graph),
+    })
+}
+
+/// The nodes of the runtime graph that `wanted` accepts (by the node and the state of its step).
+fn runtime_nodes(graph: &GraphSnapshot, wanted: impl Fn(&NodeView<'_>) -> bool) -> Vec<Value> {
     let steps: std::collections::BTreeMap<_, _> =
         graph.steps.iter().map(|s| (s.node.as_str(), s)).collect();
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
     let sagas: std::collections::BTreeMap<_, _> =
         graph.sagas.iter().map(|s| (s.node.as_str(), s)).collect();
+    let mut nodes = Vec::new();
     // Every node the engine can run: the compensations and lookups derived from the author's
     // nodes are steps of the run too, and the ones an operator is asked to decide on.
     for node in graph.definition.all_nodes() {
         let id = node.id().as_str();
         let step = steps.get(id);
+        let view = NodeView { id };
+        if !wanted(&view) {
+            continue;
+        }
         let origin = node.origin();
         nodes.push(json!({
             "id": id,
@@ -304,6 +490,18 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
             "waitingOn": step.and_then(|s| s.waiting_on),
             "childRunId": step.and_then(|s| s.child_run).map(|r| r.to_string()),
         }));
+    }
+    nodes
+}
+
+/// What a filter over the nodes of a runtime graph can look at.
+pub struct NodeView<'a> {
+    pub id: &'a str,
+}
+
+fn runtime_edges(graph: &GraphSnapshot) -> Vec<Value> {
+    let mut edges = Vec::new();
+    for node in graph.definition.all_nodes() {
         edges_of(node, &mut edges);
     }
     // The order of the compensations, and which node each lookup is about: a compensation runs
@@ -330,14 +528,51 @@ pub fn runtime_graph(graph: &GraphSnapshot) -> Value {
             }));
         }
     }
-    json!({
+    edges
+}
+
+/// What changed in a run's graph since a journal sequence (D141): the events, and the nodes they
+/// touched. A node changes only through an event that names it or activates it: a cancel request is
+/// a `step.cancel_requested` of each step, the phases of a saga are events of the saga node, and the
+/// events that create steps (a routing, a fork, a saga entered, a compensation plan, a lookup) carry
+/// the ones they create (`crates/domain/src/execution/event.rs`, `RunEvent::changed_nodes`); the
+/// events that name no node (`run.paused`, `run.resumed`, `run.stop_requested`, `run.finished`)
+/// change the run, whose `status` is always current. `reset` brings the whole graph.
+pub fn graph_changes_body(changes: &GraphChanges) -> Value {
+    let graph = &changes.graph;
+    let touched: std::collections::BTreeSet<&str> = changes
+        .events
+        .iter()
+        .flat_map(|e| e.touched.iter().flatten().map(String::as_str))
+        .collect();
+    let any = !changes.events.is_empty();
+    let nodes = if changes.reset {
+        runtime_nodes(graph, |_| true)
+    } else if any {
+        runtime_nodes(graph, |n| touched.contains(n.id))
+    } else {
+        Vec::new()
+    };
+    let mut body = json!({
         "runId": graph.run.info.run_id.to_string(),
         "status": graph.run.status.as_str(),
+        // A reset is relative to nothing: the client replaces what it has.
+        "fromSeq": if changes.reset { 0 } else { changes.since },
         "projectionSeq": graph.run.version,
-        "projectionLagMs": 0,
+        "reset": changes.reset,
+        "events": changes.events.iter().map(|e| json!({
+            "seq": e.seq,
+            "eventType": e.event_type,
+            "occurredAt": rfc3339(e.occurred_at),
+            "stepId": e.node,
+            "attempt": e.attempt,
+        })).collect::<Vec<_>>(),
         "nodes": nodes,
-        "edges": edges,
-    })
+    });
+    if changes.reset {
+        body["edges"] = Value::Array(runtime_edges(graph));
+    }
+    body
 }
 
 fn rfc3339(at: OffsetDateTime) -> String {
@@ -364,6 +599,9 @@ fn edges_of(node: &Node, out: &mut Vec<Value>) {
             on_timeout: Some(target),
             ..
         } => edge(target.as_str(), "timeout"),
+        // The body of a saga starts where it says: without this edge the steps inside a saga look
+        // like separate graphs.
+        NodeKind::Saga { begin, .. } => edge(begin.as_str(), "begin"),
         _ => {}
     }
     if let Some(next) = node.next() {

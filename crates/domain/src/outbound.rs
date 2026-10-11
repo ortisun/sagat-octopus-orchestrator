@@ -56,15 +56,21 @@ pub enum OutboundError {
 pub enum OutboundKind {
     /// A run reached a terminal status.
     RunFinished,
+    /// An operational alert began to fire in the namespace (`FR-008-005`).
+    AlertFired,
+    /// An operational alert stopped firing.
+    AlertResolved,
 }
 
 impl OutboundKind {
-    pub const ALL: [Self; 1] = [Self::RunFinished];
+    pub const ALL: [Self; 3] = [Self::RunFinished, Self::AlertFired, Self::AlertResolved];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::RunFinished => "run.finished",
+            Self::AlertFired => "ops.alert.fired",
+            Self::AlertResolved => "ops.alert.resolved",
         }
     }
 }

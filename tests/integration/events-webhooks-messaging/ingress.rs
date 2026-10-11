@@ -113,6 +113,7 @@ async fn everything_that_does_not_verify_is_refused_alike_and_leaves_no_event() 
                    event_id: Option<&'static str>| {
         let body = br#"{"a":1}"#;
         let request = WebhookRequest {
+            trace: None,
             signature,
             timestamp,
             event_id,
@@ -522,6 +523,7 @@ async fn a_full_backlog_refuses_new_events_and_still_answers_duplicates() {
             event_id: EventId::parse(id).expect("id"),
         };
         NewEvent {
+            trace: None,
             tenant_id: endpoint.tenant_id,
             namespace_id: endpoint.namespace_id,
             envelope: EventEnvelope::new(key, EventType::parse("a.b").expect("type"), None, None)
@@ -870,6 +872,7 @@ async fn what_the_sender_says_the_event_is_is_covered_by_the_signature() {
     let request = |event_type: Option<&'static str>,
                    subject: Option<&'static str>,
                    correlation_key: Option<&'static str>| WebhookRequest {
+        trace: None,
         signature: Some(&signature),
         timestamp: Some(&timestamp),
         event_id: Some("evt-1"),
@@ -1017,6 +1020,7 @@ async fn a_secret_too_short_to_mean_anything_verifies_nothing() {
     };
     let timestamp = now.to_string();
     let request = WebhookRequest {
+        trace: None,
         signature: Some(&forged),
         timestamp: Some(&timestamp),
         event_id: Some("evt-1"),
@@ -1040,6 +1044,7 @@ async fn receive_with_header(
     timestamp: String,
 ) -> Result<sagat_application::events::Received, AppError> {
     let request = WebhookRequest {
+        trace: None,
         signature: Some(&header),
         timestamp: Some(&timestamp),
         event_id: Some("evt-1"),

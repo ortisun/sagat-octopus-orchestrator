@@ -257,6 +257,12 @@ pub struct RunInfo {
     pub started_by: String,
     pub correlation_id: Option<String>,
     pub trace_id: Option<String>,
+    /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
+    pub rerun_of: Option<RunId>,
+    /// The span the run's own span hangs from: the request that started it, or the request that
+    /// published the event that did. None for a child run (its parent's span is its parent) and for
+    /// a run created before spans were recorded.
+    pub parent_span: Option<String>,
     pub deadline_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     /// The run that started this one, when it is a child (`FR-002-009`).
@@ -393,6 +399,15 @@ pub trait RunTx: Send {
         &mut self,
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
+
+    /// Whether the worker identity `subject` is being drained in this run's namespace. It takes
+    /// the drain's lock in shared mode, held to the end of the transaction, and a drain takes it
+    /// exclusively: a drain does not return while a transaction that found the worker serving is
+    /// still deciding whether to lease, so no work is handed out after the drain has returned.
+    fn worker_drained(
+        &mut self,
+        subject: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// The activity patterns `subject` is bound to in this run's namespace. Read on the
     /// transaction's own connection: a caller that holds one connection and waits for a second

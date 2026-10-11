@@ -84,6 +84,7 @@ async fn connections_killed_under_load_lose_no_accepted_event_and_admit_none_twi
                         );
                         let ts = timestamp.to_string();
                         let request = WebhookRequest {
+                            trace: None,
                             signature: Some(&signature),
                             timestamp: Some(&ts),
                             event_id: Some(&id),

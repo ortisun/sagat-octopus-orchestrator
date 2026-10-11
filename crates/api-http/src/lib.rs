@@ -24,6 +24,7 @@ mod dto;
 mod dto_events;
 mod dto_exec;
 mod dto_gov;
+mod dto_ops;
 mod dto_scripts;
 pub mod error;
 pub mod exec;
@@ -32,6 +33,8 @@ pub mod governance;
 mod limits;
 mod routes;
 mod server;
+pub mod streams;
+pub mod studio;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
@@ -258,6 +261,9 @@ where
         + sagat_application::connectors::ConnectorStore
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
+        + sagat_application::operations::AlertReader
+        + sagat_application::operations::WorkerAdmin
+        + sagat_application::operations::AuditStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
@@ -284,9 +290,13 @@ where
         + sagat_application::connectors::ConnectorStore
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
+        + sagat_application::operations::AlertReader
+        + sagat_application::operations::WorkerAdmin
+        + sagat_application::operations::AuditStore
         + 'static,
 {
     use routes::governance as gov;
+    use routes::operations as ops;
     type B<S, C, G> = GovState<S, C, G>;
 
     let serves_secrets = state.secrets().is_some();
@@ -318,6 +328,23 @@ where
             "/namespaces/{namespace_id}/worker-bindings/{subject}",
             axum::routing::put(gov::bind_worker::<B<S, C, G>>)
                 .delete(gov::unbind_worker::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/alerts",
+            get(ops::list_alerts::<B<S, C, G>>),
+        )
+        .route("/audit", get(ops::list_audit::<B<S, C, G>>))
+        .route(
+            "/namespaces/{namespace_id}/workers",
+            get(ops::list_workers::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/workers/{subject}/drain",
+            axum::routing::post(ops::drain_worker::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/workers/{subject}/undrain",
+            axum::routing::post(ops::undrain_worker::<B<S, C, G>>),
         )
         .route(
             "/namespaces/{namespace_id}/egress-policy",
@@ -615,6 +642,14 @@ where
             axum::routing::post(ex::publish_workflow::<B<S, C, P, X, E>>),
         )
         .route(
+            "/workflows/{workflow_id}/validate",
+            axum::routing::post(ex::validate_workflow::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/workflows/{workflow_id}/diff",
+            get(ex::diff_workflow::<B<S, C, P, X, E>>),
+        )
+        .route(
             "/workflows/{workflow_id}/versions",
             get(ex::list_versions::<B<S, C, P, X, E>>),
         )
@@ -636,8 +671,24 @@ where
             get(ex::run_journal::<B<S, C, P, X, E>>),
         )
         .route(
+            "/runs/{run_id}/telemetry",
+            get(ex::run_telemetry::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/attempts",
+            get(ex::run_attempts::<B<S, C, P, X, E>>),
+        )
+        .route(
             "/runs/{run_id}/graph",
             get(ex::run_graph::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/graph/changes",
+            get(ex::run_graph_changes::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/stream",
+            get(ex::run_stream::<B<S, C, P, X, E>>),
         )
         .route(
             "/runs/{run_id}/operations",

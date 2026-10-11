@@ -4,6 +4,10 @@
 //!   request head is disconnected. It also bounds idle keep-alive connections, because the timer
 //!   restarts for every request head. Without a timer on the connection builder hyper silently
 //!   drops this protection (Slowloris), which is why the loop is not `axum::serve`.
+//! * `write_stall_timeout`: a client that takes no byte of a response for this long is
+//!   disconnected. Without it a client that asks for a large body and never reads holds the
+//!   connection, and everything the response keeps alive, for as long as it likes. A reader that
+//!   makes progress, however slowly, is never cut.
 //! * `max_connections`: when the cap is reached the server stops accepting; new connections wait in
 //!   the kernel backlog instead of exhausting file descriptors.
 //! * `shutdown_grace`: on shutdown, in-flight requests may finish, but only for this long; a
@@ -11,15 +15,19 @@
 
 use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Router;
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
+use tokio::time::{Instant, Sleep};
 
 /// Connection-level limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +37,8 @@ pub struct ServerConfig {
     pub header_read_timeout: Duration,
     /// Maximum simultaneous connections.
     pub max_connections: usize,
+    /// Longest a write may wait for the client to take bytes before the connection is closed.
+    pub write_stall_timeout: Duration,
     /// How long shutdown waits for in-flight requests before dropping the remaining connections.
     pub shutdown_grace: Duration,
 }
@@ -38,6 +48,7 @@ impl Default for ServerConfig {
         Self {
             header_read_timeout: Duration::from_secs(10),
             max_connections: 1024,
+            write_stall_timeout: Duration::from_secs(30),
             shutdown_grace: Duration::from_secs(30),
         }
     }
@@ -87,7 +98,7 @@ pub async fn serve(
         // Small responses should not wait for Nagle; failure to set it is harmless.
         let _ = stream.set_nodelay(true);
         tokio::spawn(serve_connection(
-            TokioIo::new(stream),
+            TokioIo::new(StallGuard::new(stream, config.write_stall_timeout)),
             app.clone(),
             config.header_read_timeout,
             stop_rx.clone(),
@@ -109,7 +120,7 @@ pub async fn serve(
 }
 
 async fn serve_connection(
-    io: TokioIo<tokio::net::TcpStream>,
+    io: TokioIo<StallGuard<tokio::net::TcpStream>>,
     app: Router,
     header_read_timeout: Duration,
     mut stop: watch::Receiver<bool>,
@@ -137,5 +148,105 @@ async fn serve_connection(
                 connection.as_mut().graceful_shutdown();
             }
         }
+    }
+}
+
+/// A connection whose writes are given up on when the client takes nothing for `timeout`: a write
+/// that cannot make progress starts a timer, any progress stops it, and when it runs out the write
+/// fails with `TimedOut`, which closes the connection and everything its response held.
+struct StallGuard<S> {
+    inner: S,
+    timeout: Duration,
+    stalled: Pin<Box<Sleep>>,
+    waiting: bool,
+}
+
+impl<S> StallGuard<S> {
+    fn new(inner: S, timeout: Duration) -> Self {
+        Self {
+            inner,
+            timeout,
+            stalled: Box::pin(tokio::time::sleep(timeout)),
+            waiting: false,
+        }
+    }
+
+    /// What a write that could not proceed does: arm the timer if it is not, and fail once it ran out.
+    fn stall<T>(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<T>> {
+        if !self.waiting {
+            self.stalled.as_mut().reset(Instant::now() + self.timeout);
+            self.waiting = true;
+        }
+        if self.stalled.as_mut().poll(cx).is_ready() {
+            self.waiting = false;
+            metrics::counter!("http_write_stalls_total").increment(1);
+            tracing::warn!(
+                timeout_secs = self.timeout.as_secs(),
+                "a client took no bytes of a response in time; the connection is closed"
+            );
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the client took no bytes of the response in time",
+            )));
+        }
+        Poll::Pending
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for StallGuard<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for StallGuard<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write(cx, buf) {
+            Poll::Pending => self.stall(cx),
+            ready => {
+                self.waiting = false;
+                ready
+            }
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match Pin::new(&mut self.inner).poll_flush(cx) {
+            Poll::Pending => self.stall(cx),
+            ready => {
+                self.waiting = false;
+                ready
+            }
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        match Pin::new(&mut self.inner).poll_write_vectored(cx, bufs) {
+            Poll::Pending => self.stall(cx),
+            ready => {
+                self.waiting = false;
+                ready
+            }
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
     }
 }

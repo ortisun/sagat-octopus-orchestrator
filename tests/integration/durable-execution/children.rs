@@ -615,6 +615,8 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
             started_by: "system:engine".into(),
             correlation_id: None,
             trace_id: None,
+            parent_span: None,
+            rerun_of: None,
             deadline_at: None,
             created_at: candidate.as_of,
             parent: Some(ParentLink {

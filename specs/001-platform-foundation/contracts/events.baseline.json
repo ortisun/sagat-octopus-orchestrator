@@ -101,6 +101,181 @@
       ]
     }
   },
+  "OperationalAlertWebhook": {
+    "headers": {
+      "properties": {
+        "X-Octopus-Attempt": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Delivery-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Event-Type": {
+          "enum": [
+            "ops.alert.fired",
+            "ops.alert.resolved"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Schema-Version": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Signature": {
+          "type": [
+            "string"
+          ]
+        },
+        "X-Octopus-Timestamp": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "X-Octopus-Attempt",
+        "X-Octopus-Delivery-Id",
+        "X-Octopus-Event-Id",
+        "X-Octopus-Event-Type",
+        "X-Octopus-Schema-Version",
+        "X-Octopus-Signature",
+        "X-Octopus-Timestamp"
+      ]
+    },
+    "payload": {
+      "properties": {
+        "data": {
+          "type": [
+            "object"
+          ]
+        },
+        "data.alertId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.firstSeenAt": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.items": {
+          "type": [
+            "integer"
+          ]
+        },
+        "data.kind": {
+          "enum": [
+            "DEAD_ITEMS",
+            "LEASE_NOT_REAPED",
+            "OUTBOX_STUCK",
+            "REVIEW_PENDING",
+            "STEP_UNCLAIMED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.namespaceId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.oldestSeconds": {
+          "type": [
+            "number"
+          ]
+        },
+        "data.runbook": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.severity": {
+          "enum": [
+            "critical",
+            "warning"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.state": {
+          "enum": [
+            "FIRING",
+            "RESOLVED"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "data.subject": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.summary": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.tenantId": {
+          "type": [
+            "string"
+          ]
+        },
+        "id": {
+          "type": [
+            "string"
+          ]
+        },
+        "time": {
+          "type": [
+            "string"
+          ]
+        },
+        "type": {
+          "enum": [
+            "ops.alert.fired",
+            "ops.alert.resolved"
+          ],
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "data.alertId",
+        "data.firstSeenAt",
+        "data.items",
+        "data.kind",
+        "data.namespaceId",
+        "data.oldestSeconds",
+        "data.runbook",
+        "data.severity",
+        "data.state",
+        "data.subject",
+        "data.summary",
+        "data.tenantId",
+        "id",
+        "time",
+        "type"
+      ]
+    }
+  },
   "RunFinished": {
     "headers": {
       "properties": {
@@ -140,6 +315,12 @@
         },
         "tenantId": {
           "type": [
+            "string"
+          ]
+        },
+        "traceId": {
+          "type": [
+            "null",
             "string"
           ]
         }
@@ -192,6 +373,11 @@
           "type": [
             "string"
           ]
+        },
+        "traceparent": {
+          "type": [
+            "string"
+          ]
         }
       },
       "required": [
@@ -237,6 +423,12 @@
         },
         "data.tenantId": {
           "type": [
+            "string"
+          ]
+        },
+        "data.traceId": {
+          "type": [
+            "null",
             "string"
           ]
         },

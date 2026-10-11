@@ -1,0 +1,144 @@
+# Alerts on conditions of the platform itself (FR-008-005, ADR-0017). They are about the whole
+# deployment because a metric carries no tenant or namespace; the conditions that belong to a
+# namespace (an outbox that waits, a lease that was not taken back, a step no worker takes, runs that
+# wait for a person, dead items) are raised by the engine's monitor, listed by the API and delivered
+# to the namespace's webhook subscriptions: see docs/runbooks/alerts.md.
+#
+# Every rule has a `runbook` annotation that names the section that says what to do. The
+# `observability` contract test holds each `expr` to the metrics the platform really emits.
+groups:
+  - name: sagat-platform
+    rules:
+      - alert: SagatEngineDown
+        expr: sum(up{job="sagat-execution-engine"}) == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: No execution engine is being scraped.
+          runbook: docs/runbooks/observability.md#engine-down
+
+      - alert: SagatLeasesNotReaped
+        expr: max(leases_expired) > 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: Attempts whose lease ran out have not been taken back; the scheduler is not running.
+          runbook: docs/runbooks/alerts.md#lease-not-reaped
+
+      - alert: SagatOutboxOld
+        expr: max(outbox_oldest_age_seconds) > 300
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: The oldest message of the outbox has waited more than five minutes.
+          runbook: docs/runbooks/alerts.md#outbox-stuck
+
+      - alert: SagatQueueLag
+        expr: max(queue_lag_seconds) > 300
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: A step has been ready for more than five minutes and no worker takes it.
+          runbook: docs/runbooks/alerts.md#step-unclaimed
+
+      - alert: SagatDeadItems
+        expr: sum(dead_items) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: Events, deliveries or broker messages ran out of attempts and wait to be redriven.
+          runbook: docs/runbooks/alerts.md#dead-items
+
+      - alert: SagatTelemetryBehind
+        expr: max(telemetry_projection_lag_seconds) > 60
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: The spans of runs reach the collector more than a minute after the transitions.
+          runbook: docs/runbooks/observability.md#telemetry-behind
+
+      - alert: SagatNoProjector
+        expr: sum(telemetry_projector_active) == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: No engine holds the telemetry projector's lease.
+          runbook: docs/runbooks/observability.md#telemetry-behind
+
+      - alert: SagatCollectorRefusing
+        expr: sum(rate(telemetry_spans_exported_total{outcome="rejected"}[10m])) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: The collector refuses the platform's spans for good; they are dropped.
+          runbook: docs/runbooks/observability.md#collector-refusing
+
+      - alert: SagatSpansDropped
+        expr: sum(rate(otel_spans_total{outcome=~"dropped|lost"}[10m])) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: Live spans are being dropped because the exporter cannot keep up or the collector is down.
+          runbook: docs/runbooks/observability.md#collector-refusing
+
+      - alert: SagatMonitorBlind
+        expr: sum(rate(alert_checks_failed_total[10m])) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: The monitor cannot look for some condition; its alerts stay as they were.
+          runbook: docs/runbooks/observability.md#monitor-blind
+
+      - alert: SagatApiErrors
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: More than 5% of API requests fail with a server error.
+          runbook: docs/runbooks/control-plane.md
+
+      - alert: SagatApiSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 0.25
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: The p95 latency of the API is above its 250 ms objective.
+          runbook: docs/runbooks/control-plane.md
+
+      - alert: SagatDatabasePoolSaturated
+        expr: min by (job) (db_pool_connections{state="idle"}) == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: A process has no idle database connection; requests are waiting for one.
+          runbook: docs/runbooks/control-plane.md
+
+      - alert: SagatCompensationBreakerOpen
+        expr: increase(compensation_breaker_opened_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: The compensations of a provider keep failing; their circuit breaker opened.
+          runbook: docs/runbooks/sagas.md
+
+      - alert: SagatCompensationBacklog
+        expr: max(compensating_runs) > 0 and max(compensating_runs) >= max(compensating_runs offset 30m)
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: Runs have been compensating for half an hour without the number going down.
+          runbook: docs/runbooks/sagas.md
+
+      - alert: SagatWebhookDeliveriesDead
+        expr: increase(webhook_deliveries_total{outcome="dead"}[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: Deliveries to a subscriber ran out of attempts.
+          runbook: docs/runbooks/events.md
+
+      - alert: SagatQuotaRefusals
+        expr: sum(rate(quota_exceeded_total[10m])) > 0
+        for: 15m
+        labels: {severity: info}
+        annotations:
+          summary: Requests are being refused for exceeding a quota.
+          runbook: docs/runbooks/security-governance.md

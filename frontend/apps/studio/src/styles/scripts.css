@@ -1,0 +1,303 @@
+/* The pages are positioned so that the visually hidden helpers inside them (table captions, "End of the
+   code editor", the editor's own aria nodes) are placed within the scrolling area of the page, not the
+   window: otherwise the window itself gets scrollable and the whole shell slides up. */
+.scripts-page,
+.script-editor {
+  position: relative;
+}
+
+/* Scripts and the code editor. Colours come from the tokens of base.css (contrast-checked there);
+   nothing here is meaning carried by colour alone: states are words and shapes first. */
+
+.scripts-page .lede,
+.script-editor .lede {
+  max-width: 70ch;
+  color: var(--fg-muted);
+}
+
+.script-editor .crumbs {
+  margin: 0 0 4px;
+}
+
+.script-editor .meta {
+  color: var(--fg-muted);
+  margin: 0 0 var(--gap);
+}
+
+.script-editor h2 {
+  margin-top: calc(var(--gap) * 1.5);
+}
+
+.script-editor h3 {
+  font-size: 1.02rem;
+  margin: var(--gap) 0 6px;
+}
+
+.script-editor h4 {
+  font-size: 0.95rem;
+  margin: var(--gap) 0 4px;
+}
+
+:is(.scripts-page, .script-editor) .hint {
+  color: var(--fg-muted);
+  font-size: 0.9em;
+}
+
+:is(.scripts-page, .script-editor) .error {
+  color: var(--danger);
+}
+
+:is(.scripts-page, .script-editor) kbd {
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 4px;
+  background: var(--bg-subtle);
+}
+
+.script-editor .link-button {
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  min-height: 24px;
+  min-width: 24px;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.script-editor .inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.script-editor .inline-check input {
+  width: 18px;
+  height: 18px;
+}
+
+/* ------------------------------------------------------------- the editor */
+.code-editor {
+  margin-bottom: var(--gap);
+}
+
+.code-editor-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.code-editor-bar .btn {
+  min-height: 28px;
+  padding: 2px 10px;
+  font-size: 0.9em;
+}
+
+.code-editor-frame {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  min-height: 6rem;
+}
+
+.code-editor-frame:focus-within {
+  outline: 3px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.code-editor-loading {
+  display: grid;
+  place-items: center;
+  color: var(--fg-muted);
+  background: var(--bg-subtle);
+}
+
+.monaco-host {
+  width: 100%;
+  height: 100%;
+}
+
+.code-textarea {
+  display: block;
+  width: 100%;
+  min-height: 6rem;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.45;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.code-textarea[readonly] {
+  background: var(--bg-subtle);
+}
+
+/* ------------------------------------------------------------- status and panels */
+.save-status p {
+  margin: 0 0 6px;
+}
+
+.problems ul,
+.denied {
+  margin: 4px 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.problems li {
+  padding: 3px 0;
+}
+
+.problems h3 .count {
+  font-weight: 400;
+  color: var(--fg-muted);
+  font-size: 0.9em;
+}
+
+.source-section {
+  margin-bottom: var(--gap);
+}
+
+.script-editor .numbers {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 6px 0 var(--gap);
+}
+
+.script-editor .numbers dt {
+  font-weight: 600;
+}
+
+.script-editor .numbers dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.schema-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--gap);
+}
+
+.digest {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  user-select: all;
+}
+
+.publish-outcome:focus {
+  outline: none;
+}
+
+/* ------------------------------------------------------------- logs and diffs */
+pre.log,
+pre.diff {
+  margin: 4px 0;
+  padding: 8px 10px;
+  max-height: 20rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+pre.diff {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.diff-added,
+.diff-removed {
+  display: block;
+  font-weight: 600;
+}
+
+.diff-added {
+  background: var(--ok-bg);
+  border-left: 4px solid var(--ok);
+}
+
+.diff-removed {
+  background: var(--danger-bg);
+  border-left: 4px solid var(--danger);
+}
+
+.diff-same,
+.diff-gap {
+  display: block;
+  border-left: 4px solid transparent;
+}
+
+.diff-gap {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.conflict {
+  border: 2px solid var(--warn);
+  border-radius: var(--radius);
+  padding: var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.digest,
+.scripts-table code {
+  font-family: var(--mono);
+}
+
+@media (forced-colors: active) {
+  .diff-added,
+  .diff-removed {
+    border-left-color: CanvasText;
+  }
+  .code-editor-frame:focus-within {
+    outline-color: Highlight;
+  }
+}
+
+@media (max-width: 720px) {
+  .script-editor .numbers {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The tabs of the page: the selected one is told by shape and weight as well as by colour. */
+.script-editor [role='tab'][aria-selected='true'] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.script-editor [role='tablist'] {
+  margin-bottom: 0;
+}
+
+.script-editor [role='tabpanel'] {
+  padding-top: var(--gap);
+}

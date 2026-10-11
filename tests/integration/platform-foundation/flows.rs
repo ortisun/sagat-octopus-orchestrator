@@ -18,6 +18,7 @@ const TRACE: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
 fn ctx() -> RequestContext {
     RequestContext {
         trace_id: Some(TRACE.into()),
+        span_id: None,
     }
 }
 

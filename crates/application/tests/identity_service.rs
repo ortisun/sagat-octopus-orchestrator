@@ -243,6 +243,7 @@ fn subject(s: &str) -> Subject {
 fn ctx() -> RequestContext {
     RequestContext {
         trace_id: Some("4bf92f3577b34da6a3ce929d0e0e4736".into()),
+        span_id: None,
     }
 }
 

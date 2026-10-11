@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;background:oklch(0.15 0.006 260);color:oklch(0.95 0.005 260);font-family:Geist,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:oklch(0.80 0.14 160);text-decoration:none}
+a:hover{color:oklch(0.88 0.12 160)}
+input::placeholder{color:oklch(0.55 0.01 260)}
+::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:oklch(0.28 0.008 260);border-radius:8px}::-webkit-scrollbar-track{background:transparent}
+</style>
+</helmet>
+<div style="display:grid;grid-template-columns:216px minmax(0,1fr);height:100vh;min-width:1180px;font-size:13px;overflow:hidden">
+
+  <aside style="background:oklch(0.13 0.006 260);border-right:1px solid oklch(0.24 0.008 260);display:flex;flex-direction:column;padding:16px 12px;gap:20px">
+    <div style="display:flex;align-items:center;gap:10px;padding:0 6px">
+      <div style="width:26px;height:26px;border-radius:7px;background:oklch(0.80 0.14 160);color:oklch(0.15 0.02 160);display:grid;place-items:center;font-weight:600;font-size:14px">S</div>
+      <div style="display:flex;flex-direction:column;line-height:1.15"><div style="font-weight:600;font-size:14px;letter-spacing:-0.01em">sagat<span style="color:oklch(0.80 0.14 160)">-</span>octopus</div><div style="font-size:10.5px;color:oklch(0.55 0.01 260)">sagas duráveis · muitos braços</div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <div style="font-size:11px;color:oklch(0.55 0.01 260);padding:0 8px;text-transform:uppercase;letter-spacing:0.06em">Namespace</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid oklch(0.26 0.008 260);border-radius:8px;background:oklch(0.17 0.007 260);cursor:pointer">
+        <span style="font-family:'Geist Mono',monospace;font-size:12px">producao</span>
+        <span style="color:oklch(0.55 0.01 260);font-size:10px">▾</span>
+      </div>
+    </div>
+    <nav style="display:flex;flex-direction:column;gap:2px">
+      <sc-for list="{{ nav }}" as="item" hint-placeholder-count="7">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;cursor:pointer;background:{{ item.bg }};color:{{ item.color }}" style-hover="background:oklch(0.19 0.007 260)">
+          <span>{{ item.label }}</span>
+          <span style="font-family:'Geist Mono',monospace;font-size:11px;color:oklch(0.55 0.01 260)">{{ item.count }}</span>
+        </div>
+      </sc-for>
+    </nav>
+    <div style="margin-top:auto;display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid oklch(0.24 0.008 260);border-radius:10px">
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:oklch(0.68 0.01 260)">Workers ativos</span><span style="font-family:'Geist Mono',monospace">12 / 12</span></div>
+      <div style="height:4px;border-radius:4px;background:oklch(0.24 0.008 260);overflow:hidden"><div style="width:100%;height:100%;background:oklch(0.76 0.15 155)"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:oklch(0.68 0.01 260)">Backlog de filas</span><span style="font-family:'Geist Mono',monospace">37</span></div>
+    </div>
+  </aside>
+
+  <main style="display:flex;flex-direction:column;min-width:0;min-height:0">
+    <header style="height:56px;flex:none;display:flex;align-items:center;gap:16px;padding:0 20px;border-bottom:1px solid oklch(0.24 0.008 260)">
+      <div style="display:flex;align-items:center;gap:8px;color:oklch(0.68 0.01 260)">
+        <span>producao</span><span style="color:oklch(0.4 0.01 260)">/</span><span style="color:oklch(0.95 0.005 260);font-weight:500">Execuções</span>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px;width:300px;padding:7px 10px;border:1px solid oklch(0.26 0.008 260);border-radius:8px;background:oklch(0.17 0.007 260)">
+        <span style="color:oklch(0.55 0.01 260);font-size:12px">⌕</span>
+        <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="Buscar por ID ou workflow" style="flex:1;background:transparent;border:0;outline:0;color:inherit;font:inherit;font-size:13px"/>
+        <span style="font-family:'Geist Mono',monospace;font-size:11px;color:oklch(0.55 0.01 260);border:1px solid oklch(0.28 0.008 260);border-radius:4px;padding:0 5px">⌘K</span>
+      </div>
+      <button style="padding:8px 14px;border-radius:8px;border:0;background:oklch(0.80 0.14 160);color:oklch(0.18 0.03 160);font:inherit;font-weight:600;cursor:pointer" style-hover="background:oklch(0.86 0.13 160)">Novo workflow</button>
+    </header>
+
+    <div style="flex:1;min-height:0;display:grid;grid-template-columns:392px minmax(0,1fr)">
+
+      <section style="border-right:1px solid oklch(0.24 0.008 260);display:flex;flex-direction:column;min-height:0">
+        <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;border-bottom:1px solid oklch(0.24 0.008 260)">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <div style="font-size:15px;font-weight:600;letter-spacing:-0.01em">Execuções</div>
+            <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:oklch(0.68 0.01 260)">
+              <span style="width:6px;height:6px;border-radius:50%;background:{{ liveDot }}"></span>{{ liveLabel }}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <sc-for list="{{ filters }}" as="f" hint-placeholder-count="5">
+              <button onClick="{{ f.onClick }}" style="padding:4px 10px;border-radius:999px;border:1px solid {{ f.border }};background:{{ f.bg }};color:{{ f.color }};font:inherit;font-size:12px;cursor:pointer;display:flex;gap:6px;align-items:center">{{ f.label }}<span style="font-family:'Geist Mono',monospace;font-size:11px;opacity:0.7">{{ f.count }}</span></button>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:1;overflow:auto">
+          <sc-for list="{{ runs }}" as="r" hint-placeholder-count="8">
+            <div onClick="{{ r.onClick }}" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:12px 16px;border-bottom:1px solid oklch(0.21 0.007 260);cursor:pointer;background:{{ r.bg }};box-shadow:inset 2px 0 0 {{ r.bar }}" style-hover="background:oklch(0.18 0.007 260)">
+              <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                <span style="width:7px;height:7px;border-radius:50%;flex:none;background:{{ r.color }}"></span>
+                <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.wfName }}</span>
+              </div>
+              <div style="font-family:'Geist Mono',monospace;font-size:12px;color:oklch(0.80 0.01 260);text-align:right">{{ r.dur }}</div>
+              <div style="font-family:'Geist Mono',monospace;font-size:11.5px;color:oklch(0.60 0.01 260);padding-left:15px">{{ r.id }}</div>
+              <div style="font-size:11.5px;color:oklch(0.60 0.01 260);text-align:right">{{ r.started }} · {{ r.trigger }}</div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ noRuns }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:40px 16px;text-align:center;color:oklch(0.60 0.01 260)">Nenhuma execução encontrada.</div>
+          </sc-if>
+        </div>
+      </section>
+
+      <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
+        <div style="padding:18px 24px 0;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;align-items:flex-start;gap:16px">
+            <div style="display:flex;flex-direction:column;gap:6px;min-width:0">
+              <div style="display:flex;align-items:center;gap:10px">
+                <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.02em">{{ sel.wfName }}</h1>
+                <span style="display:flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:500;color:{{ sel.color }};background:{{ sel.tint }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ sel.color }}"></span>{{ sel.statusLabel }}</span>
+              </div>
+              <div style="font-family:'Geist Mono',monospace;font-size:12px;color:oklch(0.62 0.01 260)">{{ sel.id }} · run 3e9c-{{ sel.short }}</div>
+            </div>
+            <div style="margin-left:auto;display:flex;gap:8px">
+              <sc-if value="{{ sel.canSignal }}" hint-placeholder-val="{{ false }}">
+                <button style="padding:7px 12px;border-radius:8px;border:1px solid oklch(0.80 0.14 80 / 0.5);background:oklch(0.80 0.14 80 / 0.12);color:oklch(0.86 0.12 80);font:inherit;cursor:pointer">Enviar sinal</button>
+              </sc-if>
+              <sc-if value="{{ sel.canCancel }}" hint-placeholder-val="{{ false }}">
+                <button style="padding:7px 12px;border-radius:8px;border:1px solid oklch(0.30 0.008 260);background:transparent;color:inherit;font:inherit;cursor:pointer" style-hover="background:oklch(0.20 0.007 260)">Cancelar</button>
+              </sc-if>
+              <button style="padding:7px 12px;border-radius:8px;border:1px solid oklch(0.30 0.008 260);background:oklch(0.20 0.007 260);color:inherit;font:inherit;cursor:pointer" style-hover="background:oklch(0.23 0.008 260)">Reexecutar</button>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid oklch(0.24 0.008 260);border-radius:10px">
+            <sc-for list="{{ meta }}" as="m" hint-placeholder-count="5">
+              <div style="padding:10px 14px;display:flex;flex-direction:column;gap:4px;border-left:1px solid {{ m.sep }}">
+                <div style="font-size:11px;color:oklch(0.58 0.01 260);text-transform:uppercase;letter-spacing:0.05em">{{ m.k }}</div>
+                <div style="font-family:'Geist Mono',monospace;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ m.v }}</div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;gap:4px;border-bottom:1px solid oklch(0.24 0.008 260)">
+            <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="4">
+              <button onClick="{{ t.onClick }}" style="padding:9px 12px;margin-bottom:-1px;border:0;border-bottom:2px solid {{ t.line }};background:transparent;color:{{ t.color }};font:inherit;font-weight:500;cursor:pointer">{{ t.label }}</button>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="flex:1;min-height:0;overflow:auto;padding:16px 24px 24px">
+          <sc-if value="{{ isGraph }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;flex-direction:column;gap:14px">
+              <div style="border:1px solid oklch(0.24 0.008 260);border-radius:12px;overflow:auto;background-color:oklch(0.14 0.006 260);background-image:radial-gradient(oklch(0.26 0.008 260) 1px, transparent 1px);background-size:18px 18px">
+                <div style="position:relative;width:{{ graph.w }}px;height:{{ graph.h }}px;margin:0 auto">
+                  {{ edgesSvg }}
+                  <sc-for list="{{ nodes }}" as="n" hint-placeholder-count="6">
+                    <div onClick="{{ n.onClick }}" style="position:absolute;left:{{ n.x }}px;top:{{ n.y }}px;width:184px;height:62px;border-radius:10px;background:oklch(0.19 0.007 260);border:1px solid {{ n.border }};box-shadow:{{ n.shadow }};padding:9px 11px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer" style-hover="background:oklch(0.21 0.008 260)">
+                      <div style="display:flex;align-items:center;gap:7px;min-width:0">
+                        <span style="width:7px;height:7px;border-radius:50%;flex:none;background:{{ n.color }}"></span>
+                        <span style="font-family:'Geist Mono',monospace;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.name }}</span>
+                      </div>
+                      <div style="display:flex;justify-content:space-between;font-size:11px;color:oklch(0.60 0.01 260)">
+                        <span>{{ n.type }}</span><span style="font-family:'Geist Mono',monospace;color:{{ n.durColor }}">{{ n.dur }}</span>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="border:1px solid oklch(0.24 0.008 260);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:minmax(0,1.1fr) repeat(4,minmax(0,1fr));gap:16px;align-items:start">
+                <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+                  <div style="font-size:11px;color:oklch(0.58 0.01 260);text-transform:uppercase;letter-spacing:0.05em">Etapa selecionada</div>
+                  <div style="font-family:'Geist Mono',monospace;font-size:13px;font-weight:500">{{ step.name }}</div>
+                  <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:{{ step.color }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ step.color }}"></span>{{ step.statusLabel }}</div>
+                </div>
+                <sc-for list="{{ step.facts }}" as="f" hint-placeholder-count="4">
+                  <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+                    <div style="font-size:11px;color:oklch(0.58 0.01 260);text-transform:uppercase;letter-spacing:0.05em">{{ f.k }}</div>
+                    <div style="font-family:'Geist Mono',monospace;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ f.v }}</div>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ step.error }}" hint-placeholder-val="{{ false }}">
+                  <div style="grid-column:1 / -1;padding:10px 12px;border-radius:8px;background:oklch(0.68 0.19 25 / 0.1);border:1px solid oklch(0.68 0.19 25 / 0.35);font-family:'Geist Mono',monospace;font-size:12px;color:oklch(0.82 0.10 25);white-space:pre-wrap">{{ step.error }}</div>
+                </sc-if>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ isTimeline }}" hint-placeholder-val="{{ false }}">
+            <div style="border:1px solid oklch(0.24 0.008 260);border-radius:12px;padding:16px">
+              <div style="display:grid;grid-template-columns:200px minmax(0,1fr) 72px;gap:12px;padding-bottom:10px;border-bottom:1px solid oklch(0.22 0.007 260)">
+                <div style="font-size:11px;color:oklch(0.58 0.01 260);text-transform:uppercase;letter-spacing:0.05em">Etapa</div>
+                <div style="position:relative;height:14px">
+                  <sc-for list="{{ ticks }}" as="tk" hint-placeholder-count="5">
+                    <span style="position:absolute;left:{{ tk.left }}%;transform:translateX({{ tk.shift }}%);font-family:'Geist Mono',monospace;font-size:11px;color:oklch(0.58 0.01 260)">{{ tk.label }}</span>
+                  </sc-for>
+                </div>
+                <div style="font-size:11px;color:oklch(0.58 0.01 260);text-transform:uppercase;letter-spacing:0.05em;text-align:right">Duração</div>
+              </div>
+              <sc-for list="{{ bars }}" as="b" hint-placeholder-count="6">
+                <div style="display:grid;grid-template-columns:200px minmax(0,1fr) 72px;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid oklch(0.20 0.007 260)">
+                  <div style="display:flex;align-items:center;gap:8px;min-width:0"><span style="width:7px;height:7px;border-radius:50%;flex:none;background:{{ b.color }}"></span><span style="font-family:'Geist Mono',monospace;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ b.name }}</span></div>
+                  <div style="position:relative;height:18px;background-image:linear-gradient(90deg, oklch(0.22 0.007 260) 1px, transparent 1px);background-size:25% 100%">
+                    <div style="position:absolute;top:3px;bottom:3px;left:{{ b.left }}%;width:{{ b.width }}%;min-width:3px;border-radius:4px;background:{{ b.fill }};border:1px solid {{ b.color }}"></div>
+                  </div>
+                  <div style="font-family:'Geist Mono',monospace;font-size:12px;text-align:right;color:oklch(0.80 0.01 260)">{{ b.dur }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ isEvents }}" hint-placeholder-val="{{ false }}">
+            <div style="border:1px solid oklch(0.24 0.008 260);border-radius:12px;overflow:hidden">
+              <div style="display:grid;grid-template-columns:48px 88px 260px minmax(0,1fr);gap:12px;padding:10px 16px;background:oklch(0.17 0.007 260);font-size:11px;color:oklch(0.58 0.01 260);text-transform:uppercase;letter-spacing:0.05em">
+                <div>#</div><div>Tempo</div><div>Evento</div><div>Detalhes</div>
+              </div>
+              <sc-for list="{{ events }}" as="ev" hint-placeholder-count="10">
+                <div style="display:grid;grid-template-columns:48px 88px 260px minmax(0,1fr);gap:12px;padding:9px 16px;border-top:1px solid oklch(0.21 0.007 260);font-family:'Geist Mono',monospace;font-size:12px;align-items:center">
+                  <div style="color:oklch(0.55 0.01 260)">{{ ev.n }}</div>
+                  <div style="color:oklch(0.70 0.01 260)">{{ ev.time }}</div>
+                  <div style="display:flex;align-items:center;gap:8px;color:{{ ev.color }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ ev.color }}"></span>{{ ev.type }}</div>
+                  <div style="color:oklch(0.78 0.01 260);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ ev.detail }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ isIO }}" hint-placeholder-val="{{ false }}">
+            <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px">
+              <div style="border:1px solid oklch(0.24 0.008 260);border-radius:12px;overflow:hidden">
+                <div style="padding:10px 14px;background:oklch(0.17 0.007 260);font-size:12px;font-weight:500">Entrada</div>
+                <pre style="margin:0;padding:14px;font-family:'Geist Mono',monospace;font-size:12px;line-height:1.6;color:oklch(0.85 0.01 260);white-space:pre-wrap">{{ io.input }}</pre>
+              </div>
+              <div style="border:1px solid oklch(0.24 0.008 260);border-radius:12px;overflow:hidden">
+                <div style="padding:10px 14px;background:oklch(0.17 0.007 260);font-size:12px;font-weight:500">{{ io.outLabel }}</div>
+                <pre style="margin:0;padding:14px;font-family:'Geist Mono',monospace;font-size:12px;line-height:1.6;color:{{ io.outColor }};white-space:pre-wrap">{{ io.output }}</pre>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;graphLayout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;horizontal&quot;,&quot;vertical&quot;],&quot;default&quot;:&quot;horizontal&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;liveUpdates&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;},&quot;defaultTab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;graph&quot;,&quot;timeline&quot;,&quot;events&quot;,&quot;io&quot;],&quot;default&quot;:&quot;graph&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+const C = {
+  green: 'oklch(0.76 0.15 155)', blue: 'oklch(0.72 0.13 245)', red: 'oklch(0.68 0.19 25)',
+  amber: 'oklch(0.80 0.14 80)', gray: 'oklch(0.58 0.01 260)', text: 'oklch(0.95 0.005 260)',
+  muted: 'oklch(0.66 0.01 260)', border: 'oklch(0.27 0.008 260)', accent: 'oklch(0.80 0.14 160)'
+};
+const ST = {
+  completed: { label: 'Concluído', c: C.green }, running: { label: 'Em execução', c: C.blue },
+  failed: { label: 'Falhou', c: C.red }, waiting: { label: 'Aguardando sinal', c: C.amber },
+  pending: { label: 'Pendente', c: C.gray }, cancelled: { label: 'Cancelado', c: C.gray }
+};
+const tint = (c, a) => c.replace(')', ` / ${a})`);
+const WF = {
+  pedido: { name: 'processar-pedido', queue: 'pedidos', steps: [
+    { id: 'v', name: 'validar-pedido', type: 'Atividade', col: 0, row: 1, deps: [] },
+    { id: 'e', name: 'reservar-estoque', type: 'Atividade', col: 1, row: 0, deps: ['v'] },
+    { id: 'p', name: 'cobrar-pagamento', type: 'Atividade', col: 1, row: 2, deps: ['v'] },
+    { id: 'n', name: 'emitir-nota-fiscal', type: 'Workflow filho', col: 2, row: 1, deps: ['e', 'p'] },
+    { id: 'c', name: 'notificar-cliente', type: 'Atividade', col: 3, row: 0, deps: ['n'] },
+    { id: 'm', name: 'atualizar-crm', type: 'Atividade', col: 3, row: 2, deps: ['n'] }] },
+  catalogo: { name: 'sincronizar-catalogo', queue: 'catalogo', steps: [
+    { id: 'f', name: 'buscar-fornecedores', type: 'Atividade', col: 0, row: 1, deps: [] },
+    { id: 't', name: 'transformar-itens', type: 'Loop · 4.812', col: 1, row: 1, deps: ['f'] },
+    { id: 's', name: 'validar-schema', type: 'Atividade', col: 2, row: 0, deps: ['t'] },
+    { id: 'a', name: 'aguardar-aprovacao', type: 'Sinal', col: 2, row: 2, deps: ['t'] },
+    { id: 'u', name: 'publicar-catalogo', type: 'Atividade', col: 3, row: 1, deps: ['s', 'a'] }] },
+  relatorio: { name: 'relatorio-diario', queue: 'relatorios', steps: [
+    { id: 'w', name: 'aguardar-janela', type: 'Timer', col: 0, row: 1, deps: [] },
+    { id: 'x', name: 'extrair-metricas', type: 'Atividade', col: 1, row: 0, deps: ['w'] },
+    { id: 'y', name: 'extrair-custos', type: 'Atividade', col: 1, row: 2, deps: ['w'] },
+    { id: 'g', name: 'agregar-dados', type: 'Atividade', col: 2, row: 1, deps: ['x', 'y'] },
+    { id: 'd', name: 'gerar-pdf', type: 'Atividade', col: 3, row: 1, deps: ['g'] },
+    { id: 'k', name: 'enviar-email', type: 'Atividade', col: 4, row: 1, deps: ['d'] }] }
+};
+const RUNS = [
+  { id: 'wf-7f3a91c2', wf: 'pedido', status: 'running', started: '14:32:08', trigger: 'API', worker: 'worker-pedidos-03',
+    steps: { v: ['completed', 0, 1.2, 1], e: ['completed', 1.2, 2.1, 1], p: ['running', 1.2, 4.1, 2, true] },
+    input: { pedidoId: 'PED-48213', cliente: 'cli_9921', valor: 1289.9, itens: 3 } },
+  { id: 'wf-2b81e04d', wf: 'catalogo', status: 'waiting', started: '14:29:51', trigger: 'Cron', worker: 'worker-catalogo-01',
+    steps: { f: ['completed', 0, 8.4, 1], t: ['completed', 8.4, 22.7, 1], s: ['completed', 31.1, 3.2, 1], a: ['waiting', 31.1, 128, 1, true] },
+    input: { fornecedores: ['acme', 'nortex', 'vale-sul'], modo: 'incremental' } },
+  { id: 'wf-c4d19a77', wf: 'pedido', status: 'failed', started: '14:21:13', trigger: 'Webhook', worker: 'worker-pedidos-01',
+    steps: { v: ['completed', 0, 0.9, 1], e: ['completed', 0.9, 1.8, 1], p: ['failed', 0.9, 31.4, 3] },
+    error: 'PaymentGatewayTimeout: gateway não respondeu em 10s\n  at cobrarPagamento (activities/pagamento.ts:42)\n  tentativas: 3/3 · política: exponencial (1s → 4s)',
+    input: { pedidoId: 'PED-48197', cliente: 'cli_3310', valor: 349.0, itens: 1 } },
+  { id: 'wf-91e3bb20', wf: 'relatorio', status: 'completed', started: '14:00:00', trigger: 'Cron', worker: 'worker-relatorios-02',
+    steps: { w: ['completed', 0, 0.1, 1], x: ['completed', 0.1, 12.3, 1], y: ['completed', 0.1, 9.8, 1], g: ['completed', 12.4, 4.6, 1], d: ['completed', 17, 7.2, 1], k: ['completed', 24.2, 1.1, 1] },
+    input: { data: '2026-10-10', destinatarios: ['diretoria@empresa.com'] }, output: { arquivo: 's3://relatorios/2026-10-10.pdf', paginas: 14, enviado: true } },
+  { id: 'wf-5d0c7e18', wf: 'pedido', status: 'completed', started: '13:58:42', trigger: 'API', worker: 'worker-pedidos-02',
+    steps: { v: ['completed', 0, 1.1, 1], e: ['completed', 1.1, 2.4, 1], p: ['completed', 1.1, 3.0, 1], n: ['completed', 4.1, 5.6, 1], c: ['completed', 9.7, 0.8, 1], m: ['completed', 9.7, 1.9, 1] },
+    input: { pedidoId: 'PED-48150', cliente: 'cli_0182', valor: 89.9, itens: 2 }, output: { notaFiscal: 'NF-2026-118204', status: 'faturado' } },
+  { id: 'wf-e7a2f6c9', wf: 'catalogo', status: 'completed', started: '13:30:00', trigger: 'Cron', worker: 'worker-catalogo-02',
+    steps: { f: ['completed', 0, 7.9, 1], t: ['completed', 7.9, 20.1, 1], s: ['completed', 28, 2.9, 1], a: ['completed', 28, 46, 1], u: ['completed', 74, 5.2, 1] },
+    input: { fornecedores: ['acme', 'nortex'], modo: 'incremental' }, output: { publicados: 4719, rejeitados: 12 } },
+  { id: 'wf-38bd5a01', wf: 'pedido', status: 'cancelled', started: '13:12:37', trigger: 'Manual', worker: 'worker-pedidos-03',
+    steps: { v: ['completed', 0, 1.0, 1], e: ['completed', 1.0, 2.2, 1], p: ['cancelled', 1.0, 5.3, 1] },
+    input: { pedidoId: 'PED-48102', cliente: 'cli_7740', valor: 2100.0, itens: 5 } },
+  { id: 'wf-a06f4d93', wf: 'relatorio', status: 'completed', started: '13:00:00', trigger: 'Cron', worker: 'worker-relatorios-01',
+    steps: { w: ['completed', 0, 0.1, 1], x: ['completed', 0.1, 11.8, 1], y: ['completed', 0.1, 10.4, 1], g: ['completed', 11.9, 4.2, 1], d: ['completed', 16.1, 6.9, 1], k: ['completed', 23, 1.0, 1] },
+    input: { data: '2026-10-09', destinatarios: ['diretoria@empresa.com'] }, output: { arquivo: 's3://relatorios/2026-10-09.pdf', paginas: 13, enviado: true } }
+];
+const fmt = s => s < 60 ? s.toFixed(1) + 's' : Math.floor(s / 60) + 'm ' + String(Math.round(s % 60)).padStart(2, '0') + 's';
+const FILTERS = [['all', 'Todas'], ['running', 'Em execução'], ['waiting', 'Aguardando'], ['failed', 'Falhou'], ['completed', 'Concluído']];
+const TABS = [['graph', 'Grafo'], ['timeline', 'Linha do tempo'], ['events', 'Histórico de eventos'], ['io', 'Entrada / Saída']];
+
+class Component extends DCLogic {
+  state = { sel: 'wf-7f3a91c2', filter: 'all', query: '', tab: null, step: null, tick: 0 };
+  componentDidMount() {
+    this.timer = setInterval(() => { if (this.props.liveUpdates ?? true) this.setState(s => ({ tick: s.tick + 1 })); }, 1000);
+  }
+  componentWillUnmount() { clearInterval(this.timer); }
+
+  stepsOf(run) {
+    return WF[run.wf].steps.map(d => {
+      const s = run.steps[d.id];
+      if (!s) return { ...d, st: 'pending', start: 0, dur: 0, att: 0 };
+      return { ...d, st: s[0], start: s[1], dur: s[2] + (s[4] ? this.state.tick : 0), att: s[3] };
+    });
+  }
+
+  renderVals() {
+    const { sel, filter, query } = this.state;
+    const tab = this.state.tab ?? this.props.defaultTab ?? 'graph';
+    const vertical = (this.props.graphLayout ?? 'horizontal') === 'vertical';
+    const live = this.props.liveUpdates ?? true;
+    const q = query.trim().toLowerCase();
+    const totalOf = r => Math.max(...this.stepsOf(r).map(s => s.start + s.dur));
+
+    const visible = RUNS.filter(r => (filter === 'all' || r.status === filter) && (!q || r.id.includes(q) || WF[r.wf].name.includes(q)));
+    const runs = visible.map(r => ({
+      id: r.id, wfName: WF[r.wf].name, color: ST[r.status].c, started: r.started, trigger: r.trigger, dur: fmt(totalOf(r)),
+      bg: r.id === sel ? 'oklch(0.19 0.008 260)' : 'transparent', bar: r.id === sel ? C.accent : 'transparent',
+      onClick: () => this.setState({ sel: r.id, step: null })
+    }));
+    const filters = FILTERS.map(([k, label]) => {
+      const on = filter === k;
+      return { label, count: k === 'all' ? RUNS.length : RUNS.filter(r => r.status === k).length,
+        bg: on ? 'oklch(0.80 0.14 160 / 0.12)' : 'transparent', border: on ? 'oklch(0.80 0.14 160 / 0.45)' : C.border,
+        color: on ? 'oklch(0.86 0.12 160)' : C.muted, onClick: () => this.setState({ filter: k }) };
+    });
+
+    const run = RUNS.find(r => r.id === sel);
+    const wf = WF[run.wf];
+    const steps = this.stepsOf(run);
+    const total = Math.max(...steps.map(s => s.start + s.dur));
+    const st = ST[run.status];
+
+    const NW = 184, NH = 62;
+    const pos = d => vertical ? { x: 24 + d.row * 104, y: 24 + d.col * 110 } : { x: 32 + d.col * 236, y: 24 + d.row * 80 };
+    const cols = Math.max(...wf.steps.map(d => d.col)) + 1, rows = 3;
+    const graph = vertical ? { w: 48 + (rows - 1) * 104 + NW + 104, h: 48 + (cols - 1) * 110 + NH } : { w: 64 + (cols - 1) * 236 + NW, h: 48 + (rows - 1) * 80 + NH };
+    if (vertical) graph.w = 48 + 2 * 104 + NW;
+    const stepSel = this.state.step && steps.find(s => s.id === this.state.step) ? this.state.step
+      : (steps.find(s => ['running', 'failed', 'waiting', 'cancelled'].includes(s.st)) || steps[steps.length - 1]).id;
+
+    const nodes = steps.map(s => {
+      const p = pos(s), on = s.id === stepSel, c = ST[s.st].c;
+      return { ...p, name: s.name, type: s.type, color: c, dur: s.st === 'pending' ? '—' : fmt(s.dur),
+        durColor: s.st === 'running' ? C.blue : C.muted,
+        border: on ? C.accent : (s.st === 'pending' ? C.border : tint(c, 0.45)),
+        shadow: on ? '0 0 0 3px oklch(0.80 0.14 160 / 0.18)' : 'none',
+        onClick: () => this.setState({ step: s.id }) };
+    });
+    const byId = Object.fromEntries(steps.map(s => [s.id, s]));
+    const paths = [];
+    steps.forEach(s => s.deps.forEach(dId => {
+      const a = pos(byId[dId]), b = pos(s), done = byId[dId].st === 'completed' && s.st !== 'pending';
+      let d;
+      if (vertical) { const x1 = a.x + NW / 2, y1 = a.y + NH, x2 = b.x + NW / 2, y2 = b.y, m = (y1 + y2) / 2; d = `M${x1},${y1} C${x1},${m} ${x2},${m} ${x2},${y2}`; }
+      else { const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2, m = (x1 + x2) / 2; d = `M${x1},${y1} C${m},${y1} ${m},${y2} ${x2},${y2}`; }
+      paths.push(React.createElement('path', { key: dId + s.id, d, fill: 'none', stroke: done ? tint(C.green, 0.6) : 'oklch(0.34 0.01 260)', strokeWidth: 1.5, strokeDasharray: done ? null : '4 4' }));
+    }));
+    const edgesSvg = React.createElement('svg', { width: graph.w, height: graph.h, style: { position: 'absolute', inset: 0 } }, paths);
+
+    const ss = byId[stepSel];
+    const step = { name: ss.name, color: ST[ss.st].c, statusLabel: ST[ss.st].label,
+      error: ss.st === 'failed' ? run.error : (ss.st === 'waiting' ? 'Aguardando sinal "aprovacao-catalogo" — envie via API ou pelo botão "Enviar sinal".' : null),
+      facts: [{ k: 'Tipo', v: ss.type }, { k: 'Tentativas', v: ss.att ? ss.att + ' / 3' : '—' },
+        { k: 'Início', v: ss.st === 'pending' ? '—' : '+' + fmt(ss.start) }, { k: 'Duração', v: ss.st === 'pending' ? '—' : fmt(ss.dur) }] };
+    if (ss.st === 'waiting') step.error = null;
+
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((f, i) => ({ left: f * 100, shift: i === 0 ? 0 : i === 4 ? -100 : -50, label: fmt(total * f) }));
+    const bars = steps.map(s => ({ name: s.name, color: ST[s.st].c, fill: tint(ST[s.st].c, 0.25),
+      left: (s.start / total) * 100, width: s.st === 'pending' ? 0 : (s.dur / total) * 100, dur: s.st === 'pending' ? '—' : fmt(s.dur) }));
+
+    const ev = [{ t: 0, type: 'WorkflowExecutionStarted', c: C.muted, detail: `taskQueue=${wf.queue} trigger=${run.trigger}` }];
+    steps.filter(s => s.st !== 'pending').forEach(s => {
+      ev.push({ t: s.start, type: s.type === 'Sinal' ? 'SignalWaitStarted' : s.type === 'Timer' ? 'TimerStarted' : 'ActivityTaskScheduled', c: C.muted, detail: s.name });
+      if (s.type === 'Sinal' || s.type === 'Timer') { if (s.st === 'completed') ev.push({ t: s.start + s.dur, type: s.type === 'Sinal' ? 'SignalReceived' : 'TimerFired', c: C.green, detail: s.name }); return; }
+      ev.push({ t: s.start + 0.02, type: 'ActivityTaskStarted', c: C.blue, detail: `${s.name} · ${run.worker}` });
+      for (let i = 1; i < s.att; i++) ev.push({ t: s.start + (s.dur * i) / s.att, type: 'ActivityTaskRetrying', c: C.amber, detail: `${s.name} · tentativa ${i + 1}/3` });
+      if (s.st === 'completed') ev.push({ t: s.start + s.dur, type: 'ActivityTaskCompleted', c: C.green, detail: s.name });
+      if (s.st === 'failed') ev.push({ t: s.start + s.dur, type: 'ActivityTaskFailed', c: C.red, detail: `${s.name} · PaymentGatewayTimeout` });
+      if (s.st === 'cancelled') ev.push({ t: s.start + s.dur, type: 'ActivityTaskCanceled', c: C.gray, detail: `${s.name} · solicitado por ana.souza` });
+    });
+    const fin = { completed: ['WorkflowExecutionCompleted', C.green], failed: ['WorkflowExecutionFailed', C.red], cancelled: ['WorkflowExecutionCanceled', C.gray] }[run.status];
+    if (fin) ev.push({ t: total + 0.01, type: fin[0], c: fin[1], detail: run.id });
+    const events = ev.sort((a, b) => a.t - b.t).map((e, i) => ({ n: i + 1, time: '+' + fmt(e.t), type: e.type, color: e.c, detail: e.detail }));
+
+    const io = { input: JSON.stringify(run.input, null, 2),
+      outLabel: run.status === 'failed' ? 'Erro' : 'Saída',
+      output: run.output ? JSON.stringify(run.output, null, 2) : run.status === 'failed' ? run.error : run.status === 'cancelled' ? '// execução cancelada' : '// em andamento — saída disponível ao concluir',
+      outColor: run.status === 'failed' ? 'oklch(0.82 0.10 25)' : run.output ? 'oklch(0.85 0.01 260)' : C.gray };
+
+    const navItems = [['Workflows', 14], ['Execuções', 1284], ['Agendamentos', 6], ['Workers', 12], ['Filas de tarefas', 4], ['Segredos', 23], ['Configurações', '']];
+    return {
+      nav: navItems.map(([label, count]) => ({ label, count, bg: label === 'Execuções' ? 'oklch(0.20 0.008 260)' : 'transparent', color: label === 'Execuções' ? C.text : C.muted })),
+      query, onQuery: e => this.setState({ query: e.target.value }),
+      liveDot: live ? C.green : C.gray, liveLabel: live ? 'Ao vivo' : 'Pausado',
+      filters, runs, noRuns: runs.length === 0,
+      sel: { wfName: wf.name, id: run.id, short: run.id.slice(3, 7), statusLabel: st.label, color: st.c, tint: tint(st.c, 0.12),
+        canCancel: run.status === 'running' || run.status === 'waiting', canSignal: run.status === 'waiting' },
+      meta: [['Início', 'hoje, ' + run.started], ['Duração', fmt(total)], ['Gatilho', run.trigger], ['Fila', wf.queue], ['Worker', run.worker]]
+        .map(([k, v], i) => ({ k, v, sep: i ? 'oklch(0.24 0.008 260)' : 'transparent' })),
+      tabs: TABS.map(([k, label]) => ({ label, line: tab === k ? C.accent : 'transparent', color: tab === k ? C.text : C.muted, onClick: () => this.setState({ tab: k }) })),
+      isGraph: tab === 'graph', isTimeline: tab === 'timeline', isEvents: tab === 'events', isIO: tab === 'io',
+      graph, nodes, edgesSvg, step, ticks, bars, events, io
+    };
+  }
+}
+</script>
+</body>
+</html>

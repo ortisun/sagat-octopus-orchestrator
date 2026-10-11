@@ -5,7 +5,6 @@ use std::process::ExitCode;
 use sagat_control_plane::cli::{self, Command, USAGE, UsageError};
 use sagat_control_plane::config::{Config, ProvisionConfig, SeedConfig, ServeConfig};
 use sagat_control_plane::{RunError, SeedOutcome};
-use sagat_telemetry::init_logging;
 
 fn env_lookup(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -54,8 +53,19 @@ async fn run(command: Command) -> Result<(), RunError> {
     }
 
     let config = Config::from_lookup(&env_lookup)?;
-    init_logging(config.log_format);
+    let telemetry = sagat_telemetry::init(sagat_control_plane::config::telemetry(
+        &env_lookup,
+        "sagat-control-plane",
+        config.log_format,
+    )?);
+    let result = execute(command, &config).await;
+    telemetry
+        .shutdown(sagat_control_plane::config::TELEMETRY_FLUSH)
+        .await;
+    result
+}
 
+async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
     match command {
         Command::Migrate => {
             sagat_control_plane::run_migrations(&config.database).await?;
@@ -64,7 +74,7 @@ async fn run(command: Command) -> Result<(), RunError> {
         }
         Command::SeedDev => {
             let seed = SeedConfig::from_lookup(&env_lookup)?;
-            match sagat_control_plane::seed_dev(&config, &seed).await? {
+            match sagat_control_plane::seed_dev(config, &seed).await? {
                 SeedOutcome::Created => {
                     tracing::info!(tenant = %seed.tenant_slug, "development tenant created")
                 }
@@ -78,13 +88,13 @@ async fn run(command: Command) -> Result<(), RunError> {
             let secrets = sagat_control_plane::config::read_secrets(&env_lookup)?.ok_or(
                 sagat_control_plane::config::ConfigError::Missing("SAGAT_SECRETS_KEYS"),
             )?;
-            let moved = sagat_control_plane::reseal_secrets(&config, &secrets).await?;
+            let moved = sagat_control_plane::reseal_secrets(config, &secrets).await?;
             tracing::info!(moved, "secret versions re-sealed under the active key");
             Ok(())
         }
         Command::QuotaCeiling => {
             let request = sagat_control_plane::config::CeilingConfig::from_lookup(&env_lookup)?;
-            sagat_control_plane::grant_quota_ceiling(&config, &request).await?;
+            sagat_control_plane::grant_quota_ceiling(config, &request).await?;
             tracing::info!(
                 tenant = %request.tenant_id,
                 resource = %request.resource,
@@ -94,7 +104,7 @@ async fn run(command: Command) -> Result<(), RunError> {
         }
         Command::ProvisionTenant => {
             let request = ProvisionConfig::from_lookup(&env_lookup)?;
-            sagat_control_plane::provision_tenant(&config, &request).await?;
+            sagat_control_plane::provision_tenant(config, &request).await?;
             // The administrator's subject can be personal data; only the tenant is logged.
             tracing::info!(tenant = %request.tenant_slug, "tenant provisioned");
             Ok(())
@@ -107,7 +117,7 @@ async fn run(command: Command) -> Result<(), RunError> {
                 None => None,
             };
             sagat_control_plane::serve_with_admin(
-                &config,
+                config,
                 &serve,
                 listener,
                 admin,

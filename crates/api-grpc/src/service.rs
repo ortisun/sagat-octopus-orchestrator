@@ -85,9 +85,27 @@ async fn observe<T>(
     call: impl Future<Output = Result<T, Status>>,
 ) -> Result<Response<T>, Status> {
     let started = Instant::now();
-    let span = tracing::info_span!("grpc.worker", method, trace_id = %trace.trace_id());
-    let result = call.instrument(span).await;
+    // A call that carries no `traceparent` (a poll, a registration) is a trace of its own that nobody
+    // asked for: it is logged under its id but not exported, or every idle worker would add a
+    // one-span trace per poll. A report of an attempt carries the attempt's span (the lease gave it)
+    // and joins the run's trace under it.
+    let span = tracing::info_span!(
+        "grpc.worker",
+        method,
+        trace_id = %trace.trace_id(),
+        span_id = %sagat_telemetry::SpanId::generate(),
+        parent_span_id = trace.parent_span_id().map(|p| p.to_string()),
+        otel.kind = "server",
+        otel.sampled = trace.is_continuation(),
+        grpc.status_code = tracing::field::Empty,
+        otel.status_code = tracing::field::Empty,
+    );
+    let result = call.instrument(span.clone()).await;
     let code = result.as_ref().err().map_or(Code::Ok, Status::code);
+    span.record("grpc.status_code", code_label(code));
+    if code == Code::Internal || code == Code::Unknown {
+        span.record("otel.status_code", "error");
+    }
     metrics::counter!("grpc_requests_total", "method" => method, "code" => code_label(code))
         .increment(1);
     metrics::histogram!("grpc_request_duration_seconds", "method" => method)
@@ -178,6 +196,12 @@ where
         request: Request<pb::PollTasksRequest>,
     ) -> Result<Response<pb::PollTasksResponse>, Status> {
         let trace = trace_of(&request);
+        // A poll that carries no `traceparent` is a trace of its own that nobody asked for. The
+        // leases it makes belong to the traces of the runs they are for, and the timeline of a run
+        // says so: only a poll that continues a trace puts its own on the lease.
+        let request_trace = trace
+            .is_continuation()
+            .then(|| trace.trace_id().to_string());
         observe("PollTasks", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
@@ -191,7 +215,7 @@ where
                     worker,
                     &message.session_token,
                     max_tasks,
-                    Some(&trace.trace_id().to_string()),
+                    request_trace.as_deref(),
                 )
                 .await
                 .map_err(app)?;
@@ -414,28 +438,19 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
     }
 }
 
-/// The run's trace continued into the worker: same trace id, a span id derived from the step.
+/// The run's trace continued into the worker: same trace id, and the span of this attempt, the one
+/// the projector exports for it, so what the worker does under it (its own spans, the calls it makes
+/// to a provider) is a child of the attempt (D162).
 fn traceparent(task: &ClaimedTask) -> String {
     let Some(trace) = task
         .trace_id
         .as_deref()
-        .filter(|id| sagat_telemetry::TraceId::parse(id).is_some())
+        .and_then(sagat_telemetry::TraceId::parse)
     else {
         return String::new();
     };
-    let span: String = task
-        .step_id
-        .as_bytes()
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    let span = if span.bytes().all(|b| b == b'0') {
-        "0000000000000001".to_owned()
-    } else {
-        span
-    };
-    format!("00-{trace}-{span}-01")
+    let span = sagat_telemetry::attempt_span_id(task.step_id, task.fence.attempt);
+    sagat_telemetry::traceparent(trace, span, true)
 }
 
 fn epoch_ms(at: OffsetDateTime) -> i64 {

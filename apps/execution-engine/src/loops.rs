@@ -13,14 +13,16 @@ use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::PgRunStore;
 use sagat_scheduler::{
-    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, OutboxDispatcher,
-    Report, Scheduler,
+    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, Monitor, MonitorRound,
+    OutboxDispatcher, ProjectionRound, Report, Scheduler, TelemetryProjector,
 };
 use tokio::sync::watch;
 
 pub type EngineScheduler = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type EngineDispatcher = OutboxDispatcher<PgRunStore, NatsPublisher, SystemEntropy>;
 pub type EngineEvents = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
+pub type EngineProjector = TelemetryProjector<PgRunStore>;
+pub type EngineMonitor = Monitor<PgRunStore>;
 pub type EngineDeliveries = DeliveryWorker<
     PgRunStore,
     sagat_infra_connectors::webhook::GuardedSender<PgRunStore>,
@@ -176,6 +178,52 @@ where
         }
     }
     tracing::info!("delivery worker stopped");
+}
+
+/// Projects the journal into spans and measurements until stopped. A round that took runs is
+/// followed at once by the next, so a backlog drains at full speed; an idle one by a pause, and a
+/// round that failed (the collector or the database is down) by a pause that doubles up to
+/// thirty seconds, so an outage is not a storm of attempts.
+pub async fn run_telemetry<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ProjectionRound>,
+{
+    const LONGEST_PAUSE: Duration = Duration::from_secs(30);
+    let mut failing = poll;
+    while !*stop.borrow() {
+        let done = round().await;
+        let pause = if done.failed {
+            failing = (failing * 2).min(LONGEST_PAUSE);
+            failing
+        } else {
+            failing = poll;
+            if done.did_work() {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            poll
+        };
+        if stop_during(jittered(pause, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("telemetry projector stopped");
+}
+
+/// Looks for conditions that need a person, and samples the queues, every `every` until stopped.
+pub async fn run_monitor<F, Fut>(mut round: F, every: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = MonitorRound>,
+{
+    while !*stop.borrow() {
+        round().await;
+        if stop_during(jittered(every, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("monitor stopped");
 }
 
 #[cfg(test)]

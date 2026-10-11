@@ -71,6 +71,15 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **FR-007-006**: The system MUST offer SSE/WebSocket incremental updates and polling fallback, avoiding full DAG reload.
 - **FR-007-007**: The system MUST enforce operational actions via RBAC and confirmation explaining the consequences of retry/compensation.
 - **FR-007-008**: The system MUST implement a WCAG AA accessibility target and an alternative table/list view.
+- **FR-007-009**: The Studio MUST follow the visual direction recorded in [`design/README.md`](./design/README.md) on all of its screens: the
+  tokens (colour, type, radius, spacing) as the only source of values for every theme, the application shell (sidebar with the
+  namespace and the navigation, a top bar), the Runs screen as a list beside a detail pane with the graph, and the language of the
+  graph's cards and edges. Where the direction and FR-007-008 disagree, FR-007-008 wins and the deviation is listed, with its
+  contrast ratio, in `design/README.md`. The Studio's labels stay in English. It has a light and a dark theme, both derived from
+  the same tokens, and **follows the system's colour scheme by default** (D157; `prefers-color-scheme`, with forced colours as before).
+- **FR-007-010**: An element of the design for which the platform has no data or no feature MUST NOT be drawn with sample values or as a
+  link to nothing: it is omitted, or shown unavailable with the reason (queue, worker and trigger kind of a run, counts, workers and
+  backlog of the platform, pages of other features, the payload tab). The table of such elements is in `design/README.md`.
 
 ## Edge Cases
 
@@ -96,6 +105,10 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **SC-007-002:** 100% of scenarios US01..US04 pass in a reproducible automated suite.
 - **SC-007-003:** no violation of the Constitution's gates and no silent loss of persisted state.
 - **SC-007-004:** critical errors expose `code`, `trace_id` and remediation without leaking payload/secrets.
+- **SC-007-005:** (FR-007-009, FR-007-010) no stylesheet of the Studio holds a literal colour outside the token definitions; every text,
+  control-border and focus pair of every theme (light, dark, forced colours) meets its WCAG threshold, checked by a test; axe-core finds
+  no serious or critical violation on any page in any of the three; the US01..US04 journeys pass unchanged in what they assert; and
+  the Runs screen was compared with `design/runs-prototype.jpg` by a person (a review, reported as one: no tool judges intent).
 
 ## Key Entities
 
@@ -106,16 +119,19 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 - Workflow IRs and versions are immutable after publication.
 - External integrations are at-least-once, subject to idempotency or reconciliation.
 - V1 single-region HA; multi-region active-active requirements are out of scope.
+- The design is a snapshot of a project its owner may keep editing: the owner's export of 2026-10-10, whose Runs prototype is kept in `design/source/`. It is exact for the dark theme of the Runs screen; `design/README.md` says what it does not cover (G160).
 
 ## Out of Scope
 
 - Reimplementing Temporal/Restate; implementing the entire connector market; automatic migration of arbitrary code; exactly-once physical execution of external side effects.
+- The pages the design's navigation lists that belong to other features (schedules, workers, task queues, secrets, settings) and a Portuguese interface (an internationalisation feature).
 
 ## Open Design Questions
 
 - Define capacity/quota values per tier, after benchmark and security testing.
 - Confirm the payload classification/retention scheme per customer and regulator.
 - Adjust SDK ergonomics based on interviews and proof-of-concept.
+- The design's owner: the light theme and the screens beyond Runs (editor, scripts, sign-in, states), the logo, where Scripts sits in the navigation, and whether *Send signal* and the per-step *Timeline* bars are part of this feature (G160–G163, G167, G168).
 
 ## Traceability
 

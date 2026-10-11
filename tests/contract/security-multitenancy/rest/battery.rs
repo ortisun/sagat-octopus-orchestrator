@@ -33,6 +33,8 @@ fn body_of(operation: &str) -> Option<Value> {
         "createWorkflowDraft" => json!({"name": "attacker-flow", "ir": flow("attacker-flow")}),
         "updateWorkflowDraft" => json!({"draftRevision": 1, "ir": flow("victim-flow")}),
         "publishWorkflow" => json!({"draftRevision": 1}),
+        // Feature 007: a dry run of the victim's draft with a document of the attacker's.
+        "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
         "signalRun" => json!({"paid": true}),
@@ -81,6 +83,10 @@ fn body_of(operation: &str) -> Option<Value> {
         }
         "recordScriptExecution" => {
             json!({"namespaceId": "{namespaceId}", "digest": format!("sha256:{}", "ab".repeat(32)), "status": "FAILED", "denied": ["attacker"]})
+        }
+        // Feature 008: an administrator of another tenant draining the victim's worker.
+        "drainWorker" | "undrainWorker" => {
+            json!({"reason": "cross-tenant battery probe"})
         }
         _ => return None,
     })

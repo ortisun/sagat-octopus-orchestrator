@@ -99,6 +99,9 @@ pub struct NewEvent {
     /// admits it: every instant that decides what an event may wake is the database's, so
     /// instances with skewed clocks agree.
     pub dedupe_ttl: Duration,
+    /// The trace the event was published in, when its publisher sent one: the run it starts
+    /// continues it (G79).
+    pub trace: Option<crate::identity::TraceLink>,
 }
 
 /// What admitting an event came to.
@@ -235,6 +238,8 @@ pub struct WebhookRequest<'a> {
     pub subject: Option<&'a str>,
     pub correlation_key: Option<&'a str>,
     pub body: &'a [u8],
+    /// The trace of the request that carries the webhook.
+    pub trace: Option<&'a crate::identity::TraceLink>,
 }
 
 /// An event to publish through the API.
@@ -591,7 +596,7 @@ where
             request.correlation_key,
         )
         .map_err(event_error)?;
-        let event = new_event(
+        let mut event = new_event(
             principal.tenant_id(),
             namespace.id(),
             envelope,
@@ -599,6 +604,7 @@ where
             request.data,
             ttl,
         );
+        event.trace = ctx.link();
         let audit = AuditRecord::by(
             principal,
             AuditAction::EventPublished,
@@ -738,7 +744,7 @@ where
             .map_err(|_| AppError::NotAllowed("the correlation key is not usable"))?;
         let envelope = EventEnvelope::new(key.clone(), event_type, request.subject, correlation)
             .map_err(event_error)?;
-        let event = new_event(
+        let mut event = new_event(
             record.tenant_id,
             record.namespace_id,
             envelope,
@@ -746,6 +752,7 @@ where
             request.body.to_vec(),
             record.limits.dedupe_ttl(),
         );
+        event.trace = request.trace.cloned();
         match self.store.admit_event(&event, BACKLOG_LIMIT, None).await? {
             Admission::Accepted => {
                 metrics::counter!("events_received_total", "kind" => "webhook", "outcome" => "accepted")
@@ -997,6 +1004,7 @@ pub fn new_event(
         payload,
         digest,
         dedupe_ttl: ttl,
+        trace: None,
     }
 }
 

@@ -173,9 +173,9 @@ const ALL_ROLES: [Role; 6] = [
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
         DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
-        NamespaceRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart, ScriptBuild,
+        NamespaceRead, OpsRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart, ScriptBuild,
         ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse,
-        WorkerExecute, WorkspaceRead,
+        WorkerExecute, WorkerManage, WorkspaceRead,
     };
     match role {
         Role::Admin => Permission::ALL.to_vec(),
@@ -197,6 +197,7 @@ fn expected(role: Role) -> Vec<Permission> {
                 ScriptRead,
                 ScriptWrite,
                 ScriptPublish,
+                OpsRead,
             ]
         }
         Role::Operator => vec![
@@ -211,6 +212,8 @@ fn expected(role: Role) -> Vec<Permission> {
             EventPublish,
             EventRead,
             ScriptRead,
+            OpsRead,
+            WorkerManage,
         ],
         Role::Viewer => vec![
             WorkspaceRead,
@@ -220,6 +223,7 @@ fn expected(role: Role) -> Vec<Permission> {
             QuotaRead,
             EventRead,
             ScriptRead,
+            OpsRead,
         ],
         Role::Worker => vec![WorkerExecute],
         Role::Runner => vec![WorkerExecute, ScriptBuild, ScriptExecute],

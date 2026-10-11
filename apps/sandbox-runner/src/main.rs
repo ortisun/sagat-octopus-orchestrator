@@ -7,7 +7,7 @@ use std::time::Duration;
 use sagat_infra_sandbox::DockerSandbox;
 use sagat_sandbox_runner::cli::{self, Command, USAGE, UsageError};
 use sagat_sandbox_runner::{Runner, RunnerConfig};
-use sagat_telemetry::{LogFormat, init_logging};
+use sagat_telemetry::LogFormat;
 
 fn env_lookup(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -55,7 +55,18 @@ async fn run(command: Command) -> Result<(), String> {
         Some("pretty") => LogFormat::Pretty,
         Some(_) => return Err("SAGAT_LOG_FORMAT is json or pretty".to_owned()),
     };
-    init_logging(log_format);
+    let telemetry_config =
+        sagat_control_plane::config::telemetry(&env_lookup, "sagat-sandbox-runner", log_format)
+            .map_err(|e| e.to_string())?;
+    let telemetry = sagat_telemetry::init(telemetry_config);
+    let result = serve(&telemetry).await;
+    telemetry
+        .shutdown(sagat_control_plane::config::TELEMETRY_FLUSH)
+        .await;
+    result
+}
+
+async fn serve(_telemetry: &sagat_telemetry::Telemetry) -> Result<(), String> {
     let config = RunnerConfig::from_lookup(&env_lookup).map_err(|e| e.to_string())?;
     let sandbox = DockerSandbox::connect(config.images.clone())
         .map_err(|_| "the container engine could not be reached".to_owned())?;

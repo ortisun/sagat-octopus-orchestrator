@@ -15,6 +15,7 @@ pub mod egress;
 pub mod events;
 pub mod execution;
 pub mod identity;
+pub mod operations;
 pub mod outbound;
 pub mod quota;
 pub mod saga;

@@ -22,7 +22,7 @@ fn forward_migrations() -> i64 {
     i64::try_from(count).expect("count fits")
 }
 
-const TABLES: [&str; 21] = [
+const TABLES: [&str; 25] = [
     "tenants",
     "workspaces",
     "namespaces",
@@ -46,6 +46,11 @@ const TABLES: [&str; 21] = [
     "secret_versions",
     "secret_access",
     "egress_policies",
+    // Added by feature 008.
+    "telemetry_pending",
+    "engine_leases",
+    "operational_alerts",
+    "worker_drains",
 ];
 
 #[tokio::test]

@@ -235,9 +235,9 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id) \
+                 depth, root_run_id, trace_parent_span, rerun_of) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16)",
+                         $12, $13, $14, $15, $16, $17, $18)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -255,6 +255,8 @@ impl RunStore for PgRunStore {
             .bind(info.parent.as_ref().map(|p| p.cancel_policy.as_str()))
             .bind(i16::from(info.depth))
             .bind(info.root.as_uuid())
+            .bind(info.parent_span.as_deref())
+            .bind(info.rerun_of.map(|r| r.as_uuid()))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -401,7 +403,7 @@ impl RunStore for PgRunStore {
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-                    cancel_policy, depth \
+                    cancel_policy, depth, trace_parent_span, rerun_of \
              FROM runs \
              WHERE tenant_id = $1 AND namespace_id = $2 \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -442,7 +444,7 @@ impl RunStore for PgRunStore {
             return Ok(None);
         }
         let rows = sqlx::query(
-            "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, \
+            "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, detail, \
                     encode(payload_digest, 'hex') AS payload_ref \
              FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND seq > $3 \
              ORDER BY seq LIMIT $4",
@@ -454,15 +456,49 @@ impl RunStore for PgRunStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
+        // The identity of each step, which the span of an attempt is computed from.
+        let steps: std::collections::HashMap<String, Uuid> =
+            sqlx::query("SELECT node, step_id FROM steps WHERE tenant_id = $1 AND run_id = $2")
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_error)?
+                .iter()
+                .map(|r| Ok((col::<String>(r, "node")?, col::<Uuid>(r, "step_id")?)))
+                .collect::<Result<_, StoreError>>()?;
         rows.iter()
             .map(|row| {
                 let seq: i64 = col(row, "seq")?;
                 let attempt: Option<i32> = col(row, "attempt")?;
+                let event_type: String = col(row, "event_type")?;
+                let node: Option<String> = col(row, "node")?;
+                let detail: serde_json::Value = col(row, "detail")?;
+                // The steps the event changed, not only the one it names. An event this build cannot
+                // decode (one written by a newer engine) says nothing of what it changed: `None`, and a
+                // change of the graph that holds one is the whole graph.
+                let decoded = decode(&event_type, node.as_deref(), &detail);
+                let touched = decoded.as_ref().map(|event| {
+                    event
+                        .changed_nodes()
+                        .iter()
+                        .map(|n| n.as_str().to_owned())
+                        .collect()
+                });
+                let attempt = attempt.and_then(|a| u32::try_from(a).ok());
+                let span_id = attempt.and_then(|a| {
+                    node.as_deref()
+                        .and_then(|n| steps.get(n))
+                        .map(|step| sagat_telemetry::attempt_span_id(*step, a).to_string())
+                });
                 Ok(JournalEntry {
                     seq: u64::try_from(seq).map_err(|_| corrupt("sequence"))?,
-                    event_type: col(row, "event_type")?,
-                    node: col(row, "node")?,
-                    attempt: attempt.and_then(|a| u32::try_from(a).ok()),
+                    event_type,
+                    node,
+                    touched,
+                    cause: decoded.as_ref().and_then(RunEvent::cause),
+                    span_id,
+                    attempt,
                     actor: col(row, "actor")?,
                     trace_id: col(row, "trace_id")?,
                     occurred_at: col(row, "occurred_at")?,
@@ -471,6 +507,32 @@ impl RunStore for PgRunStore {
             })
             .collect::<Result<Vec<_>, StoreError>>()
             .map(Some)
+    }
+
+    async fn rerun_source(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<sagat_application::runs::RerunSource>, StoreError> {
+        let Some(row) = sqlx::query(
+            "SELECT n.slug AS namespace, p.content AS input \
+             FROM runs r \
+             JOIN namespaces n ON n.tenant_id = r.tenant_id AND n.id = r.namespace_id \
+             JOIN payloads p ON p.tenant_id = r.tenant_id AND p.digest = r.input_digest \
+             WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(sagat_application::runs::RerunSource {
+            namespace: col(&row, "namespace")?,
+            input: col(&row, "input")?,
+        }))
     }
 
     async fn graph(
@@ -663,19 +725,20 @@ async fn claim_reservation(
 
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
-     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth \
+     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
+     trace_parent_span, rerun_of \
      FROM runs WHERE tenant_id = $1 AND id = $2";
 
 const RUN_FOR_UPDATE: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, rerun_of, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE";
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
      status, run_version, stop_reason, stop_code, paused, input_digest, correlation_id, started_by, \
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
-     cancel_policy, depth, clock_timestamp() AS db_now \
+     cancel_policy, depth, trace_parent_span, rerun_of, clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE SKIP LOCKED";
 
 fn parent_link(row: &PgRow) -> Result<Option<ParentLink>, StoreError> {
@@ -707,6 +770,8 @@ fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
             started_by: col(row, "started_by")?,
             correlation_id: col(row, "correlation_id")?,
             trace_id: col(row, "trace_id")?,
+            parent_span: col(row, "trace_parent_span")?,
+            rerun_of: col::<Option<Uuid>>(row, "rerun_of")?.map(RunId::new),
             deadline_at: col(row, "deadline_at")?,
             created_at: col(row, "created_at")?,
             parent: parent_link(row)?,
@@ -1017,6 +1082,28 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn worker_drained(&mut self, subject: &str) -> Result<bool, StoreError> {
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
+            .bind(crate::operations::drain_lock_key(
+                self.info.tenant_id,
+                self.info.namespace_id,
+                subject,
+            ))
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM worker_drains \
+                            WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(subject)
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
         sqlx::query_scalar(
             "SELECT pattern FROM worker_bindings \
@@ -1163,33 +1250,17 @@ impl RunTx for PgRunTx {
             .await
             .map_err(store_error)?;
 
-            if let Some(node) = event.node() {
-                touched.insert(node.clone());
-            }
+            // The steps the event created or changed, from the one definition of them the platform has
+            // (the Studio's changes of the graph are made of the same list).
+            touched.extend(event.changed_nodes());
             self.signals.extend(of_event(event));
             match event {
-                RunEvent::RunStarted { entrypoint } => {
-                    touched.insert(entrypoint.clone());
-                }
-                RunEvent::SagaEntered { node, begin } => {
-                    touched.insert(begin.clone());
-                    sagas.insert(node.clone());
-                }
-                RunEvent::SagaCompleted { node }
+                RunEvent::SagaEntered { node, .. }
+                | RunEvent::SagaCompleted { node }
                 | RunEvent::SagaAborting { node, .. }
-                | RunEvent::SagaCompensated { node, .. } => {
+                | RunEvent::SagaCompensated { node, .. }
+                | RunEvent::CompensationPlanned { node, .. } => {
                     sagas.insert(node.clone());
-                }
-                RunEvent::CompensationPlanned { node, entries, .. } => {
-                    sagas.insert(node.clone());
-                    touched.extend(entries.iter().map(|e| e.node.compensation()));
-                }
-                RunEvent::ReconciliationRequested { node, .. } => {
-                    touched.insert(node.reconciliation());
-                }
-                RunEvent::StepRouted { activated, .. } => touched.extend(activated.iter().cloned()),
-                RunEvent::ParallelForked { branches, .. } => {
-                    touched.extend(branches.iter().cloned())
                 }
                 RunEvent::StepReleased { node }
                 | RunEvent::StepRetryDue { node }
@@ -1220,6 +1291,27 @@ impl RunTx for PgRunTx {
                 RunEvent::RunFinished { status } => self.outbox_run_finished(*status).await?,
                 _ => {}
             }
+        }
+        if !events.is_empty() {
+            // The journal moved: the telemetry projection will turn what is new into spans. The write
+            // is one upsert of a row of its own; nothing the projector does waits for this
+            // transaction or makes it wait (D160).
+            let head = i64::try_from(self.persisted + events.len() as u64)
+                .map_err(|_| corrupt("sequence"))?;
+            sqlx::query(
+                "INSERT INTO telemetry_pending (tenant_id, run_id, head_seq, applied_seq, behind_since) \
+                 VALUES ($1, $2, $3, 0, clock_timestamp()) \
+                 ON CONFLICT (tenant_id, run_id) DO UPDATE \
+                   SET behind_since = CASE WHEN telemetry_pending.applied_seq >= telemetry_pending.head_seq \
+                                           THEN clock_timestamp() ELSE telemetry_pending.behind_since END, \
+                       head_seq = GREATEST(telemetry_pending.head_seq, EXCLUDED.head_seq)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(run.as_uuid())
+            .bind(head)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
         }
         if let Some(renewal) = &effects.renewal {
             touched.insert(renewal.node.clone());
@@ -1481,6 +1573,7 @@ impl PgRunTx {
             "namespaceId": self.info.namespace_id.to_string(),
             "runId": self.info.run_id.to_string(),
             "status": status.as_str(),
+            "traceId": self.info.trace_id,
         }))
         .execute(&mut *self.tx)
         .await
@@ -1501,6 +1594,8 @@ impl PgRunTx {
                 "runId": self.info.run_id.to_string(),
                 "workflow": self.def.name().as_str(),
                 "status": status.as_str(),
+                // So a subscriber can put what it does about the run in the run's trace.
+                "traceId": self.info.trace_id,
             },
         });
         crate::outbound::fan_out(

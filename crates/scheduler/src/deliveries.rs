@@ -23,6 +23,8 @@ use sagat_domain::outbound::{
     AttemptOutcome, Verdict, delivery_backoff, judge_response, out_of_attempts,
 };
 use sagat_domain::secrets::{SecretCipher, associated_data};
+use sagat_telemetry::{SpanId, TraceId};
+use tracing::Instrument;
 
 /// The version of the shape of what is delivered (see `events.asyncapi.yaml`).
 const SCHEMA_VERSION: &str = "1";
@@ -173,8 +175,29 @@ where
         }
     }
 
-    /// Makes one attempt at one delivery and records it.
+    /// Makes one attempt at one delivery and records it, in the trace of the run the event is about
+    /// when the event says which: the receiver gets a `traceparent` whose parent is this attempt.
     async fn attempt(&self, due: &DueDelivery) -> Result<Settled, ()> {
+        let link = delivery_trace(&due.delivery.payload);
+        let span = tracing::info_span!(
+            "webhook.delivery",
+            trace_id = link.as_ref().map(|l| l.trace.as_str()),
+            span_id = %link.as_ref().map_or_else(SpanId::generate, |l| l.span),
+            parent_span_id = link.as_ref().map(|l| l.run_span.to_string()),
+            otel.kind = "client",
+            attempt = due.delivery.attempts + 1,
+        );
+        let traceparent = link.as_ref().and_then(|l| {
+            TraceId::parse(&l.trace).map(|trace| sagat_telemetry::traceparent(trace, l.span, true))
+        });
+        self.attempt_traced(due, traceparent).instrument(span).await
+    }
+
+    async fn attempt_traced(
+        &self,
+        due: &DueDelivery,
+        traceparent: Option<String>,
+    ) -> Result<Settled, ()> {
         let delivery = &due.delivery;
         let number = delivery.attempts + 1;
         let started_at = self.clock.now();
@@ -200,7 +223,10 @@ where
                         ("x-octopus-delivery-id".into(), delivery.id.to_string()),
                         ("x-octopus-attempt".into(), number.to_string()),
                         ("x-octopus-schema-version".into(), SCHEMA_VERSION.into()),
-                    ],
+                    ]
+                    .into_iter()
+                    .chain(traceparent.map(|value| ("traceparent".to_owned(), value)))
+                    .collect(),
                     body: delivery.payload.clone(),
                     timeout: due.limits.timeout(),
                 };
@@ -386,4 +412,27 @@ fn outcome_note(outcome: AttemptOutcome) -> Option<String> {
         }
         AttemptOutcome::Unsigned => Some("there is no signing secret to sign with".to_owned()),
     }
+}
+
+/// Where a delivery belongs in a trace: the trace of the run its event is about, the span of the run
+/// (what the delivery hangs from), and the span of this delivery.
+struct DeliveryTrace {
+    trace: String,
+    run_span: SpanId,
+    span: SpanId,
+}
+
+/// Reads the run and its trace from the body of a `run.finished` event (`data.runId`, `data.traceId`);
+/// any other event, or one with no trace, is delivered with none.
+fn delivery_trace(payload: &[u8]) -> Option<DeliveryTrace> {
+    let body: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let data = body.get("data")?;
+    let trace = data.get("traceId")?.as_str()?;
+    TraceId::parse(trace)?;
+    let run = uuid::Uuid::parse_str(data.get("runId")?.as_str()?).ok()?;
+    Some(DeliveryTrace {
+        trace: trace.to_owned(),
+        run_span: sagat_telemetry::run_span_id(run),
+        span: SpanId::generate(),
+    })
 }

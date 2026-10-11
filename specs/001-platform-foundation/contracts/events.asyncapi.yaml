@@ -61,6 +61,8 @@ channels:
     messages:
       runFinishedWebhook:
         $ref: '#/components/messages/RunFinishedWebhook'
+      operationalAlertWebhook:
+        $ref: '#/components/messages/OperationalAlertWebhook'
   brokerMessages:
     address: '{topicOrQueue}'
     description: A Kafka topic, an SQS queue or a NATS JetStream stream that a connector reads. Whatever the broker, the message is the event data (a JSON object) and the envelope travels in headers (Kafka, NATS) or message attributes (SQS).
@@ -87,6 +89,10 @@ operations:
     action: send
     channel: {$ref: '#/channels/outboundWebhook'}
     messages: [{$ref: '#/channels/outboundWebhook/messages/runFinishedWebhook'}]
+  sendOperationalAlertWebhook:
+    action: send
+    channel: {$ref: '#/channels/outboundWebhook'}
+    messages: [{$ref: '#/channels/outboundWebhook/messages/operationalAlertWebhook'}]
   consumeBrokerMessage:
     action: receive
     channel: {$ref: '#/channels/brokerMessages'}
@@ -125,6 +131,7 @@ components:
           namespaceId: {type: string, format: uuid}
           runId: {type: string, format: uuid}
           status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED], description: "How the run ended. COMPENSATED, PARTIAL and COMPENSATION_FAILED are the ends of a run whose saga undid its work (feature 003); a cancelled or timed-out run is reported as such once what it had done was undone."}
+          traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run.'}
     WebhookEvent:
       name: WebhookEvent
       contentType: application/json
@@ -194,6 +201,7 @@ components:
           X-Octopus-Delivery-Id: {type: string, format: uuid, description: 'Identifies this delivery and does not change between attempts: a receiver that keeps it can drop a repeat.'}
           X-Octopus-Attempt: {type: string, pattern: '^[0-9]+$'}
           X-Octopus-Schema-Version: {type: string, description: 'The version of the shape of the payload.'}
+          traceparent: {type: string, description: "W3C Trace Context. Sent when the event is about a run that belongs to a trace: the trace is the run's, and the parent is this attempt to deliver, itself a child of the run's span, so what the receiver does about the event is in the run's trace."}
       payload:
         type: object
         required: [id, type, time, data]
@@ -210,3 +218,43 @@ components:
               runId: {type: string, format: uuid}
               workflow: {type: string}
               status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}
+              traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run, so a subscriber can put what it does about the run in the run''s trace.'}
+    OperationalAlertWebhook:
+      name: OperationalAlertWebhook
+      contentType: application/json
+      headers:
+        type: object
+        required: [X-Octopus-Signature, X-Octopus-Timestamp, X-Octopus-Event-Id, X-Octopus-Event-Type, X-Octopus-Delivery-Id, X-Octopus-Attempt, X-Octopus-Schema-Version]
+        properties:
+          X-Octopus-Signature: {type: string, description: 'As for the delivery of a finished run.'}
+          X-Octopus-Timestamp: {type: string}
+          X-Octopus-Event-Id: {type: string, description: 'One per change of an alert: the alert, how many times it has begun to fire, and which change.'}
+          X-Octopus-Event-Type: {type: string, enum: [ops.alert.fired, ops.alert.resolved]}
+          X-Octopus-Delivery-Id: {type: string, format: uuid}
+          X-Octopus-Attempt: {type: string, pattern: '^[0-9]+$'}
+          X-Octopus-Schema-Version: {type: string}
+      payload:
+        type: object
+        required: [id, type, time, data]
+        properties:
+          id: {type: string}
+          type: {type: string, enum: [ops.alert.fired, ops.alert.resolved]}
+          time: {type: string, format: date-time}
+          data:
+            type: object
+            description: 'Counts, ages and names; never data of a run.'
+            required: [tenantId, namespaceId, alertId, kind, subject, severity, state, firstSeenAt, items, oldestSeconds, summary, runbook]
+            properties:
+              tenantId: {type: string, format: uuid}
+              namespaceId: {type: string, format: uuid}
+              alertId: {type: string, format: uuid}
+              kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS]}
+              subject: {type: string, maxLength: 120}
+              severity: {type: string, enum: [warning, critical]}
+              state: {type: string, enum: [FIRING, RESOLVED]}
+              firstSeenAt: {type: string, format: date-time}
+              items: {type: integer, minimum: 0}
+              oldestSeconds: {type: number, minimum: 0}
+              summary: {type: string}
+              runbook: {type: string}
+

@@ -67,6 +67,16 @@ pub struct JournalEntry {
     pub occurred_at: OffsetDateTime,
     /// Digest of the payload the event refers to (a step output), hex.
     pub payload_ref: Option<String>,
+    /// Why it happened, when it is the result of something going wrong, a person's choice or the
+    /// clock (FR-008-002).
+    pub cause: Option<sagat_domain::execution::Cause>,
+    /// The span of the attempt the event belongs to (16 hex), for the events of an attempt: the span
+    /// the worker was given, which a trace backend shows.
+    pub span_id: Option<String>,
+    /// Every step the event created or changed: the one it names and the ones it activated
+    /// (`RunEvent::changed_nodes`). The journal view shows `node` only; the changes of the graph
+    /// need all of them. `None` for an event this build cannot decode, whose effect is not known.
+    pub touched: Option<Vec<String>>,
 }
 
 /// One step as the runtime graph shows it.
@@ -108,6 +118,32 @@ pub struct GraphSnapshot {
     pub sagas: Vec<SagaView>,
 }
 
+/// Most journal events a [`GraphChanges`] carries; a client further behind than this is given the
+/// whole graph, which is cheaper than replaying a long history node by node.
+pub const MAX_CHANGE_EVENTS: u32 = 500;
+
+/// What happened to a run's graph after a journal sequence (the live view, D141): the graph as it
+/// is now, and the journal events that led from the client's sequence to it, so the client can
+/// update the nodes those events touched and keep the rest.
+#[derive(Debug, Clone)]
+pub struct GraphChanges {
+    pub graph: GraphSnapshot,
+    /// The sequence the client had.
+    pub since: u64,
+    /// The client must replace what it has with the whole graph.
+    pub reset: bool,
+    /// Events with `since < seq <= graph.run.version`, ascending; empty on a reset.
+    pub events: Vec<JournalEntry>,
+}
+
+impl GraphChanges {
+    /// The sequence the graph is at.
+    #[must_use]
+    pub fn projection_seq(&self) -> u64 {
+        self.graph.run.version
+    }
+}
+
 /// Filters of a run listing.
 #[derive(Debug, Clone, Default)]
 pub struct RunFilter {
@@ -118,7 +154,7 @@ pub struct RunFilter {
 /// Storage port for runs. Implemented by `sagat-infra-postgres`.
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
-pub trait RunStore: QuotaLookup + Send + Sync {
+pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync {
     type Tx: RunTx;
 
     /// Creates the run (row, input payload, empty state) and returns its open transaction, or
@@ -152,6 +188,14 @@ pub trait RunStore: QuotaLookup + Send + Sync {
         before: Option<RunId>,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<RunRecord>, StoreError>> + Send;
+
+    /// What a run is started again from: the namespace it ran in, the input it was given. `None`
+    /// when the run does not exist.
+    fn rerun_source(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<RerunSource>, StoreError>> + Send;
 
     /// Journal entries with `seq > after`, ascending. `None` when the run does not exist.
     fn journal(
@@ -212,8 +256,12 @@ impl RunOperation {
 /// What an operator may do to a step that waits for a decision (`FR-003-005`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewAction {
-    /// Another attempt of the step; the old attempts stay in the journal.
+    /// Another attempt of the step; the old attempts stay in the journal. For a step that waits
+    /// out the delay of a retry, the attempt starts now.
     Retry,
+    /// Hold a step that has not started (ready, or waiting out a retry delay) for a person to
+    /// decide: nothing more happens to it until someone retries it or settles it.
+    Hold,
     /// Give up on a compensation. Needs explicit permission; the saga then ends `PARTIAL`.
     Skip,
     /// Settle the step: it happened (with the output it would have had), or it did not.
@@ -224,6 +272,7 @@ impl ReviewAction {
     const fn audit(&self) -> AuditAction {
         match self {
             Self::Retry => AuditAction::SagaStepRetried,
+            Self::Hold => AuditAction::RunMarkedForReview,
             Self::Skip => AuditAction::SagaStepSkipped,
             Self::Resolve(_) => AuditAction::SagaStepResolved,
         }
@@ -232,6 +281,7 @@ impl ReviewAction {
     fn name(&self) -> String {
         match self {
             Self::Retry => "retry".to_owned(),
+            Self::Hold => "hold".to_owned(),
             Self::Skip => "skip".to_owned(),
             Self::Resolve(ReviewOutcome::Succeeded) => "resolve:succeeded".to_owned(),
             Self::Resolve(ReviewOutcome::Failed(code)) => format!("resolve:failed:{code}"),
@@ -248,6 +298,22 @@ fn outcome_label(outcome: &ReviewOutcome) -> String {
         ReviewOutcome::Succeeded => "SUCCEEDED".to_owned(),
         ReviewOutcome::Failed(code) => format!("FAILED({code})"),
     }
+}
+
+/// What a run is started again from (`RERUN_AS_NEW`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RerunSource {
+    /// The slug of the namespace the run ran in.
+    pub namespace: String,
+    /// The input the run was given.
+    pub input: Vec<u8>,
+}
+
+/// Why and from what a run is started again.
+#[derive(Debug, Clone, Copy)]
+pub struct Rerun<'a> {
+    pub of: RunId,
+    pub reason: &'a str,
 }
 
 /// What starting a run needs from the caller.
@@ -269,6 +335,16 @@ pub struct RunService<S, C, E> {
     clock: C,
     engine: Engine<E>,
     cache: DefinitionCache,
+    lag_budget: Duration,
+}
+
+/// The state of a run's telemetry and what it is judged by.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunTelemetryView {
+    pub state: crate::telemetry::TelemetryState,
+    pub telemetry: crate::telemetry::RunTelemetry,
+    /// How late spans may be before the state is `BEHIND`.
+    pub budget: Duration,
 }
 
 impl<S, C, E> std::fmt::Debug for RunService<S, C, E> {
@@ -289,7 +365,15 @@ where
             clock,
             engine,
             cache,
+            lag_budget: Duration::from_secs(30),
         }
+    }
+
+    /// How late a run's spans may be before its telemetry is called behind (default 30 s).
+    #[must_use]
+    pub const fn with_lag_budget(mut self, budget: Duration) -> Self {
+        self.lag_budget = budget;
+        self
     }
 
     /// Starts a run of a published version. The run is durable when this returns: its first steps
@@ -304,6 +388,70 @@ where
         &self,
         principal: &Principal,
         request: &StartRun<'_>,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        self.start_with(principal, request, None, ctx).await
+    }
+
+    /// Starts a run again from an ended one (`RERUN_AS_NEW`): the same version of the same workflow,
+    /// the same input and correlation id, a run of its own that says where it came from. An
+    /// operator's justification goes to the audit trail.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:operate` and `run:start`; [`AppError::NotAllowed`]
+    /// without a justification; [`AppError::NotFound`] for a run the caller cannot see;
+    /// [`AppError::StateConflict`] when the run has not ended (starting it again would do its work
+    /// twice); the errors of [`Self::start`].
+    pub async fn rerun(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        principal.authorize(Permission::RunOperate)?;
+        principal.authorize(Permission::RunStart)?;
+        let reason = reason.trim();
+        let length = reason.chars().count();
+        if !(MIN_JUSTIFICATION..=MAX_JUSTIFICATION).contains(&length)
+            || reason.chars().any(char::is_control)
+        {
+            return Err(AppError::NotAllowed(
+                "a justification of 8 to 2000 characters, in plain text, is required",
+            ));
+        }
+        let original = self.get(principal, id, ctx).await?;
+        if !original.status.is_terminal() {
+            return Err(AppError::StateConflict(
+                "only a run that has ended can be started again",
+            ));
+        }
+        let Some(source) = self.store.rerun_source(principal.tenant_id(), id).await? else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        self.start_with(
+            principal,
+            &StartRun {
+                namespace: &source.namespace,
+                workflow: original.info.workflow_id,
+                version: Some(original.info.version_id),
+                input: &source.input,
+                correlation_id: original.info.correlation_id.as_deref(),
+                deadline: None,
+                key,
+            },
+            Some(Rerun { of: id, reason }),
+            ctx,
+        )
+        .await
+    }
+
+    async fn start_with(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        rerun: Option<Rerun<'_>>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunStart)?;
@@ -370,24 +518,41 @@ where
             started_by: principal.subject().as_str().to_owned(),
             correlation_id: request.correlation_id.map(str::to_owned),
             trace_id: ctx.trace_id.clone(),
+            parent_span: ctx.span_id.clone(),
+            rerun_of: rerun.map(|r| r.of),
             deadline_at: request.deadline,
             created_at: now,
             parent: None,
             depth: 0,
             root: run_id,
         };
-        let audit = AuditRecord::by(
-            principal,
-            AuditAction::RunStarted,
-            ResourceType::Run,
-            run_id.to_string(),
-            ctx.trace_id.clone(),
-            now,
-        );
+        let audit = match rerun {
+            None => AuditRecord::by(
+                principal,
+                AuditAction::RunStarted,
+                ResourceType::Run,
+                run_id.to_string(),
+                ctx.trace_id.clone(),
+                now,
+            ),
+            Some(rerun) => AuditRecord::by(
+                principal,
+                AuditAction::RunRerun,
+                ResourceType::Run,
+                run_id.to_string(),
+                ctx.trace_id.clone(),
+                now,
+            )
+            .with_reason(format!("started again from {}: {}", rerun.of, rerun.reason)),
+        };
         let idempotency = Idempotency {
             scope: format!("run.start:{}", namespace.id()),
             key: request.key.to_owned(),
             fingerprint: fingerprint(&[
+                rerun
+                    .map(|r| r.of.to_string())
+                    .unwrap_or_default()
+                    .as_bytes(),
                 workflow.id().to_string().as_bytes(),
                 version.version.id().to_string().as_bytes(),
                 request.input,
@@ -543,6 +708,131 @@ where
         }
     }
 
+    /// How far the run's spans and measurements have got in relation to its journal (the timeline's
+    /// projection state). The journal and the graph are as current as the last commit; this is
+    /// about what is derived from them.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
+    pub async fn telemetry(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        ctx: &RequestContext,
+    ) -> Result<RunTelemetryView, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        let Some(telemetry) = self.store.run_telemetry(principal.tenant_id(), id).await? else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        Ok(RunTelemetryView {
+            state: telemetry.state(self.lag_budget),
+            telemetry,
+            budget: self.lag_budget,
+        })
+    }
+
+    /// The attempts of the run's steps as the journal tells them (FR-008-002): when each was
+    /// leased, how it ended and why, the span a trace backend shows it as. A journal longer than
+    /// the store gives in one batch is read in as many as it takes.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
+    pub async fn attempts(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<crate::telemetry::Attempt>, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        match crate::telemetry::all_attempts(
+            &self.store,
+            principal.tenant_id(),
+            id,
+            self.clock.now(),
+        )
+        .await?
+        {
+            Some(attempts) => Ok(attempts),
+            None => {
+                // No trace to derive from (or no run): a run the caller may see has no attempts to
+                // show, a run they may not is a 404.
+                if self
+                    .store
+                    .run_telemetry(principal.tenant_id(), id)
+                    .await?
+                    .is_some()
+                {
+                    Ok(Vec::new())
+                } else {
+                    Err(self.missing(principal, id, ctx).await)
+                }
+            }
+        }
+    }
+
+    /// What changed in the run's graph after journal sequence `since`.
+    ///
+    /// Every transition of a run is a journal event with a sequence, so a client that reads the
+    /// changes after the last sequence it saw misses nothing, however many snapshots it skipped.
+    /// A `since` ahead of the run, or more than [`MAX_CHANGE_EVENTS`] events behind it, is a
+    /// `reset`: the answer is the whole graph.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
+    pub async fn graph_changes(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        since: u64,
+        ctx: &RequestContext,
+    ) -> Result<GraphChanges, AppError> {
+        let graph = self.graph(principal, id, ctx).await?;
+        let projection = graph.run.version;
+        if since > projection {
+            return Ok(GraphChanges {
+                graph,
+                since,
+                reset: true,
+                events: Vec::new(),
+            });
+        }
+        if since == projection {
+            return Ok(GraphChanges {
+                graph,
+                since,
+                reset: false,
+                events: Vec::new(),
+            });
+        }
+        let Some(mut events) = self
+            .store
+            .journal(
+                principal.tenant_id(),
+                id,
+                Some(since),
+                MAX_CHANGE_EVENTS + 1,
+            )
+            .await?
+        else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        // What the snapshot already includes and no more: events after it are the next read's.
+        events.retain(|event| event.seq <= projection);
+        // More events than a delta carries, or one whose effect on the graph is not known (an event of a
+        // newer engine): the whole graph is the answer that cannot be wrong.
+        let reset = events.len() > MAX_CHANGE_EVENTS as usize
+            || events.iter().any(|event| event.touched.is_none());
+        if reset {
+            events.clear();
+        }
+        Ok(GraphChanges {
+            graph,
+            since,
+            reset,
+            events,
+        })
+    }
+
     /// Cancels, pauses or resumes a run. `expected_version`, when given, must equal the run's
     /// current version (optimistic concurrency).
     ///
@@ -649,7 +939,7 @@ where
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
         principal.authorize(match action {
-            ReviewAction::Retry => Permission::RunOperate,
+            ReviewAction::Retry | ReviewAction::Hold => Permission::RunOperate,
             ReviewAction::Skip | ReviewAction::Resolve(_) => Permission::SagaOverride,
         })?;
         // What is audited is what the person wrote, bounded the same way whoever asks: the API
@@ -699,8 +989,15 @@ where
         // would not take by itself (a high risk step waits for a person for that reason), so it is
         // an administrator's to take: an operator may retry a step that is known not to have
         // happened, or a compensation (which is idempotent by contract).
+        // A step that is only waiting out the delay of a retry is not that decision: the platform
+        // had already decided to try again, and the operator is not waiting for the delay.
         if *action == ReviewAction::Retry
             && !node.is_compensation()
+            && tx
+                .parts()
+                .1
+                .step(node)
+                .is_some_and(|step| step.status() == StepStatus::Waiting)
             && tx
                 .parts()
                 .1
@@ -721,7 +1018,7 @@ where
             ReviewAction::Resolve(outcome) => {
                 format!("declared {}: {reason}", outcome_label(outcome))
             }
-            ReviewAction::Retry | ReviewAction::Skip => reason.to_owned(),
+            ReviewAction::Retry | ReviewAction::Hold | ReviewAction::Skip => reason.to_owned(),
         };
         effects.audit = Some(
             AuditRecord::by(
@@ -741,6 +1038,7 @@ where
             .run(&mut tx, effects, move |def, state, now| {
                 let progress = match &action {
                     ReviewAction::Retry => execution::retry_review(def, state, &step, now)?,
+                    ReviewAction::Hold => execution::mark_for_review(def, state, &step, now)?,
                     ReviewAction::Skip => execution::skip_review(def, state, &step, now)?,
                     ReviewAction::Resolve(outcome) => {
                         execution::resolve_review(def, state, &step, outcome.clone(), now)?

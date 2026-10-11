@@ -60,6 +60,15 @@ pub enum AuditAction {
     SagaStepRetried,
     /// An operator gave up on a compensation, with a justification.
     SagaStepSkipped,
+    /// An operator held a step that had not started for a person to decide.
+    RunMarkedForReview,
+    /// An operator started a new run from an ended one.
+    RunRerun,
+    /// An administrator read the audit trail. Reading it again with the same filters adds nothing.
+    AuditRead,
+    /// An operator stopped a worker identity from taking new work, or let it take work again.
+    WorkerDrained,
+    WorkerUndrained,
     /// An operator settled a step with an unknown outcome (or a compensation done elsewhere).
     SagaStepResolved,
     /// A webhook endpoint was created, changed or deleted.
@@ -105,6 +114,12 @@ pub enum AuditAction {
 }
 
 impl AuditAction {
+    /// Actions that are kept for whoever runs the platform and never read back by the tenant they
+    /// are written on. A denial is recorded only when the resource exists in another tenant, so a
+    /// trail that listed it would tell anyone who can read it whether an identifier they tried
+    /// exists elsewhere, which the `404` is careful not to say.
+    pub const WITHHELD_FROM_TENANT: &'static [Self] = &[Self::CrossTenantAccessDenied];
+
     /// Whether doing the same thing again, to the same resource and for the same stated reason, adds
     /// nothing to the trail. These events are driven by a caller who can repeat them as often as
     /// they like (a worker asking again for the secrets of the attempt it holds), so the trail keeps
@@ -114,8 +129,24 @@ impl AuditAction {
     pub const fn collapses_repeats(self) -> bool {
         matches!(
             self,
-            Self::SecretResolved | Self::SecretDenied | Self::EventRejected | Self::ScriptViolation
+            Self::SecretResolved
+                | Self::SecretDenied
+                | Self::EventRejected
+                | Self::ScriptViolation
+                | Self::AuditRead
         )
+    }
+
+    /// How long an identical event is taken as the same one, for the actions that collapse repeats:
+    /// `None` for ever (what a worker asks again is the same ask), or a period after which the same
+    /// thing done again is a new event. Reading the trail is the second kind: an administrator who
+    /// exports it every day leaves a record every day, not one record for good.
+    #[must_use]
+    pub const fn repeat_window(self) -> Option<std::time::Duration> {
+        match self {
+            Self::AuditRead => Some(std::time::Duration::from_secs(300)),
+            _ => None,
+        }
     }
 
     /// How many different events of this action one actor may have on one resource before the
@@ -154,6 +185,11 @@ impl AuditAction {
             Self::QuotaChanged => "quota.changed",
             Self::EgressPolicyChanged => "egress.policy_changed",
             Self::EgressDenied => "egress.denied",
+            Self::RunMarkedForReview => "run.marked_for_review",
+            Self::RunRerun => "run.rerun",
+            Self::AuditRead => "audit.read",
+            Self::WorkerDrained => "worker.drained",
+            Self::WorkerUndrained => "worker.undrained",
             Self::WorkerBound => "worker.bound",
             Self::WorkerUnbound => "worker.unbound",
             Self::WorkerDenied => "worker.denied",
@@ -206,6 +242,8 @@ pub enum ResourceType {
     Quota,
     EgressPolicy,
     WorkerBinding,
+    /// A worker identity, as `namespace-id/subject`.
+    Worker,
     EventEndpoint,
     /// An event admitted to the inbox, as `source/id`.
     Event,
@@ -231,6 +269,7 @@ impl ResourceType {
             Self::Quota => "quota",
             Self::EgressPolicy => "egress_policy",
             Self::WorkerBinding => "worker_binding",
+            Self::Worker => "worker",
             Self::EventEndpoint => "event_endpoint",
             Self::Event => "event",
             Self::WebhookSubscription => "webhook_subscription",
