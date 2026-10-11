@@ -8,6 +8,7 @@
 mod support;
 
 mod cli;
+mod telemetry;
 mod us01;
 mod us02;
 mod us03;

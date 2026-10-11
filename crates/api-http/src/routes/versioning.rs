@@ -116,6 +116,7 @@ pub async fn open_request<B: Exec>(
             &caller.ctx,
         )
         .await?;
+    metrics::counter!("publication_events_total", "event" => "requested").increment(1);
     Ok((StatusCode::CREATED, Json(RequestBody::from(&request))))
 }
 
@@ -179,6 +180,11 @@ async fn decide<B: Exec>(
             &caller.ctx,
         )
         .await?;
+    metrics::counter!(
+        "publication_events_total",
+        "event" => if verdict == Verdict::Approve { "approved" } else { "rejected" }
+    )
+    .increment(1);
     Ok(Json(RequestBody::from(&request)))
 }
 
@@ -212,6 +218,7 @@ pub async fn withdraw_request<B: Exec>(
             &caller.ctx,
         )
         .await?;
+    metrics::counter!("publication_events_total", "event" => "withdrawn").increment(1);
     Ok(Json(RequestBody::from(&request)))
 }
 
@@ -229,6 +236,7 @@ pub async fn publish_request<B: Exec>(
             &caller.ctx,
         )
         .await?;
+    metrics::counter!("publication_events_total", "event" => "published").increment(1);
     Ok((
         StatusCode::CREATED,
         Json(PublishedBody {
@@ -276,6 +284,10 @@ pub async fn activate_version<B: Exec>(
             &caller.ctx,
         )
         .await?;
+    if activation.changed {
+        metrics::counter!("version_activations_total", "kind" => activation.record.kind.as_str().to_lowercase())
+            .increment(1);
+    }
     Ok(Json(ActivationResultBody {
         activation: ActivationBody::from(&activation.record),
         changed: activation.changed,
@@ -301,10 +313,11 @@ pub async fn promote_version<B: Exec>(
             &caller.ctx,
         )
         .await?;
-    let status = match &promotion {
-        Promotion::Published(_) => StatusCode::CREATED,
-        Promotion::Requested(_) => StatusCode::ACCEPTED,
-        Promotion::AlreadyActive { .. } => StatusCode::OK,
+    let (status, outcome) = match &promotion {
+        Promotion::Published(_) => (StatusCode::CREATED, "published"),
+        Promotion::Requested(_) => (StatusCode::ACCEPTED, "requested"),
+        Promotion::AlreadyActive { .. } => (StatusCode::OK, "already_active"),
     };
+    metrics::counter!("promotions_total", "outcome" => outcome).increment(1);
     Ok((status, Json(PromotionBody::of(&promotion))))
 }

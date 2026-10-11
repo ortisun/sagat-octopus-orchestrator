@@ -339,7 +339,7 @@ impl From<sagat_application::error::Refusal> for ApiError {
             e.parts.details = Some(details);
             e
         };
-        match refusal {
+        let refused = match refusal {
             Refusal::ApprovalRequired { required } => conflict(
                 "publishing into this namespace needs approval".to_owned(),
                 json!({ "reason": "APPROVAL_REQUIRED", "requiredApprovals": required }),
@@ -395,7 +395,18 @@ impl From<sagat_application::error::Refusal> for ApiError {
                     Self::validation("a policy asks for at most 3 approvals")
                 }
             },
-        }
+        };
+        // The reasons are a closed set (the table above), so the label cannot grow with the data.
+        let reason = refused
+            .parts
+            .details
+            .as_ref()
+            .and_then(|d| d.get("reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("VALIDATION")
+            .to_owned();
+        metrics::counter!("publication_refusals_total", "reason" => reason).increment(1);
+        refused
     }
 }
 
