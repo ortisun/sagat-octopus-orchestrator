@@ -112,6 +112,10 @@ jobs:
       - name: dependencies
         working-directory: frontend
         run: npm ci
+      # The journeys' workers use the TypeScript SDK (frontend/e2e depends on it by path), so it is built before the
+      # journeys' code is type-checked: its dist/ is what the package exports.
+      - name: TypeScript SDK
+        run: bash sdks/typescript/conformance/prepare.sh
       # Production and tooling both; a low advisory is recorded in research.md (G152), moderate and above fail the build.
       - name: advisories
         working-directory: frontend
