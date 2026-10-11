@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Say which build, which API and which worker protocols this platform speaks
+         * @description Needs a token and no permission. A client compares it with what it was written for (`sagat doctor` does): `version` is the build, `apiVersion` the path prefix, `workerProtocol` the lowest and highest protocol a worker may offer. A platform older than feature 012 answers `404 ROUTE_NOT_FOUND`.
+         */
+        get: operations["getPlatformVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workspaces": {
         parameters: {
             query?: never;
@@ -1875,6 +1895,18 @@ export interface components {
             /** @enum {string} */
             status: "ok";
         };
+        PlatformVersion: {
+            /** @constant */
+            service: "sagat-octopus-orchestrator";
+            /** @description The build, as `control-plane version` prints it. */
+            version: string;
+            /** @constant */
+            apiVersion: "v1";
+            workerProtocol: {
+                minimum: string;
+                maximum: string;
+            };
+        };
         AuthContext: {
             /** @description Slug of the caller's tenant. */
             tenant: string;
@@ -3594,6 +3626,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthContext"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getPlatformVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The versions */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformVersion"];
                 };
             };
             401: components["responses"]["Unauthorized"];
