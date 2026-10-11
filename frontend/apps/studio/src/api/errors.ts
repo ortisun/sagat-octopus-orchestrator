@@ -22,6 +22,8 @@ export class ApiError extends Error {
   /** A stable refinement of the code (`STATE_CONFLICT`, `STREAMS_PER_SUBJECT`, ...). */
   readonly reason: string | undefined;
   readonly details: Record<string, unknown> | undefined;
+  /** What to do about it, in the platform's words: a sentence from a closed table, shown as text. */
+  readonly remediation: string | undefined;
   readonly retryAfterMs: number | undefined;
 
   constructor(init: {
@@ -31,6 +33,7 @@ export class ApiError extends Error {
     retryable?: boolean;
     traceId?: string | undefined;
     details?: Record<string, unknown> | undefined;
+    remediation?: string | undefined;
     retryAfterMs?: number | undefined;
   }) {
     super(init.message);
@@ -40,6 +43,7 @@ export class ApiError extends Error {
     this.retryable = init.retryable ?? false;
     this.traceId = init.traceId;
     this.details = init.details;
+    this.remediation = init.remediation;
     // A stable name from a short list, shown to people: never more than a name's worth of what the server sent.
     const reason = init.details?.['reason'];
     this.reason = typeof reason === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(reason) ? reason : undefined;
@@ -95,6 +99,7 @@ export function errorFromResponse(status: number, body: unknown, headers: Pick<H
   const message = typeof envelope['message'] === 'string' && envelope['message'] !== '' ? envelope['message'].slice(0, MAX_MESSAGE) : defaultMessage(code);
   const traceId = typeof envelope['traceId'] === 'string' && /^[0-9a-f]{32}$/.test(envelope['traceId']) ? envelope['traceId'] : undefined;
   const details = envelope['details'] !== null && typeof envelope['details'] === 'object' && !Array.isArray(envelope['details']) ? (envelope['details'] as Record<string, unknown>) : undefined;
+  const remediation = typeof envelope['remediation'] === 'string' && envelope['remediation'] !== '' ? envelope['remediation'].slice(0, MAX_MESSAGE) : undefined;
   return new ApiError({
     code,
     status,
@@ -102,6 +107,7 @@ export function errorFromResponse(status: number, body: unknown, headers: Pick<H
     retryable: envelope['retryable'] === true || code === 'RATE_LIMITED' || code === 'UNAVAILABLE',
     traceId,
     details,
+    remediation,
     retryAfterMs: retryAfterMs(headers.get('retry-after')),
   });
 }

@@ -15,6 +15,13 @@ describe('ErrorState', () => {
     expect(alert).toHaveTextContent(`Trace ${TRACE}.`);
   });
 
+  it('prefers what the platform says to do over the general advice for the kind of error', () => {
+    render(<ErrorState error={new ApiError({ code: 'FORBIDDEN', status: 403, message: 'not allowed', remediation: 'Ask an administrator for worker:manage.', traceId: TRACE })} />);
+    const alert = screen.getByText(/not allowed/).closest('div') as HTMLElement;
+    expect(alert).toHaveTextContent('Ask an administrator for worker:manage.');
+    expect(alert).not.toHaveTextContent('Ask an administrator for the permission it needs.');
+  });
+
   it('names the stable reason of a conflict, and leaves its message to say the way out', () => {
     render(<ErrorState error={new ApiError({ code: 'CONFLICT', status: 409, message: 'the step is not waiting for a decision', details: { reason: 'STATE_CONFLICT' }, traceId: TRACE })} />);
     expect(screen.getByText(/the step is not waiting for a decision/).closest('div')).toHaveTextContent('Code CONFLICT (STATE_CONFLICT).');
