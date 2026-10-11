@@ -216,26 +216,31 @@ sustained rate is an incident; any increase of `secret_output_detected_total` me
 returning a credential; `quota_exceeded_total` rising for one limit on a quiet system means a limit
 is too low or a client is looping.
 
-The Feature 010 chart passes restricted Pod Security admission and renders non-root containers with
-read-only root filesystems and no added capabilities. Its current NetworkPolicies cover ingress only;
-control-plane, engine and worker probes remain able to reach an undeclared destination. Reproduce the
-open G45 gate on an explicit disposable Cilium cluster:
+Feature 009 prepares role-scoped egress policies on top of the committed Feature 010 chart baseline.
+The control plane gets DNS, PostgreSQL and OIDC; the engine adds NATS only when configured; workers
+get DNS plus the control-plane API and engine gRPC. Each worker pool starts with denied ingress and
+may add validated, pool-local rules. Empty peers, global CIDRs, missing ports and empty ingress
+sources fail Helm rendering. Reproduce the G45 gate on an explicit disposable Cilium cluster after
+copying the two Feature 009 templates into the chart being tested:
 
 ```sh
 KUBECONFIG=/path/to/disposable-kubeconfig \
   CHART_DIR=infra/helm tests/security/sandbox/kubernetes-network-policy.sh
 ```
 
-The verifier first proves the same destination is reachable from an unselected canary, tests DNS as a
-positive dependency, evaluates full Kubernetes label selectors, and then requires every workload to
-be selected by egress policy and unable to reach the Kubernetes API. PostgreSQL, NATS, OIDC and ingress
-positive canaries remain pending until the Feature 010 base chart and its selector/value contract are
-integrated. Feature 009 then owns the egress policies; T009-031 is open until they and the real-cluster
-checks pass.
+The verifier rejects unsafe values before cluster creation, validates every rendered workload against
+restricted Pod Security admission, and uses controlled TCP listeners for PostgreSQL, NATS, OIDC,
+control-plane and engine traffic. It proves declared traffic works, undeclared Kubernetes API and
+cross-role traffic fails, identical labels in another namespace do not grant ingress, and one worker
+pool cannot inherit another pool's overrides. This matrix passed on Cilium against a temporary copy of
+Feature 010 commit `9092aa1`. T009-031 remains open because the prepared templates are not part of a
+deployable integrated chart yet; the Feature 010 values, examples and contract fixtures must adopt the
+new required destinations and the integrated chart must repeat this command.
 
 ## 7. Not covered
 
 - Webhook signature, replay and inbound SSRF controls: feature 004 (G36).
 - Quotas for builds, storage, logs, retention and event rate (G37); default values per tier (G42).
 - A KMS or HSM behind the key ring (G43); binding a client certificate to a token subject (G44).
-- Complete Helm egress NetworkPolicies and their declared-dependency/ingress canaries (G45).
+- Integrate the prepared Helm egress policies, values and contract fixtures into the released chart,
+  then repeat the declared-dependency/ingress canaries (G45).
