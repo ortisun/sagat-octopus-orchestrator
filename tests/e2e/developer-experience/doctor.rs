@@ -52,7 +52,7 @@ async fn a_machine_that_is_ready_is_told_so_check_by_check() {
     let engine = crate::engine(&p).await;
     let dir = Dir::new();
     let broker = fake_broker(Some("INFO {\"server_id\":\"x\"}\r\n")).await;
-    let token = p.api.idp.token("alice", "acme").build();
+    let token = p.api.idp.token("alice", "acme").issued(0, 1800).build();
     let told = doctor(
         env_for(&p, &dir, Some(token), Some("payments")),
         &["--grpc", &engine.grpc_url, "--nats", &broker],
@@ -76,7 +76,7 @@ async fn a_machine_that_is_ready_is_told_so_check_by_check() {
         .mentions("is a NATS server")
         .mentions("nothing to fix");
     // The token is read and never printed.
-    let token = p.api.idp.token("alice", "acme").build();
+    let token = p.api.idp.token("alice", "acme").issued(0, 1800).build();
     let again = doctor(
         env_for(&p, &dir, Some(token.clone()), Some("payments")),
         &[],
@@ -85,6 +85,21 @@ async fn a_machine_that_is_ready_is_told_so_check_by_check() {
     again
         .omits(&token)
         .omits(token.split('.').nth(1).expect("payload"));
+}
+
+#[tokio::test]
+async fn a_token_near_expiry_is_a_warning_and_not_a_failed_check() {
+    let p = platform().await;
+    let dir = Dir::new();
+    let token = p.api.idp.token("alice", "acme").issued(0, 240).build();
+    doctor(env_for(&p, &dir, Some(token), Some("payments")), &[])
+        .await
+        .expect(0)
+        .mentions("warn  token")
+        .mentions("expires in")
+        .mentions("for alice")
+        .mentions("get a new token before a long command")
+        .mentions("nothing to fix");
 }
 
 #[tokio::test]
