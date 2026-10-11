@@ -24,6 +24,7 @@ mod dto;
 mod dto_events;
 mod dto_exec;
 mod dto_gov;
+mod dto_ops;
 mod dto_scripts;
 pub mod error;
 pub mod exec;
@@ -260,6 +261,7 @@ where
         + sagat_application::connectors::ConnectorStore
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
+        + sagat_application::operations::AlertReader
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
@@ -286,9 +288,11 @@ where
         + sagat_application::connectors::ConnectorStore
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
+        + sagat_application::operations::AlertReader
         + 'static,
 {
     use routes::governance as gov;
+    use routes::operations as ops;
     type B<S, C, G> = GovState<S, C, G>;
 
     let serves_secrets = state.secrets().is_some();
@@ -320,6 +324,10 @@ where
             "/namespaces/{namespace_id}/worker-bindings/{subject}",
             axum::routing::put(gov::bind_worker::<B<S, C, G>>)
                 .delete(gov::unbind_worker::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/alerts",
+            get(ops::list_alerts::<B<S, C, G>>),
         )
         .route(
             "/namespaces/{namespace_id}/egress-policy",

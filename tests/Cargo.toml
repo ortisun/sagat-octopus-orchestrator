@@ -235,3 +235,7 @@ path = "e2e/observability-operations/main.rs"
 [[test]]
 name = "fault_observability_operations"
 path = "fault/observability-operations/main.rs"
+
+[[test]]
+name = "contract_observability_operations"
+path = "contract/observability-operations/main.rs"

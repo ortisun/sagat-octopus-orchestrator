@@ -29,7 +29,7 @@ use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{PgIdentityStore, PgRunStore, spawn_pool_metrics};
 use sagat_scheduler::{
-    DeliveryWorker, EventDispatcher, OutboxDispatcher, Scheduler, TelemetryProjector,
+    DeliveryWorker, EventDispatcher, Monitor, OutboxDispatcher, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -43,7 +43,8 @@ pub use sagat_control_plane::{probe, shutdown_signal};
 pub use settings::EngineConfig;
 
 use loops::{
-    EngineDeliveries, EngineDispatcher, EngineEvents, EngineProjector, EngineScheduler, Health,
+    EngineDeliveries, EngineDispatcher, EngineEvents, EngineMonitor, EngineProjector,
+    EngineScheduler, Health,
 };
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
@@ -183,6 +184,9 @@ pub async fn serve(
         engine.telemetry.projector,
     ));
 
+    let monitor: Arc<EngineMonitor> =
+        Arc::new(Monitor::new(store.clone(), engine.monitor.settings.clone()));
+
     let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -258,6 +262,17 @@ pub async fn serve(
             }
         },
         engine.telemetry.poll,
+        stop_rx.clone(),
+    )));
+    tasks.push(tokio::spawn(loops::run_monitor(
+        {
+            let monitor = Arc::clone(&monitor);
+            move || {
+                let monitor = Arc::clone(&monitor);
+                async move { monitor.run_once().await }
+            }
+        },
+        engine.monitor.interval,
         stop_rx.clone(),
     )));
     if let Some(connectors) = connectors {

@@ -1,0 +1,424 @@
+//! The monitor's store: what finds the conditions that need a person, keeps the alerts in step with
+//! them, and totals the queues for the gauges (FR-008-003, FR-008-005).
+//!
+//! Every comparison uses `clock_timestamp()` on the database, so monitors on machines with different
+//! clocks agree. The detection queries are aggregates that return counts and ages per namespace and
+//! read nothing of a payload.
+
+use std::time::Duration;
+
+use sagat_application::error::StoreError;
+use sagat_application::operations::{
+    AlertReader, AlertRecord, Candidate, MAX_CANDIDATES, MAX_PER_NAMESPACE, MonitorStore,
+    Reconciled, Sample, Thresholds,
+};
+use sagat_domain::identity::{NamespaceId, TenantId};
+use sagat_domain::operations::{AlertKind, AlertState, Severity};
+use sagat_domain::outbound::OutboundKind;
+use sqlx::Row;
+use sqlx::postgres::PgRow;
+use uuid::Uuid;
+
+use crate::execution::PgRunStore;
+use crate::identity::{col, corrupt, store_error};
+use crate::pool::BeginSafely;
+
+/// The name of the monitor's lease.
+pub const MONITOR_LEASE: &str = "operations-monitor";
+
+fn secs(duration: Duration) -> f64 {
+    duration.as_secs_f64()
+}
+
+fn candidate_from_row(kind: AlertKind, row: &PgRow) -> Result<Candidate, StoreError> {
+    let items: i64 = col(row, "items")?;
+    let subject: String = col(row, "subject")?;
+    Ok(Candidate {
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
+        kind,
+        subject: Candidate::bounded_subject(&subject),
+        items: u64::try_from(items).unwrap_or(0),
+        oldest_seconds: col::<f64>(row, "oldest")?.max(0.0),
+    })
+}
+
+fn alert_from_row(row: &PgRow) -> Result<AlertRecord, StoreError> {
+    let kind: String = col(row, "kind")?;
+    let state: String = col(row, "state")?;
+    let severity: String = col(row, "severity")?;
+    let items: i64 = col(row, "item_count")?;
+    let fired: i32 = col(row, "fired_count")?;
+    Ok(AlertRecord {
+        id: col(row, "id")?,
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
+        kind: kind.parse().map_err(|()| corrupt("alert kind"))?,
+        subject: col(row, "subject")?,
+        state: state.parse().map_err(|()| corrupt("alert state"))?,
+        severity: match severity.as_str() {
+            "warning" => Severity::Warning,
+            "critical" => Severity::Critical,
+            _ => return Err(corrupt("alert severity")),
+        },
+        first_seen_at: col(row, "first_seen_at")?,
+        last_seen_at: col(row, "last_seen_at")?,
+        resolved_at: col(row, "resolved_at")?,
+        fired_count: u32::try_from(fired).map_err(|_| corrupt("alert count"))?,
+        items: u64::try_from(items).unwrap_or(0),
+        oldest_seconds: col(row, "oldest_seconds")?,
+    })
+}
+
+const ALERT_COLUMNS: &str = "id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, \
+     last_seen_at, resolved_at, fired_count, item_count, oldest_seconds";
+
+/// The body subscribers are sent for a change of an alert: identifiers, the kind, counts, ages and
+/// the runbook; never data of a run.
+fn event_body(
+    alert: &AlertRecord,
+    event: OutboundKind,
+    runbook_base: &str,
+    now: time::OffsetDateTime,
+) -> Vec<u8> {
+    let rfc3339 = |at: time::OffsetDateTime| {
+        at.format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default()
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "id": format!("alert-{}-{}-{}", alert.id, alert.fired_count, event.as_str()),
+        "type": event.as_str(),
+        "time": rfc3339(now),
+        "data": {
+            "tenantId": alert.tenant_id.to_string(),
+            "namespaceId": alert.namespace_id.to_string(),
+            "alertId": alert.id.to_string(),
+            "kind": alert.kind.as_str(),
+            "subject": alert.subject,
+            "severity": alert.severity.as_str(),
+            "state": alert.state.as_str(),
+            "firstSeenAt": rfc3339(alert.first_seen_at),
+            "items": alert.items,
+            "oldestSeconds": alert.oldest_seconds,
+            "summary": alert.kind.summary(),
+            "runbook": alert.runbook(runbook_base),
+        }
+    }))
+    .unwrap_or_default()
+}
+
+impl MonitorStore for PgRunStore {
+    async fn acquire_monitor(&self) -> Result<bool, StoreError> {
+        self.acquire_lease(MONITOR_LEASE, Duration::from_secs(60))
+            .await
+    }
+
+    async fn detect(
+        &self,
+        kind: AlertKind,
+        thresholds: &Thresholds,
+    ) -> Result<Vec<Candidate>, StoreError> {
+        let threshold = secs(thresholds.of(kind));
+        let per_namespace = i64::from(MAX_PER_NAMESPACE);
+        let limit = i64::from(MAX_CANDIDATES);
+        let sql = match kind {
+            AlertKind::OutboxStuck => {
+                "SELECT g.tenant_id, g.ns AS namespace_id, ''::text AS subject, g.items, g.oldest \
+                 FROM (SELECT o.tenant_id, o.ns, count(*) AS items, \
+                              extract(epoch FROM clock_timestamp() - min(o.created_at))::float8 AS oldest \
+                       FROM (SELECT tenant_id, created_at, \
+                                    CASE WHEN payload->>'namespaceId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+                                         THEN (payload->>'namespaceId')::uuid END AS ns \
+                             FROM event_outbox \
+                             WHERE delivered_at IS NULL \
+                               AND created_at < clock_timestamp() - make_interval(secs => $1)) o \
+                       JOIN namespaces n ON n.tenant_id = o.tenant_id AND n.id = o.ns \
+                       GROUP BY o.tenant_id, o.ns) g \
+                 ORDER BY g.oldest DESC LIMIT $2"
+            }
+            AlertKind::LeaseNotReaped => {
+                "SELECT tenant_id, namespace_id, ''::text AS subject, count(*) AS items, \
+                        extract(epoch FROM clock_timestamp() - min(lease_expires_at))::float8 AS oldest \
+                 FROM steps \
+                 WHERE status IN ('LEASED', 'RUNNING') \
+                   AND lease_expires_at < clock_timestamp() - make_interval(secs => $1) \
+                 GROUP BY tenant_id, namespace_id ORDER BY oldest DESC LIMIT $2"
+            }
+            AlertKind::StepUnclaimed => {
+                "SELECT tenant_id, namespace_id, subject, items, oldest FROM ( \
+                     SELECT tenant_id, namespace_id, subject, items, oldest, \
+                            row_number() OVER (PARTITION BY tenant_id, namespace_id ORDER BY oldest DESC) AS rank \
+                     FROM (SELECT tenant_id, namespace_id, coalesce(activity, '') AS subject, count(*) AS items, \
+                                  extract(epoch FROM clock_timestamp() - min(ready_at))::float8 AS oldest \
+                           FROM steps \
+                           WHERE status = 'READY' AND ready_at < clock_timestamp() - make_interval(secs => $1) \
+                           GROUP BY tenant_id, namespace_id, coalesce(activity, '')) g) ranked \
+                 WHERE rank <= $2 ORDER BY oldest DESC LIMIT $3"
+            }
+            AlertKind::ReviewPending => {
+                "SELECT tenant_id, namespace_id, ''::text AS subject, count(*) AS items, \
+                        extract(epoch FROM clock_timestamp() - min(updated_at))::float8 AS oldest \
+                 FROM runs \
+                 WHERE status = 'MANUAL_REVIEW' \
+                   AND updated_at < clock_timestamp() - make_interval(secs => $1) \
+                 GROUP BY tenant_id, namespace_id ORDER BY oldest DESC LIMIT $2"
+            }
+            AlertKind::DeadItems => {
+                "SELECT tenant_id, namespace_id, subject, items, oldest FROM ( \
+                     SELECT tenant_id, namespace_id, 'events'::text AS subject, count(*) AS items, \
+                            extract(epoch FROM clock_timestamp() - min(received_at))::float8 AS oldest \
+                     FROM inbox_events WHERE status = 'DEAD' GROUP BY tenant_id, namespace_id \
+                     UNION ALL \
+                     SELECT tenant_id, namespace_id, 'webhooks', count(*), \
+                            extract(epoch FROM clock_timestamp() - min(created_at))::float8 \
+                     FROM webhook_deliveries WHERE status = 'DEAD' GROUP BY tenant_id, namespace_id \
+                     UNION ALL \
+                     SELECT tenant_id, namespace_id, 'connectors', count(*), \
+                            extract(epoch FROM clock_timestamp() - min(received_at))::float8 \
+                     FROM connector_dead_letters GROUP BY tenant_id, namespace_id) d \
+                 ORDER BY oldest DESC LIMIT $1"
+            }
+        };
+        // Each statement takes exactly the parameters it uses, in this order.
+        let query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        let query = match kind {
+            AlertKind::OutboxStuck | AlertKind::LeaseNotReaped | AlertKind::ReviewPending => {
+                query.bind(threshold).bind(limit)
+            }
+            AlertKind::StepUnclaimed => query.bind(threshold).bind(per_namespace).bind(limit),
+            AlertKind::DeadItems => query.bind(limit),
+        };
+        query
+            .fetch_all(self.pool())
+            .await
+            .map_err(store_error)?
+            .iter()
+            .map(|row| candidate_from_row(kind, row))
+            .collect()
+    }
+
+    async fn reconcile(
+        &self,
+        kind: AlertKind,
+        seen: &[Candidate],
+        runbook_base: &str,
+    ) -> Result<Reconciled, StoreError> {
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        let started: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let mut out = Reconciled::default();
+        for candidate in seen.iter().filter(|c| c.kind == kind) {
+            let previous: Option<String> = sqlx::query_scalar(
+                "SELECT state FROM operational_alerts \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND kind = $3 AND subject = $4 FOR UPDATE",
+            )
+            .bind(candidate.tenant_id.as_uuid())
+            .bind(candidate.namespace_id.as_uuid())
+            .bind(kind.as_str())
+            .bind(&candidate.subject)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            let was_firing = previous.as_deref() == Some("FIRING");
+            let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO operational_alerts \
+                   (id, tenant_id, namespace_id, kind, subject, state, severity, first_seen_at, last_seen_at, \
+                    fired_count, item_count, oldest_seconds) \
+                 VALUES ($1, $2, $3, $4, $5, 'FIRING', $6, clock_timestamp(), clock_timestamp(), 1, $7, $8) \
+                 ON CONFLICT (tenant_id, namespace_id, kind, subject) DO UPDATE SET \
+                   state = 'FIRING', resolved_at = NULL, last_seen_at = clock_timestamp(), \
+                   item_count = EXCLUDED.item_count, oldest_seconds = EXCLUDED.oldest_seconds, \
+                   first_seen_at = CASE WHEN operational_alerts.state = 'RESOLVED' \
+                                        THEN clock_timestamp() ELSE operational_alerts.first_seen_at END, \
+                   fired_count = operational_alerts.fired_count \
+                                 + CASE WHEN operational_alerts.state = 'RESOLVED' THEN 1 ELSE 0 END \
+                 RETURNING {ALERT_COLUMNS}"
+            )))
+            .bind(Uuid::now_v7())
+            .bind(candidate.tenant_id.as_uuid())
+            .bind(candidate.namespace_id.as_uuid())
+            .bind(kind.as_str())
+            .bind(&candidate.subject)
+            .bind(kind.severity().as_str())
+            .bind(i64::try_from(candidate.items).unwrap_or(i64::MAX))
+            .bind(candidate.oldest_seconds)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            if !was_firing {
+                out.fired.push(alert_from_row(&row)?);
+            }
+        }
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE operational_alerts SET state = 'RESOLVED', resolved_at = clock_timestamp() \
+             WHERE kind = $1 AND state = 'FIRING' AND last_seen_at < $2 RETURNING {ALERT_COLUMNS}"
+        )))
+        .bind(kind.as_str())
+        .bind(started)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        for row in &rows {
+            out.resolved.push(alert_from_row(row)?);
+        }
+        // Each change is announced to the namespace's subscribers in the same transaction.
+        let now: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        for (alerts, event) in [
+            (&out.fired, OutboundKind::AlertFired),
+            (&out.resolved, OutboundKind::AlertResolved),
+        ] {
+            for alert in alerts {
+                let body = event_body(alert, event, runbook_base, now);
+                let event_id = format!(
+                    "alert-{}-{}-{}",
+                    alert.id,
+                    alert.fired_count,
+                    event.as_str()
+                );
+                crate::outbound::fan_out(
+                    &mut tx,
+                    alert.tenant_id,
+                    alert.namespace_id,
+                    event,
+                    &event_id,
+                    &body,
+                    now,
+                )
+                .await?;
+            }
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(out)
+    }
+
+    async fn sample(&self) -> Result<Sample, StoreError> {
+        let pool = self.pool();
+        let count_and_age = |sql: &'static str| async move {
+            let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .fetch_one(pool)
+                .await
+                .map_err(store_error)?;
+            Ok::<(u64, f64), StoreError>((
+                u64::try_from(row.try_get::<i64, _>("n").map_err(store_error)?).unwrap_or(0),
+                row.try_get::<f64, _>("oldest")
+                    .map_err(store_error)?
+                    .max(0.0),
+            ))
+        };
+        let (outbox_backlog, outbox_oldest_seconds) = count_and_age(
+            "SELECT count(*) AS n, coalesce(extract(epoch FROM clock_timestamp() - min(created_at)), 0)::float8 AS oldest \
+             FROM event_outbox WHERE delivered_at IS NULL",
+        )
+        .await?;
+        let (ready_steps, ready_oldest_seconds) = count_and_age(
+            "SELECT count(*) AS n, coalesce(extract(epoch FROM clock_timestamp() - min(ready_at)), 0)::float8 AS oldest \
+             FROM steps WHERE status = 'READY'",
+        )
+        .await?;
+        let (inbox_pending, inbox_oldest_seconds) = count_and_age(
+            "SELECT count(*) AS n, coalesce(extract(epoch FROM clock_timestamp() - min(received_at)), 0)::float8 AS oldest \
+             FROM inbox_events WHERE status = 'PENDING'",
+        )
+        .await?;
+        let leases = sqlx::query(
+            "SELECT count(*) AS active, count(*) FILTER (WHERE lease_expires_at < clock_timestamp()) AS expired \
+             FROM steps WHERE status IN ('LEASED', 'RUNNING')",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)?;
+        let dead = sqlx::query(
+            "SELECT (SELECT count(*) FROM inbox_events WHERE status = 'DEAD') AS events, \
+                    (SELECT count(*) FROM webhook_deliveries WHERE status = 'DEAD') AS deliveries, \
+                    (SELECT count(*) FROM connector_dead_letters) AS letters, \
+                    (SELECT count(*) FROM worker_sessions WHERE expires_at > clock_timestamp()) AS workers",
+        )
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)?;
+        let runs = sqlx::query(
+            "SELECT status, count(*) AS n FROM runs WHERE finished_at IS NULL GROUP BY status",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(store_error)?;
+        let to_u64 = |row: &PgRow, name: &str| -> Result<u64, StoreError> {
+            Ok(u64::try_from(row.try_get::<i64, _>(name).map_err(store_error)?).unwrap_or(0))
+        };
+        let mut runs_by_status = Vec::with_capacity(runs.len());
+        let mut compensating_runs = 0;
+        for row in &runs {
+            let status: String = col(row, "status")?;
+            let n = to_u64(row, "n")?;
+            if status == "COMPENSATING" {
+                compensating_runs = n;
+            }
+            runs_by_status.push((status, n));
+        }
+        Ok(Sample {
+            outbox_backlog,
+            outbox_oldest_seconds,
+            ready_steps,
+            ready_oldest_seconds,
+            leases_active: to_u64(&leases, "active")?,
+            leases_expired: to_u64(&leases, "expired")?,
+            inbox_pending,
+            inbox_oldest_seconds,
+            dead_events: to_u64(&dead, "events")?,
+            dead_deliveries: to_u64(&dead, "deliveries")?,
+            dead_letters: to_u64(&dead, "letters")?,
+            runs_by_status,
+            compensating_runs,
+            workers: to_u64(&dead, "workers")?,
+        })
+    }
+
+    async fn purge_alerts(&self, retention: Duration, limit: u32) -> Result<u64, StoreError> {
+        let removed = sqlx::query(
+            "DELETE FROM operational_alerts WHERE id IN ( \
+                 SELECT id FROM operational_alerts \
+                 WHERE state = 'RESOLVED' AND resolved_at < clock_timestamp() - make_interval(secs => $1) \
+                 LIMIT $2)",
+        )
+        .bind(secs(retention))
+        .bind(i64::from(limit))
+        .execute(self.pool())
+        .await
+        .map_err(store_error)?;
+        Ok(removed.rows_affected())
+    }
+}
+
+impl AlertReader for PgRunStore {
+    async fn list_alerts(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        state: Option<AlertState>,
+        before: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<AlertRecord>, StoreError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {ALERT_COLUMNS} FROM operational_alerts \
+             WHERE tenant_id = $1 AND namespace_id = $2 \
+               AND ($3::text IS NULL OR state = $3) AND ($4::uuid IS NULL OR id < $4) \
+             ORDER BY id DESC LIMIT $5"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(state.map(AlertState::as_str))
+        .bind(before)
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(alert_from_row)
+        .collect()
+    }
+}

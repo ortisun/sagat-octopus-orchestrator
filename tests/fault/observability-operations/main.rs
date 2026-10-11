@@ -7,4 +7,5 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod monitor;
 mod projection;

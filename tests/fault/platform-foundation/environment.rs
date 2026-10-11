@@ -39,6 +39,7 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             scripts: None,
             studio: None,
             streams: sagat_api_http::streams::StreamLimits::default(),
+            runbook_base: "docs/runbooks/alerts.md".to_owned(),
         },
     )
 }

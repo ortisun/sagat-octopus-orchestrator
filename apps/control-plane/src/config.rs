@@ -380,6 +380,9 @@ pub struct ServeConfig {
     pub studio: Option<sagat_api_http::studio::StudioConfig>,
     /// How many server-sent streams may be open (`SAGAT_STREAMS_*`).
     pub streams: sagat_api_http::streams::StreamLimits,
+    /// The URL or path of the alerts runbook, to which each alert's anchor is appended
+    /// (`SAGAT_RUNBOOK_BASE_URL`).
+    pub runbook_base: String,
 }
 
 impl ServeConfig {
@@ -530,6 +533,10 @@ impl ServeConfig {
             scripts: read_scripts(get)?,
             studio: read_studio(get)?,
             streams,
+            runbook_base: get("SAGAT_RUNBOOK_BASE_URL")
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "docs/runbooks/alerts.md".to_owned()),
         })
     }
 }

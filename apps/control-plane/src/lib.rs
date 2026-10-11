@@ -20,6 +20,7 @@ use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::events::EventService;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
+use sagat_application::operations::OperationsService;
 use sagat_application::outbound::OutboundService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
@@ -368,7 +369,12 @@ pub async fn serve_with_admin(
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
-    );
+    )
+    .with_operations(OperationsService::new(
+        executions.clone(),
+        SystemClock,
+        serve.runbook_base.clone(),
+    ));
     if let Some(secrets) = &serve.secrets {
         governance = governance
             .with_secrets(SecretService::new(

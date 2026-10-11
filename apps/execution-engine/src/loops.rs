@@ -13,8 +13,8 @@ use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::PgRunStore;
 use sagat_scheduler::{
-    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, OutboxDispatcher,
-    ProjectionRound, Report, Scheduler, TelemetryProjector,
+    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, Monitor, MonitorRound,
+    OutboxDispatcher, ProjectionRound, Report, Scheduler, TelemetryProjector,
 };
 use tokio::sync::watch;
 
@@ -22,6 +22,7 @@ pub type EngineScheduler = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type EngineDispatcher = OutboxDispatcher<PgRunStore, NatsPublisher, SystemEntropy>;
 pub type EngineEvents = EventDispatcher<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub type EngineProjector = TelemetryProjector<PgRunStore>;
+pub type EngineMonitor = Monitor<PgRunStore>;
 pub type EngineDeliveries = DeliveryWorker<
     PgRunStore,
     sagat_infra_connectors::webhook::GuardedSender<PgRunStore>,
@@ -408,4 +409,19 @@ where
         }
     }
     tracing::info!("telemetry projector stopped");
+}
+
+/// Looks for conditions that need a person, and samples the queues, every `every` until stopped.
+pub async fn run_monitor<F, Fut>(mut round: F, every: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = MonitorRound>,
+{
+    while !*stop.borrow() {
+        round().await;
+        if stop_during(jittered(every, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("monitor stopped");
 }

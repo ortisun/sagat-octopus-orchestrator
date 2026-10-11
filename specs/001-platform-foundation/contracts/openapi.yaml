@@ -948,6 +948,33 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/alerts:
+    get:
+      operationId: listAlerts
+      summary: List the operational alerts of a namespace, newest first
+      tags: [Operations]
+      x-implemented: '008'
+      description: |
+        Needs `ops:read`. The conditions the engine's monitor found that need a person: outbox messages that wait too long, attempts whose lease ran out and were not taken back, steps no worker takes, runs waiting for a decision, items that ran out of attempts. An alert carries counts, ages and names, never data of a run, and a `runbook` that says what to do. It toggles between `FIRING` and `RESOLVED`; `firedCount` says how many times it began to fire. The same changes are delivered to the namespace's webhook subscriptions that ask for `ops.alert.fired` and `ops.alert.resolved`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - name: state
+          in: query
+          required: false
+          description: Only the alerts in this state; both when absent.
+          schema: {type: string, enum: [FIRING, RESOLVED]}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of alerts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AlertPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /events:
     post:
       operationId: publishEvent
@@ -2967,6 +2994,30 @@ components:
         body: {type: string}
         truncated: {type: boolean}
         receivedAt: {type: string, format: date-time}
+    Alert:
+      type: object
+      required: [id, namespaceId, kind, subject, state, severity, summary, runbook, firstSeenAt, lastSeenAt, firedCount, items, oldestSeconds]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        kind: {type: string, enum: [OUTBOX_STUCK, LEASE_NOT_REAPED, STEP_UNCLAIMED, REVIEW_PENDING, DEAD_ITEMS]}
+        subject: {type: string, maxLength: 120, description: 'What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS; empty for the others.'}
+        state: {type: string, enum: [FIRING, RESOLVED]}
+        severity: {type: string, enum: [warning, critical]}
+        summary: {type: string, description: 'The condition in a sentence that names no data.'}
+        runbook: {type: string, description: 'Where to read what to do about it: a path or URL with the anchor of the section.'}
+        firstSeenAt: {type: string, format: date-time, description: 'When the current firing began.'}
+        lastSeenAt: {type: string, format: date-time}
+        resolvedAt: {type: [string, 'null'], format: date-time}
+        firedCount: {type: integer, minimum: 1}
+        items: {type: integer, format: int64, minimum: 0, description: 'How many things are in the condition at the last look.'}
+        oldestSeconds: {type: number, minimum: 0, description: 'The age of the oldest of them.'}
+    AlertPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Alert'}}
+        nextCursor: {type: [string, 'null']}
     DeadLetterPage:
       type: object
       required: [items]

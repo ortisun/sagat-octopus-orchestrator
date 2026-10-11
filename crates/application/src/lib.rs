@@ -17,6 +17,7 @@ pub mod events;
 pub mod execution;
 pub mod identity;
 pub mod maintenance;
+pub mod operations;
 pub mod outbound;
 pub mod quotas;
 pub mod runs;

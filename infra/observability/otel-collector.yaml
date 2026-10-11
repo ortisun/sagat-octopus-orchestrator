@@ -1,0 +1,41 @@
+# The OpenTelemetry Collector the platform exports spans to (FR-008-001, ADR-0017).
+#
+# The control plane and the engine send OTLP/HTTP with JSON to :4318 (`OTEL_EXPORTER_OTLP_ENDPOINT`).
+# The Collector batches and forwards them: here to Jaeger for looking at, and to its own log at
+# `info` so a developer can see that spans arrive. Point the `otlp/backend` exporter at your own
+# backend (Tempo, Honeycomb, a vendor's OTLP endpoint) and drop `otlp/jaeger` to use it instead.
+#
+# Local development only: no TLS, no authentication on the receiver.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Refuse data before the Collector itself is out of memory: the platform retries on 429/503.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+  batch:
+    timeout: 2s
+    send_batch_size: 512
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      level: basic
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger, debug]

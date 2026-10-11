@@ -713,6 +713,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the operational alerts of a namespace, newest first
+         * @description Needs `ops:read`. The conditions the engine's monitor found that need a person: outbox messages that wait too long, attempts whose lease ran out and were not taken back, steps no worker takes, runs waiting for a decision, items that ran out of attempts. An alert carries counts, ages and names, never data of a run, and a `runbook` that says what to do. It toggles between `FIRING` and `RESOLVED`; `firedCount` says how many times it began to fire. The same changes are delivered to the namespace's webhook subscriptions that ask for `ops.alert.fired` and `ops.alert.resolved`.
+         */
+        get: operations["listAlerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/events": {
         parameters: {
             query?: never;
@@ -2326,6 +2346,45 @@ export interface components {
             truncated: boolean;
             /** Format: date-time */
             receivedAt: string;
+        };
+        Alert: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            namespaceId: string;
+            /** @enum {string} */
+            kind: "OUTBOX_STUCK" | "LEASE_NOT_REAPED" | "STEP_UNCLAIMED" | "REVIEW_PENDING" | "DEAD_ITEMS";
+            /** @description What the alert is about within its kind: an activity name for STEP_UNCLAIMED, `events`, `webhooks` or `connectors` for DEAD_ITEMS; empty for the others. */
+            subject: string;
+            /** @enum {string} */
+            state: "FIRING" | "RESOLVED";
+            /** @enum {string} */
+            severity: "warning" | "critical";
+            /** @description The condition in a sentence that names no data. */
+            summary: string;
+            /** @description Where to read what to do about it: a path or URL with the anchor of the section. */
+            runbook: string;
+            /**
+             * Format: date-time
+             * @description When the current firing began.
+             */
+            firstSeenAt: string;
+            /** Format: date-time */
+            lastSeenAt: string;
+            /** Format: date-time */
+            resolvedAt?: string | null;
+            firedCount: number;
+            /**
+             * Format: int64
+             * @description How many things are in the condition at the last look.
+             */
+            items: number;
+            /** @description The age of the oldest of them. */
+            oldestSeconds: number;
+        };
+        AlertPage: {
+            items: components["schemas"]["Alert"][];
+            nextCursor?: string | null;
         };
         DeadLetterPage: {
             items: components["schemas"]["DeadLetter"][];
@@ -4336,6 +4395,44 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listAlerts: {
+        parameters: {
+            query?: {
+                /** @description Only the alerts in this state; both when absent. */
+                state?: "FIRING" | "RESOLVED";
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of alerts */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

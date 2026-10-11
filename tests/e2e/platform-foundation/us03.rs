@@ -49,6 +49,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         scripts: None,
         studio: None,
         streams: sagat_api_http::streams::StreamLimits::default(),
+        runbook_base: "docs/runbooks/alerts.md".to_owned(),
     }
 }
 
