@@ -58,7 +58,8 @@ same ids so a duplicate event delivered across the move starts nothing twice.
 approve a publication into it (production by default one, anywhere else none, an administrator can set 0 to 3,
 audited with a reason). A namespace that asks refuses a direct publish with `409 APPROVAL_REQUIRED`; the draft
 goes through a **request**, which names the draft revision and the digest of the document. Approvers approve
-that. The author never decides, a person decides once, one rejection ends it, the author may withdraw it,
+that. Neither the person who asked nor the person who saved the document decides (the platform keeps the last
+person to save the draft), a person decides once, one rejection ends it, the author may withdraw it,
 editing the draft supersedes it, and there is one open request per workflow (a partial unique index). When the
 request is published the approvals are counted again against the policy **in force then**: a policy raised
 after the approvals asks for the extra ones, and a request published twice makes one version. The check is in
@@ -83,8 +84,10 @@ checks every document with the same codec the server uses (same crate: there is 
 drift), compares digests with the active versions, shows what would change, and applies it through the REST
 operations anyone can call. Every approval, refusal and breaking-change rule above is enforced by the server;
 the tool adds convenience (the diff, the plan, exit codes a pipeline can branch on, a refusal of breaking
-changes before anything is sent) and never authority. It can be interrupted and run again: its keys are derived
-from the document, so the same publication is the same operation.
+changes before anything is sent) and never authority. It can be interrupted and run again: creating a workflow and
+publishing a new version carry a key derived from the document, so the same publication is the same operation;
+re-activating a version that was published before gets a key of its own each time, because a key that has been used
+is answered as it was whatever the pointer says now.
 
 ## Consequences
 
@@ -97,6 +100,9 @@ from the document, so the same publication is the same operation.
   policy for anyone with `version:activate`: the permission is the control, and every use of it is a row of
   the history and an audit entry (G196).
 - Versions published before a namespace asked for approvals are trusted as they are (G197).
+- "Another person" is another subject who did not save the draft last: the platform does not know the author of the
+  commit in Git, so for a namespace published from a pipeline review in Git is the control and this is a second one
+  (G210).
 - The history grows for ever (G194), and artifacts pinned by any version stay for ever (G193).
 
 ## Alternatives rejected

@@ -33,7 +33,7 @@ Maintain Git pipelines, auditing, immutable versions and safe deployment of work
 - Latency and overhead benchmarks on the critical path defined for this feature.
 - Detail compliance and retention requirements according to the deployment environment.
 
-## What was decided while building it (D183–D198) and what is left (G193–G208)
+## What was decided while building it (D183–D205) and what is left (G193–G214)
 
 Numbering continues after feature 008 (D160–D182, G169–G192). The decision is
 [ADR-0018](../../docs/adr/ADR-0018-publishing-is-one-transaction-the-pointer-has-a-history-and-an-approval-is-of-a-document.md);
@@ -78,7 +78,7 @@ how to operate it is `docs/runbooks/gitops.md`; the data is in `data-model.md`; 
   version, to the same environment or a later one, as the workflow of the same name; it never overwrites a draft
   with unpublished changes; the target's policy decides between publishing and a request bound to that document;
   an identical active document is `ALREADY_ACTIVE`; the history of the target says where it came from. Tested:
-  `integration promotion.rs` (8), `e2e us03`.
+  `integration promotion.rs` (7), `e2e us03`.
 - **D191 — Dependency digests have a foreign key.** `workflow_version_scripts` ties each version to the artifacts
   it pins with `ON DELETE RESTRICT` (SQLSTATE `23001`). FR-011-006 asks to block the removal of artifacts used by
   *active runs*; a rollback can make any published version active again, so the guard is the stricter "pinned by
@@ -114,6 +114,42 @@ how to operate it is `docs/runbooks/gitops.md`; the data is in `data-model.md`; 
   held. Found by the fault suite (`fault history.rs` and `fault storm.rs` failed before the fix: failing-first),
   fixed by storing `max(now, latest + 1 µs)` of the workflow inside the locked transaction and answering with the
   row that was written and not "the newest row".
+- **D199 — Whoever saved the document cannot approve it.** `workflows.draft_edited_by` keeps the last person to
+  save the draft (written by the statement that saves it); opening a request copies it to the request, in the
+  transaction that reads the draft; neither the requester nor that person may approve or reject it. A pipeline that
+  opens requests for a document a colleague saved no longer lets that colleague be the second pair of eyes; a
+  document saved before the platform kept this has no editor (`NULL`). Tested: `domain versioning.rs`,
+  `integration approvals.rs::whoever_saved_the_draft_cannot_approve_a_request_somebody_else_opened`.
+- **D200 — A request is not stored for a revision that is gone.** Opening one locks the draft row (`FOR SHARE`, which
+  conflicts with the statement that saves a draft) and compares the revision before the insert; the loser of the
+  race is told the draft changed (`REVISION_CONFLICT`) instead of leaving a request that holds the only slot of the
+  workflow for a document nobody can publish. Tested: `integration approvals.rs::a_request_is_not_born_for_a_revision_that_was_saved_over`
+  (deterministic at the store), `fault requests.rs::a_request_is_never_left_open_for_a_revision_that_was_saved_over`.
+- **D201 — A published request answers the key it was published with, and no other.** The answer is read from the
+  publication's idempotency record, not by validating the draft again (which may have moved on), and writes no
+  activation and no audit entry; a publication that was racing the first one is answered after it takes the lock;
+  the refusal found inside the publishing transaction has its own reason, `REQUEST_NOT_APPROVED`. Tested:
+  `fault requests.rs::a_retry_storm_with_one_key_gets_one_answer_and_later_the_same_one`, `…an_approved_request_published_at_once_makes_one_version`.
+- **D202 — The database says what the code relies on.** What a request is about (workflow, namespace, kind, revision,
+  digest, notes, requester, editor, what it asked for) cannot change after it is opened (a trigger that fires even
+  where triggers are switched off for replication); a version, a request and a pointer must belong to the workflow
+  they name, and a request to the namespace its workflow is in (composite keys); and the transaction that publishes
+  compares the revision and the digest it publishes with the ones the request names, with the policy of the
+  namespace the workflow is in. Tested: `integration isolation.rs` (3), `approvals.rs::a_request_publishes_the_revision_and_the_document_it_names_and_no_other`.
+- **D203 — Text people write for others is plain.** A release note (new lines and tabs allowed) and a justification
+  have no control character and none of the format characters that reorder or hide text. The command line shows
+  what someone else wrote on one line without them, so a note cannot forge a row of a history. Tested:
+  `approvals.rs::release_notes_are_plain_text_because_they_are_read_on_terminals_and_in_the_history`, `apps/cli/tests/args.rs`.
+- **D204 — The trail records what is worth a person looking at.** A refused self-approval or a withdrawal of someone
+  else's request (`publication.denied`, once per person and request in a window), each request a saved draft ends
+  (`publication.superseded`), a policy change as from-to, and the request a publication came from.
+- **D205 — The tool's fixes after its reviews.** A publication that re-activates a version that was published before
+  gets a key of its own each time (a key that was used is answered as it was: after a rollback the pipeline would
+  have been told "activated" with the pointer where the rollback left it); `rollback` without `--to` refuses to undo
+  a rollback; the server address is read the way the HTTP client reads it, with no user name in it, and plain `http`
+  to this machine bypasses any proxy; `validate` fails when credentials were given and cannot be used; parse errors do
+  not quote the file; `export` refuses to write through a link or more workflows than a manifest takes.
+  Tested: `e2e us04.rs` (2, each fails without the fix), `cli.rs`, `apps/cli/tests` (client, args, manifest).
 
 ### What is left
 
@@ -158,3 +194,28 @@ how to operate it is `docs/runbooks/gitops.md`; the data is in `data-model.md`; 
 - **G207 — "Another person" is another subject.** Two accounts of one human count as two. Separation of duties
   beyond the subject (teams, domains) is not modelled.
 - **G208 — `sagat requests` shows the first page** (50, newest first); older requests need the REST list.
+- **G209 — Lowering a policy does not release requests that are open.** A request opened under two approvals stays
+  pending after one when the namespace is lowered to one, and one opened under one needs it after the namespace
+  asks for none: the number it was opened with decides when it becomes approved; the policy in force decides when
+  it may be published, and only upwards (D185). Withdrawing and asking again takes a minute.
+- **G210 — "Whoever saved it" is the last person to save the draft.** Earlier contributors to a document, the author
+  of the commit in Git and the person who merged it are not known to the platform. For a namespace published from a
+  pipeline the control is review in Git (branch protection), and the platform's approval is a second control;
+  two accounts with the developer role, a pipeline's among them, satisfy the "two people" rule between them.
+- **G211 — The pointer can be moved to a version nobody approved here.** `version:activate` moves it to any published
+  version (a rollback, the way forward again), among them versions published before the namespace asked for approvals
+  or under a policy of zero. And an administrator can set a policy to zero, publish alone and set it back: audited
+  (the trail says from-to), but no second person is needed and there is no delay.
+- **G212 — No bounds on churn.** Opening and withdrawing requests, moving the pointer back and forth (each move
+  registers the triggers again) and writing policies are not rate limited per tenant beyond the in-flight
+  concurrency, and any one person with `publication:approve` can reject every request for ever; only lowering the
+  policy by an administrator gets around that.
+- **G213 — Approvals do not expire** and are not checked again against the approver's role or membership when the
+  request is published.
+- **G214 — Edges that are known and not changed.** (a) During a rolling deploy a replica from before the migration
+  that publishes writes no history row; (b) the database does not enforce that the pointer equals the last history
+  row (a deferred constraint trigger would); (c) the history backfill orders versions with the same publication time
+  by a random id; (d) a cursor of the history that names no row gives an empty page, not an error; (e) a promotion
+  that is then refused (a secret the target lacks) leaves the target's draft replaced by the source document, which
+  is clean by then (no work of anyone is lost) but makes a Studio session in the target conflict; (f) the tool, if
+  pointed at a manifest that is a link, follows it, and only no longer quotes what is in it.
