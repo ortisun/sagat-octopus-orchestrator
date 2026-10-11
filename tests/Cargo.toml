@@ -287,6 +287,10 @@ name = "fault_developer_experience"
 path = "fault/developer-experience/main.rs"
 
 [[test]]
+name = "perf_developer_experience"
+path = "performance/developer-experience/main.rs"
+
+[[test]]
 name = "e2e_developer_experience"
 path = "e2e/developer-experience/main.rs"
 
