@@ -273,6 +273,9 @@ impl Client {
             .http
             .request(method, format!("{}{path}", self.base))
             .bearer_auth(&self.token);
+        if let Some(traceparent) = crate::telemetry::current_traceparent() {
+            request = request.header("traceparent", traceparent);
+        }
         // Some operations are of the tenant and not of a namespace (a request is decided by its id).
         if !self.namespace.is_empty() {
             request = request.header("x-octopus-namespace", &self.namespace);
@@ -301,9 +304,11 @@ impl Client {
     /// # Errors
     /// [`CallError::Transport`] when there is no answer.
     pub async fn public(&self, path: &str) -> Result<(u16, Value), CallError> {
-        let response = self
-            .http
-            .get(format!("{}{path}", self.base))
+        let mut request = self.http.get(format!("{}{path}", self.base));
+        if let Some(traceparent) = crate::telemetry::current_traceparent() {
+            request = request.header("traceparent", traceparent);
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| CallError::Transport(describe(&e)))?;
@@ -321,11 +326,15 @@ impl Client {
     /// # Errors
     /// [`CallError::Transport`] when there is no answer.
     pub async fn post_public(&self, path: &str, body: &Value) -> Result<(u16, Value), CallError> {
-        let response = self
+        let mut request = self
             .http
             .post(format!("{}{path}", self.base))
             .header("content-type", "application/json")
-            .body(serde_json::to_vec(body).map_err(|e| CallError::Transport(e.to_string()))?)
+            .body(serde_json::to_vec(body).map_err(|e| CallError::Transport(e.to_string()))?);
+        if let Some(traceparent) = crate::telemetry::current_traceparent() {
+            request = request.header("traceparent", traceparent);
+        }
+        let response = request
             .send()
             .await
             .map_err(|e| CallError::Transport(describe(&e)))?;

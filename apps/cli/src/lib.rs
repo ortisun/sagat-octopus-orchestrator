@@ -22,6 +22,7 @@ pub mod new;
 mod remote;
 mod script;
 mod sync;
+pub mod telemetry;
 mod validate;
 mod versions;
 mod worker;

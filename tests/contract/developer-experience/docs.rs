@@ -336,3 +336,84 @@ fn the_links_in_the_docs_lead_to_files_that_exist() {
     }
     assert!(checked >= 40, "only {checked} links are checked");
 }
+
+/// Every file of the examples, the templates and the quickstarts, for what a secret looks like.
+fn sources_of_examples() -> Vec<PathBuf> {
+    let root = repo();
+    let mut found = Vec::new();
+    let mut stack = vec![
+        root.join("examples"),
+        root.join("templates"),
+        root.join("docs/quickstarts"),
+        root.join("docs/reference"),
+    ];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matches!(
+                name.as_str(),
+                "node_modules" | "dist" | ".venv" | "bin" | "obj" | "target" | "__pycache__"
+            ) {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            // Never follow a link while walking material that can be copied into a checkout.
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                stack.push(path);
+            } else if entry.metadata().is_ok_and(|m| m.len() < 512 * 1024) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn no_example_template_or_page_carries_a_secret() {
+    // A bearer token of the JWT shape, a private key, a cloud access key, a password in a URL.
+    let looks_like = [
+        (
+            "a JWT",
+            regex::Regex::new(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+                .expect("regex"),
+        ),
+        (
+            "a private key",
+            regex::Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----").expect("regex"),
+        ),
+        (
+            "an access key id",
+            regex::Regex::new(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b").expect("regex"),
+        ),
+        (
+            "a password in a URL",
+            regex::Regex::new(r"://[^/\s:@]+:[^/\s:@]+@[^/\s]+").expect("regex"),
+        ),
+        (
+            "a literal bearer token",
+            regex::Regex::new(r"[Bb]earer [A-Za-z0-9_-]{24,}").expect("regex"),
+        ),
+    ];
+    let mut scanned = 0;
+    for path in sources_of_examples() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue; // not text
+        };
+        scanned += 1;
+        for (what, pattern) in &looks_like {
+            assert!(
+                !pattern.is_match(&text),
+                "{} looks like it holds {what}",
+                path.strip_prefix(repo()).unwrap_or(&path).display()
+            );
+        }
+    }
+    assert!(scanned >= 70, "only {scanned} files were scanned");
+}

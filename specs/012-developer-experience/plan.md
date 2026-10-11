@@ -35,17 +35,24 @@ These checks indicate conformance **of the design**, not approval of the impleme
 
 ## Project Structure
 
+As built (the placeholders of the first draft — `tools/cli`, a `df` binary, `tests/e2e/quickstart` — were replaced by what the
+repository already had; D206):
+
 ```text
-tools/cli/src/main.rs
-examples/payment-saga/
-examples/hello-world/
-docs/quickstarts/
-tests/e2e/quickstart/
-infra/docker/compose.yaml
-tests/contract/
-tests/integration/
-tests/fault/
-tests/e2e/developer-experience/
+apps/cli/                         sagat: new, workflow, script, worker dev|bind, dev token, doctor, and feature 011's manifest commands
+apps/dev-idp/                     the development identity provider (G10): dev-idp serve|healthcheck
+apps/control-plane/               seed-dev also leaves a workspace and a namespace (SAGAT_SEED_NAMESPACE)
+crates/api-http/                  GET /v1/version
+templates/                        hello-world, event-trigger, cron, approval, compensation, inline-script
+examples/hello-world/<language>/  the hello-world in TypeScript, Go, Python, C# and Java
+examples/payment-saga/typescript/ a saga with compensation and reconciliation against an in-memory provider
+docs/quickstarts/                 the first day, one page for each SDK, the saga, the errors
+docs/reference/                   generated from the OpenAPI document, the workflow schema and the tool's help
+infra/docker/                     compose gains dev-idp; the control-plane image carries the Studio's files
+tests/e2e/developer-experience/   stories, doctor, diagnostics, the provider and the seed, the script commands, the examples
+tests/fault/developer-experience/ restarts, signals, caps, tenants, the token, the environment guard
+tests/contract/developer-experience/  the generated reference and the examples in the documents
+tests/performance/developer-experience/  the machine's part of the first day
 ```
 
 ## Implementation phases

@@ -36,7 +36,7 @@ Enable safe adoption by product, backend and operations teams without manually c
 - Latency and overhead benchmarks on the critical path defined for this feature.
 - Detail compliance and retention requirements according to the deployment environment.
 
-## What was decided while building it (D206–D228) and what is left (G215–G237)
+## What was decided while building it (D206–D228) and what is left (G215–G238)
 
 Numbering continues after feature 011 (D183–D205, G193–G214). The decision is
 [ADR-0019](../../docs/adr/ADR-0019-the-first-day-runs-on-the-real-engine-with-canned-answers-and-a-development-identity-provider.md);
@@ -206,3 +206,4 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
   closed) while `docker compose up -d` succeeds.
 - **G237 — The Studio's autosave unit tests are timing-sensitive.** Three of them failed once while the whole workspace was being
   tested at the same time and passed on a quiet machine (feature 007's, unchanged here).
+- **G238 — Closed for opt-in command instrumentation, not a newcomer study.** The CLI now propagates a W3C trace context through REST and gRPC even when exporting is disabled. `OTEL_EXPORTER_OTLP_ENDPOINT` opts into OTLP/HTTP JSON command spans, completion logs and duration gauge points; a trace-specific endpoint exports spans only. `SAGAT_ONBOARDING_TELEMETRY_FILE` optionally records local completion logs and duration points. Command, stage and outcome are closed labels; token, payload, file path, endpoint, namespace ID and tenant ID are excluded. Tenant context is only a bounded classification, not verified identity. `apps/cli/tests/telemetry.rs` captures the wire signals and checks redaction, opt-in, correlation and failure flushing. This does not identify people or measure their reading time; G215 stays open.
