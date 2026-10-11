@@ -209,9 +209,10 @@ async fn us04_a_decision_that_makes_no_sense_is_refused_precisely() {
             "",
         ),
         (
-            json!({"action": "RERUN_AS_NEW", "reason": "declared for later features"}),
-            422,
-            "not supported",
+            // Starting a run again while it is still waiting for a person would do its work twice.
+            json!({"action": "RERUN_AS_NEW", "reason": "this run is still in review"}),
+            409,
+            "only a run that has ended",
         ),
     ];
     for (body, expected, mention) in cases {

@@ -73,7 +73,8 @@ describe('which decisions are offered', () => {
     const { panel } = await panelOf('reserve~c', VIEWER);
     const list = actions(panel, 'reserve~c');
     for (const button of list.getAllByRole('button')) expect(state(button)).toBe('disabled');
-    expect(list.getAllByText('You need the run:operate permission to do this.')).toHaveLength(2);
+    // Retry step, retry compensation and holding a step all need run:operate.
+    expect(list.getAllByText('You need the run:operate permission to do this.')).toHaveLength(3);
   });
 
   it('lists the run-level actions by the state of the run: a running run can be paused, not resumed', async () => {
@@ -95,12 +96,17 @@ describe('which decisions are offered', () => {
     expect(list.getByText('The run is already paused.')).toBeInTheDocument();
   });
 
-  it('lists what the platform does not do yet as disabled, saying so (G145)', async () => {
-    const { user } = await openRunPage();
+  it('offers to run it again only once it has ended', async () => {
+    const { user, unmount } = await openRunPage({ run: runOf({ status: 'RUNNING' }) }, [...ADMIN, 'run:start']);
     await user.click(await screen.findByRole('button', { name: 'Run actions' }));
-    const list = within(screen.getByRole('list', { name: 'Run actions' }));
-    for (const name of ['Run again as new', 'Mark for manual review']) expect(state(list.getByRole('button', { name }))).toBe('disabled');
-    expect(list.getAllByText('The platform does not offer this yet.')).toHaveLength(2);
+    const running = within(screen.getByRole('list', { name: 'Run actions' }));
+    expect(state(running.getByRole('button', { name: 'Run again as new' }))).toBe('disabled');
+    expect(running.getByText('The run has not ended: starting it again would do its work twice.')).toBeInTheDocument();
+    unmount();
+    const { nodes, edges } = sagaRun();
+    const over = await openRunPage({ run: runOf({ status: 'FAILED', finishedAt: '2026-10-10T10:05:00Z' }), graph: graphOf(nodes, edges, { status: 'FAILED' }) }, [...ADMIN, 'run:start']);
+    await over.user.click(await screen.findByRole('button', { name: 'Run actions' }));
+    expect(state(within(screen.getByRole('list', { name: 'Run actions' })).getByRole('button', { name: 'Run again as new' }))).toBe('enabled');
   });
 
   it('refuses everything on a run that is over', async () => {
@@ -185,6 +191,56 @@ describe('deciding', () => {
     expect(sent?.key).toMatch(/^[0-9a-f-]{36}$/);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(await screen.findByText(/Retry compensation requested for reserve~c\./)).toBeInTheDocument();
+  });
+
+  it('holds a step that has not started for a person, and says what that does', async () => {
+    const { nodes, edges } = sagaRun();
+    nodes.push(node('ship', 'READY', { attempt: 0 }));
+    const { panel, user, platform } = await panelOf('ship', OPERATOR, { graph: graphOf(nodes, edges, { status: 'RUNNING' }), run: runOf({ status: 'RUNNING' }) });
+    await user.click(actions(panel, 'ship').getByRole('button', { name: 'Mark for manual review' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Holds step ship for a person: no worker is given it and nothing more happens to it until someone retries or settles it/)).toBeInTheDocument();
+    await user.type(reasonBox(dialog), 'the provider asked us to wait');
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Mark for manual review' }));
+    await waitFor(() => expect(platform.operations).toHaveLength(1));
+    expect(platform.operations[0]?.body).toEqual({ action: 'MARK_MANUAL_REVIEW', stepId: 'ship', reason: 'the provider asked us to wait', expectedRunVersion: 10 });
+  });
+
+  it('retries a step that waits for its retry now, and says so', async () => {
+    const { nodes, edges } = sagaRun();
+    nodes.push(node('ship', 'RETRY_WAIT', { attempt: 1, failureCode: 'PAYMENT_DECLINED' }));
+    const { panel, user, platform } = await panelOf('ship', OPERATOR, { graph: graphOf(nodes, edges, { status: 'RUNNING' }), run: runOf({ status: 'RUNNING' }) });
+    await user.click(actions(panel, 'ship').getByRole('button', { name: 'Retry step' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Starts the next attempt of step ship now, without waiting for the delay of its retry/)).toBeInTheDocument();
+    await user.type(reasonBox(dialog), 'the provider is back up');
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Retry step' }));
+    await waitFor(() => expect(platform.operations).toHaveLength(1));
+    expect(platform.operations[0]?.body).toMatchObject({ action: 'RETRY_STEP', stepId: 'ship' });
+  });
+
+  it('starts a run again and takes the person to the new one', async () => {
+    const { nodes, edges } = sagaRun();
+    const NEW_RUN = '019b5d6e-0000-7000-8000-0000000000ff';
+    const { user, platform } = await openRunPage(
+      {
+        run: runOf({ status: 'FAILED', finishedAt: '2026-10-10T10:05:00Z' }),
+        graph: graphOf(nodes, edges, { status: 'FAILED' }),
+        operate: () => jsonResponse({ operationId: '019b5d6e-0000-7000-8000-0000000000cc', accepted: true, runStatus: 'FAILED', runVersion: 10, newRunId: NEW_RUN }, 202),
+      },
+      [...ADMIN, 'run:start'],
+    );
+    await user.click(await screen.findByRole('button', { name: 'Run actions' }));
+    await user.click(within(screen.getByRole('list', { name: 'Run actions' })).getByRole('button', { name: 'Run again as new' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Starts a new run of the same version of this workflow with the same input\. This run stays as it is/)).toBeInTheDocument();
+    await user.type(reasonBox(dialog), 'the provider fixed the bug');
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm: Run again as new' }));
+    await waitFor(() => expect(platform.operations).toHaveLength(1));
+    expect(platform.operations[0]?.body).toMatchObject({ action: 'RERUN_AS_NEW', reason: 'the provider fixed the bug' });
+    expect(platform.operations[0]?.body).not.toHaveProperty('stepId');
+    // The page went to the new run: it asks the platform for it.
+    await waitFor(() => expect(platform.calls.some((call) => call.url.includes(NEW_RUN))).toBe(true));
   });
 
   it('does not edit the graph itself: the card changes when the platform says so', async () => {

@@ -767,6 +767,47 @@ pub fn retry_review(
     )
 }
 
+/// An operator holds a step that has not started (it is ready for a worker, or waits out the delay
+/// of a retry) and puts it among the ones that wait for a decision: nothing more happens to it until
+/// a person retries it, settles it or cancels the run.
+///
+/// # Errors
+/// [`ExecutionError::UnknownNode`] for a step the run does not have;
+/// [`ExecutionError::IllegalTransition`] when the step is not ready or waiting to retry (an attempt
+/// in flight cannot be held, and a step that already waits for a person is not held twice).
+pub fn mark_for_review(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    let step = require_step(state, node)?;
+    // Said before the state is asked: an attempt in flight is not "stale", it is a step that cannot
+    // be held, and the operator is told which.
+    // A lookup is the platform's way of finding out whether the step it is for happened: a person
+    // holds that step, and the lookup stays what it is, or the step would wait for an answer that a
+    // person has declared will never come.
+    if node.is_reconciliation()
+        || !matches!(step.status(), StepStatus::Ready | StepStatus::RetryWait)
+    {
+        return Err(ExecutionError::IllegalTransition {
+            node: node.clone(),
+            status: step.status(),
+            event: "step.needs_review",
+        });
+    }
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::StepNeedsReview {
+            node: node.clone(),
+            code: FailureCode::marked_for_review(),
+            fence: None,
+        },
+    )
+}
+
 /// An operator gives up on a compensation.
 ///
 /// # Errors

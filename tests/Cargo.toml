@@ -227,3 +227,27 @@ path = "fault/workflow-studio/main.rs"
 [[test]]
 name = "perf_sdk_multilanguage"
 path = "performance/sdk-multilanguage/main.rs"
+
+[[test]]
+name = "e2e_observability_operations"
+path = "e2e/observability-operations/main.rs"
+
+[[test]]
+name = "fault_observability_operations"
+path = "fault/observability-operations/main.rs"
+
+[[test]]
+name = "contract_observability_operations"
+path = "contract/observability-operations/main.rs"
+
+[[test]]
+name = "contract_rest_observability_operations"
+path = "contract/observability-operations/rest/main.rs"
+
+[[test]]
+name = "integration_observability_operations"
+path = "integration/observability-operations/main.rs"
+
+[[test]]
+name = "perf_observability_operations"
+path = "performance/observability-operations/main.rs"

@@ -4,6 +4,8 @@ use std::fmt;
 
 use uuid::Uuid;
 
+use crate::span::SpanId;
+
 /// 32 lowercase hexadecimal characters, never all zeroes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TraceId([u8; 16]);
@@ -23,10 +25,16 @@ impl TraceId {
             .filter(|id| *id != [0u8; 16])
             .map(Self)
     }
+
+    /// The 16 bytes of the id.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
 }
 
 /// Decodes exactly `2 * N` lowercase hex characters.
-fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(crate) fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let bytes = text.as_bytes();
     if bytes.len() != N * 2 {
         return None;
@@ -103,9 +111,33 @@ impl TraceContext {
         })
     }
 
+    /// A context that continues `trace_id` under `parent`, for work that starts without a request
+    /// (a scheduler pass, a delivery) on a trace that was persisted.
+    #[must_use]
+    pub const fn continuing(trace_id: TraceId, parent: Option<SpanId>, sampled: bool) -> Self {
+        let parent_span_id = match parent {
+            Some(span) => Some(span.0),
+            None => None,
+        };
+        Self {
+            trace_id,
+            parent_span_id,
+            sampled,
+        }
+    }
+
     #[must_use]
     pub const fn trace_id(&self) -> TraceId {
         self.trace_id
+    }
+
+    /// The span of the caller, when the request carried a valid `traceparent`.
+    #[must_use]
+    pub const fn parent_span_id(&self) -> Option<SpanId> {
+        match self.parent_span_id {
+            Some(bytes) => Some(SpanId(bytes)),
+            None => None,
+        }
     }
 
     /// Whether the caller asked for this trace to be sampled.

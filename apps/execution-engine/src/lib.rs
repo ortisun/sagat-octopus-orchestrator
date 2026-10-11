@@ -28,7 +28,10 @@ use sagat_control_plane::{
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{PgIdentityStore, PgRunStore, spawn_pool_metrics};
-use sagat_scheduler::{DeliveryWorker, EventDispatcher, OutboxDispatcher, Scheduler};
+use sagat_scheduler::{
+    DeliveryWorker, EventDispatcher, Monitor, OutboxDispatcher, ProjectorSettings, Scheduler,
+    TelemetryProjector,
+};
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -40,7 +43,10 @@ pub mod settings;
 pub use sagat_control_plane::{probe, shutdown_signal};
 pub use settings::EngineConfig;
 
-use loops::{EngineDeliveries, EngineDispatcher, EngineEvents, EngineScheduler, Health};
+use loops::{
+    EngineDeliveries, EngineDispatcher, EngineEvents, EngineMonitor, EngineProjector,
+    EngineScheduler, Health,
+};
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
 const DEFINITION_CACHE_ENTRIES: usize = 1024;
@@ -164,6 +170,33 @@ pub async fn serve(
         }
     };
 
+    // The journal becomes spans and measurements here, off the path of every request and every
+    // transition. With no collector configured the measurements are still made.
+    let exporter = match engine.telemetry.otlp.clone() {
+        Some(otlp) => Some(
+            sagat_telemetry::OtlpClient::new(otlp)
+                .map_err(|_| RunError::Refused("the telemetry exporter could not be set up"))?,
+        ),
+        None => None,
+    };
+    // The sampler that decides which live spans are kept decides which projected ones are too.
+    let projector_settings = ProjectorSettings {
+        sample_ratio: engine
+            .telemetry
+            .otlp
+            .as_ref()
+            .map_or(1.0, |otlp| otlp.sample_ratio),
+        ..engine.telemetry.projector
+    };
+    let projector: Arc<EngineProjector> = Arc::new(TelemetryProjector::new(
+        store.clone(),
+        exporter,
+        projector_settings,
+    ));
+
+    let monitor: Arc<EngineMonitor> =
+        Arc::new(Monitor::new(store.clone(), engine.monitor.settings.clone()));
+
     let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -193,13 +226,22 @@ pub async fn serve(
                 let scheduler = Arc::clone(&scheduler);
                 let events = Arc::clone(&events);
                 let deliveries = deliveries.clone();
+                let store = store.clone();
                 move || {
                     let scheduler = Arc::clone(&scheduler);
                     let events = Arc::clone(&events);
                     let deliveries = deliveries.clone();
+                    let store = store.clone();
                     async move {
                         scheduler.housekeeping().await;
                         events.housekeeping().await;
+                        // The notes of runs that finished and were projected a day ago.
+                        if let Err(error) = store
+                            .purge_projected(Duration::from_secs(24 * 3600), 1000)
+                            .await
+                        {
+                            tracing::warn!(%error, "could not purge the telemetry notes of finished runs");
+                        }
                         if let Some(deliveries) = deliveries {
                             deliveries.housekeeping().await;
                         }
@@ -221,6 +263,28 @@ pub async fn serve(
             stop_rx.clone(),
         )),
     ];
+    tasks.push(tokio::spawn(loops::run_telemetry(
+        {
+            let projector = Arc::clone(&projector);
+            move || {
+                let projector = Arc::clone(&projector);
+                async move { projector.run_once().await }
+            }
+        },
+        engine.telemetry.poll,
+        stop_rx.clone(),
+    )));
+    tasks.push(tokio::spawn(loops::run_monitor(
+        {
+            let monitor = Arc::clone(&monitor);
+            move || {
+                let monitor = Arc::clone(&monitor);
+                async move { monitor.run_once().await }
+            }
+        },
+        engine.monitor.interval,
+        stop_rx.clone(),
+    )));
     if let Some(connectors) = connectors {
         tasks.push(tokio::spawn(connectors.run(stop_rx.clone())));
     }

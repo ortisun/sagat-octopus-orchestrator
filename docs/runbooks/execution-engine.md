@@ -14,6 +14,8 @@ OIDC settings and the backup procedure are the same.
 | Scheduler loop | same process | Fires timers, wait deadlines and retries, reclaims lost leases, enforces run deadlines, renews lost wake-up hints, creates child runs, reports ended children to their parents, cancels children of stopped parents. Safe to run in several replicas |
 | Housekeeping | same process, every `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300) | Purges idempotency records (7 d), expired worker sessions (1 h after expiry) and delivered outbox messages (24 h, 5000 per round) |
 | Outbox dispatcher | same process, only when `SAGAT_NATS_URL` is set | Publishes `task.ready` hints (`sagat.v1.task.ready.<tenant>.<activity>`) and `run.finished` events (`sagat.v1.run.finished.<tenant>`) to JetStream, at-least-once |
+| Telemetry projector | same process, one at a time (a lease row in `engine_leases`) | Turns what is new in the journal of each run into spans and measurements and hands the spans to the OTLP collector; settings `SAGAT_TELEMETRY_*`, see [`observability.md`](observability.md) |
+| Monitor | same process, one at a time, every `SAGAT_MONITOR_INTERVAL_SECS` (30) | Finds the conditions that need a person (outbox stuck, leases not taken back, steps nobody serves, reviews waiting, dead items), keeps the alerts in step and sets the gauges; see [`alerts.md`](alerts.md) |
 | Admin listener | `SAGAT_ADMIN_ADDR`, default `127.0.0.1:9091` | `/metrics`, `/livez`, `/readyz`, **without authentication**: keep it on loopback or restrict it with a `NetworkPolicy`; the container health check uses it from inside |
 | PostgreSQL 16 | `DATABASE_URL` | Source of truth. TLS required outside `SAGAT_ENV=dev`. The runtime role `sagat_app` (the engine refuses to start as a role that could rewrite the audit trail, exit code 2) |
 | NATS JetStream | `SAGAT_NATS_URL`, stream `SAGAT` (subjects `sagat.v1.>`) | **Hints only.** Losing it, or never configuring it, costs latency, never correctness: workers poll, and the outbox keeps what is owed |
@@ -99,6 +101,10 @@ SELECT count(*) FILTER (WHERE delivered_at IS NULL) AS pending, max(attempt_coun
 | `scheduler_actions_total` | `kind`, `outcome` | What the loop did: `timer`, `wait_timeout`, `retry`, `lease`, `deadline`, `rehint`, `child_start`, `child_finish`, `child_cancel`; `done`, `skipped` (someone else got there first), `failed` |
 | `child_runs_started_total` | | Child runs created |
 | `saga_transitions_total`, `saga_outcomes_total`, `compensation_attempts_total`, `reconciliations_total`, `operator_decisions_total`, `compensation_breaker_opened_total` | closed sets | Sagas (feature 003); meaning in [`sagas.md`](sagas.md) |
+| `ready_steps`, `queue_lag_seconds`, `leases_active`, `leases_expired`, `outbox_backlog`, `outbox_oldest_age_seconds`, `inbox_pending_events`, `inbox_oldest_age_seconds`, `dead_items{kind}`, `runs_active{status}`, `compensating_runs`, `workers_registered`, `alerts_firing{kind}` | | Gauges set by the monitor (feature 008) |
+| `step_attempts_total{outcome}`, `step_attempt_duration_seconds`, `step_schedule_latency_seconds`, `runs_terminal_total{status}`, `run_duration_seconds` | | Made by the projector from the journal; they lag the transitions by `telemetry_projection_lag_seconds` |
+| `telemetry_projection_pending_runs`, `telemetry_projection_lag_seconds`, `telemetry_projector_active`, `telemetry_spans_exported_total{outcome}`, `telemetry_projection_errors_total{reason}` | | The projection and its collector |
+| `worker_polls_drained_total` | | Polls answered with nothing because the identity is being drained |
 | `outbox_published_total` | `event` | Messages sent to NATS (`task.ready`, `run.finished`, `other`) |
 | `outbox_publish_failed_total` | `code` | `BROKER_UNAVAILABLE`, `REJECTED` |
 | `outbox_backlog` | | Messages owed |
@@ -108,7 +114,7 @@ No label ever carries a tenant, run, node, subject or user-supplied text.
 
 ## 5. Logs and secrets
 
-Logs are JSON. They never contain lease tokens, session tokens, bearer tokens, payloads, outputs
+Logs are JSON (`SAGAT_LOG_FORMAT=text` for people), carry `trace_id` and `span_id` and, inside a span that has them, `run_id`; values are redacted on the way out by the name they are logged under and by the shape of a credential (a token, `Bearer …`, the password of a URL, a key with a well-known prefix), and a line is cut at 2048 characters. They never contain lease tokens, session tokens, bearer tokens, payloads, outputs
 or the database/NATS URLs. Validation messages name the field, never its value. A worker's free-text
 error message is dropped (decision D31); the journal holds a bounded failure code.
 
@@ -134,6 +140,6 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
   replicas (G22), partitioning/retention of `run_events` (G28): feature 010.
 - Sagas and compensation (feature 003), inbound events and webhooks (004): the engine only emits
   `task.ready` and `run.finished`, and signals arrive through the REST API.
-- OTLP span export (feature 008): trace ids are propagated and stored, spans are not exported.
+- OTLP span export is OTLP/HTTP with JSON only (G169); a backend that takes only protobuf needs a Collector in front. One projector and one monitor cap their own throughput (G177): sharding is feature 010. The audit trail has no retention (G182, G28).
 - Failover of PostgreSQL itself, backups of the NATS stream (it holds hints only) and capacity
   planning per tier (spec open question).

@@ -206,6 +206,8 @@ enum Action {
     Pause,
     Resume,
     OperatorRetry(NodeId),
+    /// Holds a step that has not started for a person to decide.
+    OperatorHold(NodeId),
     OperatorSkip(NodeId),
     OperatorResolve(NodeId, bool),
     Reconcile(NodeId, Fence, ReconcileVerdict),
@@ -230,7 +232,10 @@ fn enabled(h: &Harness) -> Vec<Action> {
             generation: step.generation(),
         };
         match step.status() {
-            StepStatus::Ready => actions.push(Action::Lease(node.clone())),
+            StepStatus::Ready => {
+                actions.push(Action::Lease(node.clone()));
+                actions.push(Action::OperatorHold(node.clone()));
+            }
             StepStatus::Leased | StepStatus::Running => {
                 if node.is_reconciliation() {
                     for verdict in [
@@ -248,7 +253,12 @@ fn enabled(h: &Harness) -> Vec<Action> {
                 actions.push(Action::Expire(node.clone(), fence, Expiry::LeaseExpired));
                 actions.push(Action::Expire(node.clone(), fence, Expiry::AttemptTimeout));
             }
-            StepStatus::RetryWait => actions.push(Action::RetryDue(node.clone())),
+            StepStatus::RetryWait => {
+                actions.push(Action::RetryDue(node.clone()));
+                // Without waiting for the delay, and the other way to leave it: held for a person.
+                actions.push(Action::OperatorRetry(node.clone()));
+                actions.push(Action::OperatorHold(node.clone()));
+            }
             StepStatus::Waiting => match step.waiting_on() {
                 Some(WaitingOn::Operator { .. }) => {
                     actions.push(Action::OperatorRetry(node.clone()));
@@ -343,6 +353,7 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
         Action::Pause => h.pause(),
         Action::Resume => h.resume(),
         Action::OperatorRetry(node) => h.operator_retry(node.as_str()),
+        Action::OperatorHold(node) => h.operator_hold(node.as_str()),
         Action::OperatorSkip(node) => h.operator_skip(node.as_str()),
         Action::OperatorResolve(node, ok) => h.operator_resolve(
             node.as_str(),

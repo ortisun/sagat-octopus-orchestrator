@@ -407,9 +407,10 @@ pub(crate) async fn admit_within(
     let inserted = sqlx::query(
         "INSERT INTO inbox_events \
          (tenant_id, namespace_id, source, event_id, event_type, correlation_key, subject, \
-          occurred_at, payload, payload_digest, received_at, expires_at, next_attempt_at) \
+          occurred_at, payload, payload_digest, received_at, expires_at, next_attempt_at, \
+          trace_id, trace_parent_span) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, clock_timestamp(), \
-                 clock_timestamp() + make_interval(secs => $11), clock_timestamp()) \
+                 clock_timestamp() + make_interval(secs => $11), clock_timestamp(), $12, $13) \
          ON CONFLICT (tenant_id, namespace_id, source, event_id) DO NOTHING",
     )
     .bind(event.tenant_id.as_uuid())
@@ -429,6 +430,8 @@ pub(crate) async fn admit_within(
     .bind(&event.payload)
     .bind(&event.digest)
     .bind(event.dedupe_ttl.as_secs_f64())
+    .bind(event.trace.as_ref().map(|t| t.trace_id.as_str()))
+    .bind(event.trace.as_ref().and_then(|t| t.parent_span.as_deref()))
     .execute(&mut *tx)
     .await
     .map_err(store_error)?

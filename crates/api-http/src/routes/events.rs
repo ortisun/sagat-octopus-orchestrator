@@ -12,6 +12,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use sagat_application::error::AppError;
 use sagat_application::events::{EndpointSettings, PublishRequest, WebhookRequest};
+use sagat_application::identity::TraceLink;
 use sagat_domain::events::{
     DEFAULT_DEDUPE_TTL, DEFAULT_MAX_BODY, DEFAULT_RATE, DEFAULT_SKEW, EndpointId, EndpointLimits,
     EndpointStatus, EventId, EventKey,
@@ -20,6 +21,7 @@ use sagat_domain::execution::CorrelationKey;
 use sagat_domain::identity::{NamespaceId, Slug};
 use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::EventType;
+use sagat_telemetry::TraceContext;
 
 use crate::dto_events::{
     AcceptedBody, CreateEndpointBody, EndpointBody, EndpointListBody, EventBody, PublishEventBody,
@@ -269,6 +271,8 @@ fn single<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
 pub async fn receive_webhook<B: Governance>(
     State(state): State<B>,
     Path(endpoint): Path<String>,
+    trace: Option<axum::Extension<TraceContext>>,
+    ingress: Option<axum::Extension<crate::context::IngressSpan>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<AcceptedBody>), ApiError> {
@@ -280,6 +284,11 @@ pub async fn receive_webhook<B: Governance>(
     let Some(service) = state.events() else {
         return Err(ApiError::not_found());
     };
+    // The caller's trace, when it sent a `traceparent`: the run this event starts continues it.
+    let link = trace.filter(|t| t.is_continuation()).map(|t| TraceLink {
+        trace_id: t.trace_id().to_string(),
+        parent_span: ingress.map(|i| i.0.0.to_string()),
+    });
     let request = WebhookRequest {
         signature: single(&headers, SIGNATURE_HEADER),
         timestamp: single(&headers, TIMESTAMP_HEADER),
@@ -288,6 +297,7 @@ pub async fn receive_webhook<B: Governance>(
         subject: single(&headers, SUBJECT_HEADER),
         correlation_key: single(&headers, CORRELATION_HEADER),
         body: &body,
+        trace: link.as_ref(),
     };
     match service.receive(id, &request).await {
         Ok(received) => Ok((StatusCode::ACCEPTED, Json(AcceptedBody::from(&received)))),

@@ -11,10 +11,12 @@ export function ErrorState({ error, onRetry, what }: { error: unknown; onRetry?:
       </Banner>
     );
   }
+  // What the platform says to do wins over the general advice for the kind of error.
+  const advice = error.remediation ?? remedy(error.code);
   return (
     <Banner tone="error" title={what ? `${what} failed.` : 'The request failed.'}>
       {error.message}{' '}
-      {remedy(error.code) ? <>{remedy(error.code)} </> : null}
+      {advice ? <>{advice} </> : null}
       <span>
         Code <code>{error.code}</code>
         {error.reason ? (

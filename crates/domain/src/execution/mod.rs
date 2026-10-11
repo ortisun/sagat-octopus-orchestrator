@@ -13,14 +13,14 @@ mod state;
 
 pub use command::{
     Expiry, Failure, Heartbeat, Progress, Resolution, complete_reconciliation, complete_step,
-    expire_attempt, fail_step, finish_child, fire_timer, heartbeat, lease_step, pause_run, resolve,
-    resolve_review, resume_run, retry_due, retry_review, satisfy_wait, skip_review, start_run,
-    stop_run, time_out_wait,
+    expire_attempt, fail_step, finish_child, fire_timer, heartbeat, lease_step, mark_for_review,
+    pause_run, resolve, resolve_review, resume_run, retry_due, retry_review, satisfy_wait,
+    skip_review, start_run, stop_run, time_out_wait,
 };
 pub use error::ExecutionError;
 pub use event::{
-    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry, ReconcileResult,
-    ReviewOutcome, RunEvent, StopReason,
+    Cause, ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry,
+    ReconcileResult, ReviewOutcome, RunEvent, StopReason,
 };
 pub use plan::{Evaluation, Plan, plan};
 pub use state::{

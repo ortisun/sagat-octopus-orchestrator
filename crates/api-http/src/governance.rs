@@ -9,6 +9,7 @@ use sagat_application::connectors::{ConnectorService, ConnectorStore};
 use sagat_application::egress::{EgressService, EgressStore};
 use sagat_application::events::{EventService, EventStore};
 use sagat_application::identity::IdentityStore;
+use sagat_application::operations::{AlertReader, AuditStore, OperationsService, WorkerAdmin};
 use sagat_application::outbound::{OutboundService, OutboundStore};
 use sagat_application::quotas::{QuotaService, QuotaStore};
 use sagat_application::scripts::{RunnerService, RunnerStore, ScriptService, ScriptStore};
@@ -30,6 +31,9 @@ pub trait Governance: Core {
         + ConnectorStore
         + ScriptStore
         + RunnerStore
+        + AlertReader
+        + WorkerAdmin
+        + AuditStore
         + 'static;
     type Clock: Clock + 'static;
 
@@ -52,6 +56,9 @@ pub trait Governance: Core {
     fn scripts(&self) -> Option<&ScriptService<Self::Store, Self::Clock>>;
     /// `None` when the instance has no signing key: the runner routes are then not served at all.
     fn runner(&self) -> Option<&RunnerService<Self::Store, Self::Clock>>;
+    /// `None` when the instance does not run the monitor's reads: the alert routes are then not
+    /// served at all.
+    fn operations(&self) -> Option<&OperationsService<Self::Store, Self::Clock>>;
 }
 
 /// The identity state plus the governance services, which share one store `G`.
@@ -66,6 +73,7 @@ pub struct GovState<S, C, G> {
     connectors: Option<Arc<ConnectorService<G, C>>>,
     scripts: Option<Arc<ScriptService<G, C>>>,
     runner: Option<Arc<RunnerService<G, C>>>,
+    operations: Option<Arc<OperationsService<G, C>>>,
 }
 
 impl<S, C, G> GovState<S, C, G> {
@@ -87,7 +95,15 @@ impl<S, C, G> GovState<S, C, G> {
             connectors: None,
             scripts: None,
             runner: None,
+            operations: None,
         }
+    }
+
+    /// Serves the alert routes, backed by `operations`.
+    #[must_use]
+    pub fn with_operations(mut self, operations: OperationsService<G, C>) -> Self {
+        self.operations = Some(Arc::new(operations));
+        self
     }
 
     /// Serves the secret routes, backed by `secrets`.
@@ -145,6 +161,7 @@ impl<S, C, G> Clone for GovState<S, C, G> {
             connectors: self.connectors.clone(),
             scripts: self.scripts.clone(),
             runner: self.runner.clone(),
+            operations: self.operations.clone(),
         }
     }
 }
@@ -193,6 +210,9 @@ where
         + ConnectorStore
         + ScriptStore
         + RunnerStore
+        + AlertReader
+        + WorkerAdmin
+        + AuditStore
         + 'static,
 {
     type Store = G;
@@ -232,5 +252,9 @@ where
 
     fn runner(&self) -> Option<&RunnerService<G, C>> {
         self.runner.as_deref()
+    }
+
+    fn operations(&self) -> Option<&OperationsService<G, C>> {
+        self.operations.as_deref()
     }
 }

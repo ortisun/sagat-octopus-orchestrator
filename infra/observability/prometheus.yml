@@ -1,0 +1,21 @@
+# Scrapes the three processes' `/metrics` (FR-008-003). Their admin listeners are on loopback by
+# default; the observability overlay of the compose file binds them to the container's address so
+# this container can reach them, which is acceptable on a private development network and is the
+# reason the platform warns about it. In production use a NetworkPolicy and a service monitor.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yaml
+
+scrape_configs:
+  - job_name: sagat-control-plane
+    static_configs:
+      - targets: ["control-plane:9090"]
+  - job_name: sagat-execution-engine
+    static_configs:
+      - targets: ["execution-engine:9091"]
+  - job_name: sagat-sandbox-runner
+    static_configs:
+      - targets: ["sandbox-runner:9092"]

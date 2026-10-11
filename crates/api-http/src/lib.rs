@@ -24,6 +24,7 @@ mod dto;
 mod dto_events;
 mod dto_exec;
 mod dto_gov;
+mod dto_ops;
 mod dto_scripts;
 pub mod error;
 pub mod exec;
@@ -260,6 +261,9 @@ where
         + sagat_application::connectors::ConnectorStore
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
+        + sagat_application::operations::AlertReader
+        + sagat_application::operations::WorkerAdmin
+        + sagat_application::operations::AuditStore
         + 'static,
     ExecState<S, C, P, X, E>: Exec,
 {
@@ -286,9 +290,13 @@ where
         + sagat_application::connectors::ConnectorStore
         + sagat_application::scripts::ScriptStore
         + sagat_application::scripts::RunnerStore
+        + sagat_application::operations::AlertReader
+        + sagat_application::operations::WorkerAdmin
+        + sagat_application::operations::AuditStore
         + 'static,
 {
     use routes::governance as gov;
+    use routes::operations as ops;
     type B<S, C, G> = GovState<S, C, G>;
 
     let serves_secrets = state.secrets().is_some();
@@ -320,6 +328,23 @@ where
             "/namespaces/{namespace_id}/worker-bindings/{subject}",
             axum::routing::put(gov::bind_worker::<B<S, C, G>>)
                 .delete(gov::unbind_worker::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/alerts",
+            get(ops::list_alerts::<B<S, C, G>>),
+        )
+        .route("/audit", get(ops::list_audit::<B<S, C, G>>))
+        .route(
+            "/namespaces/{namespace_id}/workers",
+            get(ops::list_workers::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/workers/{subject}/drain",
+            axum::routing::post(ops::drain_worker::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/workers/{subject}/undrain",
+            axum::routing::post(ops::undrain_worker::<B<S, C, G>>),
         )
         .route(
             "/namespaces/{namespace_id}/egress-policy",
@@ -644,6 +669,14 @@ where
         .route(
             "/runs/{run_id}/events",
             get(ex::run_journal::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/telemetry",
+            get(ex::run_telemetry::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/attempts",
+            get(ex::run_attempts::<B<S, C, P, X, E>>),
         )
         .route(
             "/runs/{run_id}/graph",

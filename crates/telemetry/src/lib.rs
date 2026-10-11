@@ -9,10 +9,21 @@
 //! OTLP export of *spans* is not implemented yet (feature 008, gap G6); the trace id is already
 //! propagated so the exporter can be added without touching call sites.
 
+mod json_log;
 mod logging;
 mod metrics;
+mod otlp;
+mod redact;
+mod span;
 mod trace;
 
-pub use logging::{LogFormat, init_logging};
+pub use json_log::{LogLayer, Style};
+pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};
 pub use metrics::Metrics;
+pub use otlp::{
+    AttrValue, ExportError, OtlpClient, OtlpConfig, OtlpConfigError, OtlpLayer, SpanData,
+    SpanEvent, SpanKind, SpanLink, SpanSink, SpanStatus, start,
+};
+pub use redact::{MAX_VALUE_CHARS, REDACTED, is_sensitive_name, scrub};
+pub use span::{SpanId, attempt_span_id, event_span_id, keeps, run_span_id, traceparent};
 pub use trace::{TraceContext, TraceId};

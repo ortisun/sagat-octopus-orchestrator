@@ -1,0 +1,97 @@
+# Observability for the local environment (FR-008-001, FR-008-003, FR-008-005): an OpenTelemetry
+# Collector the platform exports spans to, Jaeger to look at them, Prometheus with the platform's
+# alert rules, and Grafana with its dashboard.
+#
+#   docker compose -f infra/docker/compose.yaml -f infra/docker/compose.observability.yaml \
+#       --env-file infra/docker/.env up -d --build
+#
+# Jaeger on http://127.0.0.1:16686, Prometheus on http://127.0.0.1:19091, Grafana on
+# http://127.0.0.1:13000 (admin / the value of GRAFANA_ADMIN_PASSWORD, default `admin`: change it).
+#
+# The three processes keep their `/metrics` on loopback unless told otherwise; here they are told to
+# listen on the container's address so Prometheus can reach them. That is acceptable on this private
+# network and is the reason the platform warns about it: in production use a NetworkPolicy.
+#
+# NOT for production: development credentials, single instances, no TLS.
+
+services:
+  control-plane:
+    environment:
+      SAGAT_ADMIN_ADDR: 0.0.0.0:9090
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: sagat-control-plane
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  execution-engine:
+    environment:
+      SAGAT_ADMIN_ADDR: 0.0.0.0:9091
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: sagat-execution-engine
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  sandbox-runner:
+    environment:
+      SAGAT_ADMIN_ADDR: 0.0.0.0:9092
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: sagat-sandbox-runner
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    depends_on:
+      jaeger:
+        condition: service_started
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0
+    ports:
+      - "127.0.0.1:${SAGAT_JAEGER_PORT:-16686}:16686"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+    ports:
+      - "127.0.0.1:${SAGAT_PROMETHEUS_PORT:-19091}:9090"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${SAGAT_GRAFANA_PORT:-13000}:3000"
+    depends_on:
+      - prometheus
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    restart: unless-stopped

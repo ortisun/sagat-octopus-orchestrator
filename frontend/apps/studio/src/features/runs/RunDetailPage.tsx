@@ -216,7 +216,7 @@ function RunDetail({ runId }: { runId: string }) {
       <TableView model={model} order={snapshot.order} selectedId={selectedId} onSelect={select} operationsFor={operationsFor} onChoose={(operation, node, opener) => choose(operation, node, opener)} />
     );
 
-  const timelinePanel = <TimelineView journal={journal} filter={filter} onFilter={setFilter} onSelect={select} selectedId={selectedId} />;
+  const timelinePanel = <TimelineView runId={runId} journal={journal} filter={filter} onFilter={setFilter} onSelect={select} selectedId={selectedId} />;
 
   return (
     <NowProvider intervalMs={15_000}>

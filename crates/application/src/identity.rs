@@ -24,6 +24,28 @@ pub const MAX_PAGE_SIZE: u32 = 200;
 pub struct RequestContext {
     /// W3C trace id (32 lowercase hex characters) of the request, when known.
     pub trace_id: Option<String>,
+    /// The span of the request itself (16 lowercase hex characters), when it has one: what the work
+    /// the request starts hangs from in the trace.
+    pub span_id: Option<String>,
+}
+
+impl RequestContext {
+    /// Where the work this request starts belongs in a trace, when the request has one.
+    #[must_use]
+    pub fn link(&self) -> Option<TraceLink> {
+        self.trace_id.as_ref().map(|trace_id| TraceLink {
+            trace_id: trace_id.clone(),
+            parent_span: self.span_id.clone(),
+        })
+    }
+}
+
+/// Where a piece of work belongs in a trace: the trace, and the span it hangs from. Kept with an
+/// event admitted to the inbox so the run it starts continues the trace of whoever published it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceLink {
+    pub trace_id: String,
+    pub parent_span: Option<String>,
 }
 
 /// Cursor pagination input. The cursor is opaque to clients.

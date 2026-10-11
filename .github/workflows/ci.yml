@@ -176,6 +176,34 @@ jobs:
       # twice and tears everything down (see scripts/smoke-compose.sh).
       - run: scripts/smoke-compose.sh
 
+  observability:
+    name: observability files (Prometheus rules and configuration, Collector configuration, dashboards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The files the compose overlay mounts, checked by the pinned images that will read them. The
+      # cargo tests check that what they say exists (every metric is one the code emits, every alert
+      # points to a runbook section); this checks that the tools accept them.
+      - name: promtool check config (loads the rules as well)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/infra/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro" \
+            prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+      - name: promtool check rules
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro" \
+            prom/prometheus:v3.15.0 check rules /etc/prometheus/alerts.yaml
+      - name: OpenTelemetry Collector validate
+        run: |
+          docker run --rm \
+            -v "$PWD/infra/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro" \
+            otel/opentelemetry-collector-contrib:0.161.0 validate --config=/etc/otelcol/config.yaml
+      - name: Grafana dashboards are JSON
+        run: |
+          for f in infra/observability/dashboards/*.json; do python3 -m json.tool "$f" > /dev/null; done
+
   dependencies:
     name: dependency advisories (cargo audit)
     runs-on: ubuntu-latest

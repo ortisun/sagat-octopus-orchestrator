@@ -6,7 +6,6 @@ use sagat_control_plane::RunError;
 use sagat_control_plane::config::Config;
 use sagat_execution_engine::cli::{self, Command, USAGE, UsageError};
 use sagat_execution_engine::{EngineConfig, probe, serve, shutdown_signal};
-use sagat_telemetry::init_logging;
 
 fn env_lookup(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -48,12 +47,24 @@ async fn run(command: Command) -> Result<(), RunError> {
         return probe(&addr, "/livez").await;
     }
     let config = Config::from_lookup(&env_lookup)?;
-    init_logging(config.log_format);
+    let telemetry = sagat_telemetry::init(sagat_control_plane::config::telemetry(
+        &env_lookup,
+        "sagat-execution-engine",
+        config.log_format,
+    )?);
+    let result = start(&config).await;
+    telemetry
+        .shutdown(sagat_control_plane::config::TELEMETRY_FLUSH)
+        .await;
+    result
+}
+
+async fn start(config: &Config) -> Result<(), RunError> {
     let engine = EngineConfig::from_lookup(&env_lookup, config.environment)?;
     let grpc = tokio::net::TcpListener::bind(engine.grpc_addr).await?;
     let admin = match engine.admin_addr {
         Some(addr) => Some(tokio::net::TcpListener::bind(addr).await?),
         None => None,
     };
-    serve(&config, &engine, grpc, admin, shutdown_signal()).await
+    serve(config, &engine, grpc, admin, shutdown_signal()).await
 }

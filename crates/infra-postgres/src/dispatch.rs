@@ -11,6 +11,7 @@ use sagat_application::dispatch::{
     ClaimedEvent, EventDispatchStore, StoredTrigger, TriggerRegistration, WaitingStep,
 };
 use sagat_application::error::StoreError;
+use sagat_application::identity::TraceLink;
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::events::{EventEnvelope, EventId, EventKey};
 use sagat_domain::execution::{CorrelationKey, RunId};
@@ -29,7 +30,8 @@ macro_rules! select_events {
     ($tail:literal) => {
         concat!(
             "SELECT e.tenant_id, e.namespace_id, e.source, e.event_id, e.event_type, ",
-            "e.correlation_key, e.subject, e.occurred_at, e.payload, e.received_at, e.attempts ",
+            "e.correlation_key, e.subject, e.occurred_at, e.payload, e.received_at, e.attempts, ",
+            "e.trace_id, e.trace_parent_span ",
             "FROM inbox_events e ",
             $tail
         )
@@ -62,6 +64,10 @@ fn claimed_from_row(row: &PgRow) -> Result<ClaimedEvent, StoreError> {
         payload: col(row, "payload")?,
         received_at: col(row, "received_at")?,
         attempts: u32::try_from(attempts).map_err(|_| corrupt("event attempts"))?,
+        trace: col::<Option<String>>(row, "trace_id")?.map(|trace_id| TraceLink {
+            trace_id,
+            parent_span: col(row, "trace_parent_span").ok().flatten(),
+        }),
     })
 }
 
@@ -153,7 +159,7 @@ impl EventDispatchStore for PgRunStore {
                AND e.source = due.source AND e.event_id = due.event_id \
              RETURNING e.tenant_id, e.namespace_id, e.source, e.event_id, e.event_type, \
                        e.correlation_key, e.subject, e.occurred_at, e.payload, e.received_at, \
-                       e.attempts",
+                       e.attempts, e.trace_id, e.trace_parent_span",
         )
         .bind(i64::from(limit))
         .bind(seconds(lease))

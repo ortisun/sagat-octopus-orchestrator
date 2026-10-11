@@ -286,6 +286,11 @@ pub async fn start_with(options: Options) -> TestApi {
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
     )
+    .with_operations(sagat_application::operations::OperationsService::new(
+        executions.clone(),
+        SystemClock,
+        "docs/runbooks/alerts.md",
+    ))
     .with_secrets(SecretService::new(
         executions.clone(),
         SystemClock,

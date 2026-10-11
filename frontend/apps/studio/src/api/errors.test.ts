@@ -17,6 +17,15 @@ describe('errorFromResponse', () => {
     expect(error.details).toEqual({ reason: 'STATE_CONFLICT', current: 3 });
   });
 
+  it('keeps what the platform says to do about it, clipped and as text', () => {
+    const error = errorFromResponse(409, { code: 'CONFLICT', message: 'x', remediation: 'Read the run again and decide on what it shows now.' }, headers());
+    expect(error.remediation).toBe('Read the run again and decide on what it shows now.');
+    expect(errorFromResponse(409, { code: 'CONFLICT', message: 'x', remediation: 'y'.repeat(5000) }, headers()).remediation).toHaveLength(300);
+    for (const odd of [undefined, '', 7, ['a'], { text: 'no' }]) {
+      expect(errorFromResponse(409, { code: 'CONFLICT', message: 'x', remediation: odd }, headers()).remediation).toBeUndefined();
+    }
+  });
+
   it('does not believe a trace id that is not one, a code the contract does not name, or an endless message', () => {
     const error = errorFromResponse(
       500,

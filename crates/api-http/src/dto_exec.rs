@@ -247,6 +247,9 @@ pub struct OperationResultBody {
     pub accepted: bool,
     pub run_status: String,
     pub run_version: u64,
+    /// For `RERUN_AS_NEW`: the run that was started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_run_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +281,9 @@ pub struct RunBody {
     pub finished_at: Option<OffsetDateTime>,
     /// The run and step that started this one, when it is a child run.
     pub parent: Option<ParentBody>,
+    /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerun_of: Option<String>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
 }
@@ -311,6 +317,7 @@ impl From<&RunRecord> for RunBody {
                 node: p.node.to_string(),
                 cancel_policy: p.cancel_policy.as_str(),
             }),
+            rerun_of: r.info.rerun_of.map(|r| r.to_string()),
             depth: r.info.depth,
         }
     }
@@ -328,6 +335,18 @@ pub struct JournalEventBody {
     pub actor: String,
     pub trace_id: Option<String>,
     pub payload_ref: Option<String>,
+    /// Why it happened, when it has a cause.
+    pub cause: Option<CauseBody>,
+    /// The span of the attempt the event belongs to.
+    pub span_id: Option<String>,
+}
+
+/// Why a transition happened: a closed kind and the code that goes with it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CauseBody {
+    pub kind: &'static str,
+    pub code: String,
 }
 
 impl From<&JournalEntry> for JournalEventBody {
@@ -341,8 +360,77 @@ impl From<&JournalEntry> for JournalEventBody {
             actor: e.actor.clone(),
             trace_id: e.trace_id.clone(),
             payload_ref: e.payload_ref.clone(),
+            cause: e.cause.as_ref().map(|c| CauseBody {
+                kind: c.kind,
+                code: c.code.clone(),
+            }),
+            span_id: e.span_id.clone(),
         }
     }
+}
+
+/// How far a run's spans and measurements have got in relation to its journal.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTelemetryBody {
+    pub run_id: String,
+    pub trace_id: Option<String>,
+    /// `CURRENT`, `CATCHING_UP`, `BEHIND`, `NO_TRACE` or `UNTRACKED`.
+    pub state: &'static str,
+    /// The journal's last sequence and the last whose spans were taken, when the run is tracked.
+    pub head_seq: Option<u64>,
+    pub applied_seq: Option<u64>,
+    /// For how long the run has had changes that are not projected, in milliseconds.
+    pub lag_ms: u64,
+    /// How late spans may be before the state is `BEHIND`.
+    pub budget_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptBody {
+    pub node: String,
+    pub attempt: u32,
+    pub generation: u64,
+    pub span_id: String,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub ready_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub leased_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub ended_at: Option<OffsetDateTime>,
+    /// `open`, `succeeded`, `failed`, `retry`, `review`, `unknown_outcome` or `cancelled`.
+    pub outcome: &'static str,
+    pub code: Option<String>,
+    /// From ready to leased, in milliseconds, when the journal says when it became ready.
+    pub schedule_latency_ms: Option<u64>,
+}
+
+impl From<&sagat_application::telemetry::Attempt> for AttemptBody {
+    fn from(a: &sagat_application::telemetry::Attempt) -> Self {
+        Self {
+            node: a.node.clone(),
+            attempt: a.attempt,
+            generation: a.generation,
+            span_id: a.span.to_string(),
+            ready_at: a.ready_at,
+            leased_at: a.leased_at,
+            ended_at: a.ended_at,
+            outcome: a.outcome.as_str(),
+            code: a.code.clone(),
+            schedule_latency_ms: a.ready_at.map(|ready| {
+                u64::try_from((a.leased_at - ready).whole_milliseconds().max(0)).unwrap_or(0)
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptListBody {
+    pub run_id: String,
+    pub trace_id: Option<String>,
+    pub items: Vec<AttemptBody>,
 }
 
 /// The definition's graph overlaid with the run's step states. Nodes that did not start yet are

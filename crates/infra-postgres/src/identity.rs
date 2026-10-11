@@ -183,7 +183,8 @@ pub(crate) async fn insert_audit(
          WHERE NOT EXISTS ( \
              SELECT 1 FROM audit_records \
              WHERE tenant_id = $2::uuid AND actor = $3::text AND action = $4::text \
-               AND resource_id = $6::text AND reason IS NOT DISTINCT FROM $7::text) \
+               AND resource_id = $6::text AND reason IS NOT DISTINCT FROM $7::text \
+               AND ($11::float8 IS NULL OR created_at > $9::timestamptz - make_interval(secs => $11::float8))) \
            AND (SELECT count(*) FROM audit_records \
                 WHERE tenant_id = $2::uuid AND actor = $3::text AND action = $4::text \
                   AND resource_id = $6::text) < $10::bigint"
@@ -203,7 +204,9 @@ pub(crate) async fn insert_audit(
         .bind(audit.trace_id())
         .bind(audit.created_at());
     if collapses {
-        query = query.bind(audit.action().distinct_cap().map_or(i64::MAX, i64::from));
+        query = query
+            .bind(audit.action().distinct_cap().map_or(i64::MAX, i64::from))
+            .bind(audit.action().repeat_window().map(|w| w.as_secs_f64()));
     }
     query.execute(conn).await.map_err(store_error)?;
     Ok(())

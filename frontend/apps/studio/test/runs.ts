@@ -149,6 +149,7 @@ export function runPlatform(init: RunPlatformInit = {}) {
       pipes.push(pipe);
       return pipe.response;
     },
+    [`GET /runs/${RUN_ID}/telemetry`]: () => ({ runId: RUN_ID, traceId: TRACE, state: 'CURRENT', headSeq: 11, appliedSeq: 11, lagMs: 0, budgetMs: 30_000 }),
     [`GET /runs/${RUN_ID}/events`]: (_init, url) => {
       const cursor = new URL(url, 'http://studio.test').searchParams.get('cursor');
       const from = cursor === null ? 0 : Number(cursor);

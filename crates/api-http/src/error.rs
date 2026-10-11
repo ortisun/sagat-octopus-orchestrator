@@ -34,6 +34,58 @@ pub enum ErrorCode {
     Internal,
 }
 
+impl ErrorCode {
+    /// What a person (or a program) can do about it, in a sentence that names no data. The same for
+    /// every error of the code, refined by the `reason` the error carries when that changes what to
+    /// do: a closed table, so that what a failure tells a caller can be reviewed in one place and
+    /// can never carry a payload, a secret or another tenant's name (SC-008-004).
+    #[must_use]
+    pub fn remediation(self, reason: Option<&str>) -> &'static str {
+        match (self, reason.unwrap_or_default()) {
+            (Self::Conflict, "IDEMPOTENCY_KEY_REUSED") => {
+                "Use a new Idempotency-Key for a different request, or send the same request again with its key."
+            }
+            (Self::Conflict, "REVISION_CONFLICT") => {
+                "Read the resource again, apply your change to what is there now and send it with the new revision."
+            }
+            (Self::Conflict, "STATE_CONFLICT") => {
+                "Read the resource again: someone else may have already done this, or it is in a state that does not allow it."
+            }
+            (Self::NotFound, "ROUTE_NOT_FOUND") | (Self::BadRequest, "METHOD_NOT_ALLOWED") => {
+                "This server does not have that call: check the path and method, and the version of the API it speaks."
+            }
+            (Self::BadRequest, _) => {
+                "Correct the request (headers, body, query) and send it again."
+            }
+            (Self::Unauthenticated, _) => {
+                "Send a valid bearer token issued for this platform, and check that it has not expired."
+            }
+            (Self::Forbidden, _) => {
+                "Ask an administrator of the tenant for the permission the call needs."
+            }
+            (Self::NotFound, _) => {
+                "Check the identifier and the namespace; a resource of another tenant is not visible."
+            }
+            (Self::Conflict, _) => {
+                "Read the resource again and decide again: it is not in the state this call assumed."
+            }
+            (Self::ValidationFailed, _) => {
+                "Correct what `details` names (a problem, a path) and send the request again."
+            }
+            (Self::RateLimited, _) => "Wait for the time in Retry-After and send fewer requests.",
+            (Self::QuotaExceeded, _) => {
+                "Release something the limit counts, or ask an administrator to raise the limit."
+            }
+            (Self::Unavailable, _) => {
+                "Try again with a growing pause; if it lasts, check the platform's readiness and report the trace id."
+            }
+            (Self::Internal, _) => {
+                "Try again once; if it happens again, report the trace id to the operator of the platform."
+            }
+        }
+    }
+}
+
 /// An error before the trace id is attached. Travels in the response extensions.
 #[derive(Debug, Clone)]
 pub struct ErrorParts {

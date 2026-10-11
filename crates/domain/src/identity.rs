@@ -318,6 +318,11 @@ pub enum Permission {
     ScriptWrite,
     /// Publish a version of a script: the code that is built and that workflows can pin.
     ScriptPublish,
+    /// See the operational alerts of a namespace, the workers serving it and how far its telemetry
+    /// is behind (`FR-008-005`). Everything it shows is a count, an age or a name.
+    OpsRead,
+    /// Stop a worker taking new work (drain it) and let it take work again.
+    WorkerManage,
     /// Take the builds and test runs of the tenant: read the source of a script, make its
     /// artifact. Held by the runner of the sandbox and by nobody else.
     ScriptBuild,
@@ -328,7 +333,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -359,6 +364,8 @@ impl Permission {
         Self::ScriptPublish,
         Self::ScriptBuild,
         Self::ScriptExecute,
+        Self::OpsRead,
+        Self::WorkerManage,
     ];
 
     #[must_use]
@@ -394,6 +401,8 @@ impl Permission {
             Self::ScriptPublish => "script:publish",
             Self::ScriptBuild => "script:build",
             Self::ScriptExecute => "script:execute",
+            Self::OpsRead => "ops:read",
+            Self::WorkerManage => "worker:manage",
         }
     }
 }
@@ -437,9 +446,9 @@ impl Role {
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
             DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
-            EventRead, NamespaceRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart,
+            EventRead, NamespaceRead, OpsRead, QuotaRead, RunOperate, RunRead, RunSignal, RunStart,
             ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead,
-            SecretUse, WorkerExecute, WorkspaceRead,
+            SecretUse, WorkerExecute, WorkerManage, WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
@@ -460,6 +469,7 @@ impl Role {
                 ScriptRead,
                 ScriptWrite,
                 ScriptPublish,
+                OpsRead,
             ],
             Self::Operator => &[
                 WorkspaceRead,
@@ -473,6 +483,8 @@ impl Role {
                 EventPublish,
                 EventRead,
                 ScriptRead,
+                OpsRead,
+                WorkerManage,
             ],
             Self::Viewer => &[
                 WorkspaceRead,
@@ -482,6 +494,7 @@ impl Role {
                 QuotaRead,
                 EventRead,
                 ScriptRead,
+                OpsRead,
             ],
             Self::Worker => &[WorkerExecute],
             Self::Runner => &[WorkerExecute, ScriptBuild, ScriptExecute],

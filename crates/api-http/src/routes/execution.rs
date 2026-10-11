@@ -407,6 +407,62 @@ pub async fn run_journal<B: Exec>(
     Ok(page(&result))
 }
 
+/// `GET /runs/{runId}/telemetry`
+pub async fn run_telemetry<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::dto_exec::RunTelemetryBody>, ApiError> {
+    let run = parse_id::<RunId>(&id)?;
+    let view = state
+        .runs()
+        .telemetry(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    let record = state
+        .runs()
+        .get(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    let millis = |seconds: f64| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ms = (seconds * 1000.0).round() as u64;
+        ms
+    };
+    Ok(Json(crate::dto_exec::RunTelemetryBody {
+        run_id: run.to_string(),
+        trace_id: record.info.trace_id.clone(),
+        state: view.state.as_str(),
+        head_seq: view.telemetry.head_seq,
+        applied_seq: view.telemetry.applied_seq,
+        lag_ms: millis(view.telemetry.behind_seconds),
+        budget_ms: u64::try_from(view.budget.as_millis()).unwrap_or(u64::MAX),
+    }))
+}
+
+/// `GET /runs/{runId}/attempts`
+pub async fn run_attempts<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::dto_exec::AttemptListBody>, ApiError> {
+    let run = parse_id::<RunId>(&id)?;
+    let attempts = state
+        .runs()
+        .attempts(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    let record = state
+        .runs()
+        .get(&caller.session.principal, run, &caller.ctx)
+        .await?;
+    Ok(Json(crate::dto_exec::AttemptListBody {
+        run_id: run.to_string(),
+        trace_id: record.info.trace_id.clone(),
+        items: attempts
+            .iter()
+            .map(crate::dto_exec::AttemptBody::from)
+            .collect(),
+    }))
+}
+
 pub async fn run_graph<B: Exec>(
     caller: Caller,
     State(state): State<B>,
@@ -697,6 +753,7 @@ pub async fn operate_run<B: Exec>(
     }
     let review = match body.action.as_str() {
         "RETRY_STEP" => Some(ReviewAction::Retry),
+        "MARK_MANUAL_REVIEW" => Some(ReviewAction::Hold),
         "RETRY_COMPENSATION" => Some(ReviewAction::Retry),
         "SKIP_COMPENSATION" => Some(ReviewAction::Skip),
         "RESOLVE_STEP" => Some(ReviewAction::Resolve(resolution(&body)?)),
@@ -709,12 +766,7 @@ pub async fn operate_run<B: Exec>(
         "CANCEL" => RunOperation::Cancel,
         "PAUSE" => RunOperation::Pause,
         "RESUME" => RunOperation::Resume,
-        // Declared in the contract, built in later features: said plainly instead of ignored.
-        "RERUN_AS_NEW" | "MARK_MANUAL_REVIEW" => {
-            return Err(ApiError::validation(
-                "this operation is declared in the contract but not supported yet",
-            ));
-        }
+        "RERUN_AS_NEW" => return rerun_run(&caller, &state, &headers, &id, &body).await,
         _ => return Err(ApiError::validation("unknown operation")),
     };
     if body.step_id.is_some() {
@@ -742,6 +794,56 @@ pub async fn operate_run<B: Exec>(
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,
+            new_run_id: None,
+        }),
+    ))
+}
+
+/// `RERUN_AS_NEW`: a run of the same version with the same input, from a run that ended.
+async fn rerun_run<B: Exec>(
+    caller: &Caller,
+    state: &B,
+    headers: &HeaderMap,
+    id: &str,
+    body: &OperationBody,
+) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
+    if body.step_id.is_some() || body.outcome.is_some() || body.error_code.is_some() {
+        return Err(ApiError::validation(
+            "RERUN_AS_NEW applies to the whole run and takes only a reason",
+        ));
+    }
+    let run_id = parse_id::<RunId>(id)?;
+    let original = state
+        .runs()
+        .get(&caller.session.principal, run_id, &caller.ctx)
+        .await?;
+    if body
+        .expected_run_version
+        .is_some_and(|expected| expected != original.version)
+    {
+        return Err(AppError::RevisionConflict {
+            current: original.version,
+        }
+        .into());
+    }
+    let started = state
+        .runs()
+        .rerun(
+            &caller.session.principal,
+            run_id,
+            &body.reason,
+            idempotency_key(headers)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(OperationResultBody {
+            operation_id: operation_id(&run_id.to_string(), idempotency_key(headers)?),
+            accepted: true,
+            run_status: original.status.as_str().to_owned(),
+            run_version: original.version,
+            new_run_id: Some(started.info.run_id.to_string()),
         }),
     ))
 }
@@ -816,6 +918,7 @@ async fn review_step<B: Exec>(
             accepted: true,
             run_status: run.status.as_str().to_owned(),
             run_version: run.version,
+            new_run_id: None,
         }),
     ))
 }

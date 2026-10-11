@@ -102,6 +102,10 @@ impl<St: Core> FromRequestParts<St> for Caller {
             .unwrap_or_else(|| TraceContext::from_traceparent(None));
         let ctx = RequestContext {
             trace_id: Some(trace.trace_id().to_string()),
+            span_id: parts
+                .extensions
+                .get::<crate::context::IngressSpan>()
+                .map(|ingress| ingress.0.to_string()),
         };
         Ok(Self {
             session,
