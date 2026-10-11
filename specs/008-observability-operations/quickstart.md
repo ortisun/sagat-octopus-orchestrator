@@ -47,7 +47,7 @@ Everything below was run against this repository. The pieces that are **not** bu
 | Edge case | Where it is handled |
 |---|---|
 | Trace missing but journal present | The journal is the truth and the timeline reads it (transactional read models: `projectionLagMs` stays 0); the telemetry state says `BEHIND`, `NO_TRACE` or `UNTRACKED` (`us01`); a collector that is down delays the spans and loses none (`fault projection.rs`); a collector that wants other credentials is a wait, not a verdict (`integration projection.rs`) |
-| Projection behind the journal | A lag budget (`SAGAT_TELEMETRY_LAG_BUDGET_SECS`, 30), `telemetry_projection_lag_seconds`, an alert, the run's state; the note a writer pays is 4% of a completion and a busy projector slows the median completion 1.09x (`tests/performance/reports/observability-operations.md`) |
+| Projection behind the journal | A lag budget (`SAGAT_TELEMETRY_LAG_BUDGET_SECS`, 30), `telemetry_projection_lag_seconds`, an alert, the run's state; the note a writer pays is 4% of a completion and a busy projector slows the median completion 1.04x (`tests/performance/reports/observability-operations.md`) |
 | A note that claims more journal than there is | Settled with a warning instead of asked for for ever (`integration projection.rs`) |
 | Two projectors at once, a slow collector | The lease is asked for again before each batch and only the call that moved the note counts the measurements (`integration projection.rs`) |
 | Operator retry racing the scheduler's | The first commit wins and the second gets `409` (`operator_actions.rs`, `fault operators.rs`) |

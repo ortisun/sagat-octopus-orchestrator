@@ -83,7 +83,7 @@ tests/{e2e,fault,integration,contract,performance}/observability-operations/
 
 ## Delivered, and what is not
 
-Phases 1 to 6 were run for US01 to US04; the evidence per story, the review of the implementation and the open points are in [`quickstart.md`](./quickstart.md); decisions D160-D178 and gaps G169-G186 are in [`research.md`](./research.md). The performance goal ("projection must not block the write path; documented and flagged lag budget") is answered by the benchmark in `tests/performance/reports/observability-operations.md`: the note costs a writer about 4% of a completion, a busy projector slows the median completion by 1.09x, and the lag under sustained writing stayed at the resolution of the sample (100 ms) against a 30 s budget. The figures are for one machine and a PostgreSQL 18 with commits that do not ask the drive to flush; they are hypotheses, not promises.
+Phases 1 to 6 were run for US01 to US04; the evidence per story, the review of the implementation and the open points are in [`quickstart.md`](./quickstart.md); decisions D160-D178 and gaps G169-G186 are in [`research.md`](./research.md). The performance goal ("projection must not block the write path; documented and flagged lag budget") is answered by the benchmark in `tests/performance/reports/observability-operations.md`: the note costs a writer about 4% of a completion, a busy projector slows the median completion by 1.04x, and the lag under sustained writing stayed at the resolution of the sample (100 ms) against a 30 s budget. The figures are for one machine and a PostgreSQL 18 with commits that do not ask the drive to flush; they are hypotheses, not promises.
 
 ## Delivery Gate
 
