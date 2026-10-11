@@ -247,4 +247,4 @@ not evidence of owner approval or a visual match; compare Runs with
 
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
 after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
-it supersedes the pending owner-acceptance wording above. Automated CI evidence for this branch is recorded separately.
+automated CI evidence for this branch is recorded separately.

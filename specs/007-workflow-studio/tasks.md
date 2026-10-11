@@ -69,7 +69,7 @@ T007-034 (the benchmark must measure the restyled Studio) and T007-035/036. Cont
 - [ ] T007-044 Verify: axe-core in the journeys in light, dark and forced colours on every page, the US01..US04 and `SC-007-001` journeys unchanged in what they assert, the Runs screen compared with `design/runs-prototype.jpg` at 1470 × 812 by a person (a review, reported as one), and `npm run typecheck`, `lint`, `test` and `build` of the frontend.
 - [x] T007-045 Update `docs/traceability.md` and the Studio's README for FR-007-009/010 and SC-007-005 with the evidence of T007-039..044 and T007-046.
 
-Implementation evidence (2026-10-11; owner acceptance and local sandbox journey remain open):
+Implementation evidence (2026-10-11; owner approval recorded; sandbox CI validation remains open):
 
 - **T007-039:** shared colour/type/spacing/radius/layout tokens, system light/dark preference and forced-colour mappings are in
   `styles/base.css`. `tokens.test.ts` checks contrast, theme parity, fonts/licence, colour literal ownership and resolution of
@@ -85,7 +85,7 @@ Implementation evidence (2026-10-11; owner acceptance and local sandbox journey 
 - **T007-042:** compact cards, curves, dotted canvas and solid/dashed/dotted edge states are implemented. Review fixed undefined
   graph tokens, omitted-edge contrast and the selected-step mobile cascade; `canvas.test.ts`, `styles.test.ts`, shared token
   tests and browser checks passed, as did both restyled benchmarks.
-- **T007-043:** editor, Scripts and sign-in styles are derived from shared tokens. **Owner approval is pending**; no reference
+- **T007-043:** editor, Scripts and sign-in styles are derived from shared tokens. **Owner approved on 2026-10-11**; no reference
   design exists for those screens or the light theme.
 - **T007-044:** **1 033 Vitest tests in 64 files**, lint/typecheck/build/API/advisory checks and Rust fmt/clippy/architecture passed
   locally. Final browser result: **18 passed, zero failed, two opt-in performance skips**; the skipped benchmarks passed separately
@@ -99,8 +99,8 @@ Implementation evidence (2026-10-11; owner acceptance and local sandbox journey 
 - [x] T007-032 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/workflow-studio/`. — REST only: this feature adds no gRPC and no event contract; `tests/contract/workflow-studio/rest/conformance.rs` (the new operations on their normal and error paths against the OpenAPI) and `npm run check:api` (the generated types equal the contract).
 - [x] T007-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — Restyle: Rust fmt, workspace/all-targets clippy and architecture passed locally, as did frontend lint/typecheck/generated API/advisory checks. Final post-Monaco-fix frontend checks passed; prior baseline `cargo audit` evidence is recorded separately in `quickstart.md`.
 - [x] T007-034 Run the benchmark defined in `specs/007-workflow-studio/plan.md` and publish the report in `tests/performance/reports/workflow-studio.md`. — Restyled Studio: both `frontend/e2e/tests/perf.spec.ts` benchmarks passed, three cold rounds each; all six unchanged floors held. The 1 000-node editor opened in median 687 ms; the 9 991-node run in 1 470 ms, drawing 245 cards and at most 29 table rows, peak recorded heap 307 MB. Report regenerated. One machine and Chromium; partial no-sandbox mode does not affect these scenarios.
-- [x] T007-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/007-workflow-studio/quickstart.md`. — The original two review rounds remain in the baseline record. A fresh read-only restyle review checked correctness, security, accessibility and performance; its confirmed graph, navigation and duration findings were fixed. README/runbook and `quickstart.md` record the review fixes and passing technical checks; human design acceptance remains T007-043/044.
-- [x] T007-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — The evidence table records the built visual changes and final passing local checks, with the excluded US02 journey and pending owner acceptance explicitly distinguished.
+- [x] T007-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/007-workflow-studio/quickstart.md`. — The original two review rounds remain in the baseline record. A fresh read-only restyle review checked correctness, security, accessibility and performance; its confirmed graph, navigation and duration findings were fixed. README/runbook and `quickstart.md` record the review fixes and passing technical checks; the owner approved the visual proposal on 2026-10-11.
+- [x] T007-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — The evidence table records the built visual changes and final passing local checks, with the excluded US02 journey and recorded owner acceptance explicitly distinguished.
 
 ## Dependencies & independent delivery
 

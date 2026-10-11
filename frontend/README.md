@@ -58,8 +58,7 @@ virtualized Runs list beside the selected run; choosing another run retains the 
 list and detail routes. Facts come from the API: missing terminal duration is unknown, and queue, worker, trigger-kind and
 global counts are not invented. Graph, Table and Timeline remain available; Timeline means the journal, not per-step bars.
 
-The workflow editor, Scripts, sign-in and light theme are derived proposals. Their owner review and the human comparison of
-Runs with the prototype are still open. Current test results and remaining gaps are in
+The workflow editor, Scripts, sign-in and light theme are derived proposals. The owner approved the visual proposal on 2026-10-11. Current test results and remaining gaps are in
 [the validation record](../specs/007-workflow-studio/quickstart.md#visual-direction-validation--2026-10-11). The passing browser suite's
 [ten review captures](../specs/007-workflow-studio/design/README.md#owner-review-captures--2026-10-11) are available for the owner.
 

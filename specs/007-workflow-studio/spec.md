@@ -137,8 +137,8 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 
 Requirements `FR-007-###` and criteria `SC-007-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
 
-Implementation status (2026-10-11): FR-007-009/010 visual changes and technical checks are implemented: 1 033 Vitest tests, 18 executed browser journeys (light/dark/forced colours, 320px reflow and system-font fallback), and both three-round benchmarks passed. Review captures are linked in `design/README.md`; detailed evidence is in `quickstart.md`. T007-043/044 and SC-007-005 retain the owner's visual acceptance; US02 was excluded from this local browser run because Docker's sandbox runtime was unavailable. No new full-suite or GitHub CI pass is claimed.
+Implementation status (2026-10-11): FR-007-009/010 visual changes and technical checks are implemented: 1 033 Vitest tests, 18 executed browser journeys (light/dark/forced colours, 320px reflow and system-font fallback), and both three-round benchmarks passed. Review captures are linked in `design/README.md`; detailed evidence is in `quickstart.md`. The owner approved the proposal on 2026-10-11; T007-044 still requires the sandbox CI journey; US02 was excluded from this local browser run because Docker's sandbox runtime was unavailable. No new full-suite or GitHub CI pass is claimed.
 
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
 after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
-it supersedes the pending owner-acceptance wording above. Automated CI evidence for this branch is recorded separately.
+automated CI evidence for this branch is recorded separately.

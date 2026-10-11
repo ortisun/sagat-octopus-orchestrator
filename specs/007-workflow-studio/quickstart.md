@@ -105,7 +105,7 @@ semantics are unchanged. The implementation and accessibility deviations are in 
 | Expanded Chromium journeys in partial mode | **18 passed, 0 failed, 2 skipped** after the dark Monaco contrast correction. All executed journeys passed, including light/dark/forced-colour accessibility, 320px reflow and system-font fallback. The two skips are opt-in benchmarks, passed separately. **US02 was excluded**, not passed, because Docker's sandbox runtime was unavailable. |
 | Restyled benchmark | **Both browser benchmarks passed**, three cold rounds each; H1–H6 held with unchanged floors. Median first-card time: 687 ms for 1 000 editor nodes, 1 470 ms for 9 991 run nodes; 245 run cards and at most 29 table rows mounted; peak recorded heap 307 MB. Report regenerated at `tests/performance/reports/workflow-studio.md`. |
 | Font fallback | Passed: blocked font files, asserted Geist did not load and checked 320px reflow. Capture: [`runs-system-fonts-1470x812.png`](./design/review/runs-system-fonts-1470x812.png). |
-| Owner acceptance | **Pending**: Runs comparison with `design/runs-prototype.jpg` at 1470 × 812, light theme and derived editor/Script/sign-in screens. No tool or screenshot substitutes for that review. |
+| Owner acceptance | **Approved by Marcelo on 2026-10-11**: "Aprovo a proposta visual", covering Runs, light theme, editor, Scripts and sign-in after opening the local Studio and receiving the reference/captures. |
 
 The browser suite checks axe in light, dark and forced colours, including the Script editor/plain-text alternative, and selected
 pages at 320px. Status locators in US03, US04 and SC-007-001 are scoped to the named **Run detail** region because the new master
@@ -119,7 +119,7 @@ token resolution, edge styling, master navigation and unknown duration. The sele
 
 Ten named captures from the passing suite are preserved in [`design/review/`](./design/README.md#owner-review-captures--2026-10-11).
 The initial expanded run had 16 passes and one dark Monaco contrast failure; the correction is covered by the final passing
-suite and 1 033 unit tests. Before closing T007-044, restore the real Docker sandbox for US02 and obtain the owner's visual review. No GitHub CI execution, real identity-provider
+suite and 1 033 unit tests. Before closing T007-044, verify US02 with the real Docker sandbox in CI; owner visual approval is recorded below. No GitHub CI execution, real identity-provider
 sign-in, human screen-reader testing or additional browser/machine result is claimed for this restyle.
 
 
@@ -134,4 +134,4 @@ reviews are technical evidence only and do not replace owner visual acceptance o
 
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
 after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
-it supersedes the pending owner-acceptance wording above. Automated CI evidence for this branch is recorded separately.
+automated CI evidence for this branch is recorded separately.
