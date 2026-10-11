@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="hero.png" alt="Sagat Octopus: a purple, eight-armed octopus in Muay Thai shorts, wearing a red headband and an eye patch, standing on a rock and holding a workflow canvas, code, services and events, a plan-execute-monitor-compensate-succeed checklist, and task, workflow, event and compensation steps. Orchestrate a better tomorrow: workflows, sagas, systems, people, further." width="420">
+  <img src="docs/assets/sagat-octopus-hero.png" alt="Sagat Octopus: a purple, eight-armed octopus in Muay Thai shorts, wearing a red headband and an eye patch, standing on a rock and holding a workflow canvas, code, services and events, a plan-execute-monitor-compensate-succeed checklist, and task, workflow, event and compensation steps. Orchestrate a better tomorrow: workflows, sagas, systems, people, further." width="420">
 </p>
 
 # Sagat Octopus Orchestrator — Durable Workflow Platform (Spec Kit)
