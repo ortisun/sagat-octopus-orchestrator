@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Sagat Octopus Orchestrator Control & Execution API
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Operations tagged `Identity` are implemented by the control plane (feature 001); operations marked
     `x-implemented: '002'` (workflow definitions, runs, operator actions and signals) by the durable
