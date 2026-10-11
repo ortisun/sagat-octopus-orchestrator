@@ -195,9 +195,10 @@ how to operate it is `docs/runbooks/alerts.md` and `docs/runbooks/observability.
 - **G188 — The monitor's cost grows with the failure it detects, beyond the outbox (G186).** `sample()` counts the
   ready steps, the outbox and the inbox without a bound, and the detection of unserved steps reads every ready
   step older than the threshold. Both are measured at 5 000 and not beyond.
-- **G189 — A cross-tenant probe takes longer than a probe of an id that exists nowhere.** The denial is written
-  before the `404` is sent when the id exists in another tenant. The difference is a database write; it was there
-  before this feature and the new endpoints inherit it. The remedy is to write the denial off the response path.
+- **G189 — Withdrawn.** A review said a probe of an id that exists in another tenant takes longer than one of an id
+  that exists nowhere, because the denial is written before the `404`. It is not: `record_denial` takes it off the
+  response path on purpose (`crates/infra-postgres/src/identity.rs`), bounded and counted
+  (`audit_denials_total{outcome="dropped"}`); the e2e test of the oracle waits for the record for that reason.
 - **G190 — The migrations of this feature create indexes and constraints on `runs` and `inbox_events` without
   `CONCURRENTLY`**, which a transaction cannot do. On a table with many millions of rows the lock window is the time to build
   a partial index and to validate the new check constraints: plan it.

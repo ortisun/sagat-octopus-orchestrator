@@ -6,7 +6,7 @@
 
 Diagnose and operate runs, steps, external integration, resources and Sagas from reliable data.
 
-**Technical approach:** Standard OTel Collector, journal projection workers, paginated search APIs and actions that generate auditable commands.
+**Technical approach:** Standard OTel Collector, journal projection workers, paginated search APIs and actions that generate auditable commands. Delivered as ADR-0017 says: the write path leaves one note per run, a projector derives spans and measurements from the journal and exports them over OTLP/HTTP, a monitor finds the conditions that need a person and keeps alerts in step, and the operator actions are commands the domain checks and the audit trail records.
 
 ## Technical Context
 
@@ -36,16 +36,19 @@ These checks indicate conformance **of the design**, not approval of the impleme
 ## Project Structure
 
 ```text
-crates/telemetry/src/lib.rs
-crates/application/src/operations.rs
-crates/api-http/src/routes/operations.rs
-frontend/apps/studio/src/features/runs/Timeline.tsx
-infra/otel/collector.yaml
-infra/observability/dashboards/
-tests/contract/
-tests/integration/
-tests/fault/
-tests/e2e/observability-operations/
+crates/telemetry/                      OTLP exporter, span ids and sampling, redaction, JSON logs, metric buckets
+crates/domain/src/operations.rs        alert kinds, states, severities; run cause; operator commands in execution/
+crates/application/src/telemetry.rs    derive (journal -> spans, measurements), TelemetryStore, per-run state
+crates/application/src/operations.rs   monitor/alert/worker/audit ports and OperationsService
+crates/scheduler/src/telemetry.rs      the projector;  monitor.rs the monitor
+crates/infra-postgres/                 migrations 20261015*, telemetry.rs, operations.rs, workers.rs (drain)
+crates/api-http/src/routes/            operations.rs (alerts, workers, drain, audit), execution.rs (telemetry, attempts, actions)
+apps/execution-engine/                 the loops and settings of the projector and the monitor
+frontend/apps/studio/src/features/runs the timeline with cause, span and telemetry state; the new actions
+infra/observability/                   Collector, Prometheus rules (17), Grafana dashboard (34 panels), provisioning
+infra/docker/compose.observability.yaml  Collector + Jaeger + Prometheus + Grafana, images pinned
+docs/runbooks/{observability,alerts}.md  how to operate it; docs/adr/ADR-0017
+tests/{e2e,fault,integration,contract,performance}/observability-operations/
 ```
 
 ## Implementation phases
@@ -77,6 +80,10 @@ tests/e2e/observability-operations/
 | Rust modular monolith | Learning curve | Centralized invariants and gradual evolution |
 | DB transactional outbox | Extra reads/writes | Avoid losing a wakeup after commit |
 | Multi-SDK via proto | More CI and tests | Real parity and low coupling |
+
+## Delivered, and what is not
+
+Phases 1 to 6 were run for US01 to US04; the evidence per story, the review of the implementation and the open points are in [`quickstart.md`](./quickstart.md); decisions D160-D178 and gaps G169-G186 are in [`research.md`](./research.md). The performance goal ("projection must not block the write path; documented and flagged lag budget") is answered by the benchmark in `tests/performance/reports/observability-operations.md`: the note costs a writer about 4% of a completion, a busy projector slows the median completion by 1.09x, and the lag under sustained writing stayed at the resolution of the sample (100 ms) against a 30 s budget. The figures are for one machine and a PostgreSQL 18 with commits that do not ask the drive to flush; they are hypotheses, not promises.
 
 ## Delivery Gate
 
