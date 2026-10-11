@@ -330,6 +330,26 @@ fn scripts_workers_doctor_and_templates_have_their_commands() {
         }
     );
     assert_eq!(
+        parse(&argv(
+            "worker bind --workflow w.json payments.charge payments.refund"
+        ))
+        .expect("parses")
+        .command,
+        Command::WorkerBind {
+            workflow: Some("w.json".into()),
+            activities: vec!["payments.charge".into(), "payments.refund".into()]
+        }
+    );
+    assert_eq!(
+        parse(&argv("worker bind payments.charge"))
+            .expect("parses")
+            .command,
+        Command::WorkerBind {
+            workflow: None,
+            activities: vec!["payments.charge".into()]
+        }
+    );
+    assert_eq!(
         parse(&argv("doctor --json --nats nats://127.0.0.1:14222"))
             .expect("parses")
             .command,
@@ -392,6 +412,7 @@ fn the_new_commands_name_what_is_wrong() {
         ("worker", "worker needs a command"),
         ("worker dev", "--mocks is required"),
         ("worker nap", "'worker nap' is not a command"),
+        ("worker bind", "worker bind needs a --workflow or the names"),
         ("new", "a template is required"),
         ("doctor extra", "unexpected argument 'extra'"),
         ("validate extra", "unexpected argument 'extra'"),
@@ -415,6 +436,7 @@ fn the_usage_names_every_command_the_parser_takes() {
         "script test",
         "script publish",
         "worker dev",
+        "worker bind",
         "validate",
         "diff",
         "export",

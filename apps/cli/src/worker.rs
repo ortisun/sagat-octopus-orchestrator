@@ -382,6 +382,36 @@ pub(crate) async fn dev(
     Ok(EXIT_DONE)
 }
 
+/// `sagat worker bind`: the same binding `worker dev --bind` makes, for a worker written with an SDK.
+pub(crate) async fn bind_command(
+    common: &Common,
+    env: &Env,
+    workflow: Option<&Path>,
+    activities: &[String],
+    io: &mut Io<'_>,
+) -> Result<u8, String> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for name in activities {
+        if crate::mocks::bad_name(name) {
+            return Err(format!("'{}' is not an activity name", one_line(name)));
+        }
+        names.insert(name.clone());
+    }
+    if let Some(file) = workflow {
+        let loaded = manifest::load_one(&resolve(env, file)).map_err(|e| format!("{e:?}"))?;
+        names.extend(activities_of(&loaded.value));
+    }
+    if names.is_empty() {
+        return Err("the workflow names no activity and none was given".to_owned());
+    }
+    if names.len() > crate::mocks::MAX_NAMES {
+        return Err(format!("at most {} activities", crate::mocks::MAX_NAMES));
+    }
+    let namespace = namespace_of(common, env)?;
+    bind(common, env, &namespace, &names, io).await?;
+    Ok(EXIT_DONE)
+}
+
 /// Binds the identity of the token to the activities, as an administrator would. It replaces what
 /// the identity was bound to in the namespace: said, because that identity may serve a worker too.
 async fn bind(

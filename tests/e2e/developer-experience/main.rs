@@ -10,6 +10,7 @@ mod support;
 mod diagnostics;
 mod doctor;
 mod stories;
+mod us03;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};

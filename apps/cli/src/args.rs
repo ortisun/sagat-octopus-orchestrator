@@ -32,6 +32,9 @@ ONE WORKFLOW:
     script publish <FILE> [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
     worker dev --mocks <FILE> [--workflow <FILE>] [--bind] [--show-payloads] [--idle-exit <SECONDS>] [--max-tasks <N>]
                           serve the activities of a workflow from a file of canned answers and failures
+    worker bind [--workflow <FILE>] [<ACTIVITY>...]
+                          let the identity of the token serve those activities (and the ones the workflow
+                          names), so that an SDK worker can; it replaces what the identity served there
 
 A MANIFEST KEPT IN GIT:
     validate              check the manifest and every document: locally, and against the server
@@ -164,6 +167,10 @@ pub enum Command {
         idle_exit: Option<u64>,
         max_tasks: Option<u64>,
         show_payloads: bool,
+    },
+    WorkerBind {
+        workflow: Option<PathBuf>,
+        activities: Vec<String>,
     },
 }
 
@@ -572,12 +579,24 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                         .transpose()?,
                 }
             }
+            Some((sub, tail)) if sub == "bind" => {
+                let workflow = flags.take_value(&["--workflow"]).map(PathBuf::from);
+                if workflow.is_none() && tail.is_empty() {
+                    return Err(UsageError(
+                        "worker bind needs a --workflow or the names of the activities".to_owned(),
+                    ));
+                }
+                Command::WorkerBind {
+                    workflow,
+                    activities: tail.to_vec(),
+                }
+            }
             Some((other, _)) => {
                 return Err(UsageError(format!(
-                    "'worker {other}' is not a command (dev)"
+                    "'worker {other}' is not a command (dev, bind)"
                 )));
             }
-            None => return Err(UsageError("worker needs a command (dev)".to_owned())),
+            None => return Err(UsageError("worker needs a command (dev, bind)".to_owned())),
         },
         Some(other) => return Err(UsageError(format!("'{other}' is not a command"))),
     };

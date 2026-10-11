@@ -384,6 +384,10 @@ pub async fn run(args: &[String], env: &Env, out: &mut dyn Write, err: &mut dyn 
             )
             .await
         }
+        Command::WorkerBind {
+            workflow,
+            activities,
+        } => worker::bind_command(&common, env, workflow.as_deref(), &activities, &mut io).await,
         Command::New {
             template,
             dir,

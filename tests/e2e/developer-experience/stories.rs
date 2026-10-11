@@ -535,3 +535,79 @@ async fn us03_every_template_publishes_as_the_workflow_its_readme_names() {
     }
     let _: Value = json!(null);
 }
+
+fn serve_args(grpc: &str, tasks: &str) -> Vec<String> {
+    [
+        "worker",
+        "dev",
+        "--mocks",
+        "hello-world/mocks.yaml",
+        "--workflow",
+        "hello-world/workflow.json",
+        "--grpc",
+        grpc,
+        "--max-tasks",
+        tasks,
+        "--idle-exit",
+        "40",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+fn words(v: &[String]) -> Vec<&str> {
+    v.iter().map(String::as_str).collect()
+}
+
+#[tokio::test]
+async fn worker_bind_lets_the_identity_serve_the_activities_of_a_workflow_for_an_sdk_worker() {
+    let p = platform().await;
+    let engine = engine(&p).await;
+    let dir = Dir::new();
+    publish(&p, &dir, "hello-world").await;
+    // Not bound: the platform does not hand activities to an identity nobody allowed to serve them.
+    let unbound = serve_args(&engine.grpc_url, "2");
+    cli(&p, &dir, &words(&unbound))
+        .await
+        .expect(1)
+        .mentions("not bound");
+
+    // What is refused: a name that is no activity, and nothing at all to bind.
+    cli(&p, &dir, &["worker", "bind", "not an activity"])
+        .await
+        .expect(1)
+        .mentions("is not an activity name");
+    cli(&p, &dir, &["worker", "bind"]).await.expect(2);
+
+    // Bound, by the names the workflow uses: the identity serves them, with no --bind.
+    cli(
+        &p,
+        &dir,
+        &["worker", "bind", "--workflow", "hello-world/workflow.json"],
+    )
+    .await
+    .expect(0)
+    .mentions("bound alice to 2 activities in payments");
+    let bound = serve_args(&engine.grpc_url, "2");
+    let bound = words(&bound);
+    let start = [
+        "workflow",
+        "run",
+        "hello-world",
+        "--input",
+        r#"{"name":"Ada"}"#,
+        "--wait",
+        "--timeout",
+        "60",
+    ];
+    let (served, ran) = tokio::join!(cli(&p, &dir, &bound), cli(&p, &dir, &start));
+    served.expect(0).mentions("served 2 tasks");
+    ran.expect(0).mentions("SUCCEEDED");
+
+    // A binding replaces what the identity served in the namespace, and says so.
+    cli(&p, &dir, &["worker", "bind", "greeting.compose"])
+        .await
+        .expect(0)
+        .mentions("bound alice to 1 activity in payments")
+        .mentions("this replaces what it was bound to there");
+}
