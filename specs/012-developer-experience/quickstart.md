@@ -60,9 +60,9 @@ feature is checked.
 |---|---|
 | FR-012-001 the CLI: `workflow validate\|publish\|run\|inspect\|cancel`, `script test\|publish`, `worker dev` | `e2e stories.rs`, `e2e scripts.rs` (against the production sandbox runner with a stand-in for the container engine; the real engine in one test CI runs), `fault` suite, `apps/cli/tests` |
 | FR-012-002 quickstarts for five SDKs and a saga business example | `docs/quickstarts/*.md`, `examples/`, `e2e us03`, `e2e saga` |
-| FR-012-003 compose with services and fixtures, and a local emulator consistent with the real semantics | the compose file, the seed (`e2e dev_environment`), the provider (`apps/dev-idp/tests`, `e2e dev_environment`); **the emulator is the real engine** (D207), served by `worker dev` |
+| FR-012-003 compose with services and fixtures, and a local emulator consistent with the real semantics | the compose file, the seed (`e2e dev_environment`), the provider (`apps/dev-idp/tests`, `e2e dev_environment`); **the emulator is the real engine** (D207), served by `worker dev`; the complete container and Studio path passed in CI run [38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785) |
 | FR-012-004 templates: workflow, event trigger, cron, approval, compensation, inline script | `templates/`, `apps/cli/tests/templates.rs` (each is a document the codec accepts, with answers and a README), `e2e stories.rs` (each runs) |
-| FR-012-005 API docs and contracts generated from the schemas; examples executable in CI | `docs/reference/`, `contract_developer_experience` (7); both kinds of check were shown to fail when an example or a command was changed |
+| FR-012-005 API docs and contracts generated from the schemas; examples executable in CI | `docs/reference/`, `contract_developer_experience` (8); both kinds of check were shown to fail when an example or a command was changed |
 | FR-012-006 onboarding instrumentation and diagnostics for environment, credentials and incompatible versions | `sagat doctor` (`e2e doctor.rs`), `GET /v1/version`; opt-in command spans, structured completion logs and duration gauge points (`apps/cli/tests/telemetry.rs`, G238); benchmark measures machine time only |
 
 ## Edge cases of the specification
@@ -123,16 +123,20 @@ Run on the machine where this was written (macOS arm64, PostgreSQL 18.6 for the 
 | The Studio: `check:api`, `lint`, `typecheck`, `npm test`, `build` | passed (863 tests; three autosave tests of feature 007 failed once while the workspace was being tested at the same time and passed alone: G237) |
 | The five-language examples and the saga | passed locally (Node 26, Python 3.14, Go 1.24.2→1.25.14, .NET 10, JDK 23) |
 
-**What could not be run here:** the container engine on this machine could not create containers (its metadata store is
-read-only), so 63 tests of earlier features that need a container engine (NATS, Kafka, ElasticMQ, the script sandbox) fail
-here for that reason ; this revision still requires CI evidence. the new Dockerfile stages, the `dev-idp` service and the smoke test's new steps require
-verification by CI (G217); the script test with the real sandbox is `#[ignore]` and was not run here (G218).
+**What could not be run on that machine:** its container engine could not create containers because its metadata store is
+read-only, so 63 tests of earlier features that need NATS, Kafka, ElasticMQ or the script sandbox failed locally for that
+reason. GitHub CI run [38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785)
+closed that evidence gap on the implementation head `ae3c23aa05f4423d5021dc6a5c042bc8d523fd8c`: the full workspace,
+real sandbox, new Dockerfile stages, `dev-idp`, persistent volume, Compose smoke, TypeScript SDK and Studio browser
+journey all passed.
 
 ## What is not built
 
-Everything in `research.md` under "Gaps" (G215–G237). The ones that matter most for a decision: **no person was timed** (G215), **no prebuilt
-`sagat`, no published SDK, no hosted documentation** (G216), **the compose stack has not been run on a machine of the author's**
-(G217), and **the development provider has no browser flow** (G220).
+The entries in `research.md` under "Gaps" (G215–G238) distinguish open gaps from closed CI evidence. The open
+items that matter most for a decision are:
+**no person was timed** (G215), **no prebuilt `sagat`, no published SDK, no hosted documentation** (G216), and
+**the development provider has no browser flow** (G220). G217 and G218 record the local/CI execution split and are
+closed by the successful container run cited above.
 
 ## Completion review, 2026-10-11
 
@@ -153,7 +157,10 @@ cargo test -p sagat-tests --test e2e_developer_experience onboarding_browser -- 
 ```
 
 This is also wired into the provisioned Studio CI job. The compose smoke test enables the same browser
-assertion with `SAGAT_SMOKE_BROWSER=1`; a native pass does not prove the container images.
+assertion with `SAGAT_SMOKE_BROWSER=1`. Both paths passed in run
+[38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785): the Studio job ran the
+native journey and the local-environment job ran it from the actual images. A separate native integration review
+also passed against the final feature 007 Studio distribution (`/tmp/sagat-007-012-integrated-browser.log`).
 
 The independent completion review found and corrected pagination of scripts beyond 200 entries, second-terminal
 quickstart environment setup, missing default failure correlation/remediation, skipped export after a report
@@ -168,6 +175,13 @@ The machine benchmark cannot establish the person's completion time or usability
 Completion checks on this branch: CLI 56 tests; telemetry 65 tests; developer-experience
 E2E 31 passed and 4 explicitly ignored; faults 14 passed; contracts 8 passed. The ignored
 five-SDK example comparison and payment saga each passed separately; native browser onboarding
-passed separately; the real sandbox still requires Docker. Full-workspace Clippy, formatting,
+passed separately; the real sandbox requires Docker and passed in CI. Full-workspace Clippy, formatting,
 and the browser credential-failure regressions (3 cases) passed. These counts describe distinct
 suites, not a claim that the entire workspace or compose smoke ran locally.
+
+The first complete CI execution passed all eight jobs on the implementation head
+`ae3c23aa05f4423d5021dc6a5c042bc8d523fd8c`: [run 38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785).
+It covers the full Rust workspace; formatting and Clippy; architecture, contract and observability gates;
+dependency audit; all five SDKs and their examples; user stories and faults; payment saga; real script sandbox;
+Studio checks and browser journeys; and the complete Compose onboarding path. This proves SC-012-002 and
+SC-012-003. SC-012-001 remains open because automation and a machine benchmark do not replace a newcomer study.

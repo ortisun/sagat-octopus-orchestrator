@@ -153,15 +153,18 @@ how to operate it is `docs/runbooks/developer-experience.md`; the path itself is
 - **G216 — No prebuilt `sagat`, no published SDK, no hosted documentation.** The tool is installed with
   `cargo install --path apps/cli --locked` (a Rust toolchain), the SDKs are used from the checkout, and the pages are files in the
   repository (`SAGAT_DOCS_URL` turns the `docs:` line of an error into a link when somebody hosts them).
-- **G217 — The compose stack was not run on the machine where it was written.** The container engine there could not create
+- **G217 — Closed by CI; the compose stack was not run on the machine where it was written.** The container engine there could not create
   containers (its metadata store is read-only). What was done instead: `docker compose config` on the file; the Studio stage
   of the Dockerfile replayed in a scratch directory; and the real binaries (`dev-idp`, `control-plane`, `execution-engine`,
   `sagat`) started as processes with the same environment as compose, against a PostgreSQL: migrate, the seed twice, a token,
   `doctor` (all nine checks ok, the Studio included), publish, the Go example, `worker dev`. **The Dockerfile's new stages, the
-  `dev-idp` service and the volume ownership of `/data` are first proven by the `local-environment` job of CI.**
-- **G218 — Some tests run only in CI.** The five-language examples and the saga (five toolchains), and the script test with the real
+  `dev-idp` service and the volume ownership of `/data` were proven by the `local-environment` job in CI run
+  [38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785), including the CLI → TypeScript SDK → Studio browser journey.**
+- **G218 — Closed by CI; some tests run only there.** The five-language examples and the saga (five toolchains), and the script test with the real
   container engine, are `#[ignore]`; the `sdks` job runs them. Locally the five languages and the saga were run (Node 26,
-  Python 3.14, .NET 10, JDK 23; Go 1.24.2 with the 1.25.14 toolchain it fetches); the real-engine script test was not.
+  Python 3.14, .NET 10, JDK 23; Go 1.24.2 with the 1.25.14 toolchain it fetches). CI run
+  [38155640785](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38155640785) passed all of them,
+  including the real-engine script sandbox.
 - **G219 — The SDKs ship no fake context** for unit testing an activity. The quickstarts say to keep the effect behind an interface
   and to use `worker dev` or the example as the harness.
 - **G220 — The development provider has no browser flow.** The Studio takes a pasted token. A token lasts at most an hour, and a
