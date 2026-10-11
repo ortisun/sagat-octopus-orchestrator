@@ -4,8 +4,8 @@
 //!
 //! Each `examples/hello-world/<language>/` has two executables, as the conformance runners of the
 //! SDKs have: `prepare.sh` (install the dependencies and build) and `run.sh` (serve the two
-//! activities, start a run, wait for it). They are configured only through `SAGAT_API_URL`,
-//! `SAGAT_GRPC_URL`, `SAGAT_NAMESPACE` and `SAGAT_TOKEN`, and say the same three things:
+//! activities, start a run, wait for it). They are configured only through `SAGAT_SERVER`,
+//! `SAGAT_GRPC`, `SAGAT_NAMESPACE` and `SAGAT_TOKEN`, and say the same three things:
 //!
 //! ```text
 //! serving greeting.compose and greeting.deliver at protocol 1.2
@@ -21,6 +21,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use reqwest::Method;
+use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 use crate::support::worker::{Platform, platform};
@@ -113,6 +114,10 @@ async fn journal(p: &Platform, run: &str, with_outputs: bool) -> Vec<String> {
         .collect()
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn line_of<'a>(out: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     out.lines()
         .find(|l| l.starts_with(prefix) && l.ends_with(suffix))
@@ -144,8 +149,8 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
 
     let token = p.api.idp.token("alice", "acme").build();
     let setting = vec![
-        ("SAGAT_API_URL", p.api.base.clone()),
-        ("SAGAT_GRPC_URL", engine.grpc_url.clone()),
+        ("SAGAT_SERVER", p.api.base.clone()),
+        ("SAGAT_GRPC", engine.grpc_url.clone()),
         ("SAGAT_NAMESPACE", "payments".to_owned()),
         ("SAGAT_TOKEN", token.clone()),
     ];
@@ -184,6 +189,12 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
         assert!(
             line_of(&ran.out, &format!("run {started} SUCCEEDED"), "SUCCEEDED").is_some(),
             "{language}:\n{}",
+            ran.out
+        );
+        // What compose made from the input of the run reached deliver through the platform.
+        assert!(
+            ran.out.lines().any(|l| l == "delivering Hello, Ada!"),
+            "{language}: deliver did not get the greeting of compose:\n{}",
             ran.out
         );
         // A secret is not something an example prints.
@@ -229,6 +240,18 @@ async fn us03_the_hello_world_of_each_sdk_makes_the_same_run_as_the_others() {
         assert_eq!(
             story, first,
             "{language} made another journal than {first_language}"
+        );
+    }
+    // And the journal refers to the outputs the example is meant to make, byte for byte: what the
+    // platform keeps of an output is its digest.
+    for output in [
+        r#"{"greeting":"Hello, Ada!"}"#,
+        r#"{"delivered":true,"greeting":"Hello, Ada!"}"#,
+    ] {
+        let digest = hex(&Sha256::digest(output.as_bytes()));
+        assert!(
+            first.iter().any(|line| line.ends_with(&digest)),
+            "no event of the journal refers to {output} ({digest}): {first:?}"
         );
     }
     let mut traces: Vec<&String> = stories.iter().map(|(_, _, t)| t).collect();

@@ -1,12 +1,13 @@
 // The hello-world workflow served and started with the Go SDK: a worker that answers the two
 // activities of the workflow (templates/hello-world), a run of it, and the end of the run.
 //
-//	SAGAT_API_URL=http://127.0.0.1:8080/v1 SAGAT_GRPC_URL=http://127.0.0.1:19000 \
+//	SAGAT_SERVER=http://127.0.0.1:18080/v1 SAGAT_GRPC=http://127.0.0.1:19000 \
 //	SAGAT_NAMESPACE=payments SAGAT_TOKEN=... go run . [NAME]
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,16 +19,9 @@ import (
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/worker"
 )
 
-// What a step receives: the input of the run and the outputs of the steps that ran before it.
-type Task struct {
-	Input struct {
-		Name string `json:"name"`
-	} `json:"input"`
-	Steps map[string]struct {
-		Output struct {
-			Greeting string `json:"greeting"`
-		} `json:"output"`
-	} `json:"steps"`
+// What the compose step receives: the input of the run.
+type Person struct {
+	Name string `json:"name"`
 }
 
 type Greeting struct {
@@ -53,7 +47,7 @@ func main() {
 }
 
 func run() error {
-	apiURL, grpcURL, namespace, token := setting("SAGAT_API_URL"), setting("SAGAT_GRPC_URL"), setting("SAGAT_NAMESPACE"), setting("SAGAT_TOKEN")
+	apiURL, grpcURL, namespace, token := setting("SAGAT_SERVER"), setting("SAGAT_GRPC"), setting("SAGAT_NAMESPACE"), setting("SAGAT_TOKEN")
 	name := "Ada"
 	if len(os.Args) > 1 {
 		name = os.Args[1]
@@ -66,15 +60,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := host.RegisterActivity("greeting.compose", worker.Typed(func(ctx context.Context, in Task) (Greeting, error) {
-		return Greeting{Greeting: "Hello, " + in.Input.Name + "!"}, nil
+	if err := host.RegisterActivity("greeting.compose", worker.Typed(func(ctx context.Context, in Person) (Greeting, error) {
+		return Greeting{Greeting: "Hello, " + in.Name + "!"}, nil
 	})); err != nil {
 		return err
 	}
-	if err := host.RegisterActivity("greeting.deliver", worker.Typed(func(ctx context.Context, in Task) (Delivery, error) {
+	if err := host.RegisterActivity("greeting.deliver", worker.Typed(func(ctx context.Context, in Person) (Delivery, error) {
+		// The outputs of the steps that ran before this one, by step id.
+		var composed Greeting
+		if err := json.Unmarshal(worker.TaskFrom(ctx).Steps["compose"], &composed); err != nil {
+			return Delivery{}, worker.Permanent("NO_GREETING", "the compose step gave no greeting")
+		}
 		// A real delivery is an external effect: send worker.TaskFrom(ctx).IdempotencyKey to the
 		// provider, which is the same for every attempt of this step.
-		return Delivery{Delivered: true, Greeting: in.Steps["compose"].Output.Greeting}, nil
+		fmt.Printf("delivering %s\n", composed.Greeting)
+		return Delivery{Delivered: true, Greeting: composed.Greeting}, nil
 	})); err != nil {
 		return err
 	}
