@@ -196,6 +196,17 @@ impl PublishingStore for PgDefinitionStore {
         .map_err(store_error)
     }
 
+    async fn request_outside(&self, tenant: TenantId, id: RequestId) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM publication_requests WHERE id = $2 AND tenant_id <> $1)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_one(self.pool())
+        .await
+        .map_err(store_error)
+    }
+
     async fn stored_policy(
         &self,
         tenant: TenantId,
@@ -729,6 +740,10 @@ impl PublishingStore for crate::execution::PgRunStore {
         id: NamespaceId,
     ) -> Result<bool, StoreError> {
         self.definitions.namespace_outside(tenant, id).await
+    }
+
+    async fn request_outside(&self, tenant: TenantId, id: RequestId) -> Result<bool, StoreError> {
+        self.definitions.request_outside(tenant, id).await
     }
 
     async fn stored_policy(

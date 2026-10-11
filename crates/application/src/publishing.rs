@@ -167,6 +167,14 @@ pub trait PublishingStore: DefinitionStore {
         id: NamespaceId,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// Whether the request exists in a tenant other than `tenant` (decides whether a miss is
+    /// recorded as a cross-tenant attempt; never shown).
+    fn request_outside(
+        &self,
+        tenant: TenantId,
+        id: RequestId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     fn stored_policy(
         &self,
         tenant: TenantId,
@@ -514,19 +522,19 @@ where
         id: RequestId,
         ctx: &RequestContext,
     ) -> AppError {
-        let record = AuditRecord::by(
-            principal,
-            AuditAction::CrossTenantAccessDenied,
-            ResourceType::PublicationRequest,
-            id.to_string(),
-            ctx.trace_id.clone(),
-            self.clock.now(),
-        )
-        .with_reason("resource not accessible from this tenant");
-        // Whether it exists elsewhere is not asked: a request id is a random identifier, and the
-        // record is deduplicated; a miss is recorded as a probe either way, which tells nobody anything.
-        if let Err(error) = self.store.record_denial(&record).await {
-            tracing::error!(%error, action = %record.action(), "failed to record audit entry");
+        if let Ok(true) = self.store.request_outside(principal.tenant_id(), id).await {
+            let record = AuditRecord::by(
+                principal,
+                AuditAction::CrossTenantAccessDenied,
+                ResourceType::PublicationRequest,
+                id.to_string(),
+                ctx.trace_id.clone(),
+                self.clock.now(),
+            )
+            .with_reason("resource not accessible from this tenant");
+            if let Err(error) = self.store.record_denial(&record).await {
+                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
+            }
         }
         AppError::NotFound
     }

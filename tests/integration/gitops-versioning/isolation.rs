@@ -258,3 +258,60 @@ async fn the_history_of_the_pointer_cannot_be_rewritten() {
         .expect("history");
     assert_eq!(history.items.len(), 1);
 }
+
+#[tokio::test]
+async fn only_a_request_that_exists_elsewhere_leaves_a_trace_of_the_probe() {
+    let w = world().await;
+    let author = developer(&w, "author").await;
+    let record = draft(&w, "payments", "flow", &doc("flow", "v1")).await;
+    let request = w
+        .publishing
+        .open_request(
+            &author,
+            record.workflow.id(),
+            record.workflow.draft_revision(),
+            None,
+            &ctx(),
+        )
+        .await
+        .expect("request");
+    let theirs = &w.other_admin;
+
+    // Random identifiers by the thousand would otherwise be rows of the audit trail.
+    for _ in 0..20 {
+        let _ = w
+            .publishing
+            .get_request(
+                theirs,
+                sagat_domain::versioning::RequestId::generate(),
+                &ctx(),
+            )
+            .await;
+    }
+    let _ = w.publishing.get_request(theirs, request.id(), &ctx()).await;
+    let recorded = crate::support::eventually("the probe of a real request", || async {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' \
+             AND resource_type = 'publication_request'",
+        )
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("count");
+        (n > 0).then_some(n)
+    })
+    .await;
+    assert_eq!(recorded, 1);
+    // The writes are off the response path: give any other one the time to land.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let later: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' \
+         AND resource_type = 'publication_request'",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(
+        later, 1,
+        "one for the request that exists, none for the 20 that do not"
+    );
+}

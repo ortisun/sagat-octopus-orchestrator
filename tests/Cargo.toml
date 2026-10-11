@@ -255,3 +255,7 @@ path = "performance/observability-operations/main.rs"
 [[test]]
 name = "integration_gitops_versioning"
 path = "integration/gitops-versioning/main.rs"
+
+[[test]]
+name = "contract_rest_gitops_versioning"
+path = "contract/gitops-versioning/rest/main.rs"

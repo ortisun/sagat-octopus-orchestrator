@@ -267,7 +267,7 @@ paths:
       summary: Publish an immutable workflow version and make it active
       tags: [Workflows]
       x-implemented: '002'
-      description: Validates the draft against the workflow schema, the graph rules and the expression subset. A namespace that asks for approvals (production by default, see `getPublicationPolicy`) refuses it with `409 APPROVAL_REQUIRED`: the draft goes through `openPublicationRequest` instead. A document with no engine yet (foreach, humanApproval) is refused with a reason. A `script` node pins the digest of a ready script artifact of the tenant (`UNKNOWN_SCRIPT` otherwise) and runs as the activity `script.sha256-<hex>`. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
+      description: Validates the draft against the workflow schema, the graph rules and the expression subset. A namespace that asks for approvals (production by default, see `getPublicationPolicy`) refuses it with `409 APPROVAL_REQUIRED`, and the draft goes through `openPublicationRequest` instead. A document with no engine yet (foreach, humanApproval) is refused with a reason. A `script` node pins the digest of a ready script artifact of the tenant (`UNKNOWN_SCRIPT` otherwise) and runs as the activity `script.sha256-<hex>`. compensateWith/reconcileWith are accepted with a warning because compensation is not executed yet.
       parameters:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1314,7 +1314,8 @@ paths:
       summary: The history of the active version of a workflow, newest first
       tags: [Versions]
       x-implemented: '011'
-      description: Needs `definition:read`. Every publication, promotion, rollback and activation, with who did it, why, and for a publication through a request, which request. Append-only: the database refuses to change or remove a row. The newest row is the active version.
+      description: >-
+        Needs `definition:read`. Every publication, promotion, rollback and activation, with who did it, why, and for a publication through a request, which request. Append-only: the database refuses to change or remove a row. The newest row is the active version.
       parameters:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/Cursor'}

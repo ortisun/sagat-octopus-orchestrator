@@ -338,7 +338,12 @@ pub async fn start_with(options: Options) -> TestApi {
             Engine::new(JsonEvaluator),
             cache,
         ),
-    );
+    )
+    .with_publishing(sagat_application::publishing::PublishingService::new(
+        executions.clone(),
+        SystemClock,
+        JsonIrCodec,
+    ));
     if let Some(limits) = options.streams {
         exec = exec.with_stream_limits(limits);
     }
