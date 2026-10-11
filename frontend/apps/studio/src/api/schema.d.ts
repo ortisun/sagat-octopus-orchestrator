@@ -1867,6 +1867,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/script-runner/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Commit a supervisor denial before acknowledging it to a script
+         * @description Needs `script:execute`. Validates the authenticated runner against the current production
+         *     step lease, worker session and binding, or against the current test-run lease. The request
+         *     accepts only a closed denial category and fenced identifiers; it cannot carry a destination,
+         *     actor, digest, URL, headers, payload or free-form reason. `204` is returned only after the
+         *     audit transaction commits. An identical retry is an idempotent `204`.
+         */
+        post: operations["recordScriptRunnerIncident"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2925,7 +2949,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             source: string;
             lockfile?: string;
             inputSchema?: Record<string, never>;
@@ -2948,7 +2972,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             policy: components["schemas"]["ScriptPolicyView"];
             retentionDays: number;
             revision: number;
@@ -2992,7 +3016,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             source: string;
@@ -3028,7 +3052,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python";
+            language: "typescript" | "python" | "csharp";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             policy: components["schemas"]["ScriptPolicyView"];
@@ -3293,6 +3317,41 @@ export interface components {
         };
         Recorded: {
             recorded: boolean;
+        };
+        RecordRunnerIncidentRequest: {
+            target: components["schemas"]["ProductionIncidentTarget"] | components["schemas"]["TestIncidentTarget"];
+            /** @enum {string} */
+            category: "EGRESS_DISABLED" | "UNSUPPORTED_SCHEME" | "INVALID_HOST" | "PORT_NOT_ALLOWED" | "NOT_ALLOWLISTED" | "FORBIDDEN_ADDRESS" | "NO_ADDRESS";
+        };
+        ProductionIncidentTarget: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "ProductionIncidentTarget";
+            /** Format: uuid */
+            namespaceId: string;
+            /** Format: uuid */
+            runId: string;
+            /** Format: uuid */
+            stepId: string;
+            /** Format: int32 */
+            attempt: number;
+            /** Format: int64 */
+            generation: number;
+            leaseToken: string;
+        };
+        TestIncidentTarget: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "TestIncidentTarget";
+            /** Format: uuid */
+            namespaceId: string;
+            /** Format: uuid */
+            testRunId: string;
+            leaseToken: string;
         };
         PublicationPolicy: {
             /** Format: uuid */
@@ -7406,6 +7465,36 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    recordScriptRunnerIncident: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordRunnerIncidentRequest"];
+            };
+        };
+        responses: {
+            /** @description Incident committed, or committed already */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
