@@ -127,8 +127,12 @@ async fn a_look_that_fails_leaves_the_alerts_of_that_kind_as_they_are() {
     assert_eq!(firing(&p, "STEP_UNCLAIMED").await, 0);
 }
 
+/// Both monitors are in one process, so they share the holder of the lease and both pass it: this
+/// holds the alerts themselves to one row and one notification (`a_dead_monitor_is_replaced_when_its_lease_runs_out`
+/// holds the lease).
 #[tokio::test]
-async fn two_monitors_at_the_same_moment_raise_one_alert_and_tell_the_subscribers_once() {
+async fn two_monitors_that_both_think_they_hold_the_lease_still_raise_one_alert_and_tell_the_subscribers_once()
+ {
     let p = platform().await;
     let ns = p.namespace_id().await;
     for (method, path, body) in [

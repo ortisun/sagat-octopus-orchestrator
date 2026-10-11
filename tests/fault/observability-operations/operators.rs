@@ -140,7 +140,7 @@ async fn two_operators_asking_for_the_same_retry_get_one_attempt_and_one_refusal
 }
 
 #[tokio::test]
-async fn a_drain_and_a_poll_at_the_same_moment_never_hand_out_work_after_the_drain_returned() {
+async fn a_worker_that_polls_as_hard_as_it_can_after_the_drain_returned_is_given_nothing() {
     let p = platform().await;
     p.bind_everything("worker-1").await;
     p.grant(p.tenant, "olivia", Role::Operator).await;

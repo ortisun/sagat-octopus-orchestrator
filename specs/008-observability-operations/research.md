@@ -120,6 +120,26 @@ how to operate it is `docs/runbooks/alerts.md` and `docs/runbooks/observability.
   (older than the lag budget), `NO_TRACE`, `UNTRACKED`. The timeline and the graph read the transactional read
   models, so their own lag stays 0 (`projectionLagMs`); what lags is the export to the backend, and that is what
   this reports.
+- **D179 — The reviews changed five things the design had taken for granted.** (1) A look of the monitor is
+  bounded (25 groups per namespace, 100 per tenant, 1000 in all, ranked in the query) and says where it stopped
+  short; an alert is resolved only where the look saw everything, so an older condition appearing cannot resolve a
+  live alert, and one tenant cannot fill the look and hide the others'. (2) An unserved step is one a worker that
+  served it would be given: the conditions of the claim, so a paused run or a compensation behind an open breaker
+  is not an alert. (3) Marking a run projected says whether it moved the note, only that one counts the
+  measurements, and the projector asks for its lease again before each batch. (4) A collector's `401`, `404` or a
+  redirect is a wait, not a verdict on the batch: only `400`, `413` and `422` drop spans; the rest stay in the
+  journal. (5) The sampler decides the projected spans as it does the live ones.
+- **D180 — A hold keeps what is known about the last attempt.** `MARK_MANUAL_REVIEW` of a step waiting out a retry
+  after a lost lease kept `MARKED_FOR_REVIEW` as its failure and so forgot the effect may have happened; a saga stopped
+  afterwards did not undo it. The hold says why the step waits now and leaves the failure alone.
+- **D181 — A drain is coupled to the polls that lease.** The lease transaction checks the drain again under a shared
+  advisory lock; the drain takes it exclusively. A drain that has returned has stopped every poll that had not
+  leased yet (`a_drain_cannot_return_while_a_poll_that_found_the_worker_serving_is_still_leasing`). A namespace holds at
+  most 500 drained identities.
+- **D182 — The audit read follows the index of the tenant, and the reading is recorded again after five minutes.**
+  Ordering by the primary key walked the table backwards across every tenant (`Rows Removed by Filter: 10144` for 51 rows
+  with 200 tenants); a test holds the plan. An administrator who read the trail once and again a month later left one
+  record: the same reading within five minutes is one record, after that a new one.
 
 ### Gaps (G169–G1xx)
 
@@ -167,3 +187,21 @@ how to operate it is `docs/runbooks/alerts.md` and `docs/runbooks/observability.
   rows and a round that takes seconds. The other four detections are index-bound and take milliseconds. The
   remedy is to examine at most the oldest N rows in the order of `event_outbox_pending_idx` and report the count as
   "at least"; it is not done, because it changes what an alert says (`items`) and needs its own test.
+- **G187 — A caller who sends a `traceparent` chooses whether its request is sampled.** The decision is made from the
+  trace id, which the caller supplies, so a client can force every one of its requests to be exported (or none). The
+  exporter's queue is bounded and counts what it drops, which protects memory and not the fairness between
+  tenants' spans. Sampling on a value drawn by the server, or honouring only the parent's `sampled` flag from
+  trusted callers, are the remedies; neither is built.
+- **G188 — The monitor's cost grows with the failure it detects, beyond the outbox (G186).** `sample()` counts the
+  ready steps, the outbox and the inbox without a bound, and the detection of unserved steps reads every ready
+  step older than the threshold. Both are measured at 5 000 and not beyond.
+- **G189 — A cross-tenant probe takes longer than a probe of an id that exists nowhere.** The denial is written
+  before the `404` is sent when the id exists in another tenant. The difference is a database write; it was there
+  before this feature and the new endpoints inherit it. The remedy is to write the denial off the response path.
+- **G190 — The migrations of this feature create indexes and constraints on `runs` and `inbox_events` without
+  `CONCURRENTLY`**, which a transaction cannot do. On a table with many millions of rows the lock window is the time to build
+  a partial index and to validate the new check constraints: plan it.
+- **G191 — The worker list shows the 200 newest sessions** and no cursor; an identity whose sessions are older is
+  seen only in `drains`.
+- **G192 — The schedule latency of an attempt that was held by an operator includes the time it was held.** The
+  attempt starts from the step's last ready event, not from the release.
