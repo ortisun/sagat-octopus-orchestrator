@@ -671,18 +671,24 @@ async fn us04_the_trail_of_a_tenant_does_not_tell_whether_an_identifier_it_probe
             .expect("send");
         assert_eq!(bob.status().as_u16(), 404);
     }
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
+    // The denial is written off the response path (so that its cost does not tell the caller the
+    // identifier exists), so it appears a moment after the answer.
+    let mut kept = 0_i64;
+    for _ in 0..100 {
+        kept = sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' \
              AND resource_id = $1",
         )
         .bind(&ns)
         .fetch_one(&p.api.db.pool)
         .await
-        .expect("count"),
-        1,
-        "the platform keeps the denial"
-    );
+        .expect("count");
+        if kept > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(kept, 1, "the platform keeps the denial");
 
     let read = p
         .api
