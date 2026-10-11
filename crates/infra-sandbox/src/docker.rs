@@ -74,6 +74,10 @@ fn failed_at<E: std::fmt::Display>(stage: &'static str) -> impl FnOnce(E) {
 const LOG_FLOOD_FACTOR: usize = 16;
 /// A line of the channel is at most the largest result plus its framing.
 const MAX_LINE: usize = MAX_RESULT_BYTES + 16 * 1024;
+/// `System.Text.Json` represents an astral Unicode scalar as two `\uXXXX` escapes on the JSON-line
+/// channel. Keep transport encoding from becoming the result limit while preserving a hard bound;
+/// the parsed value is still checked against [`MAX_RESULT_BYTES`].
+const MAX_CSHARP_RUNTIME_LINE: usize = MAX_RESULT_BYTES * 6 + 16 * 1024;
 /// A compiled C# assembly and its allowlisted managed dependencies cross this line. It remains
 /// below the control plane's artifact cap plus bounded protocol framing.
 const MAX_BUILD_LINE: usize = sagat_infra_schema::bundle::MAX_BUNDLE_BYTES + 64 * 1024;
@@ -153,6 +157,22 @@ struct Job {
     first_message: Vec<u8>,
     limits: Limits,
     max_line: usize,
+    /// Only a terminal result may use the C# runtime's expanded transport allowance.
+    large_result_only: bool,
+}
+
+fn parse_channel_line(line: &[u8], job: &Job) -> Result<Option<Message>, ()> {
+    if line.len() > job.max_line {
+        return Err(());
+    }
+    let parsed = protocol::parse(line);
+    if job.large_result_only
+        && line.len() > MAX_LINE
+        && !matches!(&parsed, Some(Message::Result(_)))
+    {
+        return Err(());
+    }
+    Ok(parsed)
 }
 
 /// The write side of the channel to a script.
@@ -512,7 +532,13 @@ impl DockerSandbox {
                             }
                             continue;
                         }
-                        let parsed = protocol::parse(&line);
+                        let parsed = match parse_channel_line(&line, job) {
+                            Ok(parsed) => parsed,
+                            Err(()) => {
+                                driven.flooded = true;
+                                break 'read;
+                            }
+                        };
                         line.clear();
                         lines += 1;
                         if lines > MAX_CHANNEL_LINES {
@@ -937,6 +963,7 @@ impl Sandbox for DockerSandbox {
             } else {
                 MAX_LINE
             },
+            large_result_only: false,
         };
         let driven = self.drive::<NoHost>(job, None).await;
         if driven.unavailable {
@@ -1093,7 +1120,12 @@ impl Sandbox for DockerSandbox {
                 protocol::run_message(&input, &text, request.idempotency_key.as_deref())
             },
             limits: request.policy.limits,
-            max_line: MAX_LINE,
+            max_line: if language == Language::CSharp {
+                MAX_CSHARP_RUNTIME_LINE
+            } else {
+                MAX_LINE
+            },
+            large_result_only: language == Language::CSharp,
         };
         let driven = self.drive(job, Some(host)).await;
 
@@ -1421,5 +1453,45 @@ mod tests {
         let joined = join_log("héllo".to_owned(), "wörld ✓ more text", 12);
         assert!(joined.len() <= 12);
         assert!(joined.is_char_boundary(joined.len()));
+    }
+
+    #[test]
+    fn only_a_result_may_use_the_csharp_runtime_expanded_frame() {
+        let job = Job {
+            image: String::new(),
+            command: Vec::new(),
+            first_message: Vec::new(),
+            limits: Policy::default().limits,
+            max_line: MAX_CSHARP_RUNTIME_LINE,
+            large_result_only: true,
+        };
+        let padding = "x".repeat(MAX_LINE);
+        let result =
+            serde_json::to_vec(&json!({"op": "result", "value": padding})).expect("result frame");
+        assert!(matches!(
+            parse_channel_line(&result, &job),
+            Ok(Some(Message::Result(_)))
+        ));
+
+        for frame in [
+            serde_json::to_vec(&json!({
+                "op": "fetch", "id": 1, "url": format!("https://example.test/{padding}")
+            }))
+            .expect("fetch frame"),
+            serde_json::to_vec(&json!({"op": "secret", "id": 2, "name": padding}))
+                .expect("secret frame"),
+            serde_json::to_vec(&json!({"op": "unknown", "padding": padding}))
+                .expect("unknown frame"),
+            vec![b'x'; MAX_LINE + 1],
+        ] {
+            assert_eq!(parse_channel_line(&frame, &job), Err(()));
+        }
+
+        let over_cap = serde_json::to_vec(&json!({
+            "op": "result",
+            "value": "x".repeat(MAX_CSHARP_RUNTIME_LINE)
+        }))
+        .expect("oversize result frame");
+        assert_eq!(parse_channel_line(&over_cap, &job), Err(()));
     }
 }

@@ -334,6 +334,7 @@ public sealed class Script : IInlineScript
 async fn csharp_result_framing_keeps_html_and_unicode_compact_but_enforces_the_real_limit() {
     let sandbox = sandbox();
     let source = r#"
+using System.Linq;
 using System.Text.Json;
 using Sagat.ScriptContract;
 
@@ -342,7 +343,12 @@ public sealed class Script : IInlineScript
     public ValueTask<JsonElement> RunAsync(JsonElement input, IOctopus octopus, CancellationToken cancellationToken)
     {
         var length = input.GetProperty("length").GetInt32();
-        return ValueTask.FromResult(JsonSerializer.SerializeToElement(new string('<', length) + "😀"));
+        var text = input.TryGetProperty("emoji", out _)
+            ? string.Concat(Enumerable.Repeat("😀", length))
+            : input.TryGetProperty("delete", out _)
+                ? new string('\u007f', length)
+                : new string('<', length) + "😀";
+        return ValueTask.FromResult(JsonSerializer.SerializeToElement(text));
     }
 }
 "#;
@@ -361,6 +367,33 @@ public sealed class Script : IInlineScript
     let below = below.as_str().expect("string result");
     assert_eq!(below.chars().count(), 45_001);
     assert!(below.starts_with('<') && below.ends_with('😀'));
+
+    let astral = run_csharp(
+        &sandbox,
+        built.artifact.clone(),
+        r#"{"length":30000,"emoji":true}"#,
+        &Host::default(),
+        None,
+    )
+    .await;
+    let astral: Value =
+        serde_json::from_slice(&astral.result.expect("astral result")).expect("JSON");
+    let astral = astral.as_str().expect("string result");
+    assert_eq!(astral.chars().count(), 30_000);
+    assert!(astral.chars().all(|character| character == '😀'));
+
+    let delete = run_csharp(
+        &sandbox,
+        built.artifact.clone(),
+        r#"{"length":45000,"delete":true}"#,
+        &Host::default(),
+        None,
+    )
+    .await;
+    let delete: Value = serde_json::from_slice(&delete.result.expect("DEL result")).expect("JSON");
+    let delete = delete.as_str().expect("string result");
+    assert_eq!(delete.chars().count(), 45_000);
+    assert!(delete.chars().all(|character| character == '\u{7f}'));
 
     let excess = run_csharp(
         &sandbox,
