@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "packages": [
+    {
+      "id": "Newtonsoft.Json",
+      "version": "13.0.4",
+      "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A==",
+      "archiveSha512": "bR+v+E/yJ6g7GV2uXw2OrUSjYYfjLkOLC8JD4kCS23msLapnKtdJPBJA75fwHH++ErIffeIqzYITLxAur4KAXA==",
+      "dependencies": [],
+      "assemblies": [
+        {
+          "file": "Newtonsoft.Json.dll",
+          "sha256": "a28c251dfe36d881e9e2462e171441b8b0ec156fe3f452602c9149b1b9efe05b"
+        }
+      ]
+    }
+  ]
+}
