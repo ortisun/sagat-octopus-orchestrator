@@ -269,3 +269,7 @@ path = "e2e/gitops-versioning/main.rs"
 name = "fault_gitops_versioning"
 path = "fault/gitops-versioning/main.rs"
 
+[[test]]
+name = "contract_manifest_gitops_versioning"
+path = "contract/gitops-versioning/manifest/main.rs"
+
