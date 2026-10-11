@@ -41,6 +41,35 @@ pub enum ConfigError {
     Invalid { name: &'static str, reason: String },
 }
 
+impl From<sagat_telemetry::OtlpConfigError> for ConfigError {
+    fn from(error: sagat_telemetry::OtlpConfigError) -> Self {
+        Self::Invalid {
+            name: error.name,
+            reason: error.reason,
+        }
+    }
+}
+
+/// What a process installs for logs and spans: the log format, the name it goes by, and the exporter
+/// the standard `OTEL_*` variables ask for (none by default).
+///
+/// # Errors
+/// [`ConfigError::Invalid`] for an exporter setting that cannot be honoured.
+pub fn telemetry(
+    get: Lookup<'_>,
+    service: &str,
+    format: LogFormat,
+) -> Result<sagat_telemetry::TelemetryConfig, ConfigError> {
+    Ok(sagat_telemetry::TelemetryConfig {
+        format,
+        service: service.to_owned(),
+        otlp: sagat_telemetry::OtlpConfig::from_lookup(get, service)?,
+    })
+}
+
+/// How long a process waits at exit for the spans still queued to be sent.
+pub const TELEMETRY_FLUSH: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// A way to read variables; `std::env::var(..).ok()` in production, a map in tests.
 pub type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 

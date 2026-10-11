@@ -19,9 +19,13 @@ use metrics_exporter_prometheus::{
 };
 use metrics_util::MetricKindMask;
 
-/// Bucket boundaries (seconds) for every `*_duration_seconds` histogram.
-const DURATION_BUCKETS: [f64; 12] = [
-    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+/// Bucket boundaries (seconds) for every `*_seconds` histogram: a request, an attempt, a lag. From a
+/// millisecond to an hour, because the same rule serves the time a request takes and the time a
+/// delivery has waited. A histogram with no rule is rendered as a summary, whose quantiles cannot
+/// be added across replicas, so the dashboard could not compute a percentile from it.
+const DURATION_BUCKETS: [f64; 20] = [
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+    120.0, 300.0, 600.0, 1800.0, 3600.0,
 ];
 
 /// Handle to the installed recorder.
@@ -35,10 +39,7 @@ static GLOBAL: OnceLock<Metrics> = OnceLock::new();
 /// A builder with the project's histogram buckets and the given idle expiry for every metric kind.
 fn builder(idle_timeout: Duration) -> PrometheusBuilder {
     PrometheusBuilder::new()
-        .set_buckets_for_metric(
-            Matcher::Suffix("duration_seconds".to_owned()),
-            &DURATION_BUCKETS,
-        )
+        .set_buckets_for_metric(Matcher::Suffix("_seconds".to_owned()), &DURATION_BUCKETS)
         .unwrap_or_else(|_| PrometheusBuilder::new())
         .idle_timeout(MetricKindMask::ALL, Some(idle_timeout))
 }
