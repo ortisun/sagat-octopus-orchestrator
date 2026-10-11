@@ -3,12 +3,14 @@
 # API, PostgreSQL and NATS are healthy, that migrations and the seed are idempotent and that the API
 # runs as the least-privilege database role, that the development identity provider signs a token the
 # API accepts, that the Studio is served and, when SAGAT_BIN names a built `sagat`, that the first day
-# works: doctor, a workflow published, served by `worker dev` and run to the end. Then it tears
-# everything down.
+# works: doctor, a workflow published, served by `worker dev` and run to the end. With
+# SAGAT_SMOKE_BROWSER=1 it then runs the TypeScript SDK example and proves in a real browser that
+# the resulting run's graph, table and journal are visible in Studio. Then it tears everything down.
 #
 #   scripts/smoke-compose.sh                 # uses infra/docker/.env.example
 #   ENV_FILE=infra/docker/.env scripts/smoke-compose.sh
 #   SAGAT_BIN=target/debug/sagat scripts/smoke-compose.sh     # also the first day with the CLI
+#   SAGAT_BIN=target/debug/sagat SAGAT_SMOKE_BROWSER=1 scripts/smoke-compose.sh
 #
 # The stack runs under its own throw-away compose project name, so the final `down -v` can never
 # touch the volumes of the development environment you start by hand.
@@ -18,6 +20,7 @@ cd "$(dirname "$0")/.."
 ENV_FILE="${ENV_FILE:-infra/docker/.env.example}"
 PROJECT="sagat-smoke-$$"
 COMPOSE=(docker compose -p "$PROJECT" -f infra/docker/compose.yaml --env-file "$ENV_FILE")
+SMOKE_WORK=""
 
 # The env file is data, not code: read single values instead of sourcing it. An exported variable
 # of the same name wins, like it does for compose itself.
@@ -40,6 +43,7 @@ cleanup() {
     "${COMPOSE[@]}" ps -a >&2 || true
     "${COMPOSE[@]}" logs --tail=40 >&2 || true
   fi
+  if [ -n "$SMOKE_WORK" ]; then rm -rf "$SMOKE_WORK"; fi
   "${COMPOSE[@]}" --profile seed down -v --remove-orphans >/dev/null 2>&1 || true
   exit "$status"
 }
@@ -146,7 +150,8 @@ echo "ok: the development identity provider refuses a Host header it is not know
 if [ -n "${SAGAT_BIN:-}" ]; then
   echo "--- the first day with the CLI: doctor, publish, serve, run"
   SAGAT_BIN=$(cd "$(dirname "$SAGAT_BIN")" && pwd)/$(basename "$SAGAT_BIN")
-  export SAGAT_SERVER="$API" SAGAT_GRPC="http://127.0.0.1:$(env_value SAGAT_GRPC_PORT 19000)" SAGAT_NAMESPACE=payments
+  SAGAT_GRPC="http://127.0.0.1:$(env_value SAGAT_GRPC_PORT 19000)"
+  export SAGAT_SERVER="$API" SAGAT_GRPC SAGAT_NAMESPACE=payments
   export SAGAT_TOKEN="$TOKEN"
   WORK=$(mktemp -d)
   ( cd "$WORK"
@@ -166,6 +171,42 @@ if [ -n "${SAGAT_BIN:-}" ]; then
   echo "ok: a two-step workflow was published, served and run to the end"
 else
   echo "skipped: the first day with the CLI (set SAGAT_BIN to a built sagat to run it)"
+fi
+
+if [ "${SAGAT_SMOKE_BROWSER:-0}" = "1" ]; then
+  [ -n "${SAGAT_BIN:-}" ] || {
+    echo "SAGAT_SMOKE_BROWSER=1 requires SAGAT_BIN so the workflow is published and bound first" >&2
+    exit 1
+  }
+  [ -f examples/hello-world/typescript/dist/main.js ] || {
+    echo "the TypeScript hello-world is not built; run examples/hello-world/typescript/prepare.sh" >&2
+    exit 1
+  }
+
+  echo "--- the TypeScript SDK starts a run that the real Studio displays"
+  # Use a token minted after the CLI check. It stays in process memory: it is never an argument,
+  # file, URL, log line or Playwright artifact.
+  TOKEN=$(curl -fsS -X POST "$IDP/token" -H 'content-type: application/json' \
+    -d '{"subject":"dev-admin","tenant":"dev"}' \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+  export SAGAT_TOKEN="$TOKEN"
+  SMOKE_WORK=$(mktemp -d)
+  SDK_OUTPUT="$SMOKE_WORK/sdk.out"
+  examples/hello-world/typescript/run.sh Ada >"$SDK_OUTPUT" 2>&1
+  grep -q 'delivering Hello, Ada!' "$SDK_OUTPUT"
+  grep -q ' SUCCEEDED$' "$SDK_OUTPUT"
+  RUN_ID=$(sed -nE 's/^run ([0-9a-f-]{36}) started$/\1/p' "$SDK_OUTPUT" | tail -n1)
+  [ -n "$RUN_ID" ] || { echo "the TypeScript example did not report a run id" >&2; exit 1; }
+
+  export STUDIO_ORIGIN="$STUDIO" STUDIO_RUN_ID="$RUN_ID" STUDIO_TOKEN="$TOKEN"
+  (cd frontend && npx playwright test --config e2e/compose.config.ts)
+  unset STUDIO_TOKEN SAGAT_TOKEN TOKEN
+  rm -rf "$SMOKE_WORK"
+  SMOKE_WORK=""
+  echo "ok: the SDK run is succeeded in the Studio graph, table and journal"
+elif [ "${SAGAT_SMOKE_BROWSER:-0}" != "0" ]; then
+  echo "SAGAT_SMOKE_BROWSER must be 0 or 1" >&2
+  exit 1
 fi
 
 echo "--- smoke test passed"

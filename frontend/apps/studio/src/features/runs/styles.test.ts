@@ -33,9 +33,21 @@ describe('runs.css', () => {
   });
 
   it('draws a link that was taken, one not decided and one omitted differently by pattern, not only by colour', () => {
+    expect(block(css, '.react-flow__edge.edge-taken .react-flow__edge-path')).toMatch(/stroke:\s*var\(--status-ok\)/);
     expect(block(css, '.react-flow__edge.edge-taken .react-flow__edge-path')).not.toMatch(/dasharray/);
-    expect(block(css, '.react-flow__edge.edge-pending .react-flow__edge-path')).toMatch(/stroke-dasharray:\s*8 5/);
-    expect(block(css, '.react-flow__edge.edge-not-taken .react-flow__edge-path')).toMatch(/stroke-dasharray:\s*2 5/);
+    expect(block(css, '.react-flow__edge.edge-pending .react-flow__edge-path')).toMatch(/stroke-dasharray:\s*var\(--graph-edge-pending-dash\)/);
+    const omitted = block(css, '.react-flow__edge.edge-not-taken .react-flow__edge-path');
+    expect(omitted).toMatch(/stroke:\s*var\(--border\)/);
+    expect(omitted).toMatch(/stroke-dasharray:\s*var\(--graph-edge-omitted-dash\)/);
+    expect(omitted).toMatch(/opacity:\s*1/);
+  });
+
+  it('draws the graph on the semantic dotted canvas from the prototype', () => {
+    const canvas = block(css, '.rn-canvas');
+    expect(canvas).toMatch(/background-color:\s*var\(--bg-canvas\)/);
+    expect(canvas).toMatch(/radial-gradient\(var\(--graph-grid-color\)/);
+    expect(canvas).toMatch(/var\(--graph-dot-size\)/);
+    expect(canvas).toMatch(/background-size:\s*var\(--graph-grid-size\) var\(--graph-grid-size\)/);
   });
 
   it('draws an undo or a lookup with a dashed border', () => {
@@ -48,6 +60,7 @@ describe('runs.css', () => {
     const forced = block(css, '@media (forced-colors: active)');
     expect(forced).toMatch(/edge-taken/);
     expect(forced).toMatch(/Highlight/);
+    expect(forced).toMatch(/\.rn-canvas[^}]*background-image:\s*none/);
   });
 
   it('asks for nothing outside the page: no remote URL, no import (the CSP allows the platform origin only)', () => {
@@ -59,5 +72,21 @@ describe('runs.css', () => {
   it('keeps every target in the tables at least 24 pixels', () => {
     expect(block(css, '.link')).toMatch(/min-height:\s*24px/);
     expect(block(css, '.btn.small')).toMatch(/min-height:\s*28px/);
+  });
+
+  it('places the narrow selected-step override after its two-column base rule', () => {
+    const base = css.indexOf('.rn-selected-step {');
+    const narrow = css.indexOf('@media (max-width: 48rem)');
+    expect(base).toBeGreaterThanOrEqual(0);
+    expect(narrow).toBeGreaterThan(base);
+    expect(block(css, '@media (max-width: 48rem)')).toMatch(/\.rn-selected-step\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
+  });
+
+  it('compacts the run summary on wide review screens without changing the narrow layout', () => {
+    const review = block(css, '@media (min-width: 88rem)');
+    expect(review).toMatch(/\.rn-title\s*{[^}]*display:\s*grid/);
+    expect(review).toMatch(/\.rn-title\s*>\s*\.toolbar\s*{[^}]*grid-row:\s*1\s*\/\s*3/);
+    expect(review).toMatch(/\.rn-facts\.rn-grid\s*{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
+    expect(css.indexOf('@media (min-width: 88rem)')).toBeGreaterThan(css.indexOf('.rn-facts.rn-grid {'));
   });
 });

@@ -71,7 +71,7 @@ The floors were fixed before the three measured rounds, after one exploratory ru
 - Load average when the run began: ${env.loadAverageAtStart.join(' ')}
 - Commit: ${env.commit}${env.dirty ? ' (with uncommitted changes at the time of the run)' : ''}
 - Rounds per scenario: ${env.rounds}; each round is a new browser context (a cold page); every cell is the median round, with the lowest and highest in brackets
-- The platform, the engine and the browser on the same machine, over loopback; PostgreSQL in a container
+- The platform, the engine and the browser on the same machine, over loopback; real PostgreSQL (a local server via SAGAT_TEST_DATABASE_URL or the harness container)
 
 ## The editor with a workflow of 1 000 nodes (a chain of 333 diamonds: a condition, two steps, the next condition)
 

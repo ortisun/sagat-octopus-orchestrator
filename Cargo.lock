@@ -3684,12 +3684,15 @@ dependencies = [
  "sagat-application",
  "sagat-domain",
  "sagat-infra-ir",
+ "sagat-telemetry",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.11.0",
  "tokio",
  "tonic",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

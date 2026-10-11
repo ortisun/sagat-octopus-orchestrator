@@ -148,7 +148,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   reviewed first; the light theme is not in the design and is derived from the same hues and the same contrast floor (G160, G161),
   for the owner to review. Nothing forces a theme on a person who set their system to the other. The `data-theme` attribute stays the
   explicit override that the stylesheet and the code editor already read (the editor follows it and the system's scheme); the
-  journeys do not exercise both themes today and T007-044 adds that. A control in the interface to choose a theme is not part of
+  original journeys did not exercise both themes; T007-044 now covers light, dark and forced colours. A control in the interface to choose a theme is not part of
   this decision and is not built.
 - **D158 — The Runs screen is a composition, not a new route.** On a wide viewport the list and the detail pane sit side by side;
   the URL of a run stays `/runs/:id`, so a link, a reload, the back button and the journeys keep their meaning; where the two
@@ -238,8 +238,8 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   Scripts pages, the sign-in and the empty, loading and error states have no reference. The owner asked for all screens at once;
   they are derived from the same tokens and language **without a design**, and each is a proposal for the owner to review, not an
   implementation of one (T007-043).
-- **G162 — The logo is undecided.** The project holds three geometric options and a provisional "S" mark. The Studio keeps its text
-  brand until one is chosen; the provisional mark is not adopted.
+- **G162 — The logo is undecided.** The project holds three geometric options and a provisional "S" mark. The shell uses the text
+  brand and a plain "S" monogram as a provisional treatment; this does not select one of the geometric logos. Owner approval remains open.
 - **G163 — The shell of the prototype lists what the platform does not have.** Schedules, Workers, Task queues, Secrets and
   Settings are other features' pages (no link to a page that does not exist); the counts beside the navigation and the filters
   need a count the API does not give (it pages by cursor); the sidebar's active workers and queue backlog have no read API. **Scripts
@@ -250,10 +250,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **G165 — The prototype's tweaks (`graphLayout`, `liveUpdates`, `defaultTab`) are not settings of the Studio.** The layout is computed
   (D151), updates are followed live with the polling fallback (FR-007-006), and the first tab follows the viewer's preference for motion
   and the size of the graph. Whether any of them should be a setting is the owner's question; none is built as a setting.
-- **G166 — The faces are not in the repository yet.** Until Geist and Geist Mono are added as packages or as files (D159), the Studio
-  draws with the system stacks and the screens differ from the prototype in the shape of the letters and in the width of the text;
-  a layout that fits the prototype's faces is tested with the fallback too, because that is what a browser shows while a face
-  loads.
+- **G166 — Closed: fonts bundled and fallback verified (2026-10-11).** Geist and Geist Mono are pinned to `@fontsource/*` version `5.3.0`
+  (published 2026-07-19, more than two weeks before selection), loaded from the application's origin and distributed with the SIL
+  Open Font License 1.1 in `frontend/apps/studio/public/licenses/geist-OFL.txt`. Geist weights 400/500/600 and Mono 400/500 are
+  imported locally; the system stacks remain. The unit gate checks the imports, versions and licence. The final Chromium suite blocked font files, asserted Geist
+  did not load, and passed 320px reflow with the system fallback; T007-046 is complete.
 - **G167 — The design has a *Send signal* button, the platform has the operation (`signalRun`), the Studio has no such action.**
   A signal has a name, a payload and consequences (it wakes every `waitEvent` node that expects it; one that nobody waits for is a
   `409`), so it is a feature of the Studio with its own confirmation, permission and tests, not a restyle. Not built here; the
@@ -262,3 +263,20 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   journal, which is what the prototype calls *Event history*. A bar view is a new view over the step times of the graph (and, for a
   run of thousands of steps, over the virtualised list of D147); it is not built by this restyle.
 
+## Visual-direction implementation — 2026-10-11
+
+The restyle implements D154–D159 without changing the REST contract or execution semantics: shared tokens, the sidebar/top bar,
+wide Runs list and detail, compact graph cards and curved edges, and derived workflow/Script/sign-in styles. The master list is
+outside the run-specific keyed component, so sibling-run navigation preserves filters, pagination and scroll while resetting the
+detail's selection and operation dialogs. Terminal runs without `finishedAt` show an unknown duration. Omitted edges retain a
+dotted pattern but use the accessible control-border colour at full opacity; the decorative divider colour was too faint.
+
+The real-browser harness now has an explicit `SAGAT_STUDIO_NO_SANDBOX=1` development mode that excludes US02 and starts no sandbox
+runner. Default/CI execution still uses real containers. This is a limited validation path, not an implementation of a sandbox
+guarantee. Both restyled browser benchmarks passed in three cold rounds per scenario with the existing floors unchanged. Current results
+and the passing final browser checks are in `quickstart.md`; owner review is approved and US02 passed with the real sandbox in the Studio CI job linked there.
+
+
+Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
+after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
+automated CI evidence for this branch is recorded separately.
