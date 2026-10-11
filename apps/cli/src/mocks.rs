@@ -172,6 +172,25 @@ impl Mocks {
                 if crate::mocks::bad_name(name) {
                     found.push(format!("{at}: not an activity name"));
                 }
+                let codes = entry
+                    .fail
+                    .iter()
+                    .chain(
+                        entry
+                            .sequence
+                            .iter()
+                            .flatten()
+                            .filter_map(|s| s.fail.as_ref()),
+                    )
+                    .map(|f| f.code.as_str());
+                for code in codes {
+                    if !valid_code(code) {
+                        found.push(format!(
+                            "{at}: a failure code is 1 to 64 capital letters, digits and underscores, not '{}'",
+                            crate::one_line(code)
+                        ));
+                    }
+                }
                 let direct = usize::from(entry.output.is_some())
                     + usize::from(entry.echo == Some(true))
                     + usize::from(entry.fail.is_some())
@@ -348,6 +367,14 @@ fn step_answer(
     Answer::Output(output.cloned().unwrap_or_else(|| json!({})))
 }
 
+/// What the platform takes as the machine code of a failure.
+pub(crate) fn valid_code(code: &str) -> bool {
+    (1..=64).contains(&code.len())
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// Not what the platform takes as the name of an activity.
 pub(crate) fn bad_name(name: &str) -> bool {
     name.is_empty()
@@ -359,6 +386,27 @@ pub(crate) fn bad_name(name: &str) -> bool {
         || !name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
+}
+
+/// The activities of a workflow document by what they are asked to do: the ones it runs, the ones
+/// that undo them and the ones that look up whether an effect happened.
+#[must_use]
+pub fn activities_by_role(
+    document: &Value,
+) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>) {
+    let (mut forward, mut undo, mut lookup) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    for node in document["nodes"].as_array().into_iter().flatten() {
+        for (key, set) in [
+            ("activity", &mut forward),
+            ("compensateWith", &mut undo),
+            ("reconcileWith", &mut lookup),
+        ] {
+            if let Some(name) = node[key].as_str() {
+                set.insert(name.to_owned());
+            }
+        }
+    }
+    (forward, undo, lookup)
 }
 
 /// The activities a workflow document uses: the ones it runs, the ones that undo them and the ones

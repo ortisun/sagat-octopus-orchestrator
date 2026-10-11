@@ -86,6 +86,8 @@ impl std::fmt::Display for CallError {
 
 /// The most of an answer this tool reads: a page of drafts of the largest size the platform keeps.
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
+/// The most a probe, a page of the Studio or the development provider answers with.
+const MAX_PUBLIC_ANSWER: usize = 1024 * 1024;
 
 /// The platform, a token and a namespace.
 pub struct Client {
@@ -99,7 +101,7 @@ pub struct Client {
 /// across a network. The address is parsed the way the HTTP client will read it, so that what is
 /// checked is where the request goes (`http://localhost:80@elsewhere` goes to `elsewhere`), and an
 /// address with a user name or a password in it is refused.
-fn is_safe_address(base: &str) -> bool {
+pub(crate) fn is_safe_address(base: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base) else {
         return false;
     };
@@ -193,6 +195,25 @@ pub fn with_query(path: &str, params: &[(&str, &str)]) -> String {
     out
 }
 
+/// The body of an answer, read chunk by chunk and refused past `cap` bytes: a server that never stops
+/// sending is a transport failure, not memory.
+async fn read_capped(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, CallError> {
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?
+    {
+        if bytes.len() + chunk.len() > cap {
+            return Err(CallError::Transport(
+                "the answer is larger than this tool reads".to_owned(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 fn install_crypto_provider() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -269,20 +290,7 @@ impl Client {
             .await
             .map_err(|e| CallError::Transport(describe(&e)))?;
         let status = response.status().as_u16();
-        let mut response = response;
-        let mut bytes: Vec<u8> = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?
-        {
-            if bytes.len() + chunk.len() > MAX_ANSWER {
-                return Err(CallError::Transport(
-                    "the answer is larger than this tool reads".to_owned(),
-                ));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = read_capped(response, MAX_ANSWER).await?;
         let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         Ok((status, value))
     }
@@ -300,10 +308,7 @@ impl Client {
             .await
             .map_err(|e| CallError::Transport(describe(&e)))?;
         let status = response.status().as_u16();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?;
+        let bytes = read_capped(response, MAX_PUBLIC_ANSWER).await?;
         Ok((
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
@@ -325,10 +330,7 @@ impl Client {
             .await
             .map_err(|e| CallError::Transport(describe(&e)))?;
         let status = response.status().as_u16();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|_| CallError::Transport("the answer was cut short".to_owned()))?;
+        let bytes = read_capped(response, MAX_PUBLIC_ANSWER).await?;
         Ok((
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),

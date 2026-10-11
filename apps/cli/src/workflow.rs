@@ -41,7 +41,7 @@ fn problem_of(error: &DocumentError, path: &Path) -> Result<Diagnostic, String> 
 }
 
 fn say_diagnostics(io: &mut Io<'_>, diagnostics: &[Diagnostic]) {
-    for line in crate::diagnostics::render(diagnostics, crate::docs_base().as_deref()) {
+    for line in crate::diagnostics::render(diagnostics, io.docs()) {
         io.say(line);
     }
 }
@@ -218,7 +218,7 @@ pub(crate) async fn run(
             .call("GET", &format!("/runs/{run}"), None, None)
             .await
             .map_err(|e| e.to_string())?;
-        let status = body["status"].as_str().unwrap_or("?").to_owned();
+        let status = crate::one_line(body["status"].as_str().unwrap_or("?"));
         if status != last {
             io.say(format!("  {status}"));
             last = status.clone();
@@ -230,6 +230,13 @@ pub(crate) async fn run(
             } else {
                 EXIT_FAILED
             });
+        }
+        // Waiting longer would change nothing: only a person moves these.
+        if matches!(status.as_str(), "MANUAL_REVIEW" | "PAUSED") {
+            io.warn(format!(
+                "the run is {status}: it waits for a person (the Studio, or the operator actions of the API). It was not cancelled; follow it with sagat workflow inspect {run}"
+            ));
+            return Ok(EXIT_TIMEOUT);
         }
         if Instant::now() >= deadline {
             io.warn(format!(
@@ -282,7 +289,7 @@ pub(crate) async fn runs(
         return Ok(EXIT_DONE);
     }
     for run in &items {
-        let text = |key: &str| run[key].as_str().unwrap_or("-");
+        let text = |key: &str| crate::one_line(run[key].as_str().unwrap_or("-"));
         io.say(format!(
             "{}  {:<12} started {}{}",
             text("runId"),
@@ -290,7 +297,10 @@ pub(crate) async fn runs(
             text("createdAt"),
             run["finishedAt"]
                 .as_str()
-                .map_or_else(String::new, |at| format!(", finished {at}"))
+                .map_or_else(String::new, |at| format!(
+                    ", finished {}",
+                    crate::one_line(at)
+                ))
         ));
     }
     Ok(EXIT_DONE)
@@ -315,7 +325,7 @@ async fn inspect_run(client: &Client, run: &str, io: &mut Io<'_>) -> Result<(), 
         .call("GET", &format!("/runs/{run}"), None, None)
         .await
         .map_err(|e| e.to_string())?;
-    let text = |key: &str| body[key].as_str().unwrap_or("-");
+    let text = |key: &str| crate::one_line(body[key].as_str().unwrap_or("-"));
     io.say(format!(
         "run {run}  {}  workflow {}  version {}",
         text("status"),
@@ -328,10 +338,13 @@ async fn inspect_run(client: &Client, run: &str, io: &mut Io<'_>) -> Result<(), 
         text("startedBy"),
         body["finishedAt"]
             .as_str()
-            .map_or_else(String::new, |at| format!(", finished {at}"))
+            .map_or_else(String::new, |at| format!(
+                ", finished {}",
+                crate::one_line(at)
+            ))
     ));
     if let Some(trace) = body["traceId"].as_str() {
-        io.say(format!("  trace {trace}"));
+        io.say(format!("  trace {}", crate::one_line(trace)));
     }
     let events = pages(client, &format!("/runs/{run}/events"), 1000).await?;
     io.say(format!("journal ({} entries):", events.len()));
@@ -339,16 +352,16 @@ async fn inspect_run(client: &Client, run: &str, io: &mut Io<'_>) -> Result<(), 
         let mut line = format!(
             "  {:>4}  {}",
             event["seq"].as_u64().unwrap_or(0),
-            event["eventType"].as_str().unwrap_or("?")
+            crate::one_line(event["eventType"].as_str().unwrap_or("?"))
         );
         if let Some(step) = event["stepId"].as_str() {
-            line.push_str(&format!("  {step}"));
+            line.push_str(&format!("  {}", crate::one_line(step)));
             if let Some(attempt) = event["attempt"].as_u64() {
                 line.push_str(&format!(" #{attempt}"));
             }
         }
         if let Some(code) = event["cause"]["code"].as_str() {
-            line.push_str(&format!("  [{code}]"));
+            line.push_str(&format!("  [{}]", crate::one_line(code)));
         }
         io.say(line);
     }
@@ -362,12 +375,12 @@ async fn inspect_run(client: &Client, run: &str, io: &mut Io<'_>) -> Result<(), 
         for attempt in &items {
             let mut line = format!(
                 "  {}  #{}  {}",
-                attempt["node"].as_str().unwrap_or("?"),
+                crate::one_line(attempt["node"].as_str().unwrap_or("?")),
                 attempt["attempt"].as_u64().unwrap_or(0),
-                attempt["outcome"].as_str().unwrap_or("?")
+                crate::one_line(attempt["outcome"].as_str().unwrap_or("?"))
             );
             if let Some(code) = attempt["code"].as_str() {
-                line.push_str(&format!("  [{code}]"));
+                line.push_str(&format!("  [{}]", crate::one_line(code)));
             }
             io.say(line);
         }

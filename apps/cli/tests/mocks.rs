@@ -187,3 +187,33 @@ fn a_lost_answer_is_an_answer_in_a_sequence_too() {
             .contains("exactly one of")
     );
 }
+
+#[test]
+fn a_failure_code_the_platform_would_refuse_is_refused_before_the_worker_starts() {
+    for code in [
+        "lower",
+        "WITH SPACE",
+        "",
+        "X".repeat(65).as_str(),
+        "NEWLINE\n",
+        "ACENTUAÇÃO",
+    ] {
+        let text = format!(
+            "activities:\n  a.b:\n    fail: {{ code: {}, retryable: false }}\n",
+            serde_json::to_string(code).expect("json")
+        );
+        let problems = Mocks::parse(&text, true).expect_err(code);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("a failure code is 1 to 64 capital letters")),
+            "{code:?}: {problems:?}"
+        );
+    }
+    // In a sequence too, and a good one passes.
+    let sequence =
+        "activities:\n  a.b:\n    sequence:\n      - fail: { code: bad, retryable: true }\n";
+    assert!(Mocks::parse(sequence, true).is_err());
+    let good = "activities:\n  a.b:\n    fail: { code: CARD_DECLINED_2, retryable: false }\n";
+    assert!(Mocks::parse(good, true).is_ok());
+}

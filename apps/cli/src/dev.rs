@@ -25,11 +25,7 @@ pub(crate) async fn token(env: &Env, ask: &Ask<'_>, io: &mut Io<'_>) -> Result<u
     let idp = ask
         .idp
         .map(str::to_owned)
-        .or_else(|| {
-            std::env::var("SAGAT_DEV_IDP")
-                .ok()
-                .filter(|v| !v.is_empty())
-        })
+        .or_else(|| env.idp.clone())
         .unwrap_or_else(|| DEFAULT_IDP.to_owned());
     // The client wants a token to carry; this call carries none.
     let client = Client::new(&idp, "none", "")?;
@@ -89,6 +85,12 @@ pub(crate) async fn token(env: &Env, ask: &Ask<'_>, io: &mut Io<'_>) -> Result<u
 /// The token in a file only its owner reads, replacing what was there.
 fn write_private(path: &Path, token: &str) -> std::io::Result<()> {
     use std::io::Write;
+    // Not through a link: a file somebody planted there must not be overwritten with a token.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::other(
+            "it is a symbolic link; name a file, or remove the link",
+        ));
+    }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

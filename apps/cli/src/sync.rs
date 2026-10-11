@@ -51,7 +51,11 @@ fn short(digest: &str) -> &str {
 }
 
 /// The manifest read, every document checked locally, and compared with the platform.
-async fn plan<'a>(session: &Session, loaded: &'a [Loaded]) -> Result<Vec<Item<'a>>, String> {
+async fn plan<'a>(
+    session: &Session,
+    loaded: &'a [Loaded],
+    docs: Option<&str>,
+) -> Result<Vec<Item<'a>>, String> {
     let mut checked = Vec::new();
     let mut refused = Vec::new();
     for item in loaded {
@@ -62,7 +66,7 @@ async fn plan<'a>(session: &Session, loaded: &'a [Loaded]) -> Result<Vec<Item<'a
                 refused.extend(
                     crate::diagnostics::render(
                         &crate::diagnostics::of_document(&item.document),
-                        crate::docs_base().as_deref(),
+                        docs,
                     )
                     .into_iter()
                     .map(|line| format!("    {line}")),
@@ -234,7 +238,7 @@ pub(crate) async fn diff(
     };
     let namespace = common.namespace.clone().unwrap_or(manifest.namespace);
     let session = session(common, env, &namespace)?;
-    let items = plan(&session, &loaded).await?;
+    let items = plan(&session, &loaded, io.docs()).await?;
     show(io, &items);
     let pending = changes(&items);
     io.say(format!(
@@ -273,7 +277,7 @@ pub(crate) async fn publish_documents(
     accept_breaking: bool,
     io: &mut Io<'_>,
 ) -> Result<u8, String> {
-    let items = plan(session, loaded).await?;
+    let items = plan(session, loaded, io.docs()).await?;
     show(io, &items);
     if dry_run {
         io.say(format!(

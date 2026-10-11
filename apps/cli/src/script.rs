@@ -264,7 +264,8 @@ pub(crate) async fn test(
 }
 
 fn report_test(ready: &Ready, run: &Value, io: &mut Io<'_>) -> u8 {
-    let status = run["status"].as_str().unwrap_or("?");
+    let status = crate::one_line(run["status"].as_str().unwrap_or("?"));
+    let status = status.as_str();
     io.say(format!(
         "script {} ({}) test run {status}{}",
         ready.name,
@@ -276,7 +277,7 @@ fn report_test(ready: &Ready, run: &Value, io: &mut Io<'_>) -> u8 {
     if status == "SUCCEEDED" {
         io.say(format!("result: {}", clip(&run["result"].to_string())));
     } else if let Some(code) = run["failure"].as_str() {
-        io.say(format!("failure: {code}"));
+        io.say(format!("failure: {}", one_line(code)));
         io.say(format!("  help: {}", failure_help(code)));
         for denied in run["denied"]
             .as_array()
@@ -334,6 +335,7 @@ pub(crate) async fn publish(
                     .as_str()
                     .ok_or("the version is ready and has no artifact")?;
                 io.say(format!("script {} version {number} is ready", ready.name));
+                let digest = one_line(digest);
                 io.say(format!("artifactDigest {digest}"));
                 io.say(format!(
                     "pin it in a workflow with the node: {{ \"id\": \"{}\", \"type\": \"script\", \"language\": \"{}\", \"artifactDigest\": \"{digest}\" }}",

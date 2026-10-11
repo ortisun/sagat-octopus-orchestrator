@@ -141,20 +141,20 @@ fn token_check(token: Option<&str>) -> Check {
             Some("get a new token before a long command"),
         ),
         Some(exp) => {
-            // The platform refuses a token issued more than an hour ago, whatever its expiry says.
-            let old = facts
-                .issued_at
-                .is_some_and(|iat| now().saturating_sub(iat) > 3300);
-            if old {
+            // The platform refuses a token that is allowed to live more than an hour (the span from
+            // its `iat` to its `exp`), however young it is.
+            let lives = facts.issued_at.map(|iat| exp.saturating_sub(iat));
+            if let Some(span) = lives.filter(|span| *span > 3600) {
                 check(
                     "token",
                     Status::Warn,
                     format!(
-                        "expires in {}{who}, but was issued over 55 minutes ago",
-                        minutes(exp - now())
+                        "expires in {}{who}, but it is made to live {}",
+                        minutes(exp - now()),
+                        minutes(span)
                     ),
                     Some(
-                        "the platform refuses a token issued more than an hour ago: get a fresh one",
+                        "the platform refuses a token that lives more than an hour: ask your identity provider for shorter ones",
                     ),
                 )
             } else {
@@ -444,7 +444,7 @@ pub(crate) async fn run(
                     format!(
                         "the platform knows {} as {} in tenant {}; {}",
                         crate::one_line(body["subject"].as_str().unwrap_or("?")),
-                        body["role"].as_str().unwrap_or("?"),
+                        crate::one_line(body["role"].as_str().unwrap_or("?")),
                         crate::one_line(tenant.as_deref().unwrap_or("?")),
                         abilities(&permissions)
                     ),
@@ -465,17 +465,17 @@ pub(crate) async fn run(
     if token_text.is_some() && !permissions.is_empty() {
         match client.call("GET", "/version", None, None).await {
             Ok((_, body)) => {
-                let server_version = body["version"].as_str().unwrap_or("?");
+                let server_version = crate::one_line(body["version"].as_str().unwrap_or("?"));
                 let ours = env!("CARGO_PKG_VERSION");
-                let max = body["workerProtocol"]["maximum"].as_str().unwrap_or("?");
+                let max = crate::one_line(body["workerProtocol"]["maximum"].as_str().unwrap_or("?"));
                 let mut status = Status::Ok;
                 let mut help = None;
                 let mut detail = format!("platform {server_version}, this tool {ours}, worker protocol up to {max}");
-                if major_minor(server_version) != major_minor(ours) {
+                if major_minor(&server_version) != major_minor(ours) {
                     status = Status::Warn;
                     help = Some("the tool and the platform are not the same release: a command may be missing from the older one; use the same release of both".to_owned());
                 }
-                if let (Some(offered), Some(top)) = (protocol_minor(WORKER_PROTOCOL), protocol_minor(max))
+                if let (Some(offered), Some(top)) = (protocol_minor(WORKER_PROTOCOL), protocol_minor(&max))
                     && top < offered
                 {
                     status = Status::Warn;
@@ -530,7 +530,7 @@ pub(crate) async fn run(
     }
 
     // The worker endpoint and the broker.
-    match common.grpc.clone().or_else(|| std::env::var("SAGAT_GRPC").ok()) {
+    match common.grpc.clone().or_else(|| env.grpc.clone()) {
         Some(address) => checks.push(grpc_check(&address).await),
         None => checks.push(check(
             "worker",

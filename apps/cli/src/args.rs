@@ -30,13 +30,14 @@ ONE WORKFLOW:
     workflow cancel <RUN> --reason <TEXT>
     script test <FILE> [--input <JSON|@FILE>] [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
     script publish <FILE> [--language <typescript|python>] [--name <NAME>] [--timeout <SECONDS>]
-    worker dev --mocks <FILE> [--workflow <FILE>] [--bind] [--show-payloads] [--idle-exit <SECONDS>] [--max-tasks <N>]
+    worker dev --mocks <FILE> [--workflow <FILE>] [--bind] [--show-payloads] [--idle-exit <SECONDS>] [--max-tasks <N>] [--allow-non-dev]
                           serve the activities of a workflow from a file of canned answers and failures
+                          (only in a dev namespace unless --allow-non-dev: it answers real tasks)
     dev token [--idp <URL>] [--subject <SUBJECT>] [--tenant <SLUG>] [--ttl <SECONDS>] [--out <FILE>]
                           a token from the local stack's development identity provider (dev-admin of
                           tenant dev unless said otherwise); only the token is printed, or written
                           with --out for --token-file
-    worker bind [--workflow <FILE>] [<ACTIVITY>...]
+    worker bind [--workflow <FILE>] [<ACTIVITY>...] [--allow-non-dev]
                           let the identity of the token serve those activities (and the ones the workflow
                           names), so that an SDK worker can; it replaces what the identity served there
 
@@ -57,7 +58,7 @@ A MANIFEST KEPT IN GIT:
 
 EXIT CODES:
     0 done   1 failed   2 usage   3 waiting for approval   4 refused as breaking (see --accept-breaking)
-    5 differences (diff --check)   6 the run did not finish in time (workflow run --wait)
+    5 differences (diff --check)   6 it did not finish in time, or waits for a person (workflow run --wait, script test|publish)
 ";
 
 /// A usage error: the message, and the usage text is printed after it.
@@ -171,10 +172,12 @@ pub enum Command {
         idle_exit: Option<u64>,
         max_tasks: Option<u64>,
         show_payloads: bool,
+        allow_non_dev: bool,
     },
     WorkerBind {
         workflow: Option<PathBuf>,
         activities: Vec<String>,
+        allow_non_dev: bool,
     },
     DevToken {
         idp: Option<String>,
@@ -373,6 +376,13 @@ fn number(text: &str, name: &str) -> Result<u32, UsageError> {
 /// # Errors
 /// A [`UsageError`] naming what is wrong.
 pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
+    // `--version` alone is the tool's version, although it is a flag with a value for `promote`.
+    if matches!(args, [only] if only == "--version" || only == "-V") {
+        return Ok(Invocation {
+            common: Common::default(),
+            command: Command::Version,
+        });
+    }
     let (words, mut flags) = split(args)?;
     if flags.take_switch("--help") || flags.take_switch("-h") {
         return Ok(Invocation {
@@ -584,6 +594,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                     workflow: flags.take_value(&["--workflow"]).map(PathBuf::from),
                     bind: flags.take_switch("--bind"),
                     show_payloads: flags.take_switch("--show-payloads"),
+                    allow_non_dev: flags.take_switch("--allow-non-dev"),
                     idle_exit: flags
                         .take_value(&["--idle-exit"])
                         .map(|v| seconds(&v, "--idle-exit", 86_400))
@@ -604,6 +615,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 Command::WorkerBind {
                     workflow,
                     activities: tail.to_vec(),
+                    allow_non_dev: flags.take_switch("--allow-non-dev"),
                 }
             }
             Some((other, _)) => {

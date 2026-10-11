@@ -19,7 +19,7 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
         }
     };
     let mut failed = 0usize;
-    let docs = crate::docs_base();
+    let docs = io.docs().map(str::to_owned);
     for item in &loaded {
         let diagnostics = crate::diagnostics::of_document(&item.document);
         let errors = diagnostics.iter().filter(|d| !d.warning).count();
@@ -116,7 +116,7 @@ pub(crate) async fn check_on_platform(
         )
         .await
         .map_err(|e| e.to_string())?;
-    let docs = crate::docs_base();
+    let docs = io.docs().map(str::to_owned);
     let problems = answer["problems"].as_array().cloned().unwrap_or_default();
     let warnings: Vec<_> = answer["warnings"]
         .as_array()

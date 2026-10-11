@@ -8,6 +8,29 @@ fn argv(line: &str) -> Vec<String> {
 }
 
 #[test]
+fn the_version_of_the_tool_is_asked_for_in_either_way() {
+    for line in ["version", "--version", "-V"] {
+        assert_eq!(
+            parse(&argv(line)).expect("parses").command,
+            Command::Version,
+            "{line}"
+        );
+    }
+    // And as a flag with a value it is still the version of a workflow.
+    assert!(matches!(
+        parse(&argv(
+            "promote --workflow w --to prod --reason r --version 3"
+        ))
+        .expect("parses")
+        .command,
+        Command::Promote {
+            version: Some(3),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn the_commands_take_the_flags_they_document() {
     let publish = parse(&argv(
         "publish --dry-run --accept-breaking --server https://p.example/v1 -f deploy/m.yaml",
@@ -316,7 +339,7 @@ fn scripts_workers_doctor_and_templates_have_their_commands() {
         }
     );
     assert_eq!(
-        parse(&argv("worker dev --mocks m.yaml --workflow w.json --bind --idle-exit 5 --max-tasks 3 --show-payloads --grpc http://127.0.0.1:19000")).expect("parses"),
+        parse(&argv("worker dev --mocks m.yaml --workflow w.json --bind --idle-exit 5 --max-tasks 3 --show-payloads --allow-non-dev --grpc http://127.0.0.1:19000")).expect("parses"),
         sagat_cli::args::Invocation {
             common: sagat_cli::args::Common { grpc: Some("http://127.0.0.1:19000".into()), ..Default::default() },
             command: Command::WorkerDev {
@@ -325,7 +348,8 @@ fn scripts_workers_doctor_and_templates_have_their_commands() {
                 bind: true,
                 idle_exit: Some(5),
                 max_tasks: Some(3),
-                show_payloads: true
+                show_payloads: true,
+                allow_non_dev: true
             }
         }
     );
@@ -337,7 +361,8 @@ fn scripts_workers_doctor_and_templates_have_their_commands() {
         .command,
         Command::WorkerBind {
             workflow: Some("w.json".into()),
-            activities: vec!["payments.charge".into(), "payments.refund".into()]
+            activities: vec!["payments.charge".into(), "payments.refund".into()],
+            allow_non_dev: false
         }
     );
     assert_eq!(
@@ -368,7 +393,8 @@ fn scripts_workers_doctor_and_templates_have_their_commands() {
             .command,
         Command::WorkerBind {
             workflow: None,
-            activities: vec!["payments.charge".into()]
+            activities: vec!["payments.charge".into()],
+            allow_non_dev: false
         }
     );
     assert_eq!(
@@ -483,5 +509,5 @@ fn the_usage_names_every_command_the_parser_takes() {
             "the usage does not mention {command}"
         );
     }
-    assert!(sagat_cli::args::USAGE.contains("6 the run did not finish in time"));
+    assert!(sagat_cli::args::USAGE.contains("6 it did not finish in time"));
 }

@@ -20,7 +20,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 use crate::args::Common;
-use crate::mocks::{Answer, Kind, Mocks, activities_of};
+use crate::mocks::{Answer, Kind, Mocks, activities_by_role, activities_of};
 use crate::{EXIT_DONE, Env, Io, credentials, manifest, namespace_of, one_line, resolve, session};
 
 /// What `worker dev` was asked.
@@ -31,10 +31,43 @@ pub(crate) struct Ask<'a> {
     pub idle_exit: Option<u64>,
     pub max_tasks: Option<u64>,
     pub show_payloads: bool,
+    pub allow_non_dev: bool,
 }
 
 /// Longest a payload shown with `--show-payloads` is.
 const SHOWN: usize = 400;
+
+/// The most tasks asked for at once.
+const MAX_BATCH: u64 = 8;
+
+/// Becomes true when the person stops the worker: Ctrl-C, or the termination signal of a process
+/// manager. One task listens from the start.
+pub(crate) fn stop_signal() -> tokio::sync::watch::Receiver<bool> {
+    let (tell, hear) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            match signal(SignalKind::terminate()) {
+                Ok(mut term) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = term.recv() => {}
+                    }
+                }
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        let _ = tell.send(true);
+    });
+    hear
+}
 
 fn clip(text: &str) -> String {
     let flat = one_line(text);
@@ -43,6 +76,14 @@ fn clip(text: &str) -> String {
     } else {
         format!("{}…", flat.chars().take(SHOWN).collect::<String>())
     }
+}
+
+/// Why a workflow file was not read, in words: never the Debug form of the error.
+fn unreadable(error: manifest::DocumentError, path: &Path) -> String {
+    let (manifest::DocumentError::TooLarge(why)
+    | manifest::DocumentError::Unreadable(why)
+    | manifest::DocumentError::Malformed(why)) = error;
+    format!("{}: {}", path.display(), one_line(&why))
 }
 
 fn read_mocks(env: &Env, path: &Path) -> Result<Mocks, String> {
@@ -140,13 +181,13 @@ impl Dev<'_> {
         Ok(answer.accepted_protocol_version)
     }
 
-    async fn poll(&mut self) -> Result<(Vec<TaskLease>, u64), tonic::Status> {
+    async fn poll(&mut self, want: u64) -> Result<(Vec<TaskLease>, u64), tonic::Status> {
         let request = authed(
             &self.token,
             PollTasksRequest {
                 worker_id: self.worker_id.clone(),
                 session_token: self.session.clone(),
-                max_tasks: 8,
+                max_tasks: i32::try_from(want).unwrap_or(1),
             },
         )
         .map_err(tonic::Status::internal)?;
@@ -157,8 +198,14 @@ impl Dev<'_> {
         ))
     }
 
-    /// Answers one task; returns the line that tells what was done.
-    async fn serve(&mut self, task: &TaskLease, io: &mut Io<'_>) -> Result<(), String> {
+    /// Answers one task. `false` when the worker was told to stop before it answered: the task is
+    /// left to its lease, as a worker that went away would leave it.
+    async fn serve(
+        &mut self,
+        task: &TaskLease,
+        stop: &mut tokio::sync::watch::Receiver<bool>,
+        io: &mut Io<'_>,
+    ) -> Result<bool, String> {
         let Some(kind) = Kind::of(&task.task_kind) else {
             return Err(format!(
                 "a task of a kind this tool does not know ({})",
@@ -167,7 +214,10 @@ impl Dev<'_> {
         };
         let (answer, delay) = self.mocks.answer(kind, &task.activity_name);
         if delay > 0 {
-            tokio::time::sleep(Duration::from_millis(delay)).await;
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                _ = stop.changed() => return Ok(false),
+            }
         }
         let short: String = task.run_id.chars().take(8).collect();
         let label = match kind {
@@ -183,7 +233,7 @@ impl Dev<'_> {
             io.say(format!(
                 "{shown}  takes the task and never answers (a worker that died): the lease will run out"
             ));
-            return Ok(());
+            return Ok(true);
         }
         let key = format!("dev-{}-{}", task.task_id, task.attempt);
         let (outcome, report) = match &answer {
@@ -265,7 +315,7 @@ impl Dev<'_> {
                 ));
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -279,14 +329,54 @@ pub(crate) async fn dev(
     let mut names: BTreeSet<String> = mocks.names();
     let mut missing = Vec::new();
     if let Some(file) = ask.workflow {
-        let loaded = manifest::load_one(&resolve(env, file)).map_err(|e| format!("{e:?}"))?;
-        let used = activities_of(&loaded.value);
-        for name in &used {
-            if !mocks.activities.contains_key(name)
-                && !mocks.compensations.contains_key(name)
-                && !mocks.reconcilers.contains_key(name)
-            {
-                missing.push(name.clone());
+        let path = resolve(env, file);
+        let loaded = manifest::load_one(&path).map_err(|e| unreadable(e, &path))?;
+        let used = named_by(&loaded.value)?;
+        let (forward, undo, lookup) = activities_by_role(&loaded.value);
+        let elsewhere = |name: &String, section: &str| {
+            let others: Vec<&str> = [
+                ("activities", mocks.activities.contains_key(name)),
+                ("compensations", mocks.compensations.contains_key(name)),
+                ("reconcilers", mocks.reconcilers.contains_key(name)),
+            ]
+            .into_iter()
+            .filter(|(s, there)| *there && *s != section)
+            .map(|(s, _)| s)
+            .collect();
+            if others.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (the file has an answer for it under {}, where this workflow does not ask for it)",
+                    others.join(" and ")
+                )
+            }
+        };
+        for name in &forward {
+            if !mocks.activities.contains_key(name) {
+                missing.push(format!(
+                    "no answer for '{}' under activities in the mock file: it will fail as NO_MOCK{}",
+                    one_line(name),
+                    elsewhere(name, "activities")
+                ));
+            }
+        }
+        for name in &undo {
+            if !mocks.compensations.contains_key(name) {
+                missing.push(format!(
+                    "'{}' undoes a step and has no answer under compensations in the mock file: it will succeed with {{}}{}",
+                    one_line(name),
+                    elsewhere(name, "compensations")
+                ));
+            }
+        }
+        for name in &lookup {
+            if !mocks.reconcilers.contains_key(name) {
+                missing.push(format!(
+                    "'{}' looks up whether a step happened and has no answer under reconcilers in the mock file: it will say 'unknown'{}",
+                    one_line(name),
+                    elsewhere(name, "reconcilers")
+                ));
             }
         }
         names.extend(used);
@@ -300,10 +390,17 @@ pub(crate) async fn dev(
     let grpc = common
         .grpc
         .clone()
-        .or_else(|| std::env::var("SAGAT_GRPC").ok())
+        .or_else(|| env.grpc.clone())
         .ok_or("the worker endpoint is missing: pass --grpc <url> or set SAGAT_GRPC (http://127.0.0.1:19000 for the local stack)")?;
+    if !crate::client::is_safe_address(grpc.trim_end_matches('/')) {
+        return Err(
+            "the worker endpoint is an https URL (plain http only for localhost, 127.0.0.1 or [::1]): the token must not travel in the clear"
+                .to_owned(),
+        );
+    }
     let (_, token) = credentials(common, env)?;
     let namespace = namespace_of(common, env)?;
+    let environment = environment_of(common, env, &namespace, ask.allow_non_dev, io).await?;
 
     if ask.bind {
         bind(common, env, &namespace, &names, io).await?;
@@ -320,25 +417,32 @@ pub(crate) async fn dev(
     };
     let protocol = dev.register().await?;
     io.say(format!(
-        "serving {} activit{} in {namespace} at protocol {protocol}; stop with Ctrl-C",
+        "serving {} activit{} in {namespace} ({environment}) at protocol {protocol}; stop with Ctrl-C",
         names.len(),
         if names.len() == 1 { "y" } else { "ies" }
     ));
-    for name in &missing {
-        io.warn(format!(
-            "no answer for '{name}' in the mock file: a compensation will succeed, a reconciliation will say 'unknown', anything else will fail as NO_MOCK"
-        ));
+    for message in &missing {
+        io.warn(message);
     }
     let idle_limit = ask.idle_exit.map(Duration::from_secs);
     let mut idle_since = Instant::now();
     let mut served = 0u64;
-    loop {
-        if ask.max_tasks.is_some_and(|max| served >= max) {
+    // Listening for the signal is one task from here to the end: a signal that arrives while the
+    // loop is in the middle of anything but a poll must not be lost.
+    let mut stop = io.stop();
+    'serving: loop {
+        if *stop.borrow() {
+            io.say("stopping");
             break;
         }
+        let remaining = ask.max_tasks.map(|max| max.saturating_sub(served));
+        if remaining == Some(0) {
+            break;
+        }
+        let want = remaining.map_or(MAX_BATCH, |r| r.min(MAX_BATCH));
         let polled = tokio::select! {
-            polled = dev.poll() => polled,
-            _ = tokio::signal::ctrl_c() => {
+            polled = dev.poll(want) => polled,
+            _ = stop.changed() => {
                 io.say("stopping");
                 break;
             }
@@ -353,12 +457,21 @@ pub(crate) async fn dev(
                         ));
                         break;
                     }
-                    tokio::time::sleep(Duration::from_millis(retry_after.clamp(100, 1000))).await;
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_millis(retry_after.clamp(100, 1000))) => {}
+                        _ = stop.changed() => {
+                            io.say("stopping");
+                            break 'serving;
+                        }
+                    }
                     continue;
                 }
                 idle_since = Instant::now();
                 for task in &tasks {
-                    dev.serve(task, io).await?;
+                    if !dev.serve(task, &mut stop, io).await? {
+                        io.say("stopping");
+                        break 'serving;
+                    }
                     served += 1;
                 }
             }
@@ -382,12 +495,68 @@ pub(crate) async fn dev(
     Ok(EXIT_DONE)
 }
 
+/// The activities a workflow document names, each of them a name and not a pattern: a binding is
+/// made of what a document says, and a document from somebody else's repository can say `*`.
+fn named_by(document: &Value) -> Result<BTreeSet<String>, String> {
+    let names = activities_of(document);
+    for name in &names {
+        if crate::mocks::bad_name(name) {
+            return Err(format!(
+                "the workflow names '{}' as an activity, which is not an activity name: a worker is bound to names, never to patterns",
+                one_line(name)
+            ));
+        }
+    }
+    Ok(names)
+}
+
+/// Which environment the namespace is, and whether canned answers may be given to its tasks. They
+/// may in a `dev` namespace; anywhere else, or when the platform will not say, only when asked.
+async fn environment_of(
+    common: &Common,
+    env: &Env,
+    namespace: &str,
+    allow_non_dev: bool,
+    io: &mut Io<'_>,
+) -> Result<String, String> {
+    let session = session(common, env, namespace)?;
+    let environment = crate::remote::namespaces(&session.client)
+        .await
+        .ok()
+        .and_then(|all| all.into_iter().find(|n| n.slug == namespace))
+        .and_then(|n| n.environment);
+    match (environment.as_deref(), allow_non_dev) {
+        (Some("dev"), _) => Ok("dev".to_owned()),
+        (Some(other), true) => {
+            io.warn(format!(
+                "the namespace {namespace} is {}: its real tasks will get canned answers, as you asked",
+                one_line(other)
+            ));
+            Ok(one_line(other))
+        }
+        (None, true) => {
+            io.warn(format!(
+                "could not tell which environment {namespace} is: its real tasks will get canned answers, as you asked"
+            ));
+            Ok("environment unknown".to_owned())
+        }
+        (Some(other), false) => Err(format!(
+            "the namespace {namespace} is a {} namespace: worker commands here would give canned answers to real tasks (or replace the bindings of real workers). Use a dev namespace, or pass --allow-non-dev if that is what you mean",
+            one_line(other)
+        )),
+        (None, false) => Err(format!(
+            "could not tell which environment {namespace} is (listing the namespaces needs the namespace:read permission): pass --allow-non-dev if you are sure it is a development one"
+        )),
+    }
+}
+
 /// `sagat worker bind`: the same binding `worker dev --bind` makes, for a worker written with an SDK.
 pub(crate) async fn bind_command(
     common: &Common,
     env: &Env,
     workflow: Option<&Path>,
     activities: &[String],
+    allow_non_dev: bool,
     io: &mut Io<'_>,
 ) -> Result<u8, String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
@@ -398,8 +567,9 @@ pub(crate) async fn bind_command(
         names.insert(name.clone());
     }
     if let Some(file) = workflow {
-        let loaded = manifest::load_one(&resolve(env, file)).map_err(|e| format!("{e:?}"))?;
-        names.extend(activities_of(&loaded.value));
+        let path = resolve(env, file);
+        let loaded = manifest::load_one(&path).map_err(|e| unreadable(e, &path))?;
+        names.extend(named_by(&loaded.value)?);
     }
     if names.is_empty() {
         return Err("the workflow names no activity and none was given".to_owned());
@@ -408,6 +578,7 @@ pub(crate) async fn bind_command(
         return Err(format!("at most {} activities", crate::mocks::MAX_NAMES));
     }
     let namespace = namespace_of(common, env)?;
+    environment_of(common, env, &namespace, allow_non_dev, io).await?;
     bind(common, env, &namespace, &names, io).await?;
     Ok(EXIT_DONE)
 }
