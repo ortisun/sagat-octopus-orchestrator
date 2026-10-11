@@ -133,7 +133,7 @@ pass rests it (shares the first page only) for a time that depends on what the s
 
 - **found nobody new** (no tenant the first page did not already show) or **failed** (a page timed out on a backlog too
   large to read in the time the pool allows; the pass shares what the pages before it showed and does not take nothing):
-  the longer of `SAGAT_SCHEDULER_DISCOVERY_REST_MS` (two seconds) and ten times what the search took, up to a minute, so
+  the longer of `SAGAT_SCHEDULER_DISCOVERY_REST_MS` (a tenth of a second) and ten times what the search took, up to a minute, so
   the search costs a tenth of the pass's time at most;
 - **found somebody**: nothing while the search was cheap (under 100 ms), so a tenant behind a burst is served at the next
   tick; twice what it took when it was not, so that the search costs a third of the time at most while the burst and the

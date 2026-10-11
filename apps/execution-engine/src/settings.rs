@@ -456,7 +456,7 @@ impl EngineConfig {
             optional(
                 get,
                 "SAGAT_SCHEDULER_DISCOVERY_REST_MS",
-                u64::try_from(scheduler_defaults.discovery_rest.as_millis()).unwrap_or(2_000),
+                u64::try_from(scheduler_defaults.discovery_rest.as_millis()).unwrap_or(100),
             )?
             .min(MAX_DISCOVERY_REST_MS),
         );

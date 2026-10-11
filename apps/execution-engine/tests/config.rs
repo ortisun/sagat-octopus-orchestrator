@@ -512,8 +512,11 @@ fn the_shard_lease_is_bounded_and_the_replica_is_named_safely() {
     let defaults = parse(&[]).expect("config");
     assert_eq!(defaults.shards.ttl, Duration::from_secs(15));
     assert_eq!(defaults.scheduler.concurrency, 8);
-    assert_eq!(defaults.scheduler.discovery_rest, Duration::from_secs(2));
-    assert_eq!(defaults.dispatch.discovery_rest, Duration::from_secs(2));
+    assert_eq!(
+        defaults.scheduler.discovery_rest,
+        Duration::from_millis(100)
+    );
+    assert_eq!(defaults.dispatch.discovery_rest, Duration::from_millis(100));
     let rested = parse(&[("SAGAT_SCHEDULER_DISCOVERY_REST_MS", "0")]).expect("config");
     assert!(rested.scheduler.discovery_rest.is_zero() && rested.dispatch.discovery_rest.is_zero());
     let clamped = parse(&[("SAGAT_SCHEDULER_DISCOVERY_REST_MS", "9999999")]).expect("config");

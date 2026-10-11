@@ -44,7 +44,7 @@ impl Default for DispatchSettings {
             visibility: Duration::from_secs(30),
             base_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(60),
-            discovery_rest: Duration::from_secs(2),
+            discovery_rest: Duration::from_millis(100),
         }
     }
 }

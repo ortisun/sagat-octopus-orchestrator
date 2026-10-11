@@ -69,7 +69,7 @@ impl Default for SchedulerSettings {
         Self {
             batch: 200,
             fair: true,
-            discovery_rest: Duration::from_secs(2),
+            discovery_rest: Duration::from_millis(100),
             concurrency: 8,
             rehint_after: Duration::from_secs(30),
             idempotency_retention: Duration::from_secs(7 * 24 * 3600),

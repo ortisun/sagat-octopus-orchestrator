@@ -62,7 +62,8 @@ the database holds, and what each costs), the **active throughput** (step transi
 **latency under backlog** (how late a timer fires when many fall due together).
 HEAD
 
-for scenario in waits_at_scale firing_scales_with_concurrency_and_replicas a_noisy_tenant_and_a_quiet_one step_transitions_per_second; do
+# SAGAT_PERF_SCENARIOS names the ones to run (default: all four), e.g. to repeat one.
+for scenario in ${SAGAT_PERF_SCENARIOS:-waits_at_scale firing_scales_with_concurrency_and_replicas a_noisy_tenant_and_a_quiet_one step_transitions_per_second}; do
   echo "== $scenario"
   cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored --nocapture --exact "$scenario"
 done

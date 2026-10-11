@@ -42,3 +42,45 @@ Everything here runs. The numbers it produces are in [`tests/performance/reports
 - Performance reports with hardware/configuration, zero confirmed Run loss in fault injection and validated DR restore: the two reports above, and the chaos and drill steps that fail when a run is lost.
 - Reproducible, annotated errors; no confirmed transition lost.
 - `[x]` only when a real test has passed: `tasks.md` names the test of each.
+
+## Reviews of the implementation (T010-035)
+
+Two rounds, each by two independent reviewers with a fresh context and read access only (security, and correctness), told to
+substantiate every finding with the concrete input or interleaving and to drop what they could not. The first round came
+before the first benchmark and its findings are D246, D248, D250-D252 and G259-G264 of `research.md`. The second came after
+the fairness search was reworked and the last fixes of the first were in; what each of its findings became:
+
+| Finding (severity) | Outcome |
+|---|---|
+| Security: the counters' `SECURITY DEFINER` function can be hijacked through a temporary table, and attached to a table of the caller's own (high) | Fixed: `pg_temp` last in the path, qualified names, `EXECUTE` revoked from PUBLIC (D255). `a_temporary_table_cannot_stand_in_for_the_counters_or_borrow_the_function` fails against the old function |
+| Security: a pool's gauges can be inflated by a tenant with no workers (medium) | Recorded, not built (G265): the ceiling `maxReplicaCount` bounds the cost; the runbook says so |
+| Security: the autoscaler follows a signal a tenant can raise; no check of connections against the server (low) | Partly fixed: `database.serverMaxConnections` makes the chart refuse a ceiling the server does not hold (G267) |
+| Security: the HA example sets plaintext secrets for the worker API (low) | Fixed: the example has the engine terminate TLS |
+| Security: the NetworkPolicy is ingress only (low) | Recorded (G266), the runbook asks for an egress policy |
+| Security: a lease can be set to `infinity` (low) | Fixed: a `CHECK`, and the keeper no longer panics on a time it cannot take (`a_lease_cannot_be_made_to_last_for_ever`) |
+| Security: `SAGAT_SCHEDULER_BATCH` and `SAGAT_OUTBOX_BATCH` unbounded (low) | Fixed: at most 5000 (`a_batch_a_database_should_not_be_asked_for_is_refused_by_name`) |
+| Security: the chart's control-plane probes ask for the engine's paths, so the pods would not start (found as low) | Fixed (D254): `every_probe_of_the_chart_asks_for_a_path_its_process_serves` |
+| Correctness: a failed second page of the fairness search throws the first away and sets no rest; a search that finds somebody is never rested (medium) | Fixed (D257): `a_search_that_fails_shares_what_was_read_and_asks_for_a_rest`; the cost of the search while a burst and another tenant coexist is now stated (ADR-0020, decision 10) |
+| Correctness: the keeper's interval of a third of the lease does not survive two failed rounds (medium) | Fixed: a fifth (D256): `two_failed_rounds_in_a_row_do_not_lose_the_leases` fails with a third |
+| Correctness: the renewal waits for a row an orphan holds, which fails the renewal of every shard (medium-low) | Fixed: `SKIP LOCKED`, and a skipped shard adopted in the same round is not counted as lost (`a_renewal_does_not_wait_for_a_shard_an_orphan_holds_and_renews_the_others`, `a_shard_skipped_by_the_renewal_for_a_moment_is_adopted_in_the_same_round_and_not_lost`) |
+| Correctness: the remainder of a weighted share starves a light tenant among many heavy ones (low-medium) | Fixed (D258): `a_light_tenant_among_many_heavy_ones_is_given_its_fraction_before_they_are_given_theirs` |
+| Correctness: a tick longer than the snapshot's validity makes every later action `fenced` (low) | Fixed: a view per pass. No test of its own: a tick that long is not made on purpose; the e2e and chaos suites run through it |
+| Correctness: an infinite expiry panics the keeper, which nothing notices (low) | Fixed: the clamp, the `CHECK`, and `/livez` includes the keeper's rounds (`the_keeper_is_alive_until_it_stops_rounding_whatever_its_rounds_found`); the other loops are not supervised (G269) |
+| Correctness: a failed sample leaves the autoscalers' gauges at their last value (low) | Fixed: zeroed (`a_sample_that_fails_zeroes_the_gauges_the_autoscalers_read_and_the_backlog_is_the_monitors` fails without it) |
+| Correctness: every replica counts the whole outbox at every round (low) | Fixed: the monitor sets `outbox_backlog`, once (the same test reads it from the page) |
+| Correctness: the chart accepts what the binaries refuse at start (low) | Fixed for secrets without a protected hop, pool names and limits, batch and concurrency, whole numbers; 11 new refusals in `refused.yaml` |
+| Correctness: `data-model.md` says `-infinity` (low) | Fixed |
+| Correctness: `lost_leases` merges two branches and truncates (low) | Recorded (G268) |
+
+Mutation checks of the new tests: with the old counters' function, with a renewal that waits, with the remainder to the
+heaviest weight, with the interval at a third and with a monitor that does not zero its gauges, the tests above fail; with
+the fixes they pass.
+
+The benchmark found one more defect of the fairness search after these reviews (D260): its floor of two seconds between
+searches was longer than the whole drain of the noisy-neighbour scenario, so a tenant that the first page already showed
+was served once and then starved until the rest was over. The floor is a tenth of a second now, the rest stays
+proportional to what the search costs, and the scenario's timers are given an explicit order so that the three policies
+are given the same work.
+
+What the reviews could not look at: the chart in a cluster (it was rendered and read back, never installed: G247), the
+behaviour of the database under a real network partition, and PostgreSQL 16 (CI's version) locally.

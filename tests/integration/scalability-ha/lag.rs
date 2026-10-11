@@ -126,3 +126,127 @@ async fn the_queue_of_a_pool_is_what_is_ready_for_the_activities_it_serves_acros
     assert_eq!(lags[2].ready, 4);
     assert!(w.store.pool_lag(&[]).await.expect("none").is_empty());
 }
+
+/// A monitor store whose sample can be made to fail, over the real one.
+struct Flaky<S> {
+    inner: S,
+    fail_samples: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<S: sagat_application::operations::MonitorStore> sagat_application::operations::MonitorStore
+    for Flaky<S>
+{
+    async fn acquire_monitor(&self) -> Result<bool, sagat_application::error::StoreError> {
+        self.inner.acquire_monitor().await
+    }
+    async fn detect(
+        &self,
+        kind: sagat_domain::operations::AlertKind,
+        thresholds: &sagat_application::operations::Thresholds,
+        bounds: &sagat_application::operations::Bounds,
+    ) -> Result<sagat_application::operations::Detection, sagat_application::error::StoreError>
+    {
+        self.inner.detect(kind, thresholds, bounds).await
+    }
+    async fn reconcile(
+        &self,
+        kind: sagat_domain::operations::AlertKind,
+        detection: &sagat_application::operations::Detection,
+        runbook_base: &str,
+    ) -> Result<sagat_application::operations::Reconciled, sagat_application::error::StoreError>
+    {
+        self.inner.reconcile(kind, detection, runbook_base).await
+    }
+    async fn sample(
+        &self,
+    ) -> Result<sagat_application::operations::Sample, sagat_application::error::StoreError> {
+        if self.fail_samples.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(sagat_application::error::StoreError::Unavailable {
+                detail: "the sample timed out".to_owned(),
+            });
+        }
+        self.inner.sample().await
+    }
+    async fn pool_lag(
+        &self,
+        pools: &[sagat_application::operations::WorkerPool],
+    ) -> Result<Vec<sagat_application::operations::PoolLag>, sagat_application::error::StoreError>
+    {
+        self.inner.pool_lag(pools).await
+    }
+    async fn purge_alerts(
+        &self,
+        retention: std::time::Duration,
+        limit: u32,
+    ) -> Result<u64, sagat_application::error::StoreError> {
+        self.inner.purge_alerts(retention, limit).await
+    }
+}
+
+#[tokio::test]
+async fn a_sample_that_fails_zeroes_the_gauges_the_autoscalers_read_and_the_backlog_is_the_monitors()
+ {
+    use sagat_application::maintenance::OutboxStore;
+    use sagat_scheduler::{Monitor, MonitorSettings};
+
+    // The recorder is installed before anything records, as the processes do at start. No other test
+    // of this binary runs a monitor, so the series below are this test's.
+    sagat_telemetry::Metrics::global();
+    let w = world().await;
+    let runs = sleepers(&w, "gauge-lag", 2).await;
+    sqlx::query(
+        "UPDATE steps SET due_at = clock_timestamp() - interval '20 seconds' WHERE run_id = $1",
+    )
+    .bind(runs[0].as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("age");
+    // A run with an activity ready leaves a hint in the outbox for the dispatcher (a timer does not).
+    let (wf, _) = w.publish(chain("gauge-backlog")).await;
+    w.start(wf, &json!({})).await;
+    let owed = w.store.outbox_backlog().await.expect("backlog");
+    assert!(
+        owed > 0,
+        "a ready activity leaves a message for the dispatcher"
+    );
+
+    let fail_samples = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let monitor = Monitor::new(
+        Flaky {
+            inner: w.store.clone(),
+            fail_samples: std::sync::Arc::clone(&fail_samples),
+        },
+        MonitorSettings::default(),
+    );
+    let value = |series: &str| -> Option<f64> {
+        sagat_telemetry::Metrics::global()
+            .render()
+            .lines()
+            .find_map(|line| line.strip_prefix(series))
+            .and_then(|v| v.trim().parse::<f64>().ok())
+    };
+
+    monitor.run_once().await;
+    assert!(
+        value("scheduler_lag_seconds{pass=\"timers\"} ").is_some_and(|lag| lag >= 19.0),
+        "the lag the autoscaler reads"
+    );
+    assert_eq!(
+        value("outbox_backlog ").map(|n| n as u64),
+        Some(owed),
+        "the backlog is the monitor's, counted once"
+    );
+
+    // The database cannot answer: the gauges are not left at the last value, which would go on scaling
+    // the engine for as long as the failure lasts.
+    fail_samples.store(true, std::sync::atomic::Ordering::SeqCst);
+    monitor.run_once().await;
+    assert_eq!(value("scheduler_lag_seconds{pass=\"timers\"} "), Some(0.0));
+    assert_eq!(value("outbox_backlog "), Some(0.0));
+    assert_eq!(value("ready_steps "), Some(0.0));
+
+    // And they come back with the database.
+    fail_samples.store(false, std::sync::atomic::Ordering::SeqCst);
+    monitor.run_once().await;
+    assert!(value("scheduler_lag_seconds{pass=\"timers\"} ").is_some_and(|lag| lag >= 19.0));
+}

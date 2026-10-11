@@ -714,11 +714,27 @@ async fn a_noisy_tenant_and_a_quiet_one() {
             .execute(&w.db.pool)
             .await
             .expect("vacuum");
-        // Every timer of both tenants due now.
-        sqlx::query("UPDATE steps SET due_at = clock_timestamp() - interval '1 second' WHERE waiting_kind = 'TIMER' AND due_at > clock_timestamp() + interval '30 minutes'")
-            .execute(&w.db.pool)
-            .await
-            .expect("age");
+        // Every timer of both tenants due now, in the order the scenario says: all of A's first, and
+        // B's after them, a microsecond apart. (Left to the clock, the order follows the rows' places
+        // on disk, and after a vacuum the places of the new rows are the old ones' free space, so B's
+        // timers would be mixed in with A's and the policies would not be given the same work.)
+        let first_due: time::OffsetDateTime =
+            sqlx::query_scalar("SELECT clock_timestamp() - interval '1 second'")
+                .fetch_one(&w.db.pool)
+                .await
+                .expect("clock");
+        sqlx::query(
+            "WITH ordered AS ( \
+                 SELECT run_id, node, row_number() OVER (ORDER BY (tenant_id = $1) DESC, run_id) AS n \
+                   FROM steps WHERE waiting_kind = 'TIMER' AND due_at > clock_timestamp() + interval '30 minutes') \
+             UPDATE steps s SET due_at = $2 + make_interval(secs => ordered.n / 1000000.0) \
+               FROM ordered WHERE s.run_id = ordered.run_id AND s.node = ordered.node",
+        )
+        .bind(noisy.as_uuid())
+        .bind(first_due)
+        .execute(&w.db.pool)
+        .await
+        .expect("age");
         let due_since: time::OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&w.db.pool)
             .await

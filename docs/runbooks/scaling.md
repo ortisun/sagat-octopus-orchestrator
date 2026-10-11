@@ -34,7 +34,7 @@ Nothing is lost while a shard waits: timers are rows, the passes catch up as soo
 | `SAGAT_SCHEDULER_CONCURRENCY` | 8 | Candidates of one pass acted on at the same time, each in its own transaction on its own connection. Raise it with a burst of due timers to let a replica use the database; never above what `SAGAT_DB_MAX_CONNECTIONS` can carry. |
 | `SAGAT_SCHEDULER_BATCH` | 200 | Candidates examined per pass per tick. |
 | `SAGAT_DB_MAX_CONNECTIONS` | 10 (the chart sets 20) | `replicas × connections` must stay under the server's `max_connections`, with room for the control plane and the migrations. The engine uses no more concurrency than this less two (it says so when it clamps). Put a pooler in front of the server before the product passes it. |
-| `SAGAT_SCHEDULER_DISCOVERY_REST_MS` | 2000 | The least a pass (and the outbox dispatcher) rests its search for other tenants after one that found nobody new; it rests ten times what the search took if that is longer; see below. 0 never rests. |
+| `SAGAT_SCHEDULER_DISCOVERY_REST_MS` | 100 | The least a pass (and the outbox dispatcher) rests its search for other tenants after one that found nobody new; it rests ten times what the search took if that is longer; see below. 0 never rests. |
 
 **The database is the ceiling.** Every transition is a commit with its journal rows and its outbox row; adding engine replicas moves the work between processes and does not make the server's commits cheaper. When the passes are late and the replicas are not busy, look at the database (`db_pool_connections{state="in_use"}`, the server's CPU and WAL write rate) before adding replicas.
 
