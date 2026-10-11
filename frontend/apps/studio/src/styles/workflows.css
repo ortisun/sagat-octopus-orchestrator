@@ -1,0 +1,863 @@
+/* The workflow builder. Plain CSS on the tokens of base.css; colour is never the only signal (every
+   state also has a word and a shape), and forced-colors mode keeps the borders. */
+
+/* ------------------------------------------------------------------ workflows list */
+.wf-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.wf-page-head h1 {
+  margin: 0;
+  margin-right: auto;
+}
+
+.wf-reason {
+  color: var(--fg-muted);
+  margin: 0 0 var(--gap);
+}
+
+.btn[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------------ editor frame */
+.wf-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: calc(100vh - 110px);
+}
+
+.wf-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+}
+
+.wf-head h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wf-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.wf-toolbar .spacer {
+  margin-left: auto;
+}
+
+.wf-toggle {
+  display: inline-flex;
+}
+
+.wf-toggle .btn {
+  border-radius: 0;
+}
+
+.wf-toggle .btn:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.wf-toggle .btn:last-child {
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin-left: -1px;
+}
+
+/* A pressed toggle is filled and has a bar under it: not only a colour. */
+.btn[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  box-shadow: inset 0 -3px 0 var(--accent-fg);
+}
+
+.btn[aria-pressed="true"]:hover:not(:disabled),
+.wf-dock [role="tab"][aria-selected="true"]:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.1);
+}
+
+.wf-save {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.9em;
+  font-weight: 600;
+}
+
+.wf-save[data-state="saved"] {
+  color: var(--status-ok);
+}
+.wf-save[data-state="dirty"],
+.wf-save[data-state="saving"] {
+  color: var(--status-waiting);
+}
+.wf-save[data-state="conflict"],
+.wf-save[data-state="failed"] {
+  color: var(--status-bad);
+}
+.wf-save[data-state="readonly"] {
+  color: var(--status-idle);
+}
+
+.wf-publish-reason {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.wf-notice {
+  min-height: 1.4em;
+  color: var(--fg-muted);
+  font-size: 0.95em;
+}
+
+.wf-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(260px, 320px);
+  gap: 12px;
+  align-items: start;
+}
+
+/* The columns are named by what is in them, so a missing palette leaves its column empty instead of
+   moving the canvas into it. */
+.wf-palette {
+  grid-column: 1;
+}
+
+.wf-main {
+  grid-column: 2;
+}
+
+.wf-inspector {
+  grid-column: 3;
+}
+
+@media (max-width: 1100px) {
+  .wf-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wf-palette,
+  .wf-main,
+  .wf-inspector {
+    grid-column: 1;
+  }
+}
+
+.wf-panel-title {
+  font-size: 1.05rem;
+  margin: 0 0 8px;
+}
+
+.wf-main {
+  min-width: 0;
+}
+
+.wf-empty-hint {
+  margin: 0 0 8px;
+  color: var(--fg-muted);
+}
+
+/* ------------------------------------------------------------------ palette */
+.wf-palette {
+  width: 190px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 10px;
+  background: var(--bg-subtle);
+  max-height: max(64vh, 420px);
+  overflow: auto;
+}
+
+.wf-palette ul,
+.wf-kinds {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@media (max-width: 1100px) {
+  .wf-palette {
+    width: auto;
+    max-height: none;
+  }
+  .wf-palette ul {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+.wf-kind {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.wf-kind:hover {
+  background: var(--bg-subtle);
+}
+
+.wf-kind-label {
+  font-weight: 700;
+}
+
+.wf-kind-desc {
+  font-size: 0.8em;
+  color: var(--fg-muted);
+}
+
+.wf-kind[data-category="flow"] {
+  border-left-width: 6px;
+}
+.wf-kind[data-category="wait"] {
+  border-style: dashed;
+}
+.wf-kind[data-category="saga"] {
+  border-style: double;
+  border-width: 4px;
+}
+.wf-kind[data-category="end"] {
+  border-radius: 999px;
+}
+
+/* ------------------------------------------------------------------ canvas */
+.wf-canvas {
+  position: relative;
+  height: max(64vh, 420px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.wf-canvas .react-flow {
+  --xy-background-color-default: var(--bg-subtle);
+  --xy-edge-stroke-default: var(--fg-muted);
+  --xy-edge-stroke-selected-default: var(--accent);
+  --xy-edge-label-color-default: var(--fg);
+  --xy-edge-label-background-color-default: var(--bg);
+  --xy-handle-background-color-default: var(--bg-raised);
+  --xy-handle-border-color-default: var(--fg-muted);
+  --xy-controls-button-background-color-default: var(--bg-raised);
+  --xy-controls-button-background-color-hover-default: var(--bg-subtle);
+  --xy-controls-button-color-default: var(--fg);
+  --xy-controls-button-border-color-default: var(--border);
+  --xy-minimap-background-color-default: var(--bg-raised);
+  --xy-minimap-mask-background-color-default: rgb(0 0 0 / 0.15);
+  --xy-minimap-node-background-color-default: var(--fg-muted);
+  --xy-attribution-background-color-default: var(--bg-raised);
+}
+
+.wf-canvas .react-flow__attribution a {
+  color: var(--fg-muted);
+}
+
+.wf-canvas .react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border-width: 2px;
+}
+
+.wf-canvas .react-flow__edge-textbg {
+  fill: var(--bg);
+}
+
+.wf-canvas .react-flow__edge-text {
+  fill: var(--fg);
+}
+
+/* RF removes the outline of a focused node; the card gets its own, and a selected card a second mark. */
+.wf-canvas .react-flow__node:focus-visible .wf-card {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.wf-canvas .react-flow__node.selected .wf-card {
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+.wf-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 84px 6px 10px;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.wf-card[data-simplified="true"] {
+  padding: 4px 8px;
+  justify-content: center;
+}
+
+.wf-card[data-category="flow"] {
+  border-left-width: 8px;
+}
+.wf-card[data-category="wait"] {
+  border-radius: 24px;
+}
+.wf-card[data-category="saga"] {
+  border-style: double;
+  border-width: 5px;
+}
+.wf-card[data-category="end"] {
+  border-width: 3px;
+  border-radius: 999px;
+  padding-left: 18px;
+}
+.wf-card[data-category="start"] {
+  border-style: dashed;
+  padding-right: 36px;
+}
+
+.wf-card[data-problems="true"] {
+  border-color: var(--danger);
+}
+
+.wf-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wf-shape {
+  flex: none;
+}
+
+.wf-type {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.wf-kind-line {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+.wf-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+
+.wf-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: auto;
+}
+
+.wf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.85em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.wf-badge[data-tone="bad"] {
+  color: var(--status-bad);
+}
+.wf-badge[data-tone="warn"] {
+  color: var(--status-waiting);
+}
+.wf-badge[data-tone="info"] {
+  color: var(--info);
+}
+.wf-badge[data-tone="ok"] {
+  color: var(--status-ok);
+}
+
+.wf-ports {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 12px;
+  width: 70px;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+.wf-ports span {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 10px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.wf-card[data-direction="TB"]:not([data-simplified="true"]) {
+  padding: 6px 10px 22px;
+}
+
+.wf-card[data-direction="TB"] .wf-ports {
+  top: auto;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  width: auto;
+  height: 14px;
+  flex-direction: row;
+}
+
+.wf-card[data-direction="TB"] .wf-ports span {
+  justify-content: center;
+}
+
+/* ------------------------------------------------------------------ inspector */
+.wf-inspector {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--bg);
+  max-height: max(64vh, 420px);
+  overflow: auto;
+}
+
+.wf-inspector h2 {
+  overflow-wrap: anywhere;
+}
+
+.wf-inspector h3 {
+  font-size: 1rem;
+  margin-top: 16px;
+}
+
+.wf-inspector fieldset {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  margin: 0 0 var(--gap);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.wf-inspector legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.wf-rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.wf-rename .field {
+  flex: 1;
+}
+
+.wf-duration-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.wf-duration-row input,
+.wf-duration-row select {
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  min-width: 0;
+}
+
+.wf-duration-row input {
+  flex: 1;
+}
+
+.wf-check label {
+  font-weight: 400;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wf-check input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+}
+
+.wf-chips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0;
+  margin: 0 0 8px;
+}
+
+.wf-chips li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.wf-chip-remove {
+  min-width: 24px;
+  min-height: 24px;
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.wf-branches ol {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wf-branches li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wf-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.wf-notes {
+  padding-left: 18px;
+}
+
+.wf-notes li[data-kind="problem"] strong {
+  color: var(--danger);
+}
+
+.wf-picker {
+  margin-bottom: var(--gap);
+}
+
+/* ------------------------------------------------------------------ dock: validation and versions */
+.wf-dock {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.wf-dock-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+}
+
+.wf-summary {
+  font-weight: 600;
+}
+
+.wf-dock-body {
+  margin-top: 8px;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.wf-validation:focus,
+.wf-validation:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.wf-findings {
+  list-style: none;
+  margin: 0 0 var(--gap);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wf-findings li {
+  overflow-wrap: anywhere;
+}
+
+.wf-findings[data-kind="problem"] li > span:first-child {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.wf-chip {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+.wf-chip-plain {
+  font-style: italic;
+}
+
+.wf-versions h3 {
+  margin-top: 16px;
+}
+
+.wf-compare {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: var(--gap) 0;
+}
+
+.wf-compare select {
+  min-height: 36px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  background: var(--bg);
+}
+
+/* ------------------------------------------------------------------ table */
+.wf-table-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.wf-table-tools input {
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.wf-table-scroll {
+  overflow: auto;
+  max-height: 64vh;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+
+.wf-table-scroll[data-virtual="true"] .wf-table {
+  table-layout: fixed;
+  min-width: 960px;
+}
+
+.wf-table-scroll[data-virtual="true"] td,
+.wf-table-scroll[data-virtual="true"] th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-table-scroll[data-virtual="true"] th:nth-child(1) {
+  width: 18%;
+}
+.wf-table-scroll[data-virtual="true"] th:nth-child(2) {
+  width: 10%;
+}
+.wf-table-scroll[data-virtual="true"] th:nth-child(3) {
+  width: 16%;
+}
+.wf-table-scroll[data-virtual="true"] th:nth-child(4) {
+  width: 20%;
+}
+.wf-table-scroll[data-virtual="true"] th:nth-child(5) {
+  width: 12%;
+}
+.wf-table-scroll[data-virtual="true"] th:nth-child(6) {
+  width: 24%;
+}
+
+.wf-table tr[data-selected="true"] {
+  background: var(--info-bg);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.wf-table td,
+.wf-table th {
+  vertical-align: middle;
+}
+
+.wf-cell-id .wf-badge {
+  margin-left: 6px;
+}
+
+.wf-cell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wf-cell-actions .btn {
+  min-height: 28px;
+  padding: 2px 8px;
+}
+
+/* ------------------------------------------------------------------ diff, publish, conflict */
+.wf-diff ul {
+  margin: 0 0 var(--gap);
+  padding-left: 20px;
+}
+
+.wf-diff h3 {
+  font-size: 1rem;
+  margin: 12px 0 6px;
+}
+
+.wf-breaking,
+.wf-attention {
+  border: 2px solid var(--danger);
+  border-left-width: 10px;
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin: 0 0 var(--gap);
+  background: var(--danger-bg);
+}
+
+.wf-attention {
+  border-style: dashed;
+  border-left-style: solid;
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.wf-conflict-actions {
+  display: grid;
+  gap: var(--gap);
+  margin-top: var(--gap);
+}
+
+.wf-conflict-actions p {
+  margin: 4px 0 0;
+}
+
+dialog .wf-kinds {
+  max-height: 60vh;
+  overflow: auto;
+}
+
+dialog {
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.wf-notes-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (forced-colors: active) {
+  .wf-card,
+  .wf-kind,
+  .wf-badge,
+  .wf-save {
+    border-color: CanvasText;
+  }
+  .wf-canvas .react-flow__node.selected .wf-card {
+    outline: 3px solid Highlight;
+  }
+}
+
+/* The cells that name a row are not column headers: base.css shouts those. */
+table.data tbody th[scope="row"] {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: inherit;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* The selected tab is filled and underlined, as a pressed toggle is. */
+.wf-dock [role="tab"][aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  box-shadow: inset 0 -3px 0 var(--accent-fg);
+}
+
+.wf-toolbar .wf-summary {
+  font-size: 0.95em;
+}
+
+/* On a laptop the canvas needs the room more than the palette needs its sentences: the description of a kind
+   stays for assistive technology and for the title of the button, and the palette is a column of names. */
+@media (min-width: 1101px) and (max-width: 1599px) {
+  .wf-palette {
+    width: 150px;
+  }
+  .wf-kind-desc {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}

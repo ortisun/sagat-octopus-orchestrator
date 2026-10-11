@@ -63,6 +63,9 @@ pub enum RunError {
     Migrate(String),
     #[error("authentication setup failed: {0}")]
     Auth(String),
+    /// The Studio directory or its sign-in settings are unusable; the process does not start.
+    #[error("the Studio cannot be served: {0}")]
+    Studio(#[from] sagat_api_http::studio::StudioError),
     /// Outside development the API refuses to run with a database role that could rewrite the
     /// audit trail. The message names the problem, never a connection string.
     #[error("refusing to serve: {0}")]
@@ -79,7 +82,11 @@ impl RunError {
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
         match self {
-            Self::Config(_) | Self::Refused(_) | Self::Auth(_) | Self::LeastPrivilege(_) => 2,
+            Self::Config(_)
+            | Self::Refused(_)
+            | Self::Auth(_)
+            | Self::Studio(_)
+            | Self::LeastPrivilege(_) => 2,
             Self::Database(_)
             | Self::Migrate(_)
             | Self::Io(_)
@@ -412,8 +419,15 @@ pub async fn serve_with_admin(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache),
-    );
-    let app = router_with_governance(exec, governance, serve.limits);
+    )
+    .with_stream_limits(serve.streams);
+    let mut app = router_with_governance(exec, governance, serve.limits);
+    // The Studio is static files on the API's own origin: no CORS, no second listener.
+    if let Some(studio) = serve.studio.clone() {
+        let dir = studio.dir.display().to_string();
+        app = app.merge(sagat_api_http::studio::studio_router(studio)?);
+        tracing::info!(%dir, "serving the Studio under /studio/");
+    }
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
 
     // One shutdown signal drives both listeners.

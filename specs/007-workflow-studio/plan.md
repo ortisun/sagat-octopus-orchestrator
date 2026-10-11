@@ -18,6 +18,7 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **Project Type:** modular Rust monorepo + React frontend + multi-language SDKs.
 - **Performance Goals:** 1k-node DAG usable in the reference browser; virtualized lists for 10k+; FPS targets per UX benchmark.
 - **Constraints:** single-region HA; state loss after ACK forbidden; side effects at-least-once; security-by-default.
+- **Visual direction:** [`design/README.md`](./design/README.md) (FR-007-009, D154–D159): tokens in `frontend/apps/studio/src/styles/base.css`, English labels, the accessibility floor above the prototype, no element without a data source.
 - **Scale/Scope:** scale horizontally without keeping live processes for waits.
 
 ## Constitution Check

@@ -1,10 +1,11 @@
 //! Validation against the published JSON Schema (`specs/001-platform-foundation/contracts`).
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use jsonschema::Validator;
 use sagat_application::definitions::IrIssue;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const SCHEMA: &str =
     include_str!("../../../specs/001-platform-foundation/contracts/workflow.schema.json");
@@ -35,6 +36,84 @@ fn clip(text: &str) -> String {
     }
 }
 
+/// The node types the schema knows, in the order it lists them.
+const NODE_TYPES: &[&str] = &[
+    "activity",
+    "timer",
+    "waitEvent",
+    "condition",
+    "parallel",
+    "child",
+    "saga",
+    "script",
+    "foreach",
+    "humanApproval",
+    "end",
+];
+
+/// One validator per node type, to say what is wrong with a node against the type it claims.
+fn node_validators() -> &'static HashMap<&'static str, Validator> {
+    static VALIDATORS: OnceLock<HashMap<&'static str, Validator>> = OnceLock::new();
+    VALIDATORS.get_or_init(|| {
+        let Ok(schema) = serde_json::from_str::<Value>(SCHEMA) else {
+            return HashMap::new();
+        };
+        let definitions = schema.get("$defs").cloned().unwrap_or(Value::Null);
+        NODE_TYPES
+            .iter()
+            .filter_map(|kind| {
+                let own = json!({"$ref": format!("#/$defs/{kind}"), "$defs": definitions});
+                jsonschema::options()
+                    .should_validate_formats(true)
+                    .build(&own)
+                    .ok()
+                    .map(|validator| (*kind, validator))
+            })
+            .collect()
+    })
+}
+
+/// `/nodes/<index>` and nothing deeper: where a failed `oneOf` over the node types is reported.
+fn is_node_path(path: &str) -> bool {
+    path.strip_prefix("/nodes/")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// What is wrong with `node`, said against the type it claims to be (the generic answer of a
+/// `oneOf`, "is not valid under any of the schemas", tells an author nothing).
+fn node_issues(node: &Value, path: &str) -> Vec<IrIssue> {
+    let issue = |path: String, message: String| IrIssue {
+        path,
+        message: clip(&message),
+    };
+    let Some(kind) = node.get("type").and_then(Value::as_str) else {
+        return vec![issue(
+            format!("{path}/type"),
+            format!("a node needs a `type`, one of {}", NODE_TYPES.join(", ")),
+        )];
+    };
+    let Some(validator) = node_validators().get(kind) else {
+        return vec![issue(
+            format!("{path}/type"),
+            format!(
+                "unknown node type '{}'; expected one of {}",
+                kind.chars().take(32).collect::<String>(),
+                NODE_TYPES.join(", ")
+            ),
+        )];
+    };
+    validator
+        .iter_errors(node)
+        .take(MAX_ISSUES)
+        .map(|error| {
+            issue(
+                format!("{path}{}", error.instance_path()),
+                error.to_string(),
+            )
+        })
+        .collect()
+}
+
 /// The schema problems of `document`, empty when it conforms.
 pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
     let Some(validator) = validator() else {
@@ -45,12 +124,25 @@ pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
             message: "the workflow schema could not be loaded".into(),
         }];
     };
-    validator
-        .iter_errors(document)
-        .take(MAX_ISSUES)
-        .map(|error| IrIssue {
-            path: error.instance_path().to_string(),
+    let mut found = Vec::new();
+    for error in validator.iter_errors(document).take(MAX_ISSUES) {
+        let path = error.instance_path().to_string();
+        let failed_one_of = format!("{:?}", error.kind()).starts_with("OneOf");
+        if failed_one_of
+            && is_node_path(&path)
+            && let Some(node) = document.pointer(&path)
+        {
+            let precise = node_issues(node, &path);
+            if !precise.is_empty() {
+                found.extend(precise);
+                continue;
+            }
+        }
+        found.push(IrIssue {
+            path,
             message: clip(&error.to_string()),
-        })
-        .collect()
+        });
+    }
+    found.truncate(MAX_ISSUES);
+    found
 }

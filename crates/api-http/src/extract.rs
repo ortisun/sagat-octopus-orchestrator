@@ -27,6 +27,8 @@ pub struct Caller {
     pub session: Session,
     pub ctx: RequestContext,
     pub trace: TraceContext,
+    /// When the bearer token expires, in seconds since the Unix epoch.
+    pub token_expires_at: u64,
     _slot: TenantPermit,
 }
 
@@ -36,6 +38,8 @@ pub struct Caller {
 pub struct Authenticated {
     pub session: Session,
     pub slot: TenantPermit,
+    /// When the bearer token expires, in seconds since the Unix epoch.
+    pub expires_at: u64,
 }
 
 /// The one sequence that decides who a bearer token belongs to, shared by every transport:
@@ -74,7 +78,11 @@ pub async fn authenticate_bearer<St: Core>(
             metrics::counter!("http_tenant_concurrency_rejected_total").increment(1);
             ApiError::rate_limited(Duration::from_secs(1))
         })?;
-    Ok(Authenticated { session, slot })
+    Ok(Authenticated {
+        session,
+        slot,
+        expires_at: claims.expires_at,
+    })
 }
 
 impl<St: Core> FromRequestParts<St> for Caller {
@@ -82,7 +90,11 @@ impl<St: Core> FromRequestParts<St> for Caller {
 
     async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers)?;
-        let Authenticated { session, slot } = authenticate_bearer(state, token).await?;
+        let Authenticated {
+            session,
+            slot,
+            expires_at,
+        } = authenticate_bearer(state, token).await?;
         let trace = parts
             .extensions
             .get::<TraceContext>()
@@ -95,6 +107,7 @@ impl<St: Core> FromRequestParts<St> for Caller {
             session,
             ctx,
             trace,
+            token_expires_at: expires_at,
             _slot: slot,
         })
     }

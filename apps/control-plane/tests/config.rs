@@ -502,6 +502,74 @@ fn nonsensical_slow_client_settings_name_their_variable() {
 }
 
 #[test]
+fn event_streams_may_take_at_most_half_of_the_connections_the_server_accepts() {
+    // By default the platform's streams are the lesser of 2 000 and half of the connections (1 024).
+    let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
+    assert_eq!(serve.streams.global, 512);
+    assert_eq!(serve.streams.per_tenant, 200);
+    assert_eq!(serve.streams.per_subject, 20);
+    assert_eq!(serve.server.write_stall_timeout, Duration::from_secs(30));
+
+    // More connections, more streams, up to the ceiling that is set.
+    let mut big = OIDC.to_vec();
+    big.push(("SAGAT_MAX_CONNECTIONS", "8192"));
+    assert_eq!(
+        ServeConfig::from_lookup(&env(&big))
+            .expect("big")
+            .streams
+            .global,
+        2000
+    );
+
+    // A cap above half the connections would let streams starve the API, the probe and the files.
+    let mut starving = OIDC.to_vec();
+    starving.extend([
+        ("SAGAT_MAX_CONNECTIONS", "100"),
+        ("SAGAT_STREAMS_MAX", "51"),
+    ]);
+    match ServeConfig::from_lookup(&env(&starving)) {
+        Err(ConfigError::Invalid { name, reason }) => {
+            assert_eq!(name, "SAGAT_STREAMS_MAX");
+            assert!(reason.contains("half"), "{reason}");
+        }
+        other => panic!("a stream cap that starves the server was accepted: {other:?}"),
+    }
+    let mut fits = OIDC.to_vec();
+    fits.extend([
+        ("SAGAT_MAX_CONNECTIONS", "100"),
+        ("SAGAT_STREAMS_MAX", "50"),
+        ("SAGAT_STREAMS_PER_TENANT", "10"),
+        ("SAGAT_STREAMS_PER_SUBJECT", "3"),
+        ("SAGAT_WRITE_STALL_TIMEOUT_SECS", "5"),
+    ]);
+    let serve = ServeConfig::from_lookup(&env(&fits)).expect("fits");
+    assert_eq!(
+        (
+            serve.streams.global,
+            serve.streams.per_tenant,
+            serve.streams.per_subject
+        ),
+        (50, 10, 3)
+    );
+    assert_eq!(serve.server.write_stall_timeout, Duration::from_secs(5));
+
+    // Zero is not a limit.
+    for name in [
+        "SAGAT_STREAMS_MAX",
+        "SAGAT_STREAMS_PER_TENANT",
+        "SAGAT_STREAMS_PER_SUBJECT",
+        "SAGAT_WRITE_STALL_TIMEOUT_SECS",
+    ] {
+        let mut zero = OIDC.to_vec();
+        zero.push((name, "0"));
+        match ServeConfig::from_lookup(&env(&zero)) {
+            Err(ConfigError::Invalid { name: named, .. }) => assert_eq!(named, name),
+            other => panic!("{name}=0 was accepted: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn the_per_subject_budget_has_its_own_defaults_and_validation() {
     let serve = ServeConfig::from_lookup(&env(&OIDC)).expect("serve config");
     assert!(
@@ -609,4 +677,132 @@ fn an_api_that_receives_secret_values_in_plaintext_outside_development_must_say_
 
     // No ring, nothing to state.
     assert!(ServeConfig::from_lookup(&env(&OIDC)).is_ok());
+}
+
+// ------------------------------------------------------------------ the Studio (D143, D144)
+
+fn with_oidc(extra: &[(&str, &str)]) -> Vec<(&'static str, String)> {
+    let mut pairs: Vec<(&'static str, String)> =
+        OIDC.iter().map(|(k, v)| (*k, (*v).to_owned())).collect();
+    pairs.extend(extra.iter().map(|(k, v)| (leak(k), (*v).to_owned())));
+    pairs
+}
+
+fn leak(name: &str) -> &'static str {
+    Box::leak(name.to_owned().into_boxed_str())
+}
+
+fn serve_with(extra: &[(&str, &str)]) -> Result<ServeConfig, ConfigError> {
+    let owned = with_oidc(extra);
+    let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    ServeConfig::from_lookup(&env(&pairs))
+}
+
+#[test]
+fn the_studio_is_off_unless_a_directory_is_named() {
+    assert!(serve_with(&[]).expect("config").studio.is_none());
+    assert!(
+        serve_with(&[("SAGAT_STUDIO_DIR", "  ")])
+            .expect("config")
+            .studio
+            .is_none(),
+        "a blank value is no value"
+    );
+}
+
+#[test]
+fn a_directory_alone_serves_the_studio_with_a_pasted_token_sign_in() {
+    let studio = serve_with(&[("SAGAT_STUDIO_DIR", "/srv/studio")])
+        .expect("config")
+        .studio
+        .expect("on");
+    assert_eq!(studio.dir, std::path::PathBuf::from("/srv/studio"));
+    assert!(studio.oidc.is_none());
+}
+
+#[test]
+fn an_issuer_and_a_client_id_configure_the_browser_sign_in() {
+    let studio = serve_with(&[
+        ("SAGAT_STUDIO_DIR", "/srv/studio"),
+        (
+            "SAGAT_STUDIO_OIDC_ISSUER",
+            "https://login.example/realms/acme",
+        ),
+        ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+    ])
+    .expect("config")
+    .studio
+    .expect("on");
+    let oidc = studio.oidc.expect("sign-in");
+    assert_eq!(oidc.issuer, "https://login.example/realms/acme");
+    assert_eq!(oidc.client_id, "studio");
+    assert_eq!(oidc.scope, "openid profile", "the default scope");
+
+    let scoped = serve_with(&[
+        ("SAGAT_STUDIO_DIR", "/srv/studio"),
+        (
+            "SAGAT_STUDIO_OIDC_ISSUER",
+            "https://login.example/realms/acme",
+        ),
+        ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+        ("SAGAT_STUDIO_OIDC_SCOPE", "openid email"),
+    ])
+    .expect("config")
+    .studio
+    .expect("on")
+    .oidc
+    .expect("sign-in");
+    assert_eq!(scoped.scope, "openid email");
+}
+
+#[test]
+fn a_half_configured_sign_in_or_one_that_would_leak_a_token_is_refused() {
+    for (extra, name) in [
+        (
+            vec![("SAGAT_STUDIO_OIDC_ISSUER", "https://login.example/")],
+            "SAGAT_STUDIO_OIDC_CLIENT_ID",
+        ),
+        (
+            vec![("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio")],
+            "SAGAT_STUDIO_OIDC_ISSUER",
+        ),
+        (
+            vec![
+                ("SAGAT_STUDIO_OIDC_ISSUER", "http://login.example/"),
+                ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+            ],
+            "SAGAT_STUDIO_OIDC_ISSUER",
+        ),
+        (
+            vec![
+                ("SAGAT_STUDIO_OIDC_ISSUER", "https://user:pw@login.example/"),
+                ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+            ],
+            "SAGAT_STUDIO_OIDC_ISSUER",
+        ),
+        (
+            vec![
+                ("SAGAT_STUDIO_OIDC_ISSUER", "https://login.example/"),
+                ("SAGAT_STUDIO_OIDC_CLIENT_ID", "stu dio"),
+            ],
+            "SAGAT_STUDIO_OIDC_CLIENT_ID",
+        ),
+    ] {
+        let mut pairs = vec![("SAGAT_STUDIO_DIR", "/srv/studio")];
+        pairs.extend(extra);
+        let error = serve_with(&pairs).expect_err(name);
+        assert!(error.to_string().contains(name), "{name}: {error}");
+    }
+    // A loopback issuer over http is how development works.
+    assert!(
+        serve_with(&[
+            ("SAGAT_STUDIO_DIR", "/srv/studio"),
+            (
+                "SAGAT_STUDIO_OIDC_ISSUER",
+                "http://localhost:8081/realms/dev"
+            ),
+            ("SAGAT_STUDIO_OIDC_CLIENT_ID", "studio"),
+        ])
+        .is_ok()
+    );
 }

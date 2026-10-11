@@ -25,11 +25,14 @@ sagat-telemetry.workspace = true
 serde.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
+sha2 = "0.11"
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting", "parsing", "serde", "serde-well-known"] }
-tokio = { workspace = true, features = ["sync", "time", "rt", "net", "macros"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "net", "macros", "fs"] }
+tokio-stream.workspace = true
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 tower-http.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }

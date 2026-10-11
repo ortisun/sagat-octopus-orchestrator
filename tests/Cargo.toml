@@ -97,6 +97,10 @@ name = "sdk_conformance"
 path = "contract/sdk-conformance/main.rs"
 
 [[test]]
+name = "contract_rest_workflow_studio"
+path = "contract/workflow-studio/rest/main.rs"
+
+[[test]]
 name = "contract_grpc_sdk_multilanguage"
 path = "contract/sdk-multilanguage/grpc/main.rs"
 
@@ -209,8 +213,16 @@ name = "e2e_sdk_multilanguage"
 path = "e2e/sdk-multilanguage/main.rs"
 
 [[test]]
+name = "e2e_workflow_studio"
+path = "e2e/workflow-studio/main.rs"
+
+[[test]]
 name = "fault_sdk_multilanguage"
 path = "fault/sdk-multilanguage/main.rs"
+
+[[test]]
+name = "fault_workflow_studio"
+path = "fault/workflow-studio/main.rs"
 
 [[test]]
 name = "perf_sdk_multilanguage"

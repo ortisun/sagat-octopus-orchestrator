@@ -79,6 +79,9 @@ pub struct VerifiedClaims {
     pub subject: String,
     /// Raw value of the tenant claim; resolved against the database by the application layer.
     pub tenant: String,
+    /// When the token expires, in seconds since the Unix epoch. A connection that outlives one
+    /// request (a stream) must not outlive the token that opened it.
+    pub expires_at: u64,
 }
 
 /// Presence of `sub`/`exp` is enforced explicitly (not by serde) so that a missing claim is
@@ -206,7 +209,14 @@ impl TokenVerifier {
             .sub
             .filter(|s| !s.is_empty() && s.len() <= MAX_SUBJECT_BYTES)
             .ok_or(AuthError::Invalid(InvalidReason::MissingClaim))?;
-        Ok(VerifiedClaims { subject, tenant })
+        let expires_at = claims
+            .exp
+            .ok_or(AuthError::Invalid(InvalidReason::MissingClaim))?;
+        Ok(VerifiedClaims {
+            subject,
+            tenant,
+            expires_at,
+        })
     }
 
     fn check_lifetime(&self, claims: &Claims) -> Result<(), AuthError> {

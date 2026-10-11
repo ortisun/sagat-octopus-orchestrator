@@ -8,6 +8,7 @@ pub mod bindings;
 pub mod clock;
 pub mod connectors;
 pub mod definitions;
+pub mod diff;
 pub mod dispatch;
 pub mod egress;
 pub mod entropy;

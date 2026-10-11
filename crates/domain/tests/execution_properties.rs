@@ -737,6 +737,33 @@ fn finish(h: &mut Harness) {
     panic!("the run did not finish in 2000 actions: {:?}", h.state);
 }
 
+/// The graph a client holds is kept equal to the platform's by the steps the events report as
+/// changed (`RunEvent::changed_nodes`, D141): no step may change, or appear, in an action that
+/// journaled no event reporting it.
+fn changes_are_reported(
+    before: &sagat_domain::execution::RunState,
+    h: &Harness,
+    journaled: usize,
+    action: &Action,
+) {
+    let reported: std::collections::BTreeSet<NodeId> = h.journal[journaled..]
+        .iter()
+        .flat_map(sagat_domain::execution::RunEvent::changed_nodes)
+        .collect();
+    for (node, step) in h.state.steps() {
+        if before.step(node) != Some(step) {
+            assert!(
+                reported.contains(node),
+                "{action:?} changed {node} without an event that reports it: {:?}",
+                h.journal[journaled..]
+                    .iter()
+                    .map(sagat_domain::execution::RunEvent::name)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
 /// Applies `picks` (each selects one currently enabled action), checking every invariant after
 /// each step, then lets the run finish. Panics with the offending action on any violation.
 fn drive(shape: usize, picks: &[u16]) -> Harness {
@@ -750,7 +777,11 @@ fn drive(shape: usize, picks: &[u16]) -> Harness {
         let action = actions[usize::from(*pick) % actions.len()].clone();
         let (state_before, journal_before, now_before) =
             (h.state.clone(), h.journal.clone(), h.now);
-        if let Err(error) = perform(&mut h, &action) {
+        let result = perform(&mut h, &action);
+        if result.is_ok() {
+            changes_are_reported(&state_before, &h, journal_before.len(), &action);
+        }
+        if let Err(error) = result {
             assert_eq!(
                 h.state, state_before,
                 "{action:?} failed with {error:?} but changed the state"

@@ -442,7 +442,7 @@ impl RunStore for PgRunStore {
             return Ok(None);
         }
         let rows = sqlx::query(
-            "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, \
+            "SELECT seq, event_type, node, attempt, actor, trace_id, occurred_at, detail, \
                     encode(payload_digest, 'hex') AS payload_ref \
              FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND seq > $3 \
              ORDER BY seq LIMIT $4",
@@ -458,10 +458,24 @@ impl RunStore for PgRunStore {
             .map(|row| {
                 let seq: i64 = col(row, "seq")?;
                 let attempt: Option<i32> = col(row, "attempt")?;
+                let event_type: String = col(row, "event_type")?;
+                let node: Option<String> = col(row, "node")?;
+                let detail: serde_json::Value = col(row, "detail")?;
+                // The steps the event changed, not only the one it names. An event this build cannot
+                // decode (one written by a newer engine) says nothing of what it changed: `None`, and a
+                // change of the graph that holds one is the whole graph.
+                let touched = decode(&event_type, node.as_deref(), &detail).map(|event| {
+                    event
+                        .changed_nodes()
+                        .iter()
+                        .map(|n| n.as_str().to_owned())
+                        .collect()
+                });
                 Ok(JournalEntry {
                     seq: u64::try_from(seq).map_err(|_| corrupt("sequence"))?,
-                    event_type: col(row, "event_type")?,
-                    node: col(row, "node")?,
+                    event_type,
+                    node,
+                    touched,
                     attempt: attempt.and_then(|a| u32::try_from(a).ok()),
                     actor: col(row, "actor")?,
                     trace_id: col(row, "trace_id")?,
@@ -1163,33 +1177,17 @@ impl RunTx for PgRunTx {
             .await
             .map_err(store_error)?;
 
-            if let Some(node) = event.node() {
-                touched.insert(node.clone());
-            }
+            // The steps the event created or changed, from the one definition of them the platform has
+            // (the Studio's changes of the graph are made of the same list).
+            touched.extend(event.changed_nodes());
             self.signals.extend(of_event(event));
             match event {
-                RunEvent::RunStarted { entrypoint } => {
-                    touched.insert(entrypoint.clone());
-                }
-                RunEvent::SagaEntered { node, begin } => {
-                    touched.insert(begin.clone());
-                    sagas.insert(node.clone());
-                }
-                RunEvent::SagaCompleted { node }
+                RunEvent::SagaEntered { node, .. }
+                | RunEvent::SagaCompleted { node }
                 | RunEvent::SagaAborting { node, .. }
-                | RunEvent::SagaCompensated { node, .. } => {
+                | RunEvent::SagaCompensated { node, .. }
+                | RunEvent::CompensationPlanned { node, .. } => {
                     sagas.insert(node.clone());
-                }
-                RunEvent::CompensationPlanned { node, entries, .. } => {
-                    sagas.insert(node.clone());
-                    touched.extend(entries.iter().map(|e| e.node.compensation()));
-                }
-                RunEvent::ReconciliationRequested { node, .. } => {
-                    touched.insert(node.reconciliation());
-                }
-                RunEvent::StepRouted { activated, .. } => touched.extend(activated.iter().cloned()),
-                RunEvent::ParallelForked { branches, .. } => {
-                    touched.extend(branches.iter().cloned())
                 }
                 RunEvent::StepReleased { node }
                 | RunEvent::StepRetryDue { node }

@@ -219,6 +219,13 @@ impl ApiError {
         self
     }
 
+    /// Names why in a form a client can branch on (`details.reason`).
+    #[must_use]
+    pub fn with_reason(mut self, reason: &'static str) -> Self {
+        self.parts.details = Some(json!({ "reason": reason }));
+        self
+    }
+
     /// The error as it will be reported, for transports other than HTTP (the gRPC adapter maps the
     /// same classification onto its own status codes, so both agree on what an error means).
     #[must_use]

@@ -32,6 +32,8 @@ pub mod governance;
 mod limits;
 mod routes;
 mod server;
+pub mod streams;
+pub mod studio;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
@@ -615,6 +617,14 @@ where
             axum::routing::post(ex::publish_workflow::<B<S, C, P, X, E>>),
         )
         .route(
+            "/workflows/{workflow_id}/validate",
+            axum::routing::post(ex::validate_workflow::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/workflows/{workflow_id}/diff",
+            get(ex::diff_workflow::<B<S, C, P, X, E>>),
+        )
+        .route(
             "/workflows/{workflow_id}/versions",
             get(ex::list_versions::<B<S, C, P, X, E>>),
         )
@@ -638,6 +648,14 @@ where
         .route(
             "/runs/{run_id}/graph",
             get(ex::run_graph::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/graph/changes",
+            get(ex::run_graph_changes::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/stream",
+            get(ex::run_stream::<B<S, C, P, X, E>>),
         )
         .route(
             "/runs/{run_id}/operations",

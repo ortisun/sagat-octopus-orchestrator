@@ -37,6 +37,8 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             migrate_on_start: false,
             secrets: None,
             scripts: None,
+            studio: None,
+            streams: sagat_api_http::streams::StreamLimits::default(),
         },
     )
 }

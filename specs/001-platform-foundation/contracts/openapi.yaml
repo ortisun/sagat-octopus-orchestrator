@@ -285,6 +285,65 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/validate:
+    post:
+      operationId: validateWorkflowDraft
+      summary: Check a document without saving or publishing it
+      tags: [Workflows]
+      x-implemented: '007'
+      description: |
+        A dry run of what `publishWorkflow` checks, for an editor that wants to show every problem while the author works. The
+        document is the `ir` in the body or, when the body is `{}`, the stored draft. It is answered **200** whether the
+        document is valid or not: `valid` is false when any problem has the severity `error`, and the problems say where
+        (`nodeId` for a rule that names a node, `path` as a JSON pointer for a schema problem). Schema problems are listed all
+        (at most 20); the graph rules stop at the first one broken, so fix it and validate again. `warnings` are the ones
+        `publishWorkflow` would return. Nothing is stored and nothing is audited. A secret the caller may not use and a script
+        digest no build produced are problems too, answered as publish would. Needs `definition:write`.
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ValidateRequest'}
+      responses:
+        '200': {description: 'The problems found, possibly none', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Validation'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /workflows/{workflowId}/diff:
+    get:
+      operationId: diffWorkflow
+      summary: Compare two documents of a workflow and say which changes break its contract
+      tags: [Workflows]
+      x-implemented: '007'
+      description: |
+        Compares two documents of the workflow, each the draft (`draft`) or a published version (its number). The default is the
+        active version against the draft; a workflow with no version compares an empty document against the draft. The comparison
+        is of the documents as written, so a draft that does not validate can be compared. `breaking` lists what can make a
+        caller or an emitter of the contract fail: a trigger removed or changed, an input property removed, retyped or newly
+        required, an output property removed or retyped, an awaited event type removed or renamed. `attention` lists what
+        somebody must prepare: an activity name added or changed (a worker must serve it and be bound to it), a secret name added,
+        a script digest changed. Runs already started are pinned to their version and are not affected by either. Needs
+        `definition:read`.
+      parameters:
+        - {$ref: '#/components/parameters/WorkflowId'}
+        - {name: from, in: query, required: false, schema: {type: string, pattern: '^(draft|[1-9][0-9]{0,8})$'}, description: 'The older side: `draft` or a version number. Default: the active version.'}
+        - {name: to, in: query, required: false, schema: {type: string, pattern: '^(draft|[1-9][0-9]{0,8})$'}, description: 'The newer side. Default: `draft`.'}
+      responses:
+        '200': {description: 'The differences', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DefinitionDiff'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /workflows/{workflowId}/versions:
     get:
       operationId: listWorkflowVersions
@@ -428,6 +487,58 @@ paths:
         - {$ref: '#/components/parameters/RunId'}
       responses:
         '200': {description: 'Runtime graph', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/graph/changes:
+    get:
+      operationId: getRuntimeGraphChanges
+      summary: Get what changed in the runtime graph after a journal sequence
+      tags: [Runs]
+      x-implemented: '007'
+      description: |
+        The polling form of the live view. `since` is the `projectionSeq` the client last saw. The answer carries the journal
+        events after it (light: sequence, type, node, attempt, time), the full object of every node those events name or create (a node
+        changes only through events that name it or activate it: a routing, a fork, a saga entered, a compensation plan or a lookup carry the steps they create) and the new `projectionSeq`, so a client updates a few nodes and does not reload the graph. Every
+        transition of a run is a journal event with a sequence, so nothing that happens between two reads is missed. `reset` is
+        true, and `nodes` and `edges` are the whole graph, when `since` is ahead of the run or more than 500 events behind it. A
+        `since` equal to the run's version answers with no events and no nodes. Needs `run:read`.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: since, in: query, required: true, schema: {type: integer, format: int64, minimum: 0}}
+      responses:
+        '200': {description: 'The changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/GraphChanges'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/stream:
+    get:
+      operationId: streamRunChanges
+      summary: Follow a run as a stream of graph changes
+      tags: [Runs]
+      x-implemented: '007'
+      description: |
+        `text/event-stream`. The same payload as `getRuntimeGraphChanges`, pushed: an `event: graph` for every change, its `id` the
+        new `projectionSeq` and its `data` a `GraphChanges` object (one line of JSON). The first event is sent at once (the
+        changes after `after`, or the whole graph when `after` is absent). A reconnecting client sends `Last-Event-ID` (or
+        `after`) and misses nothing. A comment line (`: ping`) is sent every 15 seconds. The server closes the stream when the
+        run is finished and the last change is sent (`event: end`), when the caller's token expires, and after 15 minutes at the
+        latest (`event: reconnect`); a client that is not told `end` reconnects. Browsers cannot send an `Authorization` header
+        with `EventSource`: read this stream with `fetch`. At most 20 streams per subject and 200 per tenant are open at once
+        (`429` beyond). Needs `run:read`.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: after, in: query, required: false, schema: {type: integer, format: int64, minimum: 0}, description: 'The projection sequence the client has; `Last-Event-ID` wins when both are sent.'}
+      responses:
+        '200': {description: 'The stream', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {text/event-stream: {schema: {type: string}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -2294,6 +2405,143 @@ components:
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/JournalEvent'}}
         nextCursor: {type: [string, 'null']}
+    ValidateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        ir: {$ref: '#/components/schemas/JsonObject'}
+    DefinitionProblem:
+      type: object
+      required: [severity, code, message]
+      properties:
+        severity: {type: string, enum: [error, warning]}
+        code: {type: string, description: 'Stable, upper snake case: SCHEMA, DOCUMENT_TOO_LARGE, DOCUMENT_MALFORMED, UNSUPPORTED_NODE, EXPRESSION, NAME_MISMATCH, UNKNOWN_SCRIPT, SECRET_UNAVAILABLE, CYCLE, UNREACHABLE, UNKNOWN_TARGET, UNKNOWN_ENTRYPOINT, DUPLICATE_NODE, and the other graph rules; a warning has its own (COMPENSATION_OUTSIDE_SAGA, RECURSIVE_CHILD).'}
+        message: {type: string, description: 'Safe: never holds a value of the document beyond a clipped fragment.'}
+        nodeId: {type: [string, 'null'], description: 'The node the problem is about, when a rule names one.'}
+        path: {type: [string, 'null'], description: 'A JSON pointer into the document, for a schema problem.'}
+    Validation:
+      type: object
+      required: [valid, problems, warnings]
+      properties:
+        valid: {type: boolean}
+        digest: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$', description: 'The digest of the canonical document, when it is valid.'}
+        problems: {type: array, items: {$ref: '#/components/schemas/DefinitionProblem'}}
+        warnings: {type: array, items: {$ref: '#/components/schemas/DefinitionProblem'}}
+    DiffSide:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [version, draft, empty]}
+        number: {type: [integer, 'null'], description: 'The version number, for `version`.'}
+        revision: {type: [integer, 'null'], description: 'The draft revision, for `draft`.'}
+    DiffFinding:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string, description: 'TRIGGER_REMOVED, TRIGGER_CHANGED, INPUT_PROPERTY_REMOVED, INPUT_TYPE_CHANGED, INPUT_REQUIRED_ADDED, OUTPUT_PROPERTY_REMOVED, OUTPUT_TYPE_CHANGED, EVENT_TYPE_REMOVED (breaking); ACTIVITY_ADDED, ACTIVITY_CHANGED, SECRET_ADDED, SCRIPT_CHANGED (attention).'}
+        message: {type: string}
+        nodeId: {type: [string, 'null']}
+        path: {type: [string, 'null']}
+    DiffEdge:
+      type: object
+      required: [from, to, kind]
+      properties:
+        from: {type: string}
+        to: {type: string}
+        kind: {type: string}
+    DefinitionDiff:
+      type: object
+      required: [from, to, identical, nodes, edges, changes, breaking, attention]
+      properties:
+        from: {$ref: '#/components/schemas/DiffSide'}
+        to: {$ref: '#/components/schemas/DiffSide'}
+        identical: {type: boolean}
+        nodes:
+          type: object
+          required: [added, removed, changed]
+          properties:
+            added: {type: array, items: {type: string}}
+            removed: {type: array, items: {type: string}}
+            changed:
+              type: array
+              items:
+                type: object
+                required: [id, fields]
+                properties:
+                  id: {type: string}
+                  fields: {type: array, items: {type: string}, description: 'The top-level fields of the node that differ.'}
+        edges:
+          type: object
+          required: [added, removed]
+          properties:
+            added: {type: array, items: {$ref: '#/components/schemas/DiffEdge'}}
+            removed: {type: array, items: {$ref: '#/components/schemas/DiffEdge'}}
+        changes:
+          type: array
+          description: 'Differences outside the nodes: metadata, entrypoint, triggers, schemas.'
+          items:
+            type: object
+            required: [path, change]
+            properties:
+              path: {type: string}
+              change: {type: string, enum: [added, removed, changed]}
+        changesOmitted: {type: integer, minimum: 0, description: 'How many differences outside the nodes are not in `changes`, which lists the first thousand.'}
+        breaking: {type: array, description: 'At most a hundred; a last finding with the code `MORE_FINDINGS` says how many more there are.', items: {$ref: '#/components/schemas/DiffFinding'}}
+        attention: {type: array, description: 'At most a hundred; a last finding with the code `MORE_FINDINGS` says how many more there are.', items: {$ref: '#/components/schemas/DiffFinding'}}
+    GraphEvent:
+      type: object
+      required: [seq, eventType, occurredAt]
+      properties:
+        seq: {type: integer, format: int64, minimum: 1}
+        eventType: {type: string}
+        occurredAt: {type: string, format: date-time}
+        stepId: {type: [string, 'null']}
+        attempt: {type: [integer, 'null']}
+    GraphChanges:
+      type: object
+      required: [runId, status, fromSeq, projectionSeq, reset, events, nodes]
+      properties:
+        runId: {type: string, format: uuid}
+        status: {type: string}
+        fromSeq: {type: integer, format: int64, minimum: 0, description: 'The `since` the answer is relative to.'}
+        projectionSeq: {type: integer, format: int64, minimum: 0}
+        reset: {type: boolean, description: 'True when `nodes` and `edges` are the whole graph and the client must replace what it has.'}
+        events: {type: array, items: {$ref: '#/components/schemas/GraphEvent'}}
+        nodes: {type: array, items: {$ref: '#/components/schemas/RuntimeNode'}}
+        edges: {type: array, items: {$ref: '#/components/schemas/RuntimeEdge'}, description: 'Only when `reset` is true.'}
+    RuntimeNode:
+      type: object
+      required: [id, type, status]
+      properties:
+        id: {type: string}
+        type: {type: string}
+        status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
+        attempt: {type: integer}
+        generation: {type: integer}
+        cancelRequested: {type: boolean}
+        failureCode: {type: [string, 'null']}
+        nextAttemptAt: {type: [string, 'null'], format: date-time}
+        dueAt: {type: [string, 'null'], format: date-time}
+        waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).'}
+        childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
+        kind: {type: string, enum: [FORWARD, COMPENSATION, RECONCILIATION], description: 'Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.'}
+        forward: {type: [string, 'null'], description: 'For a compensation or a reconciliation: the forward node it is about.'}
+        saga:
+          type: [object, 'null']
+          description: 'For a `saga` node: what the run knows about it.'
+          required: [phase, irreversible]
+          properties:
+            phase: {type: string, enum: [FORWARD, ABORTING, COMPENSATING, DONE]}
+            cause: {type: [string, 'null'], description: 'Why the saga compensates, or did.'}
+            outcome: {type: [string, 'null'], enum: [COMPENSATED, PARTIAL, COMPENSATION_FAILED, null]}
+            irreversible: {type: array, items: {type: string}, description: 'Completed steps whose effect could not be undone.'}
+    RuntimeEdge:
+      type: object
+      required: [from, to, kind]
+      properties:
+        from: {type: string}
+        to: {type: string}
+        kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout, begin, compensation, reconcile], description: '`begin`: the first step of the body of a saga. `compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
     RuntimeGraph:
       type: object
       required: [runId, projectionSeq, nodes, edges]
@@ -2302,43 +2550,8 @@ components:
         status: {type: string}
         projectionSeq: {type: integer, format: int64}
         projectionLagMs: {type: integer, minimum: 0}
-        nodes:
-          type: array
-          items:
-            type: object
-            required: [id, type, status]
-            properties:
-              id: {type: string}
-              type: {type: string}
-              status: {type: string, enum: [NOT_STARTED, PENDING, READY, LEASED, RUNNING, WAITING, RETRY_WAIT, SUCCEEDED, FAILED, CANCELLED, SKIPPED]}
-              attempt: {type: integer}
-              generation: {type: integer}
-              cancelRequested: {type: boolean}
-              failureCode: {type: [string, 'null']}
-              nextAttemptAt: {type: [string, 'null'], format: date-time}
-              dueAt: {type: [string, 'null'], format: date-time}
-              waitingOn: {type: [string, 'null'], enum: [timer, event, branches, child, saga, reconciliation, operator, null], description: '`saga`: a saga node while its body works, compensates or waits. `reconciliation`: the lookup `<id>~r` is finding out whether the effect happened. `operator`: a person has to decide (RETRY_STEP, RETRY_COMPENSATION, SKIP_COMPENSATION or RESOLVE_STEP).'}
-              childRunId: {type: [string, 'null'], format: uuid, description: 'The child run a `child` node reserved.'}
-              kind: {type: string, enum: [FORWARD, COMPENSATION, RECONCILIATION], description: 'Forward work, the compensation `<id>~c` of a node, or the lookup `<id>~r` that finds out whether it happened.'}
-              forward: {type: [string, 'null'], description: 'For a compensation or a reconciliation: the forward node it is about.'}
-              saga:
-                type: [object, 'null']
-                description: 'For a `saga` node: what the run knows about it.'
-                required: [phase, irreversible]
-                properties:
-                  phase: {type: string, enum: [FORWARD, ABORTING, COMPENSATING, DONE]}
-                  cause: {type: [string, 'null'], description: 'Why the saga compensates, or did.'}
-                  outcome: {type: [string, 'null'], enum: [COMPENSATED, PARTIAL, COMPENSATION_FAILED, null]}
-                  irreversible: {type: array, items: {type: string}, description: 'Completed steps whose effect could not be undone.'}
-        edges:
-          type: array
-          items:
-            type: object
-            required: [from, to, kind]
-            properties:
-              from: {type: string}
-              to: {type: string}
-              kind: {type: string, enum: [next, error, 'true', 'false', branch, timeout, compensation, reconcile], description: '`compensation`: the compensation at `to` waits for the one at `from`. `reconcile`: `to` finds out whether `from` happened.'}
+        nodes: {type: array, items: {$ref: '#/components/schemas/RuntimeNode'}}
+        edges: {type: array, items: {$ref: '#/components/schemas/RuntimeEdge'}}
     CompensationPlans:
       type: object
       required: [sagas]
@@ -2379,7 +2592,7 @@ components:
       type: object
       required: [operationId, accepted]
       properties:
-        operationId: {type: string, format: uuid}
+        operationId: {type: string, format: uuid, description: 'Derived from the run and the Idempotency-Key: a request sent again with its key is answered with the same id. It names the request; it is not a stored record (the journal holds what was decided).'}
         accepted: {type: boolean}
         runStatus: {type: string}
         runVersion: {type: integer, format: int64}

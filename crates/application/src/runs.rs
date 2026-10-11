@@ -67,6 +67,10 @@ pub struct JournalEntry {
     pub occurred_at: OffsetDateTime,
     /// Digest of the payload the event refers to (a step output), hex.
     pub payload_ref: Option<String>,
+    /// Every step the event created or changed: the one it names and the ones it activated
+    /// (`RunEvent::changed_nodes`). The journal view shows `node` only; the changes of the graph
+    /// need all of them. `None` for an event this build cannot decode, whose effect is not known.
+    pub touched: Option<Vec<String>>,
 }
 
 /// One step as the runtime graph shows it.
@@ -106,6 +110,32 @@ pub struct GraphSnapshot {
     pub definition: Arc<WorkflowDefinition>,
     pub steps: Vec<StepView>,
     pub sagas: Vec<SagaView>,
+}
+
+/// Most journal events a [`GraphChanges`] carries; a client further behind than this is given the
+/// whole graph, which is cheaper than replaying a long history node by node.
+pub const MAX_CHANGE_EVENTS: u32 = 500;
+
+/// What happened to a run's graph after a journal sequence (the live view, D141): the graph as it
+/// is now, and the journal events that led from the client's sequence to it, so the client can
+/// update the nodes those events touched and keep the rest.
+#[derive(Debug, Clone)]
+pub struct GraphChanges {
+    pub graph: GraphSnapshot,
+    /// The sequence the client had.
+    pub since: u64,
+    /// The client must replace what it has with the whole graph.
+    pub reset: bool,
+    /// Events with `since < seq <= graph.run.version`, ascending; empty on a reset.
+    pub events: Vec<JournalEntry>,
+}
+
+impl GraphChanges {
+    /// The sequence the graph is at.
+    #[must_use]
+    pub fn projection_seq(&self) -> u64 {
+        self.graph.run.version
+    }
 }
 
 /// Filters of a run listing.
@@ -541,6 +571,69 @@ where
             Some(graph) => Ok(graph),
             None => Err(self.missing(principal, id, ctx).await),
         }
+    }
+
+    /// What changed in the run's graph after journal sequence `since`.
+    ///
+    /// Every transition of a run is a journal event with a sequence, so a client that reads the
+    /// changes after the last sequence it saw misses nothing, however many snapshots it skipped.
+    /// A `since` ahead of the run, or more than [`MAX_CHANGE_EVENTS`] events behind it, is a
+    /// `reset`: the answer is the whole graph.
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`].
+    pub async fn graph_changes(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        since: u64,
+        ctx: &RequestContext,
+    ) -> Result<GraphChanges, AppError> {
+        let graph = self.graph(principal, id, ctx).await?;
+        let projection = graph.run.version;
+        if since > projection {
+            return Ok(GraphChanges {
+                graph,
+                since,
+                reset: true,
+                events: Vec::new(),
+            });
+        }
+        if since == projection {
+            return Ok(GraphChanges {
+                graph,
+                since,
+                reset: false,
+                events: Vec::new(),
+            });
+        }
+        let Some(mut events) = self
+            .store
+            .journal(
+                principal.tenant_id(),
+                id,
+                Some(since),
+                MAX_CHANGE_EVENTS + 1,
+            )
+            .await?
+        else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        // What the snapshot already includes and no more: events after it are the next read's.
+        events.retain(|event| event.seq <= projection);
+        // More events than a delta carries, or one whose effect on the graph is not known (an event of a
+        // newer engine): the whole graph is the answer that cannot be wrong.
+        let reset = events.len() > MAX_CHANGE_EVENTS as usize
+            || events.iter().any(|event| event.touched.is_none());
+        if reset {
+            events.clear();
+        }
+        Ok(GraphChanges {
+            graph,
+            since,
+            reset,
+            events,
+        })
     }
 
     /// Cancels, pauses or resumes a run. `expected_version`, when given, must equal the run's

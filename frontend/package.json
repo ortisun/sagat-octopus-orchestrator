@@ -1,0 +1,23 @@
+{
+  "name": "@sagat/frontend",
+  "private": true,
+  "type": "module",
+  "description": "The Studio of the Sagat Octopus Orchestrator: authoring of workflows and the live view of runs.",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "e2e"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @sagat/studio",
+    "dev": "npm run dev --workspace @sagat/studio",
+    "typecheck": "npm run typecheck --workspace @sagat/studio",
+    "lint": "npm run lint --workspace @sagat/studio",
+    "test": "npm run test --workspace @sagat/studio",
+    "api": "npm run api --workspace @sagat/studio",
+    "check:api": "npm run check:api --workspace @sagat/studio",
+    "e2e": "npm run test --workspace @sagat/e2e"
+  }
+}
