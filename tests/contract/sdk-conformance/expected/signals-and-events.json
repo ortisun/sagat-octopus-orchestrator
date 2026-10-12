@@ -149,7 +149,7 @@
       "ok": true,
       "op": "startWorker",
       "result": {
-        "protocolVersion": "1.2"
+        "protocolVersion": "1.3"
       }
     },
     {
