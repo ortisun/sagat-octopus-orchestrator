@@ -11,6 +11,7 @@ use std::future::Future;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::quota::{self, QuotaError, QuotaResource, QuotaScope, QuotaSource};
+use sagat_domain::workflow::ActivityName;
 
 use crate::authz::{NamespaceDirectory, require_namespace};
 use crate::clock::Clock;
@@ -73,8 +74,38 @@ pub struct StoredLimit {
     pub value: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredActivityLimit {
+    pub activity: ActivityName,
+    pub value: u64,
+    pub used: u64,
+}
+
 /// Storage port of the quota administration. Implemented by `sagat-infra-postgres`.
 pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
+    fn activity_settings(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<Vec<StoredActivityLimit>, StoreError>> + Send;
+
+    fn put_activity_setting(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+        value: Option<u64>,
+        changed_by: &str,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    fn activity_usage(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// What was set at one level: `namespace == None` is the tenant-wide level.
     fn settings(
         &self,
@@ -142,6 +173,15 @@ pub struct QuotaView {
     pub used: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityQuotaView {
+    pub activity: ActivityName,
+    pub limit: u64,
+    pub used: u64,
+    pub ceiling: u64,
+    pub overridden: bool,
+}
+
 /// Reads and changes quotas.
 pub struct QuotaService<S, C> {
     store: S,
@@ -153,6 +193,133 @@ where
     S: QuotaStore,
     C: Clock,
 {
+    /// Activity-specific concurrency overrides stored for a namespace.
+    pub async fn list_activity_limits(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<ActivityQuotaView>, AppError> {
+        principal.authorize(Permission::QuotaRead)?;
+        self.check_namespace(principal, Some(namespace), ctx)
+            .await?;
+        let tenant = principal.tenant_id();
+        let ceiling = self.activity_ceiling(tenant).await?;
+        let mut views = Vec::new();
+        for stored in self.store.activity_settings(tenant, namespace).await? {
+            views.push(ActivityQuotaView {
+                activity: stored.activity,
+                limit: stored.value.min(ceiling),
+                used: stored.used,
+                ceiling,
+                overridden: true,
+            });
+        }
+        Ok(views)
+    }
+
+    pub async fn set_activity_limit(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        activity: ActivityName,
+        value: u64,
+        ctx: &RequestContext,
+    ) -> Result<ActivityQuotaView, AppError> {
+        principal.authorize(Permission::QuotaManage)?;
+        self.check_namespace(principal, Some(namespace), ctx)
+            .await?;
+        let ceiling = self.activity_ceiling(principal.tenant_id()).await?;
+        let value = quota::validate(QuotaResource::ActivityConcurrency, true, value, ceiling)
+            .map_err(invalid)?;
+        self.write_activity(principal, namespace, &activity, Some(value), ctx)
+            .await?;
+        Ok(ActivityQuotaView {
+            used: self
+                .store
+                .activity_usage(principal.tenant_id(), namespace, &activity)
+                .await?,
+            activity,
+            limit: value,
+            ceiling,
+            overridden: true,
+        })
+    }
+
+    pub async fn clear_activity_limit(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        activity: ActivityName,
+        ctx: &RequestContext,
+    ) -> Result<ActivityQuotaView, AppError> {
+        principal.authorize(Permission::QuotaManage)?;
+        self.check_namespace(principal, Some(namespace), ctx)
+            .await?;
+        self.write_activity(principal, namespace, &activity, None, ctx)
+            .await?;
+        let tenant = principal.tenant_id();
+        Ok(ActivityQuotaView {
+            limit: self
+                .store
+                .effective_limit(tenant, Some(namespace), QuotaResource::ActivityConcurrency)
+                .await?,
+            used: self
+                .store
+                .activity_usage(tenant, namespace, &activity)
+                .await?,
+            ceiling: self.activity_ceiling(tenant).await?,
+            activity,
+            overridden: false,
+        })
+    }
+
+    async fn activity_ceiling(&self, tenant: TenantId) -> Result<u64, AppError> {
+        Ok(quota::ceiling(
+            QuotaResource::ActivityConcurrency,
+            self.store
+                .ceilings(tenant)
+                .await?
+                .into_iter()
+                .find(|c| c.resource == QuotaResource::ActivityConcurrency)
+                .map(|c| c.value),
+        ))
+    }
+
+    async fn write_activity(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+        value: Option<u64>,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        let reason = value.map_or_else(
+            || format!("activity {} concurrency reset", activity.as_str()),
+            |v| format!("activity {} concurrency = {v}", activity.as_str()),
+        );
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::QuotaChanged,
+            ResourceType::Quota,
+            format!("{namespace}/{}", activity.as_str()),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(reason);
+        self.store
+            .put_activity_setting(
+                principal.tenant_id(),
+                namespace,
+                activity,
+                value,
+                principal.subject().as_str(),
+                &audit,
+            )
+            .await?;
+        Ok(())
+    }
+
     #[must_use]
     pub const fn new(store: S, clock: C) -> Self {
         Self { store, clock }

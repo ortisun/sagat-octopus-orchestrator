@@ -83,3 +83,17 @@ tests/e2e/durable-execution/
 ## Delivery Gate
 
 Deterministic crash test at each point of claim→effect→commit→publish, with an intact journal and no double transition.
+
+## Integrated blob completion
+
+The claim-check extension (ADR-0023) adds a provider-neutral application port and
+PostgreSQL catalog, then bounded mediated worker transfers and run-input admission.
+Descriptor visibility commits with the durable transition; external bytes are staged
+first and garbage collection retains retry evidence until external deletion succeeds.
+Current worker bindings, tenant/namespace ownership and lease fencing remain authoritative.
+Feature 006 supplies common SDK conformance, 009 authorization/quotas, and 010 recovery;
+these integrated implementations are approved dependencies for T002-037..039.
+
+## Serialized poll budget hardening
+
+Render and measure a task context before leasing it. Admit at most 8 MiB of serialized inputs per poll; update the response count only after each run transaction commits. A context larger than a fresh response records its preflight attempt and non-retryable `RUN_DATA_LIMIT` together through the existing saga-aware failure transition, with no published token. Prove numeric normalization expansion, sibling tasks split across polls, and cross-run batching against PostgreSQL (`T002-039`).

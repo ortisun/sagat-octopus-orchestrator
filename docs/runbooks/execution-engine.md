@@ -69,7 +69,7 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 | Tasks sit `READY` and nobody claims them | No worker advertises that activity in that namespace, or workers are at `max_inflight` | `SELECT activity, count(*) FROM steps WHERE status = 'READY' GROUP BY 1`; check `grpc_requests_total{method="PollTasks"}` |
 | Runs stay `WAITING` past their timer | The scheduler is not running, is stuck, or the database clock is wrong | `/livez`; `scheduler_actions_total`; compare `steps.due_at` with `clock_timestamp()` |
 | `outbox_backlog` grows | NATS is down or unreachable, or `SAGAT_NATS_URL` is unset | Nothing is lost: the backlog drains after recovery. Check `outbox_publish_failed_total{code}` and the `last_error_code` column |
-| `QUOTA_EXCEEDED` (REST 429) on a signal, or a step failed with `RUN_DATA_LIMIT` | The run retains 4 MiB of outputs and signals (every lease carries them) | Return less from the activities (references, not documents); this is a limit of the run, retrying will not help |
+| `QUOTA_EXCEEDED` (REST 429) on a signal, or a step failed with `RUN_DATA_LIMIT` | The run would retain more than 4 MiB of outputs/signals, or its serialized worker context exceeds 8 MiB (compact numbers can expand during serialization; `worker_task_input_rejected_total`) | Return less from the activities (references, not documents); this is a limit of the run, retrying will not help |
 | A step failed with `CHILD_LIMIT_EXCEEDED` | The tree of child runs reached 1024 runs, usually a workflow that starts itself without a base case | Fix the recursion; the tree has already stopped growing |
 | `RegisterWorker` answers `RESOURCE_EXHAUSTED` | The identity already holds 32 sessions under other names, or its worker names change on every start | Use a stable worker name (a restart then replaces its own session), or one identity per fleet |
 | A worker's token stops working right after another worker registered | Two workers use the same identity and the same worker name, so the second replaced the first's session | Give every process its own `worker_name` |
@@ -166,12 +166,53 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
   and the database pool is shared by everything in a process. Quotas per queue (per activity) do not
   exist (G245).
 - Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
-- A blob store for payloads over 256 KiB (G19), run results (G21), `foreach` and `humanApproval` nodes (G20).
+- Blob-backed run inputs and five-SDK blob helpers remain pending (G19); the worker output transport is described below. Run results (G21), `foreach` and `humanApproval` nodes (G20) retain their documented limits.
 - Partitioning and retention of `run_events` (G28) are not built: the journal grows with the runs
   (feature 010 measured the cost of a wait and of a transition, `tests/performance/reports/scalability-ha.md`,
   and left the partitioning for evidence, G241).
-- Sagas and compensation (feature 003), inbound events and webhooks (004): the engine only emits
-  `task.ready` and `run.finished`, and signals arrive through the REST API.
+- Outgoing broker producers (NATS/Kafka/SQS) remain pending. Sagas, compensation, inbound event dispatch and outbound HTTP webhook delivery are implemented; consult their feature runbooks for retry and recovery semantics.
 - OTLP span export is OTLP/HTTP with JSON only (G169); a backend that takes only protobuf needs a Collector in front. One projector and one monitor cap their own throughput (G177): sharding is feature 010. The audit trail has no retention (G182, G28).
 - Failover of PostgreSQL itself, backups of the NATS stream (it holds hints only) and capacity
   planning per tier (spec open question).
+
+## 8. Large worker outputs (protocol 1.3)
+
+Blob storage is opt-in: `SAGAT_BLOB_PROVIDER` accepts `s3`, `r2`, `fs`, `memory`, or `none`
+(the default). Every engine replica must use the same durable backend and prefix. `memory` is
+allowed only in development; `fs` requires a shared durable volume when replicas share the catalog.
+S3 requires `SAGAT_BLOB_S3_BUCKET` and `SAGAT_BLOB_S3_REGION`; the optional endpoint must use TLS
+outside development. R2 requires `SAGAT_BLOB_R2_ACCOUNT_ID`, `SAGAT_BLOB_R2_BUCKET`, and its access
+key/secret configuration. Supply credentials through the deployment secret mechanism, never command
+history or logs. Local S3-compatible tests do not establish live S3/R2 deployment evidence.
+
+`WriteBlob` accepts a lease header followed by chunks of at most 256 KiB. `CompleteStep.output_blob_ref`
+claims the resulting descriptor in the same transaction as output, journal and next-task scheduling.
+`ReadBlob` requires a current lease and binding in the blob's tenant and namespace. Existing inline
+protocol clients keep their 256 KiB payload limit and continue to work.
+
+Defaults: 64 MiB per blob (`SAGAT_BLOB_MAX_BYTES`), 64 unused uploads per tenant
+(`SAGAT_BLOB_MAX_PENDING`), 32 simultaneous transfers per process (`SAGAT_BLOB_MAX_TRANSFERS`),
+and 600 seconds per transfer (`SAGAT_BLOB_TRANSFER_TIMEOUT_SECS`). Unfinished uploads expire after
+3600 seconds; unused completed uploads after 86400 seconds (`SAGAT_BLOB_ABANDONED_AFTER_SECS`,
+`SAGAT_BLOB_UPLOAD_TTL_SECS`). These are pending-upload limits, not retained-storage quotas.
+
+Cleanup claims `DELETING` durably before deleting external bytes. A provider failure or process crash
+retains the row and retries after five minutes. Confirmed deletion removes a finalized upload's row.
+Never-confirmed uploads retain a tombstone and continue deletion reconciliation: a delayed PUT can
+finish after an earlier delete. First deletion confirmation is audited and releases its active upload
+slot; repeated cleanup adds no duplicate audit. Tombstones need a future compaction policy. Retention
+of unused completed uploads starts when the upload finishes. Committed output blobs are never removed
+by this sweep. Watch `blob_delete_failures_total`,
+`blob_swept_total`, `blob_lost_total` and `blob_corrupt_total`. Corrupt downloads end with `DATA_LOSS`;
+discard all received bytes and investigate storage integrity.
+
+Until streaming secret-content scanning is implemented, blob uploads and completions from steps
+that declare secrets are refused before upload. Blob output is for forward activities; compensation
+and reconciliation responses retain their existing inline semantics. Run-input transport and SDK
+helpers remain separate completion tasks, so FR-002-008 is not yet closed.
+
+Blob downloads hold both global transfer and tenant concurrency slots until the producer ends.
+An independent deadline cancels the producer even when HTTP/2 receive flow control stops polling;
+a one-message channel bounds buffering. Unexpected producer termination is an error, never verified
+EOF. `blob_transfers_total{direction,outcome}` and `blob_transfer_duration_seconds{direction,outcome}`
+record completed/interrupted/timed-out read transfers separately from unary request acceptance.

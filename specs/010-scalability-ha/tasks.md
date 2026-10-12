@@ -79,3 +79,7 @@ Contract → first failing test → domain → adapter → happy path → failur
 T010-037 evidence: `apps/execution-engine/src/supervision.rs` tests unexpected return,
 panic, graceful stop and forced bounded cleanup. Focused engine tests passed 32/32
 and focused Clippy passed (implementation-agent execution). Integrated gates follow.
+
+## Activity admission completion
+
+- [x] T010-039 Enforce tenant/namespace/activity concurrency with transactional admission and audited namespace overrides (FR-010-002). Real PostgreSQL tests prove the 12-poller race, busy-activity skip, expired lease recovery, tenant isolation and reduced platform ceiling; management REST contract suite passes 7/7. Migration rollback/forward covers 31 tables; scoped clippy passes with `-D warnings`.

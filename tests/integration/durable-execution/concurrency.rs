@@ -7,9 +7,25 @@ use std::time::{Duration, Instant};
 use sagat_application::error::AppError;
 use sagat_application::runs::{Lock, RunStore};
 use sagat_domain::execution::{RunStatus, StepStatus};
+use sagat_domain::quota::QuotaResource;
 use serde_json::json;
 
 use crate::support::engine::{activity, chain, document, task_ref, with, world};
+
+async fn activity_limit(w: &crate::support::engine::World, activity: &str, limit: i64) {
+    sqlx::query(
+        "INSERT INTO activity_quota_limits \
+         (tenant_id, namespace_id, activity, max_inflight, updated_by) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(activity)
+    .bind(limit)
+    .bind(w.admin.subject().as_str())
+    .execute(&w.db.pool)
+    .await
+    .expect("activity quota");
+}
 
 #[tokio::test]
 async fn sixteen_workers_racing_for_one_task_produce_exactly_one_lease() {
@@ -88,6 +104,103 @@ async fn many_workers_and_many_tasks_never_assign_a_step_twice() {
     for run in runs {
         w.assert_consistent(run).await;
     }
+}
+
+#[tokio::test]
+async fn concurrent_pollers_never_overshoot_an_activity_quota() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 3).await;
+    let (wf, _) = w
+        .publish(document("quota-race", "a", vec![activity("a")]))
+        .await;
+    for i in 0..24 {
+        w.start(wf, &json!({"i": i})).await;
+    }
+    let mut sessions = Vec::new();
+    for _ in 0..12 {
+        sessions.push(w.session(&["act.a"]).await);
+    }
+    let polls = futures_util::future::join_all(sessions.iter().map(|s| w.poll(s, 8))).await;
+    assert_eq!(polls.iter().map(Vec::len).sum::<usize>(), 3);
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id = $1 AND namespace_id = $2 \
+           AND activity = 'act.a' AND status IN ('LEASED', 'RUNNING') \
+           AND lease_expires_at > clock_timestamp()",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("held leases");
+    assert_eq!(held, 3, "the exact quota is never exceeded under a race");
+}
+
+#[tokio::test]
+async fn a_lowered_platform_ceiling_applies_to_an_existing_activity_override() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 3).await;
+    w.quotas
+        .grant_ceiling(
+            w.admin.tenant_id(),
+            QuotaResource::ActivityConcurrency,
+            Some(1),
+        )
+        .await
+        .expect("lower activity ceiling");
+    let (wf, _) = w
+        .publish(document("quota-ceiling", "a", vec![activity("a")]))
+        .await;
+    for i in 0..3 {
+        w.start(wf, &json!({"i": i})).await;
+    }
+    let session = w.session(&["act.a"]).await;
+    assert_eq!(
+        w.poll(&session, 8).await.len(),
+        1,
+        "lowering the operator ceiling applies to an override stored earlier"
+    );
+}
+
+#[tokio::test]
+async fn a_full_activity_is_skipped_and_an_expired_lease_returns_its_place() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 1).await;
+    let (a, _) = w
+        .publish(document("quota-a", "a", vec![activity("a")]))
+        .await;
+    let (b, _) = w
+        .publish(document("quota-b", "b", vec![activity("b")]))
+        .await;
+    for i in 0..3 {
+        w.start(a, &json!({"i": i})).await;
+    }
+    w.start(b, &json!({})).await;
+    let session = w.session_as(&w.worker, &["act.a", "act.b"], 8).await;
+    let tasks = w.poll(&session, 8).await;
+    assert_eq!(
+        tasks.len(),
+        2,
+        "one capped activity and the uncapped activity are served"
+    );
+    assert!(tasks.iter().any(|task| task.activity.as_str() == "act.a"));
+    assert!(tasks.iter().any(|task| task.activity.as_str() == "act.b"));
+
+    sqlx::query(
+        "UPDATE steps SET lease_expires_at = clock_timestamp() - interval '1 second' \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND activity = 'act.a' AND status = 'LEASED'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("expire lease");
+    let next = w.poll(&session, 8).await;
+    assert_eq!(
+        next.iter()
+            .filter(|task| task.activity.as_str() == "act.a")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

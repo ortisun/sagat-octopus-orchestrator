@@ -615,6 +615,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/activity-quotas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List activity-specific concurrency overrides in a namespace
+         * @description Needs `quota:read`. Only explicit activity overrides are listed. Activities without an override use the namespace-wide or tenant-wide `activity_concurrency` quota. A namespace of another tenant is a 404, like one that does not exist.
+         */
+        get: operations["listActivityQuotas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/activity-quotas/{activity}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the concurrency quota for one activity in a namespace
+         * @description Needs `quota:manage`. The value is the maximum number of tasks of this activity that may hold an unexpired lease in the namespace. It cannot exceed the tenant's `activity_concurrency` ceiling. Audited.
+         */
+        put: operations["setActivityQuota"];
+        post?: never;
+        /**
+         * Remove the concurrency override for one activity
+         * @description The namespace-wide or tenant-wide `activity_concurrency` quota applies again. Needs `quota:manage`. Audited.
+         */
+        delete: operations["clearActivityQuota"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/namespaces/{namespaceId}/worker-bindings": {
         parameters: {
             query?: never;
@@ -2453,7 +2497,7 @@ export interface components {
         };
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
             /** Format: int64 */
             limit: number;
             /**
@@ -2478,6 +2522,26 @@ export interface components {
         SetQuotaRequest: {
             /** Format: int64 */
             limit: number;
+        };
+        ActivityQuota: {
+            activity: string;
+            /** Format: int64 */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Tasks of this activity holding an unexpired lease now.
+             */
+            used: number;
+            /**
+             * Format: int64
+             * @description The most the tenant may set for activity concurrency.
+             */
+            ceiling: number;
+            /** @description True for an explicit activity override; false after clearing it, when the generic limit applies. */
+            overridden: boolean;
+        };
+        ActivityQuotaList: {
+            items: components["schemas"]["ActivityQuota"][];
         };
         SignalResult: {
             /** @description The waitEvent nodes the signal woke. */
@@ -3601,7 +3665,8 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
+        ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
         RequestId: string;
@@ -4845,6 +4910,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Quota"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listActivityQuotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The activity overrides */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityQuotaList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    setActivityQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                activity: components["parameters"]["ActivityName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetQuotaRequest"];
+            };
+        };
+        responses: {
+            /** @description The activity quota now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityQuota"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    clearActivityQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                activity: components["parameters"]["ActivityName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The inherited activity quota now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityQuota"];
                 };
             };
             401: components["responses"]["Unauthorized"];

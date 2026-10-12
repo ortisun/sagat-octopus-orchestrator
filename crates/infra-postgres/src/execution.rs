@@ -1168,6 +1168,16 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn activity_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
+        crate::quotas::activity_admitted(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            activity,
+        )
+        .await
+    }
+
     async fn lease_matches(
         &mut self,
         node: &NodeId,
@@ -1225,6 +1235,12 @@ impl RunTx for PgRunTx {
             if let Some(data) = &mut self.data {
                 data.outputs.insert(node.clone(), bytes.clone());
             }
+        }
+
+        // 1b. The blobs those outputs are descriptors of, used for good in this very transaction: a
+        // blob that was swept, already used or altered makes the whole report fail, never half of it.
+        for blob in &effects.blobs {
+            crate::blobs::commit(&mut self.tx, tenant, blob).await?;
         }
 
         // 2. The journal, and the nodes the events touched.

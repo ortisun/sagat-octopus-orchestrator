@@ -13,6 +13,9 @@ autotests = false
 workspace = true
 
 [dev-dependencies]
+tokio-stream.workspace = true
+bytes.workspace = true
+sagat-infra-blobstore.workspace = true
 async-nats.workspace = true
 axum.workspace = true
 base64 = "0.22"

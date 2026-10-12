@@ -4,8 +4,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use sagat_api_grpc::GrpcConfig;
-use sagat_api_grpc::TlsConfig;
+use sagat_api_grpc::{BlobTransfer, GrpcConfig, TlsConfig};
 use sagat_api_http::{AuthConfig, RateLimitConfig};
 use sagat_application::execution::BreakerPolicy;
 use sagat_application::operations::WorkerPool;
@@ -14,6 +13,7 @@ use sagat_control_plane::config::{
     ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, optional,
     rate_limit_error, read_auth, read_rate_limit, read_secrets,
 };
+use sagat_infra_blobstore::{BlobSettings, BlobStoreConfig, ConfigError as BlobConfigError};
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
     DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings, MonitorSettings,
@@ -89,6 +89,8 @@ pub struct EngineConfig {
     /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
     /// `ResolveSecrets` call off.
     pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
+    pub blobs: Option<BlobSettings>,
+    pub blob_transfer: BlobTransfer,
 }
 
 /// The most candidates of one pass a scheduler acts on at once; each holds a database connection.
@@ -360,10 +362,25 @@ impl EngineConfig {
                 grpc_defaults.max_connection_age,
             )?,
             max_in_flight: capacity(get, "SAGAT_GRPC_MAX_IN_FLIGHT", grpc_defaults.max_in_flight)?,
+            transfer_timeout: seconds(
+                get,
+                "SAGAT_BLOB_TRANSFER_TIMEOUT_SECS",
+                grpc_defaults.transfer_timeout,
+            )?,
             tls: read_tls(get)?,
             ..grpc_defaults
         };
 
+        let blob_defaults = BlobTransfer::default();
+        let blob_transfer = BlobTransfer {
+            max_concurrent: capacity(
+                get,
+                "SAGAT_BLOB_MAX_TRANSFERS",
+                blob_defaults.max_concurrent,
+            )?,
+            timeout: grpc.transfer_timeout,
+        };
+        let blobs = read_blobs(get, environment)?;
         let worker_defaults = WorkerSettings::default();
         let worker = WorkerSettings {
             lease_ttl: Duration::from_secs(positive(
@@ -706,6 +723,56 @@ impl EngineConfig {
             monitor,
             nats,
             secrets,
+            blobs,
+            blob_transfer,
         })
     }
+}
+
+/// The blob store settings, with the rules that depend on where the process runs.
+fn read_blobs(
+    get: Lookup<'_>,
+    environment: Environment,
+) -> Result<Option<BlobSettings>, ConfigError> {
+    let settings = BlobSettings::from_lookup(|name| get(name)).map_err(|error| match error {
+        BlobConfigError::Missing(name) => ConfigError::Missing(name),
+        BlobConfigError::Invalid { name, reason } => ConfigError::Invalid {
+            name,
+            reason: reason.to_owned(),
+        },
+        BlobConfigError::Incomplete(reason) => ConfigError::Invalid {
+            name: "SAGAT_BLOB_S3_ACCESS_KEY_ID",
+            reason: reason.to_owned(),
+        },
+        BlobConfigError::InsecureEndpoint => ConfigError::Invalid {
+            name: "SAGAT_BLOB_S3_ENDPOINT",
+            reason: "plain http needs SAGAT_BLOB_S3_ALLOW_HTTP=true".to_owned(),
+        },
+        BlobConfigError::Build => ConfigError::Invalid {
+            name: "SAGAT_BLOB_PROVIDER",
+            reason: "the object store could not be set up".to_owned(),
+        },
+    })?;
+    if let Some(settings) = &settings {
+        // Memory is private to one process, and the control plane and every engine replica are
+        // different processes: a blob written by one could not be read by another, and a restart
+        // would lose them all. It exists for tests and for a single-process development setup.
+        if matches!(settings.store, BlobStoreConfig::Memory) && environment != Environment::Dev {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_BLOB_PROVIDER",
+                reason: "memory is only allowed when SAGAT_ENV=dev".to_owned(),
+            });
+        }
+        if let BlobStoreConfig::S3(s3) = &settings.store
+            && s3.allow_http
+            && environment != Environment::Dev
+        {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_BLOB_S3_ALLOW_HTTP",
+                reason: "plain http to the object store is only allowed when SAGAT_ENV=dev"
+                    .to_owned(),
+            });
+        }
+    }
+    Ok(settings)
 }

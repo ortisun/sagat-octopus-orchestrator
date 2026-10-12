@@ -13,6 +13,7 @@ build = "build.rs"
 workspace = true
 
 [dependencies]
+bytes.workspace = true
 metrics.workspace = true
 prost.workspace = true
 sagat-api-http.workspace = true

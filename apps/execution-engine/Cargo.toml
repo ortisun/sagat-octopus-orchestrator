@@ -20,6 +20,7 @@ name = "execution-engine"
 path = "src/main.rs"
 
 [dependencies]
+sagat-infra-blobstore.workspace = true
 axum.workspace = true
 metrics.workspace = true
 sagat-api-grpc.workspace = true

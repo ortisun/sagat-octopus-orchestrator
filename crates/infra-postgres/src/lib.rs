@@ -53,3 +53,7 @@ pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
     MIGRATOR.run(pool).await
 }
+
+mod blobs;
+
+pub use blobs::PgBlobCatalog;

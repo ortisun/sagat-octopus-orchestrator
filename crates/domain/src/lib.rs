@@ -25,3 +25,5 @@ pub mod sharding;
 pub mod triggers;
 pub mod versioning;
 pub mod workflow;
+
+pub mod blobs;

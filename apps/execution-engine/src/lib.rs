@@ -16,6 +16,7 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use sagat_api_grpc::{WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{AppState, HttpJwksFetcher, TokenVerifier};
+use sagat_application::blobs::BlobService;
 use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
@@ -25,9 +26,10 @@ use sagat_control_plane::config::{self, Config, Environment};
 use sagat_control_plane::{
     METRICS_UPKEEP_INTERVAL, RunError, admin_router_with, open_pool, spawn_metrics_upkeep, stopped,
 };
+use sagat_infra_blobstore::build_backend;
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
-use sagat_infra_postgres::{PgIdentityStore, PgRunStore, spawn_pool_metrics};
+use sagat_infra_postgres::{PgBlobCatalog, PgIdentityStore, PgRunStore, spawn_pool_metrics};
 use sagat_scheduler::{
     DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
     ProjectorSettings, Scheduler, TelemetryProjector,
@@ -108,6 +110,31 @@ pub async fn serve(
     if let Some(secrets) = &engine.secrets {
         workers = workers.with_vault(secrets.cipher());
     }
+    // The object store for large payloads, if one is configured. A bad configuration stops the
+    // process here, not at the first upload.
+    let blobs: Option<BlobService> = match &engine.blobs {
+        Some(settings) => {
+            let backend = build_backend(&settings.store, settings.part_size).map_err(|_| {
+                RunError::Refused("could not set up the object store (SAGAT_BLOB_*)")
+            })?;
+            tracing::info!(
+                provider = backend.provider(),
+                max_bytes = settings.limits.max_bytes,
+                "blob store enabled"
+            );
+            Some(BlobService::new(
+                Arc::new(PgBlobCatalog::new(pool.clone())),
+                backend,
+                settings.limits,
+            ))
+        }
+        None => {
+            tracing::info!(
+                "SAGAT_BLOB_PROVIDER is not set: payloads are limited to 256 KiB and blobs are off"
+            );
+            None
+        }
+    };
     // The scheduler's work is split in shards by the run's id and each replica works on the ones it
     // holds a lease on (`FR-010-001`); the keeper is what takes, renews and gives back the leases.
     let placement = Placement::new(format!(
@@ -419,12 +446,35 @@ pub async fn serve(
         audience = %engine.auth.audience,
         "execution engine listening (worker gRPC API)"
     );
+    if let Some(blobs) = blobs.clone() {
+        tasks.spawn_loop(
+            "blob cleanup",
+            loops::run_housekeeping(
+                move || {
+                    let blobs = blobs.clone();
+                    async move {
+                        match blobs.sweep(500).await {
+                            Ok(0) => {}
+                            Ok(removed) => tracing::info!(removed, "swept unused blobs"),
+                            Err(error) => tracing::warn!(%error, "sweeping unused blobs failed"),
+                        }
+                    }
+                },
+                engine.housekeeping_interval,
+                stop_rx.clone(),
+            ),
+        );
+    }
+    let mut worker_api = WorkerGrpc::new(state, workers);
+    if let Some(blobs) = blobs {
+        worker_api = worker_api.with_blobs(blobs, engine.blob_transfer);
+    }
     let grpc_stop = stop_rx.clone();
     let grpc_config = engine.grpc.clone();
     tasks.spawn("worker gRPC server", async move {
         serve_grpc(
             grpc_listener,
-            worker_service(WorkerGrpc::new(state, workers)),
+            worker_service(worker_api),
             grpc_config,
             stopped(grpc_stop),
         )

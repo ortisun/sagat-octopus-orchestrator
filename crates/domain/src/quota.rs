@@ -33,6 +33,8 @@ pub enum QuotaResource {
     Workflows,
     /// Live worker sessions of the tenant.
     WorkerSessions,
+    /// Tasks of one activity that may hold an unexpired worker lease in one namespace.
+    ActivityConcurrency,
     /// Secrets in one namespace.
     Secrets,
     /// Webhook endpoints in one namespace (feature 004).
@@ -58,11 +60,12 @@ pub enum QuotaScope {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
         Self::WorkerSessions,
+        Self::ActivityConcurrency,
         Self::Secrets,
         Self::EventEndpoints,
         Self::WebhookSubscriptions,
@@ -78,6 +81,7 @@ impl QuotaResource {
             Self::TenantActiveRuns => "tenant_active_runs",
             Self::Workflows => "workflows",
             Self::WorkerSessions => "worker_sessions",
+            Self::ActivityConcurrency => "activity_concurrency",
             Self::Secrets => "secrets",
             Self::EventEndpoints => "event_endpoints",
             Self::WebhookSubscriptions => "webhook_subscriptions",
@@ -91,6 +95,7 @@ impl QuotaResource {
     pub const fn scope(self) -> QuotaScope {
         match self {
             Self::ActiveRuns
+            | Self::ActivityConcurrency
             | Self::Workflows
             | Self::Secrets
             | Self::EventEndpoints
@@ -111,6 +116,8 @@ impl QuotaResource {
             Self::TenantActiveRuns => 50_000,
             Self::Workflows => 1_000,
             Self::WorkerSessions => 1_000,
+            // No activity is throttled until a tenant administrator sets a default or override.
+            Self::ActivityConcurrency => MAX_LIMIT,
             Self::Secrets => 500,
             Self::EventEndpoints => 100,
             Self::WebhookSubscriptions => 50,
@@ -128,6 +135,7 @@ impl QuotaResource {
             Self::TenantActiveRuns => "active runs of the tenant",
             Self::Workflows => "workflows in the namespace",
             Self::WorkerSessions => "worker sessions of the tenant",
+            Self::ActivityConcurrency => "concurrent tasks of the activity",
             Self::Secrets => "secrets in the namespace",
             Self::EventEndpoints => "webhook endpoints in the namespace",
             Self::WebhookSubscriptions => "outbound webhook subscriptions in the namespace",

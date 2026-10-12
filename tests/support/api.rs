@@ -7,12 +7,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use reqwest::{Client, Method, RequestBuilder, Response};
-use sagat_api_grpc::{GrpcConfig, WorkerGrpc, serve as serve_grpc, worker_service};
+use sagat_api_grpc::{BlobTransfer, GrpcConfig, WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{
     AppState, AuthConfig, ExecState, GovState, HttpJwksFetcher, HttpLimits, RateLimitConfig,
     ServerConfig, TokenVerifier, auth::install_crypto_provider, router_with_governance,
 };
 use sagat_application::bindings::BindingService;
+use sagat_application::blobs::{BlobBackend, BlobLimits, BlobService};
 use sagat_application::clock::SystemClock;
 use sagat_application::connectors::ConnectorService;
 use sagat_application::definitions::{Applied, DefinitionService, Idempotency};
@@ -33,7 +34,9 @@ use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{
     Membership, Namespace, NamespaceId, Slug, Subject, Tenant, TenantId, Workspace, WorkspaceId,
 };
+use sagat_infra_blobstore::{BlobStoreConfig, PartSize, build_backend};
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+use sagat_infra_postgres::PgBlobCatalog;
 use sagat_infra_postgres::{PgIdentityStore, PgPool, PgRunStore, PoolConfig, connect};
 use serde_json::{Value, json};
 
@@ -56,6 +59,8 @@ pub struct TestApi {
     pub grpc_url: String,
     /// The key ring the API seals secrets with and the worker service opens them with.
     pub keys: sagat_infra_secrets::SecretsConfig,
+    pub blobs: Option<BlobService>,
+    pub blob_backend: Option<Arc<dyn BlobBackend>>,
     /// The base64 material of key `k1`, so an engine started for this API can open its secrets.
     pub key_k1: String,
     /// The public half of the key that signs the artifacts this API builds.
@@ -222,6 +227,9 @@ pub struct Options {
     pub ping_delay: Duration,
     /// Lease and session timings of the worker protocol.
     pub worker: WorkerSettings,
+    pub blobs: Option<BlobLimits>,
+    pub blob_transfer: BlobTransfer,
+    pub grpc: GrpcConfig,
     /// The most any script may be given.
     pub script_ceiling: sagat_domain::scripts::Policy,
     /// Limits and pace of the server-sent streams; the defaults when `None`.
@@ -246,6 +254,9 @@ impl Default for Options {
             },
             ping_delay: Duration::ZERO,
             worker: WorkerSettings::default(),
+            blobs: None,
+            blob_transfer: BlobTransfer::default(),
+            grpc: GrpcConfig::default(),
             script_ceiling: sagat_domain::scripts::Policy::default(),
             streams: None,
             studio: None,
@@ -290,10 +301,13 @@ pub async fn start_with(options: Options) -> TestApi {
         },
         SystemClock,
     );
-    let state = AppState::with_rate_limit(service, verifier, options.rate_limit)
+    let mut state = AppState::with_rate_limit(service, verifier, options.rate_limit)
         .expect("valid budget")
         .with_subject_rate_limit(options.subject_rate_limit)
         .expect("valid subject budget");
+    state.tenant_concurrency = Arc::new(sagat_api_http::TenantConcurrency::new(
+        options.limits.max_in_flight_per_tenant,
+    ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
     let executions = PgRunStore::new(api_pool.clone(), cache.clone());
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
@@ -369,8 +383,21 @@ pub async fn start_with(options: Options) -> TestApi {
     if let Some(limits) = options.streams {
         exec = exec.with_stream_limits(limits);
     }
+    let blob_backend = options.blobs.map(|_| {
+        build_backend(&BlobStoreConfig::Memory, PartSize::default()).expect("a memory store")
+    });
+    let blobs = options
+        .blobs
+        .zip(blob_backend.clone())
+        .map(|(limits, backend)| {
+            BlobService::new(
+                Arc::new(PgBlobCatalog::new(api_pool.clone())),
+                backend,
+                limits,
+            )
+        });
     // The worker protocol shares the REST API's identity, budgets and database.
-    let grpc = WorkerGrpc::new(
+    let mut grpc = WorkerGrpc::new(
         exec.clone(),
         WorkerService::new(
             executions.clone(),
@@ -381,6 +408,10 @@ pub async fn start_with(options: Options) -> TestApi {
         )
         .with_vault(keys.cipher()),
     );
+    if let Some(blobs) = &blobs {
+        grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
+    }
+    let grpc_config = options.grpc;
     let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind grpc");
@@ -389,7 +420,7 @@ pub async fn start_with(options: Options) -> TestApi {
         let _ = serve_grpc(
             grpc_listener,
             worker_service(grpc),
-            GrpcConfig::default(),
+            grpc_config,
             std::future::pending(),
         )
         .await;
@@ -424,6 +455,8 @@ pub async fn start_with(options: Options) -> TestApi {
         executions,
         grpc_url: format!("http://{grpc_addr}"),
         keys,
+        blobs,
+        blob_backend,
         key_k1,
         script_key,
         lookups,
@@ -523,5 +556,8 @@ impl TestApi {
 
 /// Parses a response body as JSON.
 pub async fn json_of(response: Response) -> Value {
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        return Value::Null;
+    }
     response.json::<Value>().await.expect("json body")
 }

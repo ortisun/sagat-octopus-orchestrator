@@ -22,6 +22,7 @@ use time::OffsetDateTime;
 
 use sagat_domain::audit::AuditRecord;
 
+use crate::blobs::BlobCommit;
 use crate::definitions::{Idempotency, IrCodec, IrError};
 use crate::error::StoreError;
 use crate::secrets::{SecretInputs, StoredSecret};
@@ -328,6 +329,8 @@ pub struct Effects {
     pub rehint: Vec<NodeId>,
     /// Child runs reserved in this transaction; the engine fills it while resolving `child` steps.
     pub children: Vec<ChildSpawn>,
+    /// Blobs the outputs above are descriptors of: committed with them, or the transaction fails.
+    pub blobs: Vec<BlobCommit>,
 }
 
 impl Effects {
@@ -343,6 +346,7 @@ impl Effects {
             idempotency: None,
             rehint: Vec::new(),
             children: Vec::new(),
+            blobs: Vec::new(),
         }
     }
 }
@@ -459,6 +463,14 @@ pub trait RunTx: Send {
     /// lease is the probe, and no for the others until the probe reports. Asking is not free of
     /// effect: the caller that is told yes is the probe, and must lease.
     fn compensation_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Reserves room under the exact concurrency quota of `activity` for this transaction.
+    /// `false` leaves the step ready. A `true` caller must lease before committing; dropping the
+    /// transaction releases the reservation lock without consuming a place.
+    fn activity_admitted(
         &mut self,
         activity: &ActivityName,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;

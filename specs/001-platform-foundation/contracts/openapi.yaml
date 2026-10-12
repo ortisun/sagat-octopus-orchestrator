@@ -776,6 +776,65 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/activity-quotas:
+    get:
+      operationId: listActivityQuotas
+      summary: List activity-specific concurrency overrides in a namespace
+      tags: [Governance]
+      x-implemented: '010'
+      description: Needs `quota:read`. Only explicit activity overrides are listed. Activities without an override use the namespace-wide or tenant-wide `activity_concurrency` quota. A namespace of another tenant is a 404, like one that does not exist.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The activity overrides', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivityQuotaList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/activity-quotas/{activity}:
+    put:
+      operationId: setActivityQuota
+      summary: Set the concurrency quota for one activity in a namespace
+      tags: [Governance]
+      x-implemented: '010'
+      description: Needs `quota:manage`. The value is the maximum number of tasks of this activity that may hold an unexpired lease in the namespace. It cannot exceed the tenant's `activity_concurrency` ceiling. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ActivityName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetQuotaRequest'}
+      responses:
+        '200': {description: 'The activity quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivityQuota'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: clearActivityQuota
+      summary: Remove the concurrency override for one activity
+      tags: [Governance]
+      x-implemented: '010'
+      description: The namespace-wide or tenant-wide `activity_concurrency` quota applies again. Needs `quota:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ActivityName'}
+      responses:
+        '200': {description: 'The inherited activity quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivityQuota'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/worker-bindings:
     get:
       operationId: listWorkerBindings
@@ -2629,7 +2688,12 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
+    ActivityName:
+      name: activity
+      in: path
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'}
     WorkflowId:
       name: workflowId
       in: path
@@ -3230,7 +3294,7 @@ components:
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
@@ -3246,6 +3310,20 @@ components:
       required: [limit]
       properties:
         limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+    ActivityQuota:
+      type: object
+      required: [activity, limit, used, ceiling, overridden]
+      properties:
+        activity: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'}
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        used: {type: integer, format: int64, minimum: 0, description: 'Tasks of this activity holding an unexpired lease now.'}
+        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for activity concurrency.'}
+        overridden: {type: boolean, description: 'True for an explicit activity override; false after clearing it, when the generic limit applies.'}
+    ActivityQuotaList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ActivityQuota'}}
     SignalResult:
       type: object
       required: [deliveredTo]

@@ -323,6 +323,15 @@ where
                 .delete(gov::clear_namespace_quota::<B<S, C, G>>),
         )
         .route(
+            "/namespaces/{namespace_id}/activity-quotas",
+            get(gov::list_activity_quotas::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/activity-quotas/{activity}",
+            axum::routing::put(gov::set_activity_quota::<B<S, C, G>>)
+                .delete(gov::clear_activity_quota::<B<S, C, G>>),
+        )
+        .route(
             "/namespaces/{namespace_id}/worker-bindings",
             get(gov::list_bindings::<B<S, C, G>>),
         )

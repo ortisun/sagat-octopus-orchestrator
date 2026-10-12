@@ -106,3 +106,14 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## Integrated blob completion
+
+- [x] T002-037 Implement tenant/namespace/lease-scoped blob catalog and provider port with safe deletion retries (FR-002-008; ADR-0023).
+  - Cleanup evidence: `crates/application/tests/blobs.rs::a_put_finishing_after_cleanup_remains_tracked_and_is_deleted_again` reproduces the late-PUT race and passes with durable tombstones; the application blob suite passes 20 tests. Real PostgreSQL `integration_durable_execution blobs::` passes 17 tests, including tombstone retry/audit deduplication, audit rollback with quota retention, and `uploaded_at` TTL. Scoped application/PostgreSQL and gRPC/blob-adapter clippy passes. Backend tiny/empty-fragment allocation regressions pass; real cloud provider credentials remain an explicit deployment validation gate.
+- [x] T002-038 Integrate additive worker protocol 1.3, atomic completion descriptors, bounded transfer and stale-lease fault tests; preserve 1.0–1.2 inline behavior. — 21 real PostgreSQL/gRPC blob tests pass, including idempotency-mode conflict, failed-completion replay after GC, read audit rollback and stalled HTTP/2 deadline release. gRPC unit suite 13/13 includes producer-panic fail-closed EOF; protocol descriptor compatibility 2/2 passed.
+- [ ] T002-040 Add run-input upload/claim references and conformance across all five SDKs; no output-only completion claim.
+
+## Completion hardening
+
+- [x] T002-039 Enforce the serialized worker-context limit and exact pre-commit poll byte budget (`FR-002-004`, `FR-002-008`). Evidence: `hardening::{a_serialized_task_over_the_poll_budget_fails_instead_of_staying_ready, large_sibling_tasks_are_budgeted_before_their_leases_commit, a_poll_is_bounded_in_bytes_and_the_rest_waits_for_the_next_one}`; update the worker protocol size contract and operational `RUN_DATA_LIMIT` guidance. Verification: 15 hardening tests passed in the suite run; the remaining sibling fixture was corrected to the actual IR and its targeted rerun passed (16 tests covered). The numeric-expansion regression failed before the fix; application Clippy with `-D warnings`, formatting and diff checks passed.

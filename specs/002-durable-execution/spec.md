@@ -73,6 +73,8 @@ Ensure DAG progress, checkpoints, suspension, retries and failure recovery witho
 - **FR-002-008**: The system MUST bind all runs to the immutable version and control payload/result size via blob refs.
 - **FR-002-009**: The system MUST persist the child-run parent link and the cancellation propagation policy.
 
+`FR-002-008` resource contract: inline outputs remain limited to 256 KiB each and 4 MiB retained per run. Serialized task contexts, including JSON normalization and envelope overhead, must fit 8 MiB individually and in aggregate per poll. An oversized context produces a durable, non-retryable `RUN_DATA_LIMIT` before dispatch; a task that fits a fresh response stays ready when the current response has insufficient room.
+
 ## Edge Cases
 
 - crash after external effect and before the checkpoint.

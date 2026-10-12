@@ -126,6 +126,9 @@ pub enum AuditAction {
     /// it did not declare). Written once per script, kind and reason, and at most a hundred
     /// different ones per script: a script in a loop can ask as often as it likes.
     ScriptViolation,
+    BlobUploaded,
+    BlobRead,
+    BlobDeleted,
 }
 
 impl AuditAction {
@@ -144,7 +147,8 @@ impl AuditAction {
     pub const fn collapses_repeats(self) -> bool {
         matches!(
             self,
-            Self::SecretResolved
+            Self::BlobRead
+                | Self::SecretResolved
                 | Self::SecretDenied
                 | Self::EventRejected
                 | Self::ScriptViolation
@@ -242,6 +246,9 @@ impl AuditAction {
             Self::ScriptBuilt => "script.built",
             Self::ScriptTested => "script.tested",
             Self::ScriptViolation => "script.violation",
+            Self::BlobUploaded => "blob.uploaded",
+            Self::BlobRead => "blob.read",
+            Self::BlobDeleted => "blob.deleted",
         }
     }
 }
@@ -255,6 +262,7 @@ impl fmt::Display for AuditAction {
 /// Kind of resource an audit record refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceType {
+    Blob,
     Tenant,
     Workspace,
     Namespace,
@@ -284,6 +292,7 @@ impl ResourceType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Blob => "blob",
             Self::Tenant => "tenant",
             Self::Workspace => "workspace",
             Self::Namespace => "namespace",

@@ -13,6 +13,22 @@ pub struct Stub;
 
 #[tonic::async_trait]
 impl WorkerService for Stub {
+    async fn write_blob(
+        &self,
+        _: Request<tonic::Streaming<sagat_api_grpc::pb::WriteBlobRequest>>,
+    ) -> Result<Response<sagat_api_grpc::pb::WriteBlobResponse>, Status> {
+        Ok(Response::new(
+            sagat_api_grpc::pb::WriteBlobResponse::default(),
+        ))
+    }
+    type ReadBlobStream = tokio_stream::Empty<Result<sagat_api_grpc::pb::ReadBlobResponse, Status>>;
+    async fn read_blob(
+        &self,
+        _: Request<sagat_api_grpc::pb::ReadBlobRequest>,
+    ) -> Result<Response<Self::ReadBlobStream>, Status> {
+        Ok(Response::new(tokio_stream::empty()))
+    }
+
     async fn register_worker(
         &self,
         _: Request<RegisterWorkerRequest>,

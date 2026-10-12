@@ -1,0 +1,33 @@
+[package]
+name = "sagat-infra-blobstore"
+description = "Object-store adapter of the blob port: S3, Cloudflare R2, memory and a local directory behind one interface."
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+object_store.workspace = true
+# Not called here: it makes the build ask reqwest for rustls (`rustls-no-provider`), which
+# object_store's own reqwest then shares. Without it a build of this crate alone would speak HTTP only.
+reqwest.workspace = true
+rustls.workspace = true
+sagat-application.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+hyper.workspace = true
+hyper-util.workspace = true
+s3s.workspace = true
+s3s-fs.workspace = true
+sagat-domain.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+tracing-subscriber.workspace = true

@@ -8,6 +8,7 @@ use sagat_application::quotas::{QuotaLookup, StoredLimit};
 use sagat_application::runs::RunOperation;
 use sagat_domain::identity::{NamespaceId, Principal, Role};
 use sagat_domain::quota::{MAX_LIMIT, QuotaResource, QuotaScope, QuotaSource};
+use sagat_domain::workflow::ActivityName;
 use serde_json::json;
 
 use crate::support::engine::{World, activity, child_node, ctx, document, subject_of, world};
@@ -28,6 +29,83 @@ async fn set_in_namespace(w: &World, resource: QuotaResource, value: u64) {
 
 fn waiting_flow(name: &str) -> serde_json::Value {
     document(name, "a", vec![activity("a")])
+}
+
+#[tokio::test]
+async fn activity_limits_are_authorized_ceiling_checked_tenant_bound_and_audited() {
+    let w = world().await;
+    let activity = ActivityName::parse("payment.capture").expect("activity");
+    assert!(matches!(
+        w.quotas
+            .set_activity_limit(&w.worker, w.namespace.id(), activity.clone(), 2, &ctx())
+            .await,
+        Err(AppError::Forbidden { .. })
+    ));
+    assert!(matches!(
+        w.quotas
+            .set_activity_limit(
+                &w.admin,
+                w.namespace.id(),
+                activity.clone(),
+                MAX_LIMIT + 1,
+                &ctx()
+            )
+            .await,
+        Err(AppError::NotAllowed(_))
+    ));
+    assert_eq!(
+        w.quotas
+            .set_activity_limit(
+                &w.admin,
+                w.other_namespace.id(),
+                activity.clone(),
+                2,
+                &ctx()
+            )
+            .await,
+        Err(AppError::NotFound)
+    );
+    let view = w
+        .quotas
+        .set_activity_limit(&w.admin, w.namespace.id(), activity.clone(), 2, &ctx())
+        .await
+        .expect("set activity quota");
+    assert_eq!((view.limit, view.used, view.overridden), (2, 0, true));
+    let listed = w
+        .quotas
+        .list_activity_limits(&w.admin, w.namespace.id(), &ctx())
+        .await
+        .expect("list activity quotas");
+    assert_eq!(listed, [view]);
+    w.quotas
+        .grant_ceiling(
+            w.admin.tenant_id(),
+            QuotaResource::ActivityConcurrency,
+            Some(1),
+        )
+        .await
+        .expect("lower ceiling");
+    let limited = w
+        .quotas
+        .list_activity_limits(&w.admin, w.namespace.id(), &ctx())
+        .await
+        .expect("list lowered activity quota");
+    assert_eq!((limited[0].limit, limited[0].ceiling), (1, 1));
+    let audit: (String, String) = sqlx::query_as(
+        "SELECT action, reason FROM audit_records WHERE tenant_id = $1 \
+         AND action = 'quota.changed' AND reason LIKE 'activity payment.capture%'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        audit,
+        (
+            "quota.changed".into(),
+            "activity payment.capture concurrency = 2".into()
+        )
+    );
 }
 
 // ------------------------------------------------------------- runs

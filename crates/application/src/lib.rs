@@ -30,3 +30,5 @@ pub mod shards;
 pub mod signing;
 pub mod telemetry;
 pub mod worker;
+
+pub mod blobs;

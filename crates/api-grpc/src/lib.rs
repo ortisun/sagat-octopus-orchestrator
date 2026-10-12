@@ -5,6 +5,7 @@
 //! pipeline as the REST API ([`sagat_api_http::authenticate_bearer`]), maps errors with the same
 //! classification, and delegates every rule to `sagat_application::worker::WorkerService`.
 
+mod blobs;
 mod limits;
 mod request;
 mod server;
@@ -34,6 +35,7 @@ impl std::fmt::Debug for pb::ResolvedSecret {
     }
 }
 
+pub use blobs::{BLOB_CHUNK_BYTES, BlobTransfer};
 pub use server::{GrpcConfig, TlsConfig, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};

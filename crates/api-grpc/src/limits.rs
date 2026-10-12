@@ -287,12 +287,16 @@ enum Class {
     Discovery,
     /// Keeps leased work alive or reports it: shed only when the engine is completely full.
     Lease,
+    /// Moves a blob for a step that is running: shed like a lease call, but it owns its time limit
+    /// (a transfer legitimately outlasts a unary call) and its own cap on how many run at once.
+    Transfer,
 }
 
 impl Class {
     fn of(path: &str) -> Self {
         match path.rsplit('/').next() {
             Some("Heartbeat" | "CompleteStep" | "FailStep" | "ResolveSecrets") => Self::Lease,
+            Some("WriteBlob" | "ReadBlob") => Self::Transfer,
             // Registering and polling, and whatever a future method does until it is classified.
             _ => Self::Discovery,
         }
@@ -302,6 +306,7 @@ impl Class {
         match self {
             Self::Discovery => "discovery",
             Self::Lease => "lease",
+            Self::Transfer => "transfer",
         }
     }
 }
@@ -312,13 +317,16 @@ struct Shared {
     max: usize,
     /// Calls running at once above which discovery calls are shed.
     discovery_max: usize,
+    /// The longest a call other than a blob transfer may take. The transport's own timeout has to
+    /// allow the longest transfer, so this is where the shorter limit of everything else is kept.
+    unary_timeout: Duration,
 }
 
 impl Shared {
     fn admit(self: &Arc<Self>, class: Class) -> Option<Ticket> {
         let limit = match class {
             Class::Discovery => self.discovery_max,
-            Class::Lease => self.max,
+            Class::Lease | Class::Transfer => self.max,
         };
         let running = self.in_flight.fetch_add(1, Ordering::AcqRel);
         if running >= limit {
@@ -355,13 +363,14 @@ pub(crate) struct Admission {
 impl Admission {
     /// `max` calls at once; discovery calls are shed above three quarters of it, so a reserve is
     /// left for the calls that keep leased work alive.
-    pub(crate) fn new(max: usize) -> Self {
+    pub(crate) fn new(max: usize, unary_timeout: Duration) -> Self {
         let max = max.max(1);
         Self {
             shared: Arc::new(Shared {
                 in_flight: AtomicUsize::new(0),
                 max,
                 discovery_max: (max * 3 / 4).max(1),
+                unary_timeout,
             }),
         }
     }
@@ -407,8 +416,19 @@ where
             return Box::pin(std::future::ready(Ok(shed)));
         };
         let call = self.inner.call(request);
+        let limit = (class != Class::Transfer).then_some(self.shared.unary_timeout);
         Box::pin(async move {
-            let response = call.await;
+            let response = match limit {
+                None => call.await,
+                Some(limit) => match tokio::time::timeout(limit, call).await {
+                    Ok(response) => response,
+                    Err(_) => {
+                        metrics::counter!("grpc_timeouts_total", "class" => class.label())
+                            .increment(1);
+                        Ok(to_status(&ApiError::request_timeout()).into_http())
+                    }
+                },
+            };
             drop(ticket);
             response
         })
@@ -423,6 +443,8 @@ mod tests {
     fn only_the_calls_that_keep_leased_work_alive_are_reserved_capacity() {
         let class =
             |m: &str| Class::of(&format!("/sagat_octopus_orchestrator.v1.WorkerService/{m}"));
+        assert_eq!(class("WriteBlob"), Class::Transfer);
+        assert_eq!(class("ReadBlob"), Class::Transfer);
         assert_eq!(class("PollTasks"), Class::Discovery);
         assert_eq!(class("RegisterWorker"), Class::Discovery);
         assert_eq!(class("Heartbeat"), Class::Lease);
@@ -442,7 +464,7 @@ mod tests {
 
     #[test]
     fn a_reserve_is_left_for_leased_work_and_every_ticket_is_given_back() {
-        let shared = Admission::new(8).shared;
+        let shared = Admission::new(8, Duration::from_secs(30)).shared;
         let tickets: Vec<_> = (0..6)
             .map(|_| {
                 shared

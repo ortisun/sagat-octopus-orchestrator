@@ -6,11 +6,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::quota::QuotaResource;
+use sagat_domain::workflow::ActivityName;
 
 use crate::dto_gov::{
-    BindingBody, BindingListBody, EgressPolicyBody, QuotaBody, QuotaListBody, RevokedBody,
-    SecretAccessBody, SecretBody, SecretListBody, SetBindingBody, SetEgressPolicyBody,
-    SetQuotaBody, SetSecretBody,
+    ActivityQuotaBody, ActivityQuotaListBody, BindingBody, BindingListBody, EgressPolicyBody,
+    QuotaBody, QuotaListBody, RevokedBody, SecretAccessBody, SecretBody, SecretListBody,
+    SetBindingBody, SetEgressPolicyBody, SetQuotaBody, SetSecretBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -22,6 +23,10 @@ fn namespace_id(raw: &str) -> Result<NamespaceId, ApiError> {
 
 fn resource(raw: &str) -> Result<QuotaResource, ApiError> {
     raw.parse().map_err(|_| ApiError::not_found())
+}
+
+fn activity(raw: &str) -> Result<ActivityName, ApiError> {
+    ActivityName::parse(raw).map_err(|_| ApiError::not_found())
 }
 
 // ------------------------------------------------------------------------------ tenant level
@@ -129,6 +134,60 @@ pub async fn clear_namespace_quota<B: Governance>(
         )
         .await?;
     Ok(Json(QuotaBody::from(&view)))
+}
+
+pub async fn list_activity_quotas<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+) -> Result<Json<ActivityQuotaListBody>, ApiError> {
+    let views = state
+        .quotas()
+        .list_activity_limits(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(ActivityQuotaListBody {
+        items: views.iter().map(ActivityQuotaBody::from).collect(),
+    }))
+}
+
+pub async fn set_activity_quota<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, activity_name)): Path<(String, String)>,
+    ApiJson(body): ApiJson<SetQuotaBody>,
+) -> Result<Json<ActivityQuotaBody>, ApiError> {
+    let view = state
+        .quotas()
+        .set_activity_limit(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            activity(&activity_name)?,
+            body.limit,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(ActivityQuotaBody::from(&view)))
+}
+
+pub async fn clear_activity_quota<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, activity_name)): Path<(String, String)>,
+) -> Result<Json<ActivityQuotaBody>, ApiError> {
+    let view = state
+        .quotas()
+        .clear_activity_limit(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            activity(&activity_name)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(ActivityQuotaBody::from(&view)))
 }
 
 // ------------------------------------------------------------------------------ worker bindings

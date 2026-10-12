@@ -21,6 +21,7 @@ use sagat_domain::workflow::{ActivityName, NodeId, NodeKind};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::blobs::{BlobAccess, BlobCommit, BlobScope, descriptor_json};
 use crate::clock::Clock;
 use crate::definitions::{DefinitionStore, Idempotency};
 use crate::entropy::{Entropy, Token};
@@ -33,14 +34,15 @@ use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
 use crate::secrets::{SecretProblem, SecretState, check_usable};
 use sagat_domain::binding::ActivityPattern;
+use sagat_domain::blobs::{BlobDescriptor, BlobId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_data};
 
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
 /// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
-/// `ResolveSecrets`.
-pub const PROTOCOL_MINOR: u32 = 2;
+/// `ResolveSecrets`; 1.3 adds streaming blob upload/download.
+pub const PROTOCOL_MINOR: u32 = 3;
 
 /// What registration says when it refuses the protocol version (a stable reason for SDKs).
 pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
@@ -88,6 +90,9 @@ pub const MAX_LABEL_LEN: usize = 64;
 /// the next poll. Each task carries the run's data, so without this a poll of many steps of a run
 /// with large outputs would be many times the run's size.
 pub const MAX_POLL_BYTES: usize = 8 * 1024 * 1024;
+/// A serialized task context must fit in an otherwise empty poll. Stored JSON can grow when it is
+/// rendered (notably numeric exponents), so the retained-output limit cannot replace this check.
+pub const MAX_TASK_INPUT_BYTES: usize = MAX_POLL_BYTES;
 
 /// Tunable timings of the worker protocol.
 #[derive(Debug, Clone, Copy)]
@@ -718,12 +723,41 @@ where
                 .collect()
         };
         let mut leased = Vec::new();
+        let mut run_bytes = 0usize;
         for (node, activity, timeout) in ready {
             // Every task carries the run's data; the response is bounded by what it carries.
             // `remaining` bounds what is *leased*, not what is looked at: a step the circuit
             // breaker holds back must not use up the place of one that can run.
-            if *bytes >= MAX_POLL_BYTES || leased.len() >= remaining {
+            if *bytes + run_bytes >= MAX_POLL_BYTES || leased.len() >= remaining {
                 break;
+            }
+            // Measure the actual serialized context before granting any lease. Raw output sizes
+            // do not bound it: JSON number normalization can expand a compact stored document.
+            let input = self.engine.evaluator().task_input(tx.data().await?, &node);
+            if input.len() > MAX_TASK_INPUT_BYTES {
+                match self
+                    .reject_large_input(&mut tx, session, &node, trace_id)
+                    .await
+                {
+                    Ok(()) | Err(AppError::StateConflict(_)) => break,
+                    Err(other) => return Err(other),
+                }
+            }
+            if input.len() > MAX_POLL_BYTES - *bytes - run_bytes {
+                // This task fits a fresh response. Leave it READY, without consuming an attempt,
+                // and return every lease already made in this transaction.
+                break;
+            }
+            // The quota decision and READY -> LEASED transition share this run transaction. Its
+            // activity-scoped lock makes concurrent pollers exact; a full activity stays ready so
+            // this bounded candidate scan can still serve another activity.
+            if !tx.activity_admitted(&activity).await? {
+                metrics::counter!(
+                    "quota_exceeded_total",
+                    "limit" => "activity_concurrency"
+                )
+                .increment(1);
+                continue;
             }
             // A provider whose compensations keep failing is left alone until its breaker allows
             // one probe; the step stays ready and loses nothing by waiting.
@@ -731,11 +765,11 @@ where
                 continue;
             }
             match self
-                .lease_one(&mut tx, session, &node, activity, timeout, trace_id)
+                .lease_one(&mut tx, session, &node, activity, timeout, input, trace_id)
                 .await
             {
                 Ok(task) => {
-                    *bytes += task.input.len();
+                    run_bytes += task.input.len();
                     leased.push(task);
                 }
                 // The run stopped, paused or changed under us: skip it, keep the others.
@@ -744,9 +778,51 @@ where
             }
         }
         tx.commit().await?;
+        // A failed transaction contributes neither leases nor bytes to this response.
+        *bytes += run_bytes;
         Ok(leased)
     }
 
+    /// Records a deterministic preflight failure through the same domain attempt/failure policy
+    /// as an activity report. Both journal events commit together; no live lease or token is ever
+    /// published. Saga compensation and reconciliation retain their existing failure semantics.
+    async fn reject_large_input<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        session: &SessionRecord,
+        node: &NodeId,
+        trace_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        let effects = Effects::by(
+            Actor::Worker(session.id.to_string()),
+            trace_id.map(str::to_owned),
+        );
+        self.engine
+            .run(tx, effects, |def, state, now| {
+                let (fence, leased) = execution::lease_step(state, node)?;
+                let mut progress = execution::fail_step(
+                    def,
+                    state,
+                    node,
+                    execution::Failure {
+                        fence,
+                        code: FailureCode::run_data_limit(),
+                        retryable: false,
+                        jitter_sample: 0.0,
+                    },
+                    now,
+                )?;
+                progress.events.insert(0, leased);
+                Ok(((), progress))
+            })
+            .await
+            .map_err(engine_error)?;
+        metrics::counter!("worker_task_input_rejected_total", "reason" => "run_data_limit")
+            .increment(1);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)] // the already-bounded input belongs to this lease
     async fn lease_one<Tx: RunTx>(
         &self,
         tx: &mut Tx,
@@ -754,6 +830,7 @@ where
         node: &NodeId,
         activity: ActivityName,
         timeout: Option<Duration>,
+        input: Vec<u8>,
         trace_id: Option<&str>,
     ) -> Result<ClaimedTask, AppError> {
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
@@ -842,7 +919,6 @@ where
             ),
             _ => (forward_key, None),
         };
-        let input = self.engine.evaluator().task_input(data, node);
         Ok(ClaimedTask {
             run_id,
             node: node.clone(),
@@ -930,28 +1006,234 @@ where
         output: &[u8],
         idempotency_key: &str,
     ) -> Result<StepAck, AppError> {
+        self.complete_inner(principal, task, output, None, None, idempotency_key)
+            .await
+    }
+
+    /// Records a successful attempt whose output is too large to travel: the worker uploaded it as a
+    /// blob, and what the run keeps as the step's output is the small descriptor of that blob
+    /// (FR-002-008). The blob is committed in the same transaction as the step, so it is used exactly
+    /// once and cannot be swept from under the record that refers to it.
+    ///
+    /// # Errors
+    /// As [`Self::complete`]; [`AppError::NotFound`] when the blob is not an uploaded, unused blob of
+    /// this tenant with exactly the size and digest of `blob`.
+    pub async fn complete_with_blob(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        blob: &BlobDescriptor,
+        expected_digest: &str,
+        idempotency_key: &str,
+    ) -> Result<StepAck, AppError> {
+        self.complete_inner(
+            principal,
+            task,
+            &descriptor_json(blob),
+            Some(BlobCommit::new(
+                self.blob_report_scope(principal, task).await?,
+                blob,
+            )),
+            Some(blob_report_identity(blob.id(), expected_digest)),
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// Replays a blob report using its stable request identity before accessing object storage.
+    ///
+    /// # Errors
+    /// Permission, binding and idempotency errors are identical to completion.
+    pub async fn replay_blob_completion(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        blob_id: sagat_domain::blobs::BlobId,
+        expected_digest: &str,
+        key: &str,
+    ) -> Result<Option<StepAck>, AppError> {
+        principal.authorize(Permission::WorkerExecute)?;
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        if task
+            .step_id
+            .is_some_and(|claimed| claimed != Self::scope_of(&tx, task).step_id)
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        let identity = blob_report_identity(blob_id, expected_digest);
+        let idempotency = completion_idempotency(task, key, &identity, true);
+        self.replayed(&mut tx, task, &idempotency).await
+    }
+
+    /// Whether `task` is an attempt that may still act: its lease is current and unexpired and the
+    /// identity is bound to the work. Changes nothing. The data-plane calls that are not a report
+    /// (reading and writing blobs) are authorized by this, exactly as secrets are.
+    ///
+    /// # Errors
+    /// [`AppError::StaleAttempt`] when the lease is not current, [`AppError::NotBound`], or the
+    /// permission and tenant errors of any worker call.
+    pub async fn check_lease(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+    ) -> Result<BlobScope, AppError> {
+        self.check_blob_access(principal, task, false, None).await
+    }
+
+    /// Uploads cannot bypass the inline-output secret guard. Until streaming content scanning is
+    /// available, attempts declaring secrets are refused before any bytes reach object storage.
+    pub async fn check_blob_upload(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+    ) -> Result<BlobScope, AppError> {
+        self.check_blob_access(principal, task, true, None).await
+    }
+
+    /// Audits access before any blob bytes are handed to a worker; repeated reads of the same
+    /// blob by the same attempt collapse into one append-only record.
+    pub async fn audit_blob_read(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        blob: BlobId,
+        trace_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.check_blob_access(principal, task, false, Some((blob, trace_id)))
+            .await
+            .map(|_| ())
+    }
+
+    async fn check_blob_access(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        writing: bool,
+        audit_read: Option<(BlobId, Option<&str>)>,
+    ) -> Result<BlobScope, AppError> {
+        principal.authorize(Permission::WorkerExecute)?;
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        if !tx
+            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+            .await?
+        {
+            return Err(AppError::StaleAttempt);
+        }
+        {
+            let (_, state) = tx.parts();
+            let step = state.step(task.node).ok_or(AppError::StaleAttempt)?;
+            if step.attempt() != task.fence.attempt || step.generation() != task.fence.generation {
+                return Err(AppError::StaleAttempt);
+            }
+        }
+        if writing && !Self::declared_secrets(&mut tx, task).is_empty() {
+            return Err(AppError::NotAllowed(
+                "blob outputs with declared secrets require content scanning",
+            ));
+        }
+        let scope = Self::scope_of(&tx, task);
+        if let Some((blob, trace_id)) = audit_read {
+            let mut effects =
+                Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+            effects.audit = Some(
+                AuditRecord::by(
+                    principal,
+                    AuditAction::BlobRead,
+                    ResourceType::Blob,
+                    format!("{}/{}", scope.access.namespace_id, blob),
+                    trace_id.map(str::to_owned),
+                    self.clock.now(),
+                )
+                .with_reason(format!(
+                    "run {} node {} attempt {} generation {}",
+                    task.run_id, task.node, task.fence.attempt, task.fence.generation
+                )),
+            );
+            tx.persist(&[], effects).await?;
+            tx.commit().await?;
+        }
+        Ok(scope)
+    }
+
+    /// Resolves the tenant-scoped report target without requiring a still-live lease. This permits
+    /// an exact completion replay after its lease ended; a new report is still fenced by completion.
+    pub async fn blob_report_scope(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+    ) -> Result<BlobScope, AppError> {
+        principal.authorize(Permission::WorkerExecute)?;
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        let scope = Self::scope_of(&tx, task);
+        if task.step_id.is_some_and(|claimed| claimed != scope.step_id) {
+            return Err(AppError::StaleAttempt);
+        }
+        Ok(scope)
+    }
+
+    fn scope_of<Tx: RunTx>(tx: &Tx, task: &TaskRef<'_>) -> BlobScope {
+        let info = tx.info();
+        BlobScope {
+            access: BlobAccess {
+                tenant_id: info.tenant_id,
+                namespace_id: info.namespace_id,
+            },
+            run_id: info.run_id,
+            step_id: step_id(info.version_id, info.run_id, task.node),
+            attempt: task.fence.attempt,
+            generation: task.fence.generation,
+        }
+    }
+
+    async fn complete_inner(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        output: &[u8],
+        blob: Option<BlobCommit>,
+        blob_identity: Option<Vec<u8>>,
+        idempotency_key: &str,
+    ) -> Result<StepAck, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
         if output.len() > MAX_PAYLOAD_BYTES || !self.engine.evaluator().is_json(output) {
             return Err(AppError::NotAllowed(
                 "a step output must be JSON of at most 256 KiB",
             ));
         }
-        let idempotency = Idempotency {
-            scope: report_scope(task),
-            key: idempotency_key.to_owned(),
-            fingerprint: fingerprint(&[
-                b"complete",
-                &task.fence.attempt.to_be_bytes(),
-                &task.fence.generation.to_be_bytes(),
-                output,
-            ]),
-        };
+        let idempotency = completion_idempotency(
+            task,
+            idempotency_key,
+            blob_identity.as_deref().unwrap_or(output),
+            blob.is_some(),
+        );
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
             return Ok(ack);
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
+        if blob.is_some() {
+            if task.node.is_reconciliation() || task.node.is_compensation() {
+                return Err(AppError::NotAllowed(
+                    "blob output requires a forward activity",
+                ));
+            }
+            if !Self::declared_secrets(&mut tx, task).is_empty() {
+                return Err(AppError::NotAllowed(
+                    "blob outputs with declared secrets require content scanning",
+                ));
+            }
+            if !tx
+                .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+                .await?
+            {
+                return Err(AppError::StaleAttempt);
+            }
+        }
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         // A secret the step was given must not come back in its output, where it would be stored in
         // the journal and handed to every later step: the step fails for good instead.
@@ -1018,6 +1300,7 @@ where
             return self.finish(tx, task, idempotency).await;
         }
         effects.outputs = vec![(task.node.clone(), output.to_vec())];
+        effects.blobs = blob.into_iter().collect();
         let node = task.node.clone();
         let fence = task.fence;
         self.engine
@@ -1574,6 +1857,31 @@ fn report_scope(task: &TaskRef<'_>) -> String {
         let _ = write!(scope, "{byte:02x}");
     }
     scope
+}
+
+fn blob_report_identity(id: sagat_domain::blobs::BlobId, expected_digest: &str) -> Vec<u8> {
+    fingerprint(&[
+        id.to_string().as_bytes(),
+        expected_digest.to_ascii_lowercase().as_bytes(),
+    ])
+}
+
+fn completion_idempotency(
+    task: &TaskRef<'_>,
+    key: &str,
+    payload: &[u8],
+    blob: bool,
+) -> Idempotency {
+    Idempotency {
+        scope: report_scope(task),
+        key: key.to_owned(),
+        fingerprint: fingerprint(&[
+            if blob { b"complete_blob" } else { b"complete" },
+            &task.fence.attempt.to_be_bytes(),
+            &task.fence.generation.to_be_bytes(),
+            payload,
+        ]),
+    }
 }
 
 fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {

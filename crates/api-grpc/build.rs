@@ -15,6 +15,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // skipped here and replaced by a redacting one in `lib.rs`.
     let mut config = tonic_prost_build::Config::new();
     config.skip_debug(["sagat_octopus_orchestrator.v1.ResolvedSecret"]);
+    // The chunks of a blob are handed on without being copied.
+    config.bytes([
+        ".sagat_octopus_orchestrator.v1.WriteBlobRequest.chunk",
+        ".sagat_octopus_orchestrator.v1.ReadBlobResponse.chunk",
+    ]);
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)

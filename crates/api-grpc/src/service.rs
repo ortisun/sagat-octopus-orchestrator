@@ -3,10 +3,12 @@
 //! the application's (`WorkerService`).
 
 use std::future::Future;
+use std::pin::Pin;
 use std::time::Instant;
 
 use sagat_api_http::error::ApiError;
 use sagat_api_http::{Authenticated, Core, authenticate_bearer, parse_bearer};
+use sagat_application::blobs::BlobService;
 use sagat_application::clock::Clock;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::entropy::Entropy;
@@ -14,12 +16,18 @@ use sagat_application::error::AppError;
 use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
+use sagat_domain::blobs::BlobId;
 use sagat_telemetry::TraceContext;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
+use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status};
 use tracing::Instrument;
 
+use crate::blobs as blob_failures;
+use crate::blobs::{
+    BlobAccess, BlobTransfer, Download, read_failure, upload_body, write_failure, write_request,
+};
 use crate::pb;
 use crate::request::{Attempt, idempotency_key, worker_id};
 use crate::status::{invalid, to_status};
@@ -29,12 +37,31 @@ use crate::status::{invalid, to_status};
 pub struct WorkerGrpc<St, S, C, E, R> {
     core: St,
     workers: WorkerService<S, C, E, R>,
+    blobs: Option<BlobAccess>,
 }
 
 impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R> {
     #[must_use]
     pub const fn new(core: St, workers: WorkerService<S, C, E, R>) -> Self {
-        Self { core, workers }
+        Self {
+            core,
+            workers,
+            blobs: None,
+        }
+    }
+
+    /// Serves `WriteBlob` and `ReadBlob`, and accepts `output_blob_ref`. Without it those calls are
+    /// refused as "not configured on this instance".
+    #[must_use]
+    pub fn with_blobs(mut self, service: BlobService, transfer: BlobTransfer) -> Self {
+        self.blobs = Some(BlobAccess::new(service, transfer));
+        self
+    }
+
+    fn blob_access(&self) -> Result<&BlobAccess, Status> {
+        self.blobs
+            .as_ref()
+            .ok_or_else(blob_failures::not_configured)
     }
 }
 
@@ -319,11 +346,58 @@ where
             )?;
             let key = idempotency_key(&message.idempotency_key)?;
             if !message.output_blob_ref.is_empty() {
-                // Large outputs need the payload store (gap G19); refusing is honest, ignoring
-                // the reference would silently lose the output.
-                return Err(invalid(
-                    "output_blob_ref is not supported yet; send the output inline (at most 256 KiB)",
-                ));
+                if !message.output_json.is_empty() {
+                    return Err(invalid("send output_json or output_blob_ref, not both"));
+                }
+                let blobs = self.blob_access()?;
+                let id = message
+                    .output_blob_ref
+                    .parse::<BlobId>()
+                    .map_err(|_| invalid("output_blob_ref is not a blob id"))?;
+                let principal = &auth.session.principal;
+                if let Some(ack) = self
+                    .workers
+                    .replay_blob_completion(
+                        principal,
+                        &attempt.task_ref(),
+                        id,
+                        &message.output_sha256,
+                        key,
+                    )
+                    .await
+                    .map_err(app)?
+                {
+                    return Ok(step_response(&ack));
+                }
+                let scope = self
+                    .workers
+                    .blob_report_scope(principal, &attempt.task_ref())
+                    .await
+                    .map_err(app)?;
+                let described = blobs
+                    .service
+                    .describe_for_commit(scope, id)
+                    .await
+                    .map_err(blob_failures::read_failure)?;
+                if !message.output_sha256.is_empty()
+                    && !message
+                        .output_sha256
+                        .eq_ignore_ascii_case(&described.digest().to_hex())
+                {
+                    return Err(invalid("output_sha256 does not match the blob"));
+                }
+                let ack = self
+                    .workers
+                    .complete_with_blob(
+                        principal,
+                        &attempt.task_ref(),
+                        &described,
+                        &message.output_sha256,
+                        key,
+                    )
+                    .await
+                    .map_err(app)?;
+                return Ok(step_response(&ack));
             }
             let output = output_of(&message.output_json, &message.output_sha256)?;
             let ack = self
@@ -332,6 +406,129 @@ where
                 .await
                 .map_err(app)?;
             Ok(step_response(&ack))
+        })
+        .await
+    }
+
+    async fn write_blob(
+        &self,
+        request: Request<tonic::Streaming<pb::WriteBlobRequest>>,
+    ) -> Result<Response<pb::WriteBlobResponse>, Status> {
+        let trace = trace_of(&request);
+        observe("WriteBlob", trace, async {
+            let started = Instant::now();
+            let auth = self.authenticate(&request).await?;
+            let blobs = self.blob_access()?;
+            let _place = blobs.permit()?;
+            let mut stream = request.into_inner();
+
+            // The header comes first and names the attempt; nothing is read before the lease holds.
+            let first = tokio::time::timeout(
+                blobs.timeout.saturating_sub(started.elapsed()),
+                stream.message(),
+            )
+            .await
+            .map_err(|_| to_status(&ApiError::request_timeout()))?
+            .map_err(|_| invalid("the upload could not be read"))?;
+            let Some(pb::write_blob_request::Part::Header(header)) = first.and_then(|m| m.part)
+            else {
+                return Err(invalid("the first message of an upload must be the header"));
+            };
+            let attempt = Attempt::parse(
+                &header.task_id,
+                &header.run_id,
+                &header.step_id,
+                header.attempt,
+                header.generation,
+                &header.lease_token,
+            )?;
+            let principal = &auth.session.principal;
+            let scope = self
+                .workers
+                .check_blob_upload(principal, &attempt.task_ref())
+                .await
+                .map_err(app)?;
+            let write = write_request(&header)?;
+
+            let (body, flags) =
+                upload_body(stream, blobs.timeout.saturating_sub(started.elapsed()));
+            let stored = blobs
+                .service
+                .write(scope, principal.subject().as_str(), write, body)
+                .await;
+            // Why the body ended early is told by the body; the use case only knows it was cut.
+            if flags.timed_out() {
+                return Err(to_status(&ApiError::request_timeout()));
+            }
+            if flags.violation() {
+                return Err(invalid(
+                    "after the header an upload carries only chunks of at most 256 KiB",
+                ));
+            }
+            let blob = stored.map_err(write_failure)?;
+            Ok(pb::WriteBlobResponse {
+                blob_id: blob.id().to_string(),
+                size: i64::try_from(blob.size()).unwrap_or(i64::MAX),
+                sha256: blob.digest().to_hex(),
+                content_type: blob.content_type().as_str().to_owned(),
+            })
+        })
+        .await
+    }
+
+    type ReadBlobStream = Pin<Box<dyn Stream<Item = Result<pb::ReadBlobResponse, Status>> + Send>>;
+
+    async fn read_blob(
+        &self,
+        request: Request<pb::ReadBlobRequest>,
+    ) -> Result<Response<Self::ReadBlobStream>, Status> {
+        let trace = trace_of(&request);
+        observe("ReadBlob", trace, async {
+            let auth = self.authenticate(&request).await?;
+            let blobs = self.blob_access()?;
+            let place = blobs.permit()?;
+            let message = request.get_ref();
+            let attempt = Attempt::parse(
+                &message.task_id,
+                &message.run_id,
+                &message.step_id,
+                message.attempt,
+                message.generation,
+                &message.lease_token,
+            )?;
+            let id = message
+                .blob_id
+                .parse::<BlobId>()
+                .map_err(|_| invalid("blob_id is not a blob id"))?;
+            let principal = &auth.session.principal;
+            let scope = self
+                .workers
+                .check_lease(principal, &attempt.task_ref())
+                .await
+                .map_err(app)?;
+            let (descriptor, body) = blobs
+                .service
+                .read(scope.access, id)
+                .await
+                .map_err(read_failure)?;
+            self.workers
+                .audit_blob_read(
+                    principal,
+                    &attempt.task_ref(),
+                    id,
+                    Some(&trace.trace_id().to_string()),
+                )
+                .await
+                .map_err(app)?;
+            let header = pb::ReadBlobHeader {
+                blob_id: descriptor.id().to_string(),
+                size: i64::try_from(descriptor.size()).unwrap_or(i64::MAX),
+                sha256: descriptor.digest().to_hex(),
+                content_type: descriptor.content_type().as_str().to_owned(),
+            };
+            let stream: Self::ReadBlobStream =
+                Box::pin(Download::new(header, body, place, auth, blobs.timeout));
+            Ok(stream)
         })
         .await
     }
