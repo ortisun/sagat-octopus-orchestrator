@@ -10,7 +10,7 @@ public sealed interface WorkerEvent {
     /** A poll answered with {@code tasks} tasks. */
     record Poll(int tasks) implements WorkerEvent {}
 
-    record TaskTaken(String taskId, String activity, int attempt) implements WorkerEvent {}
+    record TaskTaken(String taskId, String activity, int attempt, String traceparent) implements WorkerEvent {}
 
     record TaskCompleted(String taskId, Duration duration) implements WorkerEvent {}
 

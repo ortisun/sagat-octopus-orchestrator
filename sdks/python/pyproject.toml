@@ -27,6 +27,9 @@ dependencies = [
     "protobuf>=7.35.1,<8",
 ]
 
+[project.optional-dependencies]
+opentelemetry = ["opentelemetry-api>=1.39.1,<2"]
+
 [project.urls]
 Repository = "https://github.com/ortisun/sagat-octopus-orchestrator/tree/main/sdks/python"
 

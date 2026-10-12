@@ -485,7 +485,7 @@ public final class WorkerHost implements AutoCloseable {
             Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
             return;
         }
-        emit(new WorkerEvent.TaskTaken(lease.getTaskId(), lease.getActivityName(), lease.getAttempt()));
+        emit(new WorkerEvent.TaskTaken(lease.getTaskId(), lease.getActivityName(), lease.getAttempt(), lease.getTraceparent()));
         try {
             tasks.execute(() -> {
                 try {

@@ -44,7 +44,7 @@ export interface WorkerConfig {
 export type WorkerEvent =
   | { type: 'registered'; protocolVersion: string }
   | { type: 'poll'; tasks: number }
-  | { type: 'task.taken'; taskId: string; activity: string; attempt: number }
+  | { type: 'task.taken'; taskId: string; activity: string; attempt: number; traceparent: string }
   | { type: 'task.completed'; taskId: string; durationMs: number }
   | { type: 'task.failed'; taskId: string; code: string; retryable: boolean; durationMs: number }
   | { type: 'task.stale'; taskId: string }
@@ -346,7 +346,7 @@ export class WorkerHost {
       this.wake?.();
     });
     this.inflight.set(lease.task_id, { abort, done });
-    this.#emit({ type: 'task.taken', taskId: lease.task_id, activity: lease.activity_name, attempt: lease.attempt });
+    this.#emit({ type: 'task.taken', taskId: lease.task_id, activity: lease.activity_name, attempt: lease.attempt, traceparent: lease.traceparent });
   }
 
   private async execute(lease: TaskLease, abort: AbortController): Promise<void> {

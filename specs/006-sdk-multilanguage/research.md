@@ -91,9 +91,11 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   unit tests cover a session that is gone.
 - **G125 — The worker protocol polls; streaming of tasks is not built.** The benchmark measures polling and
   backpressure only (NFR-006-PERF asks to measure streaming too).
-- **G126 — OpenTelemetry is not a dependency of any SDK.** They propagate `traceparent`, take the ambient one
-  from a hook and report counters through a callback; C# uses `ActivitySource` and `System.Diagnostics.Metrics`.
-  No exporter is shipped and the hooks were not tried with each ecosystem's real OpenTelemetry API.
+- **G126 — Resolved for opt-in ecosystem integration (2026-10-12).** TypeScript, Python, Go and
+  Java bridge the existing hooks to real OpenTelemetry APIs; C# retains native ActivitySource/Meter.
+  In-memory SDK exporter tests prove parentage, bounded attributes/metrics and exporter failure
+  isolation. Providers/exporters remain application-owned; no global exporter is installed by an SDK.
+  See `docs/runbooks/sdk-observability.md` and each SDK's OpenTelemetry tests.
 - **G127 — Runtime matrices say only what was run on this machine** (macOS arm64): one version of each runtime,
   except Python 3.10 (conformance) and 3.11–3.13 (unit tests, before the last change). Other versions and
   operating systems are declared, not tested. Each README says which.

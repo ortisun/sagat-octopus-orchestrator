@@ -73,6 +73,7 @@ type Event struct {
 	Code            string        // EventFailed: the error code reported; EventDropped: why
 	Retryable       bool          // EventFailed
 	Duration        time.Duration // EventCompleted, EventFailed: the time since the task was taken
+	Traceparent     string        // EventTaskTaken: the lease's W3C parent, or empty
 }
 
 type config struct {

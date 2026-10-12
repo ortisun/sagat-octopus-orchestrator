@@ -87,6 +87,7 @@ class WorkerEvent:
     reason: str | None = None
     protocol_version: str | None = None
     tasks: int | None = None
+    traceparent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -499,7 +500,13 @@ class WorkerHost:
         task.runner = runner
         runner.add_done_callback(functools.partial(self._finished, task))
         self._emit(
-            WorkerEvent("task.taken", task_id=lease.task_id, activity=lease.activity_name, attempt=lease.attempt)
+            WorkerEvent(
+                "task.taken",
+                task_id=lease.task_id,
+                activity=lease.activity_name,
+                attempt=lease.attempt,
+                traceparent=lease.traceparent,
+            )
         )
 
     def _finished(self, task: _Task, done: asyncio.Future[None]) -> None:

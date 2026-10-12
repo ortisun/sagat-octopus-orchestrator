@@ -178,7 +178,7 @@ said, and `errors.Is` reaches what it returned. That it was the source is someth
 | `max_inflight` (10), pools, languages | `worker.WithMaxInflight`, `WithPools`, `WithLanguages` |
 | heartbeat interval | `worker.WithHeartbeatInterval` (default: a third of the lease, 500 ms to 10 s) |
 | logs | `WithLogger(*slog.Logger)`; silent by default |
-| trace context | `client.WithTraceContext(func(ctx) string)` returns a W3C `traceparent` (an OpenTelemetry bridge is four lines, see its doc), or pass `client.WithTraceparent` per call. No OpenTelemetry dependency |
+| trace context | `otelbridge.New(...).TraceContext` returns the ambient W3C `traceparent`, or pass `client.WithTraceparent` per call; the same bridge's `OnEvent` emits worker spans and metrics |
 | interceptors, proxies, fault injection | `worker.WithDialOptions(grpc.WithChainUnaryInterceptor(...))`, `client.WithHTTPClient` |
 
 Plain `http://` outside loopback is accepted and logs one warning at start. A redirect is never followed (the request carries a bearer token, the namespace and an idempotency key): a `3xx` is a `PROTOCOL` error, "the server redirected the call", whatever its target; a client you pass to `WithHTTPClient` is copied and its `CheckRedirect` replaced, and its `Transport` must not follow redirects either.
@@ -232,7 +232,7 @@ What was **actually run** for this release, and what was not:
 
 Dependencies, all at least two weeks older than this release (checked against the proxy): `google.golang.org/grpc`
 v1.83.2 (2026-08-25), `google.golang.org/protobuf` v1.36.11, `golang.org/x/net` v0.58.0 (2026-08-12), `golang.org/x/sys`
-v0.47.0, `golang.org/x/text` v0.41.0, and what `go.sum` pins.
+v0.47.0, `golang.org/x/text` v0.41.0, OpenTelemetry Go v1.46.0 for the opt-in `otelbridge` package and its real SDK tests, and what `go.sum` pins. No provider or exporter is configured by the SDK.
 
 ### Known findings (`govulncheck ./...`, database of 2026-10-08, re-run on 2026-10-10 with the same result)
 

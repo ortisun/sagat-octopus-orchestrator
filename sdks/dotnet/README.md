@@ -237,7 +237,8 @@ against a real platform (the conformance suite runs over loopback `http`).
   `Activity.Current`) whose `traceparent` is sent to the server; an explicit `Traceparent` option wins. A lease's `traceparent` is
   the parent of a `Consumer` span around the handler, so `Activity.Current` inside the handler is in the run's trace and the
   requests the handler makes carry it; with no listener on the SDK's source it is a plain `Activity` with the same parent (the trace
-  still reaches the handler), and with an empty or invalid `traceparent` the SDK sets none. Tags carry identifiers only.
+  still reaches the handler), and with an empty or invalid `traceparent` the SDK sets none. Worker attempts use the fixed
+  span name `sagat.worker.task`; tags carry identifiers only.
 - **Metrics**: a `Meter` named `SagatOctopusOrchestrator.Sdk`: `sagat.worker.tasks.taken`, `.completed`, `.failed`, `.stale`,
   `.dropped`, `sagat.worker.heartbeats`, `.polls`, `.reconnects` (counters) and `sagat.worker.activity.duration` (histogram, s),
   tagged with `sagat.worker`.
@@ -284,7 +285,8 @@ Central package management with pinned versions, each published at least two wee
 `Grpc.Net.Client` 2.83.0 and `Grpc.Core.Api` 2.83.0 (2026-08-03), `Google.Protobuf` 3.36.1 (2026-08-31), `Grpc.Tools` 2.84.0
 (build time, 2026-09-14), `Microsoft.Extensions.{DependencyInjection.Abstractions, Hosting.Abstractions, Logging.Abstractions,
 Options}` 10.0.11 (2026-08-11) for `net10.0` and 8.0.x for `net8.0`. Tests: `Microsoft.NET.Test.Sdk` 18.10.0, `xunit` 2.9.3,
-`xunit.runner.visualstudio` 3.1.5, `Grpc.AspNetCore.Server` 2.83.0, `Microsoft.AspNetCore.TestHost` 10.0.11.
+`xunit.runner.visualstudio` 3.1.5, `Grpc.AspNetCore.Server` 2.83.0, `Microsoft.AspNetCore.TestHost` 10.0.11, and
+OpenTelemetry plus its in-memory exporter 1.19.0 for integration tests only.
 
 ## Development
 

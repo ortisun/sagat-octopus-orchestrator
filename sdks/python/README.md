@@ -237,7 +237,7 @@ server ignores the fields it does not know.
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (226) | `mypy --strict` and `ruff` | Conformance suite (15 scenarios) |
+| Runtime | Unit tests (228) | `mypy --strict` and `ruff` | Conformance suite (15 scenarios) |
 |---|---|---|---|
 | CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
 | CPython 3.10.21 (uv build) | 226 passed | not run (type-checked against the 3.10 language level from 3.14) | passed, one run, on an earlier revision of the SDK and of the suite |
@@ -254,9 +254,9 @@ older runtime, `protobuf>=7.35.1` because the generated messages do) were not tr
 
 * TLS and mTLS are tested against in-process fakes with throw-away `openssl` certificates (trust roots, client
   certificate, an untrusted server), not against the platform's own TLS endpoints.
-* Tracing: the SDK propagates `traceparent` and takes the ambient one from the `trace_context` hook; it has no
-  OpenTelemetry dependency and the hook was not tried with the real OpenTelemetry API. Metrics are the
-  `on_event` callback of `WorkerConfig`; no exporter is shipped.
+* Tracing and metrics use the opt-in `opentelemetry` extra and `OpenTelemetryBridge`, which adapts the existing
+  `trace_context` and `on_event` hooks. Real in-memory OpenTelemetry exporters cover propagation, task spans and
+  metrics. The application still owns providers and exporters; none is configured by this package.
 * No benchmark or soak test: nothing here claims a throughput.
 
 ## Development

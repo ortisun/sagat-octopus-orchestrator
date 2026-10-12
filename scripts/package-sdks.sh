@@ -29,6 +29,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+mkdir -p "${repo_root}/target"
+dotnet_build_candidate="${repo_root}/target/.sdk-package-dotnet-build"
+if ! mkdir "${dotnet_build_candidate}"; then
+  echo "isolated .NET package build directory is already in use: ${dotnet_build_candidate}" >&2
+  exit 2
+fi
+# The trap owns only a directory this process created. A contender that loses this mkdir race must
+# leave the winner's active build directory untouched.
+dotnet_build_root="${dotnet_build_candidate}"
+
 export LC_ALL=C
 export TZ=UTC
 source_revision="${SAGAT_SOURCE_REVISION:-$(git -C "${repo_root}" rev-parse HEAD)}"
@@ -250,11 +260,6 @@ elif dotnet --list-runtimes | grep -q '^Microsoft.NETCore.App 10\.'; then
   dotnet_smoke_framework="net10.0"
 else
   echo "the .NET 8 or .NET 10 runtime is required for the package smoke test" >&2
-  exit 2
-fi
-dotnet_build_root="${repo_root}/target/.sdk-package-dotnet-build"
-if ! mkdir "${dotnet_build_root}"; then
-  echo "isolated .NET package build directory is already in use: ${dotnet_build_root}" >&2
   exit 2
 fi
 dotnet_build_home="${work_dir}/dotnet-build-home"

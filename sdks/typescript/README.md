@@ -126,16 +126,17 @@ serves it at that minor, a server of another major refuses with `UNSUPPORTED_PRO
 
 | Runtime | Status |
 |---|---|
-| Node.js 26.8.1 | **tested**: unit tests (96) and the conformance suite |
+| Node.js 26.8.1 | **tested**: unit tests (98) and the conformance suite |
 | Node.js 20, 22, 24 | declared (`engines.node >= 20`), **not run here** |
 | Browsers, Deno, Bun | not supported (the worker host uses `@grpc/grpc-js`; the client uses the global `fetch`) |
 
-Dependencies: `@grpc/grpc-js`, `@grpc/proto-loader`. The package is ESM only.
+Dependencies: `@grpc/grpc-js`, `@grpc/proto-loader`. The package is ESM only. The opt-in
+`@sagat-octopus-orchestrator/sdk/opentelemetry` export uses the optional `@opentelemetry/api` peer; provider and exporter setup stays in the application.
 
 ## Develop
 
 ```text
-npm test                 # builds, then 96 unit tests against a fake HTTP server and a fake worker service
+npm test                 # builds, then 98 unit tests against fakes and the in-memory OpenTelemetry SDK
 npm run sync             # copies worker.proto and the error catalog from the repository; npm test fails when behind
 cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
 ```

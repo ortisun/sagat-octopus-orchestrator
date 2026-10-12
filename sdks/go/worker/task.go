@@ -47,7 +47,7 @@ func (h *Host) dispatch(l *link, lease *pb.TaskLease) {
 	h.tasks[lease.GetTaskId()] = task
 	h.wg.Add(1)
 	h.mu.Unlock()
-	h.emit(Event{Type: EventTaskTaken, TaskID: lease.GetTaskId(), Activity: lease.GetActivityName(), Attempt: int(lease.GetAttempt())})
+	h.emit(Event{Type: EventTaskTaken, TaskID: lease.GetTaskId(), Activity: lease.GetActivityName(), Attempt: int(lease.GetAttempt()), Traceparent: lease.GetTraceparent()})
 	go func() {
 		defer func() {
 			cancel(nil)

@@ -838,7 +838,7 @@ public sealed partial class WorkerHost : IWorkerHost
 
     private Activity? StartSpan(TaskLease lease, TaskKind kind)
     {
-        var name = "sagat activity " + lease.ActivityName;
+        const string name = "sagat.worker.task";
         var parented = lease.Traceparent.Length > 0 && System.Diagnostics.ActivityContext.TryParse(lease.Traceparent, null, out var parent);
         var span = parented
             ? Safe.Start(name, ActivityKind.Consumer, parent)
