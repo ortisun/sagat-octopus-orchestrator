@@ -353,14 +353,29 @@ impl Worker<'_> {
 
     /// Registers and remembers the session.
     pub async fn register(&mut self, activities: &[&str]) {
-        let request = self.req(Self::register_message(activities, 100));
+        self.register_version(activities, "1").await;
+    }
+
+    /// Registers at an explicit protocol version and remembers the negotiated session.
+    pub async fn register_version(&mut self, activities: &[&str], protocol_version: &str) {
+        let mut message = Self::register_message(activities, 100);
+        message
+            .capabilities
+            .as_mut()
+            .expect("capabilities")
+            .protocol_version = protocol_version.to_owned();
+        let request = self.req(message);
         let response = self
             .client
             .register_worker(request)
             .await
             .expect("register")
             .into_inner();
-        assert_eq!(response.accepted_protocol_version, "1");
+        assert_eq!(
+            response.accepted_protocol_version,
+            sagat_application::worker::negotiate_protocol(protocol_version)
+                .expect("a supported protocol version")
+        );
         self.worker_id = response.worker_id;
         self.session = response.session_token;
     }

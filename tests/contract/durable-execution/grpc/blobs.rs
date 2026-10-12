@@ -91,7 +91,7 @@ async fn first_lease(p: &Platform) -> (Worker<'_>, sagat_api_grpc::pb::TaskLease
     let wf = p.publish("big-output", &chain_ir("big-output")).await;
     let run = p.start(&wf, &json!({"orderId": "o-1"})).await;
     let mut w = p.worker("wendy").await;
-    w.register(&["act.a", "act.b"]).await;
+    w.register_version(&["act.a", "act.b"], "1.3").await;
     let lease = w.one_task().await;
     (w, lease, run)
 }
@@ -422,7 +422,7 @@ async fn an_attempt_with_declared_secrets_cannot_upload_until_stream_scanning_is
     let workflow = p.publish("secret-blob-output", &ir).await;
     p.start(&workflow, &json!({})).await;
     let mut w = p.worker("wendy").await;
-    w.register(&["act.a", "act.b"]).await;
+    w.register_version(&["act.a", "act.b"], "1.3").await;
     let lease = w.one_task().await;
 
     let status = w
@@ -723,7 +723,7 @@ async fn other_tenants_lease(p: &Platform) -> (Worker<'_>, sagat_api_grpc::pb::T
     .await
     .expect("bind");
     let mut w = p.connect("gwen", "globex").await;
-    w.register(&["act.a", "act.b"]).await;
+    w.register_version(&["act.a", "act.b"], "1.3").await;
     let lease = w.one_task().await;
     (w, lease)
 }

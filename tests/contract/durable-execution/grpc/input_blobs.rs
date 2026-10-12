@@ -65,7 +65,7 @@ async fn large_input_is_private_until_start_then_lease_readable_and_deduplicated
     let wf = p.publish("blob-input", &chain_ir("blob-input")).await;
     p.start(&wf, &json!({})).await;
     let mut worker = p.worker("reader").await;
-    worker.register(&["act.a", "act.b"]).await;
+    worker.register_version(&["act.a", "act.b"], "1.3").await;
     let unrelated = worker.one_task().await;
     let bytes = vec![b'z'; 1_500_000];
     let blob = staged(&p, &bytes).await;
@@ -200,7 +200,7 @@ async fn child_inherits_catalog_provenance_only_when_it_inherits_the_input() {
     let report = p.tick().await;
     assert_eq!(report.children_started, 1, "{report:?}");
     let mut worker = p.worker("child-reader").await;
-    worker.register(&["act.a"]).await;
+    worker.register_version(&["act.a"], "1.3").await;
     let lease = worker.one_task().await;
     assert_eq!(lease.input_blob_ref, id);
     assert_eq!(
