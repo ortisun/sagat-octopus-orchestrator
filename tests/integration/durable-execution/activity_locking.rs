@@ -8,6 +8,35 @@ use sagat_domain::workflow::ActivityName;
 use serde_json::json;
 use std::time::Duration;
 
+async fn wait_for_policy_waiter(pool: &sqlx::PgPool, key: &str, mode: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS ( \
+                     SELECT 1 FROM pg_locks \
+                      WHERE locktype = 'advisory' AND objsubid = 1 \
+                        AND NOT granted AND mode = $2 \
+                        AND database = (SELECT oid FROM pg_database \
+                                         WHERE datname = current_database()) \
+                        AND ((classid::bigint << 32) | objid::bigint) = \
+                            hashtextextended($1, 0) \
+                 )",
+            )
+            .bind(key)
+            .bind(mode)
+            .fetch_one(pool)
+            .await
+            .expect("inspect policy lock");
+            if waiting {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("policy change reached its advisory lock");
+}
+
 #[tokio::test]
 async fn opposite_node_activity_orders_do_not_abort_a_concurrent_claim() {
     let w = world().await;
@@ -256,11 +285,13 @@ async fn an_override_waiting_behind_a_ceiling_change_reports_the_current_effecti
         Some(0),
     );
     tokio::pin!(lower);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), &mut lower)
-            .await
-            .is_err()
-    );
+    // Drive each change to its exact PostgreSQL wait. A short timeout only proves that a future is
+    // incomplete; under load it may not have finished the override's ceiling prevalidation yet.
+    let tenant_policy = format!("activity-policy:{}", w.admin.tenant_id());
+    tokio::select! {
+        result = &mut lower => panic!("ceiling editor passed an active admission: {result:?}"),
+        () = wait_for_policy_waiter(&w.db.pool, &tenant_policy, "ExclusiveLock") => {}
+    }
     let context = ctx();
     let change = w.quotas.set_activity_limit(
         &w.admin,
@@ -270,12 +301,10 @@ async fn an_override_waiting_behind_a_ceiling_change_reports_the_current_effecti
         &context,
     );
     tokio::pin!(change);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), &mut change)
-            .await
-            .is_err(),
-        "new policy reader waits behind the queued ceiling editor"
-    );
+    tokio::select! {
+        result = &mut change => panic!("override passed a queued ceiling editor: {result:?}"),
+        () = wait_for_policy_waiter(&w.db.pool, &tenant_policy, "ShareLock") => {}
+    }
     admitted.commit().await.expect("release old admission");
     let (lower, view) = tokio::join!(lower, change);
     lower.expect("lowered");
