@@ -1082,6 +1082,27 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn holds_shard(
+        &mut self,
+        owner: &str,
+        lease: sagat_application::shards::Lease,
+    ) -> Result<bool, StoreError> {
+        // FOR SHARE: a takeover of the shard (an UPDATE of this row) waits for this transaction, and a
+        // transaction that starts after the takeover finds the new generation and no row.
+        let held: Option<i16> = sqlx::query_scalar(
+            "SELECT shard FROM scheduler_shards \
+             WHERE shard = $1 AND generation = $2 AND owner = $3 AND expires_at > clock_timestamp() \
+             FOR SHARE",
+        )
+        .bind(i16::from(lease.shard.index()))
+        .bind(i64::try_from(lease.generation).unwrap_or(i64::MAX))
+        .bind(owner)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(held.is_some())
+    }
+
     async fn worker_drained(&mut self, subject: &str) -> Result<bool, StoreError> {
         sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
             .bind(crate::operations::drain_lock_key(

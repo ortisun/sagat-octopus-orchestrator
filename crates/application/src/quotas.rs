@@ -88,6 +88,16 @@ pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
         tenant: TenantId,
     ) -> impl Future<Output = Result<Vec<StoredLimit>, StoreError>> + Send;
 
+    /// Sets (`Some`) or withdraws (`None`) the weight of a tenant in the scheduler's passes
+    /// (`FR-010-002`), with its audit record, in one transaction. Reached only from the operator's
+    /// command line.
+    fn put_scheduling_weight(
+        &self,
+        tenant: TenantId,
+        weight: Option<u16>,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Grants (`Some`) or withdraws (`None`) a ceiling, with its audit record, in one transaction.
     /// Reached only from the operator's command line, never from the API.
     fn put_ceiling(
@@ -375,6 +385,40 @@ where
                 sagat_domain::identity::Subject::operator().as_str(),
                 &audit,
             )
+            .await?;
+        Ok(())
+    }
+
+    /// Sets the weight of a tenant in the scheduler's passes, or withdraws it (the default is 1),
+    /// and audits it. A tenant of weight `w` gets `w` times the share of a pass that a tenant of
+    /// weight 1 gets, when both have more work due than a pass takes; nothing changes for a tenant
+    /// that has less.
+    ///
+    /// # Errors
+    /// [`AppError::NotAllowed`] for a weight outside 1 to 16; [`AppError::NotFound`] for a tenant
+    /// that does not exist.
+    pub async fn set_scheduling_weight(
+        &self,
+        tenant: TenantId,
+        weight: Option<u16>,
+    ) -> Result<(), AppError> {
+        if weight.is_some_and(|w| !(1..=sagat_domain::sharding::MAX_WEIGHT).contains(&w)) {
+            return Err(AppError::NotAllowed("a scheduling weight is 1 to 16"));
+        }
+        let reason = match weight {
+            Some(w) => format!("scheduling weight = {w}"),
+            None => "scheduling weight withdrawn".to_owned(),
+        };
+        let audit = AuditRecord::operator(
+            tenant,
+            AuditAction::QuotaChanged,
+            ResourceType::Quota,
+            "scheduling-weight",
+            reason,
+            self.clock.now(),
+        );
+        self.store
+            .put_scheduling_weight(tenant, weight, &audit)
             .await?;
         Ok(())
     }

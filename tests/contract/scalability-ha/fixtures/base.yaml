@@ -1,0 +1,30 @@
+# The values the contract test installs the chart with: what an operator has to give it, an engine
+# with the settings the test then reads back, and two worker pools (one of them scaled).
+database: {existingSecret: sagat-db}
+oidc:
+  issuer: https://idp.example/
+  audience: sagat
+  jwksUri: https://idp.example/jwks.json
+secrets: {existingSecret: sagat-keys}
+nats: {url: "nats://nats.nats:4222", credentialsSecret: nats-creds}
+controlPlane: {allowPlaintextSecrets: true}
+engine:
+  shardLeaseSeconds: 21
+  schedulerConcurrency: 6
+  schedulerBatch: 150
+  grpc: {allowPlaintextSecrets: true}
+  autoscaling:
+    keda:
+      enabled: true
+      prometheusAddress: http://prometheus.monitoring:9090
+      maxReplicaCount: 32
+workerPoolAutoscaling: {prometheusAddress: "http://prometheus.monitoring:9090"}
+workerPools:
+  - name: render
+    language: python
+    image: registry.example.com/team/render:1.0.0
+    activities: [act.render, act.upscale]
+    autoscaling: {enabled: true, maxReplicaCount: 20}
+  - name: export
+    image: registry.example.com/team/export:1.0.0
+    activities: [act.export]

@@ -578,7 +578,7 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
     // The scheduler reads the candidate…
     let candidate = w
         .store
-        .pending_children(10)
+        .pending_children(&sagat_application::maintenance::Window::everything(10))
         .await
         .expect("candidates")
         .pop()

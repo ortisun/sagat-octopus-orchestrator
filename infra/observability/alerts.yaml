@@ -142,3 +142,64 @@ groups:
         annotations:
           summary: Requests are being refused for exceeding a quota.
           runbook: docs/runbooks/security-governance.md
+
+  # Scale and availability of the scheduler (feature 010, FR-010-001, FR-010-004): its work is split
+  # in 64 shards, each held by one engine replica under a lease. See docs/runbooks/scaling.md.
+  - name: sagat-scheduler
+    rules:
+      - alert: SagatShardsUnowned
+        expr: sum(scheduler_shards_owned) < 64
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: Some of the scheduler's 64 shards are held by no replica; their timers, retries and deadlines wait.
+          runbook: docs/runbooks/scaling.md#shards-unowned
+
+      - alert: SagatShardsOverlap
+        expr: sum(scheduler_shards_owned) > 64
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: More shards are held than there are, so two replicas believe they hold the same one.
+          runbook: docs/runbooks/scaling.md#shards-overlap
+
+      - alert: SagatSchedulerLate
+        expr: max(scheduler_lag_seconds) > 60
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: A timer, wait, retry, lease or deadline has been overdue for more than a minute.
+          runbook: docs/runbooks/scaling.md#scheduler-late
+
+      - alert: SagatShardFencing
+        expr: sum(rate(scheduler_fenced_total[5m])) > 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: A replica keeps finding that the shard of a run it was about to change is no longer its own.
+          runbook: docs/runbooks/scaling.md#shard-fencing
+
+      - alert: SagatKeeperFailing
+        expr: sum(rate(scheduler_keeper_failures_total[5m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: A replica cannot renew the leases on its shards; it stops working on them when they run out.
+          runbook: docs/runbooks/scaling.md#keeper-failing
+
+      - alert: SagatPoolBacklog
+        expr: max by (pool) (pool_queue_lag_seconds) > 300
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: The oldest step ready for a pool of workers has waited more than five minutes.
+          runbook: docs/runbooks/scaling.md#pool-backlog
+
+      - alert: SagatFairnessExhausted
+        expr: sum(rate(scheduler_fairness_exhausted_total[15m])) > 0
+        for: 15m
+        labels: {severity: info}
+        annotations:
+          summary: Passes of the scheduler ran out of pages looking for tenants; more tenants than a pass can see have work due.
+          runbook: docs/runbooks/scaling.md#fairness-exhausted
+
