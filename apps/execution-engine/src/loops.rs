@@ -4,7 +4,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use sagat_application::entropy::{Entropy, SystemEntropy};
@@ -35,6 +35,7 @@ pub type EngineDeliveries = DeliveryWorker<
 #[derive(Debug)]
 pub struct Health {
     started: Instant,
+    process_failed: AtomicBool,
     last_tick_ms: AtomicU64,
     stale_after: Duration,
     last_round_ms: AtomicU64,
@@ -46,6 +47,7 @@ impl Health {
     pub fn new(stale_after: Duration) -> Self {
         Self {
             started: Instant::now(),
+            process_failed: AtomicBool::new(false),
             last_tick_ms: AtomicU64::new(0),
             stale_after,
             last_round_ms: AtomicU64::new(0),
@@ -66,10 +68,25 @@ impl Health {
         self.last_round_ms.store(self.now_ms(), Ordering::Relaxed);
     }
 
+    /// Marks a critical task failure. This is sticky: a process whose task set changed underneath
+    /// it must be replaced, even if the remaining loops are still ticking while they drain.
+    pub fn fail_process(&self) {
+        self.process_failed.store(true, Ordering::Release);
+    }
+
+    /// Whether every critical task is still expected to be running.
+    #[must_use]
+    pub fn process_alive(&self) -> bool {
+        !self.process_failed.load(Ordering::Acquire)
+    }
+
     /// Whether the keeper's loop is running (or has only just started): a replica whose loop ended
     /// would go on holding shards it never renews, and nothing else would say so.
     #[must_use]
     pub fn keeper_alive(&self) -> bool {
+        if !self.process_alive() {
+            return false;
+        }
         let age = self
             .now_ms()
             .saturating_sub(self.last_round_ms.load(Ordering::Relaxed));
@@ -87,6 +104,9 @@ impl Health {
     /// Whether the scheduler loop ticked recently (or has only just started).
     #[must_use]
     pub fn scheduler_alive(&self) -> bool {
+        if !self.process_alive() {
+            return false;
+        }
         let age = self
             .now_ms()
             .saturating_sub(self.last_tick_ms.load(Ordering::Relaxed));

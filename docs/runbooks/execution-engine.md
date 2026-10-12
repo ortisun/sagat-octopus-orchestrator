@@ -12,7 +12,7 @@ OIDC settings and the backup procedure are the same.
 |---|---|---|
 | Worker API | `execution-engine serve`, `SAGAT_GRPC_ADDR`, default `127.0.0.1:9000` | gRPC over HTTP/2. TLS (and mTLS) can be terminated by the engine itself with `SAGAT_GRPC_TLS_*`, or by the ingress or mesh in front (then say so with `SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS=true` if secrets are configured). Authenticated like the REST API: bearer JWT, member of a tenant, role `worker` (or `admin`), **and bound** to the namespace and activities it serves (`docs/runbooks/security-governance.md`) |
 | Scheduler loop | same process | Fires timers, wait deadlines and retries, reclaims lost leases, enforces run deadlines, renews lost wake-up hints, creates child runs, reports ended children to their parents, cancels children of stopped parents. **Each replica works only on the shards of the work it holds a lease on** (64 shards, divided between the replicas alive), shares each pass between the tenants by weight, and fences every action against its lease: [`scaling.md`](scaling.md) |
-| Shard keeper | same process, every `SAGAT_SHARD_LEASE_SECS / 3` (5 s) | Announces the replica, renews its leases, gives back the shards beyond its share and takes the free ones; gives them back on `SIGTERM`. Sets `scheduler_shards_owned`, `scheduler_replicas` |
+| Shard keeper | same process, every `SAGAT_SHARD_LEASE_SECS / 5` (3 s) | Announces the replica, renews its leases, gives back the shards beyond its share and takes the free ones; gives them back on `SIGTERM`. Sets `scheduler_shards_owned`, `scheduler_replicas` |
 | Housekeeping | same process, every `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300) | Purges idempotency records (7 d), expired worker sessions (1 h after expiry) and delivered outbox messages (24 h, 5000 per round) |
 | Outbox dispatcher | same process, only when `SAGAT_NATS_URL` is set | Publishes `task.ready` hints (`sagat.v1.task.ready.<tenant>.<activity>`) and `run.finished` events (`sagat.v1.run.finished.<tenant>`) to JetStream, at-least-once |
 | Telemetry projector | same process, one at a time (a lease row in `engine_leases`) | Turns what is new in the journal of each run into spans and measurements and hands the spans to the OTLP collector; settings `SAGAT_TELEMETRY_*`, see [`observability.md`](observability.md) |
@@ -32,8 +32,9 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 ## 2. Start, stop, scale, upgrade
 
 - **Start order:** `control-plane migrate` (owner role), then engines and API with the runtime role.
-- **Stop:** `SIGTERM` stops the gRPC server (in-flight calls drain), then the loops, then closes the
-  pool. Workers whose call is cut off retry with the same idempotency key.
+- **Stop:** `SIGTERM` broadcasts shutdown to the gRPC server and all loops, drains them for
+  at most 30 seconds, then closes the pool. A task that outlasts that grace is aborted and the
+  process exits nonzero. Workers whose call is cut off retry with the same idempotency key.
 - **Scale:** run up to 64 replicas (a replica beyond the 64 shards holds none). The scheduler's work is
   divided between them by shard, so a second replica adds capacity, until the database is the limit;
   claims are `FOR UPDATE SKIP LOCKED` and the outbox is divided by shard as well. How many, how long a
@@ -49,13 +50,14 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 
 | Probe | Meaning |
 |---|---|
-| `GET /livez` | The scheduler loop finished a tick within `max(10 x SAGAT_SCHEDULER_INTERVAL_MS, SAGAT_LIVENESS_GRACE_SECS)` (30 s). Failing means the loop is stuck: restart the process |
+| `GET /livez` | No critical task has failed, the shard keeper is alive, and the scheduler loop finished a tick within `max(10 x SAGAT_SCHEDULER_INTERVAL_MS, SAGAT_LIVENESS_GRACE_SECS)` (30 s). Failing means the loop is stuck: restart the process |
 | `GET /readyz` | `/livez` and the database answers and every table of the execution schema exists. Failing before the first `migrate` is expected; it becomes ready by itself once the migration ran |
 
 ### Symptom table
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
+| Exit code 1 with a named critical task | A critical loop or server exited, panicked or failed to drain | Follow [Critical task failure](#critical-task-failure); restart and inspect the structured task name |
 | Exit code 2 at start, message names a role | The database role can rewrite the audit trail | Use the runtime role `sagat_app` (the owner role is for `migrate`) |
 | Exit code 2: `SAGAT_ALLOW_INSECURE_JWKS_HTTP is only allowed when SAGAT_ENV=dev` | Plain-http key URL outside dev | Use an `https://` JWKS URL |
 | Workers get `UNAUTHENTICATED` | Token invalid/expired, tenant claim unknown, subject not a member of the tenant, or the worker session expired (idle `SAGAT_SESSION_TTL_SECS`) | Check the token; re-register after a session expiry (`PollTasks` answers `UNAUTHENTICATED`) |
@@ -89,10 +91,27 @@ SELECT seq, event_type, node, attempt, actor, occurred_at FROM run_events WHERE 
 SELECT count(*) FILTER (WHERE delivered_at IS NULL) AS pending, max(attempt_count) FROM event_outbox;
 ```
 
+### Critical task failure
+
+Every enabled scheduler, keeper, housekeeping, event, outbox, connector, delivery,
+telemetry and monitor loop, plus the admin and worker servers, is supervised. An
+unexpected return, error or panic marks both probes unhealthy and broadcasts shutdown.
+The engine exits **1**, allowing the container restart policy to recover it. A requested
+shutdown exits successfully only when all tasks drain successfully.
+
+Cleanup has a **30-second** deadline. Tasks still running afterwards are aborted;
+uncommitted database transactions roll back and held shard leases expire so another
+engine can take over. External effects remain at-least-once and need their stable keys.
+The structured failure log names only the fixed internal task and this runbook, never a
+payload, credential or panic value. `engine_critical_task_failures_total{task}` records
+observed failures with a bounded label set; a process can exit before Prometheus scrapes
+that increment, so use restart monitoring and logs as well.
+
 ## 4. Metrics (admin listener)
 
 | Metric | Labels | Meaning |
 |---|---|---|
+| `engine_critical_task_failures_total` | `task` | Unexpected critical task exits or failed shutdown cleanup; fixed internal task names only |
 | `grpc_requests_total` | `method`, `code` | Worker API calls by outcome (closed sets) |
 | `grpc_request_duration_seconds` | `method` | Latency of each call |
 | `grpc_in_flight` | | Calls running now, all connections (limit `SAGAT_GRPC_MAX_IN_FLIGHT`) |

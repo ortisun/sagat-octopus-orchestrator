@@ -39,6 +39,7 @@ use tokio::sync::watch;
 pub mod cli;
 pub mod loops;
 pub mod settings;
+mod supervision;
 
 pub use sagat_control_plane::{probe, shutdown_signal};
 pub use settings::EngineConfig;
@@ -47,9 +48,13 @@ use loops::{
     EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor, EngineProjector,
     EngineScheduler, Health,
 };
+use supervision::CriticalTasks;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
 const DEFINITION_CACHE_ENTRIES: usize = 1024;
+/// A failed or requested shutdown may finish in-flight work and release shard leases for this long.
+/// Past the deadline tasks are aborted so a broken cleanup path cannot leave the process wedged.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
 /// Runs the engine until `shutdown` completes, then stops the loops and drains in-flight calls.
 ///
@@ -221,10 +226,6 @@ pub async fn serve(
     let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
     let pool_metrics = spawn_pool_metrics(pool.clone(), Duration::from_secs(5));
     let (stop_tx, stop_rx) = watch::channel(false);
-    tokio::spawn(async move {
-        shutdown.await;
-        let _ = stop_tx.send(true);
-    });
 
     let health = Arc::new(
         Health::new((engine.tick_interval * 10).max(engine.liveness_grace))
@@ -242,8 +243,10 @@ pub async fn serve(
             tracing::warn!(%error, "could not take the scheduler shards at start; trying again")
         }
     }
-    let mut tasks = vec![
-        tokio::spawn(loops::run_keeper(
+    let mut tasks = CriticalTasks::new();
+    tasks.spawn_loop(
+        "shard keeper",
+        loops::run_keeper(
             {
                 let keeper = Arc::clone(&keeper);
                 let health = Arc::clone(&health);
@@ -263,8 +266,11 @@ pub async fn serve(
                 move || async move { keeper.leave().await }
             },
             stop_rx.clone(),
-        )),
-        tokio::spawn(loops::run_scheduler(
+        ),
+    );
+    tasks.spawn_loop(
+        "scheduler",
+        loops::run_scheduler(
             {
                 let scheduler = Arc::clone(&scheduler);
                 move || {
@@ -275,8 +281,11 @@ pub async fn serve(
             engine.tick_interval,
             Arc::clone(&health),
             stop_rx.clone(),
-        )),
-        tokio::spawn(loops::run_housekeeping(
+        ),
+    );
+    tasks.spawn_loop(
+        "housekeeping",
+        loops::run_housekeeping(
             {
                 let scheduler = Arc::clone(&scheduler);
                 let events = Arc::clone(&events);
@@ -305,8 +314,11 @@ pub async fn serve(
             },
             engine.housekeeping_interval,
             stop_rx.clone(),
-        )),
-        tokio::spawn(loops::run_events(
+        ),
+    );
+    tasks.spawn_loop(
+        "event dispatcher",
+        loops::run_events(
             {
                 let events = Arc::clone(&events);
                 move || {
@@ -316,74 +328,89 @@ pub async fn serve(
             },
             engine.event_poll,
             stop_rx.clone(),
-        )),
-    ];
-    tasks.push(tokio::spawn(loops::run_telemetry(
-        {
-            let projector = Arc::clone(&projector);
-            move || {
+        ),
+    );
+    tasks.spawn_loop(
+        "telemetry projector",
+        loops::run_telemetry(
+            {
                 let projector = Arc::clone(&projector);
-                async move { projector.run_once().await }
-            }
-        },
-        engine.telemetry.poll,
-        stop_rx.clone(),
-    )));
-    tasks.push(tokio::spawn(loops::run_monitor(
-        {
-            let monitor = Arc::clone(&monitor);
-            move || {
+                move || {
+                    let projector = Arc::clone(&projector);
+                    async move { projector.run_once().await }
+                }
+            },
+            engine.telemetry.poll,
+            stop_rx.clone(),
+        ),
+    );
+    tasks.spawn_loop(
+        "operational monitor",
+        loops::run_monitor(
+            {
                 let monitor = Arc::clone(&monitor);
-                async move { monitor.run_once().await }
-            }
-        },
-        engine.monitor.interval,
-        stop_rx.clone(),
-    )));
+                move || {
+                    let monitor = Arc::clone(&monitor);
+                    async move { monitor.run_once().await }
+                }
+            },
+            engine.monitor.interval,
+            stop_rx.clone(),
+        ),
+    );
     if let Some(connectors) = connectors {
-        tasks.push(tokio::spawn(connectors.run(stop_rx.clone())));
+        tasks.spawn_loop("connector supervisor", connectors.run(stop_rx.clone()));
     }
     if let Some(deliveries) = deliveries {
-        tasks.push(tokio::spawn(loops::run_deliveries(
-            move || {
-                let deliveries = Arc::clone(&deliveries);
-                async move { deliveries.tick().await }
-            },
-            engine.delivery_poll,
-            stop_rx.clone(),
-        )));
+        tasks.spawn_loop(
+            "delivery worker",
+            loops::run_deliveries(
+                move || {
+                    let deliveries = Arc::clone(&deliveries);
+                    async move { deliveries.tick().await }
+                },
+                engine.delivery_poll,
+                stop_rx.clone(),
+            ),
+        );
     }
     if let Some(dispatcher) = dispatcher {
-        tasks.push(tokio::spawn(loops::run_dispatcher(
-            move || {
-                let dispatcher = Arc::clone(&dispatcher);
-                async move { dispatcher.run_once().await }
-            },
-            engine.dispatch.batch,
-            engine.outbox_poll,
-            stop_rx.clone(),
-        )));
+        tasks.spawn_loop(
+            "outbox dispatcher",
+            loops::run_dispatcher(
+                move || {
+                    let dispatcher = Arc::clone(&dispatcher);
+                    async move { dispatcher.run_once().await }
+                },
+                engine.dispatch.batch,
+                engine.outbox_poll,
+                stop_rx.clone(),
+            ),
+        );
     }
-    let admin = match admin_listener {
-        Some(listener) => {
-            let addr = listener.local_addr()?;
-            tracing::info!(%addr, "admin listener (metrics and probes)");
-            if config::admin_addr_is_exposed(addr) {
-                tracing::warn!(
-                    %addr,
-                    "the admin endpoints are unauthenticated and listen on a non-loopback address; \
-                     restrict them with a NetworkPolicy or firewall rule"
-                );
-            }
-            Some(tokio::spawn(sagat_api_http::serve(
-                listener,
-                admin_router_with(probes(store.clone(), Arc::clone(&health))),
-                sagat_api_http::ServerConfig::default(),
-                stopped(stop_rx.clone()),
-            )))
+    if let Some(listener) = admin_listener {
+        let addr = listener.local_addr()?;
+        tracing::info!(%addr, "admin listener (metrics and probes)");
+        if config::admin_addr_is_exposed(addr) {
+            tracing::warn!(
+                %addr,
+                "the admin endpoints are unauthenticated and listen on a non-loopback address; \
+                 restrict them with a NetworkPolicy or firewall rule"
+            );
         }
-        None => None,
-    };
+        let admin_health = Arc::clone(&health);
+        let admin_stop = stop_rx.clone();
+        tasks.spawn("admin server", async move {
+            sagat_api_http::serve(
+                listener,
+                admin_router_with(probes(store.clone(), admin_health)),
+                sagat_api_http::ServerConfig::default(),
+                stopped(admin_stop),
+            )
+            .await
+            .map_err(|error| RunError::Io(std::io::Error::other(error.to_string())))
+        });
+    }
 
     tracing::info!(
         addr = %grpc_listener.local_addr()?,
@@ -392,23 +419,29 @@ pub async fn serve(
         audience = %engine.auth.audience,
         "execution engine listening (worker gRPC API)"
     );
-    let outcome = serve_grpc(
-        grpc_listener,
-        worker_service(WorkerGrpc::new(state, workers)),
-        engine.grpc.clone(),
-        stopped(stop_rx.clone()),
-    )
-    .await
-    .map_err(|e| RunError::Io(std::io::Error::other(e.to_string())));
+    let grpc_stop = stop_rx.clone();
+    let grpc_config = engine.grpc.clone();
+    tasks.spawn("worker gRPC server", async move {
+        serve_grpc(
+            grpc_listener,
+            worker_service(WorkerGrpc::new(state, workers)),
+            grpc_config,
+            stopped(grpc_stop),
+        )
+        .await
+        .map_err(|error| RunError::Io(std::io::Error::other(error.to_string())))
+    });
 
-    // Whatever ended the server, tell the loops to stop and wait for them.
-    drop(stop_rx);
-    for task in tasks {
-        let _ = task.await;
-    }
-    if let Some(admin) = admin {
-        let _ = admin.await;
-    }
+    let outcome = supervision::supervise(
+        &mut tasks,
+        stop_tx,
+        stop_rx,
+        Arc::clone(&health),
+        shutdown,
+        SHUTDOWN_GRACE,
+    )
+    .await;
+
     tracing::info!("execution engine stopped");
     pool_metrics.abort();
     metrics_upkeep.abort();
@@ -424,7 +457,12 @@ fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
         move || {
             let health = Arc::clone(&health);
             async move {
-                if !health.scheduler_alive() {
+                if !health.process_alive() {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "a critical background task stopped",
+                    )
+                } else if !health.scheduler_alive() {
                     (
                         StatusCode::SERVICE_UNAVAILABLE,
                         "the scheduler loop stopped ticking",
@@ -444,6 +482,12 @@ fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
         let store = store.clone();
         let health = Arc::clone(&health);
         async move {
+            if !health.process_alive() {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "a critical background task stopped",
+                );
+            }
             if !health.scheduler_alive() {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
