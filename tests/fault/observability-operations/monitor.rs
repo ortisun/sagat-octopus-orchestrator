@@ -58,6 +58,13 @@ impl MonitorStore for Blinkable {
         self.inner.sample().await
     }
 
+    async fn pool_lag(
+        &self,
+        pools: &[sagat_application::operations::WorkerPool],
+    ) -> Result<Vec<sagat_application::operations::PoolLag>, StoreError> {
+        self.inner.pool_lag(pools).await
+    }
+
     async fn purge_alerts(&self, retention: Duration, limit: u32) -> Result<u64, StoreError> {
         self.inner.purge_alerts(retention, limit).await
     }

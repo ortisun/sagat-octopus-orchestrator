@@ -29,8 +29,8 @@ use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{PgIdentityStore, PgRunStore, spawn_pool_metrics};
 use sagat_scheduler::{
-    DeliveryWorker, EventDispatcher, Monitor, OutboxDispatcher, ProjectorSettings, Scheduler,
-    TelemetryProjector,
+    DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
+    ProjectorSettings, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -44,7 +44,7 @@ pub use sagat_control_plane::{probe, shutdown_signal};
 pub use settings::EngineConfig;
 
 use loops::{
-    EngineDeliveries, EngineDispatcher, EngineEvents, EngineMonitor, EngineProjector,
+    EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor, EngineProjector,
     EngineScheduler, Health,
 };
 
@@ -103,14 +103,37 @@ pub async fn serve(
     if let Some(secrets) = &engine.secrets {
         workers = workers.with_vault(secrets.cipher());
     }
+    // The scheduler's work is split in shards by the run's id and each replica works on the ones it
+    // holds a lease on (`FR-010-001`); the keeper is what takes, renews and gives back the leases.
+    let placement = Placement::new(format!(
+        "{}-{}",
+        engine.replica,
+        uuid::Uuid::new_v4().simple()
+    ));
+    let keeper: Arc<EngineKeeper> =
+        Arc::new(Keeper::new(store.clone(), placement.clone(), engine.shards));
+    // The candidates of a pass are acted on at the same time, each on a connection of its own, and the
+    // keeper needs one to renew the leases: never as many at once as the pool has.
+    let mut scheduler_settings = engine.scheduler;
+    let room = usize::try_from(config.database.max_connections.saturating_sub(2)).unwrap_or(1);
+    if scheduler_settings.concurrency > room.max(1) {
+        tracing::warn!(
+            configured = scheduler_settings.concurrency,
+            used = room.max(1),
+            pool = config.database.max_connections,
+            "SAGAT_SCHEDULER_CONCURRENCY is more than the pool can carry next to the keeper; using less"
+        );
+        scheduler_settings.concurrency = room.max(1);
+    }
     let scheduler: Arc<EngineScheduler> = Arc::new(
         Scheduler::new(
             store.clone(),
             Engine::new(JsonEvaluator),
             SystemEntropy,
-            engine.scheduler,
+            scheduler_settings,
         )
-        .with_children(cache.clone()),
+        .with_children(cache.clone())
+        .with_placement(placement.clone()),
     );
     let events: Arc<EngineEvents> = Arc::new(
         EventDispatcher::new(
@@ -154,12 +177,10 @@ pub async fn serve(
                     sagat_infra_nats::NatsError::Connect => "could not set up the NATS client",
                 })
             })?;
-            Some(Arc::new(OutboxDispatcher::new(
-                store.clone(),
-                publisher,
-                SystemEntropy,
-                engine.dispatch,
-            )))
+            Some(Arc::new(
+                OutboxDispatcher::new(store.clone(), publisher, SystemEntropy, engine.dispatch)
+                    .with_placement(placement.clone()),
+            ))
         }
         None => {
             tracing::warn!(
@@ -205,10 +226,44 @@ pub async fn serve(
         let _ = stop_tx.send(true);
     });
 
-    let health = Arc::new(Health::new(
-        (engine.tick_interval * 10).max(engine.liveness_grace),
-    ));
+    let health = Arc::new(
+        Health::new((engine.tick_interval * 10).max(engine.liveness_grace))
+            .with_keeper_stale_after((engine.shards.ttl * 3).max(engine.liveness_grace)),
+    );
+    // The first round before anything ticks, so the scheduler does not begin by finding nothing to
+    // look at; if the database is not there yet the loop below tries again.
+    match keeper.round().await {
+        Ok(first) => tracing::info!(
+            replicas = first.replicas,
+            held = first.held,
+            "holding scheduler shards"
+        ),
+        Err(error) => {
+            tracing::warn!(%error, "could not take the scheduler shards at start; trying again")
+        }
+    }
     let mut tasks = vec![
+        tokio::spawn(loops::run_keeper(
+            {
+                let keeper = Arc::clone(&keeper);
+                let health = Arc::clone(&health);
+                move || {
+                    let keeper = Arc::clone(&keeper);
+                    let health = Arc::clone(&health);
+                    async move {
+                        let round = keeper.round().await;
+                        health.keeper_rounded();
+                        round
+                    }
+                }
+            },
+            engine.shards.interval(),
+            {
+                let keeper = Arc::clone(&keeper);
+                move || async move { keeper.leave().await }
+            },
+            stop_rx.clone(),
+        )),
         tokio::spawn(loops::run_scheduler(
             {
                 let scheduler = Arc::clone(&scheduler);
@@ -361,20 +416,26 @@ pub async fn serve(
     outcome
 }
 
-/// `/livez` (the scheduler loop is ticking) and `/readyz` (and the database is usable).
+/// `/livez` (the scheduler loop is ticking and the shard keeper is rounding) and `/readyz` (and the
+/// database is usable).
 fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
     let live = {
         let health = Arc::clone(&health);
         move || {
             let health = Arc::clone(&health);
             async move {
-                if health.scheduler_alive() {
-                    (StatusCode::OK, "alive")
-                } else {
+                if !health.scheduler_alive() {
                     (
                         StatusCode::SERVICE_UNAVAILABLE,
                         "the scheduler loop stopped ticking",
                     )
+                } else if !health.keeper_alive() {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "the shard keeper stopped rounding",
+                    )
+                } else {
+                    (StatusCode::OK, "alive")
                 }
             }
         }
@@ -387,6 +448,12 @@ fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "the scheduler loop stopped ticking",
+                );
+            }
+            if !health.keeper_alive() {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the shard keeper stopped rounding",
                 );
             }
             match tokio::time::timeout(Duration::from_secs(2), store.ready()).await {

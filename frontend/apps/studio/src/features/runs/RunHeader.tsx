@@ -71,11 +71,17 @@ export function RunHeader({
   return (
     <header className="rn-header">
       <div className="rn-title">
-        <h1>
-          Run <code title={run.runId}>{run.runId}</code> <CopyButton text={run.runId} what="run id" />
-        </h1>
-        <div className="toolbar">
+        <div className="rn-heading-line">
+          <h1>
+            {workflowName ? clip(workflowName, 80) : 'Run'}
+            <span className="visually-hidden"> run {run.runId}</span>
+          </h1>
           <StatusBadge view={view} />
+        </div>
+        <div className="rn-run-reference">
+          <code title={run.runId}>{run.runId}</code> <CopyButton text={run.runId} what="run id" />
+        </div>
+        <div className="toolbar">
           <span className="hint">{view.help}</span>
           <span className="spacer" />
           <FollowIndicator state={follow} />

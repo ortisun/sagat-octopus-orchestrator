@@ -8,6 +8,8 @@ node_modules
 **/node_modules
 **/dist
 **/.venv
+runners/dotnet/**/bin
+runners/dotnet/**/obj
 **/.env
 **/.env.*
 !infra/docker/.env.example

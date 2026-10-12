@@ -16,10 +16,10 @@
 
 ## Phase 3: US01 — Start first workflow quickly (P1)
 **Independent test:** Given a developer follows the quickstart; When they run compose + CLI + SDK; Then a two-step workflow executes and is visible in Studio.
-- [x] T012-008 [P] [US01] Write Given/When/Then test for starting the first workflow quickly in `tests/e2e/developer-experience/us01.rs`. — **evidence:** `e2e stories::us01_*` (2) — in `stories.rs`, not `us01.rs`
+- [x] T012-008 [P] [US01] Write Given/When/Then test for starting the first workflow quickly in `tests/e2e/developer-experience/us01.rs`. — **evidence:** `e2e stories::us01_*` (2) — in `stories.rs`, not `us01.rs`; the real CLI → TypeScript SDK → Studio journey passed natively and in Compose in CI run 38155640785
 - [x] T012-009 [US01] Implement domain path and error handling for starting the first workflow quickly in `tools/cli/src/main.rs`. — **evidence:** `apps/cli/src/{new,validate,workflow,worker,doctor}.rs`
 - [x] T012-010 [US01] Integrate adapters and persistence for scenario US01 in `crates/application/` and `crates/infra-postgres/`. — **evidence:** `GET /v1/version` (`crates/api-http/src/routes/identity.rs`, OpenAPI `getPlatformVersion`, the REST conformance suite) and `seed_dev_namespace`; no persistence of its own
-- [x] T012-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to scenario US01 in `crates/telemetry/`. — **evidence:** scope: **no new metric** (the tool is a client and sends no telemetry, G238); the run it starts has a trace the tool shows and `e2e us03` holds every event of every language's run to it; the provider logs who a token was for and never the token (`apps/dev-idp/src/server.rs`); the tool never prints the token and filters what it prints (`fault no_command_prints_the_token_…`, `apps/cli/tests/terminal.rs`)
+- [x] T012-011 [P] [US01] Add logs/traces/metrics and tenant/secret protection to scenario US01 in `crates/telemetry/`. — **evidence:** opt-in command spans, completion logs and duration gauge points (`apps/cli/src/telemetry.rs`, `crates/telemetry`, `apps/cli/tests/telemetry.rs`; G238); the run it starts has a trace the tool shows and `e2e us03` holds every event of every language's run to it; the provider logs who a token was for and never the token (`apps/dev-idp/src/server.rs`); the tool never prints the token and filters what it prints (`fault no_command_prints_the_token_…`, `apps/cli/tests/terminal.rs`)
 - [x] T012-012 [US01] Run and document duplicate, timeout, worker failure and tenant boundary tests for US01 in `tests/fault/developer-experience/`. — **evidence:** `fault_developer_experience` (14): `a_worker_that_stops_and_starts_again_…`, `a_run_waited_for_in_vain_…`, `the_same_request_twice_…`, `another_tenant_…`, `a_worker_told_to_stop_…`
 
 ## Phase 4: US02 — Test Saga locally (P1)
@@ -32,7 +32,7 @@
 
 ## Phase 5: US03 — Generate examples per SDK (P1)
 **Independent test:** Given a new developer uses Go or C#; When they copy the example and run it; Then the example produces a contract/trace consistent with the other SDKs.
-- [x] T012-018 [P] [US03] Write Given/When/Then test for generating examples per SDK in `tests/e2e/developer-experience/us03.rs`. — **evidence:** `e2e us03` (ignored: needs five toolchains; the `sdks` job of CI runs it)
+- [x] T012-018 [P] [US03] Write Given/When/Then test for generating examples per SDK in `tests/e2e/developer-experience/us03.rs`. — **evidence:** `e2e us03` (ignored locally because it needs five toolchains); the `sdks` job passed it and all five real examples in CI run 38155640785
 - [x] T012-019 [US03] Implement domain path and error handling for generating examples per SDK in `examples/hello-world/`. — **evidence:** `examples/hello-world/{typescript,go,python,dotnet,java}`
 - [x] T012-020 [US03] Integrate adapters and persistence for scenario US03 in `crates/application/` and `crates/infra-postgres/`. — **evidence:** none needed: the examples use only the public API of the SDKs
 - [x] T012-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to scenario US03 in `crates/telemetry/`. — **evidence:** as T012-011
@@ -48,16 +48,16 @@
 
 ## Phase: Engineering design details (story-linked hardening)
 
-- [x] T012-028 [US01] Create Rust CLI `df workflow validate|publish|run|inspect` in `tools/cli/src/`. — **evidence:** `apps/cli` (`sagat workflow validate|publish|run|runs|inspect|cancel`, `script test|publish`, `worker dev|bind`, `dev token`, `doctor`, `new`)
+- [x] T012-028 [US01] Create Rust CLI `sagat workflow validate|publish|run|inspect` in `apps/cli/src/` (D206). — **evidence:** `apps/cli` (`sagat workflow validate|publish|run|runs|inspect|cancel`, `script test|publish`, `worker dev|bind`, `dev token`, `doctor`, `new`)
 - [x] T012-029 [US01] Write TS/Go/Python/C#/Java quickstarts with mocks and test harness in `docs/quickstarts/`. — **evidence:** `docs/quickstarts/{README,typescript,go,python,dotnet,java,saga}.md`; the mocks are `worker dev`'s (D208) and the harness is the example (`e2e us03`); **no SDK ships a fake context for unit tests (G219)**
 - [x] T012-030 [US01] Implement self-check of environment, broker and protocol version in `tools/cli/src/commands/doctor.rs`. — **evidence:** `apps/cli/src/doctor.rs`: `e2e doctor.rs` (7), `GET /v1/version`
 
 ## Final Phase: Hardening / rollout
-- [x] T012-031 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/developer-experience/`. — **evidence:** `contract_developer_experience` (7) and `contract_rest_platform_foundation` (the `/version` scenarios); the directory is `tests/contract/developer-experience/`
-- [x] T012-032 Apply lint and acyclic-dependency checks in `crates/` and product rules in `docs/architecture/`. — **evidence:** `cargo clippy --workspace --all-targets --locked -- -D warnings` clean; `scripts/check-architecture.py` passes (21 crates, no cycles)
+- [x] T012-031 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/developer-experience/`. — **evidence:** `contract_developer_experience` (8) and `contract_rest_platform_foundation` (the `/version` scenarios); the contract and full-workspace jobs passed in CI run 38155640785; the directory is `tests/contract/developer-experience/`
+- [x] T012-032 Apply lint and acyclic-dependency checks in `crates/` and product rules in `docs/architecture/`. — **evidence:** `cargo clippy --workspace --all-targets --locked -- -D warnings` clean; `scripts/check-architecture.py` passes (21 crates, no cycles); both passed at `ae3c23aa05f4423d5021dc6a5c042bc8d523fd8c` in CI run 38155640785
 - [x] T012-033 Run the benchmark defined in `specs/012-developer-experience/plan.md` and publish the report in `tests/performance/reports/developer-experience.md`. — **evidence:** `tests/performance/reports/developer-experience.md` — **the machine's part of the first day, not an evaluation with people (G215, G227)**
-- [x] T012-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/012-developer-experience/quickstart.md`. — **evidence:** `quickstart.md` (two independent reviews, their findings and what was fixed); `docs/runbooks/developer-experience.md`; README
-- [x] T012-035 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — **evidence:** `docs/traceability.md` section 012 (SC-012-001 is **not** proven: G215)
+- [x] T012-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/012-developer-experience/quickstart.md`. — **evidence:** `quickstart.md` (two independent reviews, their findings and what was fixed); `docs/runbooks/developer-experience.md`; README; browser credential-failure regressions and both onboarding journeys passed in CI run 38155640785
+- [x] T012-035 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — **evidence:** `docs/traceability.md` section 012 records CI run 38155640785 and head `ae3c23aa05f4423d5021dc6a5c042bc8d523fd8c`; SC-012-002 and SC-012-003 are proven, while SC-012-001 remains **not** proven (G215)
 
 ## Dependencies & independent delivery
 

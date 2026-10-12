@@ -8,6 +8,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::{Method, StatusCode};
+use sagat_domain::egress::Denial;
 use sagat_domain::scripts::{Digest, Language, Policy};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -187,6 +188,52 @@ pub struct ExecutionReport {
     pub start_ms: u64,
     pub memory_peak_bytes: Option<u64>,
     pub trace_id: Option<String>,
+}
+
+/// The fenced work item that observed a security incident. The server validates the lease before
+/// committing the audit row, so a report cannot be moved to another tenant or attempt.
+#[derive(Clone)]
+pub enum IncidentTarget {
+    Production {
+        namespace_id: String,
+        run_id: String,
+        step_id: String,
+        attempt: i32,
+        generation: i64,
+        lease_token: String,
+    },
+    Test {
+        namespace_id: String,
+        test_run_id: String,
+        lease_token: String,
+    },
+}
+
+impl std::fmt::Debug for IncidentTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A lease token and workload identifiers never print.
+        f.write_str(match self {
+            Self::Production { .. } => "IncidentTarget::Production(<redacted>)",
+            Self::Test { .. } => "IncidentTarget::Test(<redacted>)",
+        })
+    }
+}
+
+/// A closed incident category. No URL, hostname, secret name, header, or payload crosses this
+/// boundary.
+#[derive(Debug, Clone, Copy)]
+pub enum IncidentCategory {
+    EgressDisabled,
+    EgressDenied(Denial),
+}
+
+impl IncidentCategory {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::EgressDisabled => "EGRESS_DISABLED",
+            Self::EgressDenied(denial) => denial.code(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -474,6 +521,57 @@ impl ControlPlane {
         .ok_or(RunnerError::Decode)
     }
 
+    /// Commits a redacted incident before a refusal is acknowledged to a script. The endpoint is
+    /// idempotent for a fenced target and category, so retrying this call cannot grow the trail.
+    ///
+    /// # Errors
+    /// [`RunnerError`]. A caller must treat any error as unavailable, never as an audited denial.
+    pub async fn record_incident(
+        &self,
+        target: &IncidentTarget,
+        category: IncidentCategory,
+    ) -> Result<(), RunnerError> {
+        let target = match target {
+            IncidentTarget::Production {
+                namespace_id,
+                run_id,
+                step_id,
+                attempt,
+                generation,
+                lease_token,
+            } => json!({
+                "kind": "production",
+                "namespaceId": namespace_id,
+                "runId": run_id,
+                "stepId": step_id,
+                "attempt": attempt,
+                "generation": generation,
+                "leaseToken": lease_token,
+            }),
+            IncidentTarget::Test {
+                namespace_id,
+                test_run_id,
+                lease_token,
+            } => json!({
+                "kind": "test",
+                "namespaceId": namespace_id,
+                "testRunId": test_run_id,
+                "leaseToken": lease_token,
+            }),
+        };
+        match self
+            .call(
+                Method::POST,
+                "/script-runner/incidents",
+                Some(json!({"target": target, "category": category.code()})),
+            )
+            .await?
+        {
+            None => Ok(()),
+            Some(_) => Err(RunnerError::Decode),
+        }
+    }
+
     /// The script activities with a step ready in a namespace.
     ///
     /// # Errors
@@ -535,4 +633,65 @@ impl ControlPlane {
 /// [`RunnerError::Decode`] if it is not a policy the platform writes.
 pub fn policy_of(text: &str) -> Result<Policy, RunnerError> {
     Policy::parse_canonical(text).map_err(|_| RunnerError::Decode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_incident_target_never_prints_a_lease_or_workload_identifier() {
+        let target = IncidentTarget::Production {
+            namespace_id: "namespace-canary".to_owned(),
+            run_id: "run-canary".to_owned(),
+            step_id: "step-canary".to_owned(),
+            attempt: 1,
+            generation: 2,
+            lease_token: "lease-secret-canary".to_owned(),
+        };
+        let printed = format!("{target:?}");
+        for secret in [
+            "namespace-canary",
+            "run-canary",
+            "step-canary",
+            "lease-secret-canary",
+        ] {
+            assert!(!printed.contains(secret), "{printed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_no_content_acknowledges_a_committed_incident() {
+        let app = axum::Router::new().route(
+            "/v1/script-runner/incidents",
+            axum::routing::post(|| async { axum::Json(json!({"accepted": true})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake control plane");
+        let address = listener.local_addr().expect("fake control plane address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("fake control plane");
+        });
+        let api = ControlPlane::new(
+            &format!("http://{address}/v1"),
+            Credentials::Static("runner-token".to_owned()),
+            None,
+        )
+        .expect("control plane client");
+        let target = IncidentTarget::Test {
+            namespace_id: "namespace-canary".to_owned(),
+            test_run_id: "test-run-canary".to_owned(),
+            lease_token: "lease-canary".to_owned(),
+        };
+
+        assert!(matches!(
+            api.record_incident(&target, IncidentCategory::EgressDisabled)
+                .await,
+            Err(RunnerError::Decode)
+        ));
+        server.abort();
+    }
 }

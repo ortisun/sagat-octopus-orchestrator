@@ -121,7 +121,7 @@ export function scriptsServer(options: ServerOptions = {}) {
     [`POST ${base}`]: (init) => {
       const body = JSON.parse(init.body as string) as { name: string; language: string; source: string };
       if (state.scripts.some((s) => s.name === body.name)) return problem(409, 'CONFLICT', 'a script with this name already exists', { field: 'name' });
-      if (body.language !== 'typescript' && body.language !== 'python') return problem(422, 'VALIDATION_FAILED', 'the language is not built yet: typescript and python are', { reason: 'LANGUAGE_NOT_BUILT' });
+      if (body.language !== 'typescript' && body.language !== 'python' && body.language !== 'csharp') return problem(422, 'VALIDATION_FAILED', 'the language is not built yet: typescript, python and csharp are', { reason: 'LANGUAGE_NOT_BUILT' });
       const created = aScript({ id: OTHER_SCRIPT_ID, name: body.name, language: body.language, source: body.source });
       state.scripts = [...state.scripts, aSummary({ id: created.id, name: created.name, language: created.language })];
       return json(201, created);

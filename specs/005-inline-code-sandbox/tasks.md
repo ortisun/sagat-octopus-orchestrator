@@ -32,11 +32,11 @@
 
 ## Phase 5: US03 — Run inline C# code (P1)
 **Independent test:** Given a C# script with allowed NuGet references; When the author publishes; Then Roslyn compiles in a build worker and an isolated .NET host executes without a manual app deploy.
-- [ ] T005-018 [P] [US03] Write a Given/When/Then test for running inline C# code in `tests/e2e/inline-code-sandbox/us03.rs`. — Not done: `us03.rs` proves that C# is *refused* with `LANGUAGE_NOT_BUILT`, not that it runs (G96).
-- [ ] T005-019 [US03] Implement the domain path and error handling for running inline C# code in `crates/sandbox/src/policy.rs`. — Not done: Roslyn and an isolated .NET host are not built (G96).
-- [ ] T005-020 [US03] Integrate adapters and persistence for scenario US03 in `crates/application/` and `crates/infra-postgres/`. — Not done (G96).
-- [ ] T005-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to scenario US03 in `crates/telemetry/`. — Not done (G96).
-- [ ] T005-022 [US03] Run and document duplicate, timeout, worker failure and tenant boundary tests for US03 in `tests/fault/inline-code-sandbox/`. — Not done (G96).
+- [x] T005-018 [P] [US03] Write a Given/When/Then test for running inline C# code in `tests/e2e/inline-code-sandbox/us03.rs`. — A draft using the pinned Newtonsoft.Json package is tested, published, pinned by a workflow and executed by the real runner.
+- [x] T005-019 [US03] Implement the domain path and error handling for running inline C# code in `crates/sandbox/src/policy.rs`. — `crates/domain/src/scripts.rs`, `crates/infra-sandbox/` and `runners/dotnet/`: Roslyn compiles in a build container and a distinct runtime image loads the signed v2 assembly bundle.
+- [x] T005-020 [US03] Integrate adapters and persistence for scenario US03 in `crates/application/` and `crates/infra-postgres/`. — The existing language-neutral build lease, artifact signing, persistence and step execution paths carry C# v2 artifacts; the E2E test crosses all of them.
+- [x] T005-021 [P] [US03] Add logs/traces/metrics and tenant/secret protection to scenario US03 in `crates/telemetry/`. — Existing runner metrics carry the `csharp` language label; container tests prove supervised host calls, secret redaction and direct-network denial without adding tenant or secret labels.
+- [x] T005-022 [US03] Run and document duplicate, timeout, worker failure and tenant boundary tests for US03 in `tests/fault/inline-code-sandbox/`. — C# uses the same signed artifact/build-key, fenced lease and tenant-scoped queues; the fault suite takes over a lost C# test-run lease, and the container suite proves CPU timeout, cleanup and the runtime limits.
 
 ## Phase 6: US04 — Block a malicious script (P1)
 **Independent test:** Given a script tries to access cloud metadata, the host, or exceed CPU; When the worker executes; Then egress and resources are denied, the failure result is audited.
@@ -49,7 +49,7 @@
 ## Phase: Engineering design details (story-linked hardening)
 
 - [x] T005-028 [US01] Implement deterministic build digest source+deps+toolchain+policy in `crates/script-registry/src/builds.rs`. — the build key is the SHA-256 of the length-prefixed language, source, lockfile, toolchain, policy and schemas (`build_key` in `crates/application/src/scripts.rs`); `integration_inline_code_sandbox builds::an_identical_build_is_reused…`.
-- [ ] T005-029 [US01] Implement C# runner with Roslyn/NuGet in `runners/dotnet/` isolated per container. — Not done: no C# runner (G96).
+- [x] T005-029 [US01] Implement C# runner with Roslyn/NuGet in `runners/dotnet/` isolated per container. — Pinned .NET 10 SDK/runtime images, an offline exact Newtonsoft.Json 13.0.4 catalog, separate build/runtime hosts and a managed-assembly-only artifact v2; `integration_inline_code_sandbox_containers::csharp` runs the real images.
 - [x] T005-030 [US01] Implement egress permissions and cgroups/seccomp in `crates/sandbox/src/policy.rs` and manifests in `infra/helm/`. — the container's network, read-only root, capabilities, seccomp, cgroups and user are in `crates/infra-sandbox/src/docker.rs` (`config`) and the egress policy in `apps/sandbox-runner/src/host.rs`; there is no `infra/helm` in the repository: the deployment is `infra/docker/compose.yaml` (profile `sandbox`) and `docs/runbooks/scripts.md` (G109).
 - [x] T005-031 [US01] Add sandbox escapement/SSRF test in `tests/security/sandbox/`. — `tests/integration/inline-code-sandbox/sandbox/` (what a hostile script cannot do, in real containers) and `e2e_inline_code_sandbox::us04`; there is no `tests/security` target (G110).
 
@@ -58,7 +58,7 @@
 - [x] T005-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — `cargo clippy --workspace --all-targets -- -D warnings` clean; `scripts/check-architecture.py` passes (19 packages, no cycle, the domain imports no adapter); the control plane's manifest has no dependency on the container driver (checked by reading it; the script does not enforce that one).
 - [x] T005-034 Run the benchmark defined in `specs/005-inline-code-sandbox/plan.md` and publish the report in `tests/performance/reports/inline-code-sandbox.md`. — `tests/performance/inline-code-sandbox/` and the report `tests/performance/reports/inline-code-sandbox.md` (commit f907b6f, release build, real containers and PostgreSQL): every hypothesis held (warm start p50 104 ms TypeScript and 327 ms Python, a build 1.3 s and 0.6 s, an identical build 46 ms with no container, a test run 1.8 s, four containers at once 3.5x one, a hostile script gone within 0.5 s of its limit). The machine was loaded (load average 9 at the start). The first two attempts failed in the log-flood scenario and found a bug in the Node shim (D118); the report says so.
 - [x] T005-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/005-inline-code-sandbox/quickstart.md`. — two independent reviews, security and correctness, 35 findings, each checked against the code (D116); `docs/runbooks/scripts.md`, `docs/architecture/security-and-sandbox.md`, ADR-0013, `README.md`; evidence in `quickstart.md`.
-- [x] T005-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — `docs/traceability.md` (the 005 section; C#, dependencies and the Studio editor are marked as not built).
+- [x] T005-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — The 005 evidence table now records the isolated C# runner, exact offline NuGet catalog, schema-validated SBOM, executable Studio starter and syntax grammar. Go/Java runners, arbitrary dependencies and TypeScript/Python package installation remain outside the proven scope.
 
 ## Dependencies & independent delivery
 

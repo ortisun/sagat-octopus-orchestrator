@@ -114,6 +114,12 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
             );
             Ok(())
         }
+        Command::SchedulingWeight => {
+            let request = sagat_control_plane::config::WeightConfig::from_lookup(&env_lookup)?;
+            sagat_control_plane::set_scheduling_weight(config, &request).await?;
+            tracing::info!(tenant = %request.tenant_id, "scheduling weight changed");
+            Ok(())
+        }
         Command::ProvisionTenant => {
             let request = ProvisionConfig::from_lookup(&env_lookup)?;
             sagat_control_plane::provision_tenant(config, &request).await?;

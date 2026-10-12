@@ -197,6 +197,38 @@ pub struct Sample {
     pub compensating_runs: u64,
     /// Worker sessions that have not expired.
     pub workers: u64,
+    /// How long the oldest overdue item of each of the scheduler's passes has been overdue, in
+    /// seconds, zero when nothing is: the scheduler's lag, which is what its replicas scale on
+    /// (`FR-010-004`).
+    pub overdue: Overdue,
+}
+
+/// How late the scheduler is, by pass (seconds; zero when nothing is overdue).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Overdue {
+    pub timers: f64,
+    pub wait_deadlines: f64,
+    pub retries: f64,
+    pub leases: f64,
+    pub deadlines: f64,
+}
+
+/// A pool of workers as the operator defines it: a name and the activities its workers serve. The
+/// name is the only label its gauges carry (a tenant, a namespace or an activity never is), so the
+/// operator chooses how many series there are (`FR-010-004`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerPool {
+    pub name: String,
+    pub activities: Vec<String>,
+}
+
+/// The queue of a pool: the steps ready for any of its activities and how long the oldest has
+/// waited.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoolLag {
+    pub pool: String,
+    pub ready: u64,
+    pub oldest_seconds: f64,
 }
 
 /// What the monitor needs from the store.
@@ -226,6 +258,13 @@ pub trait MonitorStore: Send + Sync {
 
     /// Totals of the platform's queues.
     fn sample(&self) -> impl Future<Output = Result<Sample, StoreError>> + Send;
+
+    /// The queue of each of `pools`, across tenants: what a pool of workers is scaled on. A pool
+    /// with nothing ready is in the answer with zeros.
+    fn pool_lag(
+        &self,
+        pools: &[WorkerPool],
+    ) -> impl Future<Output = Result<Vec<PoolLag>, StoreError>> + Send;
 
     /// Removes the alerts that were resolved more than `retention` ago.
     fn purge_alerts(

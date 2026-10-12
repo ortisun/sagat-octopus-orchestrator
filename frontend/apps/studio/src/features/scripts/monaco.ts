@@ -13,6 +13,7 @@ import * as monaco from 'monaco-editor/editor/editor.api';
 // tokenizer when a model of that language exists. The CSS and HTML services, the language-server
 // client and the other eighty languages are not part of the bundle.
 import 'monaco-editor/features/register.all';
+import 'monaco-editor/languages/definitions/csharp/register';
 import 'monaco-editor/languages/definitions/python/register';
 import 'monaco-editor/languages/definitions/typescript/register';
 import { jsonDefaults } from 'monaco-editor/languages/features/json/register';
@@ -22,7 +23,7 @@ import JsonWorker from 'monaco-editor/language/json/json.worker?worker';
 import TypeScriptWorker from 'monaco-editor/language/typescript/ts.worker?worker';
 import { JSON_SCHEMA_META, META_SCHEMA_URI } from './jsonSchemaMeta';
 import { OCTOPUS_DTS, OCTOPUS_DTS_PATH } from './octopusTypes';
-import { installMonacoEnvironment, modelAddress, resolveTheme, severityOf, tidyProblems } from './monacoSetup';
+import { installMonacoEnvironment, modelAddress, resolveTheme, severityOf, studioThemeData, studioThemeName, tidyProblems } from './monacoSetup';
 import type { ModelRole, Problem } from './monacoSetup';
 
 installMonacoEnvironment(globalThis, {
@@ -91,10 +92,21 @@ export interface EditorHandle {
   dispose: () => void;
 }
 
-const FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const FONT_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+
+function pageToken(name: string): string {
+  return globalThis.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
 
 function currentTheme() {
-  return resolveTheme(document.documentElement.getAttribute('data-theme'), globalThis.matchMedia('(prefers-color-scheme: dark)').matches);
+  const base = resolveTheme(
+    document.documentElement.getAttribute('data-theme'),
+    globalThis.matchMedia('(prefers-color-scheme: dark)').matches,
+    globalThis.matchMedia('(forced-colors: active)').matches,
+  );
+  const name = studioThemeName(base);
+  if (base === 'vs' || base === 'vs-dark') monaco.editor.defineTheme(name, studioThemeData(base, pageToken('--fg-muted')));
+  return name;
 }
 
 let themeWatch: { count: number; stop: () => void } | undefined;
@@ -104,15 +116,18 @@ function watchTheme(): () => void {
   if (themeWatch === undefined) {
     const apply = () => monaco.editor.setTheme(currentTheme());
     apply();
-    const query = globalThis.matchMedia('(prefers-color-scheme: dark)');
+    const colorScheme = globalThis.matchMedia('(prefers-color-scheme: dark)');
+    const forcedColors = globalThis.matchMedia('(forced-colors: active)');
     const observer = new MutationObserver(apply);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    query.addEventListener('change', apply);
+    colorScheme.addEventListener('change', apply);
+    forcedColors.addEventListener('change', apply);
     themeWatch = {
       count: 0,
       stop: () => {
         observer.disconnect();
-        query.removeEventListener('change', apply);
+        colorScheme.removeEventListener('change', apply);
+        forcedColors.removeEventListener('change', apply);
       },
     };
   }
@@ -144,7 +159,7 @@ export function createEditor(host: HTMLElement, init: EditorInit): EditorHandle 
     automaticLayout: true,
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
-    fontFamily: FONT,
+    fontFamily: pageToken('--font-mono') || FONT_FALLBACK,
     fontSize: 14,
     lineNumbers: 'on',
     renderWhitespace: 'selection',

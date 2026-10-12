@@ -1,0 +1,15 @@
+DROP INDEX event_outbox_pending_shard_idx;
+DROP INDEX runs_children_to_cancel_shard_idx;
+DROP INDEX runs_unsettled_children_shard_idx;
+DROP INDEX runs_deadline_shard_idx;
+DROP INDEX steps_child_pending_shard_idx;
+DROP INDEX steps_rehint_shard_idx;
+DROP INDEX steps_attempt_deadline_shard_idx;
+DROP INDEX steps_lease_expiry_shard_idx;
+DROP INDEX steps_retry_shard_idx;
+DROP INDEX steps_wait_deadline_shard_idx;
+DROP INDEX steps_timer_shard_idx;
+DROP TABLE tenant_scheduling;
+DROP TABLE scheduler_members;
+DROP TABLE scheduler_shards;
+DROP FUNCTION run_shard(uuid);

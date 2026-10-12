@@ -129,6 +129,13 @@ fn authed<T>(token: &str, message: T) -> Result<tonic::Request<T>, String> {
         MetadataValue::try_from(format!("Bearer {token}"))
             .map_err(|_| "the token cannot travel in a header".to_owned())?,
     );
+    if let Some(traceparent) = crate::telemetry::current_traceparent() {
+        request.metadata_mut().insert(
+            "traceparent",
+            MetadataValue::try_from(traceparent)
+                .map_err(|_| "the trace context cannot travel in a header".to_owned())?,
+        );
+    }
     Ok(request)
 }
 
@@ -623,4 +630,25 @@ async fn bind(
     ));
     let _: &Value = &who;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::authed;
+
+    #[tokio::test]
+    async fn worker_requests_continue_the_instrumented_command_trace() {
+        let traceparent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        crate::telemetry::under_traceparent(traceparent.to_owned(), async {
+            let request = authed("a-token", ()).expect("request");
+            assert_eq!(
+                request
+                    .metadata()
+                    .get("traceparent")
+                    .and_then(|value| value.to_str().ok()),
+                Some(traceparent)
+            );
+        })
+        .await;
+    }
 }

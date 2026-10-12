@@ -5,6 +5,12 @@ Everything below runs against the real stack. Nothing is simulated except time, 
 ## Prerequisites
 
 - Rust toolchain pinned by the repository, **Docker** (the sandbox is containers, and the tests use Testcontainers for PostgreSQL), and the images `node:24-alpine` and `python:3.13-alpine` (pulled on first use).
+- Build the pinned C# images from the repository root before starting the runner or the container/E2E suites:
+
+  ```sh
+  docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
+  docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
+  ```
 - `docker info` must work for the user running the tests and the runner.
 
 ## The automated evidence
@@ -20,7 +26,7 @@ cargo test -p sagat-tests --test integration_inline_code_sandbox
 cargo test -p sagat-tests --test integration_inline_code_sandbox_containers
 
 # The user stories through the API, the worker protocol and the runner
-cargo test -p sagat-tests --test e2e_inline_code_sandbox          # US01, US02, US03 (the refusal), US04
+cargo test -p sagat-tests --test e2e_inline_code_sandbox          # US01, US02, US03 (real C#), US04
 
 # Failure: runner dies mid-build and mid-step, restarts, engine down, cancelled run (the stop is reported), room for one, scripts that become ready at different times
 cargo test -p sagat-tests --test fault_inline_code_sandbox
@@ -31,16 +37,25 @@ cargo test -p sagat-tests --test contract_rest_inline_code_sandbox
 # The benchmark (on purpose; release mode)
 SAGAT_PERF_REPORT=tests/performance/reports/inline-code-sandbox.md \
   cargo test -p sagat-tests --test perf_inline_code_sandbox --release -- --ignored --nocapture
+
+# The focused C# build/runtime benchmark writes its own report
+SAGAT_CSHARP_PERF_REPORT=tests/performance/reports/inline-code-sandbox-csharp.md \
+  cargo test -p sagat-tests --test perf_inline_code_sandbox --release \
+  csharp::csharp_build_and_execution_benchmark -- --ignored --nocapture
 ```
 
-### What the last run of each said (2026-10-10, this machine, Docker Desktop, PostgreSQL 16)
+The checked-in results are the [feature baseline](../../tests/performance/reports/inline-code-sandbox.md)
+and the [focused C# measurements](../../tests/performance/reports/inline-code-sandbox-csharp.md).
+Both reports describe local measurements and their environment rather than production SLOs.
+
+### What the C# completion run said (2026-10-11, this machine, Colima/Docker 29, PostgreSQL 16)
 
 | Suite | Result |
 |---|---|
-| `integration_inline_code_sandbox_containers` (real containers) | 23 passed |
+| `integration_inline_code_sandbox_containers` (real containers) | 30 passed, including 7 C# build/runtime/supply-chain/isolation cases |
 | `integration_inline_code_sandbox` (registry, PostgreSQL) | 41 passed |
-| `e2e_inline_code_sandbox` | 27 passed (three consecutive runs; one earlier run failed `us04::a_script_that_floods_its_output_is_cut_off` with `logTruncated` false and was not reproduced in the next five — the assertion now prints the stored record if it comes back) |
-| `fault_inline_code_sandbox` | 12 passed (twice in a row) |
+| `e2e_inline_code_sandbox` | 28 passed, including real NuGet test/publish/workflow and stable Go/Java refusal |
+| `fault_inline_code_sandbox` | 12 passed, including C# test-run lease loss/takeover |
 | `contract_rest_inline_code_sandbox` | 1 passed (25 operations) |
 | `cargo test --workspace` | 95 test binaries, 1328 passed, 0 failed, 6 ignored (the benchmarks) with `a_dispatcher_cut_off_at_any_await…` of feature 004 skipped, because it hung in most runs on `develop` too (6 of 8). Its cause was an sqlx 0.9.0 bug that leaves a connection in a transaction when a `begin` is cut off (ADR-0014); after the fix (`bugfix/dispatcher-cancel-hang`) the run with nothing skipped is 95 binaries, 1331 passed, 0 failed, 6 ignored |
 
@@ -105,7 +120,7 @@ Two independent read-only reviews (security, correctness) of the whole feature p
 
 ## Gates
 
-- TS and Python go from the editor's API to execution, with the limits, the network and the secrets held (US01, US02, US04; `integration_inline_code_sandbox_containers`). **C# does not** (`LANGUAGE_NOT_BUILT`; gap G96 in `research.md`).
+- TS, Python and C# go from the editor's API to execution, with the limits, the network and the secrets held. C# uses an isolated Roslyn build container, a separate runtime container and an offline exact NuGet catalog (`integration_inline_code_sandbox_containers::csharp`, US03).
 - Reproducible, annotated errors: every failure has a stable `SCRIPT_*` code, the envelope's `traceId`, and a reason that never repeats the script's words or a secret.
 - No confirmed transition lost: a build and a test run are leased and fenced; a script step is the engine's own lease; a late report from a runner that lost its lease is refused.
 - `[x]` in `tasks.md` only for what a test above proves.

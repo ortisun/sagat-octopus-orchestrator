@@ -27,7 +27,7 @@ test('US03 an operator opens a run that retried and took one branch: attempts, s
   await expect(page.getByRole('heading', { level: 1 })).toContainText(run);
   await expect(card(page, 'validate')).toBeVisible();
   await expect(card(page, 'validate')).toContainText(/Ready|Pending|Not started/);
-  await expect(page.getByText('Live', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Live', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
 
   // A worker comes: the first step fails once (retry), the payment is declined, the reservation is undone.
   const attempts = new Map<string, number>();
@@ -43,7 +43,7 @@ test('US03 an operator opens a run that retried and took one branch: attempts, s
   try {
     await api.until(run, 'COMPENSATED');
     // The page followed it: the states are the platform's, reached without reloading the page.
-    await expect(page.getByText('Compensated', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Compensated', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
     await expect(card(page, 'validate')).toContainText('Succeeded');
     await expect(card(page, 'validate')).toContainText(/attempt 2/);
     await expect(card(page, 'check')).toContainText('Succeeded');

@@ -81,12 +81,22 @@ async fn a_script_that_reaches_for_the_cloud_metadata_service_is_refused_and_it_
     );
     assert!(!executions[0].to_string().contains("SECRET123"));
     let audited = lab.audited("script.violation").await;
+    let audit_text = audited.join(" ");
+    for forbidden in [
+        "fetch",
+        "169.254.169.254",
+        "metadata.google.internal",
+        "SECRET123",
+    ] {
+        assert!(
+            !audit_text.contains(forbidden),
+            "the durable audit must contain only a closed category: {audited:?}"
+        );
+    }
     assert_eq!(
         audited,
-        vec![
-            "fetch http://169.254.169.254".to_owned(),
-            "fetch http://metadata.google.internal".to_owned()
-        ]
+        vec!["UNSUPPORTED_SCHEME".to_owned()],
+        "two different destinations in the same attempt deduplicate by category"
     );
 }
 

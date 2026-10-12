@@ -88,7 +88,7 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
         create(&bob, plain.clone(), 404),
         create(&alice, json!({"name": "Bad_Name", "language": "typescript", "source": SOURCE}), 422),
         create(&alice, json!({"name": "echo", "language": "typescript", "source": SOURCE, "extra": 1}), 422),
-        create(&alice, json!({"name": "echo", "language": "csharp", "source": SOURCE}), 422),
+        create(&alice, json!({"name": "echo", "language": "go", "source": SOURCE}), 422),
         create(&alice, json!({"name": "echo", "language": "cobol", "source": SOURCE}), 422),
         create(&alice, json!({"name": "echo", "language": "typescript", "source": ""}), 422),
         create(&alice, json!({"name": "echo", "language": "typescript", "source": SOURCE, "inputSchema": {"type": 12}}), 422),

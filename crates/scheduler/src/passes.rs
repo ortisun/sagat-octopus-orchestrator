@@ -1,5 +1,9 @@
-use std::time::Duration;
+use std::future::Future;
+use std::hash::Hash;
+use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
+use futures_util::stream;
 use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
@@ -8,19 +12,24 @@ use sagat_application::execution::{
     RunTx,
 };
 use sagat_application::maintenance::{
-    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, RunRef, StepRef,
+    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, RunRef, StepRef, Window,
 };
 use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::shards::Lease;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::RunId;
 use sagat_domain::execution::{
     self, ChildOutcome, ExecutionError, Expiry, FailureCode, Progress, RunStatus, StopReason,
 };
 use sagat_domain::identity::TenantId;
+use sagat_domain::sharding::{Shard, ShardSet};
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 use tracing::Instrument;
+
+use crate::fairness::{self, Weights};
+use crate::shards::{Placement, Snapshot};
 
 /// Delivered outbox messages deleted per housekeeping round.
 const PURGE_BATCH: u32 = 5_000;
@@ -32,6 +41,21 @@ const PURGE_ROUNDS: u32 = 20;
 pub struct SchedulerSettings {
     /// Candidates examined per pass per tick.
     pub batch: u32,
+    /// The least a pass rests its search for other tenants after a search that found nobody new (zero:
+    /// never rests). Finding out that the tenants a pass left out are the only ones with work costs a
+    /// read of their whole backlog; with one tenant's burst of a hundred thousand timers that is
+    /// every tick for as long as it drains. The rest is this or ten times what the search took,
+    /// whichever is longer (`fairness::rest`). During the rest the pass shares the first page of the
+    /// oldest candidates, so a tenant that arrives behind a burst is found when the rest is over.
+    pub discovery_rest: Duration,
+    /// Whether a pass takes its candidates fairly between tenants (the default). Off, it takes the
+    /// oldest `batch` of the shards it holds, as before feature 010: a diagnostic, to measure what
+    /// fairness does (`tests/performance/scalability-ha`), not a mode to run in.
+    pub fair: bool,
+    /// Candidates of one pass that are acted on at the same time (each in its own transaction).
+    /// One at a time costs a round trip of latency per candidate; this is what lets a replica
+    /// fire the timers of a burst at the rate the database allows instead (`FR-010-002`).
+    pub concurrency: usize,
     /// A `READY` step with no notification for this long gets a fresh one.
     pub rehint_after: Duration,
     /// Idempotency records older than this are purged.
@@ -44,6 +68,9 @@ impl Default for SchedulerSettings {
     fn default() -> Self {
         Self {
             batch: 200,
+            fair: true,
+            discovery_rest: Duration::from_millis(100),
+            concurrency: 8,
             rehint_after: Duration::from_secs(30),
             idempotency_retention: Duration::from_secs(7 * 24 * 3600),
             outbox_retention: Duration::from_secs(24 * 3600),
@@ -67,6 +94,8 @@ pub struct Report {
     pub skipped: u32,
     /// Candidates that failed for a reason other than losing a race (logged).
     pub failed: u32,
+    /// Candidates of a shard the replica no longer holds (`FR-010-001`): another replica's now.
+    pub fenced: u32,
 }
 
 impl Report {
@@ -120,6 +149,60 @@ enum Outcome {
     Done,
     Skipped,
     Failed,
+    /// The replica does not hold the run's shard any more.
+    Fenced,
+}
+
+impl Outcome {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Skipped => "skipped",
+            Self::Failed => "failed",
+            Self::Fenced => "fenced",
+        }
+    }
+}
+
+/// What a tick works on: the shards it may look at, the weights of the tenants, and the snapshot
+/// whose leases fence every action. A scheduler with no placement is the only replica: it looks at
+/// every shard and fences nothing.
+struct View {
+    shards: ShardSet,
+    weights: Weights,
+    snapshot: Option<std::sync::Arc<Snapshot>>,
+    owner: String,
+}
+
+/// What an action on a run must hold.
+enum Hold {
+    /// Nothing: the scheduler is the only replica.
+    Nothing,
+    /// The lease on the run's shard, checked in the action's transaction.
+    Lease(Lease),
+    /// The replica does not hold the run's shard (any more): the action is another replica's.
+    Lost,
+}
+
+impl View {
+    fn hold_for(&self, run: RunId) -> Hold {
+        match &self.snapshot {
+            None => Hold::Nothing,
+            Some(snapshot) => snapshot
+                .lease_of(Shard::of(run.as_uuid()), Instant::now())
+                .map_or(Hold::Lost, Hold::Lease),
+        }
+    }
+
+    /// The fence: inside the transaction that changes the run, the shard is still held at the
+    /// generation the replica holds. `true` when the action may go on.
+    async fn holds<Tx: RunTx>(&self, tx: &mut Tx, hold: &Hold) -> Result<bool, StoreError> {
+        match hold {
+            Hold::Nothing => Ok(true),
+            Hold::Lease(lease) => tx.holds_shard(&self.owner, *lease).await,
+            Hold::Lost => Ok(false),
+        }
+    }
 }
 
 /// The scheduler over a store, an evaluator and a source of jitter.
@@ -131,6 +214,10 @@ pub struct Scheduler<S, E, R> {
     /// Needed to start child runs (it parses the child workflow's definition); without it the
     /// scheduler leaves `child` steps alone.
     definitions: Option<DefinitionCache>,
+    /// Which shards this replica works on; without it the scheduler is the only replica.
+    placement: Option<Placement>,
+    /// Until when each pass rests its search for other tenants (see [`SchedulerSettings::discovery_rest`]).
+    rests: std::sync::Mutex<std::collections::BTreeMap<&'static str, Instant>>,
 }
 
 impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
@@ -152,6 +239,36 @@ where
             entropy,
             settings,
             definitions: None,
+            placement: None,
+            rests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    /// Makes the scheduler one of several replicas: it works only on the shards the placement says
+    /// it holds, and every action is fenced by the lease it holds on the run's shard.
+    #[must_use]
+    pub fn with_placement(mut self, placement: Placement) -> Self {
+        self.placement = Some(placement);
+        self
+    }
+
+    fn view(&self) -> View {
+        match &self.placement {
+            None => View {
+                shards: ShardSet::all(),
+                weights: Weights::default(),
+                snapshot: None,
+                owner: String::new(),
+            },
+            Some(placement) => {
+                let snapshot = placement.snapshot();
+                View {
+                    shards: snapshot.shards(Instant::now()),
+                    weights: snapshot.weights().clone(),
+                    owner: placement.owner().to_owned(),
+                    snapshot: Some(snapshot),
+                }
+            }
         }
     }
 
@@ -162,18 +279,26 @@ where
         self
     }
 
-    /// Runs every pass once.
+    /// Runs every pass once, over the shards this replica holds (all of them when it is alone).
     pub async fn tick(&self) -> Report {
         let mut report = Report::default();
-        self.timers(&mut report).await;
-        self.wait_deadlines(&mut report).await;
-        self.retries(&mut report).await;
-        self.leases(&mut report).await;
-        self.deadlines(&mut report).await;
-        self.hints(&mut report).await;
-        self.children_start(&mut report).await;
-        self.children_finish(&mut report).await;
-        self.children_cancel(&mut report).await;
+        if self.view().shards.is_empty() {
+            // A replica that holds nothing (it has not got its share yet, or it cannot reach the
+            // database) has nothing to look at; the keeper is what changes that.
+            return report;
+        }
+        // A view for each pass, read when the pass begins: a tick that runs long must go on with the
+        // leases the keeper has renewed since, not keep acting on the snapshot it began with until
+        // that runs out (every later action would be counted as fenced and the later passes starved).
+        self.timers(&self.view(), &mut report).await;
+        self.wait_deadlines(&self.view(), &mut report).await;
+        self.retries(&self.view(), &mut report).await;
+        self.leases(&self.view(), &mut report).await;
+        self.deadlines(&self.view(), &mut report).await;
+        self.hints(&self.view(), &mut report).await;
+        self.children_start(&self.view(), &mut report).await;
+        self.children_finish(&self.view(), &mut report).await;
+        self.children_cancel(&self.view(), &mut report).await;
         report
     }
 
@@ -247,8 +372,11 @@ where
     /// is repeated under the lock, and a candidate that no longer qualifies is skipped.
     async fn apply_if<F>(
         &self,
-        tenant: TenantId,
-        run: RunId,
+        view: &View,
+        RunRef {
+            tenant_id: tenant,
+            run_id: run,
+        }: RunRef,
         kind: &'static str,
         condition: Condition<'_>,
         effects: Effects,
@@ -261,7 +389,12 @@ where
             OffsetDateTime,
         ) -> Result<((), Progress), ExecutionError>,
     {
+        let hold = view.hold_for(run);
         let outcome = async {
+            if matches!(hold, Hold::Lost) {
+                // The shard changed hands after the candidate query: do not even open a transaction.
+                return Ok(Outcome::Fenced);
+            }
             let Some(mut tx) = self
                 .store
                 .begin(tenant, run, Lock::Wait)
@@ -282,6 +415,15 @@ where
                 parent_span_id = %sagat_telemetry::run_span_id(run.as_uuid()),
             );
             async {
+                // The fence comes first: whatever the run's state says, it is not this replica's to
+                // change unless it still holds the shard at the generation it believes it does.
+                if !view
+                    .holds(&mut tx, &hold)
+                    .await
+                    .map_err(EngineError::Store)?
+                {
+                    return Ok(Outcome::Fenced);
+                }
                 if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
                     return Ok(Outcome::Skipped);
                 }
@@ -308,18 +450,18 @@ where
             tracing::error!(%error, %run, kind, "a scheduler action failed");
             Outcome::Failed
         });
-        metrics::counter!("scheduler_actions_total", "kind" => kind, "outcome" => match outcome {
-            Outcome::Done => "done",
-            Outcome::Skipped => "skipped",
-            Outcome::Failed => "failed",
-        })
-        .increment(1);
+        metrics::counter!("scheduler_actions_total", "kind" => kind, "outcome" => outcome.label())
+            .increment(1);
+        if outcome == Outcome::Fenced {
+            metrics::counter!("scheduler_fenced_total", "kind" => kind).increment(1);
+        }
         outcome
     }
 
     /// [`Self::apply_if`] with nothing to re-check: the domain command itself refuses what is stale.
     async fn apply<F>(
         &self,
+        view: &View,
         tenant: TenantId,
         run: RunId,
         kind: &'static str,
@@ -333,8 +475,18 @@ where
             OffsetDateTime,
         ) -> Result<((), Progress), ExecutionError>,
     {
-        self.apply_if(tenant, run, kind, Condition::Always, effects, command)
-            .await
+        self.apply_if(
+            view,
+            RunRef {
+                tenant_id: tenant,
+                run_id: run,
+            },
+            kind,
+            Condition::Always,
+            effects,
+            command,
+        )
+        .await
     }
 
     fn effects(&self) -> Effects {
@@ -346,119 +498,238 @@ where
             Outcome::Done => done(report),
             Outcome::Skipped => report.skipped += 1,
             Outcome::Failed => report.failed += 1,
+            Outcome::Fenced => report.fenced += 1,
         }
     }
 
-    async fn candidates<T>(
-        result: Result<Vec<T>, sagat_application::error::StoreError>,
+    /// Reads the candidates of a pass: the oldest, taken fairly between the tenants (`FR-010-002`),
+    /// from the shards this replica holds. A query that fails is logged and the pass has nothing to
+    /// do this tick.
+    async fn pick<'a, T, K, Fut>(
+        &'a self,
+        view: &View,
         what: &'static str,
         report: &mut Report,
-    ) -> Vec<T> {
-        result.unwrap_or_else(|error| {
-            tracing::warn!(%error, what, "a scheduler query failed");
-            report.failed += 1;
-            Vec::new()
+        tenant: impl Fn(&T) -> TenantId,
+        key: impl Fn(&T) -> K,
+        query: impl Fn(&'a S, Window) -> Fut,
+    ) -> Vec<T>
+    where
+        K: Eq + Hash,
+        Fut: Future<Output = Result<Vec<T>, StoreError>>,
+    {
+        let (shards, limit, store) = (view.shards, self.settings.batch, &self.store);
+        if !self.settings.fair {
+            let oldest = query(
+                store,
+                Window {
+                    shards,
+                    exclude: Vec::new(),
+                    limit,
+                },
+            )
+            .await;
+            return oldest.unwrap_or_else(|error| {
+                tracing::warn!(%error, what, "a scheduler query failed");
+                report.failed += 1;
+                Vec::new()
+            });
+        }
+        let now = Instant::now();
+        let discover = self
+            .rests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(what)
+            .is_none_or(|until| *until <= now);
+        let selected = fairness::select(limit, discover, &view.weights, tenant, key, |exclude| {
+            query(
+                store,
+                Window {
+                    shards,
+                    exclude,
+                    limit,
+                },
+            )
         })
+        .await;
+        if discover && let Ok((_, selection)) = &selected {
+            let rest = fairness::rest_after(self.settings.discovery_rest, selection);
+            if !rest.is_zero() {
+                self.rests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(what, Instant::now() + rest);
+            }
+        }
+        match selected {
+            Ok((items, selection)) => {
+                if selection.limited > 0 {
+                    metrics::counter!("scheduler_fairness_limited_total", "pass" => what)
+                        .increment(selection.limited as u64);
+                }
+                if selection.exhausted {
+                    metrics::counter!("scheduler_fairness_exhausted_total", "pass" => what)
+                        .increment(1);
+                }
+                items
+            }
+            Err(error) => {
+                tracing::warn!(%error, what, "a scheduler query failed");
+                report.failed += 1;
+                Vec::new()
+            }
+        }
     }
 
-    async fn timers(&self, report: &mut Report) {
-        let due = Self::candidates(
-            self.store.due_timers(self.settings.batch).await,
-            "due timers",
-            report,
-        )
-        .await;
-        for StepRef {
-            tenant_id,
-            run_id,
-            node,
-        } in due
-        {
-            let outcome = self
-                .apply(
-                    tenant_id,
-                    run_id,
-                    "timer",
-                    self.effects(),
-                    move |def, state, now| Ok(((), execution::fire_timer(def, state, &node, now)?)),
-                )
-                .await;
+    /// Acts on candidates, [`SchedulerSettings::concurrency`] at a time.
+    async fn each<T, O, Fut>(&self, items: Vec<T>, work: impl FnMut(T) -> Fut) -> Vec<O>
+    where
+        Fut: Future<Output = O>,
+    {
+        stream::iter(items)
+            .map(work)
+            .buffer_unordered(self.settings.concurrency.max(1))
+            .collect()
+            .await
+    }
+
+    async fn timers(&self, view: &View, report: &mut Report) {
+        let due = self
+            .pick(
+                view,
+                "timers",
+                report,
+                |s: &StepRef| s.tenant_id,
+                |s| (s.run_id, s.node.clone()),
+                |store, window| async move { store.due_timers(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                due,
+                |StepRef {
+                     tenant_id,
+                     run_id,
+                     node,
+                 }| {
+                    self.apply(
+                        view,
+                        tenant_id,
+                        run_id,
+                        "timer",
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok(((), execution::fire_timer(def, state, &node, now)?))
+                        },
+                    )
+                },
+            )
+            .await;
+        for outcome in outcomes {
             Self::tally(report, outcome, |r| r.timers_fired += 1);
         }
     }
 
-    async fn wait_deadlines(&self, report: &mut Report) {
-        let due = Self::candidates(
-            self.store.due_wait_deadlines(self.settings.batch).await,
-            "wait deadlines",
-            report,
-        )
-        .await;
-        for StepRef {
-            tenant_id,
-            run_id,
-            node,
-        } in due
-        {
-            let outcome = self
-                .apply(
-                    tenant_id,
-                    run_id,
-                    "wait_timeout",
-                    self.effects(),
-                    move |def, state, now| {
-                        Ok(((), execution::time_out_wait(def, state, &node, now)?))
-                    },
-                )
-                .await;
+    async fn wait_deadlines(&self, view: &View, report: &mut Report) {
+        let due = self
+            .pick(
+                view,
+                "wait_deadlines",
+                report,
+                |s: &StepRef| s.tenant_id,
+                |s| (s.run_id, s.node.clone()),
+                |store, window| async move { store.due_wait_deadlines(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                due,
+                |StepRef {
+                     tenant_id,
+                     run_id,
+                     node,
+                 }| {
+                    self.apply(
+                        view,
+                        tenant_id,
+                        run_id,
+                        "wait_timeout",
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok(((), execution::time_out_wait(def, state, &node, now)?))
+                        },
+                    )
+                },
+            )
+            .await;
+        for outcome in outcomes {
             Self::tally(report, outcome, |r| r.waits_timed_out += 1);
         }
     }
 
-    async fn retries(&self, report: &mut Report) {
-        let due = Self::candidates(
-            self.store.due_retries(self.settings.batch).await,
-            "due retries",
-            report,
-        )
-        .await;
-        for StepRef {
-            tenant_id,
-            run_id,
-            node,
-        } in due
-        {
-            let outcome = self
-                .apply(
-                    tenant_id,
-                    run_id,
-                    "retry",
-                    self.effects(),
-                    move |def, state, now| Ok(((), execution::retry_due(def, state, &node, now)?)),
-                )
-                .await;
+    async fn retries(&self, view: &View, report: &mut Report) {
+        let due = self
+            .pick(
+                view,
+                "retries",
+                report,
+                |s: &StepRef| s.tenant_id,
+                |s| (s.run_id, s.node.clone()),
+                |store, window| async move { store.due_retries(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                due,
+                |StepRef {
+                     tenant_id,
+                     run_id,
+                     node,
+                 }| {
+                    self.apply(
+                        view,
+                        tenant_id,
+                        run_id,
+                        "retry",
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok(((), execution::retry_due(def, state, &node, now)?))
+                        },
+                    )
+                },
+            )
+            .await;
+        for outcome in outcomes {
             Self::tally(report, outcome, |r| r.retries_released += 1);
         }
     }
 
-    async fn leases(&self, report: &mut Report) {
-        let lost = Self::candidates(
-            self.store.lost_leases(self.settings.batch).await,
-            "lost leases",
-            report,
-        )
-        .await;
-        for lost in lost {
-            let jitter = self.entropy.unit();
-            let cause = match lost.cause {
-                LeaseLoss::Expired => Expiry::LeaseExpired,
-                LeaseLoss::TimedOut => Expiry::AttemptTimeout,
-            };
-            let (node, fence) = (lost.step.node.clone(), lost.fence);
-            let outcome = self
-                .apply_if(
-                    lost.step.tenant_id,
-                    lost.step.run_id,
+    async fn leases(&self, view: &View, report: &mut Report) {
+        let lost = self
+            .pick(
+                view,
+                "leases",
+                report,
+                |l: &sagat_application::maintenance::LostLease| l.step.tenant_id,
+                |l| (l.step.run_id, l.step.node.clone()),
+                |store, window| async move { store.lost_leases(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(lost, |lost| async move {
+                let jitter = self.entropy.unit();
+                let cause = match lost.cause {
+                    LeaseLoss::Expired => Expiry::LeaseExpired,
+                    LeaseLoss::TimedOut => Expiry::AttemptTimeout,
+                };
+                let (node, fence) = (lost.step.node.clone(), lost.fence);
+                self.apply_if(
+                    view,
+                    RunRef {
+                        tenant_id: lost.step.tenant_id,
+                        run_id: lost.step.run_id,
+                    },
                     "lease",
                     Condition::LeaseLost {
                         node: &lost.step.node,
@@ -474,21 +745,29 @@ where
                         ))
                     },
                 )
-                .await;
+                .await
+            })
+            .await;
+        for outcome in outcomes {
             Self::tally(report, outcome, |r| r.leases_expired += 1);
         }
     }
 
-    async fn deadlines(&self, report: &mut Report) {
-        let overdue = Self::candidates(
-            self.store.overdue_runs(self.settings.batch).await,
-            "overdue runs",
-            report,
-        )
-        .await;
-        for RunRef { tenant_id, run_id } in overdue {
-            let outcome = self
-                .apply(
+    async fn deadlines(&self, view: &View, report: &mut Report) {
+        let overdue = self
+            .pick(
+                view,
+                "deadlines",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.overdue_runs(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(overdue, |RunRef { tenant_id, run_id }| {
+                self.apply(
+                    view,
                     tenant_id,
                     run_id,
                     "deadline",
@@ -500,92 +779,126 @@ where
                         ))
                     },
                 )
-                .await;
+            })
+            .await;
+        for outcome in outcomes {
             Self::tally(report, outcome, |r| r.deadlines_enforced += 1);
         }
     }
 
-    async fn hints(&self, report: &mut Report) {
-        let stale = Self::candidates(
-            self.store
-                .stale_hints(self.settings.rehint_after, self.settings.batch)
-                .await,
-            "stale hints",
-            report,
-        )
-        .await;
-        for StepRef {
-            tenant_id,
-            run_id,
-            node,
-        } in stale
-        {
-            let mut effects = self.effects();
-            effects.rehint = vec![node];
-            let outcome = self
-                .apply(tenant_id, run_id, "rehint", effects, |_, _, _| {
-                    Ok((
-                        (),
-                        Progress {
-                            events: Vec::new(),
-                            pending: None,
-                        },
-                    ))
-                })
-                .await;
+    async fn hints(&self, view: &View, report: &mut Report) {
+        let older_than = self.settings.rehint_after;
+        let stale = self
+            .pick(
+                view,
+                "hints",
+                report,
+                |s: &StepRef| s.tenant_id,
+                |s| (s.run_id, s.node.clone()),
+                |store, window| async move { store.stale_hints(older_than, &window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                stale,
+                |StepRef {
+                     tenant_id,
+                     run_id,
+                     node,
+                 }| {
+                    let mut effects = self.effects();
+                    effects.rehint = vec![node];
+                    self.apply(view, tenant_id, run_id, "rehint", effects, |_, _, _| {
+                        Ok((
+                            (),
+                            Progress {
+                                events: Vec::new(),
+                                pending: None,
+                            },
+                        ))
+                    })
+                },
+            )
+            .await;
+        for outcome in outcomes {
             Self::tally(report, outcome, |r| r.hints_renewed += 1);
         }
     }
+
     // ------------------------------------------------------------------ child runs (FR-002-009)
 
     /// Creates the child runs that `child` steps reserved. Each is created, started and its
     /// reservation claimed in one transaction under the parent's lock, so a child exists exactly
     /// when its parent step was still waiting for it.
-    async fn children_start(&self, report: &mut Report) {
+    async fn children_start(&self, view: &View, report: &mut Report) {
         let Some(definitions) = &self.definitions else {
             return;
         };
-        let pending = Self::candidates(
-            self.store.pending_children(self.settings.batch).await,
-            "pending children",
-            report,
-        )
-        .await;
-        for child in pending {
-            let outcome = match self.start_child(definitions, &child).await {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    tracing::error!(%error, run = %child.step.run_id, node = %child.step.node, "starting a child run failed");
-                    Outcome::Failed
+        let pending = self
+            .pick(
+                view,
+                "pending_children",
+                report,
+                |c: &PendingChild| c.step.tenant_id,
+                |c| (c.step.run_id, c.step.node.clone()),
+                |store, window| async move { store.pending_children(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(pending, |child| async move {
+                let (outcome, counted) = match self.start_child(view, definitions, &child).await {
+                    Ok(done) => done,
+                    Err(error) => {
+                        tracing::error!(%error, run = %child.step.run_id, node = %child.step.node, "starting a child run failed");
+                        (Outcome::Failed, false)
+                    }
+                };
+                if !counted {
+                    metrics::counter!("scheduler_actions_total", "kind" => "child_start", "outcome" => outcome.label())
+                        .increment(1);
+                    if outcome == Outcome::Fenced {
+                        metrics::counter!("scheduler_fenced_total", "kind" => "child_start")
+                            .increment(1);
+                    }
                 }
-            };
-            metrics::counter!("scheduler_actions_total", "kind" => "child_start", "outcome" => match outcome {
-                Outcome::Done => "done",
-                Outcome::Skipped => "skipped",
-                Outcome::Failed => "failed",
+                (outcome, counted)
             })
-            .increment(1);
-            Self::tally(report, outcome, |r| r.children_started += 1);
+            .await;
+        for (outcome, told_the_parent) in outcomes {
+            if told_the_parent {
+                Self::tally(report, outcome, |r| r.children_finished += 1);
+            } else {
+                Self::tally(report, outcome, |r| r.children_started += 1);
+            }
         }
     }
 
+    /// Starts the child a step reserved. The flag says that the answer is the parent's step being told
+    /// that the child cannot be (the action was counted, as a `child_finish`, when it was applied).
     async fn start_child(
         &self,
+        view: &View,
         definitions: &DefinitionCache,
         pending: &PendingChild,
-    ) -> Result<Outcome, EngineError> {
+    ) -> Result<(Outcome, bool), EngineError> {
         let tenant = pending.step.tenant_id;
         let parent_id = pending.step.run_id;
         let node = &pending.step.node;
+        // The shard is the parent's: it is the parent step that waits for this child, and the
+        // candidate was found through it. (The child's own shard is whoever owns the child's id.)
+        let hold = view.hold_for(parent_id);
+        if matches!(hold, Hold::Lost) {
+            return Ok((Outcome::Fenced, false));
+        }
         let Some(parent) = self.store.get(tenant, parent_id).await? else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
         let Some(parent_version) = self
             .store
             .get_version_by_id(tenant, parent.info.version_id)
             .await?
         else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
         let parent_definition = definitions
             .get_or_parse(parent.info.version_id, &parent_version.document)
@@ -593,7 +906,7 @@ where
                 detail: "a stored version no longer parses".into(),
             })?;
         let Some(parent_node) = parent_definition.node(node) else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
         let NodeKind::Child {
             workflow,
@@ -602,7 +915,7 @@ where
             ..
         } = parent_node.kind()
         else {
-            return Ok(Outcome::Skipped);
+            return Ok((Outcome::Skipped, false));
         };
 
         // The child workflow lives in the parent's namespace; the lookup is scoped by tenant and
@@ -630,15 +943,18 @@ where
         };
         let Some((workflow_record, version_record)) = target else {
             // The child cannot exist: tell the parent step now instead of waiting forever.
-            return Ok(self
-                .finish_with(
+            return Ok((
+                self.finish_with(
+                    view,
                     tenant,
                     parent_id,
                     node.clone(),
                     pending.child,
                     ChildOutcome::Failed(FailureCode::child_not_found()),
                 )
-                .await);
+                .await,
+                true,
+            ));
         };
         let definition = definitions
             .get_or_parse(version_record.version.id(), &version_record.document)
@@ -703,32 +1019,41 @@ where
             },
         };
         match self.store.create(new).await {
-            Ok(Applied::Replayed(_)) => Ok(Outcome::Skipped),
+            Ok(Applied::Replayed(_)) => Ok((Outcome::Skipped, false)),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
-            Err(StoreError::MissingReference) => Ok(Outcome::Skipped),
+            Err(StoreError::MissingReference) => Ok((Outcome::Skipped, false)),
             // Either way the step fails instead of waiting. Waiting for room would leave the
             // blocked reservations at the head of the oldest-first queue, where a full namespace of
             // one tenant would keep every other tenant's children from starting (G32, feature
             // 010); the failure code lets the workflow tell the two apart and route on it.
-            Err(StoreError::QuotaExceeded { what }) => Ok({
-                let code = if what == sagat_application::execution::TREE_LIMIT {
-                    // The tree is as large as a tree may get.
-                    FailureCode::child_limit_exceeded()
-                } else {
-                    // The namespace or the tenant is at its quota of active runs.
-                    FailureCode::child_quota_exceeded()
-                };
-                self.finish_with(
-                    tenant,
-                    parent_id,
-                    node.clone(),
-                    pending.child,
-                    ChildOutcome::Failed(code),
-                )
-                .await
-            }),
+            Err(StoreError::QuotaExceeded { what }) => Ok((
+                {
+                    let code = if what == sagat_application::execution::TREE_LIMIT {
+                        // The tree is as large as a tree may get.
+                        FailureCode::child_limit_exceeded()
+                    } else {
+                        // The namespace or the tenant is at its quota of active runs.
+                        FailureCode::child_quota_exceeded()
+                    };
+                    self.finish_with(
+                        view,
+                        tenant,
+                        parent_id,
+                        node.clone(),
+                        pending.child,
+                        ChildOutcome::Failed(code),
+                    )
+                    .await
+                },
+                true,
+            )),
             Err(other) => Err(other.into()),
             Ok(Applied::Done(mut tx)) => {
+                // The fence, before anything is committed: a replica that lost the parent's shard
+                // while it was reading must not leave a child run behind (dropping rolls it back).
+                if !view.holds(&mut tx, &hold).await? {
+                    return Ok((Outcome::Fenced, false));
+                }
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());
                 self.engine
                     .run(&mut tx, effects, |def: &WorkflowDefinition, state, now| {
@@ -739,7 +1064,7 @@ where
                     .await?;
                 tx.commit().await?;
                 metrics::counter!("child_runs_started_total").increment(1);
-                Ok(Outcome::Done)
+                Ok((Outcome::Done, false))
             }
         }
     }
@@ -747,6 +1072,7 @@ where
     /// Reports a child's outcome to the parent step that waits for it.
     async fn finish_with(
         &self,
+        view: &View,
         tenant: TenantId,
         parent: RunId,
         node: sagat_domain::workflow::NodeId,
@@ -754,6 +1080,7 @@ where
         outcome: ChildOutcome,
     ) -> Outcome {
         self.apply(
+            view,
             tenant,
             parent,
             "child_finish",
@@ -769,62 +1096,84 @@ where
     }
 
     /// Tells parents that the child they wait for has ended.
-    async fn children_finish(&self, report: &mut Report) {
-        let ended = Self::candidates(
-            self.store.ended_children(self.settings.batch).await,
-            "ended children",
-            report,
-        )
-        .await;
-        for EndedChild {
-            tenant_id,
-            child,
-            parent,
-            node,
-            status,
-        } in ended
-        {
-            // Every way a run can end, and nothing else: a status added later must be mapped here
-            // (a run that ended in a way nobody reports would keep its parent waiting for ever, and
-            // sit at the head of the list of ended children).
-            let outcome = match status {
-                RunStatus::Succeeded => ChildOutcome::Succeeded,
-                RunStatus::Failed => ChildOutcome::Failed(FailureCode::child_failed()),
-                RunStatus::Cancelled => ChildOutcome::Failed(FailureCode::child_cancelled()),
-                RunStatus::TimedOut => ChildOutcome::Failed(FailureCode::child_timed_out()),
-                RunStatus::Compensated => ChildOutcome::Failed(FailureCode::child_compensated()),
-                RunStatus::Partial => ChildOutcome::Failed(FailureCode::child_partial()),
-                RunStatus::CompensationFailed => {
-                    ChildOutcome::Failed(FailureCode::child_compensation_failed())
-                }
-                RunStatus::Running
-                | RunStatus::Waiting
-                | RunStatus::Paused
-                | RunStatus::Cancelling
-                | RunStatus::Compensating
-                | RunStatus::ManualReview => continue,
-            };
-            let result = self
-                .finish_with(tenant_id, parent, node.clone(), child, outcome)
-                .await;
-            if result == Outcome::Skipped {
-                tracing::warn!(%parent, %node, %child, "an ended child could not be reported to its parent step");
-            }
-            Self::tally(report, result, |r| r.children_finished += 1);
+    async fn children_finish(&self, view: &View, report: &mut Report) {
+        let ended = self
+            .pick(
+                view,
+                "ended_children",
+                report,
+                |c: &EndedChild| c.tenant_id,
+                |c| c.child,
+                |store, window| async move { store.ended_children(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(
+                ended,
+                |EndedChild {
+                     tenant_id,
+                     child,
+                     parent,
+                     node,
+                     status,
+                 }| async move {
+                    // Every way a run can end, and nothing else: a status added later must be mapped
+                    // here (a run that ended in a way nobody reports would keep its parent waiting
+                    // for ever, and sit at the head of the list of ended children).
+                    let outcome = match status {
+                        RunStatus::Succeeded => ChildOutcome::Succeeded,
+                        RunStatus::Failed => ChildOutcome::Failed(FailureCode::child_failed()),
+                        RunStatus::Cancelled => {
+                            ChildOutcome::Failed(FailureCode::child_cancelled())
+                        }
+                        RunStatus::TimedOut => {
+                            ChildOutcome::Failed(FailureCode::child_timed_out())
+                        }
+                        RunStatus::Compensated => {
+                            ChildOutcome::Failed(FailureCode::child_compensated())
+                        }
+                        RunStatus::Partial => ChildOutcome::Failed(FailureCode::child_partial()),
+                        RunStatus::CompensationFailed => {
+                            ChildOutcome::Failed(FailureCode::child_compensation_failed())
+                        }
+                        RunStatus::Running
+                        | RunStatus::Waiting
+                        | RunStatus::Paused
+                        | RunStatus::Cancelling
+                        | RunStatus::Compensating
+                        | RunStatus::ManualReview => return None,
+                    };
+                    let result = self
+                        .finish_with(view, tenant_id, parent, node.clone(), child, outcome)
+                        .await;
+                    if result == Outcome::Skipped {
+                        tracing::warn!(%parent, %node, %child, "an ended child could not be reported to its parent step");
+                    }
+                    Some(result)
+                },
+            )
+            .await;
+        for outcome in outcomes.into_iter().flatten() {
+            Self::tally(report, outcome, |r| r.children_finished += 1);
         }
     }
 
     /// Stops the running children of a parent that was stopped under a policy that cancels them.
-    async fn children_cancel(&self, report: &mut Report) {
-        let doomed = Self::candidates(
-            self.store.children_to_cancel(self.settings.batch).await,
-            "children to cancel",
-            report,
-        )
-        .await;
-        for RunRef { tenant_id, run_id } in doomed {
-            let outcome = self
-                .apply(
+    async fn children_cancel(&self, view: &View, report: &mut Report) {
+        let doomed = self
+            .pick(
+                view,
+                "children_to_cancel",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.children_to_cancel(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(doomed, |RunRef { tenant_id, run_id }| {
+                self.apply(
+                    view,
                     tenant_id,
                     run_id,
                     "child_cancel",
@@ -836,7 +1185,9 @@ where
                         ))
                     },
                 )
-                .await;
+            })
+            .await;
+        for outcome in outcomes {
             Self::tally(report, outcome, |r| r.children_cancelled += 1);
         }
     }

@@ -787,6 +787,43 @@ impl CeilingConfig {
     }
 }
 
+/// Settings for `scheduling-weight`: how much of the scheduler's attention a tenant gets when others
+/// have work due too (`FR-010-002`). As with quota ceilings there are no defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeightConfig {
+    pub tenant_id: String,
+    /// `None` withdraws the weight, so the default (1) applies again.
+    pub value: Option<u16>,
+}
+
+impl WeightConfig {
+    /// # Errors
+    /// [`ConfigError::Missing`] when a value is absent; [`ConfigError::Invalid`] when the value is
+    /// neither a number from 1 to 16 nor `default`.
+    pub fn from_lookup(get: Lookup<'_>) -> Result<Self, ConfigError> {
+        let raw = required(get, "SAGAT_WEIGHT_VALUE")?;
+        let value = if raw.eq_ignore_ascii_case("default") {
+            None
+        } else {
+            let weight = raw
+                .parse::<u16>()
+                .ok()
+                .filter(|w| (1..=sagat_domain::sharding::MAX_WEIGHT).contains(w));
+            Some(weight.ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_WEIGHT_VALUE",
+                reason: format!(
+                    "expected a whole number from 1 to {} or `default`",
+                    sagat_domain::sharding::MAX_WEIGHT
+                ),
+            })?)
+        };
+        Ok(Self {
+            tenant_id: required(get, "SAGAT_WEIGHT_TENANT_ID")?,
+            value,
+        })
+    }
+}
+
 /// Settings for `provision-tenant`. Unlike the development seed there are no defaults: creating a
 /// real tenant must be a deliberate act.
 #[derive(Debug, Clone, PartialEq, Eq)]

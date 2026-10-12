@@ -400,6 +400,17 @@ pub trait RunTx: Send {
         node: &NodeId,
     ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
 
+    /// Whether `owner` still holds the shard lease `lease`, as of the database's clock. It takes
+    /// the shard's row in shared mode, held to the end of the transaction, and a takeover of the
+    /// shard needs it exclusively: a transaction that found the lease good finishes before the
+    /// shard changes hands, and one that starts after finds the new generation. This is the fence
+    /// of a scheduler action (`FR-010-001`).
+    fn holds_shard(
+        &mut self,
+        owner: &str,
+        lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// Whether the worker identity `subject` is being drained in this run's namespace. It takes
     /// the drain's lock in shared mode, held to the end of the transaction, and a drain takes it
     /// exclusively: a drain does not return while a transaction that found the worker serving is

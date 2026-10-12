@@ -2,7 +2,7 @@
 
 What an operator needs to run the controls that keep tenants apart and secrets secret: worker
 bindings, the secret store and its key ring, quotas, egress policy, and TLS on the worker API. The
-decisions behind them are D42-D51 in `specs/009-security-multitenancy/research.md`; the commands below
+decisions behind them are D42-D59 in `specs/009-security-multitenancy/research.md`; the commands below
 were run against this repository, and what is **not** built is listed at the end.
 
 ## 1. What governs what
@@ -13,7 +13,7 @@ were run against this repository, and what is **not** built is listed at the end
 | Secret | A named value a step may ask for while it holds a lease | Publishing a workflow that declares it; `ResolveSecrets` | `/namespaces/{id}/secrets...` (`secret:manage`, names with `secret:read`) |
 | Secret access list | Who may reference one secret from workflows they publish | Publishing, and again at every resolution | `PUT/DELETE /namespaces/{id}/secrets/{name}/access/{subject}` |
 | Quota | How much of the platform a namespace or tenant may use | Inside the transaction that creates the thing | `/quotas` and `/namespaces/{id}/quotas` (`quota:manage`; read with `quota:read`) |
-| Egress policy | Where a namespace's outbound requests may go | By the feature that makes the request, asking `EgressService` | `/namespaces/{id}/egress-policy` (`egress:manage`) |
+| Egress policy | Where a namespace's outbound requests may go | The script supervisor reads it before every mediated host call; other outbound features use `EgressService` | `/namespaces/{id}/egress-policy` (`egress:manage`) |
 | TLS / mTLS | Who may reach the worker API and that nobody reads it on the wire | The engine's listener | `SAGAT_GRPC_TLS_*` |
 
 Only administrators hold `worker:bind`, `secret:manage`, `quota:manage` and `egress:manage`. A
@@ -143,8 +143,16 @@ curl -X DELETE "$API/v1/namespaces/$NS/egress-policy" ...      # everything deni
 Default is deny. A rule is an exact host, `*.domain` (below it, not the domain itself) or a CIDR network
 (which also allows addressing it by IP literal). Whatever is written, loopback, link-local, the cloud
 metadata addresses, multicast and reserved space stay unreachable, and private space needs an explicit
-network rule. No feature consumes the policy yet (webhooks are 004, the script sandbox 005): this is the
-store and the guard they will use (gaps G35, G36).
+network rule. The script runner has no direct container network. `octopus.fetch` asks the supervisor,
+which reads this policy immediately before each request; a committed policy change applies to the next
+read, while a request already authorized and in flight may finish.
+
+When the supervisor refuses a request, it first posts a closed category against the current fenced
+attempt. Only a 204 after the `script.violation` audit commits is returned to the script as `denied`.
+If the incident write times out, the lease is stale or storage is unavailable, the host call fails as
+unavailable and sends no request. The incident contains no URL, hostname, header or payload. Repeated
+destinations are answered each time but produce at most one row per category and attempt. This is the
+script path (D59); feature 004 still owns future webhook signature, replay and inbound SSRF controls.
 
 ## 4. Symptoms
 
@@ -169,12 +177,15 @@ store and the guard they will use (gaps G35, G36).
 | Engine exits 2 naming a `SAGAT_GRPC_TLS_*` variable | Missing pair, unreadable or non-PEM file | Fix the named variable |
 | TLS clients fail with a certificate error | The client does not trust the CA, the name differs from the certificate, or (mTLS) it presents no certificate signed by the client CA | Check the chain and the SAN; `grpc_connections_total` stops rising for them |
 | Cross-tenant `404`s from one caller | Someone is probing identifiers of another tenant | `SELECT * FROM audit_records WHERE action = 'access.denied.cross_tenant'` (one row per caller and resource per window) |
+| A script gets `denied` from `octopus.fetch` | Its artifact disables egress, or the current namespace policy refuses the scheme, host, port or resolved address | Query `script.violation` for that run and attempt. Its reason is one of the seven closed categories; change the namespace policy only if the destination is intended |
+| A script host call fails as unavailable and `script_incidents_total` does not rise | The supervisor could not read current policy or could not commit the incident before acknowledging it | Check control-plane reachability, the runner's current lease/binding and PostgreSQL. The outbound request was not made; retry through the workflow policy after the control plane recovers |
 
 ## 5. Incidents
 
 - **A secret value leaked.** `PUT` a new value now. `SELECT created_at, actor, reason FROM audit_records WHERE action = 'secret.resolved' AND resource_id LIKE '<namespace id>/%'` shows who was handed which secret and version, by run and node; revoke the identities involved (`DELETE .../worker-bindings/{subject}` closes their sessions and releases their leases at once).
 - **The key ring leaked.** Rotate the ring (section 3), then replace every secret value.
 - **A worker identity is compromised.** Remove its bindings in every namespace; its sessions are closed and the attempts it holds are reclaimed by the scheduler, and its late reports are refused as stale. Revoke the identity at the OIDC provider as well.
+- **A sandbox attempted forbidden egress.** Preserve the `script.violation` rows for its run, step, attempt and generation, then inspect the script artifact and namespace policy. The row contains a category only; use the execution diagnostics if the destination is needed for investigation, applying the deployment's data-retention rules.
 - **A tenant's data may have been reached by another tenant.** This is a critical finding by definition (spec SC-009-001). Preserve `audit_records` and the logs, and run the cross-tenant battery against the deployed version (`cargo test -p sagat-tests --test contract_rest_security_multitenancy`).
 - **A developer left.** Their published workflows stop resolving secrets at the next attempt (D46). Republish what is still needed as someone with access.
 
@@ -182,7 +193,7 @@ store and the guard they will use (gaps G35, G36).
 
 Audit actions (immutable, redacted, never a value): `quota.changed`, `secret.stored`, `secret.deleted`,
 `secret.access_granted`, `secret.access_revoked`, `secret.resolved`, `secret.denied`,
-`egress.policy_changed`, `egress.denied`, `worker.bound`, `worker.unbound`, `worker.denied`,
+`egress.policy_changed`, `egress.denied`, `script.violation`, `worker.bound`, `worker.unbound`, `worker.denied`,
 `access.denied.cross_tenant`.
 
 Metrics (labels are closed sets; no tenant, subject, run, namespace or secret is ever a label):
@@ -190,6 +201,7 @@ Metrics (labels are closed sets; no tenant, subject, run, namespace or secret is
 | Metric | Meaning |
 |---|---|
 | `security_denials_total{action}` | Every denial that is audited as `access.denied.cross_tenant`, `worker.denied` or `egress.denied`, counted per attempt **before** the audit write. The audit table keeps one row per caller and resource per window and may drop events under flood; this counter does not, so it is the one to alert on |
+| `script_incidents_total{category}` | Sandbox supervisor incident reports accepted after the fenced audit transaction committed; categories are a closed set and carry no destination or tenant label |
 | `quota_exceeded_total{limit}` | Requests refused by a limit, by which limit (`active runs in the namespace`, `worker sessions of the tenant`, ...); the same refusals appear as `429` in `http_requests_total` |
 | `secrets_handed_out_total` | Secret values given to workers through `ResolveSecrets`, counted after the resolution and its audit record committed |
 | `secret_resolution_denied_total` | `ResolveSecrets` refused because a declared secret is no longer usable (deleted, or its publisher lost access) |
@@ -204,15 +216,65 @@ sustained rate is an incident; any increase of `secret_output_detected_total` me
 returning a credential; `quota_exceeded_total` rising for one limit on a quiet system means a limit
 is too low or a client is looping.
 
-Kubernetes requirements that the repository does not yet ship as a chart (gap G45): egress only to
-PostgreSQL, NATS and the OIDC provider; ingress only from the ingress controller (the control plane) and
-from workers (the engine); metrics port only from the scraper; run as non-root with a read-only root
-filesystem and no added capabilities.
+Feature 009 reuses the published Feature 010 chart and adds role-scoped egress policies to it.
+The control plane gets DNS, PostgreSQL and OIDC; the engine adds NATS only when configured; workers
+get DNS plus the control-plane API and engine gRPC. Each worker pool starts with denied ingress and
+may add validated, pool-local rules. Empty peers, global CIDRs, missing ports and empty ingress
+sources fail Helm rendering. Reproduce the G45 verification on an explicit disposable Cilium cluster:
+
+```sh
+KUBECONFIG=/path/to/disposable-kubeconfig \
+  CHART_DIR=infra/helm tests/security/sandbox/kubernetes-network-policy.sh
+```
+
+The verifier rejects unsafe values before creating its test namespaces, applies the rendered policies and service
+accounts, validates PodSpecs derived from every workload template against restricted Pod Security
+admission, and uses controlled TCP listeners for PostgreSQL, NATS, OIDC, control-plane and engine
+ports. It proves declared TCP paths work, undeclared Kubernetes API and cross-role paths fail,
+identical labels in another namespace do not grant ingress, and one worker pool cannot inherit
+another pool's overrides. The integrated chart passed this matrix on Cilium. This is a network and
+admission proof: it does not install the product Deployments or KEDA objects and does not exercise
+real PostgreSQL, NATS or OIDC protocols. `contract_scalability_ha` separately verifies the complete
+render and the exact role, port, peer, optional-NATS, pool-override and disabled-policy contracts.
+
+### Local verification with kind
+
+Run from the repository root with Docker, kind, Helm, kubectl and jq installed. This recipe uses
+Kubernetes 1.37.0 and Cilium 1.20.2. It follows the [Cilium kind installation guide](https://docs.cilium.io/en/stable/installation/kind/):
+the default CNI is disabled and Cilium uses Kubernetes IPAM. The node becomes ready after Cilium is
+installed. A unique cluster name and a separate kubeconfig keep the current cluster context intact.
+Select a working Docker engine first; with Colima, set `DOCKER_CONTEXT` to its named context.
+
+```sh
+security_dir=$(mktemp -d)
+security_cluster="sagat-security-$(date +%s)-$$"
+export KUBECONFIG="$security_dir/kubeconfig"
+
+kind create cluster --name "$security_cluster" \
+  --config tests/security/sandbox/kind.yaml --kubeconfig "$KUBECONFIG"
+helm install cilium oci://quay.io/cilium/charts/cilium \
+  --version 1.20.2 --namespace kube-system \
+  --set ipam.mode=kubernetes --set operator.replicas=1 \
+  --set image.pullPolicy=IfNotPresent --wait --timeout 5m
+kubectl wait --for=condition=Ready nodes --all --timeout=120s
+CHART_DIR=infra/helm tests/security/sandbox/kubernetes-network-policy.sh
+```
+
+The verifier removes its own namespaces on success or failure. After inspecting the result, remove
+only the cluster created above and its temporary kubeconfig:
+
+```sh
+kind delete cluster --name "$security_cluster"
+rm -rf -- "$security_dir"
+unset KUBECONFIG
+```
+
+For an existing disposable kind cluster, export its kubeconfig to a separate file with
+`kind export kubeconfig --name <cluster> --kubeconfig <file>`, then run the verifier with
+`KUBECONFIG=<file>`. The verifier does not create, reconfigure or delete that cluster.
 
 ## 7. Not covered
 
-- Sandbox isolation (cgroups, namespaces, seccomp) and the egress half of US03 for untrusted code: feature 005 (G35).
 - Webhook signature, replay and inbound SSRF controls: feature 004 (G36).
 - Quotas for builds, storage, logs, retention and event rate (G37); default values per tier (G42).
 - A KMS or HSM behind the key ring (G43); binding a client certificate to a token subject (G44).
-- A Helm chart with NetworkPolicy and pod security (G45).

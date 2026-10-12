@@ -144,7 +144,7 @@ describe('the run page: the graph', () => {
     const legend = await screen.findByRole('list', { name: 'How links are drawn' });
     expect(legend).toHaveTextContent('Solid: the run went this way');
     expect(legend).toHaveTextContent('Dashed: not decided yet');
-    expect(legend).toHaveTextContent('Dotted and faint: omitted');
+    expect(legend).toHaveTextContent('Dotted: omitted');
   });
 
   it('shows how far the graph was behind the journal when it was read', async () => {
@@ -163,6 +163,74 @@ describe('the run page: the graph', () => {
     act(() => card('check').focus());
     await user.keyboard('{Enter}');
     expect(await screen.findByRole('complementary', { name: 'Details of check' })).toBeInTheDocument();
+  });
+
+  it('summarizes the selected step below the graph from the graph and journal facts', async () => {
+    await open({ journal: JOURNAL });
+    await waitFor(() => card('pay'));
+    pick(within(card('pay')).getByText('pay'));
+    const summary = await screen.findByRole('group', { name: 'Selected step' });
+    expect(within(summary).getByText('pay')).toBeInTheDocument();
+    expect(within(summary).getByText('Step')).toBeInTheDocument();
+    expect(within(summary).getByText('Failed')).toBeInTheDocument();
+    expect(within(summary).getByText('attempt 3')).toBeInTheDocument();
+    expect(within(summary).getByText('HTTP_500')).toBeInTheDocument();
+  });
+});
+
+describe('the run page: responsive master and detail', () => {
+  it('keeps the run URL and shows the selected run in a master list on a wide viewport', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('min-width'),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    await open({
+      routes: {
+        'GET /runs': () => ({ items: [runOf()], nextCursor: null }),
+      },
+    });
+    const master = await screen.findByRole('complementary', { name: 'Runs list' });
+    const selected = within(master).getByRole('link', { name: new RegExp(RUN_ID.slice(-8)) });
+    expect(selected).toHaveAttribute('href', `/runs/${RUN_ID}`);
+    expect(selected).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('heading', { level: 1, name: new RegExp(RUN_ID) })).toBeInTheDocument();
+  });
+
+  it('keeps the master filters, rows and scroll region while navigation resets only the run detail', async () => {
+    const secondId = '019b5d6e-0000-7000-8000-000000000002';
+    const first = runOf({ status: 'MANUAL_REVIEW' });
+    const second = runOf({ runId: secondId, status: 'FAILED', finishedAt: null });
+    const { nodes, edges } = sagaRun();
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('min-width'),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    const { user } = await open({
+      routes: {
+        'GET /runs': (_request, url) => {
+          const status = new URL(url, 'http://studio.test').searchParams.get('status');
+          const items = [second, first].filter((item) => status === null || item.status === status);
+          return { items, nextCursor: null };
+        },
+        [`GET /runs/${secondId}`]: () => second,
+        [`GET /runs/${secondId}/graph`]: () => graphOf(nodes, edges, { runId: secondId, status: 'FAILED' }),
+      },
+    });
+    const master = await screen.findByRole('complementary', { name: 'Runs list' });
+    const status = within(master).getByRole('combobox', { name: 'Status' });
+    await user.selectOptions(status, 'FAILED');
+    const next = await within(master).findByRole('link', { name: new RegExp(secondId.slice(-8)) });
+    expect(within(next).getByText('—')).toBeInTheDocument();
+    await user.click(next);
+    expect(await screen.findByRole('heading', { level: 1, name: new RegExp(secondId) })).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'Runs list' })).toBe(master);
+    expect(within(master).getByRole('combobox', { name: 'Status' })).toBe(status);
+    expect(status).toHaveValue('FAILED');
+    expect(within(master).getByRole('link', { name: new RegExp(secondId.slice(-8)) })).toHaveAttribute('aria-current', 'page');
   });
 });
 

@@ -13,16 +13,20 @@
 
 mod deliveries;
 mod events;
+mod fairness;
 mod monitor;
 mod outbox;
 mod passes;
+mod shards;
 mod telemetry;
 
 pub use deliveries::{DeliveryRound, DeliverySettings, DeliveryWorker};
 pub use events::{EventDispatchSettings, EventDispatcher, EventRound};
+pub use fairness::{DEFAULT_WEIGHT, ROUNDS, Selection, Weights, rest, rest_after, select, share};
 pub use monitor::{Monitor, MonitorRound, MonitorSettings};
 pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{Report, Scheduler, SchedulerSettings};
+pub use shards::{Keeper, KeeperSettings, Placement, Round, Snapshot};
 pub use telemetry::{
     ProjectionRound, ProjectorSettings, TelemetryProjector, state as projection_state,
 };

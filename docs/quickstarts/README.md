@@ -53,6 +53,20 @@ knows you and what you may do, that the versions fit, that the namespace is ther
 connections, and that the Studio is served. It says what to do about each thing that is wrong, and ends with
 `nothing to fix` when there is none. A token ends after an hour: run `sagat dev token` again.
 
+Onboarding telemetry is off by default. To keep a local, append-only NDJSON report with one
+structured completion event and one duration metric point per command, opt in explicitly:
+
+```sh
+export SAGAT_ONBOARDING_TELEMETRY_FILE="$PWD/sagat-onboarding.ndjson"
+```
+
+To send the command span, correlated completion log and duration metric to an OpenTelemetry
+Collector instead, set the standard common `OTEL_EXPORTER_OTLP_ENDPOINT`. A signal-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` sends only the span. Plain HTTP is accepted only for a
+collector on loopback; remote collectors must use HTTPS. The CLI sends no telemetry unless one of
+these settings or the local report is configured. Command and outcome labels come from fixed sets;
+tokens, inputs, payloads, paths and URLs are never recorded.
+
 ## 4. Your first workflow, before you have written a worker
 
 ```sh
@@ -64,6 +78,9 @@ sagat workflow publish hello-world/workflow.json
 In a second terminal, serve its two activities from a file of canned answers and leave it running:
 
 ```sh
+cd /path/to/sagat-octopus-orchestrator       # the same checkout root used in the first terminal
+export SAGAT_SERVER=http://127.0.0.1:18080/v1 SAGAT_GRPC=http://127.0.0.1:19000 SAGAT_NAMESPACE=payments
+export SAGAT_TOKEN=$(sagat dev token)         # each terminal needs its own environment
 sagat worker dev --mocks hello-world/mocks.yaml --workflow hello-world/workflow.json --bind
 ```
 

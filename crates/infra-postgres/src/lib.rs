@@ -19,6 +19,7 @@ mod identity;
 mod maintenance;
 mod operations;
 mod outbound;
+mod partitioning;
 mod pool;
 mod privilege;
 mod quotas;

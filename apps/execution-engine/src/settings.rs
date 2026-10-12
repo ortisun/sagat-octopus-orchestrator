@@ -8,6 +8,7 @@ use sagat_api_grpc::GrpcConfig;
 use sagat_api_grpc::TlsConfig;
 use sagat_api_http::{AuthConfig, RateLimitConfig};
 use sagat_application::execution::BreakerPolicy;
+use sagat_application::operations::WorkerPool;
 use sagat_application::worker::WorkerSettings;
 use sagat_control_plane::config::{
     ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, optional,
@@ -15,8 +16,8 @@ use sagat_control_plane::config::{
 };
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
-    DeliverySettings, DispatchSettings, EventDispatchSettings, MonitorSettings, ProjectorSettings,
-    SchedulerSettings,
+    DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings, MonitorSettings,
+    ProjectorSettings, SchedulerSettings,
 };
 use sagat_telemetry::OtlpConfig;
 
@@ -55,6 +56,11 @@ pub struct EngineConfig {
     /// When the compensations of a provider operation that keeps failing stop being leased.
     pub breaker: BreakerPolicy,
     pub scheduler: SchedulerSettings,
+    /// How the replica holds its shards of the scheduler's work (`FR-010-001`).
+    pub shards: KeeperSettings,
+    /// Names the replica in the leases (`SAGAT_REPLICA_ID`, often the pod name); a random suffix is
+    /// added at start so that a restarted process is never mistaken for the one it replaces.
+    pub replica: String,
     /// Pause between scheduler ticks when the last one found nothing to do.
     pub tick_interval: Duration,
     pub housekeeping_interval: Duration,
@@ -83,6 +89,109 @@ pub struct EngineConfig {
     /// The key ring that opens secrets for workers (`SAGAT_SECRETS_KEYS`); `None` turns the
     /// `ResolveSecrets` call off.
     pub secrets: Option<sagat_infra_secrets::SecretsConfig>,
+}
+
+/// The most candidates of one pass a scheduler acts on at once; each holds a database connection.
+const MAX_SCHEDULER_CONCURRENCY: usize = 64;
+/// The most candidates one pass asks for (`SAGAT_SCHEDULER_BATCH`) and messages one dispatch round claims
+/// (`SAGAT_OUTBOX_BATCH`): each query is `LIMIT batch` for every shard the replica holds, and a search for
+/// other tenants reads up to sixteen such pages, so a mistyped value is the database's load.
+const MAX_BATCH: u32 = 5_000;
+const MIN_SHARD_LEASE: Duration = Duration::from_secs(3);
+const MAX_SHARD_LEASE: Duration = Duration::from_secs(600);
+const MAX_REPLICA_ID: usize = 64;
+/// The longest a search for other tenants may be rested: a tenant that arrives behind a burst waits
+/// for it.
+const MAX_DISCOVERY_REST_MS: u64 = 60_000;
+/// Pools whose queues are measured, and activities in all of them: each pool is two series.
+const MAX_POOLS: usize = 32;
+const MAX_POOL_ACTIVITIES: usize = 512;
+
+/// `SAGAT_WORKER_POOLS`: `name=activity,activity;name=activity`. The name is what the pool's gauges
+/// are labelled with, so it is the operator's, short and made of letters, digits and `. _ -`; an
+/// activity is a name a workflow uses, with no separator in it.
+fn worker_pools(get: Lookup<'_>) -> Result<Vec<WorkerPool>, ConfigError> {
+    const NAME: &str = "SAGAT_WORKER_POOLS";
+    let invalid = |reason: String| ConfigError::Invalid { name: NAME, reason };
+    let Some(spec) = get(NAME)
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    let mut pools: Vec<WorkerPool> = Vec::new();
+    let mut activities = 0;
+    for part in spec.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let (name, list) = part
+            .split_once('=')
+            .ok_or_else(|| invalid("each pool is name=activity,activity".to_owned()))?;
+        let name = name.trim();
+        if name.is_empty()
+            || name.len() > 64
+            || !name.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+            })
+        {
+            return Err(invalid(
+                "a pool name is 1 to 64 lowercase letters, digits or . _ -".to_owned(),
+            ));
+        }
+        if pools.iter().any(|p| p.name == name) {
+            return Err(invalid(format!("the pool {name} is named twice")));
+        }
+        let list: Vec<String> = list
+            .split(',')
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if list.is_empty() {
+            return Err(invalid(format!("the pool {name} serves no activity")));
+        }
+        if let Some(bad) = list
+            .iter()
+            .find(|a| a.len() > 128 || !a.bytes().all(|b| b.is_ascii_graphic()))
+        {
+            return Err(invalid(format!(
+                "an activity of the pool {name} is too long or has a character that is not printable ASCII ({} bytes)",
+                bad.len()
+            )));
+        }
+        // An activity named twice in a pool is one.
+        let mut list = list;
+        let mut seen = std::collections::BTreeSet::new();
+        list.retain(|a| seen.insert(a.clone()));
+        activities += list.len();
+        pools.push(WorkerPool {
+            name: name.to_owned(),
+            activities: list,
+        });
+    }
+    if pools.len() > MAX_POOLS || activities > MAX_POOL_ACTIVITIES {
+        return Err(invalid(format!(
+            "at most {MAX_POOLS} pools and {MAX_POOL_ACTIVITIES} activities in all"
+        )));
+    }
+    Ok(pools)
+}
+
+/// `SAGAT_REPLICA_ID`: printable ASCII without spaces, short; `engine` when it is not set.
+fn replica_name(get: Lookup<'_>) -> Result<String, ConfigError> {
+    let Some(name) = get("SAGAT_REPLICA_ID")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok("engine".to_owned());
+    };
+    if name.len() > MAX_REPLICA_ID || !name.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(ConfigError::Invalid {
+            name: "SAGAT_REPLICA_ID",
+            reason: format!(
+                "must be at most {MAX_REPLICA_ID} printable ASCII characters without spaces"
+            ),
+        });
+    }
+    Ok(name)
 }
 
 fn positive(name: &'static str, value: u64) -> Result<u64, ConfigError> {
@@ -323,12 +432,55 @@ impl EngineConfig {
                     u64::from(scheduler_defaults.batch),
                 )?,
             )?)
-            .map_err(|_| ConfigError::Invalid {
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
                 name: "SAGAT_SCHEDULER_BATCH",
-                reason: "is too large".to_owned(),
+                reason: format!("must be at most {MAX_BATCH}"),
             })?,
+            concurrency: capacity(
+                get,
+                "SAGAT_SCHEDULER_CONCURRENCY",
+                scheduler_defaults.concurrency,
+            )?
+            .min(MAX_SCHEDULER_CONCURRENCY),
+            // On unless it is said to be off: it is a diagnostic to turn off, never a thing to turn on.
+            fair: match get("SAGAT_SCHEDULER_FAIRNESS").as_deref().map(str::trim) {
+                None | Some("") => true,
+                Some(_) => flag(get, "SAGAT_SCHEDULER_FAIRNESS")?,
+            },
             ..scheduler_defaults
         };
+        // How long a pass rests its search for other tenants after one that found nobody (0: never).
+        let discovery_rest = Duration::from_millis(
+            optional(
+                get,
+                "SAGAT_SCHEDULER_DISCOVERY_REST_MS",
+                u64::try_from(scheduler_defaults.discovery_rest.as_millis()).unwrap_or(100),
+            )?
+            .min(MAX_DISCOVERY_REST_MS),
+        );
+        let scheduler = SchedulerSettings {
+            discovery_rest,
+            ..scheduler
+        };
+        let shard_defaults = KeeperSettings::default();
+        let shards = KeeperSettings {
+            ttl: seconds(get, "SAGAT_SHARD_LEASE_SECS", shard_defaults.ttl)?,
+        };
+        // Shorter than this, a pause of the garbage collector or of a network hop loses the shards;
+        // longer, a crashed replica's work waits that long before somebody takes it over.
+        if !(MIN_SHARD_LEASE..=MAX_SHARD_LEASE).contains(&shards.ttl) {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_SHARD_LEASE_SECS",
+                reason: format!(
+                    "must be between {} and {} seconds",
+                    MIN_SHARD_LEASE.as_secs(),
+                    MAX_SHARD_LEASE.as_secs()
+                ),
+            });
+        }
+        let replica = replica_name(get)?;
         let tick_interval = Duration::from_millis(positive(
             "SAGAT_SCHEDULER_INTERVAL_MS",
             optional(get, "SAGAT_SCHEDULER_INTERVAL_MS", 500u64)?,
@@ -353,10 +505,13 @@ impl EngineConfig {
                     u64::from(dispatch_defaults.batch),
                 )?,
             )?)
-            .map_err(|_| ConfigError::Invalid {
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
                 name: "SAGAT_OUTBOX_BATCH",
-                reason: "is too large".to_owned(),
+                reason: format!("must be at most {MAX_BATCH}"),
             })?,
+            discovery_rest,
             ..dispatch_defaults
         };
         let outbox_poll = Duration::from_millis(positive(
@@ -473,6 +628,7 @@ impl EngineConfig {
                     .map(|v| v.trim().to_owned())
                     .filter(|v| !v.is_empty())
                     .unwrap_or(monitor_defaults.runbook_base),
+                pools: worker_pools(get)?,
                 retention: Duration::from_secs(
                     positive(
                         "SAGAT_ALERT_RETENTION_DAYS",
@@ -534,6 +690,8 @@ impl EngineConfig {
             worker,
             breaker,
             scheduler,
+            shards,
+            replica,
             tick_interval,
             housekeeping_interval,
             liveness_grace,

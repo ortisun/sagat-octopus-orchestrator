@@ -357,9 +357,16 @@ fn sources_of_examples() -> Vec<PathBuf> {
             ) {
                 continue;
             }
-            if path.is_dir() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            // Never follow a link while walking material that can be copied into a checkout.
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
                 stack.push(path);
-            } else if std::fs::metadata(&path).is_ok_and(|m| m.len() < 512 * 1024) {
+            } else if entry.metadata().is_ok_and(|m| m.len() < 512 * 1024) {
                 found.push(path);
             }
         }
@@ -408,5 +415,5 @@ fn no_example_template_or_page_carries_a_secret() {
             );
         }
     }
-    assert!(scanned > 50, "only {scanned} files were scanned");
+    assert!(scanned >= 70, "only {scanned} files were scanned");
 }

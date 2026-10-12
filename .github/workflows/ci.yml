@@ -23,7 +23,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: isolated C# compiler and runtime images
+        run: |
+          docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
+          docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
       # Integration tests start PostgreSQL through Testcontainers (Docker is preinstalled).
+      # The workspace also verifies worker/event compatibility baselines and that applying
+      # platform migrations twice is a no-op (T001-030/031).
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
       - run: cargo test --workspace --locked --no-fail-fast
 
@@ -98,9 +104,11 @@ jobs:
         run: cargo test -p sagat-tests --test sdk_conformance --test e2e_sdk_multilanguage --test fault_sdk_multilanguage --locked -- --ignored
       # The hello-world of each SDK (examples/hello-world), run against a real platform: the five make the
       # same run, whose journal is the one `sagat worker dev` makes; and the payment saga
-      # (examples/payment-saga) on a good day, a declined card and a lost answer.
-      - name: examples, five languages and the payment saga
-        run: cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored
+      # (examples/payment-saga) on a good day, a declined card and a lost answer, plus the real sandbox.
+      # The browser journey runs in the studio job, which installs the frontend and Chromium.
+      - name: examples, five languages, payment saga and script sandbox
+        run: |
+          cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored us03:: saga:: scripts::
 
   studio:
     name: studio (lint, types, unit tests, build, browser journeys)
@@ -142,9 +150,15 @@ jobs:
       # #[ignore] in the workspace run because they need Node and Chromium. The benchmark runs only with STUDIO_PERF=1.
       - name: browser journeys
         run: cargo test -p sagat-tests --test e2e_workflow_studio --locked -- --ignored journeys
+      - name: onboarding browser failure redaction
+        working-directory: frontend
+        run: node --test e2e/compose-security.test.mjs
+      - name: CLI, SDK and Studio onboarding journey
+        run: |
+          cargo test -p sagat-tests --test e2e_developer_experience --locked -- --ignored onboarding_browser::
 
   contracts:
-    name: contracts (OpenAPI, protobuf, JSON Schema)
+    name: contracts (OpenAPI, protobuf, AsyncAPI, JSON Schema)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -177,14 +191,22 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The CLI the smoke test uses for the first day: doctor, publish, serve, run.
       - run: cargo build -p sagat-cli --locked
+      - name: Prepare the TypeScript SDK example and compose-only browser journey
+        run: |
+          examples/hello-world/typescript/prepare.sh
+          npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
+          (cd frontend && npx playwright install --with-deps chromium)
       # Builds the images, starts PostgreSQL + NATS + the development identity provider + control plane +
       # engine, checks health, runs the seed twice, gets a token from the provider, publishes and runs a
       # workflow with the CLI and tears everything down (see scripts/smoke-compose.sh).
-      - run: SAGAT_BIN=target/debug/sagat scripts/smoke-compose.sh
+      - run: SAGAT_BIN=target/debug/sagat SAGAT_SMOKE_BROWSER=1 scripts/smoke-compose.sh
 
   observability:
     name: observability files (Prometheus rules and configuration, Collector configuration, dashboards)
@@ -213,6 +235,44 @@ jobs:
       - name: Grafana dashboards are JSON
         run: |
           for f in infra/observability/dashboards/*.json; do python3 -m json.tool "$f" > /dev/null; done
+
+  scale:
+    name: scale and recovery (chart, load harness at a small size, disaster-recovery drill)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The contract test of the chart (`contract_scalability_ha`) renders it with `helm template` in the
+      # workspace run above; this lints it with the example an operator starts from.
+      - run: helm lint infra/helm -f infra/helm/examples/ha.yaml
+      - run: for script in tests/performance/scalability-ha/run.sh infra/dr/drill.sh; do bash -n "$script"; done
+      - run: sh -n tests/security/sandbox/kubernetes-network-policy.sh
+      # The scenarios of the benchmark at a size CI can afford, against a PostgreSQL the script starts
+      # itself: proof that the harness runs and that its assertions hold, not a measurement (the figures of
+      # the report are from a quiet machine, tests/performance/reports/scalability-ha.md).
+      - name: load harness, small
+        env:
+          SAGAT_PERF_MAX_WAITS: "2000"
+          SAGAT_PERF_FIRING_WAITS: "3000"
+          SAGAT_PERF_FIRING_BURST: "300"
+          SAGAT_PERF_NOISY: "300"
+          SAGAT_PERF_QUIET: "60"
+          SAGAT_PERF_TRANSITION_RUNS: "60"
+          SAGAT_PERF_REPORT: ${{ runner.temp }}/scalability-ha.md
+        run: |
+          tests/performance/scalability-ha/run.sh
+          cat "$SAGAT_PERF_REPORT"
+      # The point-in-time restore (journal digest before and after, every run replayed) and the failover
+      # to a synchronous standby (no acknowledged run missing), on clusters the script starts itself.
+      - name: disaster-recovery drill, small
+        env:
+          SAGAT_DR_RUNS: "300"
+          SAGAT_DR_REPORT: ${{ runner.temp }}/disaster-recovery.md
+        run: |
+          infra/dr/drill.sh
+          cat "$SAGAT_DR_REPORT"
 
   dependencies:
     name: dependency advisories (cargo audit)

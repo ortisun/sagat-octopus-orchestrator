@@ -13,8 +13,8 @@ use serde_json::Value;
 use tracing_subscriber::layer::SubscriberExt;
 
 use sagat_telemetry::{
-    AttrValue, ExportError, Metrics, OtlpClient, OtlpConfig, OtlpLayer, SpanData, SpanEvent,
-    SpanId, SpanKind, SpanLink, SpanStatus, TraceId, start,
+    AttrValue, ExportError, GaugeData, LogData, Metrics, OtlpClient, OtlpConfig, OtlpLayer,
+    SpanData, SpanEvent, SpanId, SpanKind, SpanLink, SpanStatus, TraceId, start,
 };
 
 #[derive(Default)]
@@ -55,6 +55,8 @@ async fn collector(statuses: &[u16]) -> (Arc<Collector>, String) {
         .extend(statuses.iter().copied());
     let app = Router::new()
         .route("/v1/traces", post(receive))
+        .route("/v1/logs", post(receive))
+        .route("/v1/metrics", post(receive))
         .with_state(Arc::clone(&state));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -64,6 +66,133 @@ async fn collector(statuses: &[u16]) -> (Arc<Collector>, String) {
         let _ = axum::serve(listener, app).await;
     });
     (state, url)
+}
+
+#[tokio::test]
+async fn correlated_log_and_bounded_gauge_use_the_otlp_json_signal_shapes() {
+    let (collector, traces_url) = collector(&[]).await;
+    let mut cfg = config(&traces_url);
+    cfg.logs_endpoint = Some(traces_url.replace("/v1/traces", "/v1/logs"));
+    cfg.metrics_endpoint = Some(traces_url.replace("/v1/traces", "/v1/metrics"));
+    let client = OtlpClient::new(cfg).expect("client");
+    let trace_id = TraceId::generate();
+    let span_id = SpanId::generate();
+    client
+        .export_log(&LogData {
+            trace_id,
+            span_id,
+            unix_nano: 1_700_000_000_250_000_000,
+            event_name: "sagat.cli.command.completed".to_owned(),
+            body: "command completed".to_owned(),
+            error: false,
+            attributes: vec![
+                ("command".to_owned(), AttrValue::from("help")),
+                ("token".to_owned(), AttrValue::from("secret-token")),
+            ],
+        })
+        .await
+        .expect("log exported");
+    client
+        .export_gauge(&GaugeData {
+            name: "sagat_cli_command_duration_seconds".to_owned(),
+            description: "Duration of one command.".to_owned(),
+            unit: "s".to_owned(),
+            unix_nano: 1_700_000_000_250_000_000,
+            value: 0.25,
+            attributes: vec![
+                ("command".to_owned(), AttrValue::from("help")),
+                ("outcome".to_owned(), AttrValue::from("success")),
+            ],
+        })
+        .await
+        .expect("gauge exported");
+
+    let bodies = collector.bodies.lock().expect("bodies");
+    assert_eq!(bodies.len(), 2);
+    let record = &bodies[0]["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0];
+    assert_eq!(record["timeUnixNano"], "1700000000250000000");
+    assert_eq!(record["severityNumber"], 9);
+    assert_eq!(record["traceId"], trace_id.to_string());
+    assert_eq!(record["spanId"], span_id.to_string());
+    assert_eq!(record["eventName"], "sagat.cli.command.completed");
+    assert_eq!(
+        record["attributes"][1]["value"]["stringValue"],
+        sagat_telemetry::REDACTED
+    );
+
+    let metric = &bodies[1]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0];
+    assert_eq!(metric["name"], "sagat_cli_command_duration_seconds");
+    assert_eq!(metric["unit"], "s");
+    assert_eq!(metric["gauge"]["dataPoints"][0]["asDouble"], 0.25);
+    assert_eq!(
+        metric["gauge"]["dataPoints"][0]["timeUnixNano"],
+        "1700000000250000000"
+    );
+    let encoded = serde_json::to_string(metric).expect("metric JSON");
+    assert!(!encoded.contains(&trace_id.to_string()));
+    assert!(!encoded.contains(&span_id.to_string()));
+}
+
+#[tokio::test]
+async fn a_trace_only_credential_never_reaches_the_common_signal_collector() {
+    let (common, common_trace_url) = collector(&[]).await;
+    let (traces, trace_url) = collector(&[]).await;
+    let common_base = common_trace_url
+        .strip_suffix("/v1/traces")
+        .expect("collector base")
+        .to_owned();
+    let config = OtlpConfig::from_lookup(
+        &|name| match name {
+            "OTEL_EXPORTER_OTLP_ENDPOINT" => Some(common_base.clone()),
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" => Some(trace_url.clone()),
+            "OTEL_EXPORTER_OTLP_HEADERS" => Some("x-common=common-key".to_owned()),
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS" => Some("x-trace=trace-key".to_owned()),
+            _ => None,
+        },
+        "sagat-test",
+    )
+    .expect("valid configuration")
+    .expect("export enabled");
+    let client = OtlpClient::new(config).expect("client");
+    let span = a_span("command");
+    client
+        .export(std::slice::from_ref(&span))
+        .await
+        .expect("span exported");
+    client
+        .export_log(&LogData {
+            trace_id: span.trace_id,
+            span_id: span.span_id,
+            unix_nano: span.end_unix_nano,
+            event_name: "completed".to_owned(),
+            body: "completed".to_owned(),
+            error: false,
+            attributes: Vec::new(),
+        })
+        .await
+        .expect("log exported");
+    client
+        .export_gauge(&GaugeData {
+            name: "duration".to_owned(),
+            description: "duration".to_owned(),
+            unit: "s".to_owned(),
+            unix_nano: span.end_unix_nano,
+            value: 0.25,
+            attributes: Vec::new(),
+        })
+        .await
+        .expect("gauge exported");
+
+    let trace_headers = traces.headers.lock().expect("trace headers");
+    assert_eq!(trace_headers.len(), 1);
+    assert_eq!(trace_headers[0]["x-trace"], "trace-key");
+    assert!(trace_headers[0].get("x-common").is_none());
+    let common_headers = common.headers.lock().expect("common headers");
+    assert_eq!(common_headers.len(), 2);
+    for headers in common_headers.iter() {
+        assert_eq!(headers["x-common"], "common-key");
+        assert!(headers.get("x-trace").is_none());
+    }
 }
 
 fn a_span(name: &str) -> SpanData {

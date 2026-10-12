@@ -38,34 +38,43 @@ describe('autosave (D146)', () => {
   });
 
   it('waits 1.5 s of quiet, and a change inside the wait postpones it; the indicator says so', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { user, platform } = await opened({ fakeTimers: true, realTimings: true });
-    await removeDone(user);
+    const { platform } = await opened({ realTimings: true });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
     await act(() => vi.advanceTimersByTimeAsync(1_000));
     expect(putsOf(platform)).toHaveLength(0);
-    await user.click(screen.getByRole('button', { name: 'Delete pay' }));
-    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete pay' }));
+    await act(() => vi.advanceTimersByTimeAsync(1_499));
     expect(putsOf(platform)).toHaveLength(0);
     expect(state()).toHaveTextContent('Unsaved changes');
-    await act(() => vi.advanceTimersByTimeAsync(700));
-    await waitFor(() => expect(putsOf(platform)).toHaveLength(1));
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(putsOf(platform)).toHaveLength(1);
     expect(nodesOf(putsOf(platform)[0]!)).toEqual(['check']);
   });
 
   it('sends one save for a burst of changes', async () => {
-    const { user, platform } = await opened({ timings: { validateMs: 15, autosaveMs: 150 } });
-    await removeDone(user);
-    await user.click(screen.getByRole('button', { name: 'Delete pay' }));
-    await user.click(screen.getByRole('button', { name: 'Undo' }));
-    await waitFor(() => expect(state()).toHaveTextContent('Saved · revision 2'));
+    const { platform } = await opened({ timings: { validateMs: 15, autosaveMs: 150 } });
+    // Freeze after the asynchronous load; synchronous clicks cannot cross the debounce by wall time.
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete pay' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(putsOf(platform)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(149));
+    expect(putsOf(platform)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(state()).toHaveTextContent('Saved · revision 2');
     expect(putsOf(platform)).toHaveLength(1);
   });
 
   it('sends nothing for a change that was undone before the save', async () => {
-    const { user, platform } = await opened({ timings: { validateMs: 15, autosaveMs: 100 } });
-    await removeDone(user);
-    await user.click(screen.getByRole('button', { name: 'Undo' }));
-    await settle(300);
+    const { platform } = await opened({ timings: { validateMs: 15, autosaveMs: 100 } });
+    // The mutation and its undo happen at the same instant; only this test advances the clock.
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(putsOf(platform)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(300));
     expect(putsOf(platform)).toHaveLength(0);
     expect(state()).toHaveTextContent('Saved · revision 1');
   });

@@ -1,0 +1,132 @@
+# A highly available install of the platform on Kubernetes, to start from (feature 010).
+#
+#   helm install sagat infra/helm -f infra/helm/examples/ha.yaml \
+#     --set database.existingSecret=sagat-db --set oidc.issuer=... --set oidc.audience=... --set oidc.jwksUri=...
+#
+# PostgreSQL (with a synchronous standby and a WAL archive: docs/runbooks/disaster-recovery.md),
+# NATS and the identity provider are yours. Nothing here is a promise of capacity: size the engine
+# from the report (tests/performance/reports/scalability-ha.md) and your own measurements.
+environment: prod
+
+database:
+  existingSecret: sagat-db           # DATABASE_URL of the runtime role (sagat_app), sslmode=verify-full
+  maxConnections: 20
+  serverMaxConnections: 400          # the server's max_connections: (3 + 12) x 20 = 300 at the autoscaler's ceiling, with room to spare
+
+oidc:
+  # This example keeps the provider inside the cluster so a NetworkPolicy can select its pods.
+  # For an external provider, replace the selector below with the operator-owned service CIDRs.
+  issuer: https://identity-provider.identity.svc.cluster.local/
+  audience: sagat
+  jwksUri: https://identity-provider.identity.svc.cluster.local/.well-known/jwks.json
+
+secrets:
+  existingSecret: sagat-keys         # SAGAT_SECRETS_KEYS, the same ring for the API and the engine
+
+nats:
+  url: nats://nats.nats.svc:4222
+  credentialsSecret: sagat-nats
+
+controlPlane:
+  replicas: 3
+  allowPlaintextSecrets: true        # TLS is terminated by the ingress in front of the API; keep the ingress-to-pod hop inside a mesh or a trusted network
+
+engine:
+  replicas: 3                        # shards divide between them: 22, 21 and 21
+  shardLeaseSeconds: 15
+  grpc:
+    # The engine terminates TLS itself, so the secret values it sends to workers never cross the cluster in the clear.
+    # (allowPlaintextSecrets: true is for a mesh that does it for you: it says that the hop is protected by something else.)
+    tlsSecret: sagat-engine-tls      # a kubernetes.io/tls Secret whose certificate names the engine's Service
+  autoscaling:
+    keda:
+      enabled: true
+      minReplicaCount: 3
+      maxReplicaCount: 12
+      prometheusAddress: http://prometheus.monitoring.svc:9090
+      lagThresholdSeconds: 5
+
+workerPoolAutoscaling:
+  prometheusAddress: http://prometheus.monitoring.svc:9090
+
+workerPools:
+  - name: payments
+    language: typescript
+    image: registry.example.com/team/payments-worker:1.4.2
+    activities: [act.reserve, act.charge, act.notify]
+    env:
+      - {name: SAGAT_SERVER, value: "http://sagat-octopus-orchestrator-control-plane:8080/v1"}
+      - {name: SAGAT_GRPC, value: "https://sagat-octopus-orchestrator-engine:9000"}   # the worker must trust the certificate's issuer
+      - name: SAGAT_TOKEN
+        valueFrom: {secretKeyRef: {name: payments-worker-token, key: token}}
+    resources:
+      requests: {cpu: 250m, memory: 256Mi}
+    networkPolicy:
+      # This pool needs only DNS and the platform APIs, which the chart adds. Add explicit peers and
+      # integer ports here only when an activity has another infrastructure dependency.
+      extraEgress: []
+      extraIngress: []
+    autoscaling:
+      enabled: true
+      minReplicaCount: 2
+      maxReplicaCount: 30
+      readyPerReplica: 50
+      lagThresholdSeconds: 30
+
+# Every peer is explicit. Adapt dependency labels to the PostgreSQL, identity, NATS, DNS,
+# ingress and Prometheus installations that this release actually uses. Do not replace these with
+# 0.0.0.0/0 or ::/0: the chart refuses global peers.
+networkPolicy:
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: monitoring}
+      podSelector:
+        matchLabels: {app.kubernetes.io/name: prometheus}
+  apiFrom:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      podSelector:
+        matchLabels: {app.kubernetes.io/name: ingress-nginx}
+    # This example assumes the documented `helm install sagat ...` release name. Keep these
+    # identity labels aligned if the release is renamed.
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
+          app.kubernetes.io/component: worker-payments
+  workersFrom:
+    # A podSelector-only peer is also limited to this release namespace.
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
+          app.kubernetes.io/component: worker-payments
+  egress:
+    dnsTo:
+      - namespaceSelector:
+          matchLabels: {kubernetes.io/metadata.name: kube-system}
+        podSelector:
+          matchLabels: {k8s-app: kube-dns}
+    postgres:
+      port: 5432
+      to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: database}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: postgresql}
+    oidc:
+      port: 443
+      to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: identity}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: identity-provider}
+    nats:
+      port: 4222
+      to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nats}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: nats}
+    controlPlaneExtra: []
+    engineExtra: []

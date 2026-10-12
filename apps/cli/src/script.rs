@@ -109,6 +109,48 @@ struct Ready {
     language: String,
 }
 
+/// Finds a script by name across the API's bounded pages. A repeated or backwards cursor is a bad
+/// platform answer; stopping there and creating would turn a read problem into a duplicate write.
+async fn existing_script(
+    client: &Client,
+    base: &str,
+    wanted: &str,
+) -> Result<Option<Value>, String> {
+    const PAGE: &str = "200";
+    let mut after: Option<String> = None;
+    loop {
+        let mut query = vec![("limit", PAGE)];
+        if let Some(cursor) = after.as_deref() {
+            query.push(("after", cursor));
+        }
+        let path = crate::client::with_query(base, &query);
+        let page = match client.call("GET", &path, None, None).await {
+            Ok((_, page)) => page,
+            Err(CallError::Refused(failure)) if failure.status == 404 => {
+                return Err("this platform does not serve scripts (it has no script signing key configured: docs/runbooks/scripts.md)".to_owned());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let items = page["items"]
+            .as_array()
+            .ok_or("the platform's answer is not a page of scripts")?;
+        if let Some(found) = items.iter().find(|script| script["name"] == wanted) {
+            return Ok(Some(found.clone()));
+        }
+        if items.len() < 200 {
+            return Ok(None);
+        }
+        let next = items
+            .last()
+            .and_then(|script| script["name"].as_str())
+            .ok_or("the platform's script page has no next name")?;
+        if after.as_deref().is_some_and(|previous| next <= previous) {
+            return Err("the platform's script pages do not move forward".to_owned());
+        }
+        after = Some(next.to_owned());
+    }
+}
+
 /// Creates the script or replaces its source, and says which.
 async fn upsert(
     client: &Client,
@@ -130,21 +172,7 @@ async fn upsert(
         .map(|n| n.id)
         .ok_or_else(|| format!("the tenant has no namespace '{namespace}'"))?;
     let base = format!("/namespaces/{namespace_id}/scripts");
-    let existing = match client
-        .call("GET", &format!("{base}?limit=200"), None, None)
-        .await
-    {
-        Ok((_, page)) => page["items"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|s| s["name"] == name.as_str())
-            .cloned(),
-        Err(CallError::Refused(f)) if f.status == 404 => {
-            return Err("this platform does not serve scripts (it has no script signing key configured: docs/runbooks/scripts.md)".to_owned());
-        }
-        Err(e) => return Err(e.to_string()),
-    };
+    let existing = existing_script(client, &base, &name).await?;
     let script = match existing {
         None => {
             let (_, created) = client
@@ -350,6 +378,7 @@ pub(crate) async fn publish(
                 ));
                 if let Some(why) = version["failure"].as_str() {
                     io.say(format!("failure: {}", one_line(why)));
+                    io.say(format!("  help: {}", failure_help(why)));
                 }
                 if let Some(log) = version["buildLog"]
                     .as_str()

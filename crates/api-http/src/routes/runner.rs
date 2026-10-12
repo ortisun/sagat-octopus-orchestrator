@@ -11,16 +11,19 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use sagat_application::scripts::{
-    BuildFailureKind, BuildReport, ExecutionStatus, NewExecution, RunnerService, TestReport,
+    BuildFailureKind, BuildReport, ExecutionStatus, IncidentCategory, IncidentTarget, NewExecution,
+    RunnerService, TestReport,
 };
+use sagat_domain::execution::RunId;
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::scripts::{BuildJobId, Digest, Failure, Language, TestRunId};
 use uuid::Uuid;
 
 use crate::dto_scripts::{
     BuildAssignmentBody, ClaimBuildBody, ClaimTestBody, CompleteBuildBody, CompleteTestBody,
-    LeaseBody, LeaseExtendedBody, PendingBody, RecordExecutionBody, RecordedBody,
-    RunnerArtifactBody, RunnerEgressBody, SigningKeyBody, TestAssignmentBody, decode_artifact,
+    IncidentTargetBody, LeaseBody, LeaseExtendedBody, PendingBody, RecordExecutionBody,
+    RecordIncidentBody, RecordedBody, RunnerArtifactBody, RunnerEgressBody, SigningKeyBody,
+    TestAssignmentBody, decode_artifact,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -326,4 +329,57 @@ pub async fn record_execution<B: Governance>(
         .record_execution(&caller.session.principal, execution, &caller.ctx)
         .await?;
     Ok((StatusCode::CREATED, Json(RecordedBody { recorded })))
+}
+
+pub async fn record_incident<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    ApiJson(body): ApiJson<RecordIncidentBody>,
+) -> Result<StatusCode, ApiError> {
+    let category = IncidentCategory::parse(&body.category)
+        .map_err(|_| invalid("category is one of the documented supervisor denial codes"))?;
+    let target = match &body.target {
+        IncidentTargetBody::Production {
+            namespace_id,
+            run_id,
+            step_id,
+            attempt,
+            generation,
+            lease_token,
+        } => IncidentTarget::Production {
+            namespace_id: namespace_id
+                .parse()
+                .map_err(|_| invalid("namespaceId is not an id"))?,
+            run_id: run_id
+                .parse::<RunId>()
+                .map_err(|_| invalid("runId is not an id"))?,
+            step_id: Uuid::parse_str(step_id).map_err(|_| invalid("stepId is not an id"))?,
+            attempt: u32::try_from(*attempt)
+                .ok()
+                .filter(|attempt| *attempt >= 1)
+                .ok_or_else(|| invalid("attempt must be positive"))?,
+            generation: u64::try_from(*generation)
+                .ok()
+                .filter(|generation| *generation >= 1)
+                .ok_or_else(|| invalid("generation must be positive"))?,
+            lease_token,
+        },
+        IncidentTargetBody::Test {
+            namespace_id,
+            test_run_id,
+            lease_token,
+        } => IncidentTarget::Test {
+            namespace_id: namespace_id
+                .parse()
+                .map_err(|_| invalid("namespaceId is not an id"))?,
+            test_run_id: test_run_id
+                .parse()
+                .map_err(|_| invalid("testRunId is not an id"))?,
+            lease_token,
+        },
+    };
+    runner(&state)?
+        .record_incident(&caller.session.principal, &target, category, &caller.ctx)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -1,0 +1,96 @@
+# Deterministic destinations for tests/security/sandbox/kubernetes-network-policy.sh. The script
+# creates a unique namespace carrying the canary label, then starts one TCP listener per dependency.
+nats:
+  url: nats://nats.security-canary.invalid:14222
+
+networkPolicy:
+  # A worker in this release and namespace may call both internal APIs. Identical labels in another
+  # namespace remain denied because a podSelector-only peer is namespace-scoped.
+  apiFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat-security
+        matchExpressions:
+          - key: app.kubernetes.io/component
+            operator: In
+            values: [worker-render, worker-publish]
+  workersFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat-security
+        matchExpressions:
+          - key: app.kubernetes.io/component
+            operator: In
+            values: [worker-render, worker-publish]
+  egress:
+    dnsTo:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    postgres:
+      port: 15432
+      to:
+        - namespaceSelector:
+            matchLabels:
+              sagat.io/security-canary: "true"
+          podSelector:
+            matchLabels:
+              sagat.io/dependency: postgres
+    oidc:
+      port: 18443
+      to:
+        - namespaceSelector:
+            matchLabels:
+              sagat.io/security-canary: "true"
+          podSelector:
+            matchLabels:
+              sagat.io/dependency: oidc
+    nats:
+      port: 14222
+      to:
+        - namespaceSelector:
+            matchLabels:
+              sagat.io/security-canary: "true"
+          podSelector:
+            matchLabels:
+              sagat.io/dependency: nats
+    controlPlaneExtra: []
+    engineExtra: []
+
+workerPools:
+  - name: render
+    language: test
+    image: busybox:1.36
+    activities: [act.render]
+    replicas: 1
+    networkPolicy:
+      extraEgress: []
+      extraIngress: []
+  - name: publish
+    language: test
+    image: busybox:1.36
+    activities: [act.publish]
+    replicas: 1
+    networkPolicy:
+      extraEgress:
+        - ports: [{port: 15555, protocol: TCP}]
+          to:
+            - namespaceSelector:
+                matchLabels:
+                  sagat.io/security-canary: "true"
+              podSelector:
+                matchLabels:
+                  sagat.io/dependency: pool-extra
+      extraIngress:
+        - ports: [{port: 10081, protocol: TCP}]
+          from:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: sagat-octopus-orchestrator
+                  app.kubernetes.io/instance: sagat-security
+                  app.kubernetes.io/component: intruder

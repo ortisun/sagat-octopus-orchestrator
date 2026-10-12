@@ -84,6 +84,14 @@ fn body_of(operation: &str) -> Option<Value> {
         "recordScriptExecution" => {
             json!({"namespaceId": "{namespaceId}", "digest": format!("sha256:{}", "ab".repeat(32)), "status": "FAILED", "denied": ["attacker"]})
         }
+        "recordScriptRunnerIncident" => json!({
+            "target": {
+                "kind": "production", "namespaceId": "{namespaceId}",
+                "runId": "{runId}", "stepId": Uuid::now_v7().to_string(),
+                "attempt": 1, "generation": 1, "leaseToken": "0".repeat(64)
+            },
+            "category": "NOT_ALLOWLISTED"
+        }),
         // Feature 011: an administrator of another tenant changing what the victim publishes.
         "setPublicationPolicy" => {
             json!({"requiredApprovals": 0, "reason": "cross-tenant battery probe"})
@@ -228,7 +236,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     let spec = OpenApi::load();
     let api = start().await;
     let acme = api.tenant("acme", "alice").await;
-    api.tenant("globex", "bob").await;
+    let globex = api.tenant("globex", "bob").await;
     api.owner_store
         .insert_membership(&Membership::restore(
             acme,
@@ -238,6 +246,15 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ))
         .await
         .expect("grant");
+    api.owner_store
+        .insert_membership(&Membership::restore(
+            globex,
+            subject("runner-bob"),
+            Role::Runner,
+            now(),
+        ))
+        .await
+        .expect("grant runner");
 
     // The victim: a tenant with data of every kind the API can hold.
     let ws = api.create_workspace("alice", "acme", "platform").await;
@@ -401,41 +418,56 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         if matches!(operation.as_str(), "getHealth" | "getReadiness") {
             continue; // probes: no tenant, no data
         }
+        let incident = operation == "recordScriptRunnerIncident";
         let names_a_victim_resource = template
             .split('/')
             .filter_map(|part| part.strip_prefix('{').and_then(|p| p.strip_suffix('}')))
             .any(is_resource_id)
-            || operation == "startRun";
+            || matches!(
+                operation.as_str(),
+                "startRun" | "recordScriptRunnerIncident"
+            );
         let body = body_of(&operation).map(|b| {
             // A body that names the victim's workflow (startRun) or namespace (a report from a
             // runner) names it by its real id.
             serde_json::from_str(
                 &b.to_string()
                     .replace("{workflowId}", &wf)
-                    .replace("{namespaceId}", &ns),
+                    .replace("{namespaceId}", &ns)
+                    .replace("{runId}", &run),
             )
             .expect("json")
         });
 
         let real = victim.fill(&template, true);
-        let (status, answer) = send(&api, &method, &real, bob, body.as_ref()).await;
+        let attacker = if incident {
+            ("runner-bob", "globex")
+        } else {
+            bob
+        };
+        let (status, answer) = send(&api, &method, &real, attacker, body.as_ref()).await;
 
         if names_a_victim_resource {
             addressed += 1;
-            assert_eq!(status, 404, "{operation} {method} {template}: {answer}");
+            let absent_status = if incident { 409 } else { 404 };
+            assert_eq!(
+                status, absent_status,
+                "{operation} {method} {template}: {answer}"
+            );
             // The same call against ids that exist nowhere gets the same answer.
             let fake = victim.fill(&template, false);
             let fake_body = body.as_ref().map(|b| {
                 serde_json::from_str(
                     &b.to_string()
                         .replace(wf.as_str(), &Uuid::now_v7().to_string())
-                        .replace(ns.as_str(), &Uuid::now_v7().to_string()),
+                        .replace(ns.as_str(), &Uuid::now_v7().to_string())
+                        .replace(run.as_str(), &Uuid::now_v7().to_string()),
                 )
                 .expect("json")
             });
             let (fake_status, fake_answer) =
-                send(&api, &method, &fake, bob, fake_body.as_ref()).await;
-            assert_eq!(fake_status, 404, "{operation} (baseline)");
+                send(&api, &method, &fake, attacker, fake_body.as_ref()).await;
+            assert_eq!(fake_status, absent_status, "{operation} (baseline)");
             assert_eq!(
                 shape(&answer),
                 shape(&fake_answer),

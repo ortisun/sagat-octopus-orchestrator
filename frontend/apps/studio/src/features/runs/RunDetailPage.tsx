@@ -24,12 +24,14 @@ import { runOperations, stepOperations } from './ops';
 import type { Operation, RunFacts } from './ops';
 import { useVersions, versionLabel } from './queries';
 import { RunHeader } from './RunHeader';
+import { RunsPage } from './RunsPage';
 import { TableView } from './TableView';
 import { TimelineView } from './TimelineView';
 import { useCanOperate } from './useOperate';
 import { formatDuration } from './time';
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
+const WIDE_RUN_LAYOUT = '(min-width: 74rem)';
 
 function subscribeMotion(listener: () => void): () => void {
   const query = globalThis.matchMedia?.(REDUCED_MOTION);
@@ -42,14 +44,35 @@ function usePrefersReducedMotion(): boolean {
   return useSyncExternalStore(subscribeMotion, () => globalThis.matchMedia?.(REDUCED_MOTION).matches ?? false, () => false);
 }
 
+function subscribeWideLayout(listener: () => void): () => void {
+  const query = globalThis.matchMedia?.(WIDE_RUN_LAYOUT);
+  query?.addEventListener('change', listener);
+  return () => query?.removeEventListener('change', listener);
+}
+
+/** The list is mounted only where it is visible, so a narrow detail page does no list request. */
+function useWideRunLayout(): boolean {
+  return useSyncExternalStore(subscribeWideLayout, () => globalThis.matchMedia?.(WIDE_RUN_LAYOUT).matches ?? false, () => false);
+}
+
 /** `/runs/:runId`: one run, its graph, its table, its timeline and what its operators may do. */
 export function RunDetailPage() {
   const { runId } = useParams();
   const allowed = useCan('run:read');
+  const wideLayout = useWideRunLayout();
   if (!allowed) return <NotAllowed what="Runs" permission="run:read" />;
   if (runId === undefined || runId === '') return <ErrorState error={new Error('no run')} what="Opening the run" />;
   // Another run is another page: nothing of the last one (stores, selection, dialogs) carries over.
-  return <RunDetail key={runId} runId={runId} />;
+  return (
+    <div className={wideLayout ? 'rn-master-detail is-wide' : 'rn-master-detail'}>
+      {wideLayout ? (
+        <aside className="rn-master" aria-label="Runs list">
+          <RunsPage variant="master" selectedRunId={runId} />
+        </aside>
+      ) : null}
+      <RunDetail key={runId} runId={runId} />
+    </div>
+  );
 }
 
 type TabId = 'graph' | 'table' | 'timeline';
@@ -220,7 +243,7 @@ function RunDetail({ runId }: { runId: string }) {
 
   return (
     <NowProvider intervalMs={15_000}>
-      <section className="rn-run">
+      <section className="rn-run" aria-label="Run detail">
         <RunHeader
           run={run.data}
           status={status}

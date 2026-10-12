@@ -1,0 +1,190 @@
+# Values of the Sagat Octopus Orchestrator chart (feature 010, FR-010-001, FR-010-004).
+#
+# Nothing here is a promise of capacity: the numbers are starting points, and the reports in
+# tests/performance/reports/scalability-ha.md say what was measured, on what. Read
+# docs/runbooks/scaling.md before changing the shard lease, the replica counts or the autoscalers.
+
+# The images are built from infra/docker/Dockerfile (targets control-plane and execution-engine).
+image:
+  registry: ""                 # e.g. registry.example.com/team/
+  controlPlane: sagat-octopus-orchestrator/control-plane
+  executionEngine: sagat-octopus-orchestrator/execution-engine
+  tag: ""                      # empty: the chart's appVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# dev | staging | prod. The development identity provider and the unauthenticated seed only work
+# with dev, and the chart refuses to render them for anything else.
+environment: prod
+
+# PostgreSQL is the operator's. The engine and the control plane connect as the least-privilege
+# runtime role (sagat_app); migrations run as the owner, in a Job that you run before an upgrade
+# (see docs/runbooks/scaling.md#upgrade) because a rolling upgrade must not race its own schema change.
+database:
+  # A Secret with the key DATABASE_URL: postgres://sagat_app:...@host:5432/sagat?sslmode=verify-full
+  existingSecret: ""
+  maxConnections: 20           # per replica; replicas * this must stay under max_connections of the server
+  # The server's max_connections, if you want the chart to hold you to it: it refuses to render when the
+  # control plane plus the engine at the most the autoscaler allows, times maxConnections, are more. 0: not checked.
+  # (Anyone who can make timers fall due together raises the lag the engine scales on: the ceiling must be one the server holds.)
+  serverMaxConnections: 0
+  statementTimeoutMs: 5000
+
+oidc:
+  issuer: ""
+  audience: ""
+  jwksUri: ""
+  tenantClaim: tenant
+
+# The key ring of the secret store (SAGAT_SECRETS_KEYS), in a Secret with the key SAGAT_SECRETS_KEYS.
+# Empty: the secret routes do not exist. The control plane and the engine must have the same ring.
+secrets:
+  existingSecret: ""
+
+# JetStream. Empty: hints are not published, workers poll, and the outbox accumulates.
+nats:
+  url: ""
+  requireTls: true
+  credentialsSecret: ""        # a Secret with the key nats.creds
+
+controlPlane:
+  replicas: 2
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {memory: 512Mi}
+  # Scales on CPU: it is stateless, every replica answers any request.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  service:
+    type: ClusterIP
+    port: 8080
+  podDisruptionBudget:
+    minAvailable: 1
+  studio: true
+  # True only when TLS is terminated in front of the API (an ingress or a mesh): the control plane
+  # receives secret values and refuses to run outside dev without being told.
+  allowPlaintextSecrets: false
+
+engine:
+  # The scheduler's work is split in 64 shards and every replica holds a lease on its share, so a
+  # replica beyond 64 holds nothing: the chart refuses to scale past that (see the autoscalers).
+  replicas: 2
+  # How long a replica's hold on a shard lasts without being renewed. After a crash, the work of the
+  # replica waits this long before another takes it; shorter and a pause of the process loses shards.
+  shardLeaseSeconds: 15
+  # Candidates of one scheduler pass acted on at once, and examined per pass (see runbook).
+  schedulerConcurrency: 8
+  schedulerBatch: 200
+  resources:
+    requests: {cpu: 500m, memory: 384Mi}
+    limits: {memory: 768Mi}
+  # On SIGTERM the engine stops its loops, gives its shards back and drains the calls in flight.
+  terminationGracePeriodSeconds: 45
+  podDisruptionBudget:
+    minAvailable: 1
+  grpc:
+    port: 9000
+    # Secrets travel over this API. True only when TLS is terminated in front of it (a service mesh
+    # or an ingress), because the engine itself refuses to hand secrets out over plaintext.
+    allowPlaintextSecrets: false
+    tlsSecret: ""              # a kubernetes.io/tls Secret: the engine terminates TLS itself
+  # How the number of replicas follows the load. At most one of the two is enabled.
+  autoscaling:
+    keda:
+      enabled: false
+      minReplicaCount: 2
+      maxReplicaCount: 16      # never more than 64: a replica beyond the shards has none
+      pollingInterval: 15
+      cooldownPeriod: 300
+      prometheusAddress: ""    # e.g. http://prometheus.monitoring:9090
+      # The oldest overdue timer, wait, retry, lease or deadline, in seconds: the scheduler is late.
+      lagThresholdSeconds: 5
+    hpa:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 16
+      targetCPUUtilizationPercentage: 60
+
+# Pools of workers. A pool is a deployment of the operator's own image whose program serves the
+# activities listed here; the engine measures the queue of each pool (SAGAT_WORKER_POOLS, gauges
+# pool_queue_lag_seconds and pool_ready_steps by pool) and KEDA scales the pool on it. Nothing in the
+# platform routes work to a pool: a step goes to any worker that serves its activity, in any pool.
+#
+# workerPools:
+#   - name: render                      # lowercase letters, digits . _ -
+#     language: python                  # a label, for the people who read `kubectl get`
+#     image: registry.example.com/team/render-worker:1.4.2
+#     activities: [act.render, act.upscale]
+#     replicas: 1                       # when autoscaling is off
+#     env: []                           # the worker's own configuration (server, tokens from Secrets)
+#     envFrom: []
+#     resources: {requests: {cpu: 500m, memory: 512Mi}}
+#     networkPolicy:
+#       # Optional, pool-specific rules. Every rule needs explicit peers and integer ports.
+#       extraEgress: []
+#       extraIngress: []
+#     autoscaling:
+#       enabled: true
+#       minReplicaCount: 1
+#       maxReplicaCount: 20
+#       readyPerReplica: 50             # ready steps one replica is expected to keep up with
+#       lagThresholdSeconds: 30         # and the oldest ready step may wait this long
+workerPools: []
+
+# KEDA's address for the pools' Prometheus trigger.
+workerPoolAutoscaling:
+  prometheusAddress: ""
+
+# Extra label matchers added to every Prometheus query the autoscalers ask, so that two installs that
+# share a Prometheus do not drive each other: e.g. `namespace="sagat"`. Empty: the queries have none.
+metrics:
+  selector: ""
+
+# Who may reach the pods and which dependencies the platform pods may reach. NetworkPolicy peers
+# cannot name hostnames: use pod/namespace selectors for in-cluster dependencies or operator-owned
+# CIDRs for external services. Empty/global peers are refused rather than rendered as allow-all.
+networkPolicy:
+  enabled: true
+  # Labels of the namespace(s) and pods that may scrape the admin port. It cannot be empty: an empty
+  # `from` in a NetworkPolicy means everybody, and the admin ports have no authentication.
+  metricsFrom:
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: monitoring}}
+  # Explicit callers of the REST API and worker gRPC API. Both are required when policy is enabled.
+  # A podSelector without a namespaceSelector matches only this release namespace.
+  apiFrom: []
+  workersFrom: []
+  egress:
+    # Cluster DNS. Adapt these labels for a provider that uses NodeLocal DNS or different labels.
+    dnsTo: []
+    # DATABASE_URL and oidc.* remain the connection authority. These peers are the network boundary
+    # for the same dependencies and must be supplied explicitly when policy is enabled.
+    postgres:
+      port: 5432
+      to: []
+    oidc:
+      port: 443
+      to: []
+    # Required only when nats.url is nonempty.
+    nats:
+      port: 4222
+      to: []
+    # Optional complete NetworkPolicy egress rules for deployment-specific dependencies. Rules with
+    # missing peers or ports, named ports, unsupported protocols or global peers are refused.
+    controlPlaneExtra: []
+    engineExtra: []
+
+serviceAccount:
+  create: true
+  annotations: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+# Spread the replicas over nodes and zones: a lost node must not take a majority of the shards.
+topologySpread:
+  enabled: true
+  zoneMaxSkew: 1
+  nodeMaxSkew: 1

@@ -36,16 +36,18 @@ These checks indicate conformance **of the design**, not approval of the impleme
 ## Project Structure
 
 ```text
-crates/scheduler/src/shards.rs
-crates/scheduler/src/fairness.rs
-crates/infra-postgres/src/partitioning.rs
-infra/helm/values.yaml
-tests/performance/scenarios/
-tests/fault/failover/
-tests/contract/
-tests/integration/
-tests/fault/
-tests/e2e/scalability-ha/
+crates/domain/src/sharding.rs                 the shard, the set of shards, the share, the plan
+crates/application/src/shards.rs              the port of ownership; Window, RunTx::holds_shard
+crates/scheduler/src/shards.rs                the keeper, the placement, the snapshot
+crates/scheduler/src/fairness.rs              the selection between tenants
+crates/scheduler/src/passes.rs, outbox.rs     the passes and the dispatcher over the shards they hold
+crates/infra-postgres/src/partitioning.rs     the leases, the members, the weights
+crates/infra-postgres/migrations/20261017000000_scheduler_shards, 20261017000100_active_run_counts
+infra/helm/                                   the chart (values.yaml, templates, examples/ha.yaml)
+infra/dr/                                     the drill and the digest of the journal
+tests/performance/scalability-ha/             the load harness and run.sh (T010-029 asks for tests/performance/scenarios/)
+tests/fault/failover/, tests/fault/scalability-ha/
+tests/contract/scalability-ha/ (with fixtures/), tests/integration/scalability-ha/, tests/e2e/scalability-ha/
 ```
 
 ## Implementation phases
@@ -77,6 +79,15 @@ tests/e2e/scalability-ha/
 | Rust modular monolith | Learning curve | Centralized invariants and gradual evolution |
 | DB transactional outbox | Extra reads/writes | Avoid losing a wakeup after commit |
 | Multi-SDK via proto | More CI and tests | Real parity and low coupling |
+
+## Delivered (feature 010)
+
+1. Domain contracts and types: `sharding.rs`, `shards.rs` and their tests.
+2. Persistence and ports: two additive migrations, the `ShardStore` port, the candidate queries shard first, the counters of active runs.
+3. Command processing: the keeper in the engine, the passes and the outbox dispatcher over the shards they hold, the operator's `scheduling-weight`, metrics, alerts, the chart.
+4. Happy path: `e2e_scalability_ha`, the four stories against real engine processes.
+5. Faults: `fault_failover` (chaos), `fault_scalability_ha`, the drill (`infra/dr/drill.sh`).
+6. Reviews, benchmark, documentation: `quickstart.md`, `tests/performance/reports/scalability-ha.md`, ADR-0020, the two runbooks.
 
 ## Delivery Gate
 

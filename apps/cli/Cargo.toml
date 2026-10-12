@@ -26,12 +26,16 @@ sagat-api-grpc.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-ir.workspace = true
+sagat-telemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml_ng = "0.10"
+# Keep the existing import name while using the maintained YAML implementation.
+serde_yaml_ng = { package = "yaml_serde", version = "=0.10.7" }
 sha2 = "0.11"
 tokio = { workspace = true, features = ["rt", "macros", "time", "net", "signal", "io-util"] }
 tonic = { workspace = true, features = ["tls-native-roots"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
