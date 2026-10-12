@@ -75,10 +75,63 @@ for (const theme of ['light', 'dark', 'forced'] as const) {
         expect(await page.locator('.rn-canvas .react-flow').evaluate((node) => getComputedStyle(node).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
       }
       // At the reference viewport the graph must show a step without scrolling past its header.
-      await expect.poll(() => page.locator('.rn-canvas .react-flow__node').evaluateAll((nodes) => nodes.some((node) => {
-        const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight;
-      })), { message: 'the initial run viewport shows at least one complete graph step' }).toBe(true);
+      let lastGraphGeometry = '';
+      await expect.poll(async () => {
+        const geometry = await page.evaluate(() => {
+          const rect = (selector: string) => {
+            const element = document.querySelector(selector);
+            if (element === null) return null;
+            const bounds = element.getBoundingClientRect();
+            return { top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right, width: bounds.width, height: bounds.height };
+          };
+          const nodes = Array.from(document.querySelectorAll('.rn-canvas .react-flow__node'));
+          const nodeRects = nodes.map((node) => {
+            const bounds = node.getBoundingClientRect();
+            return {
+              id: node.getAttribute('data-id'),
+              top: bounds.top,
+              bottom: bounds.bottom,
+              left: bounds.left,
+              right: bounds.right,
+              width: bounds.width,
+              height: bounds.height,
+            };
+          });
+          const viewport = document.querySelector('.rn-canvas .react-flow__viewport');
+          return {
+            complete: nodes.some((node) => {
+              const bounds = node.getBoundingClientRect();
+              return bounds.width > 0 && bounds.height > 0 && bounds.top >= 0 && bounds.bottom <= window.innerHeight;
+            }),
+            window: { innerWidth: window.innerWidth, innerHeight: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY, devicePixelRatio: window.devicePixelRatio },
+            document: { scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight },
+            forcedColors: window.matchMedia('(forced-colors: active)').matches,
+            fonts: document.fonts.status,
+            run: rect('.rn-run'),
+            header: rect('.rn-header'),
+            body: rect('.rn-body'),
+            graph: rect('.rn-graph'),
+            toolbar: rect('.rn-graph > .toolbar'),
+            legend: rect('.rn-legend'),
+            canvas: rect('.rn-canvas'),
+            flow: rect('.rn-canvas .react-flow'),
+            viewport: {
+              rect: rect('.rn-canvas .react-flow__viewport'),
+              inlineTransform: viewport instanceof HTMLElement || viewport instanceof SVGElement ? viewport.style.transform : null,
+              computedTransform: viewport === null ? null : getComputedStyle(viewport).transform,
+            },
+            nodes: nodeRects,
+          };
+        });
+        if (!geometry.complete) {
+          const diagnostic = JSON.stringify(geometry);
+          if (diagnostic !== lastGraphGeometry) {
+            console.log(`RUN_GRAPH_GEOMETRY ${diagnostic}`);
+            lastGraphGeometry = diagnostic;
+          }
+        }
+        return geometry.complete;
+      }, { message: 'the initial run viewport shows at least one complete graph step' }).toBe(true);
       await page.screenshot({ path: test.info().outputPath(`runs-${theme}-1470x812.png`), fullPage: true });
       await page.getByRole('tab', { name: 'Table' }).click();
       await expectAccessible(page, 'the run, table');
