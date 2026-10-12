@@ -2304,6 +2304,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libyaml-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3604,7 +3610,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sagat-api-grpc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "metrics",
  "prost",
@@ -3629,7 +3635,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-api-http"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3657,7 +3663,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-application"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "getrandom 0.4.3",
  "hmac 0.13.0",
@@ -3675,7 +3681,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "reqwest",
@@ -3687,17 +3693,17 @@ dependencies = [
  "sagat-telemetry",
  "serde",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.11.0",
  "tokio",
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "yaml_serde",
 ]
 
 [[package]]
 name = "sagat-control-plane"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3717,7 +3723,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-dev-idp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3738,7 +3744,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-domain"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
@@ -3749,7 +3755,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-execution-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "metrics",
@@ -3771,7 +3777,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-connectors"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -3796,7 +3802,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-egress"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "reqwest",
  "rustls",
@@ -3808,7 +3814,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-expr"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cel",
  "proptest",
@@ -3818,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-ir"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3835,7 +3841,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-nats"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-nats",
  "sagat-application",
@@ -3846,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-postgres"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "metrics",
  "sagat-application",
@@ -3863,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-sandbox"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "bollard",
@@ -3882,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-schema"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "jsonschema",
@@ -3894,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-infra-secrets"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -3906,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-sandbox-runner"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3931,7 +3937,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-scheduler"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures-util",
  "metrics",
@@ -3947,7 +3953,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-telemetry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "metrics",
@@ -3966,7 +3972,7 @@ dependencies = [
 
 [[package]]
 name = "sagat-tests"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-nats",
  "axum",
@@ -4003,7 +4009,6 @@ dependencies = [
  "sagat-scheduler",
  "sagat-telemetry",
  "serde_json",
- "serde_yaml_ng",
  "sha2 0.11.0",
  "sqlx",
  "testcontainers-modules",
@@ -4013,6 +4018,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "yaml_serde",
 ]
 
 [[package]]
@@ -4229,19 +4235,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
-]
-
-[[package]]
-name = "serde_yaml_ng"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
-dependencies = [
- "indexmap 2.14.2",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -5302,12 +5295,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5767,6 +5754,19 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "yaml_serde"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33b729a08a9a6be689bbad3e2bf8015926db54b6622cc89c3a5f7dc174b9e918"
+dependencies = [
+ "indexmap 2.14.2",
+ "itoa",
+ "libyaml-rs",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
