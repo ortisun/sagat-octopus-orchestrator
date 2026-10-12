@@ -119,3 +119,11 @@ descriptor. The worker streams bytes with `ReadBlob`, whose current tenant/names
 integrity checks apply. A descriptor-shaped inline JSON value never populates `input_blob_ref`.
 Workflow input schemas validate the descriptor, not the external opaque bytes. See
 [the blob contract](../../specs/002-durable-execution/contracts/blobs.md) for limits and errors.
+
+The session stores the minor version actually negotiated at registration. A worker below 1.3 is
+not offered a run whose durable catalog provenance includes a run-input blob or any committed step
+output blob. Candidate selection applies that condition before its bounded oldest-run scan, and the
+locked-run transaction checks it again before consuming an attempt. Incompatible work remains
+`READY`; an inline run behind it is still discoverable. Admission uses only `runs.input_blob_id`
+and committed `STEP_OUTPUT` catalog rows, so inline JSON that resembles a blob descriptor does not
+silently become a 1.3-only capability.

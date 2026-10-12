@@ -331,6 +331,17 @@ class WorkerHardeningTest {
         assertEquals(null, error.getCause(), "the service's description is not kept as a cause");
     }
 
+    @Test
+    void aBlobIntegrityFailureIsAProtocolErrorWithoutServerText() {
+        io.grpc.Metadata trailers = new io.grpc.Metadata();
+        trailers.put(GrpcErrors.SAGAT_ERROR, "BLOB_CORRUPT");
+        SagatException error = GrpcErrors.of(
+                "ReadBlob", Status.DATA_LOSS.withDescription("payload must not escape").asRuntimeException(trailers));
+        assertEquals(ErrorCode.PROTOCOL, error.code());
+        assertEquals("BLOB_CORRUPT", error.reason().orElseThrow());
+        assertFalse(error.getMessage().contains("payload must not escape"));
+    }
+
     // ------------------------------------------------------------------- the number of tasks that run
 
     @Test

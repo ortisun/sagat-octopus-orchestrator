@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
@@ -19,6 +20,7 @@ from ._json import format_instant, parse_instant
 from .config import ClientConfig
 from .errors import SagatError, invalid
 from .traceparent import check_traceparent
+from .worker.activity import BlobDescriptor
 
 RunStatus = Literal[
     "RUNNING",
@@ -332,6 +334,97 @@ class SagatClient:
         response = await self._http.request(
             HttpRequest("POST", "/runs", body=body, idempotency_key=key, traceparent=trace)
         )
+        return to_run(response.body)
+
+    async def upload_run_input(
+        self,
+        source: AsyncIterable[bytes] | Iterable[bytes],
+        *,
+        content_type: str = "application/octet-stream",
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
+    ) -> BlobDescriptor:
+        """Streams a staged run input once and verifies the returned descriptor locally."""
+        if expected_size is not None and (isinstance(expected_size, bool) or not isinstance(expected_size, int)
+                                          or expected_size < 0):
+            raise invalid("blob expected_size is a non-negative integer")
+        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise invalid("blob expected_sha256 is lowercase SHA-256 hex")
+        digest = hashlib.sha256()
+        size = 0
+        source_eof = False
+
+        async def measured() -> AsyncIterator[bytes]:
+            nonlocal size, source_eof
+            if isinstance(source, AsyncIterable):
+                iterator: Any = source
+                async for chunk in iterator:
+                    if not isinstance(chunk, bytes):
+                        raise invalid("a blob source yields bytes")
+                    size += len(chunk)
+                    digest.update(chunk)
+                    yield chunk
+            else:
+                for chunk in source:
+                    if not isinstance(chunk, bytes):
+                        raise invalid("a blob source yields bytes")
+                    size += len(chunk)
+                    digest.update(chunk)
+                    yield chunk
+            source_eof = True
+
+        headers: dict[str, str] = {}
+        if expected_size is not None:
+            headers["x-octopus-blob-size"] = str(expected_size)
+        if expected_sha256 is not None:
+            headers["x-octopus-blob-sha256"] = expected_sha256
+        response = await self._http.request(HttpRequest(
+            "POST", "/run-input-blobs", stream=measured(), content_type=content_type,
+            headers=headers, traceparent=self._trace(), safe_to_repeat=False,
+        ))
+        raw = _object(response.body, "a blob descriptor")
+        descriptor = BlobDescriptor(
+            _str(raw, "id"), _int(raw, "size", -1), _str(raw, "sha256"), _str(raw, "contentType")
+        )
+        if (not source_eof or not _UUID.fullmatch(descriptor.id) or descriptor.size != size
+                or descriptor.sha256 != digest.hexdigest() or not descriptor.content_type):
+            raise SagatError("PROTOCOL", "the run-input descriptor does not match the uploaded bytes")
+        return descriptor
+
+    async def start_with_blob(
+        self,
+        workflow: str,
+        descriptor: BlobDescriptor,
+        *,
+        version_id: str | None = None,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        deadline: datetime | None = None,
+        deadline_in: float | timedelta | None = None,
+        traceparent: str | None = None,
+    ) -> Run:
+        """Atomically starts a run with a descriptor returned by :meth:`upload_run_input`."""
+        if (not isinstance(descriptor, BlobDescriptor) or not _UUID.fullmatch(descriptor.id)
+                or descriptor.size < 0 or not re.fullmatch(r"[0-9a-f]{64}", descriptor.sha256)
+                or not descriptor.content_type):
+            raise invalid("a run-input blob descriptor is malformed")
+        if deadline is not None and deadline_in is not None:
+            raise invalid("give a deadline or a deadline_in, not both")
+        key = self._key(idempotency_key)
+        trace = self._trace(traceparent)
+        if deadline_in is not None:
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=_seconds(deadline_in))
+        workflow_id = await self.resolve_workflow(workflow)
+        body: dict[str, Any] = {"workflowId": workflow_id, "inputBlobRef": descriptor.id}
+        if version_id:
+            body["versionId"] = version_id
+        if correlation_id is not None:
+            body["correlationId"] = correlation_id
+        if deadline is not None:
+            body["deadline"] = format_instant(deadline)
+        response = await self._http.request(HttpRequest(
+            "POST", "/runs", body=body, idempotency_key=key, traceparent=trace
+        ))
         return to_run(response.body)
 
     async def get(self, run_id: str) -> Run:

@@ -15,13 +15,13 @@ These remain open even though the historical implementation tasks are checked.
 Accepted limits (offline dependency catalog, no physical exactly-once, destructive retention
 without a policy) are not silently expanded or reclassified as implemented.
 
-- [ ] FR-002-008: lease/tenant-scoped blob references, server inputs/results and five-SDK conformance; carefully port the existing draft without breaking protocol 1.2.
+- [x] FR-002-008: lease/tenant-scoped blob references, server inputs/results and five-SDK conformance; carefully port the existing draft without breaking protocol 1.2.
 - [ ] FR-009-006: exact storage/log-byte, retention-ceiling and event-rate admission quotas with concurrent/crash tests.
 - [x] FR-010-002: per-activity concurrency quotas with fair retry and tenant isolation.
 - [x] FR-004-004: OIDC/mTLS webhook authentication profiles with replay/SSRF/failure tests.
 - [x] FR-004-005: durable outgoing NATS/Kafka/SQS deliveries with stable idempotency keys, ACK ambiguity and DLQ/redrive tests.
 - [x] NFR-006-OBS: real opt-in OTel integration for all five SDKs, redacted failures, trace propagation and unavailable-exporter tests.
-- [ ] FR-006-008: reproducible package artifacts and install smoke tests; registry publication remains conditional on namespace and credentials (MIT selected by owner).
+- [x] FR-006-008: reproducible package artifacts and install smoke tests; registry publication remains conditional on namespace and credentials (MIT selected by owner).
 - [x] FR-007-002: schema-aware workflow input/output editing.
 - [ ] FR-007-005: authorized redacted payload inspection through an appropriate read API and Studio view.
 - [x] FR-005-003: isolated Go and Java build/runtime runners with signed artifacts and conformance/fault tests.
@@ -43,3 +43,5 @@ without a policy) are not silently expanded or reclassified as implemented.
 - Human acceptance protocol and blank results are in `docs/validation/`; no human outcome is claimed.
 
 - Webhook security review closed: admission rechecks the endpoint under lock after verification; pause/replace/delete races 3/3 and full ingress 29/29 pass, with scoped Clippy.
+
+- SDK blob/input completion: real five-language round trip and early-response refusal pass; all package clean-consumer checks pass. Mixed protocol 1.2/1.3 admission tests pass 3/3 and rollback tests 2/2.

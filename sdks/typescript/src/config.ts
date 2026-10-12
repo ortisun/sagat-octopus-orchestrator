@@ -45,7 +45,7 @@ export interface TlsOptions {
 export const SDK_VERSION = '0.1.0';
 
 /** The newest minor version of worker protocol 1 this SDK speaks (SPEC §6.1). */
-export const PROTOCOL_VERSION = '1.2';
+export const PROTOCOL_VERSION = '1.3';
 
 export interface ClientConfig {
   /** Base URL of the REST API including `/v1`. */

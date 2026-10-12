@@ -54,6 +54,11 @@ asyncio.run(main())
 retry of that call, so a lost answer never starts a second run. Amounts of money are strings (`"19.99"`): the
 SDK never converts a string to a number, and `600000` is never sent as `600000.0`.
 
+For a large run input, use `await client.upload_run_input(one_pass_iterable, ...)`, then pass the returned
+`BlobDescriptor` to `await client.start_with_blob(...)`. The upload is streamed once and never retried; its
+descriptor is accepted only after source EOF and matching local size/SHA-256. The synchronous client exposes
+the same two operations.
+
 No event loop? `SyncSagatClient` has the same methods, blocking:
 
 ```python

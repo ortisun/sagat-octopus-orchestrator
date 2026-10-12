@@ -74,6 +74,8 @@ final class GrpcErrors {
                         .build();
             case CANCELLED:
                 return SagatException.builder(ErrorCode.CANCELLED, "the call was cancelled").grpcStatus(name).build();
+            case DATA_LOSS:
+                return safe(ErrorCode.PROTOCOL, "the blob stream failed its integrity check", name, reason, retryAfterMs);
             default:
                 return safe(ErrorCode.INTERNAL, "the worker service failed", name, reason, retryAfterMs);
         }

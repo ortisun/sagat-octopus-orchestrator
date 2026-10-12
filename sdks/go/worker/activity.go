@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sort"
 	"sync"
@@ -181,6 +182,8 @@ type Task struct {
 	secretsDone  bool
 	secrets      *Secrets
 	resolve      func(ctx context.Context) (*Secrets, error)
+	writeBlob    func(context.Context, io.Reader, WriteBlobOptions) (BlobDescriptor, error)
+	readBlob     func(context.Context, BlobDescriptor) (io.ReadCloser, error)
 	droppedAfter atomic.Bool
 }
 
@@ -206,6 +209,27 @@ func (t *Task) Secrets(ctx context.Context) (*Secrets, error) {
 	}
 	t.secrets, t.secretsDone = secrets, true
 	return t.secrets, nil
+}
+
+// WriteBlob streams one source to blob storage. It reads source once, in bounded chunks, and
+// returns only after the service descriptor agrees with the bytes and SHA-256 observed locally.
+func (t *Task) WriteBlob(ctx context.Context, source io.Reader, options WriteBlobOptions) (BlobDescriptor, error) {
+	if t.droppedAfter.Load() {
+		return BlobDescriptor{}, errAttemptOver()
+	}
+	if source == nil {
+		return BlobDescriptor{}, sagat.Invalid("a blob source is required")
+	}
+	return t.writeBlob(ctx, source, options)
+}
+
+// ReadBlob returns a stream that verifies the descriptor while it is consumed. io.EOF is returned
+// only after the gRPC stream ended cleanly and its byte count and SHA-256 matched the descriptor.
+func (t *Task) ReadBlob(ctx context.Context, descriptor BlobDescriptor) (io.ReadCloser, error) {
+	if t.droppedAfter.Load() {
+		return nil, errAttemptOver()
+	}
+	return t.readBlob(ctx, descriptor)
 }
 
 // dropSecrets wipes the values; the handler has returned.

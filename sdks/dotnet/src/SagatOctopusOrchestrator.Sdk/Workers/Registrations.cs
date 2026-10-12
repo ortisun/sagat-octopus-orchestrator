@@ -16,6 +16,8 @@ internal abstract class ActivityResult
 {
     /// <summary>The JSON text of the output; null for "no value" (an empty string on the wire). Raises <c>VALIDATION_FAILED</c> when it cannot be written.</summary>
     internal abstract string? ToJson(JsonSerializerOptions options);
+
+    internal virtual BlobDescriptor? Blob => null;
 }
 
 internal sealed class NoResult : ActivityResult
@@ -27,6 +29,8 @@ internal sealed class NoResult : ActivityResult
 
 internal sealed class ValueResult<T>(T value) : ActivityResult
 {
+    internal override BlobDescriptor? Blob => value is BlobOutput output ? output.Descriptor : null;
+
     internal override string? ToJson(JsonSerializerOptions options) => Wire.Serialize(value, options);
 }
 

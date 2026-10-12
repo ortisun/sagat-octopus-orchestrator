@@ -148,7 +148,7 @@ class WorkerHostTest {
         assertEquals(List.of("a.undo", "b.second", "c.lookup"), request.getCapabilities().getActivitiesList());
         assertEquals(List.of("gpu"), request.getCapabilities().getPoolsList());
         assertEquals(7, request.getCapabilities().getMaxInflight());
-        assertEquals("1.2", request.getCapabilities().getProtocolVersion());
+        assertEquals("1.3", request.getCapabilities().getProtocolVersion());
         assertEquals("Bearer tok", register.header("authorization"));
         assertEquals("1.2", h.protocolVersion());
     }

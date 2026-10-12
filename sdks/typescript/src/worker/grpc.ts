@@ -46,9 +46,19 @@ export interface ResolveSecretsRequest {
 }
 export interface ResolvedSecret { name: string; value: Buffer; version: number }
 export interface ResolveSecretsResponse { secrets: ResolvedSecret[] }
+export interface WriteBlobRequest { header?: WriteBlobHeader; chunk?: Buffer }
+export interface WriteBlobHeader {
+  task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string;
+  content_type: string; expected_size: number; expected_sha256: string;
+}
+export interface WriteBlobResponse { blob_id: string; size: number; sha256: string; content_type: string }
+export interface ReadBlobRequest {
+  task_id: string; run_id: string; step_id: string; attempt: number; generation: number; lease_token: string; blob_id: string;
+}
+export interface ReadBlobResponse { header?: WriteBlobResponse; chunk?: Buffer; part?: string }
 export interface StepCommandResponse { command_id: string; already_applied: boolean; step_status: string; run_status: string }
 
-export type Method = 'RegisterWorker' | 'PollTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets';
+export type Method = 'RegisterWorker' | 'PollTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets' | 'WriteBlob' | 'ReadBlob';
 
 export interface GrpcConfig {
   grpcUrl: string;
@@ -128,6 +138,8 @@ export function errorOfStatus(method: Method, error: grpc.ServiceError): SagatEr
       return new SagatError({ code: 'TRANSPORT', message: 'no answer from the worker service', status: statusName, reason, retryAfterMs });
     case grpc.status.CANCELLED:
       return new SagatError({ code: 'CANCELLED', message: 'the call was cancelled', status: statusName });
+    case grpc.status.DATA_LOSS:
+      return safe('PROTOCOL', 'the blob stream failed its integrity check');
     default:
       return safe('INTERNAL', 'the worker service failed');
   }
@@ -240,5 +252,57 @@ export class WorkerRpc {
   }
   resolveSecrets(request: ResolveSecretsRequest, traceparent?: string): Promise<ResolveSecretsResponse> {
     return this.call('ResolveSecrets', request, traceparent);
+  }
+
+  async writeBlob(parts: AsyncIterable<WriteBlobRequest>, traceparent?: string, signal?: AbortSignal): Promise<WriteBlobResponse> {
+    const metadata = new grpc.Metadata();
+    metadata.set('authorization', `Bearer ${await resolveToken(this.#config.token)}`);
+    if (traceparent) metadata.set('traceparent', checkTraceparent(traceparent));
+    const fn = this.client.writeBlob as (metadata: grpc.Metadata, options: grpc.CallOptions,
+      callback: (error: grpc.ServiceError | null, response?: WriteBlobResponse) => void) => grpc.ClientWritableStream<WriteBlobRequest>;
+    return new Promise<WriteBlobResponse>((resolve, reject) => {
+      const call = fn.call(this.client, metadata, { deadline: new Date(Date.now() + (this.#config.timeoutMs ?? 30_000)) }, (error, response) => {
+        signal?.removeEventListener('abort', cancel);
+        if (error) reject(errorOfStatus('WriteBlob', error)); else resolve(response as WriteBlobResponse);
+      });
+      const cancel = (): void => call.cancel();
+      if (signal?.aborted) cancel(); else signal?.addEventListener('abort', cancel, { once: true });
+      void (async () => {
+        try {
+          for await (const part of parts) {
+            if (!call.write(part)) await new Promise<void>((ready) => call.once('drain', ready));
+          }
+          call.end();
+        } catch (error) {
+          call.cancel();
+          reject(error);
+        }
+      })();
+    });
+  }
+
+  async *readBlob(request: ReadBlobRequest, traceparent?: string, signal?: AbortSignal): AsyncIterable<ReadBlobResponse> {
+    const metadata = new grpc.Metadata();
+    metadata.set('authorization', `Bearer ${await resolveToken(this.#config.token)}`);
+    if (traceparent) metadata.set('traceparent', checkTraceparent(traceparent));
+    const fn = this.client.readBlob as (request: ReadBlobRequest, metadata: grpc.Metadata, options: grpc.CallOptions) => grpc.ClientReadableStream<ReadBlobResponse>;
+    const call = fn.call(this.client, request, metadata, { deadline: new Date(Date.now() + (this.#config.timeoutMs ?? 30_000)) });
+    const cancel = (): void => call.cancel();
+    if (signal?.aborted) cancel(); else signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      // Node's Readable async iterator applies transport backpressure. A hand-built `data` queue would
+      // allow a slow handler to buffer the whole blob and defeat the streaming contract.
+      for await (const value of call as unknown as AsyncIterable<ReadBlobResponse>) {
+        yield value;
+      }
+    } catch (error) {
+      if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'number') {
+        throw errorOfStatus('ReadBlob', error as grpc.ServiceError);
+      }
+      throw new SagatError({ code: 'INTERNAL', message: 'the blob stream failed' });
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      if (!call.destroyed) call.cancel();
+    }
   }
 }

@@ -140,9 +140,10 @@ public final class JdkHttpTransport implements HttpTransport {
     public Result send(Call call) throws IOException, InterruptedException {
         HttpRequest.Builder request = HttpRequest.newBuilder(call.uri()).timeout(call.timeout());
         call.headers().forEach(request::header);
-        request.method(
-                call.method(),
-                call.body() == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(call.body()));
+        HttpRequest.BodyPublisher publisher = call.stream() != null
+                ? HttpRequest.BodyPublishers.ofInputStream(call::stream)
+                : call.body() == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(call.body());
+        request.method(call.method(), publisher);
         // The JDK's request timeout ends when the response headers arrive: a server that sends them and then stalls the body
         // would hold the call for ever. The deadline of the call (SPEC section 1) covers the whole exchange.
         BoundedHandler handler = new BoundedHandler();

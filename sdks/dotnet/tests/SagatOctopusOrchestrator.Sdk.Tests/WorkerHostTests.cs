@@ -79,7 +79,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         Assert.Equal(["a.undo", "b.second", "c.lookup"], request.Capabilities.Activities);
         Assert.Empty(request.Capabilities.Pools);
         Assert.Equal(7, request.Capabilities.MaxInflight);
-        Assert.Equal("1.2", request.Capabilities.ProtocolVersion);
+        Assert.Equal("1.3", request.Capabilities.ProtocolVersion);
         Assert.Equal("Bearer tok", register.Headers.GetValue("authorization"));
         Assert.Equal("1.2", host.ProtocolVersion);
         Assert.True(host.IsRunning);
@@ -744,7 +744,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         { StatusCode.Unavailable, "UNAVAILABLE", null, SagatErrorCode.Unavailable, "UNAVAILABLE", true },
         { StatusCode.DeadlineExceeded, null, null, SagatErrorCode.Transport, "DEADLINE_EXCEEDED", true },
         { StatusCode.Internal, null, null, SagatErrorCode.Internal, "INTERNAL", false },
-        { StatusCode.DataLoss, null, null, SagatErrorCode.Internal, "DATA_LOSS", false },
+        { StatusCode.DataLoss, "BLOB_CORRUPT", null, SagatErrorCode.Protocol, "DATA_LOSS", false },
     };
 
     [Theory]

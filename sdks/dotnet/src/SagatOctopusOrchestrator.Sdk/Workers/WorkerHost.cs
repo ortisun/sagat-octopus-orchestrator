@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -707,7 +708,9 @@ public sealed partial class WorkerHost : IWorkerHost
                 minor >= 2 ? lease.TargetIdempotencyKey : string.Empty,
                 steps,
                 ContextLogger(lease.ActivityName),
-                secretsLoader.GetAsync);
+                secretsLoader.GetAsync,
+                (source, blobOptions, cancellationToken) => WriteBlobAsync(session, lease, runtime, source, blobOptions, cancellationToken),
+                (descriptor, cancellationToken) => ReadBlobAsync(session, lease, runtime, descriptor, cancellationToken));
 
             await RunAndReportAsync(session, lease, runtime, registered, typed, context, secretsLoader, started, span).ConfigureAwait(false);
         }
@@ -767,6 +770,8 @@ public sealed partial class WorkerHost : IWorkerHost
                 failure = ActivityFailure.Retryable("ACTIVITY_ERROR", TypeNameOf(error));
             }
 
+            runtime.MarkFinished();
+
             // The secrets are credentials: gone when the handler is, before the result is reported.
             secretsLoader.Close();
 
@@ -790,15 +795,39 @@ public sealed partial class WorkerHost : IWorkerHost
                 return;
             }
 
+            var blob = result!.Blob;
             string output;
-            try
+            if (blob is not null)
             {
-                output = result!.ToJson(json) ?? string.Empty;
+                if (minor < 3)
+                {
+                    await FailAsync(session, lease, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", retryable: false, started, span).ConfigureAwait(false);
+                    return;
+                }
+
+                try
+                {
+                    Blobs.Validate(blob);
+                }
+                catch (SagatException)
+                {
+                    await FailAsync(session, lease, "OUTPUT_INVALID", "the blob output descriptor is malformed", retryable: false, started, span).ConfigureAwait(false);
+                    return;
+                }
+
+                output = string.Empty;
             }
-            catch (SagatException error)
+            else
             {
-                await FailAsync(session, lease, "OUTPUT_INVALID", error.Message, retryable: false, started, span).ConfigureAwait(false);
-                return;
+                try
+                {
+                    output = result.ToJson(json) ?? string.Empty;
+                }
+                catch (SagatException error)
+                {
+                    await FailAsync(session, lease, "OUTPUT_INVALID", error.Message, retryable: false, started, span).ConfigureAwait(false);
+                    return;
+                }
             }
 
             if (Encoding.UTF8.GetByteCount(output) > MaxOutputBytes)
@@ -807,7 +836,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 return;
             }
 
-            await CompleteAsync(session, lease, output, started, span).ConfigureAwait(false);
+            await CompleteAsync(session, lease, output, blob, started, span).ConfigureAwait(false);
         }
         finally
         {
@@ -825,6 +854,52 @@ public sealed partial class WorkerHost : IWorkerHost
 
     private static bool IsCancellation(Exception error) =>
         error is OperationCanceledException || (error is SagatException { Code: SagatErrorCode.Cancelled });
+
+    private async Task<BlobDescriptor> WriteBlobAsync(
+        Session session,
+        TaskLease lease,
+        TaskRuntime runtime,
+        Stream source,
+        BlobWriteOptions blobOptions,
+        CancellationToken cancellationToken)
+    {
+        if (runtime.Finished)
+        {
+            throw SagatException.Invalid("the attempt is over");
+        }
+
+        if (minor < 3)
+        {
+            throw new SagatException(SagatErrorCode.UnsupportedProtocol, "blob streaming requires worker protocol 1.3");
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtime.Abort.Token, cancellationToken);
+        return await Blobs.WriteAsync(session.Rpc, lease, source, blobOptions, linked.Token).ConfigureAwait(false);
+    }
+
+    private async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadBlobAsync(
+        Session session,
+        TaskLease lease,
+        TaskRuntime runtime,
+        BlobDescriptor descriptor,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (runtime.Finished)
+        {
+            throw SagatException.Invalid("the attempt is over");
+        }
+
+        if (minor < 3)
+        {
+            throw new SagatException(SagatErrorCode.UnsupportedProtocol, "blob streaming requires worker protocol 1.3");
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtime.Abort.Token, cancellationToken);
+        await foreach (var chunk in Blobs.ReadAsync(session.Rpc, lease, descriptor, linked.Token).ConfigureAwait(false))
+        {
+            yield return chunk;
+        }
+    }
 
     private static string TypeNameOf(Exception error)
     {
@@ -973,7 +1048,7 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task CompleteAsync(Session session, TaskLease lease, string output, long started, Activity? span)
+    private async Task CompleteAsync(Session session, TaskLease lease, string output, BlobDescriptor? blob, long started, Activity? span)
     {
         var channel = session.Rpc;
         try
@@ -989,8 +1064,8 @@ public sealed partial class WorkerHost : IWorkerHost
                     LeaseToken = lease.LeaseToken,
                     IdempotencyKey = "done-" + lease.TaskId,
                     OutputJson = output,
-                    OutputBlobRef = string.Empty,
-                    OutputSha256 = string.Empty,
+                    OutputBlobRef = blob?.Id ?? string.Empty,
+                    OutputSha256 = blob?.Sha256 ?? string.Empty,
                     Traceparent = lease.Traceparent,
                 },
                 lease.Traceparent.Length > 0 ? lease.Traceparent : null,

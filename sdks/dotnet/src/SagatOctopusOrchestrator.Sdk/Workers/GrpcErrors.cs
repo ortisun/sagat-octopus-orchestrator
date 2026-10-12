@@ -73,6 +73,8 @@ internal static partial class GrpcErrors
                     : Safe(SagatErrorCode.Transport, "no answer from the worker service");
             case StatusCode.Cancelled:
                 return new SagatException(SagatErrorCode.Cancelled, "the call was cancelled", grpcStatus: statusName);
+            case StatusCode.DataLoss:
+                return Safe(SagatErrorCode.Protocol, "the blob stream failed its integrity check");
             default:
                 return Safe(SagatErrorCode.Internal, "the worker service failed");
         }

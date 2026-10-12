@@ -22,6 +22,7 @@ import dev.sagatoctopusorchestrator.sdk.OperationResult;
 import dev.sagatoctopusorchestrator.sdk.RetryPolicy;
 import dev.sagatoctopusorchestrator.sdk.Run;
 import dev.sagatoctopusorchestrator.sdk.RunStatus;
+import dev.sagatoctopusorchestrator.sdk.RunInputBlobOptions;
 import dev.sagatoctopusorchestrator.sdk.SagatClient;
 import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.SagatSdk;
@@ -39,6 +40,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.Trigger;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
 import java.io.File;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -46,11 +48,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -538,6 +542,20 @@ public final class Runner {
                     options.deadlineIn(Duration.ofMillis(step.get("deadlineInMs").asLong()));
                 }
                 return runJson(client.start(workflow.get("workflowId").asText(), step.has("input") ? step.get("input") : F.objectNode(), options));
+            }
+            case "startWithBlob": {
+                JsonNode workflow = config.path("workflows").path(step.get("workflow").asText());
+                byte[] body = new byte[step.get("inputBlobBytes").asInt()];
+                java.util.Arrays.fill(body, (byte) 'i');
+                String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
+                var descriptor = client.uploadRunInput(new ByteArrayInputStream(body),
+                        new RunInputBlobOptions("application/octet-stream", (long) body.length, sha256));
+                StartOptions options = StartOptions.create();
+                if (step.has("idempotencyKey")) options.idempotencyKey(step.get("idempotencyKey").asText());
+                if (step.has("correlationId")) options.correlationId(step.get("correlationId").asText());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                if (step.has("deadlineInMs")) options.deadlineIn(Duration.ofMillis(step.get("deadlineInMs").asLong()));
+                return runJson(client.startWithBlob(workflow.get("workflowId").asText(), descriptor, options));
             }
             case "workflowByName": {
                 String name = config.path("workflows").path(step.get("workflow").asText()).get("name").asText();

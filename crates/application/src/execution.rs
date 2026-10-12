@@ -392,6 +392,13 @@ pub trait RunTx: Send {
     /// The immutable definition and the mutable state, borrowed together.
     fn parts(&mut self) -> (&WorkflowDefinition, &mut RunState);
 
+    /// The oldest worker protocol that can safely receive work from this run. This is decided
+    /// from durable catalog provenance while the run is locked, never by inspecting JSON that may
+    /// happen to resemble a protocol-specific descriptor.
+    fn required_worker_protocol_minor(
+        &mut self,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
     /// When the lease held on `node` expires (the renewal capped by the attempt deadline), or
     /// `None` when no lease is held.
     fn lease_expiry(

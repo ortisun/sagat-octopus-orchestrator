@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -49,6 +50,9 @@ class HttpRequest:
     """Under the base URL, starting with ``/``."""
     query: dict[str, str | int | None] | None = None
     body: Any = field(default=_UNSET, repr=False)
+    stream: AsyncIterable[bytes] | None = field(default=None, repr=False)
+    content_type: str | None = None
+    headers: dict[str, str] | None = None
     idempotency_key: str | None = None
     traceparent: str | None = None
     safe_to_repeat: bool = True
@@ -157,10 +161,14 @@ class HttpTransport:
             headers["traceparent"] = req.traceparent
         if req.idempotency_key:
             headers["idempotency-key"] = req.idempotency_key
-        content: bytes | None = None
+        headers.update(req.headers or {})
+        content: bytes | AsyncIterable[bytes] | None = None
         if req.body is not _UNSET:
             content = encode_json(req.body).encode("utf-8")
             headers["content-type"] = "application/json"
+        elif req.stream is not None:
+            content = req.stream
+            headers["content-type"] = req.content_type or "application/octet-stream"
         params = {key: value for key, value in (req.query or {}).items() if value is not None} or None
 
         try:

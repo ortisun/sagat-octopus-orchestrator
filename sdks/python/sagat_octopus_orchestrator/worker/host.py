@@ -6,12 +6,13 @@ import asyncio
 import contextlib
 import contextvars
 import functools
+import hashlib
 import inspect
 import logging
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -38,6 +39,8 @@ from .activity import (
     ActivityContext,
     ActivityFailure,
     ActivityHandler,
+    BlobDescriptor,
+    BlobOutput,
     CancellationToken,
     CancelReason,
     Secrets,
@@ -60,6 +63,8 @@ reported before it closes the connection; it never interrupts a handler."""
 _VERSION = re.compile(r"1(?:\.([0-9]+))?")
 _REPEATABLE = frozenset({"TRANSPORT", "UNAVAILABLE", "RATE_LIMITED"})
 _TASK_KINDS: dict[str, TaskKind] = {"COMPENSATION": "COMPENSATION", "RECONCILIATION": "RECONCILIATION"}
+_BLOB_SHA256 = re.compile(r"[0-9a-f]{64}")
+MAX_BLOB_CHUNK = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -585,6 +590,10 @@ class WorkerHost:
             ),
             deadline_ms=lambda: task.deadline_ms,
             secrets=lambda: self._secrets_of(task, minor),
+            write_blob=lambda source, content_type, expected_size, expected_sha256: self._write_blob(
+                task, minor, source, content_type, expected_size, expected_sha256
+            ),
+            read_blob=lambda descriptor: self._read_blob(task, minor, descriptor),
         )
 
         # The heartbeat starts before the handler and runs until the report is made.
@@ -625,6 +634,7 @@ class WorkerHost:
     ) -> None:
         """Turns what the handler did into the one report of the attempt (``sdks/SPEC.md`` section 6.5)."""
         lease = task.lease
+        minor = _minor_of(self._accepted)
         error: BaseException | None = None
         cancelled = handler_task.cancelled()
         if not cancelled:
@@ -671,15 +681,138 @@ class WorkerHost:
             return
         if isinstance(result, Verdict):
             result = result.to_json_value()
-        try:
-            output = encode_json(result)
-        except SagatError as invalid:
-            await self._fail(task, "OUTPUT_INVALID", invalid.message, False, started)
-            return
+        blob: BlobDescriptor | None = None
+        if isinstance(result, BlobOutput):
+            if minor < 3:
+                await self._fail(
+                    task, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", False, started
+                )
+                return
+            try:
+                self._validate_blob_descriptor(result.descriptor)
+            except SagatError:
+                await self._fail(task, "OUTPUT_INVALID", "the blob output descriptor is malformed", False, started)
+                return
+            blob = result.descriptor
+            output = ""
+        else:
+            try:
+                output = encode_json(result)
+            except SagatError as invalid:
+                await self._fail(task, "OUTPUT_INVALID", invalid.message, False, started)
+                return
         if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
             await self._fail(task, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", False, started)
             return
-        await self._complete(task, output, started)
+        await self._complete(task, output, started, blob)
+
+    @staticmethod
+    def _validate_blob_descriptor(descriptor: BlobDescriptor) -> None:
+        if (
+            not isinstance(descriptor, BlobDescriptor)
+            or not isinstance(descriptor.id, str)
+            or not descriptor.id.strip()
+            or not isinstance(descriptor.size, int)
+            or isinstance(descriptor.size, bool)
+            or descriptor.size < 0
+            or not isinstance(descriptor.sha256, str)
+            or not _BLOB_SHA256.fullmatch(descriptor.sha256)
+            or not isinstance(descriptor.content_type, str)
+            or not descriptor.content_type.strip()
+        ):
+            raise SagatError("PROTOCOL", "the blob descriptor is malformed")
+
+    async def _write_blob(
+        self,
+        task: _Task,
+        minor: int,
+        source: AsyncIterable[bytes] | Iterable[bytes],
+        content_type: str,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> BlobDescriptor:
+        if task.finished:
+            raise SagatError("VALIDATION_FAILED", "the attempt is over")
+        if minor < 3:
+            raise SagatError("UNSUPPORTED_PROTOCOL", "blob streaming requires worker protocol 1.3")
+        if expected_size < 0 or (expected_sha256 and not _BLOB_SHA256.fullmatch(expected_sha256)):
+            raise SagatError("VALIDATION_FAILED", "blob preconditions are malformed")
+        rpc = task.rpc
+        assert rpc is not None
+        lease = task.lease
+        digest = hashlib.sha256()
+        size = 0
+
+        async def pieces() -> AsyncIterator[pb.WriteBlobRequest]:
+            nonlocal size
+            yield pb.WriteBlobRequest(header=pb.WriteBlobHeader(
+                task_id=lease.task_id, run_id=lease.run_id, step_id=lease.step_id,
+                attempt=lease.attempt, generation=lease.generation, lease_token=task.lease_token.reveal(),
+                content_type=content_type, expected_size=expected_size, expected_sha256=expected_sha256,
+            ))
+            if hasattr(source, "__aiter__"):
+                iterator: Any = source.__aiter__()
+                async for value in iterator:
+                    for chunk in self._blob_chunks(value):
+                        size += len(chunk)
+                        digest.update(chunk)
+                        yield pb.WriteBlobRequest(chunk=chunk)
+            else:
+                for value in source:
+                    for chunk in self._blob_chunks(value):
+                        size += len(chunk)
+                        digest.update(chunk)
+                        yield pb.WriteBlobRequest(chunk=chunk)
+
+        response = await rpc.write_blob(pieces(), lease.traceparent or None)
+        descriptor = BlobDescriptor(response.blob_id, response.size, response.sha256, response.content_type)
+        self._validate_blob_descriptor(descriptor)
+        if descriptor.size != size or descriptor.sha256 != digest.hexdigest():
+            raise SagatError("PROTOCOL", "the blob service descriptor does not match the uploaded bytes")
+        return descriptor
+
+    @staticmethod
+    def _blob_chunks(value: bytes) -> Iterable[bytes]:
+        if not isinstance(value, bytes):
+            raise SagatError("VALIDATION_FAILED", "a blob source yields bytes")
+        for offset in range(0, len(value), MAX_BLOB_CHUNK):
+            yield value[offset : offset + MAX_BLOB_CHUNK]
+
+    async def _read_blob(self, task: _Task, minor: int, descriptor: BlobDescriptor) -> AsyncIterator[bytes]:
+        if task.finished:
+            raise SagatError("VALIDATION_FAILED", "the attempt is over")
+        if minor < 3:
+            raise SagatError("UNSUPPORTED_PROTOCOL", "blob streaming requires worker protocol 1.3")
+        self._validate_blob_descriptor(descriptor)
+        rpc = task.rpc
+        assert rpc is not None
+        lease = task.lease
+        request = pb.ReadBlobRequest(
+            task_id=lease.task_id, run_id=lease.run_id, step_id=lease.step_id, attempt=lease.attempt,
+            generation=lease.generation, lease_token=task.lease_token.reveal(), blob_id=descriptor.id,
+        )
+        digest = hashlib.sha256()
+        size = 0
+        header_seen = False
+        async for part in rpc.read_blob(request, lease.traceparent or None):
+            kind = part.WhichOneof("part")
+            if kind == "header":
+                header = part.header
+                if header_seen or size or (header.blob_id, header.size, header.sha256, header.content_type) != (
+                    descriptor.id, descriptor.size, descriptor.sha256, descriptor.content_type
+                ):
+                    raise SagatError("PROTOCOL", "the blob stream header does not match its descriptor")
+                header_seen = True
+                continue
+            if kind != "chunk" or not header_seen or len(part.chunk) > MAX_BLOB_CHUNK:
+                raise SagatError("PROTOCOL", "the blob stream has an invalid part order or chunk size")
+            size += len(part.chunk)
+            if size > descriptor.size:
+                raise SagatError("PROTOCOL", "the blob stream is larger than its descriptor")
+            digest.update(part.chunk)
+            yield part.chunk
+        if not header_seen or size != descriptor.size or digest.hexdigest() != descriptor.sha256:
+            raise SagatError("PROTOCOL", "the blob stream ended with mismatched integrity metadata")
 
     # --------------------------------------------------------------------------------------------- heartbeat
 
@@ -753,7 +886,7 @@ class WorkerHost:
                     continue
                 raise
 
-    async def _complete(self, task: _Task, output: str, started: float) -> None:
+    async def _complete(self, task: _Task, output: str, started: float, blob: BlobDescriptor | None = None) -> None:
         lease = task.lease
         rpc = task.rpc
         assert rpc is not None
@@ -767,6 +900,8 @@ class WorkerHost:
             idempotency_key=f"done-{lease.task_id}",
             output_json=output,
             traceparent=lease.traceparent,
+            output_blob_ref=blob.id if blob else "",
+            output_sha256=blob.sha256 if blob else "",
         )
         try:
             answer = await self._with_retries(lambda: rpc.complete_step(request, lease.traceparent or None))

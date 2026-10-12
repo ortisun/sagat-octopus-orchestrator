@@ -1,0 +1,30 @@
+{
+  "name": "run-input-early-success",
+  "description": "FR-002-008/FR-006-006: a forged success response cannot validate a one-pass run input unless the transport consumed the source through EOF.",
+  "workflows": {
+    "input": {
+      "name": "blob-run-input-early-success",
+      "program": [
+        { "op": "step", "id": "input", "activity": "blob.input" }
+      ]
+    }
+  },
+  "faults": [
+    {
+      "channel": "http",
+      "match": "POST /run-input-blobs",
+      "action": "status",
+      "status": 201,
+      "times": 1,
+      "body": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "contentType": "application/octet-stream"
+      }
+    }
+  ],
+  "steps": [
+    { "id": "refused", "op": "startWithBlob", "workflow": "input", "inputBlobBytes": 300000, "idempotencyKey": "run-input-{{unique}}" }
+  ]
+}

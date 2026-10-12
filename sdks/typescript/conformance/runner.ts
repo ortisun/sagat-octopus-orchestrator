@@ -2,8 +2,9 @@
 // only the public API of the SDK: the builders in `build` mode, the client and the worker host in
 // `run` mode.
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
-  ActivityFailure, SDK_VERSION, SagatClient, SagatError, WorkerHost, flow, reconcile, workflow,
+  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, flow, reconcile, workflow,
   type ActivityContext, type Flow, type Run, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
@@ -185,6 +186,38 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
         }
         return { ...(behavior['returns'] ?? {}), secretLength: secrets.get(behavior['readsSecret']).length };
       }
+      if (behavior['blobRoundTripBytes'] !== undefined) {
+        const body = Buffer.alloc(behavior['blobRoundTripBytes'], 'x');
+        const descriptor = await ctx.writeBlob([body], {
+          contentType: 'application/octet-stream', expectedSize: body.length,
+          expectedSha256: createHash('sha256').update(body).digest('hex'),
+        });
+        const chunks: Buffer[] = [];
+        for await (const chunk of ctx.readBlob(descriptor)) chunks.push(chunk);
+        if (!Buffer.concat(chunks).equals(body)) throw new Error('blob round trip failed');
+        return { blobSize: descriptor.size, blobSha256: descriptor.sha256, roundTrip: true };
+      }
+      if (behavior['blobInputBytes'] !== undefined) {
+        const raw = (input as Obj)['$blob'] as Obj;
+        const descriptor = { id: raw['id'] as string, size: raw['size'] as number, sha256: raw['sha256'] as string, contentType: raw['contentType'] as string };
+        const chunks: Buffer[] = [];
+        for await (const chunk of ctx.readBlob(descriptor)) chunks.push(chunk);
+        const expected = Buffer.alloc(behavior['blobInputBytes'], 'i');
+        if (!Buffer.concat(chunks).equals(expected)) throw new Error('run-input blob did not match');
+        return { inputBlobSize: descriptor.size, inputBlobSha256: descriptor.sha256 };
+      }
+      if (behavior['blobOutputBytes'] !== undefined) {
+        const descriptor = await ctx.writeBlob([Buffer.alloc(behavior['blobOutputBytes'], 'y')], {
+          contentType: 'application/octet-stream',
+        });
+        return new BlobOutput(descriptor);
+      }
+      if (behavior['blobInlineBytes'] !== undefined) {
+        const descriptor = await ctx.writeBlob([Buffer.alloc(behavior['blobInlineBytes'], 'z')], {
+          contentType: 'application/octet-stream',
+        });
+        return { $blob: descriptor };
+      }
       if (behavior['verdict'] !== undefined) {
         const output = behavior['output'];
         return behavior['verdict'] === 'applied' ? reconcile.applied(output) : behavior['verdict'] === 'not_applied' ? reconcile.notApplied() : reconcile.unknown();
@@ -284,6 +317,17 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         case 'start': {
           const workflowId = config['workflows'][step['workflow']].workflowId as string;
           result = runJson(await client.start(workflowId, step['input'] ?? {}, {
+            idempotencyKey: step['idempotencyKey'], correlationId: step['correlationId'],
+            traceparent: step['traceparent'], deadlineInMs: step['deadlineInMs'],
+          }));
+          break;
+        }
+        case 'startWithBlob': {
+          const workflowId = config['workflows'][step['workflow']].workflowId as string;
+          const body = Buffer.alloc(step['inputBlobBytes'], 'i');
+          const sha256 = createHash('sha256').update(body).digest('hex');
+          const descriptor = await client.uploadRunInput([body], { expectedSize: body.length, expectedSha256: sha256 });
+          result = runJson(await client.startWithBlob(workflowId, descriptor, {
             idempotencyKey: step['idempotencyKey'], correlationId: step['correlationId'],
             traceparent: step['traceparent'], deadlineInMs: step['deadlineInMs'],
           }));

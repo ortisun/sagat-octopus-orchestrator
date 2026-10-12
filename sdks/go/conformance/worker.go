@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -129,6 +133,60 @@ func behave(ctx context.Context, behavior object, input json.RawMessage, outcome
 		out["secretLength"] = len(value)
 		clear(value)
 		return out, verdict, nil
+	}
+	if length, ok := behavior["blobRoundTripBytes"]; ok {
+		body := bytes.Repeat([]byte("x"), asInt(length))
+		digest := sha256.Sum256(body)
+		descriptor, writeErr := task.WriteBlob(ctx, bytes.NewReader(body), worker.WriteBlobOptions{
+			ContentType: "application/octet-stream", ExpectedSize: int64(len(body)), ExpectedSHA256: hex.EncodeToString(digest[:]),
+		})
+		if writeErr != nil {
+			return nil, verdict, writeErr
+		}
+		stream, readErr := task.ReadBlob(ctx, descriptor)
+		if readErr != nil {
+			return nil, verdict, readErr
+		}
+		read, readErr := io.ReadAll(stream)
+		_ = stream.Close()
+		if readErr != nil || !bytes.Equal(read, body) {
+			return nil, verdict, fmt.Errorf("blob round trip failed")
+		}
+		return object{"blobSize": descriptor.Size, "blobSha256": descriptor.SHA256, "roundTrip": true}, verdict, nil
+	}
+	if length, ok := behavior["blobInputBytes"]; ok {
+		decoded, decodeErr := decode(input)
+		if decodeErr != nil {
+			return nil, verdict, decodeErr
+		}
+		raw := asObject(asObject(decoded)["$blob"])
+		descriptor := worker.BlobDescriptor{ID: asString(raw["id"]), Size: int64(asInt(raw["size"])), SHA256: asString(raw["sha256"]), ContentType: asString(raw["contentType"])}
+		stream, readErr := task.ReadBlob(ctx, descriptor)
+		if readErr != nil {
+			return nil, verdict, readErr
+		}
+		read, readErr := io.ReadAll(stream)
+		_ = stream.Close()
+		if readErr != nil || !bytes.Equal(read, bytes.Repeat([]byte("i"), asInt(length))) {
+			return nil, verdict, fmt.Errorf("run-input blob did not match")
+		}
+		return object{"inputBlobSize": descriptor.Size, "inputBlobSha256": descriptor.SHA256}, verdict, nil
+	}
+	if length, ok := behavior["blobOutputBytes"]; ok {
+		body := bytes.Repeat([]byte("y"), asInt(length))
+		descriptor, writeErr := task.WriteBlob(ctx, bytes.NewReader(body), worker.WriteBlobOptions{ContentType: "application/octet-stream"})
+		if writeErr != nil {
+			return nil, verdict, writeErr
+		}
+		return worker.NewBlobOutput(descriptor), verdict, nil
+	}
+	if length, ok := behavior["blobInlineBytes"]; ok {
+		body := bytes.Repeat([]byte("z"), asInt(length))
+		descriptor, writeErr := task.WriteBlob(ctx, bytes.NewReader(body), worker.WriteBlobOptions{ContentType: "application/octet-stream"})
+		if writeErr != nil {
+			return nil, verdict, writeErr
+		}
+		return object{"$blob": object{"id": descriptor.ID, "size": descriptor.Size, "sha256": descriptor.SHA256, "contentType": descriptor.ContentType}}, verdict, nil
 	}
 	if kind, ok := behavior["verdict"]; ok {
 		var output any

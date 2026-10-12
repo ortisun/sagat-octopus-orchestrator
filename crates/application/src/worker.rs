@@ -43,6 +43,8 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_da
 /// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
 /// `ResolveSecrets`; 1.3 adds streaming blob upload/download.
 pub const PROTOCOL_MINOR: u32 = 3;
+/// Streaming blob references first became safe to hand to workers in protocol 1.3.
+pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 
 /// What registration says when it refuses the protocol version (a stable reason for SDKs).
 pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
@@ -53,6 +55,10 @@ pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
 /// `None` for another major version and for anything that is not a version.
 #[must_use]
 pub fn negotiate_protocol(offered: &str) -> Option<String> {
+    negotiate_protocol_details(offered).map(|(version, _)| version)
+}
+
+fn negotiate_protocol_details(offered: &str) -> Option<(String, u32)> {
     let minor = match offered.split_once('.') {
         None if offered == "1" => 0,
         Some(("1", minor))
@@ -66,11 +72,12 @@ pub fn negotiate_protocol(offered: &str) -> Option<String> {
         _ => return None,
     };
     let agreed = minor.min(PROTOCOL_MINOR);
-    Some(if agreed == 0 {
+    let version = if agreed == 0 {
         "1".to_owned()
     } else {
         format!("1.{agreed}")
-    })
+    };
+    Some((version, agreed))
 }
 /// Most activities one worker may advertise.
 pub const MAX_ACTIVITIES: usize = 256;
@@ -135,6 +142,8 @@ pub struct SessionRecord {
     pub worker_name: String,
     pub activities: Vec<String>,
     pub max_inflight: u32,
+    /// The minor version actually negotiated with the server, rather than the version offered.
+    pub accepted_protocol_minor: u32,
     pub expires_at: OffsetDateTime,
     /// Its identity is being drained in this namespace: it is given no new work.
     pub draining: bool,
@@ -153,6 +162,7 @@ pub struct NewSession {
     pub languages: Vec<String>,
     pub pools: Vec<String>,
     pub max_inflight: u32,
+    pub accepted_protocol_minor: u32,
     pub ttl: Duration,
     /// Live sessions the tenant may hold (a quota), judged atomically with the insert.
     pub tenant_limit: u64,
@@ -206,6 +216,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         namespace: NamespaceId,
         activities: &[String],
         limit: u32,
+        accepted_protocol_minor: u32,
     ) -> impl Future<Output = Result<Vec<RunId>, StoreError>> + Send;
 
     /// Steps currently leased to the worker session `id`.
@@ -429,7 +440,8 @@ where
         capabilities: &Capabilities,
     ) -> Result<Registered, AppError> {
         principal.authorize(Permission::WorkerExecute)?;
-        let Some(accepted_protocol_version) = negotiate_protocol(&capabilities.protocol_version)
+        let Some((accepted_protocol_version, accepted_protocol_minor)) =
+            negotiate_protocol_details(&capabilities.protocol_version)
         else {
             return Err(AppError::NotAllowed(UNSUPPORTED_PROTOCOL));
         };
@@ -535,6 +547,7 @@ where
                 languages: dedup(&capabilities.languages),
                 pools: dedup(&capabilities.pools),
                 max_inflight: capabilities.max_inflight,
+                accepted_protocol_minor,
                 ttl,
                 tenant_limit,
             })
@@ -623,6 +636,7 @@ where
                 session.namespace_id,
                 &session.activities,
                 wanted.saturating_mul(4).min(64),
+                session.accepted_protocol_minor,
             )
             .await?;
         let mut claimed = Vec::new();
@@ -703,6 +717,12 @@ where
         // made again here, under the lock a drain waits for, so a drain that has returned has
         // stopped every poll that had not leased yet.
         if tx.worker_drained(&session.subject).await? {
+            return Ok(Vec::new());
+        }
+        // Candidate selection is only a bounded hint. Recheck catalog-backed capability needs
+        // under the run lock so a protocol-specific blob committed after that scan cannot be
+        // leased to an older worker. An incompatible task stays READY and consumes no attempt.
+        if tx.required_worker_protocol_minor().await? > session.accepted_protocol_minor {
             return Ok(Vec::new());
         }
         let mut ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {

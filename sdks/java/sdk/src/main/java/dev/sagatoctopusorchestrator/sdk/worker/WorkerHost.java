@@ -12,6 +12,7 @@ import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.SagatSdk;
 import dev.sagatoctopusorchestrator.sdk.Text;
 import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -51,6 +52,7 @@ public final class WorkerHost implements AutoCloseable {
     private static final int MAX_REPORT_ATTEMPTS = 5;
     private static final Pattern CODE = Pattern.compile("^[A-Z0-9_]{1,64}$");
     private static final Pattern VERSION = Pattern.compile("^1(?:\\.(\\d+))?$");
+    private static final Pattern BLOB_SHA256 = Pattern.compile("^[0-9a-f]{64}$");
 
     private enum Kind {
         ACTIVITY,
@@ -621,12 +623,26 @@ public final class WorkerHost implements AutoCloseable {
             }
 
             String output;
+            BlobDescriptor blob = null;
             if (kind == TaskKind.RECONCILIATION && registered.kind() == Kind.RECONCILER) {
                 if (!(result instanceof Verdict verdict)) {
                     fail(channel, lease, state, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", false, started);
                     return;
                 }
                 output = Json.encode(verdict.toJson());
+            } else if (result instanceof BlobOutput blobOutput) {
+                if (minor < 3) {
+                    fail(channel, lease, state, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started);
+                    return;
+                }
+                try {
+                    validateBlob(blobOutput.descriptor());
+                } catch (SagatException invalid) {
+                    fail(channel, lease, state, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started);
+                    return;
+                }
+                blob = blobOutput.descriptor();
+                output = "";
             } else if (result == ActivityHandler.NO_RESULT) {
                 output = "";
             } else {
@@ -641,7 +657,7 @@ public final class WorkerHost implements AutoCloseable {
                 fail(channel, lease, state, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started);
                 return;
             }
-            complete(channel, lease, state, output, started);
+            complete(channel, lease, state, output, blob, started);
         } finally {
             beat.stop();
         }
@@ -772,6 +788,50 @@ public final class WorkerHost implements AutoCloseable {
             return secrets;
         }
 
+        @Override
+        public synchronized BlobDescriptor writeBlob(InputStream source, BlobWriteOptions options) {
+            if (dropped) {
+                throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the attempt is over");
+            }
+            if (minor < 3) {
+                throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "blob streaming requires worker protocol 1.3");
+            }
+            if (source == null || options == null || options.expectedSize() < 0 ||
+                    (!options.expectedSha256().isEmpty() && !BLOB_SHA256.matcher(options.expectedSha256()).matches())) {
+                throw SagatException.of(ErrorCode.VALIDATION_FAILED, "blob source or preconditions are malformed");
+            }
+            var header = Worker.WriteBlobHeader.newBuilder()
+                    .setTaskId(lease.getTaskId()).setRunId(lease.getRunId()).setStepId(lease.getStepId())
+                    .setAttempt(lease.getAttempt()).setGeneration(lease.getGeneration()).setLeaseToken(lease.getLeaseToken())
+                    .setContentType(options.contentType()).setExpectedSize(options.expectedSize())
+                    .setExpectedSha256(options.expectedSha256()).build();
+            var written = channel.writeBlob(header, source, lease.getTraceparent(), cancel);
+            var response = written.response();
+            var descriptor = new BlobDescriptor(response.getBlobId(), response.getSize(), response.getSha256(), response.getContentType());
+            validateBlob(descriptor);
+            if (descriptor.size() != written.size() || !descriptor.sha256().equals(written.sha256())) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "the blob service descriptor does not match the uploaded bytes");
+            }
+            return descriptor;
+        }
+
+        @Override
+        public synchronized InputStream readBlob(BlobDescriptor descriptor) {
+            if (dropped) {
+                throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the attempt is over");
+            }
+            if (minor < 3) {
+                throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "blob streaming requires worker protocol 1.3");
+            }
+            validateBlob(descriptor);
+            var request = Worker.ReadBlobRequest.newBuilder()
+                    .setTaskId(lease.getTaskId()).setRunId(lease.getRunId()).setStepId(lease.getStepId())
+                    .setAttempt(lease.getAttempt()).setGeneration(lease.getGeneration()).setLeaseToken(lease.getLeaseToken())
+                    .setBlobId(descriptor.id()).build();
+            var read = channel.readBlob(request, lease.getTraceparent());
+            return new BlobInputStream(read.parts(), descriptor, cancel, read::cancel);
+        }
+
         synchronized void dropSecrets() {
             dropped = true;
             if (secrets != null) {
@@ -800,6 +860,14 @@ public final class WorkerHost implements AutoCloseable {
             values.put(secret.getName(), secret.getValue().toByteArray());
         }
         return new Secrets(values);
+    }
+
+    private static void validateBlob(BlobDescriptor descriptor) {
+        if (descriptor == null || descriptor.id() == null || descriptor.id().isBlank() || descriptor.size() < 0 ||
+                descriptor.sha256() == null || !BLOB_SHA256.matcher(descriptor.sha256()).matches() ||
+                descriptor.contentType() == null || descriptor.contentType().isBlank()) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "the blob descriptor is malformed");
+        }
     }
 
     // ------------------------------------------------------------------------------------- heartbeat
@@ -926,7 +994,7 @@ public final class WorkerHost implements AutoCloseable {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     }
 
-    private void complete(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, String output, long started) {
+    private void complete(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, String output, BlobDescriptor blob, long started) {
         try {
             Worker.CompleteStepRequest request = Worker.CompleteStepRequest.newBuilder()
                     .setTaskId(lease.getTaskId())
@@ -937,6 +1005,8 @@ public final class WorkerHost implements AutoCloseable {
                     .setLeaseToken(lease.getLeaseToken())
                     .setIdempotencyKey("done-" + lease.getTaskId())
                     .setOutputJson(output)
+                    .setOutputBlobRef(blob == null ? "" : blob.id())
+                    .setOutputSha256(blob == null ? "" : blob.sha256())
                     .setTraceparent(lease.getTraceparent())
                     .build();
             Worker.StepCommandResponse answer = withRetries(channel, state, () -> channel.completeStep(request, lease.getTraceparent()));

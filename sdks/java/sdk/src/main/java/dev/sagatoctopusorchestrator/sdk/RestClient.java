@@ -3,6 +3,7 @@ package dev.sagatoctopusorchestrator.sdk;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.NullNode;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
@@ -21,7 +22,14 @@ final class RestClient {
             JsonNode body,
             String idempotencyKey,
             String traceparent,
-            boolean safeToRepeat) {}
+            boolean safeToRepeat,
+            InputStream stream,
+            Map<String, String> headers) {
+        Request(String method, String path, Map<String, String> query, JsonNode body, String idempotencyKey,
+                String traceparent, boolean safeToRepeat) {
+            this(method, path, query, body, idempotencyKey, traceparent, safeToRepeat, null, null);
+        }
+    }
 
     record Response(int status, String traceId, JsonNode body) {}
 
@@ -102,10 +110,13 @@ final class RestClient {
         if (body != null) {
             headers.put("Content-Type", "application/json");
         }
+        if (req.headers() != null) {
+            headers.putAll(req.headers());
+        }
 
         HttpTransport.Result result;
         try {
-            result = transport.send(new HttpTransport.Call(req.method(), URI.create(url.toString()), headers, body, config.timeout()));
+            result = transport.send(new HttpTransport.Call(req.method(), URI.create(url.toString()), headers, body, req.stream(), config.timeout()));
         } catch (SagatException e) {
             throw e;
         } catch (InterruptedException e) {

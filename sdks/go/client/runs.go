@@ -2,10 +2,15 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"iter"
 	"math/rand/v2"
+	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -14,6 +19,21 @@ import (
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/ids"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx"
 )
+
+// BlobDescriptor is the verified identity of a staged run input.
+type BlobDescriptor struct {
+	ID          string `json:"id"`
+	Size        int64  `json:"size"`
+	SHA256      string `json:"sha256"`
+	ContentType string `json:"contentType"`
+}
+
+// UploadRunInputOptions adds optional server-side integrity preconditions.
+type UploadRunInputOptions struct {
+	ContentType    string
+	ExpectedSize   *int64
+	ExpectedSHA256 string
+}
 
 // CallOption adjusts one call. An option that a call has no use for is ignored; the doc of each
 // option says which calls read it.
@@ -244,6 +264,107 @@ func (c *Client) Start(ctx context.Context, workflow string, input any, opts ...
 		method: "POST", path: "/runs", body: body, hasBody: true,
 		idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return parseRun(resp.body)
+}
+
+// UploadRunInput streams source exactly once and accepts only a descriptor matching the bytes read.
+func (c *Client) UploadRunInput(ctx context.Context, source io.Reader, options UploadRunInputOptions) (BlobDescriptor, error) {
+	if source == nil {
+		return BlobDescriptor{}, sagat.Invalid("a run-input source is required")
+	}
+	if options.ExpectedSize != nil && *options.ExpectedSize < 0 {
+		return BlobDescriptor{}, sagat.Invalid("blob expected size is non-negative")
+	}
+	if options.ExpectedSHA256 != "" && !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(options.ExpectedSHA256) {
+		return BlobDescriptor{}, sagat.Invalid("blob expected SHA-256 is lowercase hexadecimal")
+	}
+	digest := sha256.New()
+	reader := &measuredReader{source: source, digest: digest}
+	headers := make(http.Header)
+	if options.ExpectedSize != nil {
+		headers.Set("X-Octopus-Blob-Size", strconv.FormatInt(*options.ExpectedSize, 10))
+	}
+	if options.ExpectedSHA256 != "" {
+		headers.Set("X-Octopus-Blob-Sha256", options.ExpectedSHA256)
+	}
+	contentType := options.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: "/run-input-blobs", rawBody: reader, contentType: contentType, headers: headers})
+	if err != nil {
+		return BlobDescriptor{}, err
+	}
+	raw, err := jsonx.Object(resp.body)
+	if err != nil {
+		return BlobDescriptor{}, sagat.NewError(sagat.CodeProtocol, "the blob descriptor is not an object")
+	}
+	d := BlobDescriptor{}
+	d.ID, _ = jsonx.String(raw, "id")
+	d.Size, _ = jsonx.Int(raw, "size")
+	d.SHA256, _ = jsonx.String(raw, "sha256")
+	d.ContentType, _ = jsonx.String(raw, "contentType")
+	if !reader.eof || !uuidPattern.MatchString(d.ID) || d.Size != reader.size || d.SHA256 != hex.EncodeToString(digest.Sum(nil)) || d.ContentType == "" {
+		return BlobDescriptor{}, sagat.NewError(sagat.CodeProtocol, "the run-input descriptor does not match the uploaded bytes")
+	}
+	return d, nil
+}
+
+type measuredReader struct {
+	source io.Reader
+	digest io.Writer
+	size   int64
+	eof    bool
+}
+
+func (r *measuredReader) Read(p []byte) (int, error) {
+	n, err := r.source.Read(p)
+	if n > 0 {
+		_, _ = r.digest.Write(p[:n])
+		r.size += int64(n)
+	}
+	if err == io.EOF {
+		r.eof = true
+	}
+	return n, err
+}
+
+// StartWithBlob atomically claims a descriptor previously returned by UploadRunInput.
+func (c *Client) StartWithBlob(ctx context.Context, workflow string, descriptor BlobDescriptor, opts ...CallOption) (*Run, error) {
+	if !uuidPattern.MatchString(descriptor.ID) || descriptor.Size < 0 || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(descriptor.SHA256) || descriptor.ContentType == "" {
+		return nil, sagat.Invalid("a run-input blob descriptor is malformed")
+	}
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	deadline := o.deadline
+	if o.hasDeadlineIn {
+		deadline = time.Now().Add(o.deadlineIn)
+	}
+	workflowID, err := c.ResolveWorkflow(ctx, workflow)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"workflowId": workflowID, "inputBlobRef": descriptor.ID}
+	if o.versionID != "" {
+		body["versionId"] = o.versionID
+	}
+	if o.correlationID != "" {
+		body["correlationId"] = o.correlationID
+	}
+	if !deadline.IsZero() {
+		body["deadline"] = jsonx.Instant(deadline)
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: "/runs", body: body, hasBody: true, idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true})
 	if err != nil {
 		return nil, err
 	}

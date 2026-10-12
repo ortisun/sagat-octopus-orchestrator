@@ -22,8 +22,32 @@ from sagat_octopus_orchestrator import (
     WorkerHost,
     run_blocking,
 )
+from sagat_octopus_orchestrator.worker._grpc import error_of_status
 
 from .fakes import FakeWorkerService, Scripted, lease, until
+
+
+def test_a_blob_integrity_failure_is_a_protocol_error_without_server_text() -> None:
+    class DataLoss:
+        @staticmethod
+        def code() -> grpc.StatusCode:
+            return grpc.StatusCode.DATA_LOSS
+
+        @staticmethod
+        def details() -> str:
+            return "payload must not escape"
+
+        @staticmethod
+        def trailing_metadata() -> tuple[tuple[str, str], ...]:
+            return (("x-sagat-error", "BLOB_CORRUPT"),)
+
+        @staticmethod
+        def initial_metadata() -> None:
+            return None
+
+    mapped = error_of_status("ReadBlob", DataLoss())  # type: ignore[arg-type]
+    assert (mapped.code, mapped.reason) == ("PROTOCOL", "BLOB_CORRUPT")
+    assert "payload must not escape" not in mapped.message
 
 MakeHost = Callable[..., WorkerHost]
 TRACE = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
@@ -47,7 +71,7 @@ async def test_a_worker_registers_its_activities_and_the_newest_protocol_it_spea
     assert list(request.capabilities.languages) == ["python"]
     assert list(request.capabilities.activities) == ["a.undo", "b.second", "c.lookup"]
     assert list(request.capabilities.pools) == []
-    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.2")
+    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.3")
     assert register.metadata["authorization"] == "Bearer tok"
     assert host.protocol_version == "1.2"
 

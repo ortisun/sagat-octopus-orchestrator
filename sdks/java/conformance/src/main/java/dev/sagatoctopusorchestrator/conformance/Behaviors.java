@@ -7,10 +7,18 @@ import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.worker.ActivityContext;
 import dev.sagatoctopusorchestrator.sdk.worker.ActivityFailure;
 import dev.sagatoctopusorchestrator.sdk.worker.ActivityHandler;
+import dev.sagatoctopusorchestrator.sdk.worker.BlobDescriptor;
+import dev.sagatoctopusorchestrator.sdk.worker.BlobOutput;
+import dev.sagatoctopusorchestrator.sdk.worker.BlobWriteOptions;
 import dev.sagatoctopusorchestrator.sdk.worker.Secrets;
 import dev.sagatoctopusorchestrator.sdk.worker.Verdict;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -91,6 +99,59 @@ final class Behaviors {
                     }
                     out.put("secretLength", secrets.get(behavior.get("readsSecret").asText()).length);
                     return out;
+                }
+                if (behavior.has("blobRoundTripBytes")) {
+                    byte[] body = new byte[behavior.get("blobRoundTripBytes").asInt()];
+                    Arrays.fill(body, (byte) 'x');
+                    String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
+                    var descriptor = ctx.writeBlob(new ByteArrayInputStream(body),
+                            new BlobWriteOptions("application/octet-stream", body.length, sha256));
+                    ByteArrayOutputStream read = new ByteArrayOutputStream();
+                    try (var stream = ctx.readBlob(descriptor)) {
+                        stream.transferTo(read);
+                    }
+                    if (!Arrays.equals(read.toByteArray(), body)) {
+                        throw new IllegalStateException("blob round trip failed");
+                    }
+                    ObjectNode result = F.objectNode();
+                    result.put("blobSize", descriptor.size());
+                    result.put("blobSha256", descriptor.sha256());
+                    result.put("roundTrip", true);
+                    return result;
+                }
+                if (behavior.has("blobInputBytes")) {
+                    JsonNode raw = input.get("$blob");
+                    var descriptor = new BlobDescriptor(raw.get("id").asText(), raw.get("size").asLong(),
+                            raw.get("sha256").asText(), raw.get("contentType").asText());
+                    ByteArrayOutputStream read = new ByteArrayOutputStream();
+                    try (var stream = ctx.readBlob(descriptor)) { stream.transferTo(read); }
+                    byte[] expected = new byte[behavior.get("blobInputBytes").asInt()];
+                    Arrays.fill(expected, (byte) 'i');
+                    if (!Arrays.equals(read.toByteArray(), expected)) throw new IllegalStateException("run-input blob did not match");
+                    ObjectNode result = F.objectNode();
+                    result.put("inputBlobSize", descriptor.size()); result.put("inputBlobSha256", descriptor.sha256());
+                    return result;
+                }
+                if (behavior.has("blobOutputBytes")) {
+                    byte[] body = new byte[behavior.get("blobOutputBytes").asInt()];
+                    Arrays.fill(body, (byte) 'y');
+                    var descriptor = ctx.writeBlob(new ByteArrayInputStream(body),
+                            new BlobWriteOptions("application/octet-stream", 0, ""));
+                    return new BlobOutput(descriptor);
+                }
+                if (behavior.has("blobInlineBytes")) {
+                    byte[] body = new byte[behavior.get("blobInlineBytes").asInt()];
+                    Arrays.fill(body, (byte) 'z');
+                    var descriptor = ctx.writeBlob(new ByteArrayInputStream(body),
+                            new BlobWriteOptions("application/octet-stream", 0, ""));
+                    ObjectNode blob = F.objectNode();
+                    blob.put("id", descriptor.id());
+                    blob.put("size", descriptor.size());
+                    blob.put("sha256", descriptor.sha256());
+                    blob.put("contentType", descriptor.contentType());
+                    ObjectNode result = F.objectNode();
+                    result.set("$blob", blob);
+                    return result;
                 }
                 if (behavior.has("verdict")) {
                     JsonNode output = behavior.get("output");

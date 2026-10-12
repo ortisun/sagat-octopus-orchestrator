@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, TypeVar
 
@@ -15,6 +16,25 @@ TaskKind = Literal["FORWARD", "COMPENSATION", "RECONCILIATION"]
 CancelReason = Literal["run-cancelled", "lease-lost", "shutdown"]
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class BlobDescriptor:
+    """Verified identity of an immutable protocol 1.3 blob."""
+
+    id: str
+    size: int
+    sha256: str
+    content_type: str
+
+
+class BlobOutput:
+    """Explicitly selects a descriptor as the step output; ordinary dictionaries remain JSON."""
+
+    __slots__ = ("descriptor",)
+
+    def __init__(self, descriptor: BlobDescriptor) -> None:
+        self.descriptor = descriptor
 
 
 class ActivityFailure(Exception):
@@ -213,6 +233,8 @@ class ActivityContext:
         log: logging.LoggerAdapter[logging.Logger],
         deadline_ms: Callable[[], int],
         secrets: Callable[[], Awaitable[Secrets]],
+        write_blob: Callable[[AsyncIterable[bytes] | Iterable[bytes], str, int, str], Awaitable[BlobDescriptor]],
+        read_blob: Callable[[BlobDescriptor], AsyncIterator[bytes]],
     ) -> None:
         self.activity_name = activity_name
         self.task_id = task_id
@@ -237,6 +259,8 @@ class ActivityContext:
         self.log = log
         self._deadline_ms = deadline_ms
         self._secrets = secrets
+        self._write_blob = write_blob
+        self._read_blob = read_blob
 
     @property
     def deadline(self) -> datetime:
@@ -251,6 +275,21 @@ class ActivityContext:
     async def secrets(self) -> Secrets:
         """The secrets the step declares; resolved once per attempt, on first use. Never log them."""
         return await self._secrets()
+
+    async def write_blob(
+        self,
+        source: AsyncIterable[bytes] | Iterable[bytes],
+        *,
+        content_type: str = "",
+        expected_size: int = 0,
+        expected_sha256: str = "",
+    ) -> BlobDescriptor:
+        """Streams a one-pass source and verifies the service descriptor against the bytes sent."""
+        return await self._write_blob(source, content_type, expected_size, expected_sha256)
+
+    def read_blob(self, descriptor: BlobDescriptor) -> AsyncIterator[bytes]:
+        """Streams bytes; successful exhaustion means size and SHA-256 matched the descriptor."""
+        return self._read_blob(descriptor)
 
 
 ActivityHandler = Callable[[Any, ActivityContext], Any]

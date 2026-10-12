@@ -1020,6 +1020,27 @@ impl RunTx for PgRunTx {
         (&self.def, &mut self.state)
     }
 
+    async fn required_worker_protocol_minor(&mut self) -> Result<u32, StoreError> {
+        let needs_blob_protocol: bool = sqlx::query_scalar(
+            "SELECT r.input_blob_id IS NOT NULL OR EXISTS ( \
+                 SELECT 1 FROM blobs b \
+                 WHERE b.tenant_id = r.tenant_id AND b.namespace_id = r.namespace_id \
+                   AND b.run_id = r.id AND b.purpose = 'STEP_OUTPUT' \
+                   AND b.state = 'COMMITTED') \
+             FROM runs r WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(if needs_blob_protocol {
+            sagat_application::worker::BLOB_PROTOCOL_MINOR
+        } else {
+            0
+        })
+    }
+
     async fn data(&mut self) -> Result<&RunData, StoreError> {
         if self.data.is_none() {
             let tenant = self.info.tenant_id.as_uuid();

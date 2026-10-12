@@ -13,6 +13,7 @@ is written only on success.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import sys
@@ -27,6 +28,8 @@ from sagat_octopus_orchestrator import (
     SDK_VERSION,
     ActivityContext,
     ActivityFailure,
+    BlobDescriptor,
+    BlobOutput,
     ClientConfig,
     Flow,
     RetryPolicy,
@@ -228,6 +231,38 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj]) -> Any
                         return {**(behavior.get("returns") or {}), "secretError": error.code}
                     raise
                 return {**(behavior.get("returns") or {}), "secretLength": len(secrets.get(behavior["readsSecret"]))}
+            if behavior.get("blobRoundTripBytes") is not None:
+                body = b"x" * behavior["blobRoundTripBytes"]
+                descriptor = await ctx.write_blob(
+                    [body], content_type="application/octet-stream", expected_size=len(body),
+                    expected_sha256=hashlib.sha256(body).hexdigest(),
+                )
+                read = bytearray()
+                async for chunk in ctx.read_blob(descriptor):
+                    read.extend(chunk)
+                if read != body:
+                    raise RuntimeError("blob round trip failed")
+                return {"blobSize": descriptor.size, "blobSha256": descriptor.sha256, "roundTrip": True}
+            if behavior.get("blobInputBytes") is not None:
+                raw = run_input["$blob"]
+                descriptor = BlobDescriptor(raw["id"], raw["size"], raw["sha256"], raw["contentType"])
+                read = bytearray()
+                async for chunk in ctx.read_blob(descriptor):
+                    read.extend(chunk)
+                if read != b"i" * behavior["blobInputBytes"]:
+                    raise RuntimeError("run-input blob did not match")
+                return {"inputBlobSize": descriptor.size, "inputBlobSha256": descriptor.sha256}
+            if behavior.get("blobOutputBytes") is not None:
+                descriptor = await ctx.write_blob(
+                    [b"y" * behavior["blobOutputBytes"]], content_type="application/octet-stream"
+                )
+                return BlobOutput(descriptor)
+            if behavior.get("blobInlineBytes") is not None:
+                descriptor = await ctx.write_blob(
+                    [b"z" * behavior["blobInlineBytes"]], content_type="application/octet-stream"
+                )
+                return {"$blob": {"id": descriptor.id, "size": descriptor.size, "sha256": descriptor.sha256,
+                                  "contentType": descriptor.content_type}}
             if behavior.get("verdict") is not None:
                 verdict = behavior["verdict"]
                 if verdict == "applied":
@@ -378,6 +413,17 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                             deadline_in=deadline_in / 1000 if deadline_in is not None else None,
                         )
                     )
+                elif op == "startWithBlob":
+                    workflow_id = config["workflows"][step["workflow"]]["workflowId"]
+                    blob_body = b"i" * step["inputBlobBytes"]
+                    descriptor = await client.upload_run_input(
+                        [blob_body], expected_size=len(blob_body), expected_sha256=hashlib.sha256(blob_body).hexdigest()
+                    )
+                    result = run_json(await client.start_with_blob(
+                        workflow_id, descriptor, idempotency_key=step.get("idempotencyKey"),
+                        correlation_id=step.get("correlationId"), traceparent=step.get("traceparent"),
+                        deadline_in=(step["deadlineInMs"] / 1000 if step.get("deadlineInMs") is not None else None),
+                    ))
                 elif op == "workflowByName":
                     name = config["workflows"][step["workflow"]]["name"]
                     result = run_json(

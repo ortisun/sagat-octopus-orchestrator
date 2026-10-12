@@ -116,13 +116,13 @@ internal sealed class RunMode : IAsyncDisposable
             switch (kind)
             {
                 case "compensation":
-                    host.RegisterCompensation<JsonNode?, JsonNode?>(name, (input, context, token) => behaviors.ActivityAsync(activityName, kind, behavior, input, context, token));
+                    host.RegisterCompensation<JsonNode?, object?>(name, (input, context, token) => behaviors.ActivityAsync(activityName, kind, behavior, input, context, token));
                     break;
                 case "reconciler":
                     host.RegisterReconciler<JsonNode?>(name, (input, context, token) => behaviors.ReconcilerAsync(activityName, behavior, input, context, token));
                     break;
                 default:
-                    host.RegisterActivity<JsonNode?, JsonNode?>(name, (input, context, token) => behaviors.ActivityAsync(activityName, kind, behavior, input, context, token));
+                    host.RegisterActivity<JsonNode?, object?>(name, (input, context, token) => behaviors.ActivityAsync(activityName, kind, behavior, input, context, token));
                     break;
             }
         }
@@ -258,6 +258,24 @@ internal sealed class RunMode : IAsyncDisposable
                         Traceparent = (string?)step["traceparent"],
                         DeadlineIn = step["deadlineInMs"] is { } deadline ? TimeSpan.FromMilliseconds((long)deadline) : null,
                     }, cancellationToken).ConfigureAwait(false));
+                }
+
+            case "startWithBlob":
+                {
+                    var workflowId = (string)config["workflows"]![(string)step["workflow"]!]!["workflowId"]!;
+                    var body = Enumerable.Repeat((byte)'i', (int)step["inputBlobBytes"]!).ToArray();
+                    await using var source = new MemoryStream(body, writable: false);
+                    var descriptor = await client.UploadRunInputAsync(source, new RunInputBlobOptions(
+                        ExpectedSize: body.Length,
+                        ExpectedSha256: Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body)).ToLowerInvariant()), cancellationToken).ConfigureAwait(false);
+                    return RunJson(await client.StartWithBlobAsync(workflowId, descriptor,
+                        new StartOptions
+                        {
+                            IdempotencyKey = (string?)step["idempotencyKey"],
+                            CorrelationId = (string?)step["correlationId"],
+                            Traceparent = (string?)step["traceparent"],
+                            DeadlineIn = step["deadlineInMs"] is { } deadline ? TimeSpan.FromMilliseconds((long)deadline) : null,
+                        }, cancellationToken).ConfigureAwait(false));
                 }
 
             case "workflowByName":

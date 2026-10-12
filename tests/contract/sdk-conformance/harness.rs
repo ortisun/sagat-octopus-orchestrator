@@ -15,8 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Method;
+use sagat_application::blobs::BlobLimits;
 use sagat_application::worker::WorkerSettings;
 use sagat_domain::identity::Role;
+use sagat_infra_blobstore::BlobStoreConfig;
 use serde_json::{Map, Value, json};
 use tokio::process::Command;
 
@@ -141,6 +143,32 @@ struct Run {
     unbound_token: String,
     /// The control endpoint, which holds the platform until it is stopped.
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Both server processes use this directory, so it must outlive them.
+    _blob_dir: TempBlobDir,
+}
+
+struct TempBlobDir(PathBuf);
+
+impl TempBlobDir {
+    fn create() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "sagat-sdk-conformance-blobs-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).expect("create shared blob directory");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempBlobDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 impl Run {
@@ -169,11 +197,21 @@ fn token(platform: &Platform, subject: &str, tenant: &str) -> String {
 
 async fn boot(scenario: &Value) -> Run {
     let lease = scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30);
+    let blob_dir = TempBlobDir::create();
     let platform = platform_with(Options {
         worker: WorkerSettings {
             lease_ttl: Duration::from_secs(lease),
             ..WorkerSettings::default()
         },
+        blobs: Some(BlobLimits {
+            max_bytes: 4 * 1024 * 1024,
+            max_pending: 16,
+            upload_ttl: Duration::from_secs(24 * 3600),
+            abandoned_after: Duration::from_secs(3600),
+        }),
+        blob_store: Some(BlobStoreConfig::Fs {
+            root: blob_dir.path().to_owned(),
+        }),
         ..Options::default()
     })
     .await;
@@ -188,6 +226,7 @@ async fn boot(scenario: &Value) -> Run {
     // (also the events that release a wait) are its loops, as in production.
     let ring = format!("k1:{}", platform.api.key_k1);
     let lease_secs = lease.to_string();
+    let blob_root = blob_dir.path().to_string_lossy().into_owned();
     let engine = RunningEngine::start(engine_env(
         &platform.api.db,
         &platform.api.idp,
@@ -196,6 +235,8 @@ async fn boot(scenario: &Value) -> Run {
             ("SAGAT_LEASE_TTL_SECS", lease_secs.as_str()),
             ("SAGAT_EVENT_POLL_MS", "50"),
             ("SAGAT_DELIVERY_POLL_MS", "50"),
+            ("SAGAT_BLOB_PROVIDER", "fs"),
+            ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
         ],
     ))
     .await;
@@ -210,6 +251,7 @@ async fn boot(scenario: &Value) -> Run {
         platform,
         engine,
         tasks: vec![serving],
+        _blob_dir: blob_dir,
     }
 }
 
@@ -292,6 +334,143 @@ async fn server_state(run: &Run) -> Result<Value, String> {
         runs.push(json!({"runId": id, "status": item["status"], "paused": item["paused"], "nodes": nodes}));
     }
     Ok(Value::Array(runs))
+}
+
+/// Durable evidence for the blob scenario. This is read independently of the SDK result so blessing
+/// cannot turn a failed transfer, a wrong digest or an accidentally auto-promoted JSON object into
+/// the expected contract.
+async fn blob_evidence(run: &Run) -> Result<Value, String> {
+    let stored: Vec<(String, i64, String, String)> = sqlx::query_as(
+        "SELECT state, size_bytes, encode(sha256, 'hex'), content_type \
+         FROM blobs ORDER BY encode(sha256, 'hex')",
+    )
+    .fetch_all(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading blob evidence: {e}"))?;
+    let stored: Vec<Value> = stored
+        .into_iter()
+        .map(|(state, size, sha256, content_type)| {
+            json!({"state": state, "size": size, "sha256": sha256, "contentType": content_type})
+        })
+        .collect();
+    let inline: Vec<u8> = sqlx::query_scalar(
+        "SELECT p.content FROM steps s \
+         JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest \
+         WHERE s.node='inline'",
+    )
+    .fetch_one(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading inline blob-shaped output: {e}"))?;
+    let inline: Value = serde_json::from_slice(&inline)
+        .map_err(|e| format!("inline blob-shaped output is not JSON: {e}"))?;
+    Ok(json!({"stored": stored, "inlineOutput": inline}))
+}
+
+/// Independent durable evidence that the HTTP upload was claimed by the run and that the worker
+/// verified the whole lease-bound stream before completing the activity.
+async fn run_input_blob_evidence(run: &Run) -> Result<Value, String> {
+    let (state, size, sha256, content_type, claimed): (String, i64, String, String, bool) =
+        sqlx::query_as(
+            "SELECT state, size_bytes, encode(sha256, 'hex'), content_type, run_id IS NOT NULL \
+             FROM blobs WHERE purpose='RUN_INPUT'",
+        )
+        .fetch_one(&run.platform.api.db.pool)
+        .await
+        .map_err(|e| format!("reading run-input blob evidence: {e}"))?;
+    let output: Vec<u8> = sqlx::query_scalar(
+        "SELECT p.content FROM steps s \
+         JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest \
+         WHERE s.node='input'",
+    )
+    .fetch_one(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading run-input activity output: {e}"))?;
+    let output: Value = serde_json::from_slice(&output)
+        .map_err(|e| format!("run-input activity output is not JSON: {e}"))?;
+    Ok(json!({
+        "stored": {"state": state, "size": size, "sha256": sha256,
+                   "contentType": content_type, "claimed": claimed},
+        "verifiedOutput": output,
+    }))
+}
+
+fn validate_blob_result(doc: &Value) -> Result<(), String> {
+    for id in ["round-trip-done", "output-done", "inline-done"] {
+        let status = doc["observations"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["id"] == id))
+            .and_then(|item| item["result"]["status"].as_str());
+        if status != Some("SUCCEEDED") {
+            return Err(format!("{id} must finish SUCCEEDED, got {status:?}"));
+        }
+    }
+    let expected = [
+        (
+            "UPLOADED",
+            "29927e273accc68286005017f7fa6e4f27bddb4db3083ff8b8d4c3667905b7fa",
+        ),
+        (
+            "UPLOADED",
+            "29aa987eab9aee830fdd20595bcedef67e8674f4eeac6f017598e7ff8719da23",
+        ),
+        (
+            "COMMITTED",
+            "d9c30921ab850a0e81b8a21eabf78cb38e4ff43fdf46d2e023275a064ed1a7f9",
+        ),
+    ];
+    let rows = doc["blobEvidence"]["stored"]
+        .as_array()
+        .ok_or("blob evidence has no stored rows")?;
+    if rows.len() != expected.len() {
+        return Err(format!("expected three stored blobs, got {}", rows.len()));
+    }
+    for (row, (state, sha256)) in rows.iter().zip(expected) {
+        if row["state"] != state
+            || row["size"] != 300_000
+            || row["sha256"] != sha256
+            || row["contentType"] != "application/octet-stream"
+        {
+            return Err(format!("unexpected stored blob evidence: {row}"));
+        }
+    }
+    let inline = &doc["blobEvidence"]["inlineOutput"]["$blob"];
+    if !inline["id"].is_string()
+        || inline["size"] != 300_000
+        || inline["sha256"] != expected[1].1
+        || inline["contentType"] != "application/octet-stream"
+    {
+        return Err(format!(
+            "ordinary blob-shaped JSON was not preserved inline: {inline}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_run_input_blob_result(doc: &Value) -> Result<(), String> {
+    let status = doc["observations"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["id"] == "input-done"))
+        .and_then(|item| item["result"]["status"].as_str());
+    if status != Some("SUCCEEDED") {
+        return Err(format!("input-done must finish SUCCEEDED, got {status:?}"));
+    }
+    let expected_sha = "e327a74e9a14ae13e010f3614e258c50b6150b6845e691691f54768f8bb3b5ee";
+    let stored = &doc["runInputBlobEvidence"]["stored"];
+    if stored["state"] != "COMMITTED"
+        || stored["size"] != 300_000
+        || stored["sha256"] != expected_sha
+        || stored["contentType"] != "application/octet-stream"
+        || stored["claimed"] != true
+    {
+        return Err(format!("unexpected run-input blob evidence: {stored}"));
+    }
+    let output = &doc["runInputBlobEvidence"]["verifiedOutput"];
+    if output["inputBlobSize"] != 300_000 || output["inputBlobSha256"] != expected_sha {
+        return Err(format!(
+            "the worker did not verify the whole run input: {output}"
+        ));
+    }
+    Ok(())
 }
 
 /// The places in a runner's observations where an error repeats something it must not: a token of the run
@@ -638,8 +817,30 @@ async fn play(
                         Ok(state) => out["serverState"] = state,
                         Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                     }
+                    if name == "blobs" {
+                        match blob_evidence(&run).await {
+                            Ok(evidence) => out["blobEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
+                    if name == "run-input-blobs" {
+                        match run_input_blob_evidence(&run).await {
+                            Ok(evidence) => out["runInputBlobEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
                     let mut normalizer = Normalizer::new(&unique, given_traces(&scenario));
                     let doc = compared(&out, &mut normalizer);
+                    if name == "blobs"
+                        && let Err(e) = validate_blob_result(&doc)
+                    {
+                        failures.push(format!("{name}/{lang}: {e}"));
+                    }
+                    if name == "run-input-blobs"
+                        && let Err(e) = validate_run_input_blob_result(&doc)
+                    {
+                        failures.push(format!("{name}/{lang}: {e}"));
+                    }
                     std::fs::write(
                         dir.join(format!("{lang}.{pid}.normalized.json")),
                         serde_json::to_vec_pretty(&doc).expect("json"),
@@ -669,13 +870,17 @@ async fn play(
                 ));
             }
         }
-        if bless {
+        if bless && failures.is_empty() {
             std::fs::write(
                 &expected_path,
                 serde_json::to_vec_pretty(&first).expect("json"),
             )
             .expect("bless");
             println!("blessed {} from {first_lang}", expected_path.display());
+        } else if bless {
+            failures.push(format!(
+                "{name}: refusing to bless a scenario with failed contract assertions"
+            ));
         } else {
             match std::fs::read(&expected_path)
                 .ok()

@@ -2,17 +2,21 @@ import { PROTOCOL_VERSION, safeLogger, silentLogger, warnIfNotSecure, type Logge
 import { MAX_WAIT_MS, SagatError, isRetriable } from '../errors.js';
 import { encodeJson, parseStepDocument } from '../json.js';
 import { DEFAULT_RETRY, backoffDelayMs, sleep, type RetryPolicy } from '../retry.js';
+import { createHash } from 'node:crypto';
 import {
   ActivityFailure,
+  BlobOutput,
   isCancellation,
   type ActivityContext,
   type ActivityHandler,
+  type BlobDescriptor,
   type RegisterOptions,
   type Secrets,
   type TaskKind,
   type Verdict,
+  type WriteBlobOptions,
 } from './activity.js';
-import { WorkerRpc, checkGrpcConfig, type TaskLease } from './grpc.js';
+import { WorkerRpc, checkGrpcConfig, type TaskLease, type WriteBlobRequest } from './grpc.js';
 import type * as grpc from '@grpc/grpc-js';
 
 export interface WorkerConfig {
@@ -450,6 +454,8 @@ export class WorkerHost {
         }
         return secretsCache;
       },
+      writeBlob: (source, options) => this.writeBlob(lease, minor, source, options, secretsHolder, abort.signal),
+      readBlob: (descriptor) => this.readBlob(lease, minor, descriptor, secretsHolder, abort.signal),
     };
 
     let result: unknown;
@@ -500,6 +506,18 @@ export class WorkerHost {
         : { effect };
     }
 
+    if (result instanceof BlobOutput) {
+      try {
+        this.validateBlobDescriptor(result.descriptor);
+        this.ensureBlobAttempt(minor, { finished: false });
+      } catch {
+        await this.fail(lease, minor < 3 ? 'UNSUPPORTED_PROTOCOL' : 'OUTPUT_INVALID',
+          minor < 3 ? 'blob output requires worker protocol 1.3' : 'the blob output descriptor is malformed', false, started);
+        return;
+      }
+      await this.complete(lease, '', started, result.descriptor);
+      return;
+    }
     let output: string;
     try {
       output = result === undefined ? '' : encodeJson(result);
@@ -512,6 +530,102 @@ export class WorkerHost {
       return;
     }
     await this.complete(lease, output, started);
+  }
+
+  private ensureBlobAttempt(minor: number, holder: { finished?: boolean }): void {
+    if (minor < 3) throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: 'worker protocol 1.3 is required for blobs' });
+    if (holder.finished) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'blob transfers are only valid while the activity handler runs' });
+  }
+
+  private validateBlobDescriptor(descriptor: BlobDescriptor): void {
+    if (!descriptor || typeof descriptor.id !== 'string' || descriptor.id.trim() === '' ||
+        !Number.isSafeInteger(descriptor.size) || descriptor.size < 0 || !/^[0-9a-f]{64}$/.test(descriptor.sha256) ||
+        typeof descriptor.contentType !== 'string' || descriptor.contentType.trim() === '') {
+      throw new SagatError({ code: 'PROTOCOL', message: 'the blob descriptor is malformed' });
+    }
+  }
+
+  private async writeBlob(
+    lease: TaskLease,
+    minor: number,
+    source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+    options: WriteBlobOptions | undefined,
+    holder: { finished?: boolean },
+    signal: AbortSignal,
+  ): Promise<BlobDescriptor> {
+    this.ensureBlobAttempt(minor, holder);
+    if (options?.expectedSize !== undefined && (!Number.isSafeInteger(options.expectedSize) || options.expectedSize < 0)) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'blob expectedSize is a non-negative safe integer' });
+    }
+    if (options?.expectedSha256 && !/^[0-9a-f]{64}$/.test(options.expectedSha256)) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'blob expectedSha256 is lowercase SHA-256 hex' });
+    }
+    const hash = createHash('sha256');
+    let size = 0;
+    const parts = async function* (): AsyncIterable<WriteBlobRequest> {
+      yield { header: {
+        task_id: lease.task_id, run_id: lease.run_id, step_id: lease.step_id, attempt: lease.attempt,
+        generation: lease.generation, lease_token: lease.lease_token, content_type: options?.contentType ?? 'application/octet-stream',
+        expected_size: options?.expectedSize ?? 0, expected_sha256: options?.expectedSha256 ?? '',
+      } };
+      for await (const value of source) {
+        if (!(value instanceof Uint8Array)) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'a blob source yields Uint8Array chunks' });
+        const bytes = Buffer.from(value);
+        for (let offset = 0; offset < bytes.length; offset += 256 * 1024) {
+          const chunk = bytes.subarray(offset, offset + 256 * 1024);
+          size += chunk.length;
+          hash.update(chunk);
+          yield { chunk };
+        }
+      }
+    };
+    const response = await this.#channel().writeBlob(parts(), lease.traceparent || undefined, signal);
+    this.ensureBlobAttempt(minor, holder);
+    const sha256 = hash.digest('hex');
+    if (response.size !== size || response.sha256 !== sha256) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'the blob descriptor does not match the bytes uploaded' });
+    }
+    const descriptor = { id: response.blob_id, size, sha256, contentType: response.content_type };
+    this.validateBlobDescriptor(descriptor);
+    return descriptor;
+  }
+
+  private async *readBlob(
+    lease: TaskLease,
+    minor: number,
+    descriptor: BlobDescriptor,
+    holder: { finished?: boolean },
+    signal: AbortSignal,
+  ): AsyncIterable<Buffer> {
+    this.ensureBlobAttempt(minor, holder);
+    this.validateBlobDescriptor(descriptor);
+    const hash = createHash('sha256');
+    let size = 0;
+    let header = false;
+    for await (const part of this.#channel().readBlob({
+      task_id: lease.task_id, run_id: lease.run_id, step_id: lease.step_id, attempt: lease.attempt,
+      generation: lease.generation, lease_token: lease.lease_token, blob_id: descriptor.id,
+    }, lease.traceparent || undefined, signal)) {
+      this.ensureBlobAttempt(minor, holder);
+      if (part.header) {
+        if (header || size !== 0 || part.header.blob_id !== descriptor.id || part.header.size !== descriptor.size ||
+            part.header.sha256 !== descriptor.sha256 || part.header.content_type !== descriptor.contentType) {
+          throw new SagatError({ code: 'PROTOCOL', message: 'the blob stream header does not match its descriptor' });
+        }
+        header = true;
+      } else if (part.chunk) {
+        if (!header || part.chunk.length > 256 * 1024) throw new SagatError({ code: 'PROTOCOL', message: 'the blob stream is malformed' });
+        size += part.chunk.length;
+        if (size > descriptor.size) throw new SagatError({ code: 'PROTOCOL', message: 'the blob stream is larger than its descriptor' });
+        hash.update(part.chunk);
+        yield part.chunk;
+      } else {
+        throw new SagatError({ code: 'PROTOCOL', message: 'the blob stream is malformed' });
+      }
+    }
+    if (!header || size !== descriptor.size || hash.digest('hex') !== descriptor.sha256) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'the blob stream ended without matching its descriptor' });
+    }
   }
 
   // ----------------------------------------------------------------------------------- heartbeat
@@ -590,7 +704,7 @@ export class WorkerHost {
     }
   }
 
-  private async complete(lease: TaskLease, output: string, started: number): Promise<void> {
+  private async complete(lease: TaskLease, output: string, started: number, blob?: BlobDescriptor): Promise<void> {
     try {
       const answer = await this.withRetries(() =>
         this.#channel().completeStep(
@@ -603,8 +717,8 @@ export class WorkerHost {
             lease_token: lease.lease_token,
             idempotency_key: `done-${lease.task_id}`,
             output_json: output,
-            output_blob_ref: '',
-            output_sha256: '',
+            output_blob_ref: blob?.id ?? '',
+            output_sha256: blob?.sha256 ?? '',
             traceparent: lease.traceparent,
           },
           lease.traceparent || undefined,

@@ -45,7 +45,7 @@ func TestAGRPCFailureIsMappedOntoTheCanonicalErrors(t *testing.T) {
 		{"no answer", methodCompleteStep, codes.Unavailable, "connection refused", "", sagat.CodeTransport, true},
 		{"deadline", methodPoll, codes.DeadlineExceeded, "", "", sagat.CodeTransport, true},
 		{"cancelled by the server", methodPoll, codes.Canceled, "", "", sagat.CodeCancelled, false},
-		{"anything else", methodPoll, codes.DataLoss, "", "", sagat.CodeInternal, false},
+		{"blob corruption", methodReadBlob, codes.DataLoss, "", "BLOB_CORRUPT", sagat.CodeProtocol, false},
 		{"unknown", methodPoll, codes.Unknown, "", "", sagat.CodeInternal, false},
 	}
 	for _, c := range cases {

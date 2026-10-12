@@ -9,11 +9,24 @@ import {
   type ActivityContext, type WorkerConfig, type WorkerEvent,
 } from '../src/index.js';
 import type { TaskLease } from '../src/worker/grpc.js';
+import { errorOfStatus } from '../src/worker/grpc.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PROTO = join(here, '..', '..', 'proto', 'worker.proto');
 
 type Call = { method: string; request: Record<string, unknown>; metadata: grpc.Metadata };
+
+test('a blob integrity failure is a protocol error without server text', () => {
+  const metadata = new grpc.Metadata();
+  metadata.set('x-sagat-error', 'BLOB_CORRUPT');
+  const error = Object.assign(new Error('payload must not escape'), {
+    code: grpc.status.DATA_LOSS, details: 'payload must not escape', metadata,
+  }) as grpc.ServiceError;
+  const mapped = errorOfStatus('ReadBlob', error);
+  assert.equal(mapped.code, 'PROTOCOL');
+  assert.equal(mapped.reason, 'BLOB_CORRUPT');
+  assert.doesNotMatch(mapped.message, /payload must not escape/);
+});
 
 /** An in-memory worker service the tests script: queued leases, queued answers, a record of every call. */
 class FakeServer {
@@ -142,7 +155,7 @@ test('a worker registers its activities and the newest protocol it speaks, with 
   assert.ok(register);
   assert.deepEqual(register.request, {
     worker_name: 'test-worker', namespace: 'payments',
-    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.2' },
+    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.3' },
   });
   assert.equal(register.metadata.get('authorization')[0], 'Bearer tok');
   assert.equal(h.protocolVersion, '1.2');

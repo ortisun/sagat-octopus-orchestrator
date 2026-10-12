@@ -9,7 +9,7 @@ public static class SdkInfo
     public const string Version = "0.1.0";
 
     /// <summary>The newest minor version of worker protocol 1 this SDK speaks (SPEC section 6.1).</summary>
-    public const string ProtocolVersion = "1.2";
+    public const string ProtocolVersion = "1.3";
 
     /// <summary>The <c>languages</c> capability a worker host announces.</summary>
     public const string Language = "csharp";

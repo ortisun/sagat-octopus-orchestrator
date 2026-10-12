@@ -38,6 +38,11 @@ const done = await client.waitForCompletion(run.runId, { timeoutMs: 60_000 });
 you pass), the correlation id and the deadline, and retries **only when that is safe** (a `GET`, or a `POST`
 that carries an idempotency key or an event id; never a `4xx` other than `429`).
 
+For a large run input, call `uploadRunInput(onePassAsyncIterable, options)` and pass its verified
+`BlobDescriptor` to `startWithBlob(workflow, descriptor, options)`. The upload is streamed once and is
+never retried; the SDK accepts its descriptor only after the source reaches EOF and the measured size and
+SHA-256 match. `startWithBlob` retains the normal run-start idempotency, correlation, deadline and trace options.
+
 Every failure is a `SagatError` with `code`, `status`, `retryable`, `traceId`, `reason`, `retryAfterMs`
 and a `remediation` sentence. It never repeats a payload, a token or a secret.
 
@@ -118,7 +123,7 @@ a saga without a body). `build()` returns the document; `toJson()` its canonical
 
 **SemVer.** `0.x` is pre-release: a minor may change the public API and says so in the changelog. From `1.0`
 the public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has
-its own version, negotiated at registration: this SDK offers `1.2`; a server that speaks an older minor
+its own version, negotiated at registration: this SDK offers `1.3`; a server that speaks an older minor
 serves it at that minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL`
 ([ADR-0015](../../docs/adr/ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md)).
 

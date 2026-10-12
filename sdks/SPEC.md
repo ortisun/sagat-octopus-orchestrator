@@ -93,6 +93,8 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | Operation | Request | Success |
 |---|---|---|
 | `start(workflowId, input, options)` | `POST /runs` with `{workflowId, versionId?, input, correlationId?, deadline?}`, header `Idempotency-Key` | `202` Run |
+| `uploadRunInput(onePassSource, options)` | `POST /run-input-blobs`, raw streaming body; optional `X-Octopus-Blob-Size` and `X-Octopus-Blob-Sha256` preconditions | `201` BlobDescriptor |
+| `startWithBlob(workflowId, descriptor, options)` | `POST /runs` with `{workflowId, versionId?, inputBlobRef: descriptor.id, correlationId?, deadline?}`, header `Idempotency-Key` | `202` Run |
 | `get(runId)` | `GET /runs/{runId}` | `200` Run |
 | `list(options)` | `GET /runs?workflowId=&status=&limit=&cursor=` | `200` `{items, nextCursor}`; `listAll` pages for the caller |
 | `cancel(runId, reason, options)` | `POST /runs/{runId}/operations` with `{action: "CANCEL", reason, expectedRunVersion?}`, `Idempotency-Key` | `202` OperationResult |
@@ -117,6 +119,12 @@ Rules:
 - Run, Page and the other answers are returned as typed values **and** keep the raw JSON (`raw`) so a
   field added by a newer server is reachable.
 - Pagination: `list` returns `nextCursor` as given; `listAll` follows it until it is null.
+- A run-input upload consumes its source once while measuring size and SHA-256. It has no automatic
+  retry, even after authentication failure: no second stream exists to send. A successful answer is
+  accepted only after the source reached EOF and its descriptor exactly matches the locally measured
+  bytes. The descriptor is opaque and scoped by the server to its tenant, namespace and uploader.
+  `startWithBlob` sends only its id and uses the normal run-start idempotency key; `input` and
+  `inputBlobRef` are never sent together. Uploading alone does not start a run.
 
 ## 4. Trace context, correlation, deadline
 
@@ -146,6 +154,7 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 |---|---|
 | `GET` (REST) | `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED`, `INTERNAL` with `retryable` true |
 | `POST` that carries an idempotency key or event id | the same; **never** after any other answer |
+| `uploadRunInput` | never: its one-pass body is not replayable |
 | worker `PollTasks`, `Heartbeat` | `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, transport failures |
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |
 | `RegisterWorker` | the same; on `UNAUTHENTICATED` once, with a fresh token |
@@ -178,7 +187,7 @@ pools, max_inflight, protocol_version}}`:
   1 to 256.
 - `max_inflight`: the host's concurrency limit, 1 to 1000 (default 10).
 - `protocol_version`: the newest minor version of protocol 1 the SDK speaks — a constant of the SDK,
-  `1.2` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
+  `1.3` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
   speak (the worker's own if it is not newer than the server's, the server's otherwise). The host **MUST**
   use only the features of the accepted version: against `1` it sends `Heartbeat` without the step
   identity (`run_id`, `step_id`, `attempt`) and does not call `ResolveSecrets`; against `1.1` it does
@@ -270,6 +279,13 @@ A handler's input type that cannot be built from the document is not a crash: th
   "done-<task_id>", output_json, traceparent}`. `output_json` is the JSON of the handler's result (`null` →
   `"null"`; no result → empty string means "no value"). More than 256 KiB: not sent;
   `FailStep(error_code = "PAYLOAD_TOO_LARGE", retryable = false)` instead.
+- Protocol 1.3 exposes `ctx.writeBlob(onePassSource, options)` and `ctx.readBlob(descriptor)` only while
+  the handler is active. Upload sends one header followed by chunks no larger than 256 KiB, measures the
+  source once, and accepts the returned descriptor only when its size and SHA-256 match locally. Read requires
+  the complete descriptor, validates the response header, size and SHA-256 incrementally, and claims success
+  only at clean gRPC EOF; partial or closed streams are unverified. An explicit native `BlobOutput(descriptor)`
+  result sends `output_blob_ref` plus `output_sha256` with empty `output_json`. A JSON object that merely looks
+  like a descriptor remains ordinary inline JSON. Protocol 1.2 and older raise `UNSUPPORTED_PROTOCOL` locally.
 - Failure: `FailStep{..., idempotency_key = "failed-<task_id>", error_code, safe_message, retryable,
   traceparent}`. A handler fails by raising an **`ActivityFailure(code, message, retryable)`**; helpers:
   `retryable(code, message)`, `permanent(code, message)` (non-retryable), `outcomeUnknown(message)`

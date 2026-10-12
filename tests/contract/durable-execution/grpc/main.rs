@@ -11,3 +11,4 @@ mod protocol;
 
 mod blobs;
 mod input_blobs;
+mod protocol_compatibility;

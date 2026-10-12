@@ -121,6 +121,10 @@ A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` i
 | `{"verdict": "applied"\|"not_applied"\|"unknown", "output": V}` | for a reconciler |
 | `{"readsSecret": "name", "returns": V}` | resolves the step's secrets and returns `V` plus `secretLength`, the length of the named one (never the value) |
 | `{"readsSecret": "name", "reportsSecretError": true, "returns": V}` | the same, but if resolving raises a canonical error the output is `V` plus `secretError`, its code (a protocol-1 worker has no `ResolveSecrets`: `UNSUPPORTED_PROTOCOL`) |
+| `{"blobRoundTripBytes": N}` | streams `N` deterministic bytes with size/SHA preconditions, reads the descriptor back to verified EOF, and returns only the verified size/hash |
+| `{"blobOutputBytes": N}` | streams `N` deterministic bytes and returns the SDK's explicit native `BlobOutput` wrapper |
+| `{"blobInlineBytes": N}` | streams `N` deterministic bytes and returns ordinary JSON shaped as `{ "$blob": descriptor }`; it must remain inline |
+| `{"blobInputBytes": N}` | reads the run's lease-bound input descriptor through verified EOF and returns only the verified size/hash |
 
 Every attempt appends an entry to the worker's `workerLog` **when the handler ends**:
 `{activity, kind, node, attempt, input, taskKind, targetNode, targetIdempotencyKey, idempotencyKey,
@@ -136,6 +140,7 @@ stop the scenario.
 | `op` | Fields | Calls | Result |
 |---|---|---|---|
 | `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`) | `start` | the Run |
+| `startWithBlob` | `workflow` (key), `inputBlobBytes`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
 | `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
