@@ -9,7 +9,9 @@
 
 Protect tenant workloads, secrets and untrusted code execution before offering inline scripts.
 
-**Priority:** Cross-cutting, gate for 005. **Dependencies:** 001, 002.
+**Priority:** Cross-cutting, gate for 005. **Dependencies:** 001 and 002 for platform identity and
+worker protocols; the completion evidence composes the integrated 005 sandbox and reuses the
+published 010 Helm chart rather than creating a second runner or deployment contract.
 
 ## User Scenarios & Testing (mandatory)
 

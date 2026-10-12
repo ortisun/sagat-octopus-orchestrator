@@ -1,8 +1,8 @@
 {{- if .Values.networkPolicy.enabled }}
 {{- $cp := dict "root" . "component" "control-plane" }}
 {{- $en := dict "root" . "component" "execution-engine" }}
-# The admin listeners (metrics, probes) answer anyone, so only the monitoring namespace reaches them.
-# The API and the worker API are open to the cluster unless apiFrom / workersFrom narrow them.
+# The admin listeners (metrics, probes) answer anyone, so only explicit monitoring peers reach them.
+# API and worker API peers are also mandatory: omission fails rendering instead of opening a port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

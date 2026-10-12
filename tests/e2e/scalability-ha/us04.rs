@@ -42,8 +42,8 @@ async fn globex(p: &Platform, method: Method, path: &str, body: Option<&Value>) 
     (status, serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
-/// Tenant A starts `NOISY` timers, then globex starts `QUIET`; every timer falls due at the same
-/// instant; the engine is started only then. Returns how many of A's timers had fired by the time
+/// Tenant A starts `NOISY` timers, then globex starts `QUIET`; every timer is due, with A's timers
+/// strictly older than B's, before the engine starts. Returns how many of A's timers had fired by the time
 /// all of B's had.
 async fn noisy_then_quiet(fair: bool) -> usize {
     let p = platform().await;
@@ -82,10 +82,40 @@ async fn noisy_then_quiet(fair: bool) -> usize {
         .await;
         assert_eq!(status, 202, "{run}");
     }
-    sqlx::query("UPDATE steps SET due_at = clock_timestamp() - interval '1 second' WHERE waiting_kind = 'TIMER'")
-        .execute(&p.api.db.pool)
-        .await
-        .expect("make every timer due");
+    // Both cohorts are due when the engine starts, with every noisy timer strictly older than every
+    // quiet timer. `clock_timestamp()` is evaluated per row, so using it alone would make ordering
+    // depend on PostgreSQL's physical update order and weaken the negative control.
+    sqlx::query(
+        "UPDATE steps SET due_at = transaction_timestamp() - CASE \
+             WHEN tenant_id = $1 THEN interval '2 seconds' ELSE interval '1 second' END \
+         WHERE waiting_kind = 'TIMER'",
+    )
+    .bind(p.tenant.as_uuid())
+    .execute(&p.api.db.pool)
+    .await
+    .expect("make every timer due");
+    let fixture: (i64, i64, bool, bool) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE tenant_id = $1), \
+                count(*) FILTER (WHERE tenant_id <> $1), \
+                coalesce(bool_and(due_at <= now()), false), \
+                coalesce(max(due_at) FILTER (WHERE tenant_id = $1) \
+                         < min(due_at) FILTER (WHERE tenant_id <> $1), false) \
+         FROM steps WHERE waiting_kind = 'TIMER'",
+    )
+    .bind(p.tenant.as_uuid())
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("ordered timer fixture");
+    assert_eq!(
+        fixture,
+        (
+            i64::try_from(NOISY).expect("fits"),
+            i64::try_from(QUIET).expect("fits"),
+            true,
+            true,
+        ),
+        "the negative control needs every noisy timer due and older than every quiet timer"
+    );
 
     // One pass takes 30 candidates; the engine acts on four at a time.
     let fairness = if fair { "true" } else { "false" };

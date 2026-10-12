@@ -151,11 +151,7 @@ async fn a_deadline_and_a_cancel_at_the_same_instant_leave_one_outcome_with_ever
 async fn the_runtime_role_cannot_rewrite_the_weights_or_remove_a_shard_but_can_take_and_keep_them()
 {
     let w = world().await;
-    let mut config = PoolConfig::new(w.db.url.replacen(
-        "postgres:postgres",
-        &format!("{RUNTIME_ROLE}:{RUNTIME_ROLE_PASSWORD}"),
-        1,
-    ));
+    let mut config = PoolConfig::new(w.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD));
     config.max_connections = 2;
     let pool = connect(&config).await.expect("connect as the runtime role");
     let refused =

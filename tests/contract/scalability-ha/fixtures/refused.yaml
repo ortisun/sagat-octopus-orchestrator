@@ -50,6 +50,54 @@
 - name: an empty list of who may scrape the admin ports (an empty `from` means everybody)
   changes: {networkPolicy: {metricsFrom: []}}
   message: metricsFrom
+- name: an empty monitoring peer that would expose the admin ports globally
+  changes: {networkPolicy: {metricsFrom: [{}]}}
+  message: empty peer allows every destination
+- name: an empty monitoring namespace selector that would match every namespace
+  changes: {networkPolicy: {metricsFrom: [{namespaceSelector: {}}]}}
+  message: empty selector matches globally
+- name: no explicit REST API caller
+  changes: {networkPolicy: {apiFrom: []}}
+  message: networkPolicy.apiFrom
+- name: no explicit worker API caller
+  changes: {networkPolicy: {workersFrom: []}}
+  message: networkPolicy.workersFrom
+- name: no DNS destination
+  changes: {networkPolicy: {egress: {dnsTo: []}}}
+  message: networkPolicy.egress.dnsTo
+- name: an empty PostgreSQL destination that would allow every address
+  changes: {networkPolicy: {egress: {postgres: {to: [{}]}}}}
+  message: empty peer allows every destination
+- name: a global IPv4 PostgreSQL destination
+  changes: {networkPolicy: {egress: {postgres: {to: [{ipBlock: {cidr: 0.0.0.0/0}}]}}}}
+  message: cannot allow the global address space
+- name: an alternate global IPv6 PostgreSQL destination
+  changes: {networkPolicy: {egress: {postgres: {to: [{ipBlock: {cidr: "0:0:0:0:0:0:0:0/0"}}]}}}}
+  message: cannot allow the global address space
+- name: an invalid OIDC port
+  changes: {networkPolicy: {egress: {oidc: {port: 0}}}}
+  message: networkPolicy.egress.oidc.port
+- name: configured NATS without an explicit destination
+  changes: {networkPolicy: {egress: {nats: {to: []}}}}
+  message: networkPolicy.egress.nats.to
+- name: an extra control-plane rule without a port
+  changes:
+    networkPolicy:
+      egress:
+        controlPlaneExtra:
+          - to: [{ipBlock: {cidr: 192.0.2.0/24}}]
+  message: controlPlaneExtra[0].ports
+- name: a worker pool rule with a named rather than integer port
+  changes:
+    workerPools:
+      - name: render
+        image: x
+        activities: [act.render]
+        networkPolicy:
+          extraEgress:
+            - ports: [{port: https, protocol: TCP}]
+              to: [{ipBlock: {cidr: 192.0.2.0/24}}]
+  message: whole-number port
 - name: secrets with an API nobody said was behind TLS
   changes: {controlPlane: {allowPlaintextSecrets: false}}
   message: controlPlane.allowPlaintextSecrets

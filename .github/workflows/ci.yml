@@ -248,6 +248,7 @@ jobs:
       # workspace run above; this lints it with the example an operator starts from.
       - run: helm lint infra/helm -f infra/helm/examples/ha.yaml
       - run: for script in tests/performance/scalability-ha/run.sh infra/dr/drill.sh; do bash -n "$script"; done
+      - run: sh -n tests/security/sandbox/kubernetes-network-policy.sh
       # The scenarios of the benchmark at a size CI can afford, against a PostgreSQL the script starts
       # itself: proof that the harness runs and that its assertions hold, not a measurement (the figures of
       # the report are from a quiet machine, tests/performance/reports/scalability-ha.md).
