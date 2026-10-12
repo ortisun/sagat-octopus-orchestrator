@@ -81,3 +81,11 @@ tests/e2e/workflow-studio/
 ## Delivery Gate
 
 E2E create→validate→publish→trigger→fail→compensate→inspect journal/traces.
+
+## Workflow schema editor completion (2026-10-12)
+
+Reuse the existing script editor's lazy-loaded Monaco JSON service and bundled meta-schema for
+workflow input/output schemas, with separate model addresses. The document contract remains an
+object or absent; incomplete JSON remains local and the last valid schema stays in the draft.
+Plain-text mode preserves that local text and exposes parse errors through accessible descriptions.
+No remote schema requests or changes to workflow validation semantics are introduced.

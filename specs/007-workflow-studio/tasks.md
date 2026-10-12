@@ -121,3 +121,7 @@ The later restyle, owner approval and real-sandbox CI journey complete T007-039.
 Owner acceptance, 2026-10-11: Marcelo reviewed the open local Studio and explicitly answered
 "Aprovo a proposta visual" for Runs, the light theme, workflow editor, Scripts and sign-in. This closes
 the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 journey also passed in the Studio CI job on commit `ace4060`, completing T007-044. No second visual approval is required for this proposal.
+
+## Remaining V1 schema editing
+
+- [x] T007-047 Provide schema-aware workflow input/output editors (FR-007-002), using bundled Monaco JSON validation/autocomplete with independent models and an accessible plain-text fallback. Preserve incomplete edits across blur and editor-mode changes. Evidence: 31 focused component tests, typecheck/lint/build, and all three real Chromium US01 journeys passed on 2026-10-12; the new journey checks completions, schema diagnostics and lossless fallback.

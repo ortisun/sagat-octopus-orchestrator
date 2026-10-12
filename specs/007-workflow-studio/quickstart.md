@@ -140,3 +140,15 @@ automated CI evidence for this branch is recorded separately.
 The [Studio job](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38156597169/job/114520746513) passed on commit `ace4060` (2026-10-11): **1 034 unit tests in 64 files**, lint, typecheck, generated API types and build; **19 browser journeys passed**, including US02 executing a script in the real sandbox. The two skipped cases are the opt-in benchmarks, which passed separately locally. This closes the sandbox validation gap of the partial local run and T007-044. Other jobs in that workflow were still running when this record was written.
 
 The feature-012 native onboarding harness also passed against this final feature-007 frontend via `SAGAT_STUDIO_DIST`, using the real CLI, TypeScript SDK, engine and development identity provider.
+
+### Workflow input/output schema editing
+
+Open Workflow settings → Data contract. Both schemas offer JSON Schema autocomplete and local
+validation through the bundled Monaco service. “Use a plain text box” keeps the current text,
+including an unfinished edit. Invalid JSON is not written to the workflow; the last valid schema
+remains until the text is corrected or cleared. Server-side validation remains authoritative.
+
+Validation on 2026-10-12: 31 focused component tests and all three Chromium US01 journeys passed,
+including schema completions, an invalid-type diagnostic and preservation when switching editor
+modes. Typecheck, lint and production build passed. This focused browser run used the explicit
+no-sandbox harness mode; it does not revalidate the separate US02 inline-script runner journey.

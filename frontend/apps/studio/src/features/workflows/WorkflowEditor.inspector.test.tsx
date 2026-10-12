@@ -301,6 +301,10 @@ describe('the settings of the workflow', () => {
     await user.paste('{"type": "object"');
     expect(screen.getByRole('alert')).toHaveTextContent('not valid JSON');
     expect(input).toHaveAttribute('aria-invalid', 'true');
+    await user.tab();
+    expect(input).toHaveValue('{"type": "object"');
+    await user.click(input);
+    await user.keyboard('{End}');
     await user.paste(', "required": ["amount"]}');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     await saved(platform, (ir) => expect(ir['inputSchema']).toEqual({ type: 'object', required: ['amount'] }));
