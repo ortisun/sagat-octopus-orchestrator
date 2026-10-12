@@ -47,7 +47,8 @@ sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
-serde_yaml_ng = "0.10"
+# Keep the existing import name while using the maintained YAML implementation.
+serde_yaml_ng = { package = "yaml_serde", version = "=0.10.7" }
 sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true

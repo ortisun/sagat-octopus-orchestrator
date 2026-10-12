@@ -85,3 +85,16 @@ Recorded on 2026-10-08 after checking FR-001-001..007, the success criteria and 
 - **D23 — The required token type is a media type.** `SAGAT_OIDC_REQUIRED_TYP` is trimmed and compared after normalising both sides (RFC 7515 4.1.9: a `typ` without `/` means `application/` + it), so `at+jwt` and `application/at+jwt` are the same type.
 - **D24 — Outside development the process proves its own least privilege.** At start `serve` checks that the connected role is not a superuser, does not own `audit_records` (directly or through a role it belongs to) and holds no UPDATE (any column), DELETE or TRUNCATE on it; otherwise it exits with code 2 before listening, with a message that names the problem and never a credential. A missing `audit_records` is refused too (privileges cannot be established), so staging and production run `migrate` first. `SAGAT_MIGRATE_ON_START` needs the owner role and is therefore accepted only in dev. Role attributes other than those listed (`CREATEROLE`, `REPLICATION`) are not checked, and the check runs once, not periodically.
 - **D25 — The unauthenticated metrics port warns when exposed.** Binding `SAGAT_ADMIN_ADDR` to a non-loopback address logs a warning at start; restricting the port (NetworkPolicy, firewall) is the operator's job and is not enforced by the process.
+
+## Release 0.4.0 dependency gate (2026-10-12)
+
+The release CI detected RUSTSEC-2024-0449: `unsafe-libyaml` is unmaintained. The dependency
+came through `serde_yaml_ng` in the CLI and contract-test helpers, including YAML manifests supplied
+by users. Replace it with the YAML organization's maintained `yaml_serde` 0.10.7, backed by
+`libyaml-rs` 0.3.0. Cargo package renaming preserves the existing `serde_yaml_ng` imports while the
+lockfile removes both retired packages. No advisory exception is added; `cargo audit --deny warnings`
+passes after the replacement. The manifest tests exercise JSON/YAML loading, alias expansion limits,
+multi-document rejection and path confinement; the full release CI checks contracts and CLI journeys.
+
+Sources: [RustSec advisory](https://github.com/RustSec/advisory-db/blob/main/crates/unsafe-libyaml/RUSTSEC-2024-0449.md),
+[YAML Serde migration guide](https://github.com/yaml/yaml-serde#readme).
