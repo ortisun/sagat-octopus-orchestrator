@@ -1,10 +1,11 @@
-import { Controls, MiniMap, ReactFlow } from '@xyflow/react';
-import type { NodeChange, ReactFlowInstance } from '@xyflow/react';
+import { Controls, MiniMap, ReactFlow, useNodesInitialized, useReactFlow } from '@xyflow/react';
+import type { NodeChange } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useCallback, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import type { RefObject } from 'react';
 import { layoutGraph } from '../../model/layout';
 import type { RunModel } from '../../model/runGraph';
-import { flowEdges, flowNodes, layoutNodes } from './canvas';
+import { flowEdges, flowNodes, layoutNodes, sizeFor } from './canvas';
 import type { CardNode, ViewPolicy } from './canvas';
 import { NODE_TYPES } from './RunNodeCard';
 
@@ -18,26 +19,55 @@ const ARIA = {
 
 const FIRST_STEP_MARGIN = 16;
 
-interface InitialStepGeometry {
+interface InitialGraphGeometry {
   canvasTop: number;
   canvasBottom: number;
   viewportHeight: number;
-  stepTop: number;
-  stepBottom: number;
+  graphTop: number;
+  firstRowHeight: number;
 }
 
 /**
- * The initial camera fits the whole graph inside its canvas. A small graph is therefore centred
- * vertically, even when only the top of the canvas is above the page fold. Move that first row to
- * the visible top of the canvas only when a complete card would otherwise be clipped by the page.
+ * Fit view centres a small graph vertically. Anchor its first row at the visible top of the canvas
+ * so content that resolves above the canvas cannot later push every card below the page fold.
  */
-export function initialStepViewportOffset(geometry: InitialStepGeometry): number {
-  const visibleTop = Math.max(0, geometry.canvasTop) + FIRST_STEP_MARGIN;
-  const visibleBottom = Math.min(geometry.viewportHeight, geometry.canvasBottom) - FIRST_STEP_MARGIN;
-  const stepHeight = geometry.stepBottom - geometry.stepTop;
-  if (stepHeight <= 0 || visibleBottom - visibleTop < stepHeight) return 0;
-  if (geometry.stepTop >= visibleTop && geometry.stepBottom <= visibleBottom) return 0;
-  return visibleTop - geometry.stepTop;
+export function initialGraphViewportOffset(geometry: InitialGraphGeometry): number {
+  const visibleTop = Math.max(0, -geometry.canvasTop) + FIRST_STEP_MARGIN;
+  const visibleBottom = Math.min(geometry.viewportHeight, geometry.canvasBottom) - geometry.canvasTop - FIRST_STEP_MARGIN;
+  if (geometry.firstRowHeight <= 0 || visibleBottom - visibleTop < geometry.firstRowHeight) return 0;
+  return visibleTop - geometry.graphTop;
+}
+
+/** Fits exactly once, after React Flow has measured every node. Later data updates and user camera
+ * changes do not run this effect again. Logical graph bounds avoid depending on virtualized DOM. */
+function InitialViewport({ canvas, detail }: { canvas: RefObject<HTMLDivElement | null>; detail: ViewPolicy['detail'] }) {
+  const flow = useReactFlow<CardNode>();
+  const nodesInitialized = useNodesInitialized();
+  const started = useRef(false);
+
+  useEffect(() => {
+    if (!flow.viewportInitialized || !nodesInitialized || started.current) return;
+    started.current = true;
+    void (async () => {
+      const fitted = await flow.fitView({ padding: 0.1, duration: 0 });
+      if (!fitted) return;
+      const element = canvas.current;
+      if (element === null) return;
+      const viewport = flow.getViewport();
+      const graph = flow.getNodesBounds(flow.getNodes());
+      const bounds = element.getBoundingClientRect();
+      const offset = initialGraphViewportOffset({
+        canvasTop: bounds.top,
+        canvasBottom: bounds.bottom,
+        viewportHeight: window.innerHeight,
+        graphTop: viewport.y + graph.y * viewport.zoom,
+        firstRowHeight: sizeFor(detail).height * viewport.zoom,
+      });
+      if (offset !== 0) await flow.setViewport({ ...viewport, y: viewport.y + offset }, { duration: 0 });
+    })();
+  }, [canvas, detail, flow, nodesInitialized]);
+
+  return null;
 }
 
 /** The colour of a step in the overview: only a hint, the cards say it in words. */
@@ -86,32 +116,6 @@ export function GraphView({
     for (const change of changes) if (change.type === 'select' && change.selected) onSelect(change.id);
   };
 
-  const fitInitialViewport = useCallback((flow: ReactFlowInstance<CardNode>) => {
-    void (async () => {
-      const fitted = await flow.fitView({ padding: 0.1, duration: 0 });
-      if (!fitted) return;
-      await document.fonts.ready;
-      requestAnimationFrame(() => {
-        const element = canvas.current;
-        if (element === null) return;
-        const steps = [...element.querySelectorAll<HTMLElement>('.react-flow__node')];
-        const first = steps.map((step) => step.getBoundingClientRect()).sort((left, right) => left.top - right.top)[0];
-        if (first === undefined) return;
-        const bounds = element.getBoundingClientRect();
-        const offset = initialStepViewportOffset({
-          canvasTop: bounds.top,
-          canvasBottom: bounds.bottom,
-          viewportHeight: window.innerHeight,
-          stepTop: first.top,
-          stepBottom: first.bottom,
-        });
-        if (offset === 0) return;
-        const viewport = flow.getViewport();
-        void flow.setViewport({ ...viewport, y: viewport.y + offset }, { duration: 0 });
-      });
-    })();
-  }, []);
-
   return (
     <div className="rn-graph">
       <div className="toolbar">
@@ -151,13 +155,15 @@ export function GraphView({
           edgesFocusable={false}
           elementsSelectable
           deleteKeyCode={null}
-          onInit={fitInitialViewport}
+          fitView
+          fitViewOptions={{ padding: 0.1, duration: 0 }}
           minZoom={0.02}
           maxZoom={1.5}
           onlyRenderVisibleElements
           ariaLabelConfig={ARIA}
           colorMode="system"
         >
+          <InitialViewport canvas={canvas} detail={policy.detail} />
           <Controls showInteractive={false} />
           {policy.minimap ? <MiniMap pannable zoomable nodeColor={overviewColor} style={{ width: 150, height: 96 }} /> : null}
         </ReactFlow>
