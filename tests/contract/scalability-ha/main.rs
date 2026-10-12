@@ -898,3 +898,26 @@ fn every_probe_of_the_chart_asks_for_a_path_its_process_serves() {
         }
     }
 }
+
+#[test]
+fn development_jwks_http_is_explicit_and_reaches_both_services() {
+    let docs = render(&with(&serde_json::json!({
+        "environment": "dev", "oidc": {"allowInsecureJwksHttp": true}
+    })));
+    let mut checked = 0;
+    for deployment in of_kind(&docs, "Deployment") {
+        let env = env_of(deployment);
+        if env.contains_key("SAGAT_OIDC_JWKS_URI") {
+            assert_eq!(
+                env.get("SAGAT_ALLOW_INSECURE_JWKS_HTTP")
+                    .map(String::as_str),
+                Some("true")
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 2);
+    for deployment in of_kind(&render(&base()), "Deployment") {
+        assert!(!env_of(deployment).contains_key("SAGAT_ALLOW_INSECURE_JWKS_HTTP"));
+    }
+}

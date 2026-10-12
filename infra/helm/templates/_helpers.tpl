@@ -44,6 +44,9 @@ app.kubernetes.io/component: {{ .component }}
 {{- fail (printf "oidc.%s is required" $key) -}}
 {{- end -}}
 {{- end -}}
+{{- if and .Values.oidc.allowInsecureJwksHttp (ne .Values.environment "dev") -}}
+{{- fail "oidc.allowInsecureJwksHttp is accepted only when environment=dev" -}}
+{{- end -}}
 {{- if and .Values.engine.autoscaling.keda.enabled .Values.engine.autoscaling.hpa.enabled -}}
 {{- fail "enable at most one of engine.autoscaling.keda and engine.autoscaling.hpa" -}}
 {{- end -}}
@@ -176,6 +179,9 @@ securityContext:
 - {name: SAGAT_OIDC_AUDIENCE, value: {{ .Values.oidc.audience | quote }}}
 - {name: SAGAT_OIDC_JWKS_URI, value: {{ .Values.oidc.jwksUri | quote }}}
 - {name: SAGAT_OIDC_TENANT_CLAIM, value: {{ .Values.oidc.tenantClaim | quote }}}
+{{- if .Values.oidc.allowInsecureJwksHttp }}
+- {name: SAGAT_ALLOW_INSECURE_JWKS_HTTP, value: "true"}
+{{- end }}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef: {name: {{ .Values.database.existingSecret | quote }}, key: DATABASE_URL}

@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata: {name: sagat-seed}
+spec:
+  backoffLimit: 2
+  template:
+    metadata: {labels: {app.kubernetes.io/component: seed}}
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: seed
+          image: sagat-octopus-orchestrator/control-plane:g247-local
+          imagePullPolicy: Never
+          args: [seed-dev]
+          env:
+            - {name: SAGAT_ENV, value: dev}
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: sagat-owner-db, key: DATABASE_URL}}
+            - {name: SAGAT_SEED_TENANT, value: dev}
+            - {name: SAGAT_SEED_ADMIN_SUBJECT, value: dev-admin}
+            - {name: SAGAT_SEED_NAMESPACE, value: payments}
+            - {name: SAGAT_SEED_WORKSPACE, value: dev}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: {drop: [ALL]}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]

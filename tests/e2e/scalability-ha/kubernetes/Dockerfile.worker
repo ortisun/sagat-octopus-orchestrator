@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.7
+FROM python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+
+WORKDIR /opt/sagat
+COPY sdks/python/requirements.lock.txt /tmp/requirements.lock.txt
+RUN pip install --disable-pip-version-check --no-cache-dir --require-hashes \
+      -r /tmp/requirements.lock.txt \
+    && rm /tmp/requirements.lock.txt
+COPY sdks/python/sagat_octopus_orchestrator ./sagat_octopus_orchestrator
+COPY tests/e2e/scalability-ha/kubernetes/worker.py ./worker.py
+COPY tests/e2e/scalability-ha/kubernetes/scenario.py ./scenario.py
+
+RUN addgroup -g 10001 sagat \
+    && adduser -D -H -u 10001 -G sagat sagat \
+    && chown -R 10001:10001 /opt/sagat
+USER 10001:10001
+ENTRYPOINT ["python"]
+CMD ["/opt/sagat/worker.py"]

@@ -74,7 +74,7 @@ Contract → first failing test → domain → adapter → happy path → failur
 ## Integrated requirement completion
 
 - [x] T010-037 Close G269 by supervising critical engine loops; test unexpected exit/panic and requested shutdown (NFR-010-DUR, NFR-010-OBS).
-- [ ] T010-038 Close G247 with a full product Helm deployment and real KEDA scaling/recovery in a disposable cluster (FR-010-004).
+- [x] T010-038 Close G247 with a full product Helm deployment and real KEDA scaling/recovery in a disposable cluster (FR-010-004). — `tests/e2e/scalability-ha/kubernetes/run.sh`; live report: `tests/performance/reports/kubernetes-validation.md`.
 
 T010-037 evidence: `apps/execution-engine/src/supervision.rs` tests unexpected return,
 panic, graceful stop and forced bounded cleanup. Focused engine tests passed 32/32

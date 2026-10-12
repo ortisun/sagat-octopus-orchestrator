@@ -35,6 +35,9 @@ oidc:
   audience: ""
   jwksUri: ""
   tenantClaim: tenant
+  # Development clusters may use the repository's HTTP-only dev IdP. The chart refuses this flag
+  # outside `environment: dev`; shared environments must keep HTTPS verification.
+  allowInsecureJwksHttp: false
 
 # The key ring of the secret store (SAGAT_SECRETS_KEYS), in a Secret with the key SAGAT_SECRETS_KEYS.
 # Empty: the secret routes do not exist. The control plane and the engine must have the same ring.
