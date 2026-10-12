@@ -1,12 +1,16 @@
 # ADR-0028: Authorized structural payload inspection
 
-**Status:** Accepted design; implementation and verification pending.
+**Status:** Accepted; implemented and verified under T007-048.
 
 **Traces:** FR-007-005, FR-007-010, FR-008-006, FR-009-004; T007-048; G144. Customer classification and value-disclosure policy remain pending under G42/G39.
 
 ## Context
 
-The journal and runtime graph deliberately omit payloads. This protects values but does not let an operator inspect a run's data: G144 remains a real missing feature. Inline inputs and completed outputs already exist as immutable, tenant-scoped `payloads`; a run references its input and a journal event references the exact output it describes. External payloads have the catalog provenance defined in ADR-0023.
+The journal and runtime graph deliberately omit payloads. T007-048 closes G144 with the separate
+authorized structural inspection defined here, while those ordinary projections remain payload-free.
+Inline inputs and completed outputs exist as immutable, tenant-scoped `payloads`; a run references
+its input and a journal event references the exact output it describes. External payloads have the
+catalog provenance defined in ADR-0023.
 
 There is no approved customer classification that permits revealing values. A JSON Schema property, annotation, example or default is not such an approval. Credential heuristics are also insufficient: a secret can be an ordinary string, number, array member, or an object key.
 
@@ -114,9 +118,9 @@ Add a lazy “Inspect redacted payload” action to the run input and to journal
 
 Show the policy notice, source/provenance, byte size, structural tree, omitted-child markers, and real no-payload/unsupported/external/loading/error states. Provide a keyboard-accessible list/tree with the existing design tokens and accessible error handling. Do not show sample data or raw reveal/download/export controls. Do not copy the projection to telemetry, local storage or persistent query caches. Abort pending inspection requests and clear the view when the run, selected event, tenant or session changes; a late response cannot populate a different selection.
 
-## Verification and delivery contract
+## Verification and delivery evidence
 
-T007-048 remains pending until all of these have real evidence:
+T007-048 is complete. Its evidence covers:
 
 1. Canary values **and keys**, ordinary secrets without credential shapes, numeric/boolean values, nested arrays, Unicode, and schema `public`/`default`/`examples` annotations reveal no values or names in response, DOM, errors, logs or audit. The projection contains actual container/type/count data.
 2. Admin/operator success; developer/viewer/worker/runner refusal; missing/foreign run and sequence behavior; no global digest enumeration; cross-tenant requests leave the other namespace's rate bucket unchanged.
@@ -125,10 +129,16 @@ T007-048 remains pending until all of these have real evidence:
 5. Deep/wide/maximum-byte/multibyte payloads obey every bound and serialize within 64 KiB; invalid formats fail closed without excerpts. No external backend GET is made for a metadata inspection.
 6. REST responses validate against OpenAPI; permission catalog and generated Studio types agree. UI tests cover loading, denial, unavailable/external data, truncation and stale-response cancellation. A real browser journey verifies the useful structural view and keyboard/accessibility behavior with canaries absent.
 
-The implementer owns the new application/projector/PostgreSQL/HTTP modules and focused tests. Coordinate shared `identity.rs`, `audit.rs`, module registrations, router/state wiring, OpenAPI and Studio files with their owners before edits. Update `data-model.md`, `research.md` G144, design's unavailable-element table, traceability and quickstart with the delivered behavior and actual test results in the implementation delivery. This design-only change does not claim those surfaces are implemented.
+The delivered implementation is in `crates/application/src/payloads.rs`,
+`crates/infra-ir/src/payload_projection.rs`, `crates/infra-postgres/src/payload_inspection.rs`,
+`crates/api-http/src/routes/payload_inspection.rs` and the Studio's `PayloadInspection.tsx`, with
+the additive OpenAPI and identity/audit wiring. The real PostgreSQL/API suite passed 2/2;
+application projector and identity suites passed 6/6, 4/4 and 27/27; 70 focused Studio tests plus
+lint/typecheck/build passed; and a real Chromium journey passed with key/value canaries absent.
+`specs/007-workflow-studio/tasks.md` and `quickstart.md` record the detailed evidence.
 
 ## Alternatives and consequences
 
 Continuing to omit all payload inspection does not satisfy the operational use case. Returning raw JSON then hiding it in the browser exposes it in the network and client state. Heuristic redaction misses unrecognizable secrets; schema annotations cannot authorize customer-data disclosure. Uniform server-side value/key removal is deliberately less descriptive than named-field inspection, but supplies a useful bounded view without making that missing policy decision.
 
-The endpoint and permission are additive. Existing readers keep their old responses and rights. External content remains opaque; no retention rule changes and no historical payload is deleted. The structural inspection can be completed and verified independently of later value-disclosure policy, which must stay explicitly pending.
+The endpoint and permission are additive. Existing readers keep their old responses and rights. External content remains opaque; no retention rule changes and no historical payload is deleted. The structural inspection was completed and verified independently of later value-disclosure policy, which remains explicitly pending under G42/G39.

@@ -1,6 +1,6 @@
 # ADR-0027: Durable content, log, rate and retention quotas
 
-**Status:** Accepted design; implementation and verification pending.
+**Status:** Accepted; engineering baseline implemented and verified. Product tier values and customer/regulatory retention classification remain pending under G42.
 
 **Traces:** FR-009-006, NFR-009-PERF, FR-004-008; G37, G80, G117. G42 remains a product decision about tier values and customer/regulatory retention classification.
 
@@ -118,7 +118,11 @@ Public metrics use closed resource/outcome labels (`quota_exceeded_total`, rate 
 - Retention ceiling, minimum replay window, policy lowering and preservation of already stored expiry/pending inbox records.
 - A bounded hot-tenant/multiple-tenant benchmark for the new usage/rate locks. Publish measured behavior rather than carrying forward the old quota benchmark as proof.
 
-Until these slices and their tests are complete, FR-009-006 remains partial. Tier sizing and regulatory retention decisions are separate from this implementation gate.
+T009-037..T009-040 complete these slices and FR-009-006's engineering baseline. Evidence includes
+the exhaustive manifest and migration guards; enabled-by-default durable-execution, security,
+script and event suites; two-server HTTP admission tests; and the 2,000-operation quota benchmark
+recorded in `specs/009-security-multitenancy/tasks.md` and `tests/performance/reports/durable-quotas.md`.
+Tier sizing and regulatory retention decisions remain separate under G42.
 
 ## Initial shared-core handoff
 
@@ -179,4 +183,4 @@ Bucket implementation uses microtokens: one request costs 1,000,000 units; capac
 
 Core tables are `tenant_retained_usage` (one tenant row with nonnegative retained/reserved/log counters) and `quota_rate_buckets` (tenant, namespace, closed resource/source kind, source UUID or nil, microtokens, database update time). A source UUID never comes from an arbitrary request string: only a stored endpoint/connector identity can select it. Add durable blob reservation size to the catalog rather than deriving old reservations from a changed process configuration. Administrative policy writes share the new resource fences. Migration rollback refuses while byte reservations or non-default new policies would be silently discarded; document the exact migration policy and prove it.
 
-The first test matrix is deliberately small but consequential: (1) resource ranges and units; (2) exact manifest/backfill on all current tables; (3) last-byte race with rollback and concurrent ceiling decrease; (4) last-token race across two store instances plus database-time refill and restart; (5) zero/full log quota with multibyte UTF-8 prefix and release; (6) retention ceiling plus `2 * skew + 60 seconds`. Integration owners then add the per-slice terminal/replay/connector/API tests listed above. Core success alone does not close T009-039 or FR-009-006.
+The first test matrix is deliberately small but consequential: (1) resource ranges and units; (2) exact manifest/backfill on all current tables; (3) last-byte race with rollback and concurrent ceiling decrease; (4) last-token race across two store instances plus database-time refill and restart; (5) zero/full log quota with multibyte UTF-8 prefix and release; (6) retention ceiling plus `2 * skew + 60 seconds`. Integration owners then add the per-slice terminal/replay/connector/API tests listed above. The shared core alone did not close T009-039 or FR-009-006; the integrated consumer, terminal-state, API-admission and benchmark evidence recorded by T009-039/T009-040 completes that baseline.

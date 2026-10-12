@@ -73,7 +73,9 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   input or journal-selected output, with every scalar value and object key hidden, bounded
   structure/type/count/size metadata, and explicit unavailable/external-content states. It requires
   `run:payload:inspect` in addition to run read access. No schema annotation authorizes value
-  disclosure. Implementation and its evidence remain pending under T007-048.
+  disclosure. T007-048 is implemented and verified; its PostgreSQL/API, application/projector,
+  identity, Studio and real-browser evidence is recorded in `tasks.md` and `quickstart.md`.
+  Customer classification and raw-value disclosure remain pending under G42/G39.
 - **FR-007-006**: The system MUST offer SSE/WebSocket incremental updates and polling fallback, avoiding full DAG reload.
 - **FR-007-007**: The system MUST enforce operational actions via RBAC and confirmation explaining the consequences of retry/compensation.
 - **FR-007-008**: The system MUST implement a WCAG AA accessibility target and an alternative table/list view.
