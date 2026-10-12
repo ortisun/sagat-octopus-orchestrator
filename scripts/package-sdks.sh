@@ -98,6 +98,7 @@ assert_contains "${repo_root}/sdks/go/version.go" "const Version = \"${SDK_VERSI
 assert_contains "${repo_root}/sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj" "<Version>${SDK_VERSION}</Version>"
 assert_contains "${repo_root}/sdks/java/pom.xml" "<version>${SDK_VERSION}</version>"
 assert_contains "${repo_root}/sdks/java/pom.xml" '<name>MIT License</name>'
+assert_contains "${repo_root}/sdks/RELEASE_NOTES.md" "## ${SDK_VERSION}"
 
 echo "==> TypeScript: build, npm pack, clean consumer"
 (
@@ -354,14 +355,64 @@ EOF
 echo "==> Java: Maven package, isolated repository consumer"
 (
   cd "${java_source}"
-  MAVEN_USER_HOME="${work_dir}/maven-build-home" ./mvnw -q -pl sdk -am -Dmaven.test.skip=true clean package
+  MAVEN_USER_HOME="${work_dir}/maven-build-home" ./mvnw -q -pl sdk \
+    -Prelease-artifacts -Dmaven.test.skip=true clean package
 )
 java_artifact="sagat-octopus-orchestrator-sdk-${SDK_VERSION}"
 java_parent_artifact="sagat-octopus-orchestrator-sdk-parent-${SDK_VERSION}"
 cp "${java_source}/sdk/target/${java_artifact}.jar" "${output_dir}/${java_artifact}.jar"
+cp "${java_source}/sdk/target/${java_artifact}-sources.jar" \
+  "${output_dir}/${java_artifact}-sources.jar"
+cp "${java_source}/sdk/target/${java_artifact}-javadoc.jar" \
+  "${output_dir}/${java_artifact}-javadoc.jar"
 cp "${java_source}/sdk/pom.xml" "${output_dir}/${java_artifact}.pom"
 cp "${java_source}/pom.xml" "${output_dir}/${java_parent_artifact}.pom"
+cp "${repo_root}/sdks/RELEASE_NOTES.md" "${output_dir}/SDK_RELEASE_NOTES-${SDK_VERSION}.md"
+
+# The main JAR already carries the project license as a resource. Classifier JARs are produced from
+# source and generated documentation trees, so add the same license while normalizing their ZIP
+# metadata to the release epoch.
+"${python_bin}" - \
+  "${java_source}/sdk/src/main/resources/META-INF/LICENSE" \
+  "${SOURCE_DATE_EPOCH}" \
+  "${output_dir}/${java_artifact}-sources.jar" \
+  "${output_dir}/${java_artifact}-javadoc.jar" <<'PY'
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+import zipfile
+
+license_path = Path(sys.argv[1])
+epoch = max(int(sys.argv[2]), 315532800)  # ZIP timestamps start at 1980-01-01.
+timestamp = datetime.fromtimestamp(epoch, timezone.utc).timetuple()[:6]
+license_data = license_path.read_bytes()
+
+for value in sys.argv[3:]:
+    path = Path(value)
+    temporary = path.with_name(path.name + ".tmp")
+    with zipfile.ZipFile(path) as source:
+        entries = [
+            (info, source.read(info.filename))
+            for info in source.infolist()
+            if info.filename != "META-INF/LICENSE"
+        ]
+    with zipfile.ZipFile(temporary, "w") as destination:
+        for original, data in entries:
+            info = zipfile.ZipInfo(original.filename, timestamp)
+            info.compress_type = original.compress_type
+            info.external_attr = original.external_attr
+            info.internal_attr = original.internal_attr
+            info.create_system = original.create_system
+            destination.writestr(info, data)
+        license_info = zipfile.ZipInfo("META-INF/LICENSE", timestamp)
+        license_info.compress_type = zipfile.ZIP_DEFLATED
+        license_info.external_attr = 0o100644 << 16
+        destination.writestr(license_info, license_data)
+    temporary.replace(path)
+PY
 jar tf "${output_dir}/${java_artifact}.jar" | grep -x 'META-INF/LICENSE' >/dev/null
+jar tf "${output_dir}/${java_artifact}-sources.jar" | grep -x 'META-INF/LICENSE' >/dev/null
+jar tf "${output_dir}/${java_artifact}-javadoc.jar" | grep -x 'META-INF/LICENSE' >/dev/null
 
 java_smoke_repo="${work_dir}/java-consumer-repository"
 (
@@ -375,8 +426,15 @@ java_smoke_repo="${work_dir}/java-consumer-repository"
     -Dmaven.repo.local="${java_smoke_repo}" \
     "org.apache.maven.plugins:maven-install-plugin:${MAVEN_INSTALL_PLUGIN_VERSION}:install-file" \
     -Dfile="${output_dir}/${java_artifact}.jar" \
-    -DpomFile="${output_dir}/${java_artifact}.pom"
+    -DpomFile="${output_dir}/${java_artifact}.pom" \
+    -Dsources="${output_dir}/${java_artifact}-sources.jar" \
+    -Djavadoc="${output_dir}/${java_artifact}-javadoc.jar"
 )
+java_smoke_coordinate="${java_smoke_repo}/dev/sagatoctopusorchestrator/sagat-octopus-orchestrator-sdk/${SDK_VERSION}"
+cmp "${output_dir}/${java_artifact}-sources.jar" \
+  "${java_smoke_coordinate}/${java_artifact}-sources.jar"
+cmp "${output_dir}/${java_artifact}-javadoc.jar" \
+  "${java_smoke_coordinate}/${java_artifact}-javadoc.jar"
 mkdir -p "${work_dir}/java-consumer/src/main/java/example"
 cat >"${work_dir}/java-consumer/pom.xml" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
