@@ -7,7 +7,8 @@ use sagat_application::outbound::{
     DeliveryStore, OutboundRequest, OutboundStore, SubscriptionRecord, WebhookSender,
 };
 use sagat_domain::outbound::{
-    DeliveryLimits, DeliveryStatus, OutboundKind, SubscriptionId, SubscriptionStatus, TargetUrl,
+    DeliveryLimits, DeliveryStatus, OutboundDestination, OutboundKind, SubscriptionId,
+    SubscriptionStatus, TargetUrl,
 };
 use sagat_domain::secrets::SecretName;
 use serde_json::json;
@@ -28,8 +29,10 @@ async fn a_worker_that_died_after_sending_sends_again_with_the_same_delivery_id(
         tenant_id: w.admin.tenant_id(),
         namespace_id: w.namespace.id(),
         name: slug("finance"),
-        url: TargetUrl::parse(&receiver.url).expect("url"),
-        secret_name: SecretName::parse("provider-signing").expect("secret"),
+        destination: OutboundDestination::Webhook {
+            url: TargetUrl::parse(&receiver.url).expect("url"),
+            signing_secret: SecretName::parse("provider-signing").expect("secret"),
+        },
         kinds: vec![OutboundKind::RunFinished],
         limits: DeliveryLimits::new(100, Duration::from_secs(2)).expect("limits"),
         status: SubscriptionStatus::Active,
@@ -76,7 +79,7 @@ async fn a_worker_that_died_after_sending_sends_again_with_the_same_delivery_id(
         .send(&OutboundRequest {
             tenant_id: due.delivery.tenant_id,
             namespace_id: due.delivery.namespace_id,
-            url: due.url.clone(),
+            url: due.webhook().expect("webhook delivery").0.clone(),
             headers: vec![
                 (
                     "x-octopus-delivery-id".to_owned(),

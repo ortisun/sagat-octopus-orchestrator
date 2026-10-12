@@ -4,6 +4,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod activity_locking;
 mod children;
 mod concurrency;
 mod definitions;

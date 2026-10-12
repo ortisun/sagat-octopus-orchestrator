@@ -83,3 +83,5 @@ Completion evidence: the HTTP context regression passed; `identity_service` 30/3
 before the final added races; the expanded focused idempotency suites passed 6 REST
 and 8 PostgreSQL tests with no failures/ignored tests. They cover namespace scope,
 different-body races, audit failure rollback, service restart and permission revocation.
+
+- [x] T001-038 Own HTTP connection tasks through shutdown and cancel unfinished handlers after the configured grace period. A real TCP regression first reproduced detached sockets; all 9 `fault_platform_foundation server::` tests passed after the fix. Native TLS uses the same lifecycle.

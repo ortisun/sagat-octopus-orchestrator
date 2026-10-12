@@ -1010,6 +1010,9 @@ where
             info,
             definition: std::sync::Arc::clone(&definition),
             input: pending.input.clone(),
+            input_blob: Some(sagat_application::blobs::RunInputBinding::Inherit(
+                parent_id,
+            )),
             audit,
             idempotency: Idempotency {
                 scope: format!("child:{parent_id}"),

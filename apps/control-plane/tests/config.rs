@@ -45,6 +45,42 @@ fn defaults_are_the_safe_ones() {
 }
 
 #[test]
+fn run_input_blobs_require_shared_storage_and_bounded_transfer_settings() {
+    let off = ServeConfig::from_lookup(&env(&OIDC)).expect("default");
+    assert!(off.blobs.is_none());
+    for environment in ["dev", "prod"] {
+        let mut pairs = OIDC.to_vec();
+        pairs.extend([
+            ("SAGAT_ENV", environment),
+            ("SAGAT_BLOB_PROVIDER", "memory"),
+        ]);
+        assert!(
+            ServeConfig::from_lookup(&env(&pairs)).is_err(),
+            "private memory cannot reach an engine"
+        );
+    }
+    let mut pairs = OIDC.to_vec();
+    pairs.extend([
+        ("SAGAT_BLOB_PROVIDER", "fs"),
+        ("SAGAT_BLOB_FS_ROOT", "/tmp/shared-blobs"),
+    ]);
+    let settings = ServeConfig::from_lookup(&env(&pairs)).expect("shared fs");
+    assert!(settings.blobs.is_some());
+    assert_eq!(settings.blob_transfer.max_concurrent, 32);
+    assert_eq!(settings.blob_transfer.timeout, Duration::from_secs(600));
+    for (name, value) in [
+        ("SAGAT_BLOB_MAX_TRANSFERS", "0"),
+        ("SAGAT_BLOB_MAX_TRANSFERS", "4097"),
+        ("SAGAT_BLOB_TRANSFER_TIMEOUT_SECS", "0"),
+        ("SAGAT_BLOB_TRANSFER_TIMEOUT_SECS", "86401"),
+    ] {
+        let mut bad = pairs.clone();
+        bad.push((name, value));
+        assert!(ServeConfig::from_lookup(&env(&bad)).is_err(), "{name}");
+    }
+}
+
+#[test]
 fn the_database_url_is_required_and_never_printed() {
     assert_eq!(
         Config::from_lookup(&env(&[])).expect_err("missing"),
@@ -805,4 +841,39 @@ fn a_half_configured_sign_in_or_one_that_would_leak_a_token_is_refused() {
         ])
         .is_ok()
     );
+}
+
+#[test]
+fn native_http_tls_never_accepts_partial_or_unreadable_credentials() {
+    for name in [
+        "SAGAT_HTTP_TLS_CERT",
+        "SAGAT_HTTP_TLS_KEY",
+        "SAGAT_HTTP_TLS_CLIENT_CA",
+    ] {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, "/nonexistent/sagat-test-tls.pem"));
+        assert!(ServeConfig::from_lookup(&env(&pairs)).is_err(), "{name}");
+    }
+    let defaults = ServeConfig::from_lookup(&env(&OIDC)).expect("config");
+    assert!(defaults.tls.is_none() && defaults.webhook_oidc.is_empty());
+    let mut pairs = OIDC.to_vec();
+    pairs.push((
+        "SAGAT_WEBHOOK_OIDC_PROFILES_FILE",
+        "/nonexistent/sagat-profiles.json",
+    ));
+    assert!(ServeConfig::from_lookup(&env(&pairs)).is_err());
+}
+
+#[test]
+fn native_http_timers_and_permits_are_bounded_before_runtime_creation() {
+    for (name, value) in [
+        ("SAGAT_MAX_CONNECTIONS", usize::MAX.to_string()),
+        ("SAGAT_HEADER_READ_TIMEOUT_SECS", u64::MAX.to_string()),
+        ("SAGAT_WRITE_STALL_TIMEOUT_SECS", "86401".to_owned()),
+        ("SAGAT_SHUTDOWN_GRACE_SECS", "86401".to_owned()),
+    ] {
+        let mut pairs = OIDC.to_vec();
+        pairs.push((name, &value));
+        assert!(ServeConfig::from_lookup(&env(&pairs)).is_err(), "{name}");
+    }
 }

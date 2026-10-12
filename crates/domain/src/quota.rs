@@ -41,6 +41,8 @@ pub enum QuotaResource {
     EventEndpoints,
     /// Subscriptions to outbound events in one namespace (feature 004).
     WebhookSubscriptions,
+    /// Outbound subscriptions to tenant-operated brokers in one namespace (feature 004).
+    BrokerSubscriptions,
     /// Connectors to message brokers in one namespace (feature 004).
     Connectors,
     /// Scripts (not versions) in one namespace (feature 005).
@@ -60,7 +62,7 @@ pub enum QuotaScope {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -69,6 +71,7 @@ impl QuotaResource {
         Self::Secrets,
         Self::EventEndpoints,
         Self::WebhookSubscriptions,
+        Self::BrokerSubscriptions,
         Self::Connectors,
         Self::Scripts,
         Self::ScriptJobs,
@@ -85,6 +88,7 @@ impl QuotaResource {
             Self::Secrets => "secrets",
             Self::EventEndpoints => "event_endpoints",
             Self::WebhookSubscriptions => "webhook_subscriptions",
+            Self::BrokerSubscriptions => "broker_subscriptions",
             Self::Connectors => "event_connectors",
             Self::Scripts => "scripts",
             Self::ScriptJobs => "script_jobs",
@@ -100,6 +104,7 @@ impl QuotaResource {
             | Self::Secrets
             | Self::EventEndpoints
             | Self::WebhookSubscriptions
+            | Self::BrokerSubscriptions
             | Self::Connectors
             | Self::Scripts
             | Self::ScriptJobs => QuotaScope::Namespace,
@@ -121,6 +126,7 @@ impl QuotaResource {
             Self::Secrets => 500,
             Self::EventEndpoints => 100,
             Self::WebhookSubscriptions => 50,
+            Self::BrokerSubscriptions => 50,
             Self::Connectors => 20,
             Self::Scripts => 500,
             Self::ScriptJobs => 8,
@@ -139,6 +145,7 @@ impl QuotaResource {
             Self::Secrets => "secrets in the namespace",
             Self::EventEndpoints => "webhook endpoints in the namespace",
             Self::WebhookSubscriptions => "outbound webhook subscriptions in the namespace",
+            Self::BrokerSubscriptions => "outbound broker subscriptions in the namespace",
             Self::Connectors => "message connectors in the namespace",
             Self::Scripts => "scripts in the namespace",
             Self::ScriptJobs => "builds and test runs in progress in the namespace",

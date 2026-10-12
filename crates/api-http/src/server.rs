@@ -43,6 +43,32 @@ pub struct ServerConfig {
     pub shutdown_grace: Duration,
 }
 
+impl ServerConfig {
+    /// Check timer and semaphore bounds before a listener starts serving.
+    ///
+    /// # Errors
+    /// A static reason for a zero/overlarge cap or timeout.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.max_connections == 0
+            || self.max_connections > Semaphore::MAX_PERMITS.min(u32::MAX as usize)
+        {
+            return Err("max_connections must fit a nonzero semaphore and shutdown permit count");
+        }
+        for timeout in [
+            self.header_read_timeout,
+            self.write_stall_timeout,
+            self.shutdown_grace,
+        ] {
+            if timeout.is_zero() || timeout > Duration::from_secs(86400) {
+                return Err(
+                    "HTTP connection timeouts must be greater than zero and at most one day",
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -65,17 +91,40 @@ pub async fn serve(
     config: ServerConfig,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
-    if config.max_connections == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "max_connections must be at least 1",
-        ));
-    }
+    serve_inner(listener, app, config, None, shutdown).await
+}
+
+/// Serves HTTP over native TLS with verified, optional client identities.
+///
+/// # Errors
+/// Returns an error for an unusable server configuration.
+pub async fn serve_tls(
+    listener: TcpListener,
+    app: Router,
+    config: ServerConfig,
+    tls: HttpTlsConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()> {
+    serve_inner(listener, app, config, Some(tls), shutdown).await
+}
+
+async fn serve_inner(
+    listener: TcpListener,
+    app: Router,
+    config: ServerConfig,
+    tls: Option<HttpTlsConfig>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()> {
+    config
+        .validate()
+        .map_err(|reason| io::Error::new(io::ErrorKind::InvalidInput, reason))?;
     let permits = Arc::new(Semaphore::new(config.max_connections));
+    let mut connections = tokio::task::JoinSet::new();
     let (stop_tx, stop_rx) = watch::channel(false);
     tokio::pin!(shutdown);
 
     loop {
+        while connections.try_join_next().is_some() {}
         // Take a slot first: at the cap we simply stop accepting.
         let permit = tokio::select! {
             permit = Arc::clone(&permits).acquire_owned() => match permit {
@@ -97,13 +146,64 @@ pub async fn serve(
         };
         // Small responses should not wait for Nagle; failure to set it is harmless.
         let _ = stream.set_nodelay(true);
-        tokio::spawn(serve_connection(
-            TokioIo::new(StallGuard::new(stream, config.write_stall_timeout)),
-            app.clone(),
-            config.header_read_timeout,
-            stop_rx.clone(),
-            permit,
-        ));
+        if let Some(tls) = tls.clone() {
+            let app = app.clone();
+            let mut stop = stop_rx.clone();
+            connections.spawn(async move {
+                let acceptor = tokio_rustls::TlsAcceptor::from(tls.server);
+                let accepted = tokio::select! {
+                    result = tokio::time::timeout(config.header_read_timeout, acceptor.accept(stream)) => result,
+                    _ = stop.changed() => return,
+                };
+                let Ok(Ok(stream)) = accepted else {
+                    metrics::counter!("http_tls_handshakes_total", "outcome" => "refused")
+                        .increment(1);
+                    return;
+                };
+                metrics::counter!("http_tls_handshakes_total", "outcome" => "accepted")
+                    .increment(1);
+                let app = match stream.get_ref().1.peer_certificates() {
+                    Some(chain) if !chain.is_empty() => {
+                        let identity = ClientIdentity {
+                            chain: chain.to_vec(),
+                            verifier: tls.client_verifier,
+                        };
+                        app.layer(axum::middleware::from_fn(
+                            move |mut request: axum::extract::Request,
+                                  next: axum::middleware::Next| {
+                                let identity = identity.clone();
+                                async move {
+                                    // Recheck validity on each keep-alive request, including certificate expiry.
+                                    // An expired identity is absent: profile admission then emits
+                                    // the normal typed denial, audit and request telemetry.
+                                    if let Some(certificate) = identity.verified() {
+                                        request.extensions_mut().insert(certificate);
+                                    }
+                                    next.run(request).await
+                                }
+                            },
+                        ))
+                    }
+                    _ => app,
+                };
+                serve_connection(
+                    TokioIo::new(StallGuard::new(stream, config.write_stall_timeout)),
+                    app,
+                    config.header_read_timeout,
+                    stop,
+                    permit,
+                )
+                .await;
+            });
+        } else {
+            connections.spawn(serve_connection(
+                TokioIo::new(StallGuard::new(stream, config.write_stall_timeout)),
+                app.clone(),
+                config.header_read_timeout,
+                stop_rx.clone(),
+                permit,
+            ));
+        }
     }
 
     // Stop: let every connection finish its current request, then close.
@@ -116,11 +216,14 @@ pub async fn serve(
             "shutdown grace period elapsed; dropping the remaining connections"
         ),
     }
+    // Dropping a JoinHandle detaches its task. Explicitly cancel and drain the owned tasks so
+    // sockets, request bodies and handler resources are released before this listener returns.
+    connections.shutdown().await;
     Ok(())
 }
 
-async fn serve_connection(
-    io: TokioIo<StallGuard<tokio::net::TcpStream>>,
+async fn serve_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    io: TokioIo<StallGuard<S>>,
     app: Router,
     header_read_timeout: Duration,
     mut stop: watch::Receiver<bool>,
@@ -250,3 +353,97 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for StallGuard<S> {
         self.inner.is_write_vectored()
     }
 }
+
+/// Identity inserted by the native TLS listener after certificate validation.
+#[derive(Clone)]
+pub(crate) struct VerifiedClientCertificate {
+    pub(crate) sha256: String,
+}
+
+/// Native HTTP TLS configuration. Private keys are deliberately not printable.
+#[derive(Clone)]
+pub struct HttpTlsConfig {
+    server: Arc<rustls::ServerConfig>,
+    client_verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+}
+
+impl std::fmt::Debug for HttpTlsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HttpTlsConfig([redacted])")
+    }
+}
+
+impl HttpTlsConfig {
+    /// Build native TLS with an optional client certificate, checked against these roots.
+    /// Profile-specific handlers decide whether a verified client identity is mandatory.
+    ///
+    /// # Errors
+    /// A static error without key or certificate bytes if configuration is invalid.
+    pub fn from_pem(
+        certificate: &[u8],
+        private_key: &[u8],
+        client_roots: &[u8],
+    ) -> Result<Self, &'static str> {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+        crate::auth::install_crypto_provider();
+        if [certificate.len(), private_key.len(), client_roots.len()]
+            .into_iter()
+            .any(|size| size == 0 || size > 256 * 1024)
+        {
+            return Err("HTTP TLS PEM files must be non-empty and at most 256 KiB");
+        }
+        let chain = CertificateDer::pem_slice_iter(certificate)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "invalid HTTP TLS certificate")?;
+        let key = PrivateKeyDer::from_pem_slice(private_key)
+            .map_err(|_| "invalid HTTP TLS private key")?;
+        let mut roots = rustls::RootCertStore::empty();
+        for root in CertificateDer::pem_slice_iter(client_roots) {
+            roots
+                .add(root.map_err(|_| "invalid HTTP TLS client roots")?)
+                .map_err(|_| "invalid HTTP TLS client roots")?;
+        }
+        let client_verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+            .allow_unauthenticated()
+            .build()
+            .map_err(|_| "invalid HTTP TLS client roots")?;
+        let mut server = rustls::ServerConfig::builder()
+            .with_client_cert_verifier(client_verifier.clone())
+            .with_single_cert(chain, key)
+            .map_err(|_| "invalid HTTP TLS certificate and key")?;
+        server.alpn_protocols = vec![b"http/1.1".to_vec()];
+        // Resumed sessions must not retain a client identity across certificate replacement.
+        server.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+        server.send_tls13_tickets = 0;
+        Ok(Self {
+            server: Arc::new(server),
+            client_verifier,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ClientIdentity {
+    chain: Vec<rustls::pki_types::CertificateDer<'static>>,
+    verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+}
+
+impl ClientIdentity {
+    fn verified(&self) -> Option<VerifiedClientCertificate> {
+        use sha2::Digest as _;
+        let (leaf, intermediates) = self.chain.split_first()?;
+        self.verifier
+            .verify_client_cert(leaf, intermediates, rustls::pki_types::UnixTime::now())
+            .ok()?;
+        Some(VerifiedClientCertificate {
+            sha256: sha2::Sha256::digest(leaf.as_ref())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "server_tls_tests.rs"]
+mod tls_tests;

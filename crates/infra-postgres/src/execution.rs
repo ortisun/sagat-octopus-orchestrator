@@ -186,6 +186,23 @@ impl PgRunStore {
 impl RunStore for PgRunStore {
     type Tx = PgRunTx;
 
+    async fn replay_start(
+        &self,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<String>, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let result = replay(
+            &mut tx,
+            tenant,
+            idempotency,
+            &hash(&idempotency.fingerprint),
+        )
+        .await?;
+        tx.rollback().await.map_err(store_error)?;
+        Ok(result)
+    }
+
     async fn create(&self, new: NewRun) -> Result<Applied<PgRunTx>, StoreError> {
         let tenant = new.info.tenant_id;
         let hash = hash(&new.idempotency.fingerprint);
@@ -210,6 +227,27 @@ impl RunStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
             let info = &new.info;
+            let input_blob =
+                match &new.input_blob {
+                    Some(sagat_application::blobs::RunInputBinding::Uploaded(descriptor)) => {
+                        Some(descriptor.id())
+                    }
+                    Some(sagat_application::blobs::RunInputBinding::Inherit(source)) => {
+                        if info.rerun_of != Some(*source)
+                            && info.parent.as_ref().map(|p| p.run) != Some(*source)
+                        {
+                            return Err(StoreError::MissingReference);
+                        }
+                        sqlx::query_scalar::<_, Option<Uuid>>(
+                        "SELECT input_blob_id FROM runs WHERE tenant_id = $1 AND namespace_id = $2 \
+                         AND id = $3 AND input_digest = $4",
+                    )
+                    .bind(tenant.as_uuid()).bind(info.namespace_id.as_uuid()).bind(source.as_uuid())
+                    .bind(&input_digest).fetch_optional(&mut *tx).await.map_err(store_error)?
+                    .flatten().map(sagat_domain::blobs::BlobId::new)
+                    }
+                    None => None,
+                };
             // On a refusal the transaction is rolled back at once: its locks (the parent's row, the
             // tree's, the quota scopes') must not wait for the connection to be reused.
             if let Some(parent) = &info.parent
@@ -235,9 +273,9 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id, trace_parent_span, rerun_of) \
+                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17, $18)",
+                         $12, $13, $14, $15, $16, $17, $18, $19)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -257,9 +295,22 @@ impl RunStore for PgRunStore {
             .bind(info.root.as_uuid())
             .bind(info.parent_span.as_deref())
             .bind(info.rerun_of.map(|r| r.as_uuid()))
+            .bind(input_blob.map(sagat_domain::blobs::BlobId::as_uuid))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            if let Some(sagat_application::blobs::RunInputBinding::Uploaded(descriptor)) =
+                &new.input_blob
+                && let Err(error) = crate::blobs::commit_input(&mut tx, info, descriptor).await
+            {
+                tx.rollback().await.map_err(store_error)?;
+                if matches!(error, StoreError::MissingReference)
+                    && let Some(existing) = self.replay_start(tenant, &new.idempotency).await?
+                {
+                    return Ok(Applied::Replayed(existing));
+                }
+                return Err(error);
+            }
             insert_audit(&mut tx, &new.audit).await?;
             if remember(
                 &mut tx,
@@ -282,6 +333,7 @@ impl RunStore for PgRunStore {
                     data: Some(RunData {
                         run_id: Some(new.info.run_id),
                         input: new.input.clone(),
+                        input_blob,
                         outputs: BTreeMap::new(),
                     }),
                     input_digest,
@@ -971,10 +1023,13 @@ impl RunTx for PgRunTx {
     async fn data(&mut self) -> Result<&RunData, StoreError> {
         if self.data.is_none() {
             let tenant = self.info.tenant_id.as_uuid();
-            let input: Vec<u8> = sqlx::query_scalar(
-                "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
+            let input_row = sqlx::query(
+                "SELECT p.content, r.input_blob_id FROM runs r JOIN payloads p \
+                 ON p.tenant_id = r.tenant_id AND p.digest = r.input_digest \
+                 WHERE r.tenant_id = $1 AND r.id = $2 AND p.digest = $3",
             )
             .bind(tenant)
+            .bind(self.info.run_id.as_uuid())
             .bind(&self.input_digest)
             .fetch_one(&mut *self.tx)
             .await
@@ -999,7 +1054,9 @@ impl RunTx for PgRunTx {
             }
             self.data = Some(RunData {
                 run_id: Some(self.info.run_id),
-                input,
+                input: col(&input_row, "content")?,
+                input_blob: col::<Option<Uuid>>(&input_row, "input_blob_id")?
+                    .map(sagat_domain::blobs::BlobId::new),
                 outputs,
             });
         }

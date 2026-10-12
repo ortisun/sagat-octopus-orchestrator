@@ -127,3 +127,9 @@ unexpected exit or panic must make probes unhealthy, stop sibling tasks and prod
 nonzero process exit. Requested shutdown has a bounded drain and preserves transactional
 rollback and lease-expiry recovery (T010-037). Full application/KEDA cluster validation
 remains a separate acceptance step (T010-038).
+
+Activity admission acquires policy fences in tenant, namespace, activity order. Claims share the
+tenant and namespace fences; edits exclusively fence the level they change. A run claiming several
+activities visits them in activity-name order (then node id), independent of workflow node order.
+A completed limit change governs subsequent admissions; transactions already admitted may finish
+before the change commits. Existing leases are not revoked by a lower limit (T010-040).

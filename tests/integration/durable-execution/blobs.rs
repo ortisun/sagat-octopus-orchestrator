@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sagat_application::blobs::{BlobAccess, BlobCatalog, BlobScope, DEFAULT_DELETE_RETRY};
+use sagat_application::blobs::{
+    BlobAccess, BlobCatalog, BlobOwner, BlobScope, DEFAULT_DELETE_RETRY,
+};
 use sagat_application::error::StoreError;
 use sagat_domain::blobs::{BlobId, BlobState, ContentType};
 use sagat_domain::workflow::Digest;
@@ -89,7 +91,7 @@ fn digest(byte: u8) -> Digest {
 async fn reserve(f: &Fixture, scope: BlobScope, max: u32) -> Result<BlobId, StoreError> {
     let id = BlobId::generate();
     f.catalog
-        .reserve(scope, id, &json(), "wendy", max)
+        .reserve(BlobOwner::StepOutput(scope), id, &json(), "wendy", max)
         .await
         .map(|()| id)
 }
@@ -254,7 +256,13 @@ async fn racing_uploads_cannot_overshoot_the_budget() {
         let scope = f.scope;
         tasks.push(tokio::spawn(async move {
             catalog
-                .reserve(scope, BlobId::generate(), &json(), "wendy", 5)
+                .reserve(
+                    BlobOwner::StepOutput(scope),
+                    BlobId::generate(),
+                    &json(),
+                    "wendy",
+                    5,
+                )
                 .await
         }));
     }

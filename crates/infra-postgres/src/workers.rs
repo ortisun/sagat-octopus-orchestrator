@@ -27,7 +27,20 @@ use crate::quotas::ensure_room_for_session;
 /// the rows: when the breaker is open the planner does not enter that branch at all. An outage can
 /// leave very many compensations READY behind an open breaker, and neither the claim of forward
 /// work nor the claim of the compensations of a healthy provider walks them.
+// The activity quota is only a candidate-selection hint: it prevents a capped oldest backlog
+// from hiding other activities behind the global LIMIT. The transaction rechecks the exact quota
+// under its admission locks. With no configured override/ceiling, leave the default to that gate.
+// OFFSET/LIMIT stops after the configured number of active leases; it never aggregates READY rows.
 pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activity) \
+     CROSS JOIN LATERAL ( \
+       SELECT least( \
+         coalesce( \
+           (SELECT max_inflight FROM activity_quota_limits WHERE tenant_id = $1 AND namespace_id = $2 AND activity = a.activity), \
+           (SELECT max_value FROM quota_limits WHERE tenant_id = $1 AND namespace_id = $2 AND resource = 'activity_concurrency'), \
+           (SELECT max_value FROM quota_limits WHERE tenant_id = $1 AND namespace_id IS NULL AND resource = 'activity_concurrency'), \
+           (SELECT max_value FROM quota_ceilings WHERE tenant_id = $1 AND resource = 'activity_concurrency')), \
+         (SELECT max_value FROM quota_ceilings WHERE tenant_id = $1 AND resource = 'activity_concurrency')) AS max_inflight \
+     ) quota \
      CROSS JOIN LATERAL ( \
          (SELECT st.run_id, st.ready_at FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
@@ -46,6 +59,12 @@ pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activi
                   AND b.opened_until > clock_timestamp()) \
           ORDER BY st.ready_at LIMIT $4) \
      ) s \
+     WHERE quota.max_inflight IS NULL OR (quota.max_inflight > 0 AND NOT EXISTS ( \
+         SELECT 1 FROM steps active \
+         WHERE active.tenant_id = $1 AND active.namespace_id = $2 AND active.activity = a.activity \
+           AND active.status IN ('LEASED', 'RUNNING') AND active.lease_expires_at > clock_timestamp() \
+         OFFSET greatest(quota.max_inflight - 1, 0) LIMIT 1 \
+     )) \
      ORDER BY s.ready_at, s.run_id LIMIT $4";
 
 fn micros(duration: Duration) -> i64 {

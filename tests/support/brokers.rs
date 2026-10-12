@@ -243,15 +243,20 @@ impl TestSqs {
 
     /// Creates a queue with a short visibility timeout and returns its URL.
     pub async fn create_queue(&self, name: &str) -> String {
-        let text = self
-            .call(
-                "/",
-                &[
-                    ("Action", "CreateQueue".to_owned()),
-                    ("QueueName", name.to_owned()),
-                ],
-            )
-            .await;
+        self.create_queue_with(name, false).await
+    }
+
+    /// Creates a FIFO queue when `fifo` is true, retaining the `.fifo` suffix in its URL.
+    pub async fn create_queue_with(&self, name: &str, fifo: bool) -> String {
+        let mut parameters = vec![
+            ("Action", "CreateQueue".to_owned()),
+            ("QueueName", name.to_owned()),
+        ];
+        if fifo {
+            parameters.push(("Attribute.1.Name", "FifoQueue".to_owned()));
+            parameters.push(("Attribute.1.Value", "true".to_owned()));
+        }
+        let text = self.call("/", &parameters).await;
         let url = text
             .split("<QueueUrl>")
             .nth(1)
@@ -264,6 +269,20 @@ impl TestSqs {
             .split_once("://")
             .map_or("", |(_, rest)| rest.split_once('/').map_or("", |(_, p)| p));
         format!("{}/{path}", self.endpoint)
+    }
+
+    /// Receives one message, including all string attributes, as the service's XML response.
+    pub async fn receive_raw(&self, queue_url: &str) -> String {
+        let path = queue_url.strip_prefix(&self.endpoint).unwrap_or("/");
+        self.call(
+            path,
+            &[
+                ("Action", "ReceiveMessage".to_owned()),
+                ("MaxNumberOfMessages", "1".to_owned()),
+                ("MessageAttributeName.1", "All".to_owned()),
+            ],
+        )
+        .await
     }
 
     pub async fn send(&self, queue_url: &str, body: &str, attributes: &[(&str, &str)]) {

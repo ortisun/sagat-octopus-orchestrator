@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use sagat_application::blobs::{
-    BlobAccess, BlobCatalog, BlobCommit, BlobRecord, BlobScope, BoxFuture,
+    BlobAccess, BlobCatalog, BlobCommit, BlobOwner, BlobRecord, BlobScope, BoxFuture,
 };
 use sagat_application::error::StoreError;
 use sagat_domain::audit::{AuditAction, ResourceType};
@@ -71,18 +71,28 @@ async fn append_blob_audit(
 impl BlobCatalog for PgBlobCatalog {
     fn reserve<'a>(
         &'a self,
-        scope: BlobScope,
+        owner: BlobOwner,
         id: BlobId,
         content_type: &'a ContentType,
         created_by: &'a str,
         max_pending: u32,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
+            let access = owner.access();
+            let scope = match owner {
+                BlobOwner::StepOutput(scope) => Some(scope),
+                BlobOwner::RunInput(_) => None,
+            };
+            let purpose = if scope.is_some() {
+                "STEP_OUTPUT"
+            } else {
+                "RUN_INPUT"
+            };
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             // Count and insert as one decision: two uploads racing for the last place serialise here
             // and the second one sees the first. Released with the transaction.
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-                .bind(format!("blobs:{}", scope.access.tenant_id))
+                .bind(format!("blobs:{}", access.tenant_id))
                 .execute(&mut *tx)
                 .await
                 .map_err(store_error)?;
@@ -90,7 +100,7 @@ impl BlobCatalog for PgBlobCatalog {
                 "SELECT count(*) FROM blobs WHERE tenant_id = $1 AND state <> 'COMMITTED' \
                  AND deletion_confirmed_at IS NULL",
             )
-            .bind(scope.access.tenant_id.as_uuid())
+            .bind(access.tenant_id.as_uuid())
             .fetch_one(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -99,21 +109,33 @@ impl BlobCatalog for PgBlobCatalog {
             }
             let inserted = sqlx::query(
                 "INSERT INTO blobs (tenant_id, namespace_id, id, state, content_type, created_by, \
-                                    run_id, step_id, attempt, generation) \
-                 SELECT $1, $2, $3, 'UPLOADING', $4, $5, $6, $7, $8, $9 \
-                 FROM steps \
-                 WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $6 AND step_id = $7 \
-                   AND attempt = $8 AND generation = $9",
+                                    run_id, step_id, attempt, generation, purpose) \
+                 SELECT $1, $2, $3, 'UPLOADING', $4, $5, $6, $7, $8, $9, $10 \
+                 FROM namespaces WHERE tenant_id = $1 AND id = $2 \
+                   AND ($10 = 'RUN_INPUT' OR EXISTS (SELECT 1 FROM steps \
+                       WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $6 AND step_id = $7 \
+                         AND attempt = $8 AND generation = $9))",
             )
-            .bind(scope.access.tenant_id.as_uuid())
-            .bind(scope.access.namespace_id.as_uuid())
+            .bind(access.tenant_id.as_uuid())
+            .bind(access.namespace_id.as_uuid())
             .bind(id.as_uuid())
             .bind(content_type.as_str())
             .bind(created_by)
-            .bind(scope.run_id.as_uuid())
-            .bind(scope.step_id)
-            .bind(i32::try_from(scope.attempt).map_err(|_| corrupt("attempt"))?)
-            .bind(i64::try_from(scope.generation).map_err(|_| corrupt("generation"))?)
+            .bind(scope.map(|s| s.run_id.as_uuid()))
+            .bind(scope.map(|s| s.step_id))
+            .bind(
+                scope
+                    .map(|s| i32::try_from(s.attempt))
+                    .transpose()
+                    .map_err(|_| corrupt("attempt"))?,
+            )
+            .bind(
+                scope
+                    .map(|s| i64::try_from(s.generation))
+                    .transpose()
+                    .map_err(|_| corrupt("generation"))?,
+            )
+            .bind(purpose)
             .execute(&mut *tx)
             .await
             .map_err(store_error)?
@@ -165,7 +187,7 @@ impl BlobCatalog for PgBlobCatalog {
     ) -> BoxFuture<'a, Result<Option<BlobRecord>, StoreError>> {
         Box::pin(async move {
             let row = sqlx::query(
-                "SELECT state, size_bytes, sha256, content_type, run_id, step_id, attempt, generation \
+                "SELECT state, size_bytes, sha256, content_type, run_id, step_id, attempt, generation, purpose, created_by \
                  FROM blobs WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3",
             )
             .bind(access.tenant_id.as_uuid())
@@ -197,15 +219,20 @@ impl BlobCatalog for PgBlobCatalog {
                     content_type,
                 ),
                 state,
-                scope: BlobScope {
-                    access,
-                    run_id: RunId::new(col::<Uuid>(&row, "run_id")?),
-                    step_id: col(&row, "step_id")?,
-                    attempt: u32::try_from(col::<i32>(&row, "attempt")?)
-                        .map_err(|_| corrupt("attempt"))?,
-                    generation: u64::try_from(col::<i64>(&row, "generation")?)
-                        .map_err(|_| corrupt("generation"))?,
+                owner: match col::<String>(&row, "purpose")?.as_str() {
+                    "RUN_INPUT" => BlobOwner::RunInput(access),
+                    "STEP_OUTPUT" => BlobOwner::StepOutput(BlobScope {
+                        access,
+                        run_id: RunId::new(col::<Uuid>(&row, "run_id")?),
+                        step_id: col(&row, "step_id")?,
+                        attempt: u32::try_from(col::<i32>(&row, "attempt")?)
+                            .map_err(|_| corrupt("attempt"))?,
+                        generation: u64::try_from(col::<i64>(&row, "generation")?)
+                            .map_err(|_| corrupt("generation"))?,
+                    }),
+                    _ => return Err(corrupt("purpose")),
                 },
+                created_by: col(&row, "created_by")?,
             }))
         })
     }
@@ -383,6 +410,37 @@ pub(crate) async fn commit(
     .bind(i64::try_from(blob.scope.generation).map_err(|_| corrupt("generation"))?)
     .bind(size)
     .bind(blob.digest.as_bytes().as_slice())
+    .execute(conn)
+    .await
+    .map_err(store_error)?
+    .rows_affected();
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(StoreError::MissingReference)
+    }
+}
+
+/// Binds a staged run input after its run row exists, in that same creation transaction.
+pub(crate) async fn commit_input(
+    conn: &mut PgConnection,
+    run: &sagat_application::execution::RunInfo,
+    descriptor: &BlobDescriptor,
+) -> Result<(), StoreError> {
+    let changed = sqlx::query(
+        "UPDATE blobs SET state = 'COMMITTED', committed_at = clock_timestamp(), run_id = $4 \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 \
+           AND purpose = 'RUN_INPUT' AND state = 'UPLOADED' AND created_by = $5 \
+           AND size_bytes = $6 AND sha256 = $7 AND content_type = $8",
+    )
+    .bind(run.tenant_id.as_uuid())
+    .bind(run.namespace_id.as_uuid())
+    .bind(descriptor.id().as_uuid())
+    .bind(run.run_id.as_uuid())
+    .bind(&run.started_by)
+    .bind(i64::try_from(descriptor.size()).map_err(|_| corrupt("size"))?)
+    .bind(descriptor.digest().as_bytes().as_slice())
+    .bind(descriptor.content_type().as_str())
     .execute(conn)
     .await
     .map_err(store_error)?

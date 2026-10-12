@@ -234,13 +234,16 @@ where
             .map_err(invalid)?;
         self.write_activity(principal, namespace, &activity, Some(value), ctx)
             .await?;
+        // A platform ceiling may have changed while this write waited for its policy fence.
+        // The stored override remains subject to that ceiling, just like every admission.
+        let ceiling = self.activity_ceiling(principal.tenant_id()).await?;
         Ok(ActivityQuotaView {
             used: self
                 .store
                 .activity_usage(principal.tenant_id(), namespace, &activity)
                 .await?,
             activity,
-            limit: value,
+            limit: value.min(ceiling),
             ceiling,
             overridden: true,
         })

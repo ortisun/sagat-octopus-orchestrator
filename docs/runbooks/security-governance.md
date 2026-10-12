@@ -278,3 +278,21 @@ For an existing disposable kind cluster, export its kubeconfig to a separate fil
 - Webhook signature, replay and inbound SSRF controls: feature 004 (G36).
 - Quotas for builds, storage, logs, retention and event rate (G37); default values per tier (G42).
 - A KMS or HSM behind the key ring (G43); binding a client certificate to a token subject (G44).
+
+
+### Activity concurrency policy changes
+
+Activity limits apply to unexpired `LEASED`/`RUNNING` tasks in one tenant and namespace.
+Admission holds shared tenant and namespace policy locks, then the exact activity lock, through the
+lease transaction. Multi-activity claims acquire activities by activity name and node id, so two
+workflows with opposite node orders cannot deadlock each other. Distinct activities retain concurrent
+admission. Namespace defaults exclusively fence that namespace; tenant defaults and operator ceilings
+exclusively fence the tenant. An edit waits for earlier admissions to finish before acknowledging.
+Existing leases remain valid after a lower limit; subsequent admissions use the new effective limit.
+Auditing shares each policy-write transaction. `quota_exceeded_total{limit="activity_concurrency"}`
+records refusals without activity or tenant metric labels.
+
+Reproduce lock ordering and policy races with
+`cargo test -p sagat-tests --test integration_durable_execution activity_locking` against Docker.
+The ABBA regression gates two concurrent lease writes after admission to exercise the original
+opposite-activity ordering deterministically.

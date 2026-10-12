@@ -3,6 +3,8 @@
 mod config;
 mod jwks;
 mod verifier;
+mod webhooks;
+pub use webhooks::{WebhookOidcConfig, WebhookOidcVerifiers};
 
 pub use config::AuthConfig;
 pub use jwks::{

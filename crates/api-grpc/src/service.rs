@@ -615,7 +615,7 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
         expires_at_epoch_ms: epoch_ms(task.expires_at),
         activity_name: task.activity.to_string(),
         input_json: String::from_utf8_lossy(&task.input).into_owned(),
-        input_blob_ref: String::new(),
+        input_blob_ref: task.input_blob.map(|id| id.to_string()).unwrap_or_default(),
         traceparent: traceparent(task),
         // The tenant is implicit in the worker's identity; its slug is not disclosed to code that
         // does not need it.

@@ -112,6 +112,24 @@ pub struct BlobScope {
     pub generation: u64,
 }
 
+/// The capability that may bind a staged upload. A run input has no run or attempt yet; its
+/// uploader is recorded separately by the catalog and checked when a run claims it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlobOwner {
+    StepOutput(BlobScope),
+    RunInput(BlobAccess),
+}
+
+impl BlobOwner {
+    #[must_use]
+    pub const fn access(self) -> BlobAccess {
+        match self {
+            Self::StepOutput(scope) => scope.access,
+            Self::RunInput(access) => access,
+        }
+    }
+}
+
 impl BlobKey {
     #[must_use]
     pub fn of(access: BlobAccess, id: BlobId) -> Self {
@@ -156,7 +174,8 @@ pub trait BlobBackend: Send + Sync + fmt::Debug + 'static {
 pub struct BlobRecord {
     pub descriptor: BlobDescriptor,
     pub state: BlobState,
-    pub scope: BlobScope,
+    pub owner: BlobOwner,
+    pub created_by: String,
 }
 
 /// The record of which blobs exist, per tenant and namespace.
@@ -169,7 +188,7 @@ pub trait BlobCatalog: Send + Sync + fmt::Debug + 'static {
     /// Confirmed cleanup tombstones retain reconciliation evidence without consuming an active slot.
     fn reserve<'a>(
         &'a self,
-        scope: BlobScope,
+        owner: BlobOwner,
         id: BlobId,
         content_type: &'a ContentType,
         created_by: &'a str,
@@ -233,6 +252,20 @@ pub struct BlobCommit {
     pub size: u64,
     pub digest: Digest,
     pub scope: BlobScope,
+}
+
+/// How a newly created run acquires its input reference. Inheritance is authorized by the
+/// source run's rerun/parent link and exact input digest, never by a caller-selected blob id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunInputBinding {
+    Uploaded(BlobDescriptor),
+    Inherit(RunId),
+}
+
+/// Checks a bounded descriptor against the input schema in an immutable workflow document.
+/// Implemented by the existing JSON Schema adapter; errors must contain no payload values.
+pub trait RunInputChecker: Send + Sync {
+    fn check(&self, workflow: &[u8], input: &[u8]) -> Result<(), &'static str>;
 }
 
 impl BlobCommit {
@@ -361,7 +394,31 @@ impl BlobService {
         request: WriteRequest,
         body: ByteStream,
     ) -> Result<BlobDescriptor, BlobWriteError> {
-        let outcome = self.write_inner(scope, created_by, request, body).await;
+        self.write_owned(BlobOwner::StepOutput(scope), created_by, request, body)
+            .await
+    }
+
+    /// Stages an input for a future run. The caller must already have authenticated and authorized
+    /// `run:start` in `access`; the catalog retains `created_by` as the only uploader that may bind it.
+    pub async fn write_input(
+        &self,
+        access: BlobAccess,
+        created_by: &str,
+        request: WriteRequest,
+        body: ByteStream,
+    ) -> Result<BlobDescriptor, BlobWriteError> {
+        self.write_owned(BlobOwner::RunInput(access), created_by, request, body)
+            .await
+    }
+
+    async fn write_owned(
+        &self,
+        owner: BlobOwner,
+        created_by: &str,
+        request: WriteRequest,
+        body: ByteStream,
+    ) -> Result<BlobDescriptor, BlobWriteError> {
+        let outcome = self.write_inner(owner, created_by, request, body).await;
         metrics::counter!(
             "blob_writes_total",
             "provider" => self.backend.provider(),
@@ -384,7 +441,7 @@ impl BlobService {
 
     async fn write_inner(
         &self,
-        scope: BlobScope,
+        owner: BlobOwner,
         created_by: &str,
         request: WriteRequest,
         body: ByteStream,
@@ -397,9 +454,10 @@ impl BlobService {
             return Err(BlobWriteError::TooLarge);
         }
         let id = BlobId::generate();
+        let access = owner.access();
         self.catalog
             .reserve(
-                scope,
+                owner,
                 id,
                 &request.content_type,
                 created_by,
@@ -414,12 +472,12 @@ impl BlobService {
                     BlobWriteError::Internal
                 }
             })?;
-        let key = BlobKey::of(scope.access, id);
+        let key = BlobKey::of(access, id);
 
         let (measured, probe) = Measured::new(body, self.limits.max_bytes);
         let stored = self.backend.put(&key, Box::pin(measured)).await;
         if let Err(failure) = stored {
-            self.forget(scope.access, id, &key).await;
+            self.forget(access, id, &key).await;
             return Err(match failure {
                 BackendFailure::Body(BlobIoError::TooLarge) => BlobWriteError::TooLarge,
                 BackendFailure::Body(_) => BlobWriteError::Interrupted,
@@ -445,15 +503,11 @@ impl BlobService {
             None
         };
         if let Some(error) = mismatch {
-            self.forget(scope.access, id, &key).await;
+            self.forget(access, id, &key).await;
             return Err(error);
         }
-        if let Err(error) = self
-            .catalog
-            .mark_uploaded(scope.access, id, size, &digest)
-            .await
-        {
-            self.forget(scope.access, id, &key).await;
+        if let Err(error) = self.catalog.mark_uploaded(access, id, size, &digest).await {
+            self.forget(access, id, &key).await;
             return Err(match error {
                 StoreError::Unavailable { .. } => BlobWriteError::Unavailable,
                 _ => BlobWriteError::Internal,
@@ -477,7 +531,11 @@ impl BlobService {
             .find(access, id)
             .await
             .map_err(|_| BlobReadError::Unavailable)?
-            .filter(|record| matches!(record.state, BlobState::Uploaded | BlobState::Committed))
+            .filter(|record| {
+                record.state == BlobState::Committed
+                    || (record.state == BlobState::Uploaded
+                        && matches!(record.owner, BlobOwner::StepOutput(_)))
+            })
             .ok_or(BlobReadError::NotFound)?;
         let key = BlobKey::of(access, id);
         let stream = self
@@ -531,7 +589,28 @@ impl BlobService {
             .map_err(|_| BlobReadError::Unavailable)?
             .filter(|record| {
                 matches!(record.state, BlobState::Uploaded | BlobState::Committed)
-                    && record.scope == scope
+                    && record.owner == BlobOwner::StepOutput(scope)
+            })
+            .map(|record| record.descriptor)
+            .ok_or(BlobReadError::NotFound)
+    }
+
+    /// Finds an unused run-input upload for its authenticated creator. The start transaction
+    /// repeats this exact owner/state decision before binding it, excluding concurrent GC/use.
+    pub async fn describe_input(
+        &self,
+        access: BlobAccess,
+        id: BlobId,
+        created_by: &str,
+    ) -> Result<BlobDescriptor, BlobReadError> {
+        self.catalog
+            .find(access, id)
+            .await
+            .map_err(|_| BlobReadError::Unavailable)?
+            .filter(|record| {
+                record.state == BlobState::Uploaded
+                    && record.owner == BlobOwner::RunInput(access)
+                    && record.created_by == created_by
             })
             .map(|record| record.descriptor)
             .ok_or(BlobReadError::NotFound)

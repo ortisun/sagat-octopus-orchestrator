@@ -11,12 +11,14 @@ use std::time::Duration;
 use sagat_application::definitions::DefinitionStore;
 use sagat_application::error::StoreError;
 use sagat_application::events::{
-    Admission, Delivery, EndpointRecord, EventStore, NewEvent, StoredEvent,
+    Admission, Delivery, EndpointRecord, EventStore, NewEvent, StoredEvent, WebhookAdmission,
+    WebhookAdmissionAudits, WebhookEndpointMismatch,
 };
 use sagat_application::secrets::StoredSecret;
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::events::{
     EndpointId, EndpointLimits, EndpointStatus, EventEnvelope, EventId, EventKey, InboxStatus,
+    WebhookAuthentication,
 };
 use sagat_domain::execution::{CorrelationKey, RunId};
 use sagat_domain::identity::{Namespace, NamespaceId, Slug, TenantId};
@@ -35,7 +37,8 @@ use crate::quotas::{ensure_room_for_endpoint, lock_event_endpoints, lock_event_s
 macro_rules! select_endpoints {
     ($tail:literal) => {
         concat!(
-            "SELECT id, tenant_id, namespace_id, slug, secret_name, default_event_type, ",
+            "SELECT id, tenant_id, namespace_id, slug, profile, secret_name, oidc_profile, ",
+            "oidc_subject, mtls_certificate_sha256, default_event_type, ",
             "dedupe_ttl_seconds, skew_seconds, max_body_bytes, rate_per_second, status, ",
             "created_by, created_at, updated_at FROM event_endpoints ",
             $tail
@@ -51,17 +54,56 @@ fn seconds(value: i32) -> Result<Duration, StoreError> {
 
 fn endpoint_from_row(row: &PgRow) -> Result<EndpointRecord, StoreError> {
     let slug: String = col(row, "slug")?;
-    let secret: String = col(row, "secret_name")?;
+    let profile: String = col(row, "profile")?;
+    let secret: Option<String> = col(row, "secret_name")?;
+    let oidc_profile: Option<String> = col(row, "oidc_profile")?;
+    let oidc_subject: Option<String> = col(row, "oidc_subject")?;
+    let mtls_certificate_sha256: Option<String> = col(row, "mtls_certificate_sha256")?;
     let default_type: Option<String> = col(row, "default_event_type")?;
     let status: String = col(row, "status")?;
     let body: i32 = col(row, "max_body_bytes")?;
     let rate: i32 = col(row, "rate_per_second")?;
+    let secret_name = secret
+        .map(|name| SecretName::parse(&name).map_err(|_| corrupt("event endpoint secret name")))
+        .transpose()?;
+    let authentication = match profile.as_str() {
+        "HMAC"
+            if secret_name.is_some()
+                && oidc_profile.is_none()
+                && oidc_subject.is_none()
+                && mtls_certificate_sha256.is_none() =>
+        {
+            WebhookAuthentication::Hmac
+        }
+        "OIDC" if secret_name.is_none() && mtls_certificate_sha256.is_none() => {
+            WebhookAuthentication::Oidc {
+                profile: Slug::parse(
+                    oidc_profile
+                        .as_deref()
+                        .ok_or_else(|| corrupt("event endpoint OIDC profile"))?,
+                )
+                .map_err(|_| corrupt("event endpoint OIDC profile"))?,
+                subject: oidc_subject.ok_or_else(|| corrupt("event endpoint OIDC subject"))?,
+            }
+        }
+        "MTLS" if secret_name.is_none() && oidc_profile.is_none() && oidc_subject.is_none() => {
+            WebhookAuthentication::Mtls {
+                certificate_sha256: mtls_certificate_sha256
+                    .ok_or_else(|| corrupt("event endpoint mTLS fingerprint"))?,
+            }
+        }
+        _ => return Err(corrupt("event endpoint authentication profile")),
+    };
+    if !authentication.is_valid() {
+        return Err(corrupt("event endpoint authentication identity"));
+    }
     Ok(EndpointRecord {
         id: EndpointId::new(col::<Uuid>(row, "id")?),
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
         namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
         slug: Slug::parse(&slug).map_err(|_| corrupt("event endpoint slug"))?,
-        secret_name: SecretName::parse(&secret).map_err(|_| corrupt("event endpoint secret"))?,
+        secret_name,
+        authentication,
         default_event_type: default_type
             .map(|t| EventType::parse(&t).map_err(|_| corrupt("event endpoint type")))
             .transpose()?,
@@ -142,16 +184,30 @@ impl EventStore for PgRunStore {
         ensure_room_for_endpoint(&mut tx, endpoint.tenant_id, endpoint.namespace_id, limit).await?;
         sqlx::query(
             "INSERT INTO event_endpoints \
-             (id, tenant_id, namespace_id, slug, secret_name, default_event_type, \
-              dedupe_ttl_seconds, skew_seconds, max_body_bytes, rate_per_second, status, \
-              created_by, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)",
+             (id, tenant_id, namespace_id, slug, profile, secret_name, oidc_profile, oidc_subject, \
+              mtls_certificate_sha256, default_event_type, dedupe_ttl_seconds, skew_seconds, \
+              max_body_bytes, rate_per_second, status, created_by, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, \
+                     $16, $17, $17)",
         )
         .bind(endpoint.id.as_uuid())
         .bind(endpoint.tenant_id.as_uuid())
         .bind(endpoint.namespace_id.as_uuid())
         .bind(endpoint.slug.as_str())
-        .bind(endpoint.secret_name.as_str())
+        .bind(endpoint.authentication.kind())
+        .bind(endpoint.secret_name.as_ref().map(SecretName::as_str))
+        .bind(match &endpoint.authentication {
+            WebhookAuthentication::Oidc { profile, .. } => Some(profile.as_str()),
+            _ => None,
+        })
+        .bind(match &endpoint.authentication {
+            WebhookAuthentication::Oidc { subject, .. } => Some(subject.as_str()),
+            _ => None,
+        })
+        .bind(match &endpoint.authentication {
+            WebhookAuthentication::Mtls { certificate_sha256 } => Some(certificate_sha256.as_str()),
+            _ => None,
+        })
         .bind(endpoint.default_event_type.as_ref().map(EventType::as_str))
         .bind(secs(endpoint.limits.dedupe_ttl()))
         .bind(secs(endpoint.limits.skew()))
@@ -174,14 +230,28 @@ impl EventStore for PgRunStore {
     ) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let changed = sqlx::query(
-            "UPDATE event_endpoints SET secret_name = $3, default_event_type = $4, \
-                 dedupe_ttl_seconds = $5, skew_seconds = $6, max_body_bytes = $7, \
-                 rate_per_second = $8, status = $9, updated_at = $10 \
+            "UPDATE event_endpoints SET profile = $3, secret_name = $4, oidc_profile = $5, \
+                 oidc_subject = $6, mtls_certificate_sha256 = $7, default_event_type = $8, \
+                 dedupe_ttl_seconds = $9, skew_seconds = $10, max_body_bytes = $11, \
+                 rate_per_second = $12, status = $13, updated_at = $14 \
              WHERE tenant_id = $1 AND id = $2",
         )
         .bind(endpoint.tenant_id.as_uuid())
         .bind(endpoint.id.as_uuid())
-        .bind(endpoint.secret_name.as_str())
+        .bind(endpoint.authentication.kind())
+        .bind(endpoint.secret_name.as_ref().map(SecretName::as_str))
+        .bind(match &endpoint.authentication {
+            WebhookAuthentication::Oidc { profile, .. } => Some(profile.as_str()),
+            _ => None,
+        })
+        .bind(match &endpoint.authentication {
+            WebhookAuthentication::Oidc { subject, .. } => Some(subject.as_str()),
+            _ => None,
+        })
+        .bind(match &endpoint.authentication {
+            WebhookAuthentication::Mtls { certificate_sha256 } => Some(certificate_sha256.as_str()),
+            _ => None,
+        })
         .bind(endpoint.default_event_type.as_ref().map(EventType::as_str))
         .bind(secs(endpoint.limits.dedupe_ttl()))
         .bind(secs(endpoint.limits.skew()))
@@ -293,6 +363,44 @@ impl EventStore for PgRunStore {
         }
         // Anything else wrote nothing that matters: the transaction is rolled back.
         Ok(admission)
+    }
+
+    async fn admit_webhook(
+        &self,
+        expected: &EndpointRecord,
+        event: &NewEvent,
+        backlog_limit: u64,
+        audits: &WebhookAdmissionAudits,
+    ) -> Result<WebhookAdmission, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let current = sqlx::query(select_endpoints!("WHERE id = $1 FOR SHARE"))
+            .bind(expected.id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?
+            .map(|row| endpoint_from_row(&row))
+            .transpose()?;
+        let mismatch = match current {
+            None => Some(WebhookEndpointMismatch::Missing),
+            Some(ref current) if current.status == EndpointStatus::Paused => {
+                Some(WebhookEndpointMismatch::Paused)
+            }
+            Some(ref current) if !expected.has_same_trusted_configuration(current) => {
+                Some(WebhookEndpointMismatch::Changed)
+            }
+            Some(_) => None,
+        };
+        if let Some(mismatch) = mismatch {
+            insert_audit(&mut tx, audits.for_mismatch(mismatch)).await?;
+            tx.commit().await.map_err(store_error)?;
+            return Ok(WebhookAdmission::Refused(mismatch));
+        }
+
+        let admission = admit_within(&mut tx, event, backlog_limit).await?;
+        if admission == Admission::Accepted {
+            tx.commit().await.map_err(store_error)?;
+        }
+        Ok(WebhookAdmission::Admitted(admission))
     }
 
     async fn event(

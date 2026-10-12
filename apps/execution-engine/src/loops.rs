@@ -28,6 +28,10 @@ pub type EngineDeliveries = DeliveryWorker<
     PgRunStore,
     sagat_infra_connectors::webhook::GuardedSender<PgRunStore>,
     SystemEntropy,
+    sagat_infra_connectors::publish::Publisher<
+        sagat_infra_connectors::guard::PolicyGuard<PgRunStore>,
+        PgRunStore,
+    >,
 >;
 
 /// Liveness of the scheduler loop: it must keep ticking, even when a tick finds nothing (or the

@@ -1,6 +1,6 @@
 # Blob reference contract (worker protocol 1.3)
 
-This contract defines the implemented step-output slice of FR-002-008. It is additive to worker protocol 1.2: workers that negotiate 1.2 keep sending inline `output_json`, and servers continue accepting it. Protocol 1.3 adds `WriteBlob`, `ReadBlob`, and `CompleteStep.output_blob_ref`. Large run input over REST and `TaskLease.input_blob_ref` are not implemented; `input_blob_ref` stays reserved and empty.
+This contract defines run-input and step-output claim-check transport for FR-002-008. It is additive to worker protocol 1.2: workers that negotiate 1.2 keep sending inline `output_json`, and servers continue accepting it. Protocol 1.3 adds `WriteBlob`, `ReadBlob`, and `CompleteStep.output_blob_ref`. Large run input is staged through REST and committed through `inputBlobRef`; protocol 1.3 leases expose its catalog-backed `input_blob_ref`.
 
 ## Descriptor
 
@@ -25,7 +25,7 @@ Every blob RPC carries the full task identity and lease capability: task, run, s
 
 A reservation durably binds the blob to that tenant, namespace, run, step, attempt, and generation. Only that exact scope may attach it to a completion. An exact replay of an already successful `CompleteStep` may resolve its `COMMITTED` descriptor after the lease ended so a lost response remains idempotent; a new report still needs the original completion checks.
 
-A current lease may read an `UPLOADED` or `COMMITTED` blob in its tenant and namespace by unguessable id. A different tenant, namespace, or unknown id returns the same `NOT_FOUND` result. Workers never receive object-store credentials, endpoints, bucket names, or presigned URLs.
+A current lease may read an `UPLOADED` step-output blob or any `COMMITTED` blob in its tenant and namespace by unguessable id. A different tenant, namespace, or unknown id returns the same `NOT_FOUND` result. Workers never receive object-store credentials, endpoints, bucket names, or presigned URLs.
 
 ## WriteBlob
 
@@ -70,3 +70,15 @@ Unused uploaded-blob retention starts at `uploaded_at`, not reservation time. Cl
 ## Verification boundary
 
 The repository tests memory and filesystem backends and signed requests against an in-process S3-compatible server. Real AWS S3 and Cloudflare R2 tests require credentials, are ignored by default, and have not been claimed as executed. The local S3-compatible server cannot represent multipart metadata for the full tenant/namespace key within its filesystem filename limit, so its 12 MiB signed-request case uses one part; multipart behavior remains part of the unexecuted real-provider checks.
+
+## Run inputs (T002-040)
+
+`POST /v1/run-input-blobs` uses bearer authentication and `X-Octopus-Namespace`. It requires `run:start` and accepts a raw body with optional `Content-Type` (default `application/octet-stream`), `X-Octopus-Blob-Size` (unsigned decimal), and `X-Octopus-Blob-Sha256` (64 hexadecimal characters). A successful complete upload returns HTTP 201 and `{id,size,sha256,contentType}`. The existing blob limits and cleanup apply.
+
+`POST /v1/runs` accepts either the existing `input` or `inputBlobRef`, never both (including explicit `input:null`). A reference must belong to the same uploader and namespace and still be unused. Its measured descriptor becomes the run's JSON input, checked against a declared workflow input schema; external bytes are opaque. Binding and the initial run transition commit together. Exact retries replay before catalog lookup; another input mode/reference under the same key conflicts. The lease's `input_blob_ref` is populated only from durable catalog-backed run input. No worker can read the upload before binding.
+
+The uploader streams once; the upload endpoint has no idempotency key and clients must not automatically retry a consumed stream. An uncertain response can leave an unused upload, reclaimed by the existing TTL/cleanup. Exact run-start retries do use the mandatory Idempotency-Key. Run-start fingerprinting includes the input mode, blob id, uploader, requested version selection and other request fields; replay precedes catalog, current active-version and deadline checks.
+
+HTTP upload errors use the standard envelope: 401 authentication, 403 missing run:start, 404 unknown namespace, 408 transfer or idle timeout, 413 size limit, 422 metadata or measurement mismatch, 429 tenant/pending quota, and 503 transfer capacity/provider availability. A disabled provider does not register the upload route.
+
+REST uploads share global and tenant in-flight budgets but have their own configured body/transfer limits. Bearer expiration is an upper bound on transfer lifetime. Configure the same durable store and prefix on the control plane and every engine; control-plane memory storage is refused because separate processes cannot share it.

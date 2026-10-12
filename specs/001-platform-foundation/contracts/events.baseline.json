@@ -333,6 +333,61 @@
       ]
     }
   },
+  "RunFinishedBroker": {
+    "headers": {
+      "properties": {
+        "Nats-Msg-Id": {
+          "type": [
+            "string"
+          ]
+        },
+        "attempt": {
+          "type": [
+            "string"
+          ]
+        },
+        "delivery-id": {
+          "type": [
+            "string"
+          ]
+        },
+        "event-id": {
+          "type": [
+            "string"
+          ]
+        },
+        "event-type": {
+          "enum": [
+            "run.finished"
+          ],
+          "type": [
+            "string"
+          ]
+        },
+        "schema-version": {
+          "type": [
+            "string"
+          ]
+        },
+        "traceparent": {
+          "type": [
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "attempt",
+        "delivery-id",
+        "event-id",
+        "event-type",
+        "schema-version"
+      ]
+    },
+    "payload": {
+      "properties": {},
+      "required": []
+    }
+  },
   "RunFinishedWebhook": {
     "headers": {
       "properties": {

@@ -370,3 +370,28 @@ async fn heartbeats_from_a_worker_that_lost_its_lease_do_not_resurrect_it() {
     );
     w.assert_consistent(run).await;
 }
+
+#[tokio::test]
+async fn a_capped_backlog_cannot_hide_another_activity_past_the_candidate_limit() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 0).await;
+    let (blocked, _) = w
+        .publish(document("capped-backlog", "a", vec![activity("a")]))
+        .await;
+    for i in 0..65 {
+        w.start(blocked, &json!({"i":i})).await;
+    }
+    let (available, _) = w
+        .publish(document("available", "b", vec![activity("b")]))
+        .await;
+    let run = w.start(available, &json!({})).await;
+    let session = w.session_as(&w.worker, &["act.a", "act.b"], 8).await;
+    let tasks = w.poll(&session, 1).await;
+    assert_eq!(
+        tasks.len(),
+        1,
+        "a capped oldest backlog cannot monopolize candidate selection"
+    );
+    assert_eq!(tasks[0].run_id, run);
+    assert_eq!(tasks[0].activity.as_str(), "act.b");
+}

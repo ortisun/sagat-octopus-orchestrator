@@ -17,6 +17,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutLayer};
 
 pub mod auth;
+pub mod blobs;
 mod concurrency;
 mod context;
 mod core;
@@ -38,6 +39,7 @@ pub mod streams;
 pub mod studio;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
+pub use blobs::HttpBlobTransfer;
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
 pub use core::Core;
 pub use exec::{Exec, ExecState};
@@ -46,7 +48,7 @@ pub use governance::{GovState, Governance};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
 };
-pub use server::{ServerConfig, serve};
+pub use server::{HttpTlsConfig, ServerConfig, serve, serve_tls};
 
 /// Shared handler state. Cloning is cheap (a few `Arc`s).
 pub struct AppState<S, C> {
@@ -386,7 +388,7 @@ where
             );
     }
     let mut router = router.layer(RequestBodyLimitLayer::new(limits.max_body_bytes));
-    // Without a key ring a webhook cannot be verified: the event routes do not exist.
+    // The event service is deployment-gated with the key ring required by its HMAC profiles.
     if serves_events {
         use routes::events as ev;
         router = router.merge(
@@ -446,6 +448,33 @@ where
                 .route(
                     "/namespaces/{namespace_id}/webhook-subscriptions/{subscription_id}/redrive",
                     axum::routing::post(ob::redrive_dead::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions",
+                    get(ob::list_broker_subscriptions::<B<S, C, G>>)
+                        .post(ob::create_broker_subscription::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}",
+                    get(ob::get_broker_subscription::<B<S, C, G>>)
+                        .put(ob::update_broker_subscription::<B<S, C, G>>)
+                        .delete(ob::delete_broker_subscription::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/deliveries",
+                    get(ob::list_broker_deliveries::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/deliveries/{delivery_id}",
+                    get(ob::get_broker_delivery::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/deliveries/{delivery_id}/redrive",
+                    axum::routing::post(ob::redrive_broker_delivery::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/redrive",
+                    axum::routing::post(ob::redrive_broker_dead::<B<S, C, G>>),
                 )
                 .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)),
         );
@@ -619,6 +648,29 @@ where
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_in_flight.max(1)));
     let shed = || axum::middleware::from_fn_with_state(Arc::clone(&slots), limits::shed_excess);
 
+    // Large streaming uploads have their own size/time budget. Ordinary JSON routes retain
+    // their existing protection; no caller can smuggle a larger run request through this path.
+    let uploads = if let Some(blobs) = state.runs().input_blobs() {
+        let upload_limits = HttpLimits {
+            max_body_bytes: usize::try_from(blobs.limits().max_bytes).unwrap_or(usize::MAX),
+            request_timeout: state.blob_transfers().limits.timeout,
+            ..limits
+        };
+        protect(
+            Router::new()
+                .route(
+                    "/v1/run-input-blobs",
+                    axum::routing::post(blobs::upload::<B<S, C, P, X, E>>),
+                )
+                .route_layer(shed())
+                .route_layer(from_fn(context::record_route))
+                .with_state(state.clone()),
+            upload_limits,
+        )
+    } else {
+        Router::new()
+    };
+
     let identity_routes = Router::new()
         .route("/auth/context", get(identity::auth_context))
         .route("/version", get(identity::platform_version))
@@ -787,7 +839,7 @@ where
             .max(routes::runner::RUNNER_MAX_BODY_BYTES),
         ..limits
     };
-    protect(Router::new().nest("/v1", v1), outer)
+    protect(Router::new().nest("/v1", v1), outer).merge(uploads)
 }
 
 /// Wraps a router with the protections every endpoint must have: panic containment, a request

@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use sagat_application::outbound::{OutboundStore, SubscriptionRecord};
 use sagat_domain::outbound::{
-    DeliveryLimits, OutboundKind, SubscriptionId, SubscriptionStatus, TargetUrl,
+    DeliveryLimits, OutboundDestination, OutboundKind, SubscriptionId, SubscriptionStatus,
+    TargetUrl,
 };
 use sagat_domain::secrets::SecretName;
 use serde_json::{Value, json};
@@ -50,8 +51,10 @@ async fn the_outbound_webhook_and_the_event_document_conform_to_the_document() {
         tenant_id: w.admin.tenant_id(),
         namespace_id: w.namespace.id(),
         name: slug("conformance"),
-        url: TargetUrl::parse(&receiver.url).expect("url"),
-        secret_name: SecretName::parse("provider-signing").expect("secret"),
+        destination: OutboundDestination::Webhook {
+            url: TargetUrl::parse(&receiver.url).expect("url"),
+            signing_secret: SecretName::parse("provider-signing").expect("secret"),
+        },
         kinds: vec![OutboundKind::RunFinished],
         limits: DeliveryLimits::new(100, Duration::from_secs(2)).expect("limits"),
         status: SubscriptionStatus::Active,

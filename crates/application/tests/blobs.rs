@@ -15,8 +15,8 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use sagat_application::blobs::{
     BackendFailure, BlobAccess, BlobBackend, BlobCatalog, BlobIoError, BlobKey, BlobLimits,
-    BlobReadError, BlobRecord, BlobScope, BlobService, BlobWriteError, BoxFuture, ByteStream,
-    WriteRequest, byte_stream, descriptor_json,
+    BlobOwner, BlobReadError, BlobRecord, BlobScope, BlobService, BlobWriteError, BoxFuture,
+    ByteStream, WriteRequest, byte_stream, descriptor_json,
 };
 use sagat_application::error::StoreError;
 use sagat_domain::blobs::{BlobDescriptor, BlobId, BlobState, ContentType};
@@ -179,7 +179,7 @@ impl FakeCatalog {
 impl BlobCatalog for FakeCatalog {
     fn reserve<'a>(
         &'a self,
-        scope: BlobScope,
+        owner: BlobOwner,
         id: BlobId,
         content_type: &'a ContentType,
         created_by: &'a str,
@@ -191,7 +191,7 @@ impl BlobCatalog for FakeCatalog {
                     .0
                     .iter()
                     .filter(|((access, _), r)| {
-                        access.tenant_id == scope.access.tenant_id
+                        access.tenant_id == owner.access().tenant_id
                             && !r.record.state.is_referenced()
                             && !r.deletion_confirmed
                     })
@@ -202,7 +202,7 @@ impl BlobCatalog for FakeCatalog {
                     });
                 }
                 rows.0.insert(
-                    (scope.access, id),
+                    (owner.access(), id),
                     Row {
                         record: BlobRecord {
                             descriptor: BlobDescriptor::new(
@@ -212,7 +212,8 @@ impl BlobCatalog for FakeCatalog {
                                 content_type.clone(),
                             ),
                             state: BlobState::Uploading,
-                            scope,
+                            owner,
+                            created_by: created_by.to_owned(),
                         },
                         created_by: created_by.to_owned(),
                         age: Duration::ZERO,
@@ -766,7 +767,13 @@ async fn a_blob_whose_upload_never_finished_cannot_be_read() {
     let id = BlobId::generate();
     let content_type = ContentType::octet_stream();
     w.catalog
-        .reserve(w.scope(), id, &content_type, "wendy", 4)
+        .reserve(
+            BlobOwner::StepOutput(w.scope()),
+            id,
+            &content_type,
+            "wendy",
+            4,
+        )
         .await
         .expect("reserved");
 
@@ -1031,7 +1038,7 @@ async fn an_abandoned_upload_is_swept_much_sooner_than_an_uploaded_blob_nobody_u
     let abandoned = BlobId::generate();
     w.catalog
         .reserve(
-            w.scope(),
+            BlobOwner::StepOutput(w.scope()),
             abandoned,
             &ContentType::octet_stream(),
             "wendy",
@@ -1063,5 +1070,59 @@ async fn an_abandoned_upload_is_swept_much_sooner_than_an_uploaded_blob_nobody_u
                 )
         ),
         "uncertain upload retains reconciliation evidence"
+    );
+}
+
+#[tokio::test]
+async fn a_run_input_is_private_until_bound_and_only_its_creator_can_bind_it() {
+    let w = world();
+    let descriptor = w
+        .service
+        .write_input(w.access(), "wendy", request(), body(&[b"large input"]))
+        .await
+        .expect("staged without a lease");
+    assert_eq!(
+        w.service
+            .describe_input(w.access(), descriptor.id(), "wendy")
+            .await,
+        Ok(descriptor.clone())
+    );
+    assert_eq!(
+        w.service
+            .describe_input(w.access(), descriptor.id(), "other")
+            .await,
+        Err(BlobReadError::NotFound)
+    );
+    assert_eq!(
+        w.service
+            .describe_for_commit(w.scope(), descriptor.id())
+            .await,
+        Err(BlobReadError::NotFound)
+    );
+    assert_eq!(
+        w.service.read(w.access(), descriptor.id()).await.err(),
+        Some(BlobReadError::NotFound)
+    );
+    w.catalog.with(|rows| {
+        rows.0
+            .get_mut(&(w.access(), descriptor.id()))
+            .expect("input row")
+            .record
+            .state = BlobState::Committed
+    });
+    assert_eq!(
+        w.service
+            .describe_input(w.access(), descriptor.id(), "wendy")
+            .await,
+        Err(BlobReadError::NotFound)
+    );
+    let (_, stream) = w
+        .service
+        .read(w.access(), descriptor.id())
+        .await
+        .expect("committed input");
+    assert_eq!(
+        collect(stream).await.expect("verified bytes"),
+        b"large input"
     );
 }

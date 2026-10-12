@@ -9,6 +9,7 @@ use sagat_application::identity::IdentityStore;
 use sagat_application::publishing::{PublishingService, PublishingStore};
 use sagat_application::runs::{RunService, RunStore};
 
+use crate::blobs::{BlobTransfers, HttpBlobTransfer};
 use crate::concurrency::TenantConcurrency;
 use crate::core::Core;
 use crate::limits::RateLimiter;
@@ -32,6 +33,7 @@ pub trait Exec: Core {
 
     /// The open server-sent streams (D142).
     fn streams(&self) -> &Arc<StreamRegistry>;
+    fn blob_transfers(&self) -> &Arc<BlobTransfers>;
 }
 
 /// The identity state plus the definition and run services.
@@ -41,6 +43,7 @@ pub struct ExecState<S, C, P, X, E> {
     publishing: Option<Arc<PublishingService<P, C, X>>>,
     runs: Arc<RunService<P, C, E>>,
     streams: Arc<StreamRegistry>,
+    blob_transfers: Arc<BlobTransfers>,
 }
 
 impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
@@ -56,6 +59,7 @@ impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
             publishing: None,
             runs: Arc::new(runs),
             streams: StreamRegistry::new(StreamLimits::default()),
+            blob_transfers: BlobTransfers::new(HttpBlobTransfer::default()),
         }
     }
 
@@ -72,6 +76,12 @@ impl<S, C, P, X, E> ExecState<S, C, P, X, E> {
         self.streams = StreamRegistry::new(limits);
         self
     }
+
+    #[must_use]
+    pub fn with_blob_transfer(mut self, limits: HttpBlobTransfer) -> Self {
+        self.blob_transfers = BlobTransfers::new(limits);
+        self
+    }
 }
 
 impl<S, C, P, X, E> Clone for ExecState<S, C, P, X, E> {
@@ -82,6 +92,7 @@ impl<S, C, P, X, E> Clone for ExecState<S, C, P, X, E> {
             publishing: self.publishing.clone(),
             runs: Arc::clone(&self.runs),
             streams: Arc::clone(&self.streams),
+            blob_transfers: Arc::clone(&self.blob_transfers),
         }
     }
 }
@@ -147,5 +158,9 @@ where
 
     fn streams(&self) -> &Arc<StreamRegistry> {
         &self.streams
+    }
+
+    fn blob_transfers(&self) -> &Arc<BlobTransfers> {
+        &self.blob_transfers
     }
 }

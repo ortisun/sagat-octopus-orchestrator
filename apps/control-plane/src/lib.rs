@@ -525,12 +525,24 @@ pub async fn serve_with_admin(
                 secrets.cipher(),
             ))
             // Webhooks are verified with secrets of the namespace, so they need the key ring too.
-            .with_events(EventService::new(
-                executions.clone(),
-                SystemClock,
-                secrets.cipher(),
-                Arc::new(JsonEvaluator),
-            ))
+            .with_events(
+                EventService::new(
+                    executions.clone(),
+                    SystemClock,
+                    secrets.cipher(),
+                    Arc::new(JsonEvaluator),
+                )
+                .with_identities(Arc::new(
+                    sagat_api_http::auth::WebhookOidcVerifiers::new(
+                        &serve.webhook_oidc,
+                        serve.webhook_oidc_development,
+                    )
+                    .map_err(|reason| config::ConfigError::Invalid {
+                        name: "SAGAT_WEBHOOK_OIDC_PROFILES_FILE",
+                        reason: reason.to_owned(),
+                    })?,
+                )),
+            )
             // Deliveries are signed with a secret of the namespace, so they need the key ring too.
             .with_outbound(OutboundService::new(
                 executions.clone(),
@@ -564,13 +576,37 @@ pub async fn serve_with_admin(
         );
     }
     let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec);
+    let mut runs = RunService::new(
+        executions.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        cache,
+    )
+    .with_lag_budget(serve.telemetry_lag_budget);
+    if let Some(settings) = &serve.blobs {
+        let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
+            .map_err(|_| RunError::Refused("could not set up the object store (SAGAT_BLOB_*)"))?;
+        tracing::info!(
+            provider = backend.provider(),
+            max_bytes = settings.limits.max_bytes,
+            "run input blob store enabled"
+        );
+        runs = runs.with_input_blobs(
+            sagat_application::blobs::BlobService::new(
+                Arc::new(sagat_infra_postgres::PgBlobCatalog::new(pool.clone())),
+                backend,
+                settings.limits,
+            ),
+            Arc::new(sagat_infra_schema::Schemas),
+        );
+    }
     let exec = ExecState::new(
         state,
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
-        RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
-            .with_lag_budget(serve.telemetry_lag_budget),
+        runs,
     )
     .with_stream_limits(serve.streams)
+    .with_blob_transfer(serve.blob_transfer)
     .with_publishing(publishing);
     let mut app = router_with_governance(exec, governance, serve.limits);
     // The Studio is static files on the API's own origin: no CORS, no second listener.
@@ -618,7 +654,11 @@ pub async fn serve_with_admin(
         }
         None => None,
     };
-    sagat_api_http::serve(listener, app, serve.server, stopped(stop_rx)).await?;
+    if let Some(tls) = serve.tls.clone() {
+        sagat_api_http::serve_tls(listener, app, serve.server, tls, stopped(stop_rx)).await?;
+    } else {
+        sagat_api_http::serve(listener, app, serve.server, stopped(stop_rx)).await?;
+    }
     if let Some(admin) = admin {
         let _ = admin.await;
     }

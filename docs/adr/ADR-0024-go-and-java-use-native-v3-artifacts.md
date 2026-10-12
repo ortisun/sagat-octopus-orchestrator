@@ -120,3 +120,5 @@ was rejected in favor of a pinned, reviewed library.
 - ADR-0013 and `specs/005-inline-code-sandbox/spec.md`.
 
 Native AMD64 startup and six-sample Go/Java production execution passed on commit `4aeb618` in [CI job 114653433277](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38200759888/job/114653433277), alongside native ARM64 job 114653433252. The CI job also runs the full native host-call and resource suite on subsequent revisions.
+
+Full native host-call and resource validation subsequently passed on `64f1532`: all five ignored tests in [AMD64 job 114655611633](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38201472580/job/114655611633) and [ARM64 job 114655611559](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38201472580/job/114655611559), including CPU termination, network/host-call isolation and cleanup. AMD64 completed in 37.73 seconds.

@@ -213,6 +213,55 @@ async fn shutdown_does_not_wait_forever_for_a_connection_that_never_completes() 
     );
 }
 
+#[tokio::test]
+async fn shutdown_cancels_an_inflight_handler_when_the_grace_period_expires() {
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let handler_entered = entered.clone();
+    let app = Router::new().route(
+        "/never",
+        get(move || {
+            let entered = handler_entered.clone();
+            async move {
+                entered.notify_one();
+                std::future::pending::<&'static str>().await
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let (stop, stopped) = oneshot::channel();
+    let server = tokio::spawn(serve(
+        listener,
+        app,
+        ServerConfig {
+            shutdown_grace: Duration::from_millis(100),
+            ..ServerConfig::default()
+        },
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    let mut client = TcpStream::connect(address).await.expect("connect");
+    client
+        .write_all(b"GET /never HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .expect("request");
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .expect("handler entered");
+    stop.send(()).expect("shutdown");
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("bounded shutdown")
+        .expect("join")
+        .expect("serve");
+    let (_, closed) = read_until_closed(&mut client, Duration::from_millis(500)).await;
+    assert!(
+        closed,
+        "shutdown must drop the handler and socket, not detach them"
+    );
+}
+
 /// Reads a response to its end as slowly as `pause` between reads, counting what arrives; the
 /// server closing the connection ends it early.
 async fn read_all_counting(stream: &mut TcpStream, pause: Duration, overall: Duration) -> usize {

@@ -180,9 +180,10 @@ pub async fn serve(
     // Deliveries are signed with a secret of the namespace, so without a key ring there is nothing to
     // deliver with.
     let deliveries: Option<Arc<EngineDeliveries>> = engine.secrets.as_ref().map(|keys| {
-        Arc::new(DeliveryWorker::new(
+        Arc::new(DeliveryWorker::with_broker(
             store.clone(),
             sagat_infra_connectors::webhook::GuardedSender::new(store.clone()),
+            sagat_infra_connectors::publish::Publisher::new(store.clone()),
             SystemEntropy,
             keys.cipher(),
             engine.deliveries,

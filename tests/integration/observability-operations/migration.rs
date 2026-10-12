@@ -5,7 +5,8 @@ use std::time::Duration;
 use sagat_application::outbound::{OutboundStore, SubscriptionRecord};
 use sagat_application::telemetry::TelemetryState;
 use sagat_domain::outbound::{
-    DeliveryLimits, OutboundKind, SubscriptionId, SubscriptionStatus, TargetUrl,
+    DeliveryLimits, OutboundDestination, OutboundKind, SubscriptionId, SubscriptionStatus,
+    TargetUrl,
 };
 use sagat_domain::secrets::SecretName;
 use sagat_infra_postgres::{MIGRATOR, migrate};
@@ -83,8 +84,10 @@ async fn subscribe(w: &World, name: &str, kinds: Vec<OutboundKind>) -> Subscript
         tenant_id: w.admin.tenant_id(),
         namespace_id: w.namespace.id(),
         name: slug(name),
-        url: TargetUrl::parse("https://hooks.example.com/in").expect("url"),
-        secret_name: SecretName::parse("signing").expect("secret"),
+        destination: OutboundDestination::Webhook {
+            url: TargetUrl::parse("https://hooks.example.com/in").expect("url"),
+            signing_secret: SecretName::parse("signing").expect("secret"),
+        },
         kinds,
         limits: DeliveryLimits::new(100, Duration::from_secs(2)).expect("limits"),
         status: SubscriptionStatus::Active,

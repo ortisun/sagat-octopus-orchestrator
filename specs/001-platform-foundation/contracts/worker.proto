@@ -74,7 +74,9 @@ message TaskLease {
   int64 expires_at_epoch_ms = 7;
   string activity_name = 8;
   string input_json = 9;
-  // Reserved: always empty. A blob reaches a step as a descriptor inside input_json (see ReadBlob).
+  // Catalog-backed run input, if started through REST inputBlobRef. Its descriptor also appears
+  // inside input_json; read the bytes through ReadBlob under this lease. Ordinary JSON that
+  // resembles a descriptor does not populate this field. Added semantics in protocol 1.3.
   string input_blob_ref = 10;
   string traceparent = 11;
   string tenant_alias = 12;

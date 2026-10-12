@@ -34,13 +34,13 @@ const ACK_WAIT: Duration = Duration::from_secs(30);
 
 /// Whether the credentials contain something that must not cross a connection nobody encrypts.
 /// (A `.creds` file signs a challenge of the server and sends no secret.)
-fn sends_a_secret(credentials: &Credentials) -> bool {
+pub(crate) fn sends_a_secret(credentials: &Credentials) -> bool {
     credentials.text("creds").is_none()
         && (credentials.text("token").is_some()
             || (credentials.text("user").is_some() && credentials.text("password").is_some()))
 }
 
-fn options(credentials: &Credentials) -> Result<ConnectOptions, &'static str> {
+pub(crate) fn options(credentials: &Credentials) -> Result<ConnectOptions, &'static str> {
     let options = ConnectOptions::new().name("sagat-octopus-orchestrator");
     if let Some(creds) = credentials.text("creds") {
         return options

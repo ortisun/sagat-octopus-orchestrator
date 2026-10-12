@@ -236,6 +236,7 @@ pub struct ClaimedTask {
     pub expires_at: OffsetDateTime,
     pub activity: ActivityName,
     pub input: Vec<u8>,
+    pub input_blob: Option<BlobId>,
     /// Stable for the step: the same on every attempt, so the provider can recognise a repeat. For a
     /// compensation it is stable per run, step and action (`compensation_key`).
     pub idempotency_key: String,
@@ -704,7 +705,7 @@ where
         if tx.worker_drained(&session.subject).await? {
             return Ok(Vec::new());
         }
-        let ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {
+        let mut ready: Vec<(NodeId, ActivityName, Option<Duration>)> = {
             let (def, state) = tx.parts();
             state
                 .steps()
@@ -722,6 +723,16 @@ where
                 })
                 .collect()
         };
+        // A run transaction retains every activity quota (and compensation breaker) lock until
+        // commit. Node-id order can invert the same activities across workflows and deadlock.
+        ready.sort_by(
+            |(left_node, left_activity, _), (right_node, right_activity, _)| {
+                left_activity
+                    .as_str()
+                    .cmp(right_activity.as_str())
+                    .then_with(|| left_node.cmp(right_node))
+            },
+        );
         let mut leased = Vec::new();
         let mut run_bytes = 0usize;
         for (node, activity, timeout) in ready {
@@ -889,6 +900,7 @@ where
         };
         // Borrowed, not cloned: a run's data can be megabytes and a poll leases many steps of it.
         let data = tx.data().await?;
+        let input_blob = data.input_blob;
         // The key of the forward step: what identifies the effect at the provider.
         let forward_node = forward.as_ref().unwrap_or(node);
         let forward_key = match template {
@@ -928,6 +940,7 @@ where
             expires_at,
             activity,
             input,
+            input_blob,
             idempotency_key,
             trace_id: info.trace_id,
             kind,

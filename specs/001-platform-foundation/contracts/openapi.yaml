@@ -420,6 +420,34 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /run-input-blobs:
+    post:
+      operationId: uploadRunInput
+      summary: Stage a streaming run input owned by the authenticated uploader
+      description: 'Requires run:start and a configured shared blob provider. The raw bytes remain opaque; starting a run validates the canonical $blob descriptor against its inputSchema. Staging is not automatically retried: an uncertain response may leave an unused upload for durable cleanup. The ordinary JSON body limit is unchanged.'
+      tags: [Runs]
+      x-implemented: '002'
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {name: X-Octopus-Blob-Size, in: header, required: false, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: X-Octopus-Blob-Sha256, in: header, required: false, schema: {type: string, pattern: '^[0-9a-fA-F]{64}$'}}
+      requestBody:
+        required: true
+        content:
+          '*/*':
+            schema: {type: string, format: binary}
+      responses:
+        '201': {description: 'Fully measured staged input; only its uploader may bind it to one new run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BlobDescriptor'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '408': {description: 'The transfer deadline expired'}
+        '413': {description: 'The configured blob size limit was exceeded'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs:
     get:
       operationId: listRuns
@@ -1493,16 +1521,19 @@ paths:
         default: {$ref: '#/components/responses/InternalError'}
   /webhooks/{endpointId}:
     post:
-      security: []
+      security:
+        - webhookHmac: []
+        - webhookOidc: []
+        - webhookMtls: []
       operationId: receiveSignedWebhook
-      summary: Receive a signed webhook
+      summary: Receive an authenticated webhook
       tags: [Events]
       x-implemented: '004'
       description: |
-        The public URL of an event endpoint; there is no bearer token, the signature is the credential. The signature is `v1=` and the hex HMAC-SHA256, under the endpoint's secret, of `"octopus-event-in-v1\n{timestamp}\n{eventId}\n{eventType}\n{subject}\n{correlationKey}\n"` followed by the body, where the type, the subject and the correlation key are the values of the headers of the same names *as sent* (an absent one is the empty string; the endpoint's default type is not signed). They are covered because the type chooses the workflows that start and the key the waits that wake. A secret of fewer than 16 bytes verifies nothing. The timestamp is in seconds and must be within the endpoint's allowed skew of the platform's clock (300 s unless set); a copy of a signed request replayed within the window is answered `DUPLICATE`, because the event id is remembered for at least twice the skew. Up to four comma-separated signatures (512 bytes at most) are accepted, so a secret can be rotated; the three newest versions of the secret are tried. A header that is too long, or a timestamp outside the window, is refused before any secret is read. **Every request that does not verify gets the same 401**: an unknown endpoint, a missing header, a stale timestamp, a wrong signature. The body must be a JSON object of at most the endpoint's limit (240 KiB at most). A paused endpoint answers 503, an endpoint over its rate 429, and a full backlog 429; both with `Retry-After`.
+        The public URL of an event endpoint. Authentication is selected by its persisted profile; profiles never fall back to one another. HMAC requires X-Octopus-Signature. OIDC requires an Authorization bearer token from the deployment-approved verifier and the exact configured subject. MTLS requires a native TLS client certificate with the configured verified leaf fingerprint; forwarded headers are ignored. OIDC and MTLS authenticate the sender over TLS, not a detached body signature. All profiles require the timestamp and event ID. An unavailable OIDC key provider returns 503. For HMAC, the signature is `v1=` and the hex HMAC-SHA256, under the endpoint's secret, of `"octopus-event-in-v1\n{timestamp}\n{eventId}\n{eventType}\n{subject}\n{correlationKey}\n"` followed by the body, where the type, the subject and the correlation key are the values of the headers of the same names *as sent* (an absent one is the empty string; the endpoint's default type is not signed). They are covered because the type chooses the workflows that start and the key the waits that wake. A secret of fewer than 16 bytes verifies nothing. The timestamp is in seconds and must be within the endpoint's allowed skew of the platform's clock (300 s unless set); a copy of a signed request replayed within the window is answered `DUPLICATE`, because the event id is remembered for at least twice the skew. Up to four comma-separated signatures (512 bytes at most) are accepted, so a secret can be rotated; the three newest versions of the secret are tried. A header that is too long, or a timestamp outside the window, is refused before any secret is read. **Every request that does not verify gets the same 401**: an unknown endpoint, a missing header, a stale timestamp, a wrong signature. The body must be a JSON object of at most the endpoint's limit (240 KiB at most). A paused endpoint answers 503, an endpoint over its rate 429, and a full backlog 429; both with `Retry-After`.
       parameters:
         - {name: endpointId, in: path, required: true, schema: {type: string}}
-        - {name: X-Octopus-Signature, in: header, required: true, schema: {type: string}}
+        - {name: X-Octopus-Signature, in: header, required: false, description: Required for the HMAC profile, schema: {type: string}}
         - {name: X-Octopus-Timestamp, in: header, required: true, schema: {type: string, pattern: '^[0-9]+$'}}
         - {name: X-Octopus-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
         - {name: X-Octopus-Event-Type, in: header, required: false, description: 'Required unless the endpoint has a default event type.', schema: {type: string}}
@@ -1514,7 +1545,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/EventPayload'}
       responses:
-        '202': {description: "Signature verified, event durably admitted (or already admitted before)", headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '202': {description: "Endpoint identity verified, event durably admitted (or already admitted before)", headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1818,6 +1849,201 @@ paths:
   /namespaces/{namespaceId}/webhook-subscriptions/{subscriptionId}/redrive:
     post:
       operationId: redriveWebhookDeliveries
+      summary: Put the dead deliveries of a subscription back in the queue
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Audited. Up to `limit` (100 unless given, at most 1000), oldest first.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RedriveRequest'}
+      responses:
+        '200': {description: 'How many were queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions:
+    get:
+      operationId: listBrokerSubscriptions
+      summary: List the outbound broker subscriptions of a namespace
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The subscriptions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscriptionList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createBrokerSubscription
+      summary: Subscribe a broker destination to platform events
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. The destination is NATS JetStream, Kafka or SQS and must be allowed by the namespace egress policy at creation and every attempt. The stable `delivery-id` is sent as `Nats-Msg-Id`, the Kafka record key, or the SQS FIFO deduplication id. Success requires the broker acknowledgement. Delivery is at-least-once: an acknowledgement lost after the broker accepted a message can cause a repeat. Failures retry with backoff for twelve attempts, then become `DEAD` and can be redriven. A subscription with 10000 pending deliveries is disabled.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateBrokerSubscriptionRequest'}
+      responses:
+        '201': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscription'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}:
+    get:
+      operationId: getBrokerSubscription
+      summary: Read a subscription, with its health
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      responses:
+        '200': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscription'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateBrokerSubscription
+      summary: Replace the settings of a subscription
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Setting `status` to `ACTIVE` on a subscription the platform switched off (`DISABLED`, after 20 deliveries in a row were set aside) turns it back on, forgets its failures and puts its dead deliveries back in the queue.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateBrokerSubscriptionRequest'}
+      responses:
+        '200': {description: 'The subscription now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscription'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteBrokerSubscription
+      summary: Delete a subscription and what was queued for it
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      responses:
+        '204': {description: 'The subscription is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries:
+    get:
+      operationId: listBrokerDeliveries
+      summary: List the deliveries of a subscription, newest first
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+        - {name: status, in: query, schema: {type: string, enum: [PENDING, DELIVERED, DEAD]}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of deliveries', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDeliveryPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}:
+    get:
+      operationId: getBrokerDelivery
+      summary: Read a delivery with every attempt made
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`. What the receiver answered is never kept, only its status and a class of failure.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+        - {$ref: '#/components/parameters/DeliveryId'}
+      responses:
+        '200': {description: 'The delivery', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDelivery'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}/redrive:
+    post:
+      operationId: redriveBrokerDelivery
+      summary: Put a dead delivery back in the queue
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Audited. The delivery gets a full set of attempts again; the attempts made are kept.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+        - {$ref: '#/components/parameters/DeliveryId'}
+      responses:
+        '200': {description: 'The delivery is queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/redrive:
+    post:
+      operationId: redriveBrokerDeliveries
       summary: Put the dead deliveries of a subscription back in the queue
       tags: [Events]
       x-implemented: '004'
@@ -2602,6 +2828,9 @@ paths:
         default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
+    webhookHmac: {type: apiKey, in: header, name: X-Octopus-Signature, description: 'Required only for endpoints configured with the HMAC profile.'}
+    webhookOidc: {type: http, scheme: bearer, bearerFormat: JWT, description: 'Requires the exact deployment-approved verifier and endpoint subject.'}
+    webhookMtls: {type: mutualTLS, description: 'Native TLS client identity must match the endpoint leaf certificate fingerprint.'}
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
   headers:
     HttpRequestId:
@@ -2688,7 +2917,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs]}
     ActivityName:
       name: activity
       in: path
@@ -2935,14 +3164,29 @@ components:
         nextCursor: {type: [string, 'null']}
     StartRunRequest:
       type: object
-      required: [workflowId, input]
+      required: [workflowId]
       additionalProperties: false
+      oneOf:
+        - required: [input]
+          not: {required: [inputBlobRef]}
+        - required: [inputBlobRef]
+          not: {required: [input]}
       properties:
         workflowId: {type: string, format: uuid}
         versionId: {type: string, format: uuid, description: 'Optional explicit pin; the active version otherwise.'}
         input: {$ref: '#/components/schemas/JsonObject'}
+        inputBlobRef: {type: string, format: uuid, description: 'An unused run-input blob uploaded by this subject in this namespace. The run input is its canonical $blob descriptor.'}
         correlationId: {type: string, maxLength: 160}
         deadline: {type: string, format: date-time, description: 'Must be in the future and within a year; the run times out at this instant.'}
+    BlobDescriptor:
+      type: object
+      required: [id, size, sha256, contentType]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        size: {type: integer, format: int64, minimum: 0}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        contentType: {type: string, maxLength: 127}
     Run:
       type: object
       required: [runId, workflowId, versionId, status, version, createdAt]
@@ -3294,7 +3538,7 @@ components:
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
@@ -3349,14 +3593,44 @@ components:
         eventId: {type: string}
         source: {type: string, description: 'api, or the slug of the endpoint or connector the event came through.'}
         status: {type: string, enum: [ACCEPTED, DUPLICATE]}
+    WebhookAuthentication:
+      description: 'Omitted on writes means HMAC and requires secretName. OIDC and MTLS prohibit secretName; OIDC names a deployment-approved verifier, never a URL. All profiles require timestamp and event ID.'
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind]
+          properties:
+            kind: {type: string, const: HMAC}
+        - type: object
+          additionalProperties: false
+          required: [kind, profile, subject]
+          properties:
+            kind: {type: string, const: OIDC}
+            profile: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$', not: {pattern: '--'}}
+            subject: {type: string, minLength: 1, maxLength: 255, description: 'At most 255 UTF-8 bytes; control characters are prohibited.'}
+        - type: object
+          additionalProperties: false
+          required: [kind, certificateSha256]
+          properties:
+            kind: {type: string, const: MTLS}
+            certificateSha256: {type: string, pattern: '^[0-9a-f]{64}$'}
     EventEndpoint:
       type: object
-      required: [id, namespaceId, slug, secretName, dedupeTtlSeconds, skewSeconds, maxBodyBytes, ratePerSecond, status, webhookPath, createdBy, createdAt, updatedAt]
+      allOf:
+        - if:
+            properties:
+              authentication:
+                properties:
+                  kind: {const: HMAC}
+          then: {required: [secretName]}
+          else: {not: {required: [secretName]}}
+      required: [id, namespaceId, slug, authentication, dedupeTtlSeconds, skewSeconds, maxBodyBytes, ratePerSecond, status, webhookPath, createdBy, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         slug: {type: string, description: 'What a webhook trigger names, and the source of the events it admits.'}
         secretName: {type: string}
+        authentication: {$ref: '#/components/schemas/WebhookAuthentication'}
         defaultEventType: {type: string}
         dedupeTtlSeconds: {type: integer}
         skewSeconds: {type: integer}
@@ -3374,11 +3648,20 @@ components:
         items: {type: array, items: {$ref: '#/components/schemas/EventEndpoint'}}
     CreateEventEndpointRequest:
       type: object
+      allOf:
+        - if:
+            properties:
+              authentication:
+                properties:
+                  kind: {const: HMAC}
+          then: {required: [secretName]}
+          else: {not: {required: [secretName]}}
       additionalProperties: false
-      required: [slug, secretName]
+      required: [slug]
       properties:
         slug: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        authentication: {$ref: '#/components/schemas/WebhookAuthentication'}
         defaultEventType: {type: string}
         dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, default: 86400, description: 'At least twice skewSeconds and 60 seconds more, or a replay of a signed request could be admitted as a new event.'}
         skewSeconds: {type: integer, minimum: 1, maximum: 3600, default: 300}
@@ -3387,10 +3670,18 @@ components:
         status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
     UpdateEventEndpointRequest:
       type: object
+      allOf:
+        - if:
+            properties:
+              authentication:
+                properties:
+                  kind: {const: HMAC}
+          then: {required: [secretName]}
+          else: {not: {required: [secretName]}}
       additionalProperties: false
-      required: [secretName]
       properties:
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        authentication: {$ref: '#/components/schemas/WebhookAuthentication'}
         defaultEventType: {type: string}
         dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, default: 86400}
         skewSeconds: {type: integer, minimum: 1, maximum: 3600, default: 300}
@@ -3424,6 +3715,88 @@ components:
         dispatchedAt: {type: string, format: date-time}
         data: {$ref: '#/components/schemas/JsonObject'}
         deliveries: {type: array, items: {$ref: '#/components/schemas/EventDelivery'}}
+    BrokerSubscription:
+      type: object
+      required: [id, namespaceId, name, kind, settings, events, ratePerSecond, timeoutMs, status, health, createdBy, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
+        secretName: {type: string, description: 'Optional namespace secret containing the broker credentials JSON.'}
+        events: {type: array, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
+        ratePerSecond: {type: integer}
+        timeoutMs: {type: integer}
+        status: {type: string, enum: [ACTIVE, PAUSED, DISABLED]}
+        health: {$ref: '#/components/schemas/OutboundSubscriptionHealth'}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    BrokerSubscriptionList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/BrokerSubscription'}}
+    CreateBrokerSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [name, kind, settings, events]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
+        ratePerSecond: {type: integer, minimum: 1, maximum: 100, default: 10}
+        timeoutMs: {type: integer, minimum: 1000, maximum: 30000, default: 10000}
+        status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
+    UpdateBrokerSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, settings, events]
+      properties:
+        kind: {type: string, enum: [NATS, KAFKA, SQS], description: 'Must remain the subscription kind set at creation.'}
+        settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
+        ratePerSecond: {type: integer, minimum: 1, maximum: 100, default: 10}
+        timeoutMs: {type: integer, minimum: 1000, maximum: 30000, default: 10000}
+        status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
+    OutboundBrokerSettings:
+      oneOf:
+        - {$ref: '#/components/schemas/OutboundNatsSettings'}
+        - {$ref: '#/components/schemas/OutboundKafkaSettings'}
+        - {$ref: '#/components/schemas/OutboundSqsSettings'}
+    OutboundNatsSettings:
+      type: object
+      additionalProperties: false
+      required: [servers, subject]
+      properties:
+        servers: {type: array, minItems: 1, maxItems: 16, items: {type: string}}
+        subject: {type: string}
+    OutboundKafkaSettings:
+      type: object
+      additionalProperties: false
+      required: [servers, topic]
+      properties:
+        servers: {type: array, minItems: 1, maxItems: 16, items: {type: string}}
+        topic: {type: string}
+    OutboundSqsSettings:
+      type: object
+      additionalProperties: false
+      required: [queueUrl, region]
+      properties:
+        queueUrl: {type: string, maxLength: 2048}
+        region: {type: string}
+    OutboundSubscriptionHealth:
+      type: object
+      required: [consecutiveDead]
+      properties:
+        consecutiveDead: {type: integer}
+        lastSuccessAt: {type: string, format: date-time}
+        lastFailureAt: {type: string, format: date-time}
+        disabledReason: {type: string}
     WebhookSubscription:
       type: object
       required: [id, namespaceId, name, url, secretName, events, ratePerSecond, timeoutMs, status, health, createdBy, createdAt, updatedAt]
@@ -3483,7 +3856,7 @@ components:
         attempt: {type: integer}
         startedAt: {type: string, format: date-time}
         durationMs: {type: integer}
-        outcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED]}
+        outcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED, CREDENTIAL_UNAVAILABLE]}
         httpStatus: {type: integer}
         error: {type: string, description: 'A class of failure written by the platform; never the receiver''s words.'}
     WebhookDelivery:
@@ -3497,7 +3870,7 @@ components:
         status: {type: string, enum: [PENDING, DELIVERED, DEAD]}
         attempts: {type: integer, description: 'Attempts made in all.'}
         nextAttemptAt: {type: string, format: date-time}
-        lastOutcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED]}
+        lastOutcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED, CREDENTIAL_UNAVAILABLE]}
         lastHttpStatus: {type: integer}
         lastError: {type: string}
         createdAt: {type: string, format: date-time}

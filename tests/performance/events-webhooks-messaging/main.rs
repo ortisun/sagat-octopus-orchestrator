@@ -612,8 +612,10 @@ async fn subscribe(w: &World, name: &str, url: &str, rate: u32) -> SubscriptionR
         tenant_id: w.admin.tenant_id(),
         namespace_id: w.namespace.id(),
         name: slug(name),
-        url: TargetUrl::parse(url).expect("url"),
-        secret_name: SecretName::parse("provider-signing").expect("secret"),
+        destination: sagat_domain::outbound::OutboundDestination::Webhook {
+            url: TargetUrl::parse(url).expect("url"),
+            signing_secret: SecretName::parse("provider-signing").expect("secret"),
+        },
         kinds: vec![OutboundKind::RunFinished],
         limits: DeliveryLimits::new(rate, Duration::from_secs(2)).expect("limits"),
         status: SubscriptionStatus::Active,

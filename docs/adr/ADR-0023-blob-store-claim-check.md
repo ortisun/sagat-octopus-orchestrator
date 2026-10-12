@@ -1,6 +1,6 @@
 # ADR-0023 — Large payloads live in a provider-neutral blob store and travel as descriptors
 
-Status: **Accepted** | Date: 2026-10-09 | Builds on ADR-0002 and ADR-0004; diverges from none. Implements the step-output slice of gap G19 in feature 002 (FR-002-008); large run inputs remain open.
+Status: **Accepted** | Date: 2026-10-09 | Builds on ADR-0002 and ADR-0004; diverges from none. Implements gap G19 in feature 002 (FR-002-008). Run-input and SDK conformance verification is tracked by T002-040.
 
 ## Context
 
@@ -34,7 +34,7 @@ Three questions were open: where the bytes live, how the engine refers to them, 
 - Reads are authorized by a current, unexpired, worker-bound lease in the blob's tenant and namespace plus the unguessable id, not by "a blob named in this step's input" (G67).
 - Blob uploads from steps that declare secrets currently fail before the first byte is stored. Inline outputs already scan current secret versions, but the equivalent bounded, cross-chunk raw and JSON-escaped scan for blob streams is pending; the platform does not claim leak detection for a stream it has not scanned.
 - A crash after `WriteBlob` and before the step's completion leaves an `UPLOADED` blob that is swept after 24 h. A crashed upload leaves an `UPLOADING` row, and a failed multipart abort may leave provider-managed incomplete parts that catalog cleanup cannot address by object key. The bucket must expire incomplete multipart uploads through its lifecycle policy.
-- Run inputs sent over REST are still limited to 256 KiB: the REST API has no upload operation yet (G66). That is the other half of FR-002-008 and needs product decisions about the API (permission, body limit, content types).
+- Ordinary REST run input remains limited to 256 KiB. The additive streaming upload and explicit inputBlobRef contract below supports larger opaque inputs without expanding ordinary JSON request limits.
 - Committed blobs are never deleted: payload rows are not either, and the retention and classification policy the specification lists as an open question is not decided (G69).
 - Tombstones for uploads of unknown outcome also remain until an explicit reconciliation/compaction policy exists. A client or provider timeout is not proof that a late PUT cannot occur. The bounded cleanup batch keeps retry work limited per pass; confirmed tombstones do not occupy active upload slots.
 - S3 and R2 are exercised against an S3-protocol server that verifies Signature V4, not against the real services; the contract suite that runs against them exists and is marked `ignore` until someone supplies credentials (G70).
@@ -42,3 +42,13 @@ Three questions were open: where the bytes live, how the engine refers to them, 
 ## Review criteria
 
 Open a new ADR with benchmark data (throughput and memory of concurrent transfers on a reference machine), failure tests, operational cost and compatibility with runs in flight if: presigned URLs are wanted (workers would receive provider URLs), the engine must evaluate expressions over blob content, blobs need a retention or classification policy, or another provider's semantics (conditional writes, consistency, multipart rules) cannot be reached through the port as it is.
+
+## Run-input extension (T002-040)
+
+- `POST /v1/run-input-blobs` accepts a raw stream under the authenticated tenant and `X-Octopus-Namespace`, requiring current `run:start`. Its optional size/hash preconditions are checked while streaming. The response is only `{id,size,sha256,contentType}`. It uses the configured provider, transfer/pending limits, expiry, durable cleanup and upload audit; no storage credentials or URLs cross the API.
+- Catalog ownership is tagged `STEP_OUTPUT` (the existing exact fence) or `RUN_INPUT` (the namespace and uploader subject, initially unbound). There are no placeholder run or step identities. Workers cannot read an unbound run-input upload.
+- `POST /v1/runs` accepts `inputBlobRef` instead of `input`, never both. The authenticated uploader may bind an exact uploaded descriptor once. The run row records the blob identity, and blob commitment, run creation, journal, initial tasks, outbox, audit and idempotency share one PostgreSQL transaction. Exact replay uses a fingerprint containing the input mode and blob id, before catalog lookup, and rechecks current authorization.
+- This is explicit claim-check input: the stored input and expression `input` value are the bounded canonical `$blob` descriptor; the original bytes remain opaque. A declared workflow `inputSchema` is checked against that descriptor, with external schema references forbidden, and is never claimed to validate the external bytes. `TaskLease.input_blob_ref` names the catalog-backed run input; a normal JSON object resembling a descriptor does not populate that field. Workers use the existing lease-authorized streaming read.
+- Rerunning an authorized source run and a child inheriting its exact input may reference the existing committed blob through the source run's durable provenance. They do not reclaim an upload or accept a caller-selected committed blob. Reads after commitment retain the documented tenant/namespace plus live-lease boundary.
+- Existing inline starts and protocol fields remain compatible. No auto-loading, secret injection, raw payload read endpoint or relaxation of the secret-declaring output-upload restriction is introduced. Retention of committed references remains the existing explicit open policy.
+- Required proof: interrupted/late upload cleanup; wrong uploader, tenant and namespace; read before/after bind and stale lease; duplicate start and conflicting mode/body; schema rejection before durable use; crash/audit failure during bind; rerun/inherited-child provenance; actual REST streaming plus worker read.

@@ -7,3 +7,5 @@
 mod support;
 
 mod conformance;
+
+mod identity_profiles;

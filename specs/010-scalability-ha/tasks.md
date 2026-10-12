@@ -82,4 +82,6 @@ and focused Clippy passed (implementation-agent execution). Integrated gates fol
 
 ## Activity admission completion
 
+- [x] T010-040 Order multi-activity claim locks and fence activity policy edits (FR-010-002). Both original failures reproduced before the fix; five real PostgreSQL `activity_locking` tests pass: deterministic ABBA prevention, ceiling/default commit fencing, queued-editor reentrancy, independent activity concurrency and effective-limit response after a concurrent ceiling change. Integration-target clippy passes with `-D warnings`.
+
 - [x] T010-039 Enforce tenant/namespace/activity concurrency with transactional admission and audited namespace overrides (FR-010-002). Real PostgreSQL tests prove the 12-poller race, busy-activity skip, expired lease recovery, tenant isolation and reduced platform ceiling; management REST contract suite passes 7/7. Migration rollback/forward covers 31 tables; scoped clippy passes with `-D warnings`.

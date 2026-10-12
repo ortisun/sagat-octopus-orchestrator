@@ -336,28 +336,47 @@ pub async fn start_run<B: Exec>(
     headers: HeaderMap,
     ApiJson(body): ApiJson<StartRunBody>,
 ) -> Result<(StatusCode, Json<RunBody>), ApiError> {
-    let input = to_bytes(&body.input)?;
+    if body.input.is_some() == body.input_blob_ref.is_some() {
+        return Err(ApiError::validation(
+            "exactly one of input or inputBlobRef is required",
+        ));
+    }
+    let input = body
+        .input
+        .as_ref()
+        .map(to_bytes)
+        .transpose()?
+        .unwrap_or_default();
     let version = body
         .version_id
         .as_deref()
         .map(parse_id::<WorkflowVersionId>)
         .transpose()?;
-    let record = state
-        .runs()
-        .start(
-            &caller.session.principal,
-            &StartRun {
-                namespace: namespace(&headers)?,
-                workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
-                version,
-                input: &input,
-                correlation_id: body.correlation_id.as_deref(),
-                deadline: body.deadline,
-                key: idempotency_key(&headers)?,
-            },
-            &caller.ctx,
-        )
-        .await?;
+    let request = StartRun {
+        namespace: namespace(&headers)?,
+        workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
+        version,
+        input: &input,
+        correlation_id: body.correlation_id.as_deref(),
+        deadline: body.deadline,
+        key: idempotency_key(&headers)?,
+    };
+    let record = if let Some(id) = body.input_blob_ref {
+        state
+            .runs()
+            .start_with_blob(
+                &caller.session.principal,
+                &request,
+                parse_id::<sagat_domain::blobs::BlobId>(&id)?,
+                &caller.ctx,
+            )
+            .await?
+    } else {
+        state
+            .runs()
+            .start(&caller.session.principal, &request, &caller.ctx)
+            .await?
+    };
     Ok((StatusCode::ACCEPTED, Json(RunBody::from(&record))))
 }
 

@@ -8,18 +8,21 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use sagat_application::outbound::SubscriptionSettings;
+use sagat_application::outbound::{BrokerSubscriptionSettings, SubscriptionSettings};
+use sagat_domain::connectors::ConnectorKind;
 use sagat_domain::identity::{NamespaceId, Slug};
 use sagat_domain::outbound::{
-    DeliveryId, DeliveryLimits, DeliveryStatus, OutboundKind, SubscriptionId, SubscriptionStatus,
-    TargetUrl,
+    BrokerDestination, DeliveryId, DeliveryLimits, DeliveryStatus, OutboundKind, SubscriptionId,
+    SubscriptionStatus, TargetUrl,
 };
 use sagat_domain::secrets::SecretName;
 use serde::Deserialize;
 
 use crate::dto_events::{
-    CreateSubscriptionBody, DeliveryBody, DeliveryPageBody, RedriveBody, RedrivenBody,
-    SubscriptionBody, SubscriptionListBody, UpdateSubscriptionBody,
+    BrokerSubscriptionBody, BrokerSubscriptionListBody, CreateBrokerSubscriptionBody,
+    CreateSubscriptionBody, DeliveryBody, DeliveryPageBody, OutboundKafkaSettingsBody,
+    OutboundNatsSettingsBody, OutboundSqsSettingsBody, RedriveBody, RedrivenBody, SubscriptionBody,
+    SubscriptionListBody, UpdateBrokerSubscriptionBody, UpdateSubscriptionBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -293,6 +296,268 @@ pub async fn redrive_dead<B: Governance>(
             subscription_id(&id)?,
             None,
             limit,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(RedrivenBody { redriven }))
+}
+
+fn broker_settings(
+    kind: &str,
+    value: &serde_json::Value,
+    secret_name: Option<&str>,
+    events: &[String],
+    rate_per_second: Option<u32>,
+    timeout_ms: Option<u64>,
+    status: Option<&str>,
+) -> Result<BrokerSubscriptionSettings, ApiError> {
+    let kind = kind
+        .parse::<ConnectorKind>()
+        .map_err(|()| ApiError::validation("the kind is NATS, KAFKA or SQS"))?;
+    let invalid = |_| ApiError::validation("the settings do not fit the broker kind");
+    let refused = |e: sagat_domain::connectors::ConnectorError| ApiError::validation(e.to_string());
+    let destination = match kind {
+        ConnectorKind::Nats => {
+            let s: OutboundNatsSettingsBody =
+                serde_json::from_value(value.clone()).map_err(invalid)?;
+            BrokerDestination::nats(&s.servers, &s.subject).map_err(refused)?
+        }
+        ConnectorKind::Kafka => {
+            let s: OutboundKafkaSettingsBody =
+                serde_json::from_value(value.clone()).map_err(invalid)?;
+            BrokerDestination::kafka(&s.servers, &s.topic).map_err(refused)?
+        }
+        ConnectorKind::Sqs => {
+            let s: OutboundSqsSettingsBody =
+                serde_json::from_value(value.clone()).map_err(invalid)?;
+            BrokerDestination::sqs(&s.queue_url, &s.region).map_err(refused)?
+        }
+    };
+    let kinds = events
+        .iter()
+        .map(|e| {
+            e.parse::<OutboundKind>().map_err(|()| {
+                ApiError::validation("an event type is not one that can be delivered")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(BrokerSubscriptionSettings {
+        destination,
+        credentials_secret: secret_name
+            .map(|s| {
+                SecretName::parse(s)
+                    .map_err(|_| ApiError::validation("the secret name is not valid"))
+            })
+            .transpose()?,
+        kinds,
+        limits: DeliveryLimits::new(
+            rate_per_second.unwrap_or(DeliveryLimits::DEFAULT_RATE),
+            timeout_ms.map_or(DeliveryLimits::DEFAULT_TIMEOUT, Duration::from_millis),
+        )
+        .map_err(|e| ApiError::validation(e.to_string()))?,
+        status: match status {
+            None => SubscriptionStatus::Active,
+            Some(text) => text
+                .parse()
+                .map_err(|()| ApiError::validation("the status is ACTIVE or PAUSED"))?,
+        },
+    })
+}
+
+pub async fn create_broker_subscription<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+    ApiJson(body): ApiJson<CreateBrokerSubscriptionBody>,
+) -> Result<(StatusCode, Json<BrokerSubscriptionBody>), ApiError> {
+    let settings = broker_settings(
+        &body.kind,
+        &body.settings,
+        body.secret_name.as_deref(),
+        &body.events,
+        body.rate_per_second,
+        body.timeout_ms,
+        body.status.as_deref(),
+    )?;
+    let name =
+        Slug::parse(&body.name).map_err(|_| ApiError::validation("the name is not valid"))?;
+    let created = outbound(&state)?
+        .create_broker(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            name,
+            settings,
+            &caller.ctx,
+        )
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(BrokerSubscriptionBody::from(&created)),
+    ))
+}
+
+pub async fn list_broker_subscriptions<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(namespace): Path<String>,
+) -> Result<Json<BrokerSubscriptionListBody>, ApiError> {
+    let items = outbound(&state)?
+        .list_brokers(
+            &caller.session.principal,
+            namespace_id(&namespace)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(BrokerSubscriptionListBody {
+        items: items.iter().map(BrokerSubscriptionBody::from).collect(),
+    }))
+}
+
+pub async fn get_broker_subscription<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((_namespace, id)): Path<(String, String)>,
+) -> Result<Json<BrokerSubscriptionBody>, ApiError> {
+    let found = outbound(&state)?
+        .get_broker(&caller.session.principal, subscription_id(&id)?)
+        .await?;
+    Ok(Json(BrokerSubscriptionBody::from(&found)))
+}
+
+pub async fn update_broker_subscription<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((_namespace, id)): Path<(String, String)>,
+    ApiJson(body): ApiJson<UpdateBrokerSubscriptionBody>,
+) -> Result<Json<BrokerSubscriptionBody>, ApiError> {
+    let settings = broker_settings(
+        &body.kind,
+        &body.settings,
+        body.secret_name.as_deref(),
+        &body.events,
+        body.rate_per_second,
+        body.timeout_ms,
+        body.status.as_deref(),
+    )?;
+    let updated = outbound(&state)?
+        .update_broker(
+            &caller.session.principal,
+            subscription_id(&id)?,
+            settings,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(Json(BrokerSubscriptionBody::from(&updated)))
+}
+
+pub async fn delete_broker_subscription<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((_namespace, id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    outbound(&state)?
+        .delete_broker(
+            &caller.session.principal,
+            subscription_id(&id)?,
+            &caller.ctx,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_broker_deliveries<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((_namespace, id)): Path<(String, String)>,
+    Query(query): Query<DeliveryQuery>,
+) -> Result<Json<DeliveryPageBody>, ApiError> {
+    let status = query
+        .status
+        .as_deref()
+        .map(|s| {
+            s.parse::<DeliveryStatus>()
+                .map_err(|()| ApiError::bad_request("status is PENDING, DELIVERED or DEAD"))
+        })
+        .transpose()?;
+    let before = query
+        .cursor
+        .as_deref()
+        .map(|c| {
+            c.parse::<DeliveryId>()
+                .map_err(|_| ApiError::bad_request("the cursor is not valid"))
+        })
+        .transpose()?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let mut items = outbound(&state)?
+        .broker_deliveries(
+            &caller.session.principal,
+            subscription_id(&id)?,
+            status,
+            before,
+            limit + 1,
+        )
+        .await?;
+    let next_cursor = if items.len() > limit as usize {
+        items.truncate(limit as usize);
+        items.last().map(|d| d.id.to_string())
+    } else {
+        None
+    };
+    Ok(Json(DeliveryPageBody {
+        items: items.iter().map(DeliveryBody::listed).collect(),
+        next_cursor,
+    }))
+}
+
+pub async fn get_broker_delivery<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((_namespace, id, delivery)): Path<(String, String, String)>,
+) -> Result<Json<DeliveryBody>, ApiError> {
+    let (delivery, attempts) = outbound(&state)?
+        .broker_delivery(
+            &caller.session.principal,
+            subscription_id(&id)?,
+            delivery_id(&delivery)?,
+        )
+        .await?;
+    Ok(Json(DeliveryBody::detailed(&delivery, &attempts)))
+}
+
+pub async fn redrive_broker_delivery<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((_namespace, id, delivery)): Path<(String, String, String)>,
+) -> Result<Json<RedrivenBody>, ApiError> {
+    let redriven = outbound(&state)?
+        .redrive_broker(
+            &caller.session.principal,
+            subscription_id(&id)?,
+            Some(delivery_id(&delivery)?),
+            1,
+            &caller.ctx,
+        )
+        .await?;
+    if redriven == 0 {
+        return Err(
+            sagat_application::error::AppError::StateConflict("the delivery is not dead").into(),
+        );
+    }
+    Ok(Json(RedrivenBody { redriven }))
+}
+
+pub async fn redrive_broker_dead<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((_namespace, id)): Path<(String, String)>,
+    ApiJson(body): ApiJson<RedriveBody>,
+) -> Result<Json<RedrivenBody>, ApiError> {
+    let redriven = outbound(&state)?
+        .redrive_broker(
+            &caller.session.principal,
+            subscription_id(&id)?,
+            None,
+            body.limit.unwrap_or(100),
             &caller.ctx,
         )
         .await?;

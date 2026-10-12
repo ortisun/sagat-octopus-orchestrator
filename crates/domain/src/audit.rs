@@ -105,6 +105,13 @@ pub enum AuditAction {
     WebhookSubscriptionDisabled,
     /// An operator put dead deliveries back in the queue.
     WebhookDeliveryRedriven,
+    /// An outbound broker subscription was created, changed, deleted or disabled.
+    BrokerSubscriptionCreated,
+    BrokerSubscriptionChanged,
+    BrokerSubscriptionDeleted,
+    BrokerSubscriptionDisabled,
+    /// An operator put dead broker deliveries back in the queue.
+    BrokerDeliveryRedriven,
     /// A connector to a broker was created, changed or deleted.
     ConnectorCreated,
     ConnectorChanged,
@@ -234,6 +241,11 @@ impl AuditAction {
             Self::WebhookSubscriptionDeleted => "webhook.subscription_deleted",
             Self::WebhookSubscriptionDisabled => "webhook.subscription_disabled",
             Self::WebhookDeliveryRedriven => "webhook.delivery_redriven",
+            Self::BrokerSubscriptionCreated => "broker.subscription_created",
+            Self::BrokerSubscriptionChanged => "broker.subscription_changed",
+            Self::BrokerSubscriptionDeleted => "broker.subscription_deleted",
+            Self::BrokerSubscriptionDisabled => "broker.subscription_disabled",
+            Self::BrokerDeliveryRedriven => "broker.delivery_redriven",
             Self::ConnectorCreated => "connector.created",
             Self::ConnectorChanged => "connector.changed",
             Self::ConnectorDeleted => "connector.deleted",
@@ -280,6 +292,7 @@ pub enum ResourceType {
     /// An event admitted to the inbox, as `source/id`.
     Event,
     WebhookSubscription,
+    BrokerSubscription,
     Connector,
     Script,
     /// A version of a script, as `script-id/number`.
@@ -308,6 +321,7 @@ impl ResourceType {
             Self::EventEndpoint => "event_endpoint",
             Self::Event => "event",
             Self::WebhookSubscription => "webhook_subscription",
+            Self::BrokerSubscription => "broker_subscription",
             Self::Connector => "connector",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",

@@ -152,6 +152,32 @@ impl TokenVerifier {
     /// # Errors
     /// See [`AuthError`]. All variants except [`AuthError::Unavailable`] mean "not authenticated".
     pub async fn verify(&self, token: &str) -> Result<VerifiedClaims, AuthError> {
+        let claims = self.verify_claims(token).await?;
+        let tenant = self.tenant_of(&claims)?;
+        Ok(VerifiedClaims {
+            subject: claims
+                .sub
+                .ok_or(AuthError::Invalid(InvalidReason::MissingClaim))?,
+            tenant,
+            expires_at: claims
+                .exp
+                .ok_or(AuthError::Invalid(InvalidReason::MissingClaim))?,
+        })
+    }
+
+    /// Verify an external webhook sender without treating it as a platform member.
+    /// Issuer, audience, signature, algorithm and lifetime checks are identical to API tokens.
+    ///
+    /// # Errors
+    /// [`AuthError`] when any required identity claim or signature fails verification.
+    pub async fn verify_identity(&self, token: &str) -> Result<String, AuthError> {
+        self.verify_claims(token)
+            .await?
+            .sub
+            .ok_or(AuthError::Invalid(InvalidReason::MissingClaim))
+    }
+
+    async fn verify_claims(&self, token: &str) -> Result<Claims, AuthError> {
         if token.len() > MAX_TOKEN_BYTES {
             return Err(AuthError::Malformed);
         }
@@ -204,19 +230,14 @@ impl TokenVerifier {
             return Err(AuthError::Invalid(InvalidReason::Issuer));
         }
         self.check_lifetime(&claims)?;
-        let tenant = self.tenant_of(&claims)?;
-        let subject = claims
+        if !claims
             .sub
-            .filter(|s| !s.is_empty() && s.len() <= MAX_SUBJECT_BYTES)
-            .ok_or(AuthError::Invalid(InvalidReason::MissingClaim))?;
-        let expires_at = claims
-            .exp
-            .ok_or(AuthError::Invalid(InvalidReason::MissingClaim))?;
-        Ok(VerifiedClaims {
-            subject,
-            tenant,
-            expires_at,
-        })
+            .as_ref()
+            .is_some_and(|subject| !subject.is_empty() && subject.len() <= MAX_SUBJECT_BYTES)
+        {
+            return Err(AuthError::Invalid(InvalidReason::MissingClaim));
+        }
+        Ok(claims)
     }
 
     fn check_lifetime(&self, claims: &Claims) -> Result<(), AuthError> {
@@ -229,7 +250,10 @@ impl TokenVerifier {
         if iat > now.saturating_add(self.leeway) {
             return Err(AuthError::Invalid(InvalidReason::NotYetValid));
         }
-        if exp.saturating_sub(iat) > self.max_lifetime {
+        let lifetime = exp
+            .checked_sub(iat)
+            .ok_or(AuthError::Invalid(InvalidReason::Lifetime))?;
+        if lifetime > self.max_lifetime {
             return Err(AuthError::Invalid(InvalidReason::Lifetime));
         }
         Ok(())

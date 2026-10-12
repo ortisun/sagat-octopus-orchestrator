@@ -122,3 +122,7 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-002-###` and criteria `SC-002-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Large run-input contract (T002-040)
+
+A caller authorized to start a run may stream an input blob into its namespace and use its returned id through the mutually exclusive `inputBlobRef` start field. The creator owns the unused upload; binding commits atomically with the run and replays idempotently. The run's input is an explicit claim-check descriptor, validated against a declared input schema, while the blob contents remain opaque. Worker reads require a current bound lease and committed input scope. Reruns and inherited child inputs preserve the source reference through durable provenance.

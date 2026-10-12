@@ -64,8 +64,9 @@ pub struct EndpointRecord {
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
     pub slug: Slug,
-    /// The secret of the namespace that signs the requests: a name, never a value.
-    pub secret_name: SecretName,
+    /// The HMAC secret name. Identity-based profiles carry no secret reference.
+    pub secret_name: Option<SecretName>,
+    pub authentication: sagat_domain::events::WebhookAuthentication,
     /// The type given to a request that does not say one.
     pub default_event_type: Option<EventType>,
     pub limits: EndpointLimits,
@@ -75,10 +76,30 @@ pub struct EndpointRecord {
     pub updated_at: OffsetDateTime,
 }
 
+impl EndpointRecord {
+    /// Whether this is still the endpoint whose settings and scope were trusted during webhook
+    /// verification. Audit timestamps are deliberately excluded: changing only bookkeeping must
+    /// not invalidate a request, while every value that affects identity, routing or limits must.
+    #[must_use]
+    pub fn has_same_trusted_configuration(&self, current: &Self) -> bool {
+        self.id == current.id
+            && self.tenant_id == current.tenant_id
+            && self.namespace_id == current.namespace_id
+            && self.slug == current.slug
+            && self.secret_name == current.secret_name
+            && self.authentication == current.authentication
+            && self.default_event_type == current.default_event_type
+            && self.limits == current.limits
+            && self.status == current.status
+            && self.created_by == current.created_by
+    }
+}
+
 /// What an administrator chooses about an endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndpointSettings {
-    pub secret_name: SecretName,
+    pub secret_name: Option<SecretName>,
+    pub authentication: sagat_domain::events::WebhookAuthentication,
     pub default_event_type: Option<EventType>,
     pub limits: EndpointLimits,
     pub status: EndpointStatus,
@@ -115,6 +136,80 @@ pub enum Admission {
     Reused,
     /// The tenant's backlog is full; nothing was written.
     Backlogged,
+}
+
+/// Why a verified webhook could no longer be admitted against the endpoint snapshot that was
+/// authenticated. These outcomes are distinct so the application can give retryable changes and
+/// permanent deletion different answers without admitting under stale authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookEndpointMismatch {
+    Missing,
+    Changed,
+    Paused,
+}
+
+impl WebhookEndpointMismatch {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "endpoint_missing",
+            Self::Changed => "endpoint_changed",
+            Self::Paused => "endpoint_paused",
+        }
+    }
+}
+
+/// The admission result after the endpoint snapshot is checked again in the inbox transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookAdmission {
+    Admitted(Admission),
+    Refused(WebhookEndpointMismatch),
+}
+
+/// Collapsed audit records for each transactional endpoint recheck refusal.
+pub struct WebhookAdmissionAudits {
+    missing: AuditRecord,
+    changed: AuditRecord,
+    paused: AuditRecord,
+}
+
+impl WebhookAdmissionAudits {
+    fn new(endpoint: &EndpointRecord, now: OffsetDateTime) -> Self {
+        let audit = |label: &str, reason: &str| {
+            AuditRecord::gateway(
+                endpoint.tenant_id,
+                AuditAction::EventRejected,
+                ResourceType::EventEndpoint,
+                format!("{}/{}", endpoint.id, label),
+                reason,
+                now,
+            )
+        };
+        Self {
+            missing: audit(
+                "endpoint_missing",
+                "webhook endpoint was deleted during authentication",
+            ),
+            changed: audit(
+                "endpoint_changed",
+                "webhook endpoint configuration changed during authentication",
+            ),
+            paused: audit(
+                "endpoint_paused",
+                "webhook endpoint was paused during authentication",
+            ),
+        }
+    }
+
+    /// The audit record matching a typed refusal.
+    #[must_use]
+    pub fn for_mismatch(&self, mismatch: WebhookEndpointMismatch) -> &AuditRecord {
+        match mismatch {
+            WebhookEndpointMismatch::Missing => &self.missing,
+            WebhookEndpointMismatch::Changed => &self.changed,
+            WebhookEndpointMismatch::Paused => &self.paused,
+        }
+    }
 }
 
 /// An event as the API shows it.
@@ -220,6 +315,17 @@ pub trait EventStore: NamespaceDirectory + QuotaLookup + SecretAccessLookup {
         audit: Option<&AuditRecord>,
     ) -> impl Future<Output = Result<Admission, StoreError>> + Send;
 
+    /// Rechecks the exact endpoint settings trusted during webhook verification under a shared row
+    /// lock, then admits the event in that same transaction. The potentially remote credential
+    /// verification has already completed before this method acquires the lock.
+    fn admit_webhook(
+        &self,
+        expected: &EndpointRecord,
+        event: &NewEvent,
+        backlog_limit: u64,
+        audits: &WebhookAdmissionAudits,
+    ) -> impl Future<Output = Result<WebhookAdmission, StoreError>> + Send;
+
     fn event(
         &self,
         tenant: TenantId,
@@ -229,9 +335,13 @@ pub trait EventStore: NamespaceDirectory + QuotaLookup + SecretAccessLookup {
 }
 
 /// A request to a webhook endpoint, as the HTTP adapter read it. Nothing here is trusted.
-#[derive(Debug, Clone, Copy)]
+// Deliberately no `Debug`: signatures and bearer credentials must never reach logs or failures.
+#[derive(Clone, Copy)]
 pub struct WebhookRequest<'a> {
     pub signature: Option<&'a str>,
+    pub bearer: Option<&'a str>,
+    /// Only a transport that verified the certificate may populate this value.
+    pub certificate_sha256: Option<&'a str>,
     pub timestamp: Option<&'a str>,
     pub event_id: Option<&'a str>,
     pub event_type: Option<&'a str>,
@@ -356,6 +466,35 @@ impl Gate {
     }
 }
 
+/// Verifies an OIDC identity against deployment-approved configuration, never token-controlled URLs.
+pub trait WebhookIdentityVerifier: Send + Sync {
+    /// Whether a verifier name exists in deployment configuration.
+    fn supports(&self, profile: &Slug) -> bool;
+
+    /// Returns the exact verified `sub` claim. Invalid credentials return `Unauthenticated`; a
+    /// verifier or JWKS outage returns `Unavailable`, so callers can safely retry.
+    fn verify<'a>(
+        &'a self,
+        profile: &'a Slug,
+        token: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, AppError>> + Send + 'a>>;
+}
+
+struct NoWebhookIdentities;
+impl WebhookIdentityVerifier for NoWebhookIdentities {
+    fn supports(&self, _: &Slug) -> bool {
+        false
+    }
+    fn verify<'a>(
+        &'a self,
+        _: &'a Slug,
+        _: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, AppError>> + Send + 'a>>
+    {
+        Box::pin(async { Err(AppError::Unauthenticated) })
+    }
+}
+
 /// Manages endpoints, publishes events and receives webhooks.
 pub struct EventService<S, C> {
     store: S,
@@ -363,6 +502,7 @@ pub struct EventService<S, C> {
     cipher: Arc<dyn SecretCipher>,
     evaluator: Arc<dyn ExpressionEvaluator>,
     gate: Gate,
+    identities: Arc<dyn WebhookIdentityVerifier>,
 }
 
 impl<S, C> EventService<S, C>
@@ -383,6 +523,42 @@ where
             cipher,
             evaluator,
             gate: Gate::default(),
+            identities: Arc::new(NoWebhookIdentities),
+        }
+    }
+
+    #[must_use]
+    pub fn with_identities(mut self, identities: Arc<dyn WebhookIdentityVerifier>) -> Self {
+        self.identities = identities;
+        self
+    }
+
+    async fn check_authentication(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        settings: &EndpointSettings,
+    ) -> Result<(), AppError> {
+        use sagat_domain::events::WebhookAuthentication;
+        if !settings.authentication.is_valid() {
+            return Err(AppError::NotAllowed(
+                "the webhook identity profile is not valid",
+            ));
+        }
+        match (&settings.authentication, &settings.secret_name) {
+            (WebhookAuthentication::Hmac, Some(secret)) => {
+                self.require_usable_secret(principal, namespace, secret)
+                    .await
+            }
+            (WebhookAuthentication::Oidc { profile, .. }, None)
+                if self.identities.supports(profile) =>
+            {
+                Ok(())
+            }
+            (WebhookAuthentication::Mtls { .. }, None) => Ok(()),
+            _ => Err(AppError::NotAllowed(
+                "the webhook profile or signing secret is not configured",
+            )),
         }
     }
 
@@ -410,7 +586,7 @@ where
             ));
         }
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        self.require_usable_secret(principal, namespace, &settings.secret_name)
+        self.check_authentication(principal, namespace, &settings)
             .await?;
         let now = self.clock.now();
         let endpoint = EndpointRecord {
@@ -419,6 +595,7 @@ where
             namespace_id: namespace,
             slug,
             secret_name: settings.secret_name,
+            authentication: settings.authentication,
             default_event_type: settings.default_event_type,
             limits: settings.limits,
             status: settings.status,
@@ -461,10 +638,11 @@ where
     ) -> Result<EndpointRecord, AppError> {
         principal.authorize(Permission::EventManage)?;
         let mut endpoint = self.load(principal, id).await?;
-        self.require_usable_secret(principal, endpoint.namespace_id, &settings.secret_name)
+        self.check_authentication(principal, endpoint.namespace_id, &settings)
             .await?;
         let now = self.clock.now();
         endpoint.secret_name = settings.secret_name;
+        endpoint.authentication = settings.authentication;
         endpoint.default_event_type = settings.default_event_type;
         endpoint.limits = settings.limits;
         endpoint.status = settings.status;
@@ -753,8 +931,23 @@ where
             record.limits.dedupe_ttl(),
         );
         event.trace = request.trace.cloned();
-        match self.store.admit_event(&event, BACKLOG_LIMIT, None).await? {
-            Admission::Accepted => {
+        let recheck_audits = WebhookAdmissionAudits::new(&record, now);
+        match self
+            .store
+            .admit_webhook(&record, &event, BACKLOG_LIMIT, &recheck_audits)
+            .await?
+        {
+            WebhookAdmission::Refused(mismatch) => {
+                metrics::counter!("webhook_rejected_total", "reason" => mismatch.as_str())
+                    .increment(1);
+                Err(match mismatch {
+                    WebhookEndpointMismatch::Missing | WebhookEndpointMismatch::Changed => {
+                        AppError::Unauthenticated
+                    }
+                    WebhookEndpointMismatch::Paused => AppError::Unavailable,
+                })
+            }
+            WebhookAdmission::Admitted(Admission::Accepted) => {
                 metrics::counter!("events_received_total", "kind" => "webhook", "outcome" => "accepted")
                     .increment(1);
                 Ok(Received {
@@ -762,7 +955,7 @@ where
                     duplicate: false,
                 })
             }
-            Admission::Duplicate => {
+            WebhookAdmission::Admitted(Admission::Duplicate) => {
                 metrics::counter!("events_received_total", "kind" => "webhook", "outcome" => "duplicate")
                     .increment(1);
                 Ok(Received {
@@ -770,13 +963,13 @@ where
                     duplicate: true,
                 })
             }
-            Admission::Reused => {
+            WebhookAdmission::Admitted(Admission::Reused) => {
                 metrics::counter!("events_received_total", "kind" => "webhook", "outcome" => "reused")
                     .increment(1);
                 self.audit_reuse(&record, now).await;
                 Err(AppError::Conflict(ConflictKind::EventIdReused))
             }
-            Admission::Backlogged => {
+            WebhookAdmission::Admitted(Admission::Backlogged) => {
                 metrics::counter!("events_received_total", "kind" => "webhook", "outcome" => "backlogged")
                     .increment(1);
                 tracing::warn!(tenant = %record.tenant_id, "event backlog is full");
@@ -794,6 +987,9 @@ where
         request: &WebhookRequest<'_>,
         now: OffsetDateTime,
     ) -> Result<(EventId, EventType), Unverified> {
+        if record.authentication != sagat_domain::events::WebhookAuthentication::Hmac {
+            return self.verify_identity(record, request, now).await;
+        }
         let (Some(signature), Some(timestamp), Some(event_id)) =
             (request.signature, request.timestamp, request.event_id)
         else {
@@ -821,7 +1017,7 @@ where
             .signing_secrets(
                 record.tenant_id,
                 record.namespace_id,
-                &record.secret_name,
+                record.secret_name.as_ref().ok_or(Refusal::NoSecret)?,
                 SIGNING_VERSIONS,
             )
             .await
@@ -878,6 +1074,65 @@ where
         let Some(event_type) = event_type else {
             return Err(Refusal::Malformed.into());
         };
+        Ok((event_id, event_type))
+    }
+
+    async fn verify_identity(
+        &self,
+        record: &EndpointRecord,
+        request: &WebhookRequest<'_>,
+        now: OffsetDateTime,
+    ) -> Result<(EventId, EventType), Unverified> {
+        use sagat_domain::events::WebhookAuthentication;
+        let timestamp = request
+            .timestamp
+            .and_then(|s| s.parse::<i64>().ok())
+            .ok_or(Refusal::Malformed)?;
+        let skew = i64::try_from(record.limits.skew().as_secs()).unwrap_or(i64::MAX);
+        if now.unix_timestamp().abs_diff(timestamp) > u64::try_from(skew).unwrap_or(0) {
+            return Err(Refusal::Stale.into());
+        }
+        let event_id = request
+            .event_id
+            .and_then(|id| EventId::parse(id).ok())
+            .ok_or(Refusal::Malformed)?;
+        match &record.authentication {
+            WebhookAuthentication::Oidc { profile, subject } => {
+                let token = request
+                    .bearer
+                    .filter(|v| !v.is_empty() && v.len() <= 8192)
+                    .ok_or(Refusal::BadSignature)?;
+                match self.identities.verify(profile, token).await {
+                    Ok(actual) if actual == *subject => {}
+                    Ok(_) | Err(AppError::Unauthenticated) => {
+                        return Err(Refusal::BadSignature.into());
+                    }
+                    Err(error) => {
+                        if error == AppError::Unavailable {
+                            metrics::counter!(
+                                "webhook_rejected_total",
+                                "reason" => "identity_unavailable"
+                            )
+                            .increment(1);
+                        }
+                        return Err(Unverified::Store(error));
+                    }
+                }
+            }
+            WebhookAuthentication::Mtls { certificate_sha256 } => {
+                if request.certificate_sha256 != Some(certificate_sha256.as_str()) {
+                    return Err(Refusal::BadSignature.into());
+                }
+            }
+            WebhookAuthentication::Hmac => return Err(Refusal::Malformed.into()),
+        }
+        let event_type = request
+            .event_type
+            .map_or_else(
+                || record.default_event_type.clone(),
+                |text| EventType::parse(text).ok(),
+            )
+            .ok_or(Refusal::Malformed)?;
         Ok((event_id, event_type))
     }
 

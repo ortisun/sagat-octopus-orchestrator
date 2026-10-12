@@ -210,6 +210,9 @@ impl IdentityStore for CountingStore {
 
 /// Settings tests may tighten before the API starts.
 pub struct Options {
+    pub http_tls: Option<sagat_api_http::HttpTlsConfig>,
+    pub http_tls_ca: Option<Vec<u8>>,
+    pub webhook_oidc_profiles: Vec<sagat_api_http::auth::WebhookOidcConfig>,
     pub auth: Box<dyn FnOnce(&mut AuthConfig)>,
     pub limits: HttpLimits,
     /// Server-side cap per statement for the API's database pool.
@@ -228,6 +231,9 @@ pub struct Options {
     /// Lease and session timings of the worker protocol.
     pub worker: WorkerSettings,
     pub blobs: Option<BlobLimits>,
+    /// Storage shared with another process when a test starts an execution engine separately.
+    /// Blob-enabled tests use the in-process memory backend unless they opt in here.
+    pub blob_store: Option<BlobStoreConfig>,
     pub blob_transfer: BlobTransfer,
     pub grpc: GrpcConfig,
     /// The most any script may be given.
@@ -241,6 +247,9 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            http_tls: None,
+            http_tls_ca: None,
+            webhook_oidc_profiles: Vec::new(),
             auth: Box::new(|_| {}),
             limits: HttpLimits::default(),
             // Generous: the suites also run on loaded machines, and the tests about timeouts set their own.
@@ -255,6 +264,7 @@ impl Default for Options {
             ping_delay: Duration::ZERO,
             worker: WorkerSettings::default(),
             blobs: None,
+            blob_store: None,
             blob_transfer: BlobTransfer::default(),
             grpc: GrpcConfig::default(),
             script_ceiling: sagat_domain::scripts::Policy::default(),
@@ -332,12 +342,18 @@ pub async fn start_with(options: Options) -> TestApi {
         SystemClock,
         keys.cipher(),
     ))
-    .with_events(EventService::new(
-        executions.clone(),
-        SystemClock,
-        keys.cipher(),
-        Arc::new(JsonEvaluator),
-    ))
+    .with_events(
+        EventService::new(
+            executions.clone(),
+            SystemClock,
+            keys.cipher(),
+            Arc::new(JsonEvaluator),
+        )
+        .with_identities(Arc::new(
+            sagat_api_http::auth::WebhookOidcVerifiers::new(&options.webhook_oidc_profiles, true)
+                .expect("webhook profiles"),
+        )),
+    )
     .with_outbound(OutboundService::new(
         executions.clone(),
         SystemClock,
@@ -365,26 +381,12 @@ pub async fn start_with(options: Options) -> TestApi {
             options.script_ceiling,
         ),
     );
-    let mut exec = ExecState::new(
-        state,
-        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
-        RunService::new(
-            executions.clone(),
-            SystemClock,
-            Engine::new(JsonEvaluator),
-            cache,
-        ),
-    )
-    .with_publishing(sagat_application::publishing::PublishingService::new(
-        executions.clone(),
-        SystemClock,
-        JsonIrCodec,
-    ));
-    if let Some(limits) = options.streams {
-        exec = exec.with_stream_limits(limits);
-    }
-    let blob_backend = options.blobs.map(|_| {
-        build_backend(&BlobStoreConfig::Memory, PartSize::default()).expect("a memory store")
+    let blob_backend = options.blobs.as_ref().map(|_| {
+        let store = options
+            .blob_store
+            .as_ref()
+            .unwrap_or(&BlobStoreConfig::Memory);
+        build_backend(store, PartSize::default()).expect("a blob store")
     });
     let blobs = options
         .blobs
@@ -396,6 +398,32 @@ pub async fn start_with(options: Options) -> TestApi {
                 limits,
             )
         });
+    let mut runs = RunService::new(
+        executions.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        cache,
+    );
+    if let Some(blobs) = &blobs {
+        runs = runs.with_input_blobs(blobs.clone(), Arc::new(sagat_infra_schema::Schemas));
+    }
+    let mut exec = ExecState::new(
+        state,
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        runs,
+    )
+    .with_blob_transfer(sagat_api_http::HttpBlobTransfer {
+        max_concurrent: options.blob_transfer.max_concurrent,
+        timeout: options.blob_transfer.timeout,
+    })
+    .with_publishing(sagat_application::publishing::PublishingService::new(
+        executions.clone(),
+        SystemClock,
+        JsonIrCodec,
+    ));
+    if let Some(limits) = options.streams {
+        exec = exec.with_stream_limits(limits);
+    }
     // The worker protocol shares the REST API's identity, budgets and database.
     let mut grpc = WorkerGrpc::new(
         exec.clone(),
@@ -435,17 +463,29 @@ pub async fn start_with(options: Options) -> TestApi {
         .expect("bind api");
     let addr = listener.local_addr().expect("addr");
     let server = options.server;
+    let https = options.http_tls.is_some();
     let http_server = tokio::spawn(async move {
-        let _ = sagat_api_http::serve(listener, app, server, std::future::pending()).await;
+        if let Some(tls) = options.http_tls {
+            let _ =
+                sagat_api_http::serve_tls(listener, app, server, tls, std::future::pending()).await;
+        } else {
+            let _ = sagat_api_http::serve(listener, app, server, std::future::pending()).await;
+        }
     });
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("client");
+    let mut client = Client::builder().timeout(Duration::from_secs(10));
+    if let Some(root) = options.http_tls_ca {
+        client = client
+            .add_root_certificate(reqwest::Certificate::from_pem(&root).expect("HTTP TLS root"));
+    }
+    let client = client.build().expect("client");
     let owner_store = PgIdentityStore::new(db.pool.clone());
     TestApi {
-        base: format!("http://{addr}/v1"),
+        base: if https {
+            format!("https://localhost:{}/v1", addr.port())
+        } else {
+            format!("http://{addr}/v1")
+        },
         client,
         idp,
         db,

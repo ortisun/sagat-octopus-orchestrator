@@ -1,5 +1,18 @@
 # Benchmark: events, webhooks and messaging (feature 004)
 
+## Outbound broker completion (G77, 2026-10-12)
+
+NATS JetStream, Kafka and SQS now share the durable outbound subscription and delivery pipeline with webhooks. The physical `webhook_*` table names remain for compatibility. Migration `20261021000000_outbound_brokers` adds the destination discriminator and typed settings and refuses rollback while broker subscription rows exist.
+
+Evidence run against the dedicated Colima Docker socket (`/Users/marcelo/.colima/sagat-remaining/docker.sock`):
+
+- `cargo test -p sagat-tests --test integration_events_webhooks_messaging outbound_brokers -- --nocapture`: **5 passed** in 3.65 seconds after compilation. Real Testcontainers proved the published body and JetStream PubAck with `Nats-Msg-Id` deduplication, Kafka produce acknowledgement plus stable record key/header, and ElasticMQ FIFO `SendMessage` plus delivery-id metadata. Worker fault injection proved that an ambiguous acknowledgement is retried after restart with the same delivery id and selected broker destination, and that bounded failure reaches `DEAD` before an audited redrive succeeds without changing either. Boundary tests proved tenant isolation, loopback egress denial and credential redaction. PostgreSQL tests proved both refusal to erase broker subscriptions and a successful empty rollback/forward cycle.
+- `cargo test -p sagat-tests --test contract_rest_events_webhooks_messaging every_event_operation_conforms_to_the_contract_on_its_normal_and_error_paths -- --nocapture`: **1 passed**. The live API covered all nine broker subscription CRUD, delivery and redrive operations together with existing Feature 004 operations.
+- `cargo test -p sagat-infra-connectors --lib`: **10 passed**.
+- `cargo clippy -p sagat-scheduler -p sagat-infra-connectors -p sagat-execution-engine --all-targets -- -D warnings`: **passed**.
+
+The real NATS run found a publisher lifetime defect before completion: the native client was dropped while its PubAck future was pending, which produced a broken pipe. Keeping the JetStream context alive through acknowledgement fixed it, and the same test passed afterward. Delivery remains explicitly at-least-once; Kafka repartitions may change key placement, and a lost acknowledgement can cause a repeat.
+
 Produced by `tests/performance/events-webhooks-messaging` (T004-040, NFR-004-PERF). Hypotheses are written down before the run and the result says whether each held; a hypothesis that fails is restated openly, not dropped.
 
 ## Environment

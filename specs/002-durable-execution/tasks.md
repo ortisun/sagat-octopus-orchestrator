@@ -112,7 +112,7 @@ Contract → first failing test → domain → adapter → happy path → failur
 - [x] T002-037 Implement tenant/namespace/lease-scoped blob catalog and provider port with safe deletion retries (FR-002-008; ADR-0023).
   - Cleanup evidence: `crates/application/tests/blobs.rs::a_put_finishing_after_cleanup_remains_tracked_and_is_deleted_again` reproduces the late-PUT race and passes with durable tombstones; the application blob suite passes 20 tests. Real PostgreSQL `integration_durable_execution blobs::` passes 17 tests, including tombstone retry/audit deduplication, audit rollback with quota retention, and `uploaded_at` TTL. Scoped application/PostgreSQL and gRPC/blob-adapter clippy passes. Backend tiny/empty-fragment allocation regressions pass; real cloud provider credentials remain an explicit deployment validation gate.
 - [x] T002-038 Integrate additive worker protocol 1.3, atomic completion descriptors, bounded transfer and stale-lease fault tests; preserve 1.0–1.2 inline behavior. — 21 real PostgreSQL/gRPC blob tests pass, including idempotency-mode conflict, failed-completion replay after GC, read audit rollback and stalled HTTP/2 deadline release. gRPC unit suite 13/13 includes producer-panic fail-closed EOF; protocol descriptor compatibility 2/2 passed.
-- [ ] T002-040 Add run-input upload/claim references and conformance across all five SDKs; no output-only completion claim.
+- [ ] T002-040 Add run-input upload/claim references and conformance across all five SDKs; server REST/PostgreSQL/gRPC path and failure regressions implemented; all-five SDK conformance pending.
 
 ## Completion hardening
 

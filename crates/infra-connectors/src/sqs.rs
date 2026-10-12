@@ -199,7 +199,7 @@ pub fn parse_receive(xml: &str) -> Result<Vec<Received>, Unreadable> {
 }
 
 /// A signed Query request to the queue; the answer's body.
-async fn call(
+pub(crate) async fn call(
     client: &EgressClient,
     queue_url: &str,
     region: &str,

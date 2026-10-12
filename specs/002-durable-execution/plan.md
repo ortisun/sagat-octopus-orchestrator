@@ -97,3 +97,7 @@ these integrated implementations are approved dependencies for T002-037..039.
 ## Serialized poll budget hardening
 
 Render and measure a task context before leasing it. Admit at most 8 MiB of serialized inputs per poll; update the response count only after each run transaction commits. A context larger than a fresh response records its preflight attempt and non-retryable `RUN_DATA_LIMIT` together through the existing saga-aware failure transition, with no published token. Prove numeric normalization expansion, sibling tasks split across polls, and cross-run batching against PostgreSQL (`T002-039`).
+
+## Run-input blob slice
+
+Extend the existing catalog with tagged ownership and nullable pre-start run identity; reuse streaming storage, limits, audit and tombstone cleanup. Add authorized raw REST upload, stable pre-catalog start replay, transactional run-input binding, bounded descriptor schema validation and durable lease input reference. Configure the same storage provider in control plane and engine. Verify the REST-to-worker path with PostgreSQL and the in-process storage test backend, then exercise production configuration and compatibility. ADR-0023 specifies the input semantics; The server path is covered by real REST/PostgreSQL/gRPC tests in `grpc/input_blobs.rs`; T002-040 remains pending until all-five SDK conformance passes.

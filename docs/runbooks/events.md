@@ -7,7 +7,7 @@ For the people who connect the platform to the outside world: providers that pos
 - **An event the platform answered `202` for is durable**: it is a row in the inbox, committed. It is dispatched to every trigger and every waiting step it matches; each effect (a run started, a step woken) happens **once** per event, however the dispatcher is interrupted or repeated.
 - **Events are deduplicated** by `(tenant, namespace, source, event id)` for the window of the endpoint or connector (24 hours by default; for a webhook never less than twice the signature skew and a minute). After the window the same id is a new event and starts its runs again. A repeat of the same body is answered `202` with `status: DUPLICATE`; the same id with a different body is `409 EVENT_ID_REUSED`.
 - **Nothing is ordered.** Two events of one correlation key can be dispatched in either order. A workflow that needs order carries a sequence number in the event and checks it.
-- **Outgoing webhooks are at-least-once.** A receiver can see the same delivery twice (the worker died after the receiver answered, or the answer was lost). Every attempt of a delivery carries the same `X-Octopus-Delivery-Id`; keep it and drop repeats.
+- **Outgoing webhooks and broker subscriptions are at-least-once.** A receiver can see the same delivery twice (the worker died after the receiver or broker acknowledged it, or the acknowledgement was lost). Every attempt carries the same delivery id; use it to drop repeats.
 - **A message is acknowledged to its broker only after the event is in the inbox.** A crash in between means the broker delivers it again, and the inbox recognises it.
 - The platform does **not** promise exactly-once *delivery* to or from anything outside it.
 
@@ -109,7 +109,9 @@ Common fields: `slug` (the source), `secretName` (the credentials), `defaultEven
 - Credentials are read when a reader starts; to rotate them, put a new version of the secret and pause and resume the connector (or wait: a reader that fails five calls in a row stops and starts again, which reads them anew; a NATS or Kafka reader that loses its connection does the same). **A password or token is never sent to a server whose address is not `tls://`**: the reader refuses to start, and says so in `health.lastError`. (A NATS `creds` file only signs a challenge and may go either way.) A topic with more than 256 partitions is refused.
 - The egress policy of the namespace must allow the bootstrap hosts. **It is checked on the addresses given, not on what the brokers advertise afterwards** (G76): restrict the network of the engine as well.
 
-## 4. Telling other systems what happened (outbound webhooks)
+## 4. Telling other systems what happened (outbound subscriptions)
+
+### 4.1 Webhooks
 
 `POST /v1/namespaces/{ns}/webhook-subscriptions` with `{"name": "billing-hook", "url": "https://hooks.example.com/octopus", "secretName": "hook-signing", "events": ["run.finished"], "ratePerSecond": 20, "timeoutMs": 10000}`. Needs `event:manage`. The URL must be `https` (or `http` if the namespace's egress policy says so), must not carry credentials, and must be allowed by the **namespace's egress policy** (egress policy: [`security-governance.md`](security-governance.md)); loopback and private addresses can never be allowed, redirects are never followed, and the policy is applied again at every attempt.
 
@@ -137,6 +139,20 @@ The body of an answer is **never read, stored or logged**, however long it is; o
 
 **Rotating the signing secret.** Put the new value under the same name. The next attempts carry two signatures (new and previous); receivers that verify against either keep working. Remove the old value from the receivers when they have moved.
 
+### 4.2 NATS, Kafka and SQS
+
+Create a broker subscription with `POST /v1/namespaces/{ns}/broker-subscriptions`. Common fields are `name`, `kind`, `settings`, optional `secretName`, `events`, `ratePerSecond`, `timeoutMs` and `status`. Credentials use the same JSON shapes as inbound connectors. Password and token credentials require TLS addresses.
+
+| `kind` | `settings` | Stable delivery metadata |
+|---|---|---|
+| `NATS` | `{"servers":["tls://nats.example.com:4222"],"subject":"runs.finished"}` | `Nats-Msg-Id` and `delivery-id` header |
+| `KAFKA` | `{"servers":["tls://kafka.example.com:9093"],"topic":"runs-finished"}` | record key and `delivery-id` header |
+| `SQS` | `{"queueUrl":"https://sqs.eu-west-1.amazonaws.com/123/runs-finished.fifo","region":"eu-west-1"}` | `delivery-id` message attribute; for FIFO, `MessageDeduplicationId` and a subscription-stable `MessageGroupId` |
+
+Success means a JetStream PubAck, a Kafka produce acknowledgement, or a successful SQS `SendMessage` response. A lost acknowledgement can still cause a repeat, including outside the broker's deduplication window. Kafka partition selection is stable while the topic's partition set is unchanged; changing the partition count can move a delivery key. The same twelve-attempt retry, `DEAD` state, redrive, rate limit, pending-delivery cap and fenced attempt recording used by webhooks apply to brokers. Manage failures through `/broker-subscriptions/{id}/deliveries` and its redrive routes.
+
+The current namespace egress policy is checked for every attempt. NATS and Kafka bootstrap addresses are checked before the native client connects; broker-advertised Kafka addresses remain subject to the network-boundary limitation in G76. SQS uses the guarded HTTP client. Missing or unreadable credentials produce `CREDENTIAL_UNAVAILABLE`, which retries so credential repair can recover the existing delivery. Subscription changes, deletion, disablement and redrive are audited without credential values or payloads.
+
 ## 5. What to look at
 
 | Question | Where |
@@ -146,7 +162,7 @@ The body of an answer is **never read, stored or logged**, however long it is; o
 | Are webhooks being refused? | `webhook_rejected_total{reason}` (`bad_signature`, `stale_timestamp`, `malformed`, `unknown_endpoint`, `no_signing_secret`, `paused`, `too_large`, `attempts`, `rate`) and the `event.rejected` audit records. A rise in `no_signing_secret` means an endpoint's secret was deleted or no key of the ring opens it: it is logged at error level. |
 | Do waits wake? | `event_wakeups_total{outcome=woken\|lost_race\|refused}`, `trigger_events_total{outcome}`, `runs_started_total{source="trigger"}`. |
 | Are cron ticks late? | `cron_fire_lag_seconds`, `cron_fires_total{outcome}`. |
-| Are deliveries going out? | `webhook_pending_deliveries`, `webhook_delivery_lag_seconds`, `webhook_attempts_total{outcome}`, `webhook_attempts_superseded_total` (a worker that was too slow and found its delivery already dealt with), `webhook_deliveries_total{outcome}`, `webhook_subscriptions_switched_off_total`. |
+| Are deliveries going out? | `outbound_pending_deliveries`; fixed-label `outbound_attempt_seconds{destination}`, `outbound_attempts_total{destination,outcome}`, `outbound_delivery_lag_seconds{destination}`, `outbound_deliveries_total{destination,outcome}` and `outbound_subscriptions_switched_off_total{destination}`. Existing `webhook_*` counters remain for compatibility. |
 | Are connectors reading? | `connectors_running`, `connector_messages_total`, `connector_failures_total`, `connector_dead_letters_dropped_total`, `connector_consumers_abandoned_total` (a reader that did not stop when told to and was cut off), and `health` on each connector. |
 
 The engine's loops are tuned with `SAGAT_EVENT_POLL_MS` (200), `SAGAT_EVENT_BATCH` (100), `SAGAT_DELIVERY_POLL_MS` (250), `SAGAT_DELIVERY_BATCH` (32), `SAGAT_DELIVERY_RETENTION_DAYS` (14) and `SAGAT_CONNECTOR_REFRESH_SECS` (5). The loops are safe to run in every replica: claims use leases and `FOR UPDATE SKIP LOCKED`, and every effect is recorded in the transaction that makes it.
@@ -158,6 +174,7 @@ The engine's loops are tuned with `SAGAT_EVENT_POLL_MS` (200), `SAGAT_EVENT_BATC
 | Event body | 240 KiB (an endpoint may lower it) |
 | Event endpoints per tenant | 100 (`event_endpoints`) |
 | Webhook subscriptions per tenant | 50 (`webhook_subscriptions`) |
+| Broker subscriptions per namespace | 50 (`broker_subscriptions`) |
 | Connectors per tenant | 20 (`event_connectors`) |
 | Undispatched events per tenant | 10 000, then `429`/backpressure |
 | Dedupe window | 24 h by default; at least twice the skew |
@@ -178,5 +195,50 @@ The honest list, with the reasons, is in [`research.md`](../../specs/004-events-
 - **Broker sockets are not guarded after the first connection**: the egress policy is applied to the bootstrap names and addresses given, not to what a broker advertises afterwards or to a second resolution of the name (G76). Restrict the network of the engine as well.
 - **No retained-bytes quota for the inbox** (G80): events published through the API can be kept up to 30 days at up to 240 KiB each, within the per-subject and per-tenant request limits. Watch the size of `inbox_events`.
 - **Waits and `event` triggers match type and key from any source** (G87), a look-back reaches only as far as the window of the event's source (G89), and the dispatcher is one queue for all tenants (G88).
-- **No outbound Kafka, SQS or NATS producers** (G77), no OIDC or mTLS profile for webhooks (G75), no SDK helpers (G86), no dashboards (G85).
+- **No SDK helpers** (G86) and no dashboards (G85). Outbound Kafka, SQS and NATS producers close G77; OIDC and mTLS profiles close G75.
 - **A binding to a secret is checked when it is made, not each time it is used** (G90), and a revoked secret has to be deleted to stop being tried (G92).
+
+## Webhook identity profiles
+
+The default endpoint profile remains HMAC and requires `secretName`. To use an
+external OIDC sender, configure `SAGAT_WEBHOOK_OIDC_PROFILES_FILE` with a bounded
+JSON array, for example:
+
+```json
+[{"name":"provider","issuer":"https://id.example/","audience":"workflow-events","jwksUri":"https://id.example/jwks.json","requiredTokenType":"at+jwt"}]
+```
+
+Only deployment configuration supplies issuer, audience and JWKS URLs; endpoint
+authors cannot change trust roots or discover arbitrary URLs. At most 32 profiles
+are loaded, the file is at most 256 KiB, redirects are refused and production key
+URLs require HTTPS. Each profile has a separate bounded key cache. API tokens still
+require a tenant claim; external webhook senders need only their verified subject.
+Create/update an endpoint with `authentication: {"kind":"OIDC","profile":"provider",
+"subject":"expected-provider-subject"}` and omit `secretName`. A request carries
+`Authorization: Bearer ...`, `X-Octopus-Timestamp` and `X-Octopus-Event-Id`.
+
+For mutual TLS, set `SAGAT_HTTP_TLS_CERT`, `SAGAT_HTTP_TLS_KEY` and
+`SAGAT_HTTP_TLS_CLIENT_CA` to readable PEM files (each at most 256 KiB). The public
+listener serves native HTTPS. Configure `authentication: {"kind":"MTLS",
+"certificateSha256":"<64 lowercase hex digits>"}` and omit `secretName`. The pin is
+SHA-256 of the DER leaf certificate, not the PEM file. Rotate the endpoint pin in an
+audited management update when replacing its certificate. Trust roots and server
+certificates reload on process restart. Client certificate validity is rechecked on
+every keep-alive request; TLS session resumption is disabled. Forwarded certificate
+headers confer no identity. A TLS-terminating proxy must pass through TLS for this
+profile; plaintext requests cannot use it.
+
+The three profiles are exclusive: a failed OIDC credential cannot fall back to a
+valid HMAC signature or TLS client certificate. The timestamp and ID remain
+mandatory, with the same replay window, duplicate 202 and changed-content 409.
+OIDC/mTLS authenticate the sender over TLS; they do not sign the event body. Invalid
+identities return the uniform webhook 401. Unavailable JWKS returns 503, never an
+authentication success. No credential, certificate, payload or provider response is
+stored in refusal logs. `http_tls_handshakes_total{outcome}` reports bounded TLS
+outcomes; existing event admission and refusal metrics cover all profiles.
+
+Validate profile changes against `contract_rest_events_webhooks_messaging`,
+`integration_events_webhooks_messaging` and `sagat-api-http`'s `webhook_oidc` tests.
+The real transport contract covers native TLS, spoofed certificate headers, OIDC
+without a platform tenant claim, subject mismatch, duplicate/reused event IDs and
+cross-tenant management reads.

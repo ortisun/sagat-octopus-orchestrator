@@ -8,8 +8,9 @@
 //! the first's row once that commits. The lock is released with the transaction, so a crash cannot
 //! leave a scope locked.
 //!
-//! The scopes lock in a fixed order (namespace before tenant), and nothing that holds one waits for
-//! anything but the next in that order, so the locks cannot deadlock with each other.
+//! Resource creation scopes lock namespace before tenant. Activity admission has a separate policy
+//! hierarchy (shared tenant, shared namespace, exact activity), with activities visited in name
+//! order and administrative edits exclusively fencing their changed level.
 
 use crate::pool::BeginSafely;
 use sagat_application::authz::NamespaceDirectory;
@@ -54,13 +55,53 @@ fn judge(resource: QuotaResource, count: i64, limit: u64) -> Result<(), StoreErr
     }
 }
 
-/// Takes the activity's quota lock for the rest of the transaction.
+/// Activity policy hierarchy: tenant, namespace, then exact activity. Claims share the policy
+/// fences; changing a default/ceiling exclusively fences only its affected level. These keys are
+/// separate from other resources' admission locks and no policy editor takes a run-row lock.
+async fn activity_policy_lock(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: Option<NamespaceId>,
+    exclusive: bool,
+) -> Result<(), StoreError> {
+    let key = match namespace {
+        Some(namespace) => format!("activity-policy:{tenant}:{namespace}"),
+        None => format!("activity-policy:{tenant}"),
+    };
+    let sql = if exclusive {
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))"
+    };
+    sqlx::query(sql)
+        .bind(key)
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
+async fn activity_policy_change(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: Option<NamespaceId>,
+) -> Result<(), StoreError> {
+    if namespace.is_some() {
+        activity_policy_lock(conn, tenant, None, false).await?;
+    }
+    activity_policy_lock(conn, tenant, namespace, true).await
+}
+
+/// Takes shared policy fences followed by the activity lock for the rest of the transaction.
+/// Callers acquiring several activities must visit them in activity-name order.
 async fn lock_activity(
     conn: &mut PgConnection,
     tenant: TenantId,
     namespace: NamespaceId,
     activity: &ActivityName,
 ) -> Result<(), StoreError> {
+    activity_policy_lock(conn, tenant, None, false).await?;
+    activity_policy_lock(conn, tenant, Some(namespace), false).await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!(
             "activity-quota:{tenant}:{namespace}:{}",
@@ -250,14 +291,9 @@ pub(crate) async fn lock_subscriptions(
     conn: &mut PgConnection,
     tenant: TenantId,
     namespace: NamespaceId,
+    resource: QuotaResource,
 ) -> Result<(), StoreError> {
-    lock(
-        conn,
-        QuotaResource::WebhookSubscriptions,
-        tenant,
-        Some(namespace),
-    )
-    .await
+    lock(conn, resource, tenant, Some(namespace)).await
 }
 
 /// A new subscription fits in its namespace. The caller holds [`lock_subscriptions`].
@@ -265,17 +301,21 @@ pub(crate) async fn ensure_room_for_subscription(
     conn: &mut PgConnection,
     tenant: TenantId,
     namespace: NamespaceId,
+    resource: QuotaResource,
     limit: u64,
 ) -> Result<(), StoreError> {
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM webhook_subscriptions WHERE tenant_id = $1 AND namespace_id = $2",
+        "SELECT count(*) FROM webhook_subscriptions WHERE tenant_id = $1 AND namespace_id = $2 \
+           AND (($3 = 'webhook_subscriptions' AND destination_kind = 'WEBHOOK') \
+             OR ($3 = 'broker_subscriptions' AND destination_kind <> 'WEBHOOK'))",
     )
     .bind(tenant.as_uuid())
     .bind(namespace.as_uuid())
+    .bind(resource.as_str())
     .fetch_one(&mut *conn)
     .await
     .map_err(store_error)?;
-    judge(QuotaResource::WebhookSubscriptions, count, limit)
+    judge(resource, count, limit)
 }
 
 /// Takes the lock of the connectors of one namespace for the rest of the transaction.
@@ -640,6 +680,9 @@ impl QuotaStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        if resource == QuotaResource::ActivityConcurrency {
+            activity_policy_change(&mut tx, tenant, None).await?;
+        }
         match value {
             Some(value) => {
                 let value = i64::try_from(value).map_err(|_| StoreError::Internal {
@@ -700,6 +743,9 @@ impl QuotaStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        if resource == QuotaResource::ActivityConcurrency {
+            activity_policy_change(&mut tx, tenant, namespace).await?;
+        }
         match value {
             Some(value) => {
                 let value = i64::try_from(value).map_err(|_| StoreError::Internal {
@@ -824,7 +870,17 @@ impl QuotaStore for PgRunStore {
             QuotaResource::WebhookSubscriptions => {
                 sqlx::query_scalar(
                     "SELECT count(*) FROM webhook_subscriptions \
-                 WHERE tenant_id = $1 AND namespace_id = $2",
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND destination_kind = 'WEBHOOK'",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace)
+                .fetch_one(&self.pool)
+                .await
+            }
+            QuotaResource::BrokerSubscriptions => {
+                sqlx::query_scalar(
+                    "SELECT count(*) FROM webhook_subscriptions \
+                     WHERE tenant_id = $1 AND namespace_id = $2 AND destination_kind <> 'WEBHOOK'",
                 )
                 .bind(tenant.as_uuid())
                 .bind(namespace)

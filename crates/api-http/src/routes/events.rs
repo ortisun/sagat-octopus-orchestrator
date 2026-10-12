@@ -1,8 +1,8 @@
-//! Events: the endpoints that receive signed webhooks, publishing through the API, and reading the
+//! Events: the endpoints that authenticate webhooks, publishing through the API, and reading the
 //! inbox.
 //!
-//! The webhook route is the one route that is not authenticated with a bearer token: the signature
-//! is the credential, and everything that can go wrong with it ends in the same `401`.
+//! Webhook senders use the endpoint's HMAC, external OIDC or verified native mTLS profile instead
+//! of platform membership. Invalid identities share a uniform `401`; verifier outages are retryable.
 
 use std::time::Duration;
 
@@ -62,7 +62,10 @@ fn invalid(message: &'static str) -> ApiError {
 
 /// The settings of a request, with the defaults of an endpoint for what it leaves out.
 fn settings(
-    secret_name: &str,
+    credential: (
+        Option<&str>,
+        Option<crate::dto_events::WebhookAuthenticationBody>,
+    ),
     default_event_type: Option<&str>,
     dedupe_ttl_seconds: Option<u64>,
     skew_seconds: Option<u64>,
@@ -70,6 +73,7 @@ fn settings(
     rate_per_second: Option<u32>,
     status: Option<&str>,
 ) -> Result<EndpointSettings, ApiError> {
+    let (secret_name, authentication) = credential;
     let limits = EndpointLimits::new(
         dedupe_ttl_seconds.map_or(DEFAULT_DEDUPE_TTL, Duration::from_secs),
         skew_seconds.map_or(DEFAULT_SKEW, Duration::from_secs),
@@ -78,8 +82,25 @@ fn settings(
     )
     .map_err(|e| ApiError::validation(e.to_string()))?;
     Ok(EndpointSettings {
-        secret_name: SecretName::parse(secret_name)
+        secret_name: secret_name
+            .map(SecretName::parse)
+            .transpose()
             .map_err(|_| invalid("the secret name is not valid"))?,
+        authentication: match authentication {
+            None | Some(crate::dto_events::WebhookAuthenticationBody::Hmac) => {
+                sagat_domain::events::WebhookAuthentication::Hmac
+            }
+            Some(crate::dto_events::WebhookAuthenticationBody::Oidc { profile, subject }) => {
+                sagat_domain::events::WebhookAuthentication::Oidc {
+                    profile: Slug::parse(&profile)
+                        .map_err(|_| invalid("the OIDC profile is not valid"))?,
+                    subject,
+                }
+            }
+            Some(crate::dto_events::WebhookAuthenticationBody::Mtls { certificate_sha256 }) => {
+                sagat_domain::events::WebhookAuthentication::Mtls { certificate_sha256 }
+            }
+        },
         default_event_type: default_event_type
             .map(|t| {
                 EventType::parse(t).map_err(|_| invalid("the default event type is not valid"))
@@ -104,7 +125,7 @@ pub async fn create_endpoint<B: Governance>(
     ApiJson(body): ApiJson<CreateEndpointBody>,
 ) -> Result<(StatusCode, Json<EndpointBody>), ApiError> {
     let settings = settings(
-        &body.secret_name,
+        (body.secret_name.as_deref(), body.authentication),
         body.default_event_type.as_deref(),
         body.dedupe_ttl_seconds,
         body.skew_seconds,
@@ -160,7 +181,7 @@ pub async fn update_endpoint<B: Governance>(
     ApiJson(body): ApiJson<UpdateEndpointBody>,
 ) -> Result<Json<EndpointBody>, ApiError> {
     let settings = settings(
-        &body.secret_name,
+        (body.secret_name.as_deref(), body.authentication),
         body.default_event_type.as_deref(),
         body.dedupe_ttl_seconds,
         body.skew_seconds,
@@ -272,6 +293,7 @@ pub async fn receive_webhook<B: Governance>(
     State(state): State<B>,
     Path(endpoint): Path<String>,
     trace: Option<axum::Extension<TraceContext>>,
+    certificate: Option<axum::Extension<crate::server::VerifiedClientCertificate>>,
     ingress: Option<axum::Extension<crate::context::IngressSpan>>,
     headers: HeaderMap,
     body: Bytes,
@@ -291,6 +313,8 @@ pub async fn receive_webhook<B: Governance>(
     });
     let request = WebhookRequest {
         signature: single(&headers, SIGNATURE_HEADER),
+        bearer: single(&headers, "authorization").and_then(|s| s.strip_prefix("Bearer ")),
+        certificate_sha256: certificate.as_ref().map(|cert| cert.sha256.as_str()),
         timestamp: single(&headers, TIMESTAMP_HEADER),
         event_id: single(&headers, EVENT_ID_HEADER),
         event_type: single(&headers, EVENT_TYPE_HEADER),

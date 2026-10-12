@@ -142,6 +142,8 @@ impl BreakerPolicy {
 pub struct RunData {
     pub run_id: Option<RunId>,
     pub input: Vec<u8>,
+    /// Catalog-backed run input only; a caller-provided JSON lookalike never sets this identity.
+    pub input_blob: Option<sagat_domain::blobs::BlobId>,
     /// Outputs of the steps that succeeded, by node id.
     pub outputs: BTreeMap<NodeId, Vec<u8>>,
 }

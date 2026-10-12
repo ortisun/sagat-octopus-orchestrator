@@ -166,7 +166,7 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
   and the database pool is shared by everything in a process. Quotas per queue (per activity) do not
   exist (G245).
 - Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
-- Blob-backed run inputs and five-SDK blob helpers remain pending (G19); the worker output transport is described below. Run results (G21), `foreach` and `humanApproval` nodes (G20) retain their documented limits.
+- Run-input and worker-output blob transport is described below; five-SDK conformance is tracked by T002-040. Run results (G21), `foreach` and `humanApproval` nodes (G20) retain their documented limits.
 - Partitioning and retention of `run_events` (G28) are not built: the journal grows with the runs
   (feature 010 measured the cost of a wait and of a transition, `tests/performance/reports/scalability-ha.md`,
   and left the partitioning for evidence, G241).
@@ -175,11 +175,12 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
 - Failover of PostgreSQL itself, backups of the NATS stream (it holds hints only) and capacity
   planning per tier (spec open question).
 
-## 8. Large worker outputs (protocol 1.3)
+## 8. Large inputs and worker outputs (protocol 1.3)
 
 Blob storage is opt-in: `SAGAT_BLOB_PROVIDER` accepts `s3`, `r2`, `fs`, `memory`, or `none`
-(the default). Every engine replica must use the same durable backend and prefix. `memory` is
-allowed only in development; `fs` requires a shared durable volume when replicas share the catalog.
+(the default). The control plane and every engine replica must use the same durable backend and
+prefix. The control plane refuses `memory`, which cannot share uploads across processes. Engine-only
+`memory` is development-only; `fs` requires a shared durable volume across the processes.
 S3 requires `SAGAT_BLOB_S3_BUCKET` and `SAGAT_BLOB_S3_REGION`; the optional endpoint must use TLS
 outside development. R2 requires `SAGAT_BLOB_R2_ACCOUNT_ID`, `SAGAT_BLOB_R2_BUCKET`, and its access
 key/secret configuration. Supply credentials through the deployment secret mechanism, never command
@@ -201,18 +202,41 @@ retains the row and retries after five minutes. Confirmed deletion removes a fin
 Never-confirmed uploads retain a tombstone and continue deletion reconciliation: a delayed PUT can
 finish after an earlier delete. First deletion confirmation is audited and releases its active upload
 slot; repeated cleanup adds no duplicate audit. Tombstones need a future compaction policy. Retention
-of unused completed uploads starts when the upload finishes. Committed output blobs are never removed
+of unused completed uploads starts when the upload finishes. Committed input or output blobs are never removed
 by this sweep. Watch `blob_delete_failures_total`,
 `blob_swept_total`, `blob_lost_total` and `blob_corrupt_total`. Corrupt downloads end with `DATA_LOSS`;
 discard all received bytes and investigate storage integrity.
 
 Until streaming secret-content scanning is implemented, blob uploads and completions from steps
 that declare secrets are refused before upload. Blob output is for forward activities; compensation
-and reconciliation responses retain their existing inline semantics. Run-input transport and SDK
-helpers remain separate completion tasks, so FR-002-008 is not yet closed.
+and reconciliation responses retain their existing inline semantics. SDK conformance remains tracked
+by T002-040 until all five language clients pass the common scenarios.
 
 Blob downloads hold both global transfer and tenant concurrency slots until the producer ends.
 An independent deadline cancels the producer even when HTTP/2 receive flow control stops polling;
 a one-message channel bounds buffering. Unexpected producer termination is an error, never verified
 EOF. `blob_transfers_total{direction,outcome}` and `blob_transfer_duration_seconds{direction,outcome}`
 record completed/interrupted/timed-out read transfers separately from unary request acceptance.
+
+
+Run inputs use two requests: stream raw bytes to `POST /v1/run-input-blobs` with the bearer token,
+`X-Octopus-Namespace`, and optional `Content-Type`, `X-Octopus-Blob-Size` and
+`X-Octopus-Blob-Sha256`; then send `POST /v1/runs` with `workflowId` and `inputBlobRef` using the
+returned id and an `Idempotency-Key`. Omit `input` entirely. A different uploader or namespace cannot
+bind the staging object; workers cannot read it until the run-start transaction commits. The run's
+JSON input is a small `$blob` descriptor, and any workflow input schema must accept that descriptor.
+The server never loads the external bytes as JSON. Workers use lease-scoped `ReadBlob` and verify
+size/hash before treating EOF as success. An ordinary inline JSON object resembling the descriptor
+does not create catalog provenance.
+
+The upload endpoint retains the shared global/tenant request admission and body-idle protection,
+with its own maximum body and total transfer deadline (also bounded by bearer expiration). A stalled
+or interrupted upload leaves durable cleanup evidence; no caller should automatically retry a
+consumed upload stream. Retry the run-start request with the same key after an uncertain response;
+its exact result remains replayable after the staged blob was committed or the active version changed.
+
+Reproduce the happy and failure cases with
+`cargo test -p sagat-tests --test contract_grpc_durable_execution input_blobs` against Docker:
+large REST upload to worker read, unused-object privacy, cross-scope refusal, schema rejection,
+concurrent duplicate start, audit rollback, deadline/version-independent replay, rerun/child reuse,
+inline body limits and expired staging cleanup.

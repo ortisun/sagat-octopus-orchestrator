@@ -10,6 +10,7 @@ mod cron;
 mod dispatch;
 mod ingress;
 mod outbound;
+mod outbound_brokers;
 mod sender;
 
 use sagat_application::events::{EndpointRecord, EndpointSettings, WebhookRequest};
@@ -24,7 +25,8 @@ pub const SECRET_NAME: &str = "provider-signing";
 
 pub fn settings() -> EndpointSettings {
     EndpointSettings {
-        secret_name: SecretName::parse(SECRET_NAME).expect("secret name"),
+        secret_name: Some(SecretName::parse(SECRET_NAME).expect("secret name")),
+        authentication: sagat_domain::events::WebhookAuthentication::Hmac,
         default_event_type: None,
         limits: EndpointLimits::default(),
         status: sagat_domain::events::EndpointStatus::Active,
@@ -85,6 +87,8 @@ impl Signed {
         WebhookRequest {
             trace: None,
             signature: Some(&self.signature),
+            bearer: None,
+            certificate_sha256: None,
             timestamp: Some(&self.timestamp),
             event_id: Some(&self.event_id),
             event_type,

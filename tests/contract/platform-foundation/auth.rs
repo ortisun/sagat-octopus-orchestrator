@@ -10,7 +10,7 @@ use sagat_api_http::{AuthConfig, TokenVerifier};
 use serde_json::{Value, json};
 
 use crate::support::oidc::{
-    AUDIENCE, ISSUER, TestIdp, TestKey, now_secs, tamper_payload, unsigned_token,
+    AUDIENCE, ISSUER, Mode, TestIdp, TestKey, now_secs, tamper_payload, unsigned_token,
 };
 
 async fn verifier_with(idp: &TestIdp, tweak: impl FnOnce(&mut AuthConfig)) -> TokenVerifier {
@@ -125,6 +125,22 @@ async fn token_lifetime_is_bounded_to_limit_the_revocation_window() {
         v.verify(&hour_long).await.is_ok(),
         "exactly the limit is allowed"
     );
+}
+
+#[tokio::test]
+async fn a_token_cannot_expire_before_it_was_issued() {
+    let idp = TestIdp::start().await;
+    let v = verifier(&idp).await;
+    let now = now_secs();
+    // Both timestamps are inside the configured clock leeway, so the ordering check itself is what
+    // must reject this token.
+    let reversed = idp
+        .token("alice", "acme")
+        .claim("iat", json!(now + 20))
+        .claim("exp", json!(now + 10))
+        .build();
+
+    assert_eq!(v.verify(&reversed).await, invalid(InvalidReason::Lifetime));
 }
 
 // ----------------------------------------------------------------------------- claims
@@ -338,6 +354,9 @@ async fn keys_that_cannot_verify_access_tokens_are_never_used() {
     let real = idp.key.lock().expect("key").clone();
     let mut encryption_only = real.public_jwk();
     encryption_only["use"] = json!("enc");
+    let mut wrong_operation = real.public_jwk();
+    wrong_operation["kid"] = json!("decrypt-only");
+    wrong_operation["key_ops"] = json!(["decrypt"]);
     let mut wrong_alg = real.public_jwk();
     wrong_alg["alg"] = json!("RS256");
     let mut without_kid = real.public_jwk();
@@ -348,6 +367,7 @@ async fn keys_that_cannot_verify_access_tokens_are_never_used() {
     idp.publish(vec![
         json!({"kty": "oct", "kid": "hmac-1", "k": "c2VjcmV0", "alg": "HS256"}),
         encryption_only,
+        wrong_operation,
         wrong_alg,
         without_kid,
         unrelated.public_jwk(),
@@ -357,6 +377,29 @@ async fn keys_that_cannot_verify_access_tokens_are_never_used() {
     // Even a token correctly signed by the real key finds no usable key published under its kid.
     let token = idp.token("alice", "acme").build();
     assert_eq!(v.verify(&token).await, invalid(InvalidReason::UnknownKey));
+
+    let wrong_operation_token = idp.token("alice", "acme").kid(Some("decrypt-only")).build();
+    assert_eq!(
+        v.verify(&wrong_operation_token).await,
+        invalid(InvalidReason::UnknownKey)
+    );
+}
+
+#[tokio::test]
+async fn an_absent_key_ops_keeps_a_signing_key_usable() {
+    let idp = TestIdp::start().await;
+    let key = idp.key.lock().expect("key").clone();
+    let jwk = key.public_jwk();
+    assert!(jwk.get("key_ops").is_none(), "fixture must omit key_ops");
+    idp.publish(vec![jwk]);
+
+    assert!(
+        verifier(&idp)
+            .await
+            .verify(&idp.token("alice", "acme").build())
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -371,6 +414,44 @@ async fn a_rotated_key_is_picked_up_without_a_restart() {
     assert!(
         v.verify(&with_new_key).await.is_ok(),
         "unknown kid triggers a refresh"
+    );
+}
+
+#[tokio::test]
+async fn a_rotation_outage_is_retryable_without_discarding_a_cached_key_or_hammering_jwks() {
+    let idp = TestIdp::start().await;
+    let original = idp.token("alice", "acme").build();
+    let v = verifier_with(&idp, |c| {
+        c.jwks_ttl = Duration::from_millis(1);
+        c.jwks_max_stale = Duration::from_secs(2);
+        c.jwks_min_refresh_interval = Duration::from_secs(1);
+    })
+    .await;
+    assert!(v.verify(&original).await.is_ok(), "warm the original key");
+
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    idp.rotate(true);
+    let rotated = idp.token("alice", "acme").build();
+    idp.set_mode(Mode::Status(503));
+    let before_failure = idp.jwks_hits();
+
+    assert_eq!(v.verify(&rotated).await, Err(AuthError::Unavailable));
+    assert_eq!(idp.jwks_hits(), before_failure + 1, "one refresh attempt");
+    // A known key inside the stale window remains usable even though refreshing failed.
+    assert!(v.verify(&original).await.is_ok());
+
+    let after_failure = idp.jwks_hits();
+    for i in 0..20 {
+        let unknown = idp
+            .token("mallory", "acme")
+            .kid(Some(&format!("outage-{i}")))
+            .build();
+        assert_eq!(v.verify(&unknown).await, Err(AuthError::Unavailable));
+    }
+    assert_eq!(
+        idp.jwks_hits(),
+        after_failure,
+        "the failed refresh is rate limited without changing 503 to 401"
     );
 }
 

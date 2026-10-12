@@ -188,9 +188,19 @@ impl Server {
     pub fn address(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+
+    /// The address in configuration form, retaining whether TLS is required.
+    #[must_use]
+    pub fn configured_address(&self) -> String {
+        if self.tls {
+            format!("tls://{}:{}", self.host, self.port)
+        } else {
+            self.address()
+        }
+    }
 }
 
-fn name(text: &str) -> Result<String, ConnectorError> {
+pub(crate) fn name(text: &str) -> Result<String, ConnectorError> {
     if text.is_empty() || text.len() > MAX_TEXT || !text.chars().all(|c| c.is_ascii_graphic()) {
         Err(ConnectorError::InvalidName)
     } else {
@@ -310,7 +320,7 @@ impl ConnectorSettings {
     }
 }
 
-fn parse_servers(servers: &[String]) -> Result<Vec<Server>, ConnectorError> {
+pub(crate) fn parse_servers(servers: &[String]) -> Result<Vec<Server>, ConnectorError> {
     if servers.is_empty() || servers.len() > MAX_SERVERS {
         return Err(ConnectorError::InvalidServers);
     }

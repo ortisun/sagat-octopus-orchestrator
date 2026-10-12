@@ -53,7 +53,7 @@ const REFRESH: Duration = Duration::from_secs(30);
 /// How long to wait before reading again after the tenant's backlog was full.
 const BACKLOG_PAUSE: Duration = Duration::from_secs(5);
 
-fn sasl(credentials: &Credentials) -> Result<Option<SaslConfig>, &'static str> {
+pub(crate) fn sasl(credentials: &Credentials) -> Result<Option<SaslConfig>, &'static str> {
     let (Some(user), Some(password)) = (credentials.text("username"), credentials.text("password"))
     else {
         return Ok(None);
@@ -69,7 +69,7 @@ fn sasl(credentials: &Credentials) -> Result<Option<SaslConfig>, &'static str> {
     ))
 }
 
-fn tls() -> Arc<rustls::ClientConfig> {
+pub(crate) fn tls() -> Arc<rustls::ClientConfig> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
