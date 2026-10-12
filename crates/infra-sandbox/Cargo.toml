@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 bollard = "0.20"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 metrics.workspace = true

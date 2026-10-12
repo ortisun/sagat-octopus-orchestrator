@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 axum.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 hyper.workspace = true
 hyper-util.workspace = true
 jsonwebtoken.workspace = true
