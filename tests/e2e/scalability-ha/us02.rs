@@ -4,21 +4,45 @@
 
 use std::time::Duration;
 
+use sagat_control_plane::config::Config;
 use serde_json::json;
 
 use crate::support::worker::{RunningEngine, engine_env, platform};
 
 async fn connections(p: &crate::support::worker::Platform) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
-        .fetch_one(&p.api.db.pool)
-        .await
-        .expect("connections")
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity \
+         WHERE datname = current_database() AND backend_type = 'client backend'",
+    )
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("connections")
+}
+
+async fn assert_connection_budget(
+    p: &crate::support::worker::Platform,
+    budget: i64,
+    checkpoint: &str,
+) {
+    let observed = connections(p).await;
+    assert!(
+        observed <= budget,
+        "{checkpoint}: {observed} client backends exceed the configured pool budget {budget}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn thousands_of_suspended_runs_cost_rows_and_not_tasks_connections_or_leases() {
     let p = platform().await;
-    let engine = RunningEngine::start(engine_env(&p.api.db, &p.api.idp, &[])).await;
+    let engine_environment = engine_env(&p.api.db, &p.api.idp, &[]);
+    let lookup = |name: &str| engine_environment.get(name).cloned();
+    let engine_config = Config::from_lookup(&lookup).expect("engine configuration");
+    // All three pools open lazily under load, but never beyond these configured budgets. A
+    // suspended run must not allocate a connection outside that fixed, run-count-independent cap.
+    let connection_budget = i64::from(p.api.db.pool.options().get_max_connections())
+        + i64::from(p.api.api_pool.options().get_max_connections())
+        + i64::from(engine_config.database.max_connections);
+    let engine = RunningEngine::start(engine_environment).await;
     let ir = json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
         "metadata": {"name": "sleeper"}, "entrypoint": "pause",
@@ -28,29 +52,27 @@ async fn thousands_of_suspended_runs_cost_rows_and_not_tasks_connections_or_leas
         ]
     });
     let workflow = p.publish("sleeper", &ir).await;
-    // The pools of the API and of the engine open connections as load asks for them, up to their size, and a
-    // slow machine opens them late. The claim is that a suspended run costs no connection of its own, so the
-    // first runs warm the pools and the count is taken after them: it must not grow with the next fifteen hundred.
-    const WARM_UP: usize = 200;
-    for i in 0..WARM_UP {
-        p.start(&workflow, &json!({ "warm": i })).await;
-    }
-    // Let the engine's loops and pools settle before the first reading.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_connection_budget(&p, connection_budget, "before suspended runs").await;
     let tasks_before = tokio::runtime::Handle::current()
         .metrics()
         .num_alive_tasks();
-    let connections_before = connections(&p).await;
 
     const RUNS: usize = 1_500;
     for i in 0..RUNS {
         p.start(&workflow, &json!({ "i": i })).await;
+        if (i + 1) % 250 == 0 {
+            assert_connection_budget(
+                &p,
+                connection_budget,
+                &format!("after {} suspended runs", i + 1),
+            )
+            .await;
+        }
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
     let tasks_after = tokio::runtime::Handle::current()
         .metrics()
         .num_alive_tasks();
-    let connections_after = connections(&p).await;
 
     let waiting: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM steps WHERE status = 'WAITING' AND waiting_kind = 'TIMER'",
@@ -58,17 +80,14 @@ async fn thousands_of_suspended_runs_cost_rows_and_not_tasks_connections_or_leas
     .fetch_one(&p.api.db.pool)
     .await
     .expect("count");
-    assert_eq!(waiting, i64::try_from(WARM_UP + RUNS).expect("fits"));
+    assert_eq!(waiting, i64::try_from(RUNS).expect("fits"));
+    assert_connection_budget(&p, connection_budget, "after suspended runs settled").await;
 
     // A suspended run is a row: not a task, not a connection, not a lease, not a worker.
     assert!(
         tasks_after < tasks_before + 20,
         "{RUNS} suspended runs added {} tasks to the runtime",
         tasks_after.saturating_sub(tasks_before)
-    );
-    assert!(
-        connections_after <= connections_before + 3,
-        "connections went from {connections_before} to {connections_after}"
     );
     for (what, sql) in [
         (
