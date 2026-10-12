@@ -1,4 +1,4 @@
-import { Controls, MiniMap, ReactFlow, useNodesInitialized, useReactFlow } from '@xyflow/react';
+import { Controls, MiniMap, ReactFlow, useReactFlow } from '@xyflow/react';
 import type { NodeChange } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useEffect, useMemo, useRef } from 'react';
@@ -38,15 +38,15 @@ export function initialGraphViewportOffset(geometry: InitialGraphGeometry): numb
   return visibleTop - geometry.graphTop;
 }
 
-/** Fits exactly once, after React Flow has measured every node. Later data updates and user camera
- * changes do not run this effect again. Logical graph bounds avoid depending on virtualized DOM. */
+/** Fits exactly once, after React Flow has initialized its viewport. The nodes declare fixed sizes,
+ * so fitting does not depend on virtualized nodes being measured. Later data updates and user
+ * camera changes do not run this effect again. */
 function InitialViewport({ canvas, detail }: { canvas: RefObject<HTMLDivElement | null>; detail: ViewPolicy['detail'] }) {
   const flow = useReactFlow<CardNode>();
-  const nodesInitialized = useNodesInitialized();
   const started = useRef(false);
 
   useEffect(() => {
-    if (!flow.viewportInitialized || !nodesInitialized || started.current) return;
+    if (!flow.viewportInitialized || started.current) return;
     started.current = true;
     void (async () => {
       const fitted = await flow.fitView({ padding: 0.1, duration: 0 });
@@ -65,7 +65,7 @@ function InitialViewport({ canvas, detail }: { canvas: RefObject<HTMLDivElement 
       });
       if (offset !== 0) await flow.setViewport({ ...viewport, y: viewport.y + offset }, { duration: 0 });
     })();
-  }, [canvas, detail, flow, nodesInitialized]);
+  }, [canvas, detail, flow]);
 
   return null;
 }
@@ -155,8 +155,6 @@ export function GraphView({
           edgesFocusable={false}
           elementsSelectable
           deleteKeyCode={null}
-          fitView
-          fitViewOptions={{ padding: 0.1, duration: 0 }}
           minZoom={0.02}
           maxZoom={1.5}
           onlyRenderVisibleElements
