@@ -23,9 +23,9 @@ export function canvasMode(nodeCount: number): CanvasMode {
 }
 
 export const CARD_SIZE = {
-  full: { width: 232, height: 96 },
-  simplified: { width: 152, height: 40 },
-  trigger: { width: 208, height: 64 },
+  full: { width: 320, height: 192 },
+  simplified: { width: 248, height: 104 },
+  trigger: { width: 320, height: 112 },
 } as const;
 
 /** Trigger cards share the canvas with the nodes; `@` and `:` cannot be part of a node id. */

@@ -124,20 +124,27 @@ describe('the run page: the graph', () => {
     await waitFor(() => card('pay'));
     const pay = card('pay');
     expect(within(pay).getByText('Failed')).toBeInTheDocument();
-    expect(within(pay).getByText('attempt 3')).toBeInTheDocument();
-    expect(within(pay).getByText('failure HTTP_500')).toBeInTheDocument();
+    expect(within(pay).getByText('Failure: HTTP_500')).toBeInTheDocument();
     expect(within(pay).getByText('Step')).toBeInTheDocument();
+    pick(within(pay).getByText('pay'));
+    const payPanel = await screen.findByRole('complementary', { name: 'Details of pay' });
+    expect(within(payPanel).getByText('attempt 3')).toBeInTheDocument();
+    expect(within(payPanel).getByText('HTTP_500')).toBeInTheDocument();
     // An undo the platform added is labelled as one, dashed, and says it waits for a person.
     const undoCard = card('reserve~c');
     expect(within(undoCard).getByText('Undo of reserve')).toBeInTheDocument();
     expect(undoCard.querySelector('.rn-card')).toHaveAttribute('data-variant', 'undo');
-    expect(within(undoCard).getByText('Waiting for a person')).toBeInTheDocument();
+    expect(within(undoCard).getByText('Needs a person')).toBeInTheDocument();
+    pick(within(undoCard).getByText('reserve~c'));
+    expect(within(await screen.findByRole('complementary', { name: 'Details of reserve~c' })).getByText('Waiting for a person')).toBeInTheDocument();
     expect(within(card('pay~r')).getByText('Lookup for pay')).toBeInTheDocument();
     expect(card('pay~r').querySelector('.rn-card')).toHaveAttribute('data-variant', 'lookup');
-    // A skipped branch, a saga, a timer with its due time as relative text and the absolute time in the tooltip.
+    // A skipped branch stays in the card; saga and timer detail are available on selection.
     expect(within(card('shipping')).getByText('Skipped')).toBeInTheDocument();
-    expect(within(card('order')).getByText(/saga going forward/)).toBeInTheDocument();
-    const due = card('wait').querySelector('time');
+    pick(within(card('order')).getByText('order'));
+    expect(within(await screen.findByRole('complementary', { name: 'Details of order' })).getByText(/saga going forward/)).toBeInTheDocument();
+    pick(within(card('wait')).getByText('wait'));
+    const due = (await screen.findByRole('complementary', { name: 'Details of wait' })).querySelector('time');
     expect(due).toHaveAttribute('title', '2099-01-01 00:00:00 UTC');
     expect(due?.textContent).toMatch(/^in \d+ d$/);
     // The cards are named for assistive technology.
@@ -146,11 +153,16 @@ describe('the run page: the graph', () => {
 
   it('links a child node to the child run', async () => {
     const { nodes, edges } = sagaRun();
-    nodes.push(node('charge', 'WAITING', { type: 'child', waitingOn: 'child', childRunId: '019b5d6e-0000-7000-8000-0000000000ee' }));
+    const childRunId = '019b5d6e-0000-7000-8000-0000000000ee';
+    nodes.push(node('charge', 'WAITING', { type: 'child', waitingOn: 'child', childRunId }));
     await open({ graph: graphOf(nodes, edges, { status: 'MANUAL_REVIEW' }) });
-    const link = await screen.findByRole('link', { name: 'Open the child run of charge' });
-    expect(link).toHaveAttribute('href', '/runs/019b5d6e-0000-7000-8000-0000000000ee');
-    expect(within(card('charge')).getByText('Waiting for the child run')).toBeInTheDocument();
+    await waitFor(() => card('charge'));
+    expect(within(card('charge')).getByText('Waiting')).toBeInTheDocument();
+    pick(within(card('charge')).getByText('charge'));
+    const panel = await screen.findByRole('complementary', { name: 'Details of charge' });
+    const link = within(panel).getByRole('link', { name: childRunId });
+    expect(link).toHaveAttribute('href', `/runs/${childRunId}`);
+    expect(within(panel).getByText('Waiting for the child run')).toBeInTheDocument();
   });
 
   it('explains how the links are drawn, in words', async () => {
@@ -257,8 +269,7 @@ describe('the run page: live updates', () => {
     const before = check.innerHTML;
     pipe.send(changesOf(10, 12, [node('pay', 'RUNNING', { attempt: 4 })], { status: 'MANUAL_REVIEW', events: [graphEvent(11, 'step.retry_requested', 'pay'), graphEvent(12, 'step.leased', 'pay', 4)] }));
     await waitFor(() => expect(within(card('pay')).getByText('Running')).toBeInTheDocument());
-    expect(within(card('pay')).getByText('attempt 4')).toBeInTheDocument();
-    expect(within(card('pay')).queryByText(/failure/)).not.toBeInTheDocument();
+    expect(within(card('pay')).queryByText(/Failure:/)).not.toBeInTheDocument();
     // Only the card the update touched is highlighted, and the others are the very same elements, untouched.
     expect(card('pay').querySelector('.rn-flash')).not.toBeNull();
     expect(card('check')).toBe(check);
@@ -266,6 +277,10 @@ describe('the run page: live updates', () => {
     expect(card('reserve~c').querySelector('.rn-flash')).toBeNull();
     expect(platform.state.graphReads).toBe(1);
     expect(follow()).toHaveTextContent('Live');
+    pick(within(card('pay')).getByText('pay'));
+    const panel = await screen.findByRole('complementary', { name: 'Details of pay' });
+    expect(within(panel).getByText('attempt 4')).toBeInTheDocument();
+    expect(within(panel).queryByText('Failure code')).not.toBeInTheDocument();
   });
 
   it('keeps every step where it was when updates arrive, even when the platform sends the whole graph again', async () => {
@@ -704,6 +719,41 @@ describe('the run page: the details of a step', () => {
     return { ...view, panel };
   }
 
+  it('shows complete 64 and 80 character identifiers, relation and failure details', async () => {
+    const forward = 'f'.repeat(64);
+    const derived = `${'d'.repeat(78)}~c`;
+    const failureCode = 'COMPENSATION_'.repeat(8);
+    const nodes = [node(forward, 'SUCCEEDED'), node(derived, 'FAILED', { kind: 'COMPENSATION', forward, failureCode })];
+    await open({ graph: graphOf(nodes, [{ from: forward, to: derived, kind: 'compensation' }], { status: 'FAILED' }) });
+    await waitFor(() => card(derived));
+    pick(within(card(derived)).getByText(derived));
+
+    const panel = await screen.findByRole('complementary', { name: `Details of ${derived}` });
+    expect(within(panel).getByRole('heading', { name: derived })).toBeInTheDocument();
+    expect(within(within(panel).getByRole('group', { name: 'Selected step' })).getByText(derived)).toBeInTheDocument();
+    expect(within(panel).getByText(`Undo of ${forward}`)).toBeInTheDocument();
+    expect(within(panel).getByText(failureCode)).toBeInTheDocument();
+    expect(within(panel).getAllByRole('button', { name: forward })).toHaveLength(2);
+  });
+
+  it('shows arbitrary identifiers and unknown types in full with safe wrapping', async () => {
+    const id = 'selected-step-'.repeat(10);
+    const type = 'unknown-type-'.repeat(12);
+    const related = 'following-step-'.repeat(10);
+    const failureCode = 'FAILURE_DETAIL_'.repeat(12);
+    const nodes = [node(id, 'FAILED', { type, failureCode }), node(related, 'READY')];
+    await open({ graph: graphOf(nodes, [{ from: id, to: related, kind: 'next' }], { status: 'FAILED' }) });
+    await waitFor(() => card(id));
+    pick(card(id));
+
+    const panel = await screen.findByRole('complementary', { name: `Details of ${id}` });
+    expect(within(panel).getByRole('heading', { name: id })).toBeInTheDocument();
+    expect(within(within(panel).getByRole('group', { name: 'Selected step' })).getByText(id)).toBeInTheDocument();
+    expect(within(panel).getByText(type)).toBeInTheDocument();
+    expect(within(panel).getByText(failureCode)).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: related })).toBeInTheDocument();
+  });
+
   it('tells the attempts of the step from the journal: when, how it ended, how long', async () => {
     const { panel } = await select('pay');
     const table = await within(panel).findByRole('table', { name: 'Attempts of this step, from the journal' });
@@ -805,10 +855,11 @@ describe('the run page: what the platform sends is only ever text', () => {
       journal: [journalEvent(1, 'step.failed', HOSTILE, { actor: '<u>worker</u>', traceId: '"><svg onload=alert(3)>' })],
     });
     await waitFor(() => card(HOSTILE));
-    expect(within(card(HOSTILE)).getByText('failure <script>alert(2)</script>')).toBeInTheDocument();
+    expect(within(card(HOSTILE)).getByText('Failure: <script>alert(2)</script>')).toBeInTheDocument();
     pick(within(card(HOSTILE)).getByText(HOSTILE));
     const panel = await screen.findByRole('complementary', { name: `Details of ${HOSTILE}` });
     expect(within(panel).getByRole('heading', { name: HOSTILE })).toBeInTheDocument();
+    expect(within(panel).getByText('<script>alert(2)</script>')).toBeInTheDocument();
     await user.click(screen.getByRole('tab', { name: 'Table' }));
     expect(within(await screen.findByRole('table', { name: 'Steps of the run' })).getByRole('button', { name: HOSTILE })).toBeInTheDocument();
     await user.click(screen.getByRole('tab', { name: 'Timeline' }));

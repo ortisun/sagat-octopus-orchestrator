@@ -84,6 +84,16 @@ E2E create→validate→publish→trigger→fail→compensate→inspect journal/
 
 ## Visual defect correction (2026-10-12)
 
+T007-051 applies the owner's explicit Temporal/Windmill UX references to graph information
+hierarchy: readable identity/type/status on cards, configuration and execution detail through the
+existing selected inspector. Replace cramped card budgets with fixed variant dimensions and
+non-shrinking text rows, an independent port rail and moderate corner radii. Bound preview content
+deliberately; do not conceal ordinary identifiers or primary states with hover-only popups.
+Scope the amount/unit layout to the duration field, since its row class is also reused by other
+controls. Test glyph rectangles and overlap, not merely presence/page overflow; run the graph
+benchmarks because the larger dimensions change visible density. No runtime, API, tenant, audit
+or OTel semantics change; G159 remains the existing browser telemetry gap.
+
 Asset replacement recovery (T007-050): serve the current bounded `index.html` on each page request,
 including deep links and `/studio/index.html`, instead of retaining its old asset hashes for the
 process lifetime. Preserve CSP, `no-store`, path confinement, asset transfer limits and missing-file

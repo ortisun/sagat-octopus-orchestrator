@@ -79,8 +79,8 @@
   --topbar-height: 3.5rem;
   --control-height: 2.25rem;
   --runs-master-width: 24.5rem;
-  --graph-node-width: 11.5rem;
-  --graph-node-height: 3.875rem;
+  --graph-node-width: 20rem;
+  --graph-node-height: 11rem;
   --graph-grid-size: 1.125rem;
   --graph-dot-size: 1px;
   --graph-edge-width: 1.5px;

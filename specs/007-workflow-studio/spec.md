@@ -95,6 +95,15 @@ bounded and never cached; unavailable or unsafe HTML fails closed. A lazy route 
 offer an accessible, explicit reload action, explain loss of unsaved edits and the need to sign in
 again, and hide exception text and stack traces. No automatic reload loop is allowed.
 
+Graph text acceptance (T007-051, FR-007-001/005/008/009): following the owner's Temporal/Windmill
+UX direction, separate the canvas summary from the selected step's detailed editor/inspection.
+Node identity, type and execution status must remain legible, without squeezed line boxes or
+ellipsis on valid node IDs. Give badges and connection labels their own space; rounded borders
+must not clip glyphs. Longer configuration/expression previews may be explicit summaries; the
+complete value stays available in the selected inspector. Keep duration amounts and their units
+usable independently. Verify actual text geometry, rich states, 64-character IDs, both layout
+directions and narrow viewports, while preserving stable runtime positions and virtualization.
+
 Visual defect acceptance (2026-10-12, FR-007-008/009): initial workflow and run graphs must show
 readable cards rather than shrinking the entire graph to microscopic text. Explicit fit/zoom and
 the alternative list/table remain available. At desktop widths the run graph controls must fit in

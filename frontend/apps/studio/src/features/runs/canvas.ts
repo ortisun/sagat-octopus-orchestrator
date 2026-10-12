@@ -27,8 +27,8 @@ export function viewPolicy(nodeCount: number): ViewPolicy {
   return { detail: 'simple', start: nodeCount > TABLE_FIRST_ABOVE ? 'table' : 'graph', minimap: false, edgeLabels: false };
 }
 
-export const CARD_SIZE = { width: 184, height: 62 } as const;
-export const CHIP_SIZE = { width: 176, height: 44 } as const;
+export const CARD_SIZE = { width: 320, height: 176 } as const;
+export const CHIP_SIZE = { width: 248, height: 88 } as const;
 
 export function sizeFor(detail: ViewPolicy['detail']): { width: number; height: number } {
   return detail === 'full' ? CARD_SIZE : CHIP_SIZE;

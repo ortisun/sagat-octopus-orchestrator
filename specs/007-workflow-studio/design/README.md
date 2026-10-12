@@ -12,6 +12,48 @@ project reaches the Studio by updating this record first.
 | **Not used** | the logo page (the choice is not made, G162) and the Temporal × Windmill analysis (a market comparison, not a visual specification) |
 | **History of this record** | first written from a capture of the running prototype (colours sampled from a JPEG); rewritten the same day from the export. **A correction:** the first version reported the list's secondary text at 3.98 : 1; the export shows its role is lightness 0.60, which is 4.98 : 1. The sample had hit an anti-aliased pixel |
 
+## Graph reading and selection, 2026-10-12 (T007-051)
+
+The owner requested Temporal and Windmill as UX references after reporting clipped graph text.
+The [Temporal Web UI documentation](https://docs.temporal.io/web-ui) separates execution state and
+metadata from selected history details. The [Windmill editor components](https://www.windmill.dev/docs/flows/editor_components)
+separate the flow canvas from the selected action's configuration/test editor. These patterns inform
+Sagat's information hierarchy; its existing tokens, runtime semantics and permissions remain.
+
+Editor cards put the full valid step ID above its type and a bounded configuration preview. Badges
+have their own wrapping row, and connection labels occupy an independent 84px rail (a footer in
+vertical layouts). Non-shrinking line boxes and moderate corners preserve glyphs. Full, simplified
+and trigger cards are respectively 320×192, 248×104 and 320×112px, shared by React Flow and layout.
+The initial camera keeps the top of both trigger and entrypoint inside the canvas at reading scale,
+so anchoring the shorter trigger cannot cut off the taller first step's title.
+The duration amount gets the remaining input width beside a bounded unit selector; narrow fields
+stack the two controls. This does not change the other controls reusing the generic row class.
+
+Run cards show step ID, type/relation and state in separate rows, plus one critical attention
+summary. Selecting a card opens the existing panel with attempts, complete failure code, wait
+reason, due time, saga details and child-run links. Those facts no longer depend on a hover popup.
+Full/simplified cards are 320×176 and 248×88px, with stable dimensions across live updates. IDs up
+to 80 characters wrap; larger runtime values use an explicit selection prompt instead of an
+ellipsis. Arbitrary configuration previews are summaries, with the complete value in the inspector.
+The original prototype's 184×62px runtime card is superseded by this content budget.
+
+`graph-text-layout.spec.ts` measures real glyph rectangles and intersections between text, badges
+and ports; element presence alone cannot establish legibility. Review images and actual validation
+are recorded below and in the quickstart. This is agent review, not new owner acceptance.
+
+Review captures: editor at reading scale [light](./review-2026-10-12-text/text-editor-reading-light.png)
+and [dark](./review-2026-10-12-text/text-editor-reading-dark.png); corrected camera
+[before](./review-2026-10-12-text/editor-camera-before.png) →
+[after](./review-2026-10-12-text/text-editor-reading-dark.png);
+[vertical overview](./review-2026-10-12-text/text-editor-overview-tb.png),
+[forced-colour overview](./review-2026-10-12-text/text-editor-overview-forced.png) and
+[12-digit duration at 320px](./review-2026-10-12-text/text-editor-inspector-320.png).
+Runs at reading scale [light](./review-2026-10-12-text/text-run-reading-light.png) and
+[dark](./review-2026-10-12-text/text-run-reading-dark.png); selected details in
+[dark](./review-2026-10-12-text/text-run-panel-dark.png) and
+[forced colours](./review-2026-10-12-text/text-run-panel-forced.png).
+The canvas remains pannable; overview captures are not claims of reading-scale text.
+
 ## Visual corrections, 2026-10-12 (T007-049)
 
 The UX and frontend review found that fitting an entire graph initially reduced labels to roughly

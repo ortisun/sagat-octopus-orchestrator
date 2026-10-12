@@ -250,13 +250,13 @@ describe('deciding', () => {
     await waitFor(() => expect(platform.operations).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     // The operation was accepted, and the graph still says what the platform last said.
-    expect(within(card('reserve~c')).getByText('Waiting for a person')).toBeInTheDocument();
+    expect(within(card('reserve~c')).getByText('Needs a person')).toBeInTheDocument();
     expect(within(card('reserve~c')).queryByText('Running')).not.toBeInTheDocument();
     // The effect arrives the way every change does.
     const pipe = await openStream(platform);
     pipe.send(changesOf(10, 12, [node('reserve~c', 'RUNNING', { kind: 'COMPENSATION', forward: 'reserve', attempt: 3 })], { events: [] }));
     await waitFor(() => expect(within(card('reserve~c')).getByText('Running')).toBeInTheDocument());
-    expect(within(card('reserve~c')).queryByText('Waiting for a person')).not.toBeInTheDocument();
+    expect(within(card('reserve~c')).queryByText('Needs a person')).not.toBeInTheDocument();
   });
 
   it('asks for the step id to be typed back to skip a compensation, and sends nothing until it is', async () => {

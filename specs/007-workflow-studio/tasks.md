@@ -128,6 +128,16 @@ the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 j
 
 ## Visual defect regression (FR-007-008/009, SC-007-005)
 
+- [x] T007-051 Correct clipped graph text and duration controls using the owner's Temporal and
+  Windmill UX references. Give primary card text, badges and ports separate space; keep full
+  details reachable through selection; preserve stable layout/virtualization. Cover long IDs,
+  rich states, both directions, viewport widths, themes and fallback fonts with glyph/overlap
+  assertions and captures; record the real checks and relevant graph benchmarks. Evidence on
+  2026-10-12: 1 066 frontend tests, 27 Chromium/API/engine journeys and both three-round benchmarks
+  passed in the shared worktree; US02 explicitly excluded. Lint, app/E2E types, build and API
+  consistency passed. Ten captures and the regenerated benchmark report preserve the review;
+  initial entrypoint framing and selected-panel clipping were reproduced and then verified fixed.
+
 - [x] T007-050 Fix HTML/asset mismatch after rebuilding a running Studio and replace the router's
   developer error screen with accessible recovery. Prove fresh root/deep-link HTML, safe missing
   index handling and real-browser recovery from a missing CSS chunk; update serving/UI contracts

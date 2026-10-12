@@ -270,3 +270,50 @@ cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --noc
 This fixes the serving/UI contracts in the [runbook](../../docs/runbooks/studio.md); REST schemas,
 tenant checks, operation audit and OTel contracts are unchanged. Browser telemetry remains G159.
 No sandbox, performance, full-workspace Rust or non-Chromium validation is claimed for this fix.
+
+## Graph text and inspector correction — 2026-10-12 (T007-051)
+
+The owner's Temporal/Windmill direction is recorded in the [design mapping and captures](design/README.md#graph-reading-and-selection-2026-10-12-t007-051).
+Cards now separate identity, type, state, badges and ports; selection exposes complete details.
+Duration amounts and units have independent space, and the initial camera includes the top of the
+short trigger and taller entrypoint. Fixed variant dimensions preserve layout and live-update positions.
+
+Observed regressions before the fixes: 14 editor glyph/overlap failures, a 22px Timeout amount,
+clipped runtime selected-step identity, and a first-step title above the initial canvas boundary.
+The added browser checks failed on those actual geometries before passing on the final build.
+
+Validation of the shared working tree:
+
+- **1 066 Vitest tests in 70 files passed**; ESLint, application/E2E TypeScript, production build
+  and generated OpenAPI consistency passed. This includes the concurrent namespace increment.
+- Real PostgreSQL/API/engine/Chromium suite: **27 passed, zero failed**, two opt-in performance
+  tests skipped in the journey run. US02 was explicitly excluded with `SAGAT_STUDIO_NO_SANDBOX=1`.
+- `graph-text-layout.spec.ts` measures DOM Range glyph bounds and collisions for triggers,
+  Activity/Timer/Condition/Parallel, initial entrypoint framing, LR/TB, light/dark/forced colours,
+  and blocked Geist fonts. The 320px inspector accepts twelve visible duration digits without
+  colliding with the unit. A real compensated run exercises long identity/type/state, saga, failure,
+  undo and keyboard-selected details. Browser IDs are 64 characters (66 for derived compensation);
+  component tests additionally cover 80-character and arbitrary runtime values.
+- The run journey verifies attempts in the selected panel while preserving live-update, graph-read
+  count and journal assertions. Table assertions are scoped to the steps table, since selection
+  also displays an attempts table.
+- UX and frontend agents reviewed the code and actual captures. The remaining initial-camera
+  defect was fixed and rechecked at 1:1. Vertical overview captures are labelled as overviews.
+- The already-running server returned the current built HTML and all seven CSS assets with HTTP
+  200 after replacement; no control-plane restart was needed.
+- Both performance scenarios passed separately, three cold rounds each: median first-card time
+  **978ms for 1 000 editor nodes** and **1 425ms for 9 991 runtime nodes**; median pan/zoom frames
+  16.7ms, peak JavaScript heap 215MB. All six existing floors held; see the regenerated
+  [benchmark report](../../tests/performance/reports/workflow-studio.md).
+
+```sh
+STUDIO_PERF=1 STUDIO_PERF_OUT="$PWD/frontend/e2e/perf-results/perf.json" \
+SAGAT_STUDIO_GREP=PERF SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0 \
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
+cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+Reproduce the integrated run using the T007-050 command above. The wire/API, transaction,
+tenant/RBAC, audit and OTel contracts are unchanged; browser telemetry remains G159.
+No sandbox execution, non-Chromium testing or new human acceptance is claimed here.

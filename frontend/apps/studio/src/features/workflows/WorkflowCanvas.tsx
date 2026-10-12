@@ -69,7 +69,6 @@ const CardView = memo(function CardView({ id, data }: NodeProps<CardNode>) {
         <span className="wf-shape" aria-hidden="true">
           {data.shape}
         </span>
-        {data.simplified || data.role === 'trigger' ? <span className="wf-type">{data.typeLabel}</span> : null}
         <span className="wf-id">{data.title}</span>
         {data.simplified && data.problems > 0 ? (
           <span className="wf-badge" data-tone="bad">
@@ -78,9 +77,9 @@ const CardView = memo(function CardView({ id, data }: NodeProps<CardNode>) {
           </span>
         ) : null}
       </div>
+      <div className="wf-kind-line">{data.typeLabel}</div>
       {!data.simplified ? (
         <>
-          {data.role === 'node' ? <div className="wf-kind-line">{data.typeLabel}</div> : null}
           {data.detail !== '' ? <div className="wf-detail">{data.detail}</div> : null}
           <div className="wf-badges">
             {data.first ? (
@@ -165,7 +164,15 @@ function CanvasInner(props: WorkflowCanvasProps) {
     () => model.nodes.find((node) => isTriggerCard(node.id)) ?? model.nodes.find((node) => node.id === doc.entrypoint) ?? model.nodes[0],
     [doc.entrypoint, model.nodes],
   );
-  const initialViewport = useMemo(() => readableInitialViewport(initialCard?.position), [initialCard]);
+  const initialViewport = useMemo(() => {
+    if (initialCard === undefined) return readableInitialViewport(undefined);
+    // A trigger is shorter than a step. Keep the entrypoint's title below the top edge too.
+    const entrypoint = model.nodes.find((node) => node.id === doc.entrypoint);
+    return readableInitialViewport({
+      x: initialCard.position.x,
+      y: Math.min(initialCard.position.y, entrypoint?.position.y ?? initialCard.position.y),
+    });
+  }, [doc.entrypoint, initialCard, model.nodes]);
   const nodes = useMemo(
     () => (dragging.size === 0 ? model.nodes : model.nodes.map((n) => (dragging.has(n.id) ? { ...n, position: dragging.get(n.id) ?? n.position } : n))),
     [model.nodes, dragging],

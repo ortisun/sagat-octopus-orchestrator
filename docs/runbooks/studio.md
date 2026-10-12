@@ -56,7 +56,8 @@ memory until restart). A browser-cache purge cannot correct that old server beha
   shown the difference and nothing is overwritten without it. *Publish…* shows what changes against the active version and which changes can break callers.
 - **Watch a run**: on wide screens the filtered Runs list stays beside the detail; selecting another run preserves its filters,
   loaded rows and scroll position. On narrow screens, use the separate Runs list and detail routes. The graph shows each step's
-  state, attempts and the way the run took; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner
+  identity, type, state and the way the run took. Select a step for attempts, failure/wait details,
+  saga information and child-run links; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner
   tells how the view is kept current (live, polling, reconnecting). Missing finish times stay unknown rather than counting through now.
 - **Act on a failure**: choose the step, *Retry*, *Retry compensation*, *Skip compensation* or *Resolve*; each asks for a reason, says what it will do, and is recorded with your name.
   Skipping or resolving needs the administrator permission `saga:override`.
