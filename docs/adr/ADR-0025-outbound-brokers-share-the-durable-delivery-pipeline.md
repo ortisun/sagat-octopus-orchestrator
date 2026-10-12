@@ -71,3 +71,13 @@ At-least-once delivery is explicit. Consumers that need one logical effect keep 
 their broker's idempotency facility. The shared pipeline makes webhook and broker recovery identical,
 but the historical PostgreSQL names are less descriptive. A future table rename may be operational
 cleanup; it does not alter correctness and is outside this change.
+
+## Acknowledgement hardening evidence
+
+The publish deadline covers guard/DNS resolution, client construction, network I/O and broker
+acknowledgement. NATS rejection logs use the closed error category, never the broker-controlled
+description. SQS accepts only a bounded 64 KiB Query success envelope containing exactly one
+nonempty direct MessageId; malformed XML, HTML, error envelopes and arbitrary HTTP 2xx are rejected.
+The adapter suite passes 11 tests. Real JetStream error-canary, false SQS success, stalled-guard
+cancellation and NATS/Kafka/ElasticMQ positive integration tests pass; independent review found
+and verified closure of the malformed-envelope edge cases.

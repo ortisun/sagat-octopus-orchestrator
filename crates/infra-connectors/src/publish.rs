@@ -62,45 +62,50 @@ where
     F: ClientFactory,
 {
     async fn publish(&self, request: &BrokerRequest) -> Result<(), BrokerFailure> {
-        if request.body.len() > MAX_PAYLOAD_BYTES
-            || request.headers.len() > MAX_HEADERS
-            || request
-                .headers
-                .iter()
-                .map(|(name, value)| name.len() + value.len())
-                .sum::<usize>()
-                > MAX_HEADER_BYTES
-        {
-            return Err(BrokerFailure::Rejected);
-        }
-        let credentials = match &request.credentials {
-            Some(value) => {
-                Credentials::parse(value.expose()).map_err(|_| BrokerFailure::Rejected)?
+        let operation = async {
+            if request.body.len() > MAX_PAYLOAD_BYTES
+                || request.headers.len() > MAX_HEADERS
+                || request
+                    .headers
+                    .iter()
+                    .map(|(name, value)| name.len() + value.len())
+                    .sum::<usize>()
+                    > MAX_HEADER_BYTES
+            {
+                return Err(BrokerFailure::Rejected);
             }
-            None => Credentials::none(),
+            let credentials = match &request.credentials {
+                Some(value) => {
+                    Credentials::parse(value.expose()).map_err(|_| BrokerFailure::Rejected)?
+                }
+                None => Credentials::none(),
+            };
+            if !self
+                .guard
+                .permits(
+                    request.tenant_id,
+                    request.namespace_id,
+                    &request.destination.servers(),
+                )
+                .await
+            {
+                return Err(BrokerFailure::Denied);
+            }
+            match &request.destination {
+                BrokerDestination::Nats { servers, subject } => {
+                    self.nats(request, servers, subject, &credentials).await
+                }
+                BrokerDestination::Kafka { servers, topic } => {
+                    self.kafka(request, servers, topic, &credentials).await
+                }
+                BrokerDestination::Sqs { queue_url, region } => {
+                    self.sqs(request, queue_url, region, &credentials).await
+                }
+            }
         };
-        if !self
-            .guard
-            .permits(
-                request.tenant_id,
-                request.namespace_id,
-                &request.destination.servers(),
-            )
+        tokio::time::timeout(request.timeout, operation)
             .await
-        {
-            return Err(BrokerFailure::Denied);
-        }
-        match &request.destination {
-            BrokerDestination::Nats { servers, subject } => {
-                self.nats(request, servers, subject, &credentials).await
-            }
-            BrokerDestination::Kafka { servers, topic } => {
-                self.kafka(request, servers, topic, &credentials).await
-            }
-            BrokerDestination::Sqs { queue_url, region } => {
-                self.sqs(request, queue_url, region, &credentials).await
-            }
-        }
+            .map_err(|_| BrokerFailure::Timeout)?
     }
 }
 
@@ -144,7 +149,7 @@ where
                 .await
                 .map_err(|_| BrokerFailure::Network)?;
             ack.await.map_err(|error| {
-                tracing::warn!(%error, "NATS JetStream rejected an outbound publish");
+                tracing::warn!(error.kind = %error.kind(), "NATS JetStream rejected an outbound publish");
                 BrokerFailure::Rejected
             })?;
             Ok(())
@@ -264,7 +269,7 @@ where
         }
         tokio::time::timeout(
             request.timeout,
-            crate::sqs::call(
+            crate::sqs::send_message(
                 &client,
                 queue_url.as_str(),
                 region,
@@ -274,7 +279,6 @@ where
         )
         .await
         .map_err(|_| BrokerFailure::Timeout)?
-        .map(|_| ())
         .map_err(|_| BrokerFailure::Rejected)
     }
 }

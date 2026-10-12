@@ -1,6 +1,7 @@
 //! Real broker proof for outbound subscriptions (`FR-004-005`, `T004-042`).
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use sagat_domain::outbound::{
     OutboundDestination, OutboundKind, SubscriptionId, SubscriptionStatus,
 };
 use sagat_domain::secrets::SecretValue;
-use sagat_infra_connectors::guard::Unguarded;
+use sagat_infra_connectors::guard::{BrokerGuard, Unguarded};
 use sagat_infra_connectors::publish::Publisher;
 use sagat_infra_connectors::webhook::Clients;
 use sagat_scheduler::{DeliverySettings, DeliveryWorker};
@@ -28,7 +29,7 @@ use crate::support::brokers;
 use crate::support::engine::{World, ctx, world};
 use crate::support::nats;
 use crate::support::receiver::{LoopbackSender, OpenFactory};
-use crate::support::{now, slug};
+use crate::support::{logs, now, slug};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SeenBrokerRequest {
@@ -80,6 +81,57 @@ impl BrokerPublisher for ScriptedPublisher {
             attempt: header("attempt"),
         });
         state.results.pop_front().unwrap_or(Ok(()))
+    }
+}
+
+struct ExpectedLastPublisher<P> {
+    inner: P,
+    expected: &'static str,
+}
+
+impl<P: BrokerPublisher> BrokerPublisher for ExpectedLastPublisher<P> {
+    async fn publish(&self, request: &BrokerRequest) -> Result<(), BrokerFailure> {
+        assert!(
+            request.credentials.is_none(),
+            "this test publisher does not copy secrets"
+        );
+        let mut headers = request.headers.clone();
+        headers.push((
+            "Nats-Expected-Last-Msg-Id".to_owned(),
+            self.expected.to_owned(),
+        ));
+        self.inner
+            .publish(&BrokerRequest {
+                tenant_id: request.tenant_id,
+                namespace_id: request.namespace_id,
+                subscription_id: request.subscription_id,
+                destination: request.destination.clone(),
+                credentials: None,
+                headers,
+                body: request.body.clone(),
+                timeout: request.timeout,
+            })
+            .await
+    }
+}
+
+#[derive(Clone)]
+struct SlowGuard {
+    entered: Arc<AtomicBool>,
+    completed: Arc<AtomicBool>,
+}
+
+impl BrokerGuard for SlowGuard {
+    async fn permits(
+        &self,
+        _: sagat_domain::identity::TenantId,
+        _: sagat_domain::identity::NamespaceId,
+        _: &[sagat_domain::connectors::Server],
+    ) -> bool {
+        self.entered.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        self.completed.store(true, Ordering::SeqCst);
+        true
     }
 }
 
@@ -452,6 +504,176 @@ async fn broker_management_is_tenant_scoped_denies_loopback_and_redacts_credenti
     assert!(
         !debug.contains("do-not-log-this"),
         "credentials leaked: {debug}"
+    );
+}
+
+#[tokio::test]
+async fn nats_puback_details_never_reach_logs_or_durable_failure_state() {
+    const SENTINEL: &str = "puback-must-not-leak-7d34b2";
+    const WRONG_EXPECTATION: &str = "a-different-last-message-id";
+
+    let world = world().await;
+    let nats = nats::start().await;
+    let client = async_nats::connect(nats.url()).await.expect("NATS client");
+    let jetstream = async_nats::jetstream::new(client);
+    jetstream
+        .create_stream(async_nats::jetstream::stream::Config {
+            name: "OUTBOUND_REJECT".to_owned(),
+            subjects: vec!["events.rejected".to_owned()],
+            ..Default::default()
+        })
+        .await
+        .expect("NATS stream");
+    let mut seed_headers = async_nats::HeaderMap::new();
+    seed_headers.insert("Nats-Msg-Id", SENTINEL);
+    jetstream
+        .publish_with_headers("events.rejected", seed_headers, "seed".into())
+        .await
+        .expect("publish seed")
+        .await
+        .expect("seed PubAck");
+    let mut reject_headers = async_nats::HeaderMap::new();
+    reject_headers.insert("Nats-Expected-Last-Msg-Id", WRONG_EXPECTATION);
+    let rejection = jetstream
+        .publish_with_headers("events.rejected", reject_headers, "probe".into())
+        .await
+        .expect("send rejected publish")
+        .await
+        .expect_err("conditional publish must be rejected");
+    assert!(
+        rejection.to_string().contains(SENTINEL),
+        "the real PubAck error must contain the sentinel for this redaction proof: {rejection}"
+    );
+    let destination =
+        BrokerDestination::nats(&[nats.url()], "events.rejected").expect("NATS destination");
+    let subscription = store_broker(&world, "nats-redacted-rejection", destination).await;
+    let delivery = queue_delivery(&world, &subscription, 0).await;
+    let publisher = ExpectedLastPublisher {
+        inner: Publisher::with_parts(
+            Unguarded,
+            Clients::with_factory(world.store.clone(), OpenFactory),
+        ),
+        expected: WRONG_EXPECTATION,
+    };
+    let worker = DeliveryWorker::with_broker(
+        world.store.clone(),
+        LoopbackSender::new(),
+        publisher,
+        SystemEntropy,
+        world.keys.cipher(),
+        DeliverySettings::default(),
+    );
+
+    let (_guard, captured) = logs::capture();
+    let result = worker.tick().await;
+    assert_eq!((result.attempted, result.retried), (1, 1));
+    let log = captured.text();
+    assert!(
+        log.contains("NATS JetStream rejected an outbound publish"),
+        "the rejection remains observable: {log}"
+    );
+    assert!(!log.contains(SENTINEL), "PubAck detail leaked: {log}");
+
+    let (record, attempts) = world
+        .outbound
+        .broker_delivery(&world.admin, subscription.id, delivery)
+        .await
+        .expect("rejected delivery");
+    assert_eq!(record.status, DeliveryStatus::Pending);
+    assert_eq!(record.last_outcome, Some(AttemptOutcome::Rejected));
+    assert_eq!(
+        record.last_error.as_deref(),
+        Some("the receiver refused the event")
+    );
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].outcome, AttemptOutcome::Rejected);
+    assert_eq!(
+        attempts[0].error.as_deref(),
+        Some("the receiver refused the event")
+    );
+    assert!(
+        !record
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains(SENTINEL)
+            && !attempts[0]
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains(SENTINEL),
+        "PubAck detail reached durable state"
+    );
+}
+
+#[tokio::test]
+async fn an_sqs_http_success_without_a_send_result_is_retried() {
+    let world = world().await;
+    let receiver = crate::support::receiver::Receiver::start().await;
+    receiver.script([crate::support::receiver::Reply::StatusBody(
+        200,
+        "<html>accepted-ish</html>",
+    )]);
+    let destination = BrokerDestination::sqs(&receiver.url, "us-east-1").expect("SQS destination");
+    let subscription = store_broker(&world, "sqs-malformed-success", destination).await;
+    let delivery = queue_delivery(&world, &subscription, 0).await;
+    let worker = DeliveryWorker::with_broker(
+        world.store.clone(),
+        LoopbackSender::new(),
+        Publisher::with_parts(
+            Unguarded,
+            Clients::with_factory(world.store.clone(), OpenFactory),
+        ),
+        SystemEntropy,
+        world.keys.cipher(),
+        DeliverySettings::default(),
+    );
+
+    let result = worker.tick().await;
+    assert_eq!(
+        (result.attempted, result.retried, result.delivered),
+        (1, 1, 0)
+    );
+    let (record, attempts) = world
+        .outbound
+        .broker_delivery(&world.admin, subscription.id, delivery)
+        .await
+        .expect("malformed SQS response delivery");
+    assert_eq!(record.status, DeliveryStatus::Pending);
+    assert_eq!(record.last_outcome, Some(AttemptOutcome::Rejected));
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].outcome, AttemptOutcome::Rejected);
+}
+
+#[tokio::test]
+async fn broker_timeout_covers_the_guard_and_cancels_it_before_effects() {
+    let world = world().await;
+    let entered = Arc::new(AtomicBool::new(false));
+    let completed = Arc::new(AtomicBool::new(false));
+    let publisher = Publisher::with_parts(
+        SlowGuard {
+            entered: Arc::clone(&entered),
+            completed: Arc::clone(&completed),
+        },
+        Clients::with_factory(world.store.clone(), OpenFactory),
+    );
+    let mut outbound = request(
+        &world,
+        BrokerDestination::nats(&["127.0.0.1:1".to_owned()], "events.timeout")
+            .expect("NATS destination"),
+        "deadline-covers-guard",
+    );
+    outbound.timeout = Duration::from_millis(25);
+
+    assert_eq!(
+        publisher.publish(&outbound).await,
+        Err(BrokerFailure::Timeout)
+    );
+    assert!(entered.load(Ordering::SeqCst), "guard was entered");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !completed.load(Ordering::SeqCst),
+        "cancelled guard must not resume and perform its later effect"
     );
 }
 
