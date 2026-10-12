@@ -100,3 +100,7 @@ toolchain younger than two weeks) and G136 (Java has no `tls.serverName`; unpinn
 Not run: Linux, Windows or another architecture; the SDKs against a TLS-terminating proxy or a real cloud; the
 Python conformance suite on 3.10–3.13 with the final code (unit tests only); `net8.0` and Java 17/21 execution
 beyond what each README states; publishing to any registry; streaming of tasks (not built).
+
+Licence decision after this historical run: the owner selected MIT on 2026-10-11 (G122 resolved as a decision).
+The root licence/package metadata and publication checks are current packaging work; registry publication remains
+unverified (G123).

@@ -121,6 +121,7 @@ Two independent read-only reviews (security, correctness) of the whole feature p
 ## Gates
 
 - TS, Python and C# go from the editor's API to execution, with the limits, the network and the secrets held. C# uses an isolated Roslyn build container, a separate runtime container and an offline exact NuGet catalog (`integration_inline_code_sandbox_containers::csharp`, US03).
+- A production script has no direct network. When its signed policy permits namespace egress, the runner reloads the stored namespace policy before every mediated fetch and refuses the fetch if the policy read or durable category-only incident acknowledgement fails. `e2e_security_multitenancy::us03` and `fault_security_multitenancy::egress` cover allowed/denied calls, revocation during one run, duplicates, timeout, runner loss and tenant scope.
 - Reproducible, annotated errors: every failure has a stable `SCRIPT_*` code, the envelope's `traceId`, and a reason that never repeats the script's words or a secret.
 - No confirmed transition lost: a build and a test run are leased and fenced; a script step is the engine's own lease; a late report from a runner that lost its lease is refused.
 - `[x]` in `tasks.md` only for what a test above proves.

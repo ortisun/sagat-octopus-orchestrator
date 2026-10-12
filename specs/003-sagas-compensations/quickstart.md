@@ -79,7 +79,7 @@ Everything below was run against this repository. The pieces that are **not** bu
 |---|---|
 | SC-003-001 E2E reserve→submit fails→release; ambiguous provider requires reconciliation; release failure triggers manual review | Met: `us02`, `us03`, `us04` against the engine as a process and real PostgreSQL |
 | SC-003-002 100% of US01..US04 pass in a reproducible automated suite | Met for the scenarios of the specification (`e2e_sagas_compensations`, 20 tests) |
-| SC-003-003 no violation of the Constitution gates and no silent loss of persisted state | Partial: no loss is provable by the tests above; the Constitution is still not in the repository (G1) |
+| SC-003-003 no violation of the Constitution gates and no silent loss of persisted state | Partial: the tests above prove no confirmed loss in their scope; the v1.0.0 Constitution was ratified on 2026-10-11; only principle II has a dedicated automated architecture gate |
 | SC-003-004 critical errors expose `code`, `trace_id` and remediation without leaking payload or secrets | Partial, as in 009: `code`, `traceId` and a stable message are proven (`us04_a_decision_that_makes_no_sense_is_refused_precisely`); no separate `remediation` field exists |
 
 ## The review (T003-034)
@@ -88,4 +88,4 @@ Two reviewers who had no part in writing it read the uncommitted change, one for
 
 ## What is not built
 
-The list, with the reason for each, is G51–G65 in [`research.md`](./research.md): the SDK DSL (006), Studio screens (007), dashboards and alerts (008), compensations as inline scripts (005), `MARK_MANUAL_REVIEW` and `RERUN_AS_NEW` (011), and the limits of a breaker per activity name.
+The list and accepted tradeoffs remain in G51–G65 of [`research.md`](./research.md). Cross-feature gaps G58–G60 are now closed by features 006–008. Still open here: explicit proof of a script artifact used as a compensation target (G61), and the accepted circuit-breaker and migration limits G62–G65.
