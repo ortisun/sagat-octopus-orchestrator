@@ -52,7 +52,9 @@ async fn a_machine_that_is_ready_is_told_so_check_by_check() {
     let engine = crate::engine(&p).await;
     let dir = Dir::new();
     let broker = fake_broker(Some("INFO {\"server_id\":\"x\"}\r\n")).await;
-    let token = p.api.idp.token("alice", "acme").build();
+    // (The default token lives five minutes, which is where the tool starts to warn: it would be "ok" only
+    // if the command ran in the second the token was made. This one has half an hour.)
+    let token = p.api.idp.token("alice", "acme").issued(0, 1800).build();
     let told = doctor(
         env_for(&p, &dir, Some(token), Some("payments")),
         &["--grpc", &engine.grpc_url, "--nats", &broker],

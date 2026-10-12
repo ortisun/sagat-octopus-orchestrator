@@ -28,8 +28,15 @@ async fn thousands_of_suspended_runs_cost_rows_and_not_tasks_connections_or_leas
         ]
     });
     let workflow = p.publish("sleeper", &ir).await;
+    // The pools of the API and of the engine open connections as load asks for them, up to their size, and a
+    // slow machine opens them late. The claim is that a suspended run costs no connection of its own, so the
+    // first runs warm the pools and the count is taken after them: it must not grow with the next fifteen hundred.
+    const WARM_UP: usize = 200;
+    for i in 0..WARM_UP {
+        p.start(&workflow, &json!({ "warm": i })).await;
+    }
     // Let the engine's loops and pools settle before the first reading.
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let tasks_before = tokio::runtime::Handle::current()
         .metrics()
         .num_alive_tasks();
@@ -51,7 +58,7 @@ async fn thousands_of_suspended_runs_cost_rows_and_not_tasks_connections_or_leas
     .fetch_one(&p.api.db.pool)
     .await
     .expect("count");
-    assert_eq!(waiting, i64::try_from(RUNS).expect("fits"));
+    assert_eq!(waiting, i64::try_from(WARM_UP + RUNS).expect("fits"));
 
     // A suspended run is a row: not a task, not a connection, not a lease, not a worker.
     assert!(
