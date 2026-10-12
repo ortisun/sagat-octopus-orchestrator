@@ -115,6 +115,8 @@ public sealed class TelemetryTests
         fake.State.Lease(Leases.Lease());
         await host.StartAsync();
         await Eventually.UntilAsync(() => fake.State.Of("CompleteStep").Count == 1, "the completion");
+        // Receiving the RPC precedes the response, outcome metrics and span disposal.
+        await Eventually.UntilAsync(() => spans.Spans.Any(s => s.OperationName == "sagat.worker.task"), "the completed task span");
 
         Assert.NotNull(inside);
         Assert.Equal(SdkInfo.ActivitySourceName, inside.Source.Name);
