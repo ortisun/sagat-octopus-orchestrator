@@ -140,5 +140,4 @@ npm run sync             # copies worker.proto and the error catalog from the re
 cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
 ```
 
-Licence: not yet declared by the repository (`UNLICENSED`); this is an owner decision recorded in
-`specs/006-sdk-multilanguage/research.md`.
+License: MIT. The package includes the license text in `LICENSE`.

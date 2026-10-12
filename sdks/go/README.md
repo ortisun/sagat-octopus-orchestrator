@@ -16,7 +16,7 @@ transition: the server owns every state and every retry decision. The behaviour 
 conformance suite ([`tests/contract/sdk-conformance`](../../tests/contract/sdk-conformance/README.md)).
 
 Package metadata: module `github.com/ortisun/sagat-octopus-orchestrator/sdks/go`, version `0.1.0`,
-license `UNLICENSED` (as the repository and the TypeScript package: there is no license file yet),
+license `MIT` (the module source artifact includes `LICENSE`),
 repository `https://github.com/ortisun/sagat-octopus-orchestrator`, directory `sdks/go`.
 
 ## Install

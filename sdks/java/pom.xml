@@ -12,11 +12,11 @@
   <description>Java SDK for the Sagat Octopus Orchestrator: client, worker host and workflow builders.</description>
   <url>https://github.com/ortisun/sagat-octopus-orchestrator</url>
 
-  <!-- The repository has no published licence yet; this mirrors the other SDK manifests (UNLICENSED). -->
   <licenses>
     <license>
-      <name>UNLICENSED</name>
-      <comments>All rights reserved until the repository publishes a licence.</comments>
+      <name>MIT License</name>
+      <url>https://spdx.org/licenses/MIT.html</url>
+      <distribution>repo</distribution>
     </license>
   </licenses>
   <scm>

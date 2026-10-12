@@ -82,3 +82,12 @@ tests/e2e/sdk-multilanguage/
 ## Delivery Gate
 
 Same golden flows and failure cases executed in TS, Go, Python, C# and Java with normalized results.
+
+## Completion integration
+
+The owner selected MIT on 2026-10-11. Package builds must produce local artifacts and exercise
+clean consumer installs before any registry release. Credential-free CI stores the same artifacts.
+OpenTelemetry bridges remain opt-in and use the application's provider/exporter; instrumentation
+failures must not change workflow results or emit payloads, credentials or arbitrary exception text.
+Worker protocol 1.3 blob support depends on the transactional catalog and bounded transport of
+feature 002; all five languages share its contract and common conformance scenarios.

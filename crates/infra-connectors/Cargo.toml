@@ -2,6 +2,7 @@
 name = "sagat-infra-connectors"
 description = "Adapters between the event gateway and the outside: guarded outbound webhooks and message brokers (NATS, Kafka, SQS)."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

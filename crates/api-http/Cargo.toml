@@ -2,6 +2,7 @@
 name = "sagat-api-http"
 description = "HTTP adapter: Axum router, JWT/OIDC authentication, error envelope and identity routes."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

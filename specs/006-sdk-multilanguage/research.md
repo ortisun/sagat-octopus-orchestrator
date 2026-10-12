@@ -83,9 +83,8 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   `proto/sagat_octopus_orchestrator/v1/worker.proto` as `plan.md` lists.** It has been the canonical file since
   feature 002; each SDK copies it with a script and a test fails when its copy is behind. Moving it would touch
   every feature's contracts for no gain.
-- **G122 — Resolved as a product decision: MIT.** The owner selected the MIT License on 2026-10-11. Adding the root licence and aligning each package's metadata is part of the current packaging work; registry publication and its verification remain G123 until that work lands and passes.
-- **G123 — Publishing is not automated** (npm, PyPI, the Go proxy, NuGet, Maven Central), nor signing, nor a
-  changelog per SDK. `docs/runbooks/sdks.md` §7 lists the steps by hand.
+- **G122 — Resolved as a product decision: MIT.** The owner selected the MIT License on 2026-10-11. The root licence and all five SDK package licences/metadata are aligned, and clean-consumer package tests pass. Registry publication remains G123.
+- **G123 — Local distribution is verified; registry release remains open.** `scripts/package-sdks.sh` builds eight artifacts with checksums, verifies embedded MIT licences and installs all five SDKs into clean consumers. Paired builds with a fixed source revision matched hashes. `.github/workflows/sdk-packages.yml` runs this credential-free and stores CI artifacts. Actual npm/PyPI/NuGet/Maven/Go-proxy releases, signing, release notes, Maven sources/Javadocs and durable release retention still require completion; see `docs/runbooks/sdk-packaging.md`.
 - **G124 — A server restart is not in the conformance suite.** The scenarios fail the transport and the session
   (`worker-transport-faults`: a registration that never leaves, refused polls, an UNAUTHENTICATED poll, refused
   heartbeats and completions) but do not stop the engine; the engine would come back on another port. Each SDK's

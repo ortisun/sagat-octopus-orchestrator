@@ -2,6 +2,7 @@
 name = "sagat-infra-expr"
 description = "Bounded evaluator for the safe CEL subset used by workflow conditions, correlation keys and idempotency templates."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

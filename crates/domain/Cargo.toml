@@ -2,6 +2,7 @@
 name = "sagat-domain"
 description = "Pure domain model: no web, database, broker or serialization-format dependencies."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

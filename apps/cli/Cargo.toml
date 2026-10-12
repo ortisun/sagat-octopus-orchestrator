@@ -2,6 +2,7 @@
 name = "sagat-cli"
 description = "The sagat command line: validate, diff, export, publish, promote and roll back workflows from a manifest kept in Git."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

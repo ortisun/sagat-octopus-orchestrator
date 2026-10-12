@@ -2,6 +2,7 @@
 name = "sagat-control-plane"
 description = "Control plane process: HTTP API, schema migrations and development seed."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

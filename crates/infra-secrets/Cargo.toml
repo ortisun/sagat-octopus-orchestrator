@@ -2,6 +2,7 @@
 name = "sagat-infra-secrets"
 description = "AES-256-GCM sealing of secrets with a rotatable key ring."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

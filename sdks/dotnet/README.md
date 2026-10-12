@@ -310,5 +310,4 @@ plus plain HTTP for the control endpoint), `proto/worker.proto` (a copy). The ge
 
 ## License
 
-None granted: the repository declares no license (`LICENSE.txt` says `UNLICENSED`, like the TypeScript SDK). Decide it before
-publishing.
+MIT. `LICENSE.txt` is included in the NuGet package.

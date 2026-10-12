@@ -271,8 +271,8 @@ properties). A build from an empty local repository (511 files) was run with the
 public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has its own
 version, negotiated at registration: this SDK offers `1.2`; a server that speaks an older minor serves it at that
 minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL` (ADR-0015). Package metadata: group
-`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.1.0`, licence `UNLICENSED` (the
-repository has not declared one; an owner decision recorded in `specs/006-sdk-multilanguage/research.md`),
+`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.1.0`, license `MIT` (the
+JAR includes the license text under `META-INF/LICENSE`),
 repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automatic module name
 `dev.sagatoctopusorchestrator.sdk`.
 

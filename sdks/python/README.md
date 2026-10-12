@@ -275,3 +275,7 @@ The locks are made from `requirements.in` and `requirements-dev.in` with
 the committed protobuf code; the unit tests fail when any of them is behind. The conformance suite
 (`tests/contract/sdk-conformance/`) runs from the repository root:
 `SAGAT_SDK_LANGS=python cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture`.
+
+## License
+
+MIT. The wheel and source distribution include the license text in `LICENSE`.

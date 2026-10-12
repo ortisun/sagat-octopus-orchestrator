@@ -15,5 +15,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <RepoRootDirectory>$([MSBuild]::EnsureTrailingSlash('$(MSBuildThisFileDirectory)'))</RepoRootDirectory>
+    <!-- Keep the source-tree outputs excluded when packaging redirects Base*OutputPath to an isolated directory. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)/bin/**;$(MSBuildProjectDirectory)/obj/**</DefaultItemExcludes>
   </PropertyGroup>
 </Project>
