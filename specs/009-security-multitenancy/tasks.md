@@ -70,3 +70,10 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## FR-009-006 durable quota completion (ADR-0027)
+
+- [ ] T009-037 Define resource-specific byte/rate/retention units and ranges, authoritative policy fences, durable usage/bucket state, and the exhaustive variable-column classification manifest; implement additive migration/backfill and schema coverage tests in `crates/{domain,application,infra-postgres}` and `tests/integration/security-multitenancy/`.
+- [ ] T009-038 Enforce namespace/source event rates inside `infra-postgres/events.rs::admit_within` after dedupe, with atomic no-charge rollback and connector no-ack/checkpoint semantics; enforce event/script retention ceilings at authoritative new admission without rewriting stored expiry; update REST/CLI contracts and race/minimum-window tests.
+- [ ] T009-039 Wire every classified content/log mutation and purge, including runtime payloads/child input, definitions/publications, script source/artifacts/SBOM/results/logs, events/dead letters, secrets/configuration and blob reservations; prove exact accounting, late-PUT safety, quota-induced fenced terminal failures and log truncation without blocking state/journal/audit/outbox.
+- [ ] T009-040 Add shared durable API-rate admission after authenticated canonical namespace authorization, inventory every applicable API use case, and prove two-server shared buckets plus cross-tenant non-debit; complete fixed-label telemetry, governance runbook, measured quota benchmark and FR-009-006 evidence. Product tier/regulatory decisions G42 remain separately identified.

@@ -121,3 +121,16 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-009-###` and criteria `SC-009-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Remaining durable quota contract
+
+ADR-0027 defines completion of FR-009-006: exact tenant retained-content and log-byte accounting,
+durable namespace API/event rate admission, and operator ceilings on new event/script retention
+choices. `tenant_content_bytes` counts classified logical tenant content and external object
+reservations; it does not claim physical disk, index, WAL, replica or backup accounting. Every
+variable-size tenant column must be classified and covered by migration tests. Bounded, payload-free
+audit/journal/delivery control records remain protected so a full content/log quota cannot prevent
+terminal evidence. Log exhaustion truncates with persisted evidence. Rejected asynchronous content
+ends with a fenced typed failure and repeatable acknowledgement. Lowering retention policy does not
+rewrite existing expiry or authorize deletion. These are conservative engineering limits; quota
+tiers and regulatory retention classification remain the open product questions above.
