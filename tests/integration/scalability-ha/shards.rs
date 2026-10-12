@@ -350,7 +350,7 @@ async fn the_fence_is_good_for_the_current_lease_and_for_nothing_else() {
         .await
         .expect("fence")
     );
-    drop(tx);
+    tx.commit().await.expect("the action ends");
 
     // A lease that ran out is not good, even if nobody took the shard.
     expire(&w, "alpha").await;
@@ -361,7 +361,7 @@ async fn the_fence_is_good_for_the_current_lease_and_for_nothing_else() {
         .expect("begin")
         .expect("the run");
     assert!(!tx.holds_shard("alpha", lease).await.expect("fence"));
-    drop(tx);
+    tx.commit().await.expect("the action ends");
 
     // And one that another replica took: the old generation is refused, the new one is good.
     let theirs = w
@@ -430,7 +430,7 @@ async fn a_takeover_never_overtakes_the_transaction_that_found_the_lease_good() 
     assert_eq!(row(&w, shard(11)).await.0.as_deref(), Some("alpha"));
 
     // The action ends; the next round takes the shard, with a new generation.
-    drop(tx);
+    tx.commit().await.expect("the action ends");
     let taken = rival
         .store
         .acquire("beta", &[shard(11)], TTL)
@@ -510,7 +510,7 @@ async fn a_renewal_does_not_wait_for_a_shard_an_orphan_holds_and_renews_the_othe
         "the shards that are free are renewed, the one the orphan holds is not"
     );
 
-    drop(orphan);
+    orphan.rollback().await.expect("the orphan ends");
     let again = w
         .store
         .renew("alpha", &leases, Duration::from_secs(30))
