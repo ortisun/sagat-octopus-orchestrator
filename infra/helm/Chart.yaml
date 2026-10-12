@@ -7,8 +7,8 @@ description: >-
   chart: they are the operator's.
 type: application
 # The chart is versioned with the platform; the release process sets both (see docs/runbooks/scaling.md).
-version: 0.3.0
-appVersion: "0.3.0"
+version: 0.4.0
+appVersion: "0.4.0"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/tentativafc/sagat-octopus-orchestrator
 sources:

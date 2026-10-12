@@ -84,3 +84,8 @@ are given the same work.
 
 What the reviews could not look at: the chart in a cluster (it was rendered and read back, never installed: G247), the
 behaviour of the database under a real network partition, and PostgreSQL 16 (CI's version) locally.
+
+## What CI proved (PR #20, 2026-10-11)
+
+[Run 38189200062](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38189200062) at `20793c2`: the whole workspace on PostgreSQL 16 with the container suites (NATS, Kafka, SQS, the sandbox) that cannot run on the author's machine, the compose smoke test, the SDKs, the Studio and the `scale and recovery` job (the chart linted, the load harness at a small size against a PostgreSQL it starts, the drill with a point-in-time restore and a synchronous failover). Four runs before it failed, and what they found is part of the delivery: a PostgreSQL started by the benchmark with a socket directory the runner's user may not write (Debian's packaging); fixed ports of the drill, one of which was taken, and a drill that went on for half an hour after a cluster did not start because bash does not stop at a failed command inside a command substitution; a US02 test that counted connections before the pools had warmed; a takeover test that dropped a transaction and took its shard before the rollback ran; and, outside this feature, a CLI test whose token lived exactly as long as the tool's warning threshold, and a timing-sensitive Studio unit test that passed on its rerun.
+
