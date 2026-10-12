@@ -1,13 +1,15 @@
 //! Live conformance of the operations marked `x-implemented: '002'`.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use reqwest::Method;
+use sagat_application::blobs::BlobLimits;
 use sagat_domain::identity::{Membership, Role};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::support::api::{TestApi, json_of, start};
+use crate::support::api::{Options, TestApi, json_of, start, start_with};
 use crate::support::contract::{As, OpenApi, check, scenario};
 use crate::support::{now, subject};
 
@@ -72,7 +74,16 @@ async fn grant(api: &TestApi, tenant: sagat_domain::identity::TenantId, sub: &st
 #[tokio::test]
 async fn every_execution_operation_conforms_to_the_contract_on_its_normal_and_error_paths() {
     let spec = OpenApi::load();
-    let api = start().await;
+    let api = start_with(Options {
+        blobs: Some(BlobLimits {
+            max_bytes: 4 * 1024 * 1024,
+            max_pending: 8,
+            upload_ttl: Duration::from_secs(24 * 3600),
+            abandoned_after: Duration::from_secs(3600),
+        }),
+        ..Options::default()
+    })
+    .await;
     let acme = api.tenant("acme", "alice").await;
     api.tenant("globex", "bob").await;
     grant(&api, acme, "vera", Role::Viewer).await;
@@ -161,6 +172,7 @@ async fn every_execution_operation_conforms_to_the_contract_on_its_normal_and_er
     let run_t = "/runs/{runId}";
     let ops_t = "/runs/{runId}/operations";
     let signal_t = "/runs/{runId}/signals/{signalName}";
+    let upload_t = "/run-input-blobs";
 
     let scenarios = vec![
         // ---- workflows
@@ -520,6 +532,32 @@ async fn every_execution_operation_conforms_to_the_contract_on_its_normal_and_er
             None,
             404,
         ),
+        // ---- streamed run input staging
+        ns(scenario(
+            "POST",
+            upload_t,
+            upload_t,
+            alice.clone(),
+            Some(json!({"large": "run input"})),
+            201,
+        )),
+        ns(scenario(
+            "POST",
+            upload_t,
+            upload_t,
+            vera.clone(),
+            Some(json!({"large": "forbidden"})),
+            403,
+        )),
+        ns(scenario(
+            "POST",
+            upload_t,
+            upload_t,
+            alice.clone(),
+            Some(json!({"large": "wrong digest"})),
+            422,
+        ))
+        .with_header("x-octopus-blob-sha256", "0".repeat(64)),
         // ---- operator actions
         mutating(scenario(
             "POST",

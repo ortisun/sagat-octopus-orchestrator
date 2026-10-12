@@ -1,6 +1,6 @@
-//! Live conformance of `validateWorkflowDraft`, `diffWorkflow`, `getRuntimeGraphChanges` and
-//! `streamRunChanges`. The stream is open-ended, so its successful answer is played by the user
-//! stories (`tests/e2e/workflow-studio`); here its refusals are held to the contract.
+//! Live conformance of the Studio workflow, graph, stream and structural payload operations. The
+//! stream is open-ended, so its successful answer is played by the user stories
+//! (`tests/e2e/workflow-studio`); here its refusals are held to the contract.
 
 use std::collections::BTreeSet;
 
@@ -45,6 +45,7 @@ async fn the_studio_operations_conform_to_the_contract_on_their_normal_and_error
     let diff_t = "/workflows/{workflowId}/diff";
     let changes_t = "/runs/{runId}/graph/changes";
     let stream_t = "/runs/{runId}/stream";
+    let inspect_t = "/runs/{runId}/payload-inspections";
     let validate = format!("/workflows/{wf}/validate");
     let diff = format!("/workflows/{wf}/diff");
     let changes = |since: &str| format!("/runs/{run}/graph/changes{since}");
@@ -257,6 +258,47 @@ async fn the_studio_operations_conform_to_the_contract_on_their_normal_and_error
             None,
             400,
         )),
+        // ---- inspectRunPayload
+        ns(scenario(
+            "POST",
+            inspect_t,
+            &format!("/runs/{run}/payload-inspections"),
+            alice.clone(),
+            Some(json!({"source": "input"})),
+            200,
+        )),
+        ns(scenario(
+            "POST",
+            inspect_t,
+            &format!("/runs/{run}/payload-inspections"),
+            vera.clone(),
+            Some(json!({"source": "input"})),
+            403,
+        )),
+        ns(scenario(
+            "POST",
+            inspect_t,
+            &format!("/runs/{missing}/payload-inspections"),
+            alice.clone(),
+            Some(json!({"source": "input"})),
+            404,
+        )),
+        ns(scenario(
+            "POST",
+            inspect_t,
+            &format!("/runs/{run}/payload-inspections"),
+            alice.clone(),
+            Some(json!({"source": "journal"})),
+            422,
+        )),
+        ns(scenario(
+            "POST",
+            inspect_t,
+            &format!("/runs/{run}/payload-inspections"),
+            bob.clone(),
+            Some(json!({"source": "input"})),
+            404,
+        )),
     ];
     let _ = key();
     let mut exercised: BTreeSet<(String, String, u16)> = BTreeSet::new();
@@ -266,7 +308,7 @@ async fn the_studio_operations_conform_to_the_contract_on_their_normal_and_error
 
     // Everything the feature added is documented and exercised; all but the stream, successfully.
     let added = spec.operations_marked("x-implemented", "007");
-    assert_eq!(added.len(), 4, "{added:?}");
+    assert_eq!(added.len(), 5, "{added:?}");
     for (method, template) in &added {
         if template == stream_t {
             continue;
