@@ -56,11 +56,14 @@ async fn a_run_started_with_a_traceparent_belongs_to_that_trace_and_hangs_from_t
         "the run hangs from the request's span, not the caller's"
     );
 
-    sink.shutdown(std::time::Duration::from_secs(5)).await;
+    // Wait for the server span to close before stopping its exporter: shutdown drains spans that
+    // are already queued, but the client receiving the response can precede the server dropping
+    // its last span reference.
     let request = collector
         .wait_for(1, |s| s.name == "http.request" && s.span_id == hangs_from)
         .await
         .remove(0);
+    sink.shutdown(std::time::Duration::from_secs(5)).await;
     assert_eq!(request.trace_id, trace.to_string());
     assert_eq!(
         request.parent.as_deref(),
@@ -88,10 +91,10 @@ async fn a_run_started_without_a_traceparent_still_belongs_to_a_trace_the_respon
             .expect("the run");
     let trace = trace.expect("a trace");
     assert_eq!(trace.len(), 32);
-    sink.shutdown(std::time::Duration::from_secs(5)).await;
     let exported = collector
         .wait_for(1, |s| s.span_id == parent.clone().unwrap_or_default())
         .await;
+    sink.shutdown(std::time::Duration::from_secs(5)).await;
     assert_eq!(exported[0].trace_id, trace);
     assert!(
         exported[0].parent.is_none(),
@@ -207,11 +210,11 @@ async fn an_event_published_with_a_traceparent_starts_a_run_in_the_same_trace() 
     );
     let hangs_from = run_parent.expect("and hangs from the request that admitted the event");
 
-    sink.shutdown(std::time::Duration::from_secs(5)).await;
     let request = collector
         .wait_for(1, |s| s.name == "http.request" && s.span_id == hangs_from)
         .await
         .remove(0);
+    sink.shutdown(std::time::Duration::from_secs(5)).await;
     assert_eq!(request.trace_id, trace.to_string());
     assert_eq!(request.parent.as_deref(), Some(caller.to_string().as_str()));
 }
@@ -347,11 +350,11 @@ async fn a_subscriber_is_delivered_the_finished_run_with_a_traceparent_that_cont
     assert_eq!(body["data"]["traceId"], trace.to_string());
 
     // The span the receiver's work hangs from is the delivery attempt, a child of the run's span.
-    sink.shutdown(std::time::Duration::from_secs(5)).await;
     let delivered = collector
         .wait_for(1, |s| s.name == "webhook.delivery")
         .await
         .remove(0);
+    sink.shutdown(std::time::Duration::from_secs(5)).await;
     assert_eq!(
         Some(delivered.span_id.clone()),
         continued.parent_span_id().map(|s| s.to_string())
