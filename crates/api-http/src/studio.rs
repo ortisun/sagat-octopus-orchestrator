@@ -19,7 +19,7 @@
 //!   the sign-in), `nosniff`, no referrer and a same-origin opener policy; built assets are
 //!   `immutable`, the page is `no-store`.
 
-use std::io;
+use std::io::{self, Read as _};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use serde_json::json;
+use tokio::io::AsyncReadExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Sleep;
 use tokio_stream::Stream;
@@ -40,6 +41,8 @@ use tokio_util::io::ReaderStream;
 
 /// The largest file served. The biggest thing in a build is an editor worker of a few megabytes.
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// The page is read for every navigation so a rebuilt Studio does not retain stale asset names.
+const MAX_INDEX_BYTES: u64 = 64 * 1024;
 
 /// Where the Studio is and how it signs in.
 #[derive(Debug, Clone)]
@@ -96,7 +99,6 @@ pub enum StudioError {
 #[derive(Clone)]
 struct Site {
     root: PathBuf,
-    index: Vec<u8>,
     config: Vec<u8>,
     csp: HeaderValue,
     transfers: Arc<Semaphore>,
@@ -112,15 +114,13 @@ struct Site {
 pub fn studio_router(config: StudioConfig) -> Result<Router, StudioError> {
     let root = std::fs::canonicalize(&config.dir)
         .map_err(|_| StudioError::NoIndex(config.dir.display().to_string()))?;
-    let index = std::fs::read(root.join("index.html"))
-        .map_err(|_| StudioError::NoIndex(config.dir.display().to_string()))?;
+    validate_index(&root).map_err(|_| StudioError::NoIndex(config.dir.display().to_string()))?;
     let connect = match &config.oidc {
         Some(oidc) => Some(origin_of(&oidc.issuer)?),
         None => None,
     };
     let site = Site {
         root,
-        index,
         config: serde_json::to_vec(&json!({
             "oidc": config.oidc.as_ref().map(|oidc| json!({
                 "issuer": oidc.issuer,
@@ -214,16 +214,28 @@ fn typed(content_type: &'static str, body: Vec<u8>) -> Response {
 }
 
 async fn page(State(site): State<Site>, method: Method) -> Response {
-    html(&site, &method)
+    html(&site, &method).await
 }
 
-fn html(site: &Site, method: &Method) -> Response {
+async fn html(site: &Site, method: &Method) -> Response {
+    let Some(index) = read_index(&site.root).await else {
+        let mut unavailable = StatusCode::SERVICE_UNAVAILABLE.into_response();
+        unavailable
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        return hardened(site, unavailable, "no-store");
+    };
+    let length = index.len() as u64;
     let body = if method == Method::HEAD {
         Vec::new()
     } else {
-        site.index.clone()
+        index
     };
-    hardened(site, typed("text/html; charset=utf-8", body), "no-store")
+    let mut response = typed("text/html; charset=utf-8", body);
+    response
+        .headers_mut()
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    hardened(site, response, "no-store")
 }
 
 async fn settings(State(site): State<Site>, method: Method) -> Response {
@@ -243,6 +255,9 @@ async fn file(
     let Some(relative) = plain_path(&path) else {
         return hardened(&site, StatusCode::NOT_FOUND.into_response(), "no-store");
     };
+    if relative == Path::new("index.html") {
+        return html(&site, &method).await;
+    }
     if let Some((real, length)) = locate(&site.root, &relative).await {
         // A place among the transfers, waited for a moment (a page asks for twenty files at once and a
         // browser does not ask again for a script that failed), then a refusal that says when to come back.
@@ -287,9 +302,60 @@ async fn file(
     }
     // A route of the app has no extension; a missing file does, and is not the page.
     if relative.extension().is_none() {
-        return html(&site, &method);
+        return html(&site, &method).await;
     }
     hardened(&site, StatusCode::NOT_FOUND.into_response(), "no-store")
+}
+
+/// Verify at startup that the index is a readable, regular file inside the configured directory.
+/// Its bytes are deliberately discarded: requests read the current build, not this snapshot.
+fn validate_index(root: &Path) -> io::Result<()> {
+    let path = root.join("index.html");
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_INDEX_BYTES
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "unsafe index"));
+    }
+    let real = std::fs::canonicalize(path)?;
+    if !real.starts_with(root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "index outside root",
+        ));
+    }
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    std::fs::File::open(real)?
+        .take(MAX_INDEX_BYTES + 1)
+        .read_to_end(&mut contents)?;
+    if contents.len() as u64 > MAX_INDEX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "oversized index",
+        ));
+    }
+    Ok(())
+}
+
+/// Read the current page with a hard cap. A failed, missing, replaced or unsafe index never falls
+/// back to the startup copy because that copy may reference assets that no longer exist.
+async fn read_index(root: &Path) -> Option<Vec<u8>> {
+    let path = root.join("index.html");
+    let metadata = tokio::fs::symlink_metadata(&path).await.ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_INDEX_BYTES
+    {
+        return None;
+    }
+    let real = tokio::fs::canonicalize(path).await.ok()?;
+    if !real.starts_with(root) {
+        return None;
+    }
+    let file = tokio::fs::File::open(real).await.ok()?;
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_INDEX_BYTES + 1)
+        .read_to_end(&mut contents)
+        .await
+        .ok()?;
+    (contents.len() as u64 <= MAX_INDEX_BYTES).then_some(contents)
 }
 
 /// The body of a file: it holds its place among the transfers in flight until it is dropped, and it

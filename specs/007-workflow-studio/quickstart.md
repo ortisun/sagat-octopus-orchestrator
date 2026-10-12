@@ -224,3 +224,49 @@ manual-review state; both US04 journeys passed in the final clean platform run w
 Eight [review captures](./design/README.md#visual-corrections-2026-10-12-t007-049) preserve before/after,
 editable/read-only, dark/light/forced colours and mobile evidence. These are agent-reviewed images;
 no new human acceptance, screen-reader study, non-Chromium result or performance benchmark is claimed.
+
+## Asset replacement recovery — 2026-10-12 (T007-050)
+
+The reported CSS preload failure was reproduced at `127.0.0.1:18080`: the server returned an HTML
+entry for `index.CmpvQGsS.js` while disk already held the newer build, and the old
+`workflows.CjFtM_i_.css` returned 404. `Site.index` retained startup HTML even though asset requests
+read current files. This was a server snapshot error, not an incorrectly cached HTML response
+(`Cache-Control` was already `no-store`). The earlier T007-049 browser harness started a fresh
+server and did not cover replacement while it remained running.
+
+The HTTP adapter now reads bounded, confined HTML on each request (root, deep link and explicit
+index). Missing/oversized/symlink HTML returns 503 with Retry-After, without a stale fallback.
+The eager route boundary replaces the developer error screen with a focused heading, explicit
+reload and an unsaved-edit/session warning. The [recovery capture](design/review-2026-10-12/route-load-recovery.png)
+shows the tested 320px layout. The UI follows the documented [React Router error boundary](https://reactrouter.com/how-to/error-boundary)
+mechanism; [Vite's load-error guidance](https://vite.dev/guide/build#load-error-handling) describes
+the missing-chunk case. No automatic reload or session persistence was added.
+
+Validation:
+
+- Before the fix, the new HTTP regression received startup HTML after replacing `index.html`;
+  two component regressions rendered the router's developer error screen. Both failures were observed.
+- `CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test -p sagat-api-http --test studio`:
+  **13 passed**, including index replacement/HEAD, missing/unsafe/oversized index, path confinement,
+  cache/CSP, transfer quotas and slow clients. Targeted `cargo clippy -p sagat-api-http --test studio
+  -- -D warnings` and Rust formatting passed.
+- Frontend: **1 051 tests in 68 files passed**; lint, app/E2E typechecks and production build passed.
+  The final focused route-error tests also passed after correcting their TypeScript route shape.
+- The real PostgreSQL/API/engine/Chromium command below passed **24 journeys, zero failures**;
+  **two optional performance benchmarks skipped and US02 excluded**. The new journey injects a
+  stylesheet 404, checks recovery focus/320px reflow/axe WCAG AA and no exception text, then restores
+  the asset, reloads, signs in again and opens Workflows without browser errors.
+- The control-plane binary built successfully. Its local replacement was first checked on separate
+  ports with the existing configuration, then started on 18080. A fresh Chromium visit to
+  `/studio/workflows` showed sign-in without failed asset responses or console/page errors.
+
+```sh
+SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0 \
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
+cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+This fixes the serving/UI contracts in the [runbook](../../docs/runbooks/studio.md); REST schemas,
+tenant checks, operation audit and OTel contracts are unchanged. Browser telemetry remains G159.
+No sandbox, performance, full-workspace Rust or non-Chromium validation is claimed for this fix.

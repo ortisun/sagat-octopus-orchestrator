@@ -712,7 +712,8 @@ dialog::backdrop {
   text-align: center;
 }
 
-.signin {
+.signin,
+.route-error {
   position: relative;
   max-width: 35rem;
   margin: 10vh auto;

@@ -6,6 +6,12 @@ acts on them. Why it is built this way: [ADR-0016](../docs/adr/ADR-0016-the-stud
 what it decided and what it does not do: [`specs/007-workflow-studio/research.md`](../specs/007-workflow-studio/research.md);
 how to run and operate it: [`docs/runbooks/studio.md`](../docs/runbooks/studio.md).
 
+The server reads current entry HTML after a completed build replacement. Publish hashed assets
+before replacing the HTML and retain old assets during rollout, as described in the runbook.
+The eager route error page offers **Reload Studio** when a page cannot load, with an explicit
+warning about unsaved edits and signing in again. It does not automatically reload or show stack
+traces. `RouteErrorPage.test.tsx` and the missing-stylesheet journey in `smoke.spec.ts` cover recovery.
+
 ```text
 apps/studio/        the app (Vite, React 19, React Flow, Monaco, TanStack Query)
   src/api/          the REST client, the types generated from the OpenAPI contract, the live follower (SSE with polling as fallback)

@@ -128,6 +128,15 @@ the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 j
 
 ## Visual defect regression (FR-007-008/009, SC-007-005)
 
+- [x] T007-050 Fix HTML/asset mismatch after rebuilding a running Studio and replace the router's
+  developer error screen with accessible recovery. Prove fresh root/deep-link HTML, safe missing
+  index handling and real-browser recovery from a missing CSS chunk; update serving/UI contracts
+  and the runbook. Preserve the configured security and resource boundaries. Evidence on 2026-10-12:
+  13 HTTP serving tests, 1 051 frontend tests and 24 real Chromium journeys passed (two opt-in
+  benchmarks skipped; US02 excluded). New regressions failed before the fix. Lint, app/E2E types,
+  frontend/control-plane builds, targeted Rust clippy and formatting passed. The live local server
+  was replaced and its current HTML/sign-in assets checked in Chromium without browser errors.
+
 - [x] T007-049 Correct unreadable initial graph zoom, intermediate-width editor layout, selected
   forced-colour controls and the run header/canvas geometry. Add real-browser regressions in
   `frontend/e2e/tests/visual-layout.spec.ts`, retain API and interaction coverage, and record actual

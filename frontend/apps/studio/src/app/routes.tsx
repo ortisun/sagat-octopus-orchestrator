@@ -2,12 +2,14 @@ import { Navigate } from 'react-router';
 import type { RouteObject } from 'react-router';
 import { Shell } from './Shell';
 import { NotFoundPage } from './NotFoundPage';
+import { RouteErrorPage } from './RouteErrorPage';
 
 /** The pages load on demand, so the editor and the graph libraries are not in the first download. */
 export const routes: RouteObject[] = [
   {
     path: '/',
     element: <Shell />,
+    errorElement: <RouteErrorPage />,
     children: [
       { index: true, element: <Navigate to="/workflows" replace /> },
       { path: 'workflows', lazy: async () => ({ Component: (await import('../features/workflows/WorkflowsPage')).WorkflowsPage }) },

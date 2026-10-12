@@ -33,6 +33,21 @@ files and links that resolve outside the directory are not served; assets under 
 buffer `text/event-stream` (the stream sends `X-Accel-Buffering: no`). A Studio on another origin than the API is not supported by the API (it has no CORS);
 put both behind one host.
 
+The page is read from the configured directory on each request, including deep links and
+`/studio/index.html`. It must be a regular, readable file of at most 64 KiB, not a symlink. A missing,
+oversized or unsafe page after startup returns `503`, `Retry-After: 1` and `no-store`; it never falls
+back to HTML that references a previous build. Asset transfer quotas still apply independently.
+
+For deployments, build in a separate directory, publish new hashed assets before replacing
+`index.html` atomically, and retain previous hashed assets for existing tabs during rollout. Running
+Vite directly over the served directory removes old assets and can temporarily leave no page.
+Once the build is complete, new page requests see it without restarting the control plane.
+If an existing tab cannot load a route, **Reload Studio** loads the current document. It explicitly
+warns that unsaved edits will be lost and authentication is required again; there is no automatic
+reload. If even a fresh page requests obsolete assets, compare its asset names with the served
+directory and verify that the control plane includes T007-050 (older binaries retained HTML in
+memory until restart). A browser-cache purge cannot correct that old server behavior.
+
 ## 3. Using it (short)
 
 - **Sign in**: paste a token, or use your organisation's single sign-on. The header shows who you are and your role; what you cannot do is not hidden but explained.

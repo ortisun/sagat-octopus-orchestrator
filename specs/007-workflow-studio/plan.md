@@ -84,6 +84,15 @@ E2E create→validate→publish→trigger→fail→compensate→inspect journal/
 
 ## Visual defect correction (2026-10-12)
 
+Asset replacement recovery (T007-050): serve the current bounded `index.html` on each page request,
+including deep links and `/studio/index.html`, instead of retaining its old asset hashes for the
+process lifetime. Preserve CSP, `no-store`, path confinement, asset transfer limits and missing-file
+404s. An unavailable page returns a retryable 503, never the obsolete page. Eagerly include a route
+error boundary with a user-triggered reload and a warning about unsaved edits and signing in again;
+do not automatically reload or expose exception details. Test rebuilds without restarting the HTTP
+server and a failed lazy CSS request followed by recovery in Chromium. No API, tenant, operation
+audit or OTel contract changes; browser telemetry remains G159.
+
 Preserve the approved tokens and English labels. Separate readable initial graph framing from the
 explicit fit-all command, keeping fixed-size nodes, virtualisation and the user's camera after
 updates. Reflow palette/canvas/inspector according to available width; keep selected system-colour
