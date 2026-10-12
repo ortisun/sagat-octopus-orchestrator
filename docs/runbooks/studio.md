@@ -77,7 +77,7 @@ automated screenshots do not complete visual acceptance.
 
 ## 6. What is not built
 
-Showing a step's input, output or error text (the journal carries none: G144); *retry run as new* and *mark manual review* (the API refuses them: G145); human approval and
+Raw input, output or error values (the authorized structure-only inspection hides all values and keys: ADR-0028); *retry run as new* and *mark manual review* (the API refuses them: G145); human approval and
 for-each nodes can be drawn but not published (G147); manual positions of cards are kept in the browser only (G148); pushing changes from the engine instead of polling
 the database (G143); a screen-reader test by a person (G146).
 
@@ -101,3 +101,17 @@ The API, engine and browser remain real. PostgreSQL is still required; `SAGAT_TE
 administrative test connection when Docker cannot start it. The default/CI path still starts real containers and includes US02.
 Report partial results as such: they provide no evidence that scripts build or execute in the sandbox.
 
+
+## Payload structure inspection
+
+An Admin or Operator can explicitly inspect the run input or a selected journal event from the run
+detail view. The server authorizes `run:payload:inspect` and commits a bounded access audit before
+returning a projection. The view contains JSON types, structure and bounded counts; every field name
+and scalar value is removed. Large external content is represented only by verified catalog
+metadata, and missing/unsupported content has an explicit unavailable state. There is no raw-value
+export or automatic fetch of external object bytes.
+
+The selected journal sequence identifies historical output, not the node's latest attempt. Changing
+the run, event or authenticated session clears the prior result and cancels its request. Responses
+use `Cache-Control: private, no-store`. Customer payload classification and permission to disclose
+actual values remain separate decisions; structure-only inspection does not infer those permissions.

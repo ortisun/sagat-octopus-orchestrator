@@ -6,7 +6,8 @@
 use std::time::Duration;
 
 use sagat_application::blobs::{
-    BlobAccess, BlobCatalog, BlobCommit, BlobOwner, BlobRecord, BlobScope, BoxFuture,
+    BlobAccess, BlobCatalog, BlobCommit, BlobDeleteClaim, BlobOwner, BlobRecord, BlobScope,
+    BoxFuture,
 };
 use sagat_application::error::StoreError;
 use sagat_domain::audit::{AuditAction, ResourceType};
@@ -75,6 +76,7 @@ impl BlobCatalog for PgBlobCatalog {
         id: BlobId,
         content_type: &'a ContentType,
         created_by: &'a str,
+        reservation_bytes: u64,
         max_pending: u32,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
@@ -88,6 +90,8 @@ impl BlobCatalog for PgBlobCatalog {
             } else {
                 "RUN_INPUT"
             };
+            let reservation_bytes =
+                i64::try_from(reservation_bytes).map_err(|_| corrupt("reservation"))?;
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             // Count and insert as one decision: two uploads racing for the last place serialise here
             // and the second one sees the first. Released with the transaction.
@@ -109,8 +113,8 @@ impl BlobCatalog for PgBlobCatalog {
             }
             let inserted = sqlx::query(
                 "INSERT INTO blobs (tenant_id, namespace_id, id, state, content_type, created_by, \
-                                    run_id, step_id, attempt, generation, purpose) \
-                 SELECT $1, $2, $3, 'UPLOADING', $4, $5, $6, $7, $8, $9, $10 \
+                                    run_id, step_id, attempt, generation, purpose, reservation_bytes) \
+                 SELECT $1, $2, $3, 'UPLOADING', $4, $5, $6, $7, $8, $9, $10, $11 \
                  FROM namespaces WHERE tenant_id = $1 AND id = $2 \
                    AND ($10 = 'RUN_INPUT' OR EXISTS (SELECT 1 FROM steps \
                        WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $6 AND step_id = $7 \
@@ -136,6 +140,7 @@ impl BlobCatalog for PgBlobCatalog {
                     .map_err(|_| corrupt("generation"))?,
             )
             .bind(purpose)
+            .bind(reservation_bytes)
             .execute(&mut *tx)
             .await
             .map_err(store_error)?
@@ -157,11 +162,21 @@ impl BlobCatalog for PgBlobCatalog {
         Box::pin(async move {
             let size = i64::try_from(size).map_err(|_| corrupt("size"))?;
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-            let actor: Option<String> = sqlx::query_scalar(
-                "UPDATE blobs SET state = 'UPLOADED', size_bytes = $4, sha256 = $5, \
-                 uploaded_at = clock_timestamp() \
+            let row: Option<(String, bool)> = sqlx::query_as(
+                "UPDATE blobs SET state = CASE WHEN state = 'UPLOADING' THEN 'UPLOADED' \
+                                               ELSE 'DELETING' END, \
+                     size_bytes = $4, sha256 = $5, uploaded_at = clock_timestamp(), \
+                     delete_after = CASE WHEN state = 'DELETING' THEN clock_timestamp() \
+                                         ELSE delete_after END, \
+                     deletion_confirmed_at = CASE WHEN state = 'DELETING' THEN NULL \
+                                                  ELSE deletion_confirmed_at END, \
+                     deletion_attempts = CASE WHEN state = 'DELETING' \
+                                              THEN deletion_attempts + 1 \
+                                              ELSE deletion_attempts END \
                  WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 \
-                   AND state = 'UPLOADING' RETURNING created_by",
+                   AND state IN ('UPLOADING', 'DELETING') AND uploaded_at IS NULL \
+                   AND $4 <= reservation_bytes \
+                 RETURNING created_by, state = 'DELETING'",
             )
             .bind(access.tenant_id.as_uuid())
             .bind(access.namespace_id.as_uuid())
@@ -171,12 +186,17 @@ impl BlobCatalog for PgBlobCatalog {
             .fetch_optional(&mut *tx)
             .await
             .map_err(store_error)?;
-            let Some(actor) = actor else {
-                // Swept while the bytes were still on their way, or never reserved.
+            let Some((actor, deleting)) = row else {
+                // Already finalized, committed, or never reserved.
                 return Err(StoreError::MissingReference);
             };
             append_blob_audit(&mut tx, access, id, &actor, AuditAction::BlobUploaded, None).await?;
-            tx.commit().await.map_err(store_error)
+            tx.commit().await.map_err(store_error)?;
+            if deleting {
+                Err(StoreError::MissingReference)
+            } else {
+                Ok(())
+            }
         })
     }
 
@@ -242,28 +262,36 @@ impl BlobCatalog for PgBlobCatalog {
         access: BlobAccess,
         id: BlobId,
         retry_after: Duration,
-    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+    ) -> BoxFuture<'a, Result<Option<BlobDeleteClaim>, StoreError>> {
         Box::pin(async move {
             let retry_micros = i64::try_from(retry_after.as_micros()).unwrap_or(i64::MAX);
             // The claim is durable before the object-store call. A retry may reclaim a failed
             // deletion only after its delay; a committed blob is never eligible.
-            let changed = sqlx::query(
+            let attempt: Option<i32> = sqlx::query_scalar(
                 "UPDATE blobs SET state = 'DELETING', deletion_attempts = deletion_attempts + 1, \
                      deletion_last_attempt_at = clock_timestamp(), \
                      delete_after = clock_timestamp() + $4 * interval '1 microsecond' \
                  WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 \
                    AND (state IN ('UPLOADING', 'UPLOADED') \
-                        OR (state = 'DELETING' AND delete_after <= clock_timestamp()))",
+                        OR (state = 'DELETING' AND delete_after <= clock_timestamp())) \
+                 RETURNING deletion_attempts",
             )
             .bind(access.tenant_id.as_uuid())
             .bind(access.namespace_id.as_uuid())
             .bind(id.as_uuid())
             .bind(retry_micros)
-            .execute(&self.pool)
+            .fetch_optional(&self.pool)
             .await
-            .map_err(store_error)?
-            .rows_affected();
-            Ok(changed == 1)
+            .map_err(store_error)?;
+            attempt
+                .map(|attempt| {
+                    Ok(BlobDeleteClaim {
+                        access,
+                        id,
+                        attempt: u32::try_from(attempt).map_err(|_| corrupt("deletion attempt"))?,
+                    })
+                })
+                .transpose()
         })
     }
 
@@ -273,7 +301,7 @@ impl BlobCatalog for PgBlobCatalog {
         unused_for: Duration,
         retry_after: Duration,
         limit: u32,
-    ) -> BoxFuture<'a, Result<Vec<(BlobAccess, BlobId)>, StoreError>> {
+    ) -> BoxFuture<'a, Result<Vec<BlobDeleteClaim>, StoreError>> {
         Box::pin(async move {
             let micros = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
             // One statement picks and marks. A blob being committed holds its row lock, so it is
@@ -296,7 +324,7 @@ impl BlobCatalog for PgBlobCatalog {
                  FROM due \
                  WHERE b.tenant_id = due.tenant_id AND b.namespace_id = due.namespace_id \
                    AND b.id = due.id \
-                 RETURNING b.tenant_id, b.namespace_id, b.id",
+                 RETURNING b.tenant_id, b.namespace_id, b.id, b.deletion_attempts",
             )
             .bind(micros(abandoned_after))
             .bind(micros(unused_for))
@@ -310,13 +338,15 @@ impl BlobCatalog for PgBlobCatalog {
                     let tenant: Uuid = col(row, "tenant_id")?;
                     let namespace: Uuid = col(row, "namespace_id")?;
                     let id: Uuid = row.try_get("id").map_err(store_error)?;
-                    Ok((
-                        BlobAccess {
+                    let attempt: i32 = col(row, "deletion_attempts")?;
+                    Ok(BlobDeleteClaim {
+                        access: BlobAccess {
                             tenant_id: TenantId::new(tenant),
                             namespace_id: NamespaceId::new(namespace),
                         },
-                        BlobId::new(id),
-                    ))
+                        id: BlobId::new(id),
+                        attempt: u32::try_from(attempt).map_err(|_| corrupt("deletion attempt"))?,
+                    })
                 })
                 .collect()
         })
@@ -324,10 +354,12 @@ impl BlobCatalog for PgBlobCatalog {
 
     fn finish_delete<'a>(
         &'a self,
-        access: BlobAccess,
-        id: BlobId,
+        claim: BlobDeleteClaim,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
+            let attempt = i32::try_from(claim.attempt).map_err(|_| corrupt("deletion attempt"))?;
+            let access = claim.access;
+            let id = claim.id;
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             // A successful delete does not prove an earlier, unconfirmed PUT can no longer finish.
             // Lock before deciding: only a previously confirmed upload can lose its catalog row.
@@ -335,11 +367,12 @@ impl BlobCatalog for PgBlobCatalog {
                 "SELECT uploaded_at IS NOT NULL AS finalized, \
                         deletion_confirmed_at IS NOT NULL AS confirmed \
                  FROM blobs WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 \
-                 AND state = 'DELETING' FOR UPDATE",
+                 AND state = 'DELETING' AND deletion_attempts = $4 FOR UPDATE",
             )
             .bind(access.tenant_id.as_uuid())
             .bind(access.namespace_id.as_uuid())
             .bind(id.as_uuid())
+            .bind(attempt)
             .fetch_optional(&mut *tx)
             .await
             .map_err(store_error)?;

@@ -510,6 +510,7 @@ pub async fn serve_with_admin(
     let executions = PgRunStore::new(pool.clone(), cache.clone());
     let mut governance = GovState::new(
         state.clone(),
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
@@ -604,11 +605,19 @@ pub async fn serve_with_admin(
     }
     let exec = ExecState::new(
         state,
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         runs,
     )
     .with_stream_limits(serve.streams)
     .with_blob_transfer(serve.blob_transfer)
+    .with_payload_inspections(Arc::new(
+        sagat_application::payloads::PayloadInspectionService::new(
+            executions.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
     .with_publishing(publishing);
     let mut app = router_with_governance(exec, governance, serve.limits);
     // The Studio is static files on the API's own origin: no CORS, no second listener.

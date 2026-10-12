@@ -18,10 +18,11 @@ use sagat_application::error::StoreError;
 use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredActivityLimit, StoredLimit};
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sagat_domain::quota::{self, QuotaResource};
+use sagat_domain::quota::{self, QuotaKind, QuotaResource};
 use sagat_domain::workflow::ActivityName;
 use sqlx::{PgConnection, PgPool};
 
+use crate::content_usage;
 use crate::execution::PgRunStore;
 use crate::identity::{insert_audit, store_error};
 
@@ -682,6 +683,8 @@ impl QuotaStore for PgRunStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         if resource == QuotaResource::ActivityConcurrency {
             activity_policy_change(&mut tx, tenant, None).await?;
+        } else if resource.kind() != QuotaKind::Count {
+            content_usage::policy_change(&mut tx, tenant, None, resource).await?;
         }
         match value {
             Some(value) => {
@@ -745,6 +748,8 @@ impl QuotaStore for PgRunStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         if resource == QuotaResource::ActivityConcurrency {
             activity_policy_change(&mut tx, tenant, namespace).await?;
+        } else if resource.kind() != QuotaKind::Count {
+            content_usage::policy_change(&mut tx, tenant, namespace, resource).await?;
         }
         match value {
             Some(value) => {
@@ -925,6 +930,30 @@ impl QuotaStore for PgRunStore {
                 .bind(tenant.as_uuid())
                 .fetch_one(&self.pool)
                 .await
+            }
+            QuotaResource::TenantContentBytes => sqlx::query_scalar(
+                "SELECT coalesce(content_bytes + content_reserved_bytes, 0)::bigint \
+                     FROM tenant_retained_usage WHERE tenant_id = $1",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map(|value| value.unwrap_or(0)),
+            QuotaResource::TenantLogBytes => sqlx::query_scalar(
+                "SELECT coalesce(log_bytes, 0)::bigint FROM tenant_retained_usage \
+                     WHERE tenant_id = $1",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map(|value| value.unwrap_or(0)),
+            QuotaResource::ApiRequestsPerSecond
+            | QuotaResource::EventsPerSecond
+            | QuotaResource::EventRetentionSeconds
+            | QuotaResource::ScriptRetentionDays => {
+                return Err(StoreError::Internal {
+                    detail: "an admission policy has no scalar usage".into(),
+                });
             }
         }
         .map_err(store_error)?;

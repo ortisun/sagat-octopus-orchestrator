@@ -30,6 +30,30 @@ pub trait QuotaLookup: Send + Sync {
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 }
 
+/// Exact retained logical bytes charged to a tenant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetainedUsage {
+    pub content_bytes: u64,
+    pub content_reserved_bytes: u64,
+    pub log_bytes: u64,
+}
+
+/// Result of consuming one durable namespace-rate token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateDecision {
+    Admitted,
+    Refused { retry_after_secs: u32 },
+}
+
+/// Authoritative admission for one authenticated, already-authorized namespace API request.
+pub trait NamespaceApiAdmission: Send + Sync {
+    fn admit_namespace_request(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<RateDecision, StoreError>> + Send;
+}
+
 /// The limits a run is created under, resolved just before the creation and judged by the store, in
 /// the transaction that inserts the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,11 +391,12 @@ where
                 setting(&tenant_level, resource),
                 ceiling,
             );
-            let used = match (resource.scope(), namespace) {
-                (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
+            let used = match (resource.has_usage(), resource.scope(), namespace) {
+                (false, _, _) => None,
+                (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
                     Some(self.store.usage(tenant, namespace, resource).await?)
                 }
-                (QuotaScope::Namespace, None) => None,
+                (true, QuotaScope::Namespace, None) => None,
             };
             views.push(QuotaView {
                 resource,
@@ -503,11 +528,12 @@ where
                 .map(|r| r.value),
             ceiling,
         );
-        let used = match (resource.scope(), namespace) {
-            (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
+        let used = match (resource.has_usage(), resource.scope(), namespace) {
+            (false, _, _) => None,
+            (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
                 Some(self.store.usage(tenant, namespace, resource).await?)
             }
-            (QuotaScope::Namespace, None) => None,
+            (true, QuotaScope::Namespace, None) => None,
         };
         Ok(QuotaView {
             resource,
@@ -532,7 +558,7 @@ where
         value: Option<u64>,
     ) -> Result<(), AppError> {
         let value = value
-            .map(quota::validate_ceiling)
+            .map(|value| quota::validate_ceiling(resource, value))
             .transpose()
             .map_err(invalid)?;
         let reason = match value {
@@ -609,7 +635,8 @@ where
 
 fn invalid(error: QuotaError) -> AppError {
     AppError::NotAllowed(match error {
-        QuotaError::TooLarge => "a quota limit is at most 1000000000",
+        QuotaError::TooLarge => "the quota limit is above the maximum for this resource",
+        QuotaError::OutsideRange => "the quota limit is outside the valid range for this resource",
         QuotaError::NotPerNamespace => "this quota is counted for the whole tenant",
         QuotaError::AboveCeiling => {
             "the value is above the ceiling the platform grants this tenant (see `ceiling`)"

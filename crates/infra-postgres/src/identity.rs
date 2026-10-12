@@ -706,6 +706,16 @@ fn classify(error: &sqlx::Error) -> StoreError {
             let code = db.code();
             let code = code.as_deref().unwrap_or_default();
             match code {
+                "54000" if db.constraint() == Some("tenant_content_quota_exceeded") => {
+                    StoreError::QuotaExceeded {
+                        what: sagat_domain::quota::QuotaResource::TenantContentBytes.limit_name(),
+                    }
+                }
+                "54000" if db.constraint() == Some("tenant_log_quota_exceeded") => {
+                    StoreError::QuotaExceeded {
+                        what: sagat_domain::quota::QuotaResource::TenantLogBytes.limit_name(),
+                    }
+                }
                 // unique_violation
                 "23505" => match db.constraint() {
                     Some("tenants_slug_uniq") => StoreError::Conflict(ConflictKind::TenantSlug),

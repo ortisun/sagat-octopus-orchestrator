@@ -24,6 +24,7 @@ use sagat_application::events::EventService;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::{IdentityService, IdentityStore};
 use sagat_application::outbound::OutboundService;
+use sagat_application::payloads::PayloadInspectionService;
 use sagat_application::quotas::QuotaService;
 use sagat_application::runs::RunService;
 use sagat_application::script_signing::Signer;
@@ -35,7 +36,7 @@ use sagat_domain::identity::{
     Membership, Namespace, NamespaceId, Slug, Subject, Tenant, TenantId, Workspace, WorkspaceId,
 };
 use sagat_infra_blobstore::{BlobStoreConfig, PartSize, build_backend};
-use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+use sagat_infra_ir::{JsonEvaluator, JsonIrCodec, JsonPayloadProjector};
 use sagat_infra_postgres::PgBlobCatalog;
 use sagat_infra_postgres::{PgIdentityStore, PgPool, PgRunStore, PoolConfig, connect};
 use serde_json::{Value, json};
@@ -67,6 +68,8 @@ pub struct TestApi {
     pub script_key: Vec<u8>,
     lookups: Arc<AtomicUsize>,
     pings: Arc<AtomicUsize>,
+    /// Fully configured application for a second listener against the same durable stores.
+    replica_app: axum::Router,
     /// The REST and gRPC servers, which have nothing to make them stop: they end with the API.
     servers: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -328,6 +331,7 @@ pub async fn start_with(options: Options) -> TestApi {
     let script_key = signer.public_key();
     let governance = GovState::new(
         state.clone(),
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         QuotaService::new(executions.clone(), SystemClock),
         BindingService::new(executions.clone(), SystemClock),
         EgressService::new(executions.clone(), SystemClock),
@@ -409,6 +413,7 @@ pub async fn start_with(options: Options) -> TestApi {
     }
     let mut exec = ExecState::new(
         state,
+        sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
         runs,
     )
@@ -420,7 +425,12 @@ pub async fn start_with(options: Options) -> TestApi {
         executions.clone(),
         SystemClock,
         JsonIrCodec,
-    ));
+    ))
+    .with_payload_inspections(Arc::new(PayloadInspectionService::new(
+        executions.clone(),
+        SystemClock,
+        JsonPayloadProjector,
+    )));
     if let Some(limits) = options.streams {
         exec = exec.with_stream_limits(limits);
     }
@@ -457,6 +467,7 @@ pub async fn start_with(options: Options) -> TestApi {
     if let Some(studio) = options.studio {
         app = app.merge(sagat_api_http::studio::studio_router(studio).expect("a Studio build"));
     }
+    let replica_app = app.clone();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -501,6 +512,7 @@ pub async fn start_with(options: Options) -> TestApi {
         script_key,
         lookups,
         pings,
+        replica_app,
         servers: vec![grpc_server, http_server],
     }
 }
@@ -514,6 +526,26 @@ impl TestApi {
     /// Readiness pings that reached the store so far.
     pub fn pings(&self) -> usize {
         self.pings.load(Ordering::SeqCst)
+    }
+
+    /// Starts another HTTP listener with the same configured services and database-backed
+    /// admission. The returned base includes `/v1`.
+    pub async fn start_http_replica(&mut self) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind API replica");
+        let address = listener.local_addr().expect("API replica address");
+        let app = self.replica_app.clone();
+        self.servers.push(tokio::spawn(async move {
+            let _ = sagat_api_http::serve(
+                listener,
+                app,
+                ServerConfig::default(),
+                std::future::pending(),
+            )
+            .await;
+        }));
+        format!("http://{address}/v1")
     }
 
     /// Creates a tenant and its first admin directly in the database.

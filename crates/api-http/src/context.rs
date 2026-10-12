@@ -174,8 +174,13 @@ fn finalize(response: Response, trace_id: TraceId, request_id: TraceId) -> Respo
     if let Ok(value) = HeaderValue::from_str(&request_id.to_string()) {
         head.headers.insert(REQUEST_ID_HEADER.clone(), value);
     }
-    head.headers
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // A sensitive handler may add `private`, but cannot weaken the API's no-store policy.
+    if head.headers.get(header::CACHE_CONTROL)
+        != Some(&HeaderValue::from_static("private, no-store"))
+    {
+        head.headers
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     head.headers
         .insert(header::X_CONTENT_TYPE_OPTIONS, NOSNIFF.clone());
     Response::from_parts(head, body)

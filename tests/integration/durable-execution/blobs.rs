@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_application::blobs::{
-    BlobAccess, BlobCatalog, BlobOwner, BlobScope, DEFAULT_DELETE_RETRY,
+    BlobAccess, BlobCatalog, BlobDeleteClaim, BlobOwner, BlobScope, DEFAULT_DELETE_RETRY,
 };
 use sagat_application::error::StoreError;
 use sagat_domain::blobs::{BlobId, BlobState, ContentType};
@@ -88,10 +88,25 @@ fn digest(byte: u8) -> Digest {
     Digest::new([byte; 32])
 }
 
+fn delete_claim(access: BlobAccess, id: BlobId, attempt: u32) -> BlobDeleteClaim {
+    BlobDeleteClaim {
+        access,
+        id,
+        attempt,
+    }
+}
+
 async fn reserve(f: &Fixture, scope: BlobScope, max: u32) -> Result<BlobId, StoreError> {
     let id = BlobId::generate();
     f.catalog
-        .reserve(BlobOwner::StepOutput(scope), id, &json(), "wendy", max)
+        .reserve(
+            BlobOwner::StepOutput(scope),
+            id,
+            &json(),
+            "wendy",
+            2 * 1024 * 1024,
+            max,
+        )
         .await
         .map(|()| id)
 }
@@ -102,6 +117,85 @@ async fn state_of(f: &Fixture, access: BlobAccess, id: BlobId) -> Option<BlobSta
         .await
         .expect("find")
         .map(|record| record.state)
+}
+
+async fn retained_usage(f: &Fixture) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT content_bytes, content_reserved_bytes FROM tenant_retained_usage \
+         WHERE tenant_id = $1",
+    )
+    .bind(f.scope.access.tenant_id.as_uuid())
+    .fetch_one(&f.db.pool)
+    .await
+    .expect("retained usage")
+}
+
+async fn set_content_limit(f: &Fixture, max_value: i64) {
+    let tenant = f.scope.access.tenant_id.as_uuid();
+    let mut tx = f.db.pool.begin().await.expect("policy transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("quota-policy:tenant_content_bytes:{tenant}"))
+        .execute(&mut *tx)
+        .await
+        .expect("policy fence");
+    sqlx::query(
+        "DELETE FROM quota_limits WHERE tenant_id = $1 AND namespace_id IS NULL \
+         AND resource = 'tenant_content_bytes'",
+    )
+    .bind(tenant)
+    .execute(&mut *tx)
+    .await
+    .expect("remove old limit");
+    sqlx::query(
+        "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+         VALUES ($1, NULL, 'tenant_content_bytes', $2, 'quota-test')",
+    )
+    .bind(tenant)
+    .bind(max_value)
+    .execute(&mut *tx)
+    .await
+    .expect("store content limit");
+    tx.commit().await.expect("policy commit");
+}
+
+async fn enable_content_enforcement(f: &Fixture) {
+    sqlx::query("UPDATE quota_accounting_control SET content_enforcement_enabled = true")
+        .execute(&f.db.pool)
+        .await
+        .expect("enable content enforcement");
+}
+
+#[tokio::test]
+async fn reservations_admit_the_last_byte_and_conversion_survives_a_policy_decrease() {
+    let f = fixture().await;
+    let baseline = retained_usage(&f).await;
+    let baseline_total = baseline.0 + baseline.1;
+    set_content_limit(&f, baseline_total + 1).await;
+    enable_content_enforcement(&f).await;
+
+    let reserve_one = || {
+        let catalog = Arc::clone(&f.catalog);
+        async move {
+            let id = BlobId::generate();
+            catalog
+                .reserve(BlobOwner::StepOutput(f.scope), id, &json(), "wendy", 1, 10)
+                .await
+                .map(|()| id)
+        }
+    };
+    let (left, right) = tokio::join!(reserve_one(), reserve_one());
+    assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+    let admitted = left.or(right).expect("one last-byte reservation");
+    assert_eq!(retained_usage(&f).await, (baseline.0, baseline.1 + 1));
+
+    // A committed reservation remains valid after policy is lowered. Finalization converts the
+    // already charged byte to measured content and performs no positive unreserved growth.
+    set_content_limit(&f, baseline_total).await;
+    f.catalog
+        .mark_uploaded(f.scope.access, admitted, 1, &digest(7))
+        .await
+        .expect("reservation conversion after policy decrease");
+    assert_eq!(retained_usage(&f).await, (baseline.0 + 1, baseline.1));
 }
 
 #[tokio::test]
@@ -152,6 +246,7 @@ async fn a_blob_is_reserved_then_confirmed_with_its_size_and_digest() {
 async fn an_upload_state_change_rolls_back_when_its_audit_cannot_be_appended() {
     let f = fixture().await;
     let id = reserve(&f, f.scope, 10).await.expect("reserved");
+    let reserved_usage = retained_usage(&f).await;
     sqlx::query(
         "CREATE FUNCTION reject_blob_upload_audit() RETURNS trigger LANGUAGE plpgsql AS $$ \
          BEGIN IF NEW.action = 'blob.uploaded' THEN RAISE EXCEPTION 'test audit failure'; \
@@ -178,6 +273,11 @@ async fn an_upload_state_change_rolls_back_when_its_audit_cannot_be_appended() {
         state_of(&f, f.scope.access, id).await,
         Some(BlobState::Uploading),
         "the catalog update and audit append are one transaction"
+    );
+    assert_eq!(
+        retained_usage(&f).await,
+        reserved_usage,
+        "the reservation-to-measured conversion also rolled back"
     );
 }
 
@@ -216,10 +316,11 @@ async fn another_tenant_sees_nothing_and_changes_nothing() {
         Err(StoreError::MissingReference)
     );
     assert!(
-        !f.catalog
+        f.catalog
             .claim_delete(f.other_scope.access, id, DEFAULT_DELETE_RETRY)
             .await
             .expect("a no-op")
+            .is_none()
     );
 
     assert_eq!(
@@ -261,6 +362,7 @@ async fn racing_uploads_cannot_overshoot_the_budget() {
                     BlobId::generate(),
                     &json(),
                     "wendy",
+                    50,
                     5,
                 )
                 .await
@@ -302,11 +404,17 @@ async fn a_used_blob_stops_counting_against_the_budget() {
     .execute(&f.db.pool)
     .await
     .expect("uploaded");
+    let after_upload = retained_usage(&f).await;
     sqlx::query("UPDATE blobs SET state = 'COMMITTED', committed_at = now() WHERE id = $1")
         .bind(ids[0].as_uuid())
         .execute(&f.db.pool)
         .await
         .expect("committed");
+    assert_eq!(
+        retained_usage(&f).await,
+        after_upload,
+        "committing a finalized descriptor does not charge its bytes twice"
+    );
 
     assert!(
         reserve(&f, f.scope, 2).await.is_ok(),
@@ -329,29 +437,27 @@ async fn cleanup_claims_an_unused_blob_but_never_a_used_one() {
     .await
     .expect("committed");
 
+    let attempt = f
+        .catalog
+        .claim_delete(f.scope.access, unused, DEFAULT_DELETE_RETRY)
+        .await
+        .expect("claim")
+        .expect("unused blob is eligible");
     assert!(
         f.catalog
-            .claim_delete(f.scope.access, unused, DEFAULT_DELETE_RETRY)
-            .await
-            .expect("claim")
-    );
-    assert!(
-        !f.catalog
             .claim_delete(f.scope.access, used, DEFAULT_DELETE_RETRY)
             .await
             .expect("committed is not eligible")
+            .is_none()
     );
     assert_eq!(
         state_of(&f, f.scope.access, unused).await,
         Some(BlobState::Deleting),
         "the row remains until external deletion is confirmed"
     );
+    f.catalog.finish_delete(attempt).await.expect("confirm");
     f.catalog
-        .finish_delete(f.scope.access, unused)
-        .await
-        .expect("confirm");
-    f.catalog
-        .finish_delete(f.scope.access, unused)
+        .finish_delete(attempt)
         .await
         .expect("confirmation is idempotent");
 
@@ -423,8 +529,8 @@ async fn the_sweep_claims_only_old_unused_blobs_and_retains_rows_until_confirmat
     claimed.sort();
 
     let mut expected = vec![
-        (f.scope.access, old_unused),
-        (f.other_scope.access, old_other_tenant),
+        delete_claim(f.scope.access, old_unused, 1),
+        delete_claim(f.other_scope.access, old_other_tenant, 1),
     ];
     expected.sort();
     assert_eq!(claimed, expected);
@@ -449,9 +555,9 @@ async fn the_sweep_claims_only_old_unused_blobs_and_retains_rows_until_confirmat
             .is_empty(),
         "a claimed blob is claimed once"
     );
-    for (access, id) in claimed {
+    for claim in claimed {
         f.catalog
-            .finish_delete(access, id)
+            .finish_delete(claim)
             .await
             .expect("backend confirmed deletion");
     }
@@ -494,7 +600,7 @@ async fn a_failed_external_delete_has_durable_attempt_and_retry_evidence() {
             .claim_expired(HOUR, DAY_TTL, DEFAULT_DELETE_RETRY, 10)
             .await
             .expect("first claim"),
-        vec![(f.scope.access, id)]
+        vec![delete_claim(f.scope.access, id, 1)]
     );
     let evidence: (String, i32, bool, bool) = sqlx::query_as(
         "SELECT state, deletion_attempts, deletion_last_attempt_at IS NOT NULL, \
@@ -530,7 +636,7 @@ async fn a_failed_external_delete_has_durable_attempt_and_retry_evidence() {
             .claim_expired(HOUR, DAY_TTL, DEFAULT_DELETE_RETRY, 10)
             .await
             .expect("retry claim"),
-        vec![(f.scope.access, id)]
+        vec![delete_claim(f.scope.access, id, 2)]
     );
     let attempts: i32 =
         sqlx::query_scalar("SELECT deletion_attempts FROM blobs WHERE tenant_id = $1 AND id = $2")
@@ -542,11 +648,11 @@ async fn a_failed_external_delete_has_durable_attempt_and_retry_evidence() {
     assert_eq!(attempts, 2);
 
     f.catalog
-        .finish_delete(f.scope.access, id)
+        .finish_delete(delete_claim(f.scope.access, id, 2))
         .await
         .expect("backend confirmed deletion");
     f.catalog
-        .finish_delete(f.scope.access, id)
+        .finish_delete(delete_claim(f.scope.access, id, 2))
         .await
         .expect("lost response retry is idempotent");
     assert_eq!(
@@ -641,6 +747,15 @@ async fn the_schema_refuses_states_that_cannot_exist() {
             "UPDATE blobs SET content_type = 'x' WHERE id = $1",
             "blobs_content_type_length",
         ),
+        (
+            "UPDATE blobs SET reservation_bytes = reservation_bytes - 1 WHERE id = $1",
+            "blobs_reservation_immutable",
+        ),
+        (
+            "UPDATE blobs SET state = 'UPLOADED', size_bytes = 2097153, \
+                 sha256 = decode(repeat('ab', 32), 'hex'), uploaded_at = now() WHERE id = $1",
+            "blobs_within_reservation",
+        ),
     ];
     for (sql, constraint) in attempts {
         let id = reserve(&f, f.scope, 50).await.expect("valid reservation");
@@ -653,6 +768,24 @@ async fn the_schema_refuses_states_that_cannot_exist() {
         assert_eq!(code, "23514", "{sql}");
         assert_eq!(named.as_deref(), Some(constraint), "{sql}");
     }
+
+    let finalized = reserve(&f, f.scope, 50).await.expect("reservation");
+    f.catalog
+        .mark_uploaded(f.scope.access, finalized, 5, &digest(3))
+        .await
+        .expect("finalized");
+    let error = sqlx::query("UPDATE blobs SET size_bytes = 6 WHERE id = $1")
+        .bind(finalized.as_uuid())
+        .execute(&f.db.pool)
+        .await
+        .expect_err("finalized measurement changed");
+    assert_eq!(
+        db_error(error),
+        (
+            "23514".to_owned(),
+            Some("blobs_finalized_measurement_immutable".to_owned())
+        )
+    );
 
     // And a blob cannot belong to a tenant that does not exist.
     let error = sqlx::query(
@@ -694,7 +827,7 @@ async fn an_unfinished_upload_expires_sooner_than_an_uploaded_blob() {
 
     assert_eq!(
         claimed,
-        vec![(f.scope.access, unfinished)],
+        vec![delete_claim(f.scope.access, unfinished, 1)],
         "three hours is long for an upload, not for a blob"
     );
     assert_eq!(
@@ -707,30 +840,29 @@ async fn an_unfinished_upload_expires_sooner_than_an_uploaded_blob() {
 async fn confirmed_cleanup_of_an_unknown_upload_retains_a_retryable_tombstone() {
     let f = fixture().await;
     let id = reserve(&f, f.scope, 1).await.expect("reserved");
-    f.catalog
+    let reserved_usage = retained_usage(&f).await;
+    let attempt = f
+        .catalog
         .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
         .await
-        .expect("claim");
+        .expect("claim")
+        .expect("eligible");
     f.catalog
-        .finish_delete(f.scope.access, id)
+        .finish_delete(attempt)
         .await
         .expect("first delete confirmed");
     f.catalog
-        .finish_delete(f.scope.access, id)
+        .finish_delete(attempt)
         .await
         .expect("repeat confirmation");
     assert_eq!(
         state_of(&f, f.scope.access, id).await,
         Some(BlobState::Deleting)
     );
-    assert!(
-        matches!(
-            f.catalog
-                .mark_uploaded(f.scope.access, id, 12, &digest(1))
-                .await,
-            Err(StoreError::MissingReference)
-        ),
-        "late completion cannot revive the upload"
+    assert_eq!(
+        retained_usage(&f).await,
+        reserved_usage,
+        "an unfinalized delete cannot release capacity while a PUT may finish late"
     );
     assert!(
         reserve(&f, f.scope, 1).await.is_ok(),
@@ -754,12 +886,17 @@ async fn confirmed_cleanup_of_an_unknown_upload_retains_a_retryable_tombstone() 
             .claim_expired(HOUR, DAY_TTL, DEFAULT_DELETE_RETRY, 10)
             .await
             .expect("retry"),
-        vec![(f.scope.access, id)]
+        vec![delete_claim(f.scope.access, id, 2)]
     );
     f.catalog
-        .finish_delete(f.scope.access, id)
+        .finish_delete(delete_claim(f.scope.access, id, 2))
         .await
         .expect("late bytes deleted again");
+    assert_eq!(
+        retained_usage(&f).await,
+        (reserved_usage.0, reserved_usage.1 + 2 * 1024 * 1024),
+        "repeated delete confirmation leaves both late-PUT reservations charged"
+    );
     let repeated_audits: i64 =
         sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE action = 'blob.deleted'")
             .fetch_one(&f.db.pool)
@@ -772,14 +909,215 @@ async fn confirmed_cleanup_of_an_unknown_upload_retains_a_retryable_tombstone() 
 }
 
 #[tokio::test]
+async fn confirmed_cleanup_releases_acknowledged_rejected_put_measurements() {
+    let f = fixture().await;
+    let baseline = retained_usage(&f).await;
+
+    // These represent a provider-acknowledged short body and wrong digest. Both are rejected by
+    // the use case, but the acknowledged bytes are measured before cleanup so they are no longer
+    // an unknown PUT that must retain its whole reservation.
+    for (size, byte) in [(11, 4), (7, 5)] {
+        let id = BlobId::generate();
+        f.catalog
+            .reserve(BlobOwner::StepOutput(f.scope), id, &json(), "wendy", 12, 10)
+            .await
+            .expect("reservation");
+        f.catalog
+            .mark_uploaded(f.scope.access, id, size, &digest(byte))
+            .await
+            .expect("acknowledged PUT measurement");
+        assert_eq!(
+            retained_usage(&f).await,
+            (baseline.0 + size as i64, baseline.1)
+        );
+        let attempt = f
+            .catalog
+            .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
+            .await
+            .expect("claim cleanup")
+            .expect("uploaded mismatch is eligible");
+        f.catalog
+            .finish_delete(attempt)
+            .await
+            .expect("confirmed cleanup");
+        assert_eq!(state_of(&f, f.scope.access, id).await, None);
+        assert_eq!(
+            retained_usage(&f).await,
+            baseline,
+            "confirmed cleanup releases the exact acknowledged measurement"
+        );
+    }
+}
+
+#[tokio::test]
+async fn acknowledged_late_put_stays_deleting_and_a_fresh_delete_releases_it() {
+    let f = fixture().await;
+    let baseline = retained_usage(&f).await;
+    let id = BlobId::generate();
+    f.catalog
+        .reserve(BlobOwner::StepOutput(f.scope), id, &json(), "wendy", 12, 10)
+        .await
+        .expect("reservation");
+    let first_attempt = f
+        .catalog
+        .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
+        .await
+        .expect("first delete")
+        .expect("eligible");
+    f.catalog
+        .finish_delete(first_attempt)
+        .await
+        .expect("first confirmation");
+
+    assert_eq!(
+        f.catalog
+            .mark_uploaded(f.scope.access, id, 9, &digest(6))
+            .await,
+        Err(StoreError::MissingReference),
+        "the late PUT is measured but never made usable"
+    );
+    assert_eq!(
+        state_of(&f, f.scope.access, id).await,
+        Some(BlobState::Deleting)
+    );
+    assert_eq!(retained_usage(&f).await, (baseline.0 + 9, baseline.1));
+    let fresh_attempt = f
+        .catalog
+        .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
+        .await
+        .expect("fresh delete after late PUT")
+        .expect("late PUT made cleanup immediately eligible");
+    f.catalog
+        .finish_delete(fresh_attempt)
+        .await
+        .expect("late PUT cleanup");
+    assert_eq!(state_of(&f, f.scope.access, id).await, None);
+    assert_eq!(retained_usage(&f).await, baseline);
+}
+
+#[tokio::test]
+async fn stale_delete_acknowledgement_cannot_finalize_a_newer_attempt() {
+    let f = fixture().await;
+    let baseline = retained_usage(&f).await;
+    let id = BlobId::generate();
+    f.catalog
+        .reserve(BlobOwner::StepOutput(f.scope), id, &json(), "wendy", 12, 10)
+        .await
+        .expect("reservation");
+    let first_attempt = f
+        .catalog
+        .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
+        .await
+        .expect("first claim")
+        .expect("eligible");
+
+    // DELETE 1 is still in flight when the PUT is acknowledged. Recording that PUT makes a fresh
+    // cleanup attempt due; DELETE 2 is claimed before DELETE 1 reports its stale success.
+    assert_eq!(
+        f.catalog
+            .mark_uploaded(f.scope.access, id, 9, &digest(7))
+            .await,
+        Err(StoreError::MissingReference)
+    );
+    let second_attempt = f
+        .catalog
+        .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
+        .await
+        .expect("second claim")
+        .expect("late PUT requires another delete");
+    assert!(second_attempt.attempt > first_attempt.attempt);
+
+    f.catalog
+        .finish_delete(first_attempt)
+        .await
+        .expect("stale provider acknowledgement is ignored");
+    assert_eq!(
+        state_of(&f, f.scope.access, id).await,
+        Some(BlobState::Deleting),
+        "DELETE 1 cannot release the row claimed by DELETE 2"
+    );
+    assert_eq!(
+        retained_usage(&f).await,
+        (baseline.0 + 9, baseline.1),
+        "a stale acknowledgement cannot release measured late-PUT bytes"
+    );
+
+    f.catalog
+        .finish_delete(second_attempt)
+        .await
+        .expect("matching provider acknowledgement");
+    assert_eq!(state_of(&f, f.scope.access, id).await, None);
+    assert_eq!(retained_usage(&f).await, baseline);
+}
+
+#[tokio::test]
+async fn late_put_logically_retires_the_delete_claim_even_when_database_time_moves_backward() {
+    let f = fixture().await;
+    let baseline = retained_usage(&f).await;
+    let id = BlobId::generate();
+    f.catalog
+        .reserve(BlobOwner::StepOutput(f.scope), id, &json(), "wendy", 12, 10)
+        .await
+        .expect("reservation");
+    let before_put = f
+        .catalog
+        .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
+        .await
+        .expect("claim")
+        .expect("eligible");
+    sqlx::query(
+        "UPDATE blobs SET deletion_last_attempt_at = clock_timestamp() + interval '1 hour' \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3",
+    )
+    .bind(f.scope.access.tenant_id.as_uuid())
+    .bind(f.scope.access.namespace_id.as_uuid())
+    .bind(id.as_uuid())
+    .execute(&f.db.pool)
+    .await
+    .expect("simulate a delete timestamp later than the PUT clock");
+
+    assert_eq!(
+        f.catalog
+            .mark_uploaded(f.scope.access, id, 9, &digest(8))
+            .await,
+        Err(StoreError::MissingReference)
+    );
+    f.catalog
+        .finish_delete(before_put)
+        .await
+        .expect("retired attempt is ignored");
+    assert_eq!(
+        state_of(&f, f.scope.access, id).await,
+        Some(BlobState::Deleting)
+    );
+    assert_eq!(retained_usage(&f).await, (baseline.0 + 9, baseline.1));
+
+    let after_put = f
+        .catalog
+        .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
+        .await
+        .expect("new claim")
+        .expect("late PUT made cleanup due");
+    assert!(after_put.attempt >= before_put.attempt + 2);
+    f.catalog
+        .finish_delete(after_put)
+        .await
+        .expect("new attempt finalizes cleanup");
+    assert_eq!(state_of(&f, f.scope.access, id).await, None);
+    assert_eq!(retained_usage(&f).await, baseline);
+}
+
+#[tokio::test]
 async fn uploaded_retention_starts_when_the_upload_finishes() {
     let f = fixture().await;
+    let baseline = retained_usage(&f).await;
     let id = reserve(&f, f.scope, 1).await.expect("reserved");
     age(&f, id, 2 * DAY).await;
     f.catalog
         .mark_uploaded(f.scope.access, id, 5, &digest(2))
         .await
         .expect("just uploaded");
+    assert_eq!(retained_usage(&f).await, (baseline.0 + 5, baseline.1));
     assert!(
         f.catalog
             .claim_expired(HOUR, DAY_TTL, DEFAULT_DELETE_RETRY, 10)
@@ -793,15 +1131,14 @@ async fn uploaded_retention_starts_when_the_upload_finishes() {
         .execute(&f.db.pool)
         .await
         .expect("retention elapsed");
-    assert_eq!(
-        f.catalog
-            .claim_expired(HOUR, DAY_TTL, DEFAULT_DELETE_RETRY, 10)
-            .await
-            .expect("expired"),
-        vec![(f.scope.access, id)]
-    );
+    let claims = f
+        .catalog
+        .claim_expired(HOUR, DAY_TTL, DEFAULT_DELETE_RETRY, 10)
+        .await
+        .expect("expired");
+    assert_eq!(claims, vec![delete_claim(f.scope.access, id, 1)]);
     f.catalog
-        .finish_delete(f.scope.access, id)
+        .finish_delete(claims[0])
         .await
         .expect("confirmed finalized upload deletion");
     assert_eq!(
@@ -809,16 +1146,23 @@ async fn uploaded_retention_starts_when_the_upload_finishes() {
         None,
         "finalized uploads have no late writer and need no tombstone"
     );
+    assert_eq!(
+        retained_usage(&f).await,
+        baseline,
+        "confirmed deletion releases finalized measured bytes"
+    );
 }
 
 #[tokio::test]
 async fn failed_cleanup_audit_keeps_the_tombstone_unconfirmed_and_the_slot_reserved() {
     let f = fixture().await;
     let id = reserve(&f, f.scope, 1).await.expect("reserved");
-    f.catalog
+    let attempt = f
+        .catalog
         .claim_delete(f.scope.access, id, DEFAULT_DELETE_RETRY)
         .await
-        .expect("claim");
+        .expect("claim")
+        .expect("eligible");
     sqlx::query(
         "CREATE FUNCTION reject_blob_delete_audit() RETURNS trigger LANGUAGE plpgsql AS $$ \
         BEGIN IF NEW.action = 'blob.deleted' THEN RAISE EXCEPTION 'test audit failure'; \
@@ -834,7 +1178,7 @@ async fn failed_cleanup_audit_keeps_the_tombstone_unconfirmed_and_the_slot_reser
     .execute(&f.db.pool)
     .await
     .expect("failure trigger");
-    assert!(f.catalog.finish_delete(f.scope.access, id).await.is_err());
+    assert!(f.catalog.finish_delete(attempt).await.is_err());
     let confirmed: bool =
         sqlx::query_scalar("SELECT deletion_confirmed_at IS NOT NULL FROM blobs WHERE id = $1")
             .bind(id.as_uuid())
@@ -854,7 +1198,7 @@ async fn failed_cleanup_audit_keeps_the_tombstone_unconfirmed_and_the_slot_reser
         .await
         .expect("remove failure");
     f.catalog
-        .finish_delete(f.scope.access, id)
+        .finish_delete(attempt)
         .await
         .expect("retry confirmation");
     assert!(reserve(&f, f.scope, 1).await.is_ok());

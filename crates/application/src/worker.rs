@@ -795,6 +795,17 @@ where
             if node.is_compensation() && !tx.compensation_admitted(&activity).await? {
                 continue;
             }
+            // Retention is part of admitting the effect, not of its eventual report. A forward
+            // lease also freezes any script compensation/reconciliation it may obligate. The
+            // store holds the policy fence and journals the pins with the lease atomically.
+            if !tx.script_execution_admitted(&node, &activity).await? {
+                metrics::counter!(
+                    "quota_exceeded_total",
+                    "limit" => QuotaResource::ScriptRetentionDays.limit_name()
+                )
+                .increment(1);
+                continue;
+            }
             match self
                 .lease_one(&mut tx, session, &node, activity, timeout, input, trace_id)
                 .await
@@ -1276,7 +1287,9 @@ where
             effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
             let node = task.node.clone();
             let fence = task.fence;
-            self.engine
+            let fallback_audit = effects.audit.clone();
+            let completed = self
+                .engine
                 .run(&mut tx, effects, move |def, state, now| {
                     let failure = execution::Failure {
                         fence,
@@ -1287,13 +1300,25 @@ where
                     Ok(((), execution::fail_step(def, state, &node, failure, now)?))
                 })
                 .await
-                .map_err(engine_error)?;
-            return self.finish(tx, task, idempotency).await;
+                .map_err(engine_error);
+            let result = match completed {
+                Ok(()) => self.finish(tx, task, idempotency.clone()).await,
+                Err(error) => {
+                    drop(tx);
+                    Err(error)
+                }
+            };
+            return self
+                .recover_success_storage_quota(principal, task, idempotency, fallback_audit, result)
+                .await;
         }
         // A reconciliation does not produce the output of a step, it says whether the step happened.
         if task.node.is_reconciliation() {
+            let result = self
+                .complete_reconciliation(tx, task, output, effects, idempotency.clone())
+                .await;
             return self
-                .complete_reconciliation(tx, task, output, effects, idempotency)
+                .recover_success_storage_quota(principal, task, idempotency, None, result)
                 .await;
         }
         // What a compensation answers is not kept: nothing reads it (a later step reads the output
@@ -1303,14 +1328,24 @@ where
         if task.node.is_compensation() {
             let node = task.node.clone();
             let fence = task.fence;
-            self.engine
+            let completed = self
+                .engine
                 .run(&mut tx, effects, move |def, state, now| {
                     let progress = execution::complete_step(def, state, &node, fence, now)?;
                     Ok(((), progress))
                 })
                 .await
-                .map_err(engine_error)?;
-            return self.finish(tx, task, idempotency).await;
+                .map_err(engine_error);
+            let result = match completed {
+                Ok(()) => self.finish(tx, task, idempotency.clone()).await,
+                Err(error) => {
+                    drop(tx);
+                    Err(error)
+                }
+            };
+            return self
+                .recover_success_storage_quota(principal, task, idempotency, None, result)
+                .await;
         }
         // Every lease receives the outputs of the steps before it, so what a run retains is bounded:
         // a completion that would exceed it fails the step (a retry would only exceed it again).
@@ -1318,7 +1353,8 @@ where
         if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
             let node = task.node.clone();
             let fence = task.fence;
-            self.engine
+            let completed = self
+                .engine
                 .run(&mut tx, effects, move |def, state, now| {
                     let failure = execution::Failure {
                         fence,
@@ -1329,16 +1365,86 @@ where
                     Ok(((), execution::fail_step(def, state, &node, failure, now)?))
                 })
                 .await
-                .map_err(engine_error)?;
-            return self.finish(tx, task, idempotency).await;
+                .map_err(engine_error);
+            let result = match completed {
+                Ok(()) => self.finish(tx, task, idempotency.clone()).await,
+                Err(error) => {
+                    drop(tx);
+                    Err(error)
+                }
+            };
+            return self
+                .recover_success_storage_quota(principal, task, idempotency, None, result)
+                .await;
         }
         effects.outputs = vec![(task.node.clone(), output.to_vec())];
         effects.blobs = blob.into_iter().collect();
         let node = task.node.clone();
         let fence = task.fence;
-        self.engine
+        let completed = self
+            .engine
             .run(&mut tx, effects, move |def, state, now| {
                 let progress = execution::complete_step(def, state, &node, fence, now)?;
+                Ok(((), progress))
+            })
+            .await
+            .map_err(engine_error);
+        let result = match completed {
+            Ok(()) => self.finish(tx, task, idempotency.clone()).await,
+            Err(error) => {
+                drop(tx);
+                Err(error)
+            }
+        };
+        self.recover_success_storage_quota(principal, task, idempotency, None, result)
+            .await
+    }
+
+    async fn recover_success_storage_quota(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        idempotency: Idempotency,
+        audit: Option<AuditRecord>,
+        result: Result<StepAck, AppError>,
+    ) -> Result<StepAck, AppError> {
+        match result {
+            Err(AppError::QuotaExceeded(what))
+                if what == QuotaResource::TenantContentBytes.limit_name() =>
+            {
+                metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
+                self.fail_success_for_storage_quota(principal, task, idempotency, audit)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// The success transaction was rolled back in full because its retained data did not fit.
+    /// Reopen the same fenced attempt, replay the original completion identity first, and commit a
+    /// terminal storage failure under that identity. Stopping before settling the step prevents an
+    /// `onError` route from allocating more retained data while preserving saga drain semantics.
+    async fn fail_success_for_storage_quota(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        idempotency: Idempotency,
+        audit: Option<AuditRecord>,
+    ) -> Result<StepAck, AppError> {
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+            return Ok(ack);
+        }
+        self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        let node = task.node.clone();
+        let fence = task.fence;
+        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.audit = audit;
+        self.engine
+            .run(&mut tx, effects, move |def, state, now| {
+                let progress =
+                    execution::fail_step_for_storage_quota(def, state, &node, fence, now)?;
                 Ok(((), progress))
             })
             .await
@@ -1459,7 +1565,10 @@ where
         let node = task.node.clone();
         let fence = task.fence;
         let jitter = self.entropy.unit();
-        self.engine
+        let fallback_code = code.clone();
+        let fallback_audit = effects.audit.clone();
+        let completed = self
+            .engine
             .run(&mut tx, effects, move |def, state, now| {
                 let progress = execution::fail_step(
                     def,
@@ -1473,6 +1582,71 @@ where
                     },
                     now,
                 )?;
+                Ok(((), progress))
+            })
+            .await
+            .map_err(engine_error);
+        let result = match completed {
+            Ok(()) => self.finish(tx, task, idempotency.clone()).await,
+            Err(error) => {
+                drop(tx);
+                Err(error)
+            }
+        };
+        self.recover_failed_storage_quota(
+            principal,
+            task,
+            idempotency,
+            fallback_code,
+            fallback_audit,
+            result,
+        )
+        .await
+    }
+
+    async fn recover_failed_storage_quota(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        idempotency: Idempotency,
+        code: FailureCode,
+        audit: Option<AuditRecord>,
+        result: Result<StepAck, AppError>,
+    ) -> Result<StepAck, AppError> {
+        match result {
+            Err(AppError::QuotaExceeded(what))
+                if what == QuotaResource::TenantContentBytes.limit_name() =>
+            {
+                metrics::counter!("quota_exceeded_total", "limit" => what).increment(1);
+                self.fail_report_for_storage_quota(principal, task, idempotency, code, audit)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    async fn fail_report_for_storage_quota(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        idempotency: Idempotency,
+        code: FailureCode,
+        audit: Option<AuditRecord>,
+    ) -> Result<StepAck, AppError> {
+        let mut tx = self.open(principal, task, Lock::Wait).await?;
+        if let Some(ack) = self.replayed(&mut tx, task, &idempotency).await? {
+            return Ok(ack);
+        }
+        self.verify(&mut tx, task).await?;
+        self.ensure_bound(principal, &mut tx, task).await?;
+        let node = task.node.clone();
+        let fence = task.fence;
+        let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
+        effects.audit = audit;
+        self.engine
+            .run(&mut tx, effects, move |def, state, now| {
+                let progress =
+                    execution::fail_report_for_storage_quota(def, state, &node, fence, code, now)?;
                 Ok(((), progress))
             })
             .await
@@ -1934,7 +2108,25 @@ pub fn describe(events: &[RunEvent]) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PROTOCOL_MINOR, json_escaped, negotiate_protocol};
+    use sagat_domain::blobs::BlobId;
+
+    use super::{PROTOCOL_MINOR, blob_report_identity, json_escaped, negotiate_protocol};
+
+    #[test]
+    fn blob_report_identity_normalizes_sha256_hex_case() {
+        let id = BlobId::generate();
+        let lowercase = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let uppercase = lowercase.to_ascii_uppercase();
+
+        assert_eq!(
+            blob_report_identity(id, lowercase),
+            blob_report_identity(id, &uppercase)
+        );
+        assert_ne!(
+            blob_report_identity(id, lowercase),
+            blob_report_identity(BlobId::generate(), lowercase)
+        );
+    }
 
     #[test]
     fn the_newest_version_both_sides_speak_is_agreed() {

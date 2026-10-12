@@ -18,6 +18,7 @@ import { OperationList } from './Operations';
 import type { Operation } from './ops';
 import { childPath, sagaWords } from './RunNodeCard';
 import { clip, formatDuration } from './time';
+import { PayloadInspector } from './PayloadInspection';
 
 function AttemptsTable({ history, running }: { history: StepHistory; running: boolean }) {
   const now = useNow();
@@ -144,6 +145,7 @@ function Links({ edges, model, id, onSelect }: { edges: readonly RuntimeEdge[]; 
  */
 export function NodePanel({
   node,
+  runId,
   selectedId,
   model,
   journal,
@@ -155,6 +157,7 @@ export function NodePanel({
   onShowInTimeline,
 }: {
   node: RuntimeNode | undefined;
+  runId: string;
   selectedId: string;
   model: RunModel;
   journal: JournalStore;
@@ -176,6 +179,7 @@ export function NodePanel({
     void journal.loadAll();
   }, [journal]);
   const history = useMemo(() => stepHistory(snapshot.entries, selectedId), [snapshot.entries, selectedId]);
+  const retainedPayloads = snapshot.entries.filter((entry) => entry.stepId === selectedId && entry.payloadRef !== null);
   const traces = [...new Set(snapshot.entries.filter((e) => e.stepId === selectedId && e.detail === 'journal' && e.traceId).map((e) => e.traceId as string))];
   const knowsTraces = snapshot.entries.some((e) => e.stepId === selectedId && e.detail === 'journal');
   const kind = node === undefined ? undefined : kindView(node);
@@ -267,6 +271,20 @@ export function NodePanel({
             <p className="hint">Trace ids come with the journal events, which are not read yet.</p>
           )}
           <p className="hint">The journal keeps no input or output of a step, only a digest: the payload is redacted.</p>
+          {retainedPayloads.length > 0 ? (
+            <div className="rn-payload-events">
+              <h3>Retained payloads</h3>
+              {retainedPayloads.map((entry) => (
+                <PayloadInspector
+                  key={entry.seq}
+                  runId={runId}
+                  selector={{ source: 'journal', sequence: entry.seq }}
+                  label={`Inspect redacted payload from event ${entry.seq}`}
+                  compact
+                />
+              ))}
+            </div>
+          ) : null}
 
           <h3>Structure</h3>
           <Links edges={model.edges} model={model} id={selectedId} onSelect={onSelect} />

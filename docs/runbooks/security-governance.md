@@ -275,8 +275,8 @@ For an existing disposable kind cluster, export its kubeconfig to a separate fil
 
 ## 7. Not covered
 
-- Webhook signature, replay and inbound SSRF controls: feature 004 (G36).
-- Quotas for builds, storage, logs, retention and event rate (G37); default values per tier (G42).
+- Webhook signature, replay and inbound SSRF controls are documented with feature 004.
+- Product-approved default quota values per tier (G42); provisional bounds are engineering defaults.
 - A KMS or HSM behind the key ring (G43); binding a client certificate to a token subject (G44).
 
 
@@ -296,3 +296,68 @@ Reproduce lock ordering and policy races with
 `cargo test -p sagat-tests --test integration_durable_execution activity_locking` against Docker.
 The ABBA regression gates two concurrent lease writes after admission to exercise the original
 opposite-activity ordering deterministically.
+
+## Durable byte, rate and retention quotas (ADR-0027)
+
+`tenant_content_bytes` charges stored content and outstanding blob reservations;
+`tenant_log_bytes` charges retained diagnostic bytes. The schema classification in
+`crates/infra-postgres/storage-classification.json` enumerates every variable-size column.
+PostgreSQL triggers and transaction-local deltas commit counters with the owning mutation.
+Content reuse is charged once; deletes release charged bytes. Lowering a ceiling does not erase
+existing data and still permits shrinking mutations. Blob admission reserves the declared size
+(or configured maximum) before PUT; finalization converts it to measured bytes. Unknown late-PUT
+reservations remain charged until safe cleanup, including unresolved legacy uploads conservatively
+reserved at 5 GiB each.
+
+Logs retain the largest permitted UTF-8 prefix and explicitly mark omitted diagnostics. Build/test
+completion and event/connector progress can therefore finish at zero log capacity. A refused new
+build artifact or test output becomes non-retryable `STORAGE_QUOTA_EXCEEDED` under the original
+job fence. Read `failureCode` even when the diagnostic string is empty. The metric
+`quota_log_truncated_total` records clipping without tenant or payload labels.
+
+Namespace API rates use a shared PostgreSQL token bucket (two-second burst), following authorization
+and canonical namespace resolution. See [the route inventory](api-rate-admission.md). Quota policy
+administration remains available at zero API quota. Event namespace/source buckets commit with
+inbox admission and connector progress: duplicates do not debit tokens, and refusal does not advance
+a broker checkpoint or acknowledge its delivery. Event retention checks include the replay window
+`2 * clock skew + 60 seconds`. Script forward leases pin retention before execution, including
+script compensation/reconciliation obligations; lowering the current ceiling never rewrites existing
+expiry or revokes an admitted obligation. A separate, unbound execution report uses current policy.
+
+Until a poll transaction commits and exposes tasks, its claims are new admission. If an
+oversized-input preflight failure would allocate charged on-error data, full storage rolls back
+all tentative claims and returns quota backpressure; existing READY work remains durable and may
+wait for capacity. No exposed lease token or external completion is lost. Already-exposed worker
+reports and scheduler expiries use the protected terminal/stop recovery paths instead. Event/cron
+starts and event wake-ups likewise retain their durable inbox/recovery record when new admission
+is refused; no broker checkpoint or acknowledgement advances for a rejected transaction.
+
+### Upgrade and rollback
+
+This change requires a coordinated writer upgrade; mixed old/new writers are not supported while
+byte enforcement is enabled. Old processes do not acquire the new policy/usage locks, stamp script
+retention pins, or implement quota-safe completion. Stop admission, drain or stop all control-plane,
+engine and runner writers, apply migrations with the owner role, deploy the matching binaries, then
+resume. Read replicas alone do not make an old writer safe. Preserve database backups before this
+migration and test the sequence on a restored copy.
+
+Before migration `20261025000000`, check historical script trace identifiers using counts only:
+
+```sql
+SELECT count(*) AS invalid_script_trace_ids FROM script_executions
+WHERE trace_id IS NOT NULL AND
+      (trace_id !~ '^[0-9a-f]{32}$' OR trace_id = repeat('0',32));
+```
+
+The validated constraint refuses an upgrade containing invalid legacy identifiers. Investigate and
+repair those records under the operator's existing evidence-retention procedure before retrying;
+the migration does not delete, print, or silently grandfather arbitrary historical content.
+New reports accept only nonzero, 32-character lowercase hexadecimal trace IDs.
+
+Migration `20261024000000` backfills counters and initially leaves content/log enforcement disabled
+in the owner-only `quota_accounting_control` row so consumer integration can be verified. Do not
+manually enable it with older binaries. API/event rates and retention admission are application
+policies and require the matching binaries independently of these byte switches. Rollback refuses
+to discard outstanding reservations or non-default new policies; `20261025000000` additionally
+refuses rollback while truncation/failure-code evidence exists. Restore or forward-fix according to
+the deployment's recovery plan rather than deleting evidence to bypass these guards.

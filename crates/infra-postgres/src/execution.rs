@@ -30,7 +30,7 @@ use sagat_domain::execution::{
     StepState, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
-use sagat_domain::saga::SagaOutcome;
+use sagat_domain::saga::{NodeOrigin, SagaOutcome};
 use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::{ActivityName, Digest, Node, NodeId, NodeKind, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
@@ -339,6 +339,7 @@ impl RunStore for PgRunStore {
                     input_digest,
                     stored: BTreeSet::new(),
                     breaker: self.breaker,
+                    script_retention: BTreeMap::new(),
                     signals: Vec::new(),
                 }));
             }
@@ -427,6 +428,7 @@ impl RunStore for PgRunStore {
             input_digest,
             stored,
             breaker: self.breaker,
+            script_retention: BTreeMap::new(),
             signals: Vec::new(),
         }))
     }
@@ -991,8 +993,24 @@ pub struct PgRunTx {
     /// proposed row before it takes the update path).
     stored: BTreeSet<NodeId>,
     breaker: BreakerPolicy,
+    /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
+    /// them to the matching immutable `step.leased` detail in this transaction.
+    script_retention: BTreeMap<NodeId, ScriptRetentionPins>,
     /// Counted when (and only when) the transaction commits.
     signals: Vec<Signal>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ScriptRetentionPins {
+    script: Option<u16>,
+    compensation: Option<u16>,
+    reconciliation: Option<u16>,
+}
+
+enum ScriptRetentionDecision {
+    NotScript,
+    Refused,
+    Pinned(u16),
 }
 
 impl std::fmt::Debug for PgRunTx {
@@ -1256,6 +1274,84 @@ impl RunTx for PgRunTx {
         .await
     }
 
+    async fn script_execution_admitted(
+        &mut self,
+        node: &NodeId,
+        activity: &ActivityName,
+    ) -> Result<bool, StoreError> {
+        let origin = self
+            .def
+            .node(node)
+            .map(Node::origin)
+            .cloned()
+            .ok_or_else(|| corrupt("leased node"))?;
+        match origin {
+            NodeOrigin::Compensation(forward) | NodeOrigin::Reconciliation(forward) => {
+                if sagat_domain::scripts::digest_of_activity(activity.as_str()).is_none() {
+                    return Ok(true);
+                }
+                let field = if node.is_compensation() {
+                    "compensationScriptRetentionDays"
+                } else {
+                    "reconciliationScriptRetentionDays"
+                };
+                let days = self
+                    .inherited_script_retention(&forward, field, activity)
+                    .await?;
+                self.script_retention.insert(
+                    node.clone(),
+                    ScriptRetentionPins {
+                        script: Some(days),
+                        ..ScriptRetentionPins::default()
+                    },
+                );
+                Ok(true)
+            }
+            NodeOrigin::Declared => {
+                let compensation = self
+                    .def
+                    .node(&node.compensation())
+                    .and_then(|node| match node.kind() {
+                        NodeKind::Activity { activity, .. } => Some(activity.clone()),
+                        _ => None,
+                    });
+                let reconciliation =
+                    self.def
+                        .node(&node.reconciliation())
+                        .and_then(|node| match node.kind() {
+                            NodeKind::Activity { activity, .. } => Some(activity.clone()),
+                            _ => None,
+                        });
+                let mut pins = ScriptRetentionPins::default();
+                for (role, candidate) in [
+                    (0_u8, Some(activity.clone())),
+                    (1_u8, compensation),
+                    (2_u8, reconciliation),
+                ] {
+                    let Some(candidate) = candidate else {
+                        continue;
+                    };
+                    match self.current_script_retention(&candidate).await? {
+                        ScriptRetentionDecision::NotScript => {}
+                        ScriptRetentionDecision::Refused => return Ok(false),
+                        ScriptRetentionDecision::Pinned(days) => match role {
+                            0 => pins.script = Some(days),
+                            1 => pins.compensation = Some(days),
+                            _ => pins.reconciliation = Some(days),
+                        },
+                    }
+                }
+                if pins.script.is_some()
+                    || pins.compensation.is_some()
+                    || pins.reconciliation.is_some()
+                {
+                    self.script_retention.insert(node.clone(), pins);
+                }
+                Ok(true)
+            }
+        }
+    }
+
     async fn lease_matches(
         &mut self,
         node: &NodeId,
@@ -1332,7 +1428,28 @@ impl RunTx for PgRunTx {
         for (offset, event) in events.iter().enumerate() {
             let seq = i64::try_from(self.persisted + 1 + offset as u64)
                 .map_err(|_| corrupt("sequence"))?;
-            let encoded = encode(event);
+            let mut encoded = encode(event);
+            if let RunEvent::StepLeased { node, .. } = event
+                && let Some(pins) = self.script_retention.get(node)
+            {
+                let detail =
+                    encoded
+                        .detail
+                        .as_object_mut()
+                        .ok_or_else(|| StoreError::Internal {
+                            detail: "a lease event did not encode as an object".into(),
+                        })?;
+                detail.insert("scriptRetentionPolicyVersion".into(), serde_json::json!(1));
+                for (name, value) in [
+                    ("scriptRetentionDays", pins.script),
+                    ("compensationScriptRetentionDays", pins.compensation),
+                    ("reconciliationScriptRetentionDays", pins.reconciliation),
+                ] {
+                    if let Some(days) = value {
+                        detail.insert(name.into(), serde_json::json!(days));
+                    }
+                }
+            }
             let payload = event
                 .node()
                 .filter(|_| {
@@ -1555,6 +1672,109 @@ impl RunTx for PgRunTx {
 }
 
 impl PgRunTx {
+    async fn ready_script_retention(
+        &mut self,
+        activity: &ActivityName,
+    ) -> Result<Option<u16>, StoreError> {
+        let Some(digest) = sagat_domain::scripts::digest_of_activity(activity.as_str()) else {
+            return Ok(None);
+        };
+        let days: Option<i16> = sqlx::query_scalar(
+            "SELECT max(retention_days) FROM script_versions \
+             WHERE tenant_id = $1 AND artifact_digest = $2 AND status = 'READY'",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(digest.as_str())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let days = days.ok_or_else(|| StoreError::Internal {
+            detail: "a workflow script has no READY version".into(),
+        })?;
+        u16::try_from(days)
+            .ok()
+            .filter(|days| (1..=365).contains(days))
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a READY script has invalid retention".into(),
+            })
+            .map(Some)
+    }
+
+    async fn current_script_retention(
+        &mut self,
+        activity: &ActivityName,
+    ) -> Result<ScriptRetentionDecision, StoreError> {
+        if sagat_domain::scripts::digest_of_activity(activity.as_str()).is_none() {
+            return Ok(ScriptRetentionDecision::NotScript);
+        }
+        // Fence the effective policy before selecting the current READY-version maximum. A policy
+        // edit that completed first governs this lease; one that starts later waits for commit.
+        let cap = match crate::content_usage::script_execution_retention(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            365,
+        )
+        .await
+        {
+            Ok(days) => days,
+            Err(StoreError::QuotaExceeded { what })
+                if what == sagat_domain::quota::QuotaResource::ScriptRetentionDays.limit_name() =>
+            {
+                return Ok(ScriptRetentionDecision::Refused);
+            }
+            Err(error) => return Err(error),
+        };
+        let requested = self
+            .ready_script_retention(activity)
+            .await?
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a script activity lost its digest".into(),
+            })?;
+        Ok(ScriptRetentionDecision::Pinned(requested.min(cap)))
+    }
+
+    async fn inherited_script_retention(
+        &mut self,
+        forward: &NodeId,
+        field: &'static str,
+        activity: &ActivityName,
+    ) -> Result<u16, StoreError> {
+        let attempt = self
+            .state
+            .step(forward)
+            .map(sagat_domain::execution::StepState::attempt)
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a derived script has no originating forward step".into(),
+            })?;
+        let detail: serde_json::Value = sqlx::query_scalar(
+            "SELECT detail FROM run_events \
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND event_type = 'step.leased' AND attempt = $4 \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(forward.as_str())
+        .bind(i32::try_from(attempt).map_err(|_| corrupt("attempt"))?)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| StoreError::Internal {
+            detail: "a derived script has no originating lease".into(),
+        })?;
+        match versioned_script_retention(&detail, field)? {
+            None => {
+                self.ready_script_retention(activity)
+                    .await?
+                    .ok_or_else(|| StoreError::Internal {
+                        detail: "a legacy script obligation has no READY version".into(),
+                    })
+            }
+            Some(days) => Ok(days),
+        }
+    }
+
     /// An attempt of the compensation `node` ended: tells the breaker of its activity.
     async fn breaker_outcome(&mut self, node: &NodeId, succeeded: bool) -> Result<(), StoreError> {
         let Some(NodeKind::Activity { activity, .. }) = self.def.node(node).map(Node::kind) else {
@@ -1978,6 +2198,27 @@ impl PgRunTx {
     }
 }
 
+fn versioned_script_retention(
+    detail: &serde_json::Value,
+    field: &'static str,
+) -> Result<Option<u16>, StoreError> {
+    match detail.get("scriptRetentionPolicyVersion") {
+        None => Ok(None),
+        Some(marker) if marker.as_u64() == Some(1) => detail
+            .get(field)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|days| u16::try_from(days).ok())
+            .filter(|days| (1..=365).contains(days))
+            .map(Some)
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a versioned script lease is missing its retention pin".into(),
+            }),
+        _ => Err(StoreError::Internal {
+            detail: "a script lease has an unknown retention policy version".into(),
+        }),
+    }
+}
+
 /// The run store also serves definitions, so one value can back every service that needs both.
 impl DefinitionStore for PgRunStore {
     async fn find_namespace_by_slug(
@@ -2137,5 +2378,43 @@ impl DefinitionStore for PgRunStore {
 
     async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
         DefinitionStore::record_denial(&self.definitions, audit).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_application::error::StoreError;
+    use serde_json::json;
+
+    use super::versioned_script_retention;
+
+    #[test]
+    fn script_retention_pin_parser_grandfathers_only_unversioned_leases() {
+        assert_eq!(
+            versioned_script_retention(&json!({"attempt": 1}), "scriptRetentionDays")
+                .expect("legacy lease"),
+            None
+        );
+        assert_eq!(
+            versioned_script_retention(
+                &json!({
+                    "scriptRetentionPolicyVersion": 1,
+                    "scriptRetentionDays": 7
+                }),
+                "scriptRetentionDays",
+            )
+            .expect("versioned pin"),
+            Some(7)
+        );
+        for corrupt in [
+            json!({"scriptRetentionPolicyVersion": 1}),
+            json!({"scriptRetentionPolicyVersion": 1, "scriptRetentionDays": 0}),
+            json!({"scriptRetentionPolicyVersion": 2, "scriptRetentionDays": 7}),
+        ] {
+            assert!(matches!(
+                versioned_script_retention(&corrupt, "scriptRetentionDays"),
+                Err(StoreError::Internal { .. })
+            ));
+        }
     }
 }

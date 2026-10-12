@@ -177,7 +177,8 @@ The engine's loops are tuned with `SAGAT_EVENT_POLL_MS` (200), `SAGAT_EVENT_BATC
 | Broker subscriptions per namespace | 50 (`broker_subscriptions`) |
 | Connectors per tenant | 20 (`event_connectors`) |
 | Undispatched events per tenant | 10 000, then `429`/backpressure |
-| Dedupe window | 24 h by default; at least twice the skew |
+| Dedupe window | 24 h by default; at least twice the skew plus 60 seconds, bounded by `event_retention_seconds` |
+| New event rate per namespace | `events_per_second`, initially 1 000/s with a two-second burst, shared across replicas |
 | Dead letters per connector | 1 000 (the first ones), 64 KiB each |
 | Deliveries waiting per subscription | 10 000, then the subscription is switched off |
 | Signatures in a header / header size | 4 / 512 bytes |
@@ -186,12 +187,24 @@ The engine's loops are tuned with `SAGAT_EVENT_POLL_MS` (200), `SAGAT_EVENT_BATC
 
 Quotas are changed through the quota API of feature 009; capacity per tier is an open question until measured on a production-like environment.
 
+New inbox admission consumes the durable namespace bucket and, for a webhook or connector, its
+source bucket in the same PostgreSQL transaction as the event and checkpoint. Temporary exhaustion
+returns retryable `429` with `Retry-After`; a zero policy disables new admission with
+`QUOTA_EXCEEDED`. A remembered duplicate remains acknowledged without a debit. Audit failure or
+transaction rollback returns both tokens. A connector leaves its broker receipt and checkpoint
+unchanged on refusal, so retry with the same event ID.
+
+`event_retention_seconds` bounds new event TTLs and new/changed endpoint windows. Lowering it never
+rewrites stored expiry. An endpoint can still be paused with its existing window; accepting a new
+event rechecks the current policy. Incompatible replay windows are rejected rather than shortened.
+The tenant pending-backlog cap remains approximate under concurrent distinct admissions.
+
 ## 7. Known gaps
 
 The honest list, with the reasons, is in [`research.md`](../../specs/004-events-webhooks-messaging/research.md) (G73–G95). The ones that matter to an operator:
 
 - **No ordering** between events (G74).
-- **The ingress limiter is in memory, per replica and per endpoint**; there is no per-address or global limit, and traffic that has not proved anything draws on the endpoint's attempt budget, so anyone who knows the URL can make an endpoint answer `429` to its provider for a while (G78). Put a proxy with its own limits in front of `/v1/webhooks`.
+- **The pre-authentication flood limiter remains in memory, per replica and endpoint**; accepted-event namespace/source rates are now durable. Traffic that has not proved anything draws on the endpoint's attempt budget, so anyone who knows the URL can make an endpoint answer `429` to its provider for a while (G78). Put a proxy with its own limits in front of `/v1/webhooks`.
 - **Broker sockets are not guarded after the first connection**: the egress policy is applied to the bootstrap names and addresses given, not to what a broker advertises afterwards or to a second resolution of the name (G76). Restrict the network of the engine as well.
 - **No retained-bytes quota for the inbox** (G80): events published through the API can be kept up to 30 days at up to 240 KiB each, within the per-subject and per-tenant request limits. Watch the size of `inbox_events`.
 - **Waits and `event` triggers match type and key from any source** (G87), a look-back reaches only as far as the window of the event's source (G89), and the dispatcher is one queue for all tenants (G88).
@@ -227,6 +240,15 @@ certificates reload on process restart. Client certificate validity is rechecked
 every keep-alive request; TLS session resumption is disabled. Forwarded certificate
 headers confer no identity. A TLS-terminating proxy must pass through TLS for this
 profile; plaintext requests cannot use it.
+
+The Helm chart configures this listener through `controlPlane.nativeTls.tlsSecret` (keys
+`tls.crt` and `tls.key`) and `controlPlane.nativeTls.clientCaSecret` (key `ca.crt`); the pair is
+mandatory and cannot be combined with `controlPlane.allowPlaintextSecrets`. For a private server
+CA, provide a separate `controlPlane.nativeTls.healthcheckCaSecret` containing `ca.crt` and set
+`healthcheckServerName` to the certificate name. Kubernetes probes use HTTPS. All TLS and profile
+files are read-only mode 0440 under pod group 10001. An optional
+`controlPlane.webhookOidcProfilesSecret` supplies `profiles.json` to
+`SAGAT_WEBHOOK_OIDC_PROFILES_FILE`.
 
 The three profiles are exclusive: a failed OIDC credential cannot fall back to a
 valid HMAC signature or TLS client certificate. The timestamp and ID remain

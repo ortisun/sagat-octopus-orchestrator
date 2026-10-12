@@ -136,6 +136,8 @@ pub enum Admission {
     Reused,
     /// The tenant's backlog is full; nothing was written.
     Backlogged,
+    /// A durable namespace/source bucket is temporarily depleted; nothing was admitted.
+    RateLimited { retry_after_secs: u32 },
 }
 
 /// Why a verified webhook could no longer be admitted against the endpoint snapshot that was
@@ -414,8 +416,6 @@ impl From<Refusal> for Unverified {
 enum Stage {
     /// Every request that reaches a known endpoint, signed or not.
     Attempt,
-    /// Requests whose signature verified.
-    Verified,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -817,6 +817,10 @@ where
                     .increment(1);
                 Err(AppError::Conflict(ConflictKind::EventIdReused))
             }
+            Admission::RateLimited { retry_after_secs } => {
+                metrics::counter!("events_received_total", "kind" => "api", "outcome" => "rate_limited").increment(1);
+                Err(AppError::Busy { retry_after_secs })
+            }
             Admission::Backlogged => {
                 metrics::counter!("events_received_total", "kind" => "api", "outcome" => "backlogged")
                     .increment(1);
@@ -900,14 +904,8 @@ where
             }
         };
 
-        self.gate
-            .take(
-                (record.id, Stage::Verified),
-                rate,
-                (rate * 2.0).max(2.0),
-                now,
-            )
-            .map_err(|wait| busy(wait, "rate"))?;
+        // Verified event admission is shared across replicas and charged only after dedupe by
+        // the inbox transaction. The local gate above remains pre-authentication flood protection.
         if !self.evaluator.is_json_object(request.body) {
             return Err(AppError::NotAllowed("the body must be a JSON object"));
         }
@@ -968,6 +966,10 @@ where
                     .increment(1);
                 self.audit_reuse(&record, now).await;
                 Err(AppError::Conflict(ConflictKind::EventIdReused))
+            }
+            WebhookAdmission::Admitted(Admission::RateLimited { retry_after_secs }) => {
+                metrics::counter!("events_received_total", "kind" => "webhook", "outcome" => "rate_limited").increment(1);
+                Err(AppError::Busy { retry_after_secs })
             }
             WebhookAdmission::Admitted(Admission::Backlogged) => {
                 metrics::counter!("events_received_total", "kind" => "webhook", "outcome" => "backlogged")

@@ -15,6 +15,7 @@ mod isolation;
 mod nats;
 mod outbox;
 mod routing;
+mod runtime_quotas;
 mod scheduler;
 mod starting;
 

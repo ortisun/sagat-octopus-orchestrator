@@ -8,6 +8,7 @@ pub mod health;
 pub mod identity;
 pub mod operations;
 pub mod outbound;
+pub mod payload_inspection;
 pub mod runner;
 pub mod scripts;
 pub mod versioning;

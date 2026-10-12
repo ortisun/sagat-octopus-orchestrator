@@ -23,7 +23,7 @@ without a policy) are not silently expanded or reclassified as implemented.
 - [x] NFR-006-OBS: real opt-in OTel integration for all five SDKs, redacted failures, trace propagation and unavailable-exporter tests.
 - [x] FR-006-008: reproducible package artifacts and install smoke tests; registry publication remains conditional on namespace and credentials (MIT selected by owner).
 - [x] FR-007-002: schema-aware workflow input/output editing.
-- [ ] FR-007-005: authorized redacted payload inspection through an appropriate read API and Studio view.
+- [x] FR-007-005: authorized, audited `structure-only-v1` payload inspection through REST and Studio; real PostgreSQL/gRPC/blob E2E 2/2 and keyboard Chromium journey 1/1 passed. All values and keys remain hidden.
 - [x] FR-005-003: isolated Go and Java build/runtime runners with signed artifacts and conformance/fault tests.
 - [ ] SC-008-001 / SC-012-001: agree the numeric UX target and record real human evaluation; never substitute an automated timing claim.
 - [x] Owner selected MIT; apply it to the repository and distributable SDK packages.
@@ -45,3 +45,6 @@ without a policy) are not silently expanded or reclassified as implemented.
 - Webhook security review closed: admission rechecks the endpoint under lock after verification; pause/replace/delete races 3/3 and full ingress 29/29 pass, with scoped Clippy.
 
 - SDK blob/input completion: real five-language round trip and early-response refusal pass; all package clean-consumer checks pass. Mixed protocol 1.2/1.3 admission tests pass 3/3 and rollback tests 2/2.
+
+- Latest Studio integration: 1,042 unit tests, lint, typecheck and production build passed; generated OpenAPI types and reference documentation refreshed.
+- Durable quota lock measurement: 2,000 committed operations across hot single-tenant and two-tenant cases, exact byte accounting; report `tests/performance/reports/durable-quotas.md`.

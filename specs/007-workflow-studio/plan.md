@@ -89,3 +89,27 @@ workflow input/output schemas, with separate model addresses. The document contr
 object or absent; incomplete JSON remains local and the last valid schema stays in the draft.
 Plain-text mode preserves that local text and exposes parse errors through accessible descriptions.
 No remote schema requests or changes to workflow validation semantics are introduced.
+
+## Authorized structural payload inspection (T007-048)
+
+Implement [ADR-0028](../../docs/adr/ADR-0028-authorized-structural-payload-inspection.md) as an
+additive audited read, using feature 002's immutable inline payload/journal references, feature
+009's permission/audit boundaries, ADR-0023's external catalog provenance and ADR-0027's canonical
+namespace API admission. This dependency approval does not authorize changes to execution
+transactions, blob capabilities, retention or customer value-disclosure policy.
+
+The application defines the selector/provenance/projection types and inspection use case in a new
+`crates/application/src/payloads.rs`; a small projector port is implemented in `crates/infra-ir`.
+A new PostgreSQL `payload_inspection.rs` reads the selected immutable data and commits the bounded
+audit before exposing a projection. The HTTP adapter adds
+`POST /v1/runs/{run_id}/payload-inspections`, with only input or journal-sequence selectors, and
+the dedicated permission. The Studio adds a lazy inspection view to run input/history; its
+server-provided tree contains no original keys or scalar values. External content returns verified
+catalog metadata with an explicit notice; it is not downloaded for this operation.
+
+Build the cross-tenant, canary-in-key/value, audit-failure, historical-selector and resource-bound
+tests first; then the PostgreSQL/use-case/REST path and accessible Studio view. Keep graph/SSE
+responses unchanged. Check generated OpenAPI types, late-response cancellation and a real browser
+journey. At implementation delivery update `data-model.md`, `research.md` G144, the design table,
+traceability and quickstart with the actual tests. T007-048 is not complete at design acceptance;
+customer classification and raw-value disclosure remain explicitly pending afterward.

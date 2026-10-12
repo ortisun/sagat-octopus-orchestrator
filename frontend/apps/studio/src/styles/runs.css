@@ -249,6 +249,64 @@
   overflow-wrap: anywhere;
 }
 
+.rn-payload {
+  margin: 0 0 var(--gap);
+}
+
+.rn-payload.compact {
+  margin: var(--space-2) 0 0;
+}
+
+.rn-payload-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.rn-payload-result {
+  margin-top: var(--space-3);
+  padding: var(--gap);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--bg-raised);
+}
+
+.rn-payload-policy {
+  margin-top: 0;
+}
+
+.rn-payload-tree {
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.rn-payload-tree ul {
+  margin: 0;
+  padding-left: var(--space-6);
+  list-style: none;
+}
+
+.rn-payload-tree > ul {
+  padding-left: 0;
+}
+
+.rn-payload-tree li {
+  margin: var(--space-2) 0;
+}
+
+.rn-payload-tree [role='group'] {
+  border-left: 1px solid var(--border-subtle);
+}
+
+.rn-payload-events {
+  margin-block: var(--gap);
+}
+
 /* The facts of the run, a few to a line: the graph is what the page is for, and it should be on the first screen. */
 .rn-facts.rn-grid {
   grid-template-columns: repeat(auto-fit, minmax(calc(var(--runs-master-width) * 0.66), 1fr));

@@ -379,6 +379,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{runId}/payload-inspections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect retained payload structure with every key and value hidden
+         * @description Requires both `run:read` and `run:payload:inspect` (Admin or Operator). Selects the
+         *     run input or the immutable payload referenced by one journal sequence. The server
+         *     commits a bounded audit before returning data. `structure-only-v1` hides all object
+         *     keys and scalar values, including values annotated as public in a schema. No raw
+         *     download or external-object read is performed. External metadata is returned only
+         *     from a committed tenant-bound catalog entry. Missing retained content is explicit.
+         *     The request is limited to 1 KiB; the projection to depth 16, 256 nodes, 32 children
+         *     per container and a 64 KiB response. Responses have `Cache-Control: private, no-store`.
+         *     Canonical namespace API admission is charged once after authorization.
+         */
+        post: operations["inspectRunPayload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{runId}/events": {
         parameters: {
             query?: never;
@@ -1772,7 +1800,7 @@ export interface paths {
         };
         /**
          * Read a test run
-         * @description Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED` or `SCRIPT_SANDBOX_UNAVAILABLE`.
+         * @description Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED`, `SCRIPT_SANDBOX_UNAVAILABLE` or non-retryable `STORAGE_QUOTA_EXCEEDED`. Retained content exhaustion commits the fenced terminal failure without the rejected result or inferred schemas; retained log exhaustion clips at a UTF-8 boundary and sets truncation evidence.
          */
         get: operations["getScriptTestRun"];
         put?: never;
@@ -2091,6 +2119,56 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        PayloadInspectionSelector: {
+            /** @constant */
+            source: "input";
+        } | {
+            /** @constant */
+            source: "journal";
+            sequence: number;
+        };
+        PayloadStructure: {
+            /** @enum {string} */
+            type: "object" | "array";
+            childCount: number;
+            children: components["schemas"]["PayloadStructure"][];
+            omittedChildren: number;
+        } | {
+            /** @enum {string} */
+            type: "string" | "number" | "boolean" | "null";
+            /** @constant */
+            redacted: true;
+        };
+        PayloadInspection: {
+            /** Format: uuid */
+            runId: string;
+            runVersion: number;
+            selection: components["schemas"]["PayloadInspectionSelector"];
+            nodeId?: string;
+            attempt?: number;
+            /** @constant */
+            policy: "structure-only-v1";
+        } & ({
+            /** @constant */
+            kind: "inline-json";
+            sizeBytes: number;
+            truncated: boolean;
+            tree: components["schemas"]["PayloadStructure"];
+        } | {
+            /** @constant */
+            kind: "external";
+            sizeBytes: number;
+            /** @enum {string} */
+            contentKind: "json" | "text" | "binary" | "other";
+            /** @constant */
+            reason: "EXTERNAL_CONTENT_NOT_INSPECTED";
+        } | {
+            /** @constant */
+            kind: "unavailable";
+            /** @enum {string} */
+            reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT";
+            sizeBytes?: number;
+        });
         JsonObject: {
             [key: string]: unknown;
         };
@@ -2737,7 +2815,7 @@ export interface components {
             /** @description What a waiting step correlates on. */
             correlationKey?: string;
             data: components["schemas"]["JsonObject"];
-            /** @description How long the event id is remembered (24 hours by default). */
+            /** @description How long the event id is remembered (24 hours by default), bounded by the current namespace event_retention_seconds policy. A remembered duplicate preserves its original expiry. */
             dedupeTtlSeconds?: number;
         };
         EventAccepted: {
@@ -2795,7 +2873,7 @@ export interface components {
             authentication?: components["schemas"]["WebhookAuthentication"];
             defaultEventType?: string;
             /**
-             * @description At least twice skewSeconds and 60 seconds more, or a replay of a signed request could be admitted as a new event.
+             * @description At least twice skewSeconds and 60 seconds more, bounded by event_retention_seconds. Incompatible windows are rejected, never silently shortened.
              * @default 86400
              */
             dedupeTtlSeconds: number;
@@ -3342,7 +3420,10 @@ export interface components {
             inputSchema?: Record<string, never>;
             outputSchema?: Record<string, never>;
             policy?: components["schemas"]["ScriptPolicy"];
-            /** @default 14 */
+            /**
+             * @description New choices, publications and test admissions must fit the current namespace script_retention_days policy. Lowering policy preserves existing records and exact publication replay.
+             * @default 14
+             */
             retentionDays: number;
         };
         UpdateScriptRequest: {
@@ -3381,7 +3462,11 @@ export interface components {
             keyId?: string;
             toolchain?: string;
             buildLog?: string;
-            /** @description Why the build made nothing: `rejected:`, `lockfile:`, `limit:`, `unsupported:` or `unavailable:` and the first message of the toolchain. */
+            /** @description True when the retained build diagnostic or log was truncated, including an empty log at zero allowance. */
+            buildLogTruncated?: boolean;
+            /** @enum {string} */
+            failureCode?: "SCRIPT_BUILD_REJECTED" | "SCRIPT_SANDBOX_UNAVAILABLE" | "STORAGE_QUOTA_EXCEEDED";
+            /** @description Retained build diagnostic, possibly empty when the log allowance is exhausted. failureCode preserves the terminal category independently; buildLogTruncated records omitted diagnostics. */
             failure?: string;
             createdBy: string;
             /** Format: date-time */
@@ -3409,6 +3494,8 @@ export interface components {
             keyId?: string;
             toolchain?: string;
             failure?: string;
+            /** @enum {string} */
+            failureCode?: "SCRIPT_BUILD_REJECTED" | "SCRIPT_SANDBOX_UNAVAILABLE" | "STORAGE_QUOTA_EXCEEDED";
             createdBy: string;
             /** Format: date-time */
             createdAt: string;
@@ -3992,6 +4079,7 @@ export interface operations {
                     "application/json": components["schemas"]["Health"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
             default: components["responses"]["InternalError"];
         };
@@ -4016,6 +4104,7 @@ export interface operations {
                     "application/json": components["schemas"]["Health"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
         };
@@ -4784,6 +4873,44 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    inspectRunPayload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PayloadInspectionSelector"];
+            };
+        };
+        responses: {
+            /** @description Audited structural projection or an explicit unavailable/external state */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadInspection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

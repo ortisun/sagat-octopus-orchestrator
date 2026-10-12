@@ -14,18 +14,21 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::definitions::DiffRef;
 use sagat_application::error::AppError;
 use sagat_application::identity::{Page, PageRequest};
 use sagat_application::runs::{GraphChanges, ReviewAction, RunFilter, RunOperation, StartRun};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
-use sagat_domain::execution::{FailureCode, ReviewOutcome, RunId, RunStatus};
+use sagat_domain::execution::{FailureCode, ReviewOutcome, RunId, RunStatus, StepStatus};
+use sagat_domain::identity::Permission;
 use sagat_domain::workflow::NodeId;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
+use crate::admission::{admit, namespace_slug};
 use crate::dto::PageBody;
 use crate::dto_exec::{
     CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody, PublishBody,
@@ -125,14 +128,24 @@ pub async fn create_workflow<B: Exec>(
     headers: HeaderMap,
     ApiJson(body): ApiJson<CreateWorkflowBody>,
 ) -> Result<(StatusCode, Json<WorkflowBody>), ApiError> {
+    let namespace_name = namespace(&headers)?;
+    let namespace = namespace_slug(namespace_name)?;
+    let key = idempotency_key(&headers)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionWrite,
+        ApiTarget::NamespaceSlug(namespace),
+    )
+    .await?;
     let record = state
         .definitions()
         .create_workflow(
             &caller.session.principal,
-            namespace(&headers)?,
+            namespace_name,
             &body.name,
             &to_bytes(&body.ir)?,
-            idempotency_key(&headers)?,
+            key,
             &caller.ctx,
         )
         .await?;
@@ -145,11 +158,20 @@ pub async fn list_workflows<B: Exec>(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<PageBody<WorkflowBody>>, ApiError> {
+    let namespace_name = namespace(&headers)?;
+    let namespace = namespace_slug(namespace_name)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::NamespaceSlug(namespace),
+    )
+    .await?;
     let result = state
         .definitions()
         .list_workflows(
             &caller.session.principal,
-            namespace(&headers)?,
+            namespace_name,
             &page_request(&query),
         )
         .await?;
@@ -161,13 +183,17 @@ pub async fn get_workflow<B: Exec>(
     State(state): State<B>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkflowBody>, ApiError> {
+    let id = parse_id::<WorkflowId>(&id)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let record = state
         .definitions()
-        .get_workflow(
-            &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
-            &caller.ctx,
-        )
+        .get_workflow(&caller.session.principal, id, &caller.ctx)
         .await?;
     Ok(Json(WorkflowBody::from(&record)))
 }
@@ -178,11 +204,19 @@ pub async fn update_draft<B: Exec>(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<UpdateDraftBody>,
 ) -> Result<Json<WorkflowBody>, ApiError> {
+    let id = parse_id::<WorkflowId>(&id)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionWrite,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let record = state
         .definitions()
         .update_draft(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
+            id,
             body.draft_revision,
             &to_bytes(&body.ir)?,
             &caller.ctx,
@@ -198,11 +232,19 @@ pub async fn validate_workflow<B: Exec>(
     ApiJson(body): ApiJson<ValidateBody>,
 ) -> Result<Json<Value>, ApiError> {
     let document = body.ir.as_ref().map(to_bytes).transpose()?;
+    let id = parse_id::<WorkflowId>(&id)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionWrite,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let validation = state
         .definitions()
         .validate(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
+            id,
             document.as_deref(),
             &caller.ctx,
         )
@@ -238,15 +280,19 @@ pub async fn diff_workflow<B: Exec>(
     Path(id): Path<String>,
     Query(query): Query<DiffQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let id = parse_id::<WorkflowId>(&id)?;
+    let from = diff_ref(query.from.as_deref())?;
+    let to = diff_ref(query.to.as_deref())?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let diff = state
         .definitions()
-        .diff(
-            &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
-            diff_ref(query.from.as_deref())?,
-            diff_ref(query.to.as_deref())?,
-            &caller.ctx,
-        )
+        .diff(&caller.session.principal, id, from, to, &caller.ctx)
         .await?;
     Ok(Json(diff_body(&diff)))
 }
@@ -258,14 +304,23 @@ pub async fn publish_workflow<B: Exec>(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<PublishBody>,
 ) -> Result<(StatusCode, Json<PublishedBody>), ApiError> {
+    let id = parse_id::<WorkflowId>(&id)?;
+    let key = idempotency_key(&headers)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionPublish,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let published = state
         .definitions()
         .publish(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
+            id,
             body.draft_revision,
             body.release_notes.as_deref(),
-            idempotency_key(&headers)?,
+            key,
             &caller.ctx,
         )
         .await?;
@@ -285,11 +340,19 @@ pub async fn list_versions<B: Exec>(
     Path(id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<PageBody<VersionBody>>, ApiError> {
+    let id = parse_id::<WorkflowId>(&id)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let result = state
         .definitions()
         .list_versions(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
+            id,
             &page_request(&query),
             &caller.ctx,
         )
@@ -303,25 +366,23 @@ pub async fn get_version<B: Exec>(
     Path((id, number)): Path<(String, String)>,
 ) -> Result<Json<VersionBody>, ApiError> {
     let number = number.parse::<u32>().map_err(|_| ApiError::not_found())?;
+    let id = parse_id::<WorkflowId>(&id)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let record = state
         .definitions()
-        .get_version(
-            &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
-            number,
-            &caller.ctx,
-        )
+        .get_version(&caller.session.principal, id, number, &caller.ctx)
         .await?;
     let mut body = VersionBody::from(&record);
     if let Some(publishing) = state.publishing() {
         body.scripts = Some(
             publishing
-                .dependencies(
-                    &caller.session.principal,
-                    parse_id::<WorkflowId>(&id)?,
-                    number,
-                    &caller.ctx,
-                )
+                .dependencies(&caller.session.principal, id, number, &caller.ctx)
                 .await?,
         );
     }
@@ -361,6 +422,13 @@ pub async fn start_run<B: Exec>(
         deadline: body.deadline,
         key: idempotency_key(&headers)?,
     };
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunStart,
+        ApiTarget::NamespaceSlug(namespace_slug(request.namespace)?),
+    )
+    .await?;
     let record = if let Some(id) = body.input_blob_ref {
         state
             .runs()
@@ -401,11 +469,19 @@ pub async fn list_runs<B: Exec>(
             })
             .transpose()?,
     };
+    let namespace_name = namespace(&headers)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunRead,
+        ApiTarget::NamespaceSlug(namespace_slug(namespace_name)?),
+    )
+    .await?;
     let result = state
         .runs()
         .list(
             &caller.session.principal,
-            namespace(&headers)?,
+            namespace_name,
             &filter,
             &page_request(&query),
         )
@@ -418,13 +494,11 @@ pub async fn get_run<B: Exec>(
     State(state): State<B>,
     Path(id): Path<String>,
 ) -> Result<Json<RunBody>, ApiError> {
+    let id = parse_id::<RunId>(&id)?;
+    admit(&state, &caller, ApiOperation::RunRead, ApiTarget::Run(id)).await?;
     let run = state
         .runs()
-        .get(
-            &caller.session.principal,
-            parse_id::<RunId>(&id)?,
-            &caller.ctx,
-        )
+        .get(&caller.session.principal, id, &caller.ctx)
         .await?;
     Ok(Json(RunBody::from(&run)))
 }
@@ -435,11 +509,13 @@ pub async fn run_journal<B: Exec>(
     Path(id): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<PageBody<JournalEventBody>>, ApiError> {
+    let id = parse_id::<RunId>(&id)?;
+    admit(&state, &caller, ApiOperation::RunRead, ApiTarget::Run(id)).await?;
     let result = state
         .runs()
         .journal(
             &caller.session.principal,
-            parse_id::<RunId>(&id)?,
+            id,
             &page_request(&query),
             &caller.ctx,
         )
@@ -454,6 +530,7 @@ pub async fn run_telemetry<B: Exec>(
     Path(id): Path<String>,
 ) -> Result<Json<crate::dto_exec::RunTelemetryBody>, ApiError> {
     let run = parse_id::<RunId>(&id)?;
+    admit(&state, &caller, ApiOperation::RunRead, ApiTarget::Run(run)).await?;
     let view = state
         .runs()
         .telemetry(&caller.session.principal, run, &caller.ctx)
@@ -485,6 +562,7 @@ pub async fn run_attempts<B: Exec>(
     Path(id): Path<String>,
 ) -> Result<Json<crate::dto_exec::AttemptListBody>, ApiError> {
     let run = parse_id::<RunId>(&id)?;
+    admit(&state, &caller, ApiOperation::RunRead, ApiTarget::Run(run)).await?;
     let attempts = state
         .runs()
         .attempts(&caller.session.principal, run, &caller.ctx)
@@ -508,13 +586,11 @@ pub async fn run_graph<B: Exec>(
     State(state): State<B>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let id = parse_id::<RunId>(&id)?;
+    admit(&state, &caller, ApiOperation::RunRead, ApiTarget::Run(id)).await?;
     let graph = state
         .runs()
-        .graph(
-            &caller.session.principal,
-            parse_id::<RunId>(&id)?,
-            &caller.ctx,
-        )
+        .graph(&caller.session.principal, id, &caller.ctx)
         .await?;
     Ok(Json(runtime_graph(&graph)))
 }
@@ -534,6 +610,7 @@ pub async fn run_graph_changes<B: Exec>(
     Query(query): Query<ChangesQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let run = parse_id::<RunId>(&id)?;
+    admit(&state, &caller, ApiOperation::RunRead, ApiTarget::Run(run)).await?;
     let Some(since) = query
         .since
         .as_deref()
@@ -590,6 +667,7 @@ pub async fn run_stream<B: Exec>(
 ) -> Result<Response, ApiError> {
     let run = parse_id::<RunId>(&id)?;
     let after = resume_point(&headers, &query)?;
+    admit(&state, &caller, ApiOperation::RunRead, ApiTarget::Run(run)).await?;
     let principal = caller.session.principal.clone();
     let ctx = caller.ctx.clone();
     // Reading first means a refusal is a refusal, not an empty stream.
@@ -799,8 +877,62 @@ pub async fn operate_run<B: Exec>(
         "RESOLVE_STEP" => Some(ReviewAction::Resolve(resolution(&body)?)),
         _ => None,
     };
+    let run_id = parse_id::<RunId>(&id)?;
+    // The idempotency header is part of the typed request. Reject it before consuming admission;
+    // the action-specific helper reuses the same validated value below.
+    idempotency_key(&headers)?;
+    let review_node = review
+        .as_ref()
+        .map(|action| validate_review_request(&body, action))
+        .transpose()?;
+    if matches!(review, Some(ReviewAction::Retry))
+        && review_node
+            .as_ref()
+            .is_some_and(|node| !node.is_compensation())
+    {
+        let node = review_node.as_ref().ok_or_else(ApiError::not_found)?;
+        let graph = state
+            .runs()
+            .graph(&caller.session.principal, run_id, &caller.ctx)
+            .await?;
+        let step = graph
+            .steps
+            .iter()
+            .find(|step| &step.node == node)
+            .ok_or_else(ApiError::not_found)?;
+        let unknown_outcome = step.status == StepStatus::Waiting
+            && step
+                .failure_code
+                .as_deref()
+                .and_then(|code| FailureCode::parse(code).ok())
+                .is_some_and(|code| code.leaves_outcome_unknown());
+        if unknown_outcome {
+            caller
+                .session
+                .principal
+                .authorize(Permission::SagaOverride)
+                .map_err(AppError::from)?;
+        }
+    }
+    let admission_operation = match (&review, body.action.as_str()) {
+        (Some(ReviewAction::Retry | ReviewAction::Hold), _) => ApiOperation::RunOperate,
+        (Some(ReviewAction::Skip | ReviewAction::Resolve(_)), _) => ApiOperation::SagaOverride,
+        (None, "RERUN_AS_NEW") => ApiOperation::RunRerun,
+        (None, "CANCEL" | "PAUSE" | "RESUME") => ApiOperation::RunOperate,
+        _ => return Err(ApiError::validation("unknown operation")),
+    };
+    admit(&state, &caller, admission_operation, ApiTarget::Run(run_id)).await?;
     if let Some(action) = review {
-        return review_step(&caller, &state, &headers, &id, &body, &action).await;
+        return review_step(
+            &caller,
+            &state,
+            &headers,
+            run_id,
+            &body,
+            review_node.as_ref().ok_or_else(ApiError::not_found)?,
+            &action,
+        )
+        .await;
     }
     let operation = match body.action.as_str() {
         "CANCEL" => RunOperation::Cancel,
@@ -814,7 +946,6 @@ pub async fn operate_run<B: Exec>(
             "CANCEL, PAUSE and RESUME apply to the whole run",
         ));
     }
-    let run_id = parse_id::<RunId>(&id)?;
     let run = state
         .runs()
         .operate(
@@ -837,6 +968,30 @@ pub async fn operate_run<B: Exec>(
             new_run_id: None,
         }),
     ))
+}
+
+fn validate_review_request(
+    body: &OperationBody,
+    action: &ReviewAction,
+) -> Result<NodeId, ApiError> {
+    let step = body
+        .step_id
+        .as_deref()
+        .ok_or_else(|| ApiError::validation("stepId is required for this operation"))?;
+    let node = NodeId::parse_stored(step)
+        .map_err(|_| ApiError::validation("stepId is not a step of a run"))?;
+    if body.action == "RETRY_COMPENSATION" && !node.is_compensation() {
+        return Err(ApiError::validation(
+            "RETRY_COMPENSATION needs the id of a compensation (ending in ~c)",
+        ));
+    }
+    if body.action != "RESOLVE_STEP" && (body.outcome.is_some() || body.error_code.is_some()) {
+        return Err(ApiError::validation(
+            "outcome and errorCode only go with RESOLVE_STEP",
+        ));
+    }
+    let _ = action;
+    Ok(node)
 }
 
 /// `RERUN_AS_NEW`: a run of the same version with the same input, from a run that ended.
@@ -916,34 +1071,17 @@ async fn review_step<B: Exec>(
     caller: &Caller,
     state: &B,
     headers: &HeaderMap,
-    id: &str,
+    run_id: RunId,
     body: &OperationBody,
+    node: &NodeId,
     action: &ReviewAction,
 ) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
-    let Some(step) = body.step_id.as_deref() else {
-        return Err(ApiError::validation(
-            "stepId is required for this operation",
-        ));
-    };
-    let node = NodeId::parse_stored(step)
-        .map_err(|_| ApiError::validation("stepId is not a step of a run"))?;
-    if body.action == "RETRY_COMPENSATION" && !node.is_compensation() {
-        return Err(ApiError::validation(
-            "RETRY_COMPENSATION needs the id of a compensation (ending in ~c)",
-        ));
-    }
-    if body.action != "RESOLVE_STEP" && (body.outcome.is_some() || body.error_code.is_some()) {
-        return Err(ApiError::validation(
-            "outcome and errorCode only go with RESOLVE_STEP",
-        ));
-    }
-    let run_id = parse_id::<RunId>(id)?;
     let run = state
         .runs()
         .review(
             &caller.session.principal,
             run_id,
-            &node,
+            node,
             action,
             &body.reason,
             body.expected_run_version,
@@ -970,14 +1108,17 @@ pub async fn get_compensation_plans<B: Exec>(
     Path((id, number)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let number = number.parse::<u32>().map_err(|_| ApiError::not_found())?;
+    let id = parse_id::<WorkflowId>(&id)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Workflow(id),
+    )
+    .await?;
     let plans = state
         .definitions()
-        .compensation_plans(
-            &caller.session.principal,
-            parse_id::<WorkflowId>(&id)?,
-            number,
-            &caller.ctx,
-        )
+        .compensation_plans(&caller.session.principal, id, number, &caller.ctx)
         .await?;
     Ok(Json(compensation_plans_body(&plans)))
 }
@@ -989,14 +1130,17 @@ pub async fn signal_run<B: Exec>(
     Path((id, name)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<SignalResultBody>), ApiError> {
+    let id = parse_id::<RunId>(&id)?;
+    let key = idempotency_key(&headers)?;
+    admit(&state, &caller, ApiOperation::RunSignal, ApiTarget::Run(id)).await?;
     let delivered = state
         .runs()
         .signal(
             &caller.session.principal,
-            parse_id::<RunId>(&id)?,
+            id,
             &name,
             &body,
-            idempotency_key(&headers)?,
+            key,
             &caller.ctx,
         )
         .await?;

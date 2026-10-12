@@ -1,8 +1,9 @@
 //! Quotas: how much of the platform one tenant or one namespace may use (FR-009-006, US04).
 //!
-//! A quota is a *hard* limit, not a rate: a request that would exceed it is refused, and the count
-//! it is judged against must be exact at the moment of the decision. The stores therefore count under
-//! a lock, in the same transaction that creates the thing counted; nothing here is an estimate.
+//! Quotas cover exact live counts, retained bytes, admission rates and retention ceilings. Count and
+//! storage admission is decided against authoritative usage in the transaction that creates the
+//! counted data. Rate admission uses durable database-time token buckets. Retention quotas bound new
+//! policy choices rather than reporting a scalar current usage.
 //!
 //! The defaults below are **provisional**: the specification leaves "capacity and quota values per
 //! tier" to be defined after benchmark and security testing (spec.md, open design questions). They
@@ -21,6 +22,9 @@ use std::str::FromStr;
 /// Largest value a limit can be set to; also what "effectively unlimited" means. Keeps every count
 /// and every comparison well inside `i64`.
 pub const MAX_LIMIT: u64 = 1_000_000_000;
+
+/// Largest logical-byte quota PostgreSQL can safely aggregate with ample headroom for deltas.
+pub const MAX_BYTE_LIMIT: u64 = 1_u64 << 50;
 
 /// What is limited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -50,6 +54,18 @@ pub enum QuotaResource {
     /// Builds and test runs of one namespace that have not finished: the concurrent work the sandbox
     /// is asked for on behalf of authors (feature 005).
     ScriptJobs,
+    /// Tenant-owned retained content and outstanding upload reservations.
+    TenantContentBytes,
+    /// Tenant-owned retained redacted application logs.
+    TenantLogBytes,
+    /// Authenticated namespace API requests admitted each second.
+    ApiRequestsPerSecond,
+    /// New namespace events admitted each second.
+    EventsPerSecond,
+    /// Longest event retention newly selected in a namespace.
+    EventRetentionSeconds,
+    /// Longest script retention newly selected in a namespace.
+    ScriptRetentionDays,
 }
 
 /// At which level a resource is counted.
@@ -61,8 +77,27 @@ pub enum QuotaScope {
     Tenant,
 }
 
+/// How a quota participates in admission and usage reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaKind {
+    Count,
+    Storage,
+    Rate,
+    Retention,
+}
+
+/// The scalar unit carried by a quota value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaUnit {
+    Items,
+    Bytes,
+    RequestsPerSecond,
+    Seconds,
+    Days,
+}
+
 impl QuotaResource {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 18] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -75,6 +110,12 @@ impl QuotaResource {
         Self::Connectors,
         Self::Scripts,
         Self::ScriptJobs,
+        Self::TenantContentBytes,
+        Self::TenantLogBytes,
+        Self::ApiRequestsPerSecond,
+        Self::EventsPerSecond,
+        Self::EventRetentionSeconds,
+        Self::ScriptRetentionDays,
     ];
 
     #[must_use]
@@ -92,6 +133,12 @@ impl QuotaResource {
             Self::Connectors => "event_connectors",
             Self::Scripts => "scripts",
             Self::ScriptJobs => "script_jobs",
+            Self::TenantContentBytes => "tenant_content_bytes",
+            Self::TenantLogBytes => "tenant_log_bytes",
+            Self::ApiRequestsPerSecond => "api_requests_per_second",
+            Self::EventsPerSecond => "events_per_second",
+            Self::EventRetentionSeconds => "event_retention_seconds",
+            Self::ScriptRetentionDays => "script_retention_days",
         }
     }
 
@@ -107,8 +154,54 @@ impl QuotaResource {
             | Self::BrokerSubscriptions
             | Self::Connectors
             | Self::Scripts
-            | Self::ScriptJobs => QuotaScope::Namespace,
-            Self::TenantActiveRuns | Self::WorkerSessions => QuotaScope::Tenant,
+            | Self::ScriptJobs
+            | Self::ApiRequestsPerSecond
+            | Self::EventsPerSecond
+            | Self::EventRetentionSeconds
+            | Self::ScriptRetentionDays => QuotaScope::Namespace,
+            Self::TenantActiveRuns
+            | Self::WorkerSessions
+            | Self::TenantContentBytes
+            | Self::TenantLogBytes => QuotaScope::Tenant,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(self) -> QuotaKind {
+        match self {
+            Self::TenantContentBytes | Self::TenantLogBytes => QuotaKind::Storage,
+            Self::ApiRequestsPerSecond | Self::EventsPerSecond => QuotaKind::Rate,
+            Self::EventRetentionSeconds | Self::ScriptRetentionDays => QuotaKind::Retention,
+            _ => QuotaKind::Count,
+        }
+    }
+
+    #[must_use]
+    pub const fn unit(self) -> QuotaUnit {
+        match self {
+            Self::TenantContentBytes | Self::TenantLogBytes => QuotaUnit::Bytes,
+            Self::ApiRequestsPerSecond | Self::EventsPerSecond => QuotaUnit::RequestsPerSecond,
+            Self::EventRetentionSeconds => QuotaUnit::Seconds,
+            Self::ScriptRetentionDays => QuotaUnit::Days,
+            _ => QuotaUnit::Items,
+        }
+    }
+
+    /// Whether the quota view can report one exact retained/live usage value.
+    #[must_use]
+    pub const fn has_usage(self) -> bool {
+        !matches!(self.kind(), QuotaKind::Rate | QuotaKind::Retention)
+    }
+
+    /// Largest value accepted for this resource without expanding legacy count limits.
+    #[must_use]
+    pub const fn maximum(self) -> u64 {
+        match self {
+            Self::TenantContentBytes | Self::TenantLogBytes => MAX_BYTE_LIMIT,
+            Self::ApiRequestsPerSecond | Self::EventsPerSecond => 1_000_000,
+            Self::EventRetentionSeconds => 2_592_000,
+            Self::ScriptRetentionDays => 365,
+            _ => MAX_LIMIT,
         }
     }
 
@@ -130,6 +223,12 @@ impl QuotaResource {
             Self::Connectors => 20,
             Self::Scripts => 500,
             Self::ScriptJobs => 8,
+            Self::TenantContentBytes => 10 * 1024 * 1024 * 1024,
+            Self::TenantLogBytes => 1024 * 1024 * 1024,
+            Self::ApiRequestsPerSecond => 100,
+            Self::EventsPerSecond => 1_000,
+            Self::EventRetentionSeconds => 2_592_000,
+            Self::ScriptRetentionDays => 365,
         }
     }
 
@@ -149,6 +248,12 @@ impl QuotaResource {
             Self::Connectors => "message connectors in the namespace",
             Self::Scripts => "scripts in the namespace",
             Self::ScriptJobs => "builds and test runs in progress in the namespace",
+            Self::TenantContentBytes => "retained content bytes of the tenant",
+            Self::TenantLogBytes => "retained log bytes of the tenant",
+            Self::ApiRequestsPerSecond => "API requests per second in the namespace",
+            Self::EventsPerSecond => "events per second in the namespace",
+            Self::EventRetentionSeconds => "event retention in the namespace",
+            Self::ScriptRetentionDays => "script retention in the namespace",
         }
     }
 }
@@ -181,7 +286,7 @@ impl FromStr for QuotaResource {
 pub fn ceiling(resource: QuotaResource, granted: Option<u64>) -> u64 {
     granted
         .unwrap_or_else(|| resource.default_limit())
-        .min(MAX_LIMIT)
+        .min(resource.maximum())
 }
 
 /// Where the limit in force comes from.
@@ -210,8 +315,10 @@ impl QuotaSource {
 /// A value that cannot be a limit.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QuotaError {
-    #[error("a limit is at most {MAX_LIMIT}")]
+    #[error("the limit is above the maximum for this resource")]
     TooLarge,
+    #[error("the limit is outside the valid range for this resource")]
+    OutsideRange,
     /// More than the platform grants this tenant. The ceiling is shown in the quota view.
     #[error("the value is above the ceiling the platform grants this tenant")]
     AboveCeiling,
@@ -231,8 +338,11 @@ pub fn validate(
     value: u64,
     ceiling: u64,
 ) -> Result<u64, QuotaError> {
-    if value > MAX_LIMIT {
+    if value > resource.maximum() {
         return Err(QuotaError::TooLarge);
+    }
+    if resource == QuotaResource::EventRetentionSeconds && (1..60).contains(&value) {
+        return Err(QuotaError::OutsideRange);
     }
     if namespace_level && resource.scope() == QuotaScope::Tenant {
         return Err(QuotaError::NotPerNamespace);
@@ -247,9 +357,11 @@ pub fn validate(
 ///
 /// # Errors
 /// [`QuotaError::TooLarge`] above [`MAX_LIMIT`].
-pub const fn validate_ceiling(value: u64) -> Result<u64, QuotaError> {
-    if value > MAX_LIMIT {
+pub const fn validate_ceiling(resource: QuotaResource, value: u64) -> Result<u64, QuotaError> {
+    if value > resource.maximum() {
         Err(QuotaError::TooLarge)
+    } else if matches!(resource, QuotaResource::EventRetentionSeconds) && value > 0 && value < 60 {
+        Err(QuotaError::OutsideRange)
     } else {
         Ok(value)
     }
@@ -342,7 +454,7 @@ mod tests {
             assert_eq!(ceiling(resource, Some(0)), 0, "zero is a ceiling");
             assert_eq!(
                 ceiling(resource, Some(u64::MAX)),
-                MAX_LIMIT,
+                resource.maximum(),
                 "a stored value out of range cannot lift the limit"
             );
         }
@@ -377,8 +489,11 @@ mod tests {
             validate(QuotaResource::WorkerSessions, false, 10, CEILING),
             Ok(10)
         );
-        assert_eq!(validate_ceiling(big), Ok(big));
-        assert_eq!(validate_ceiling(big + 1), Err(QuotaError::TooLarge));
+        assert_eq!(validate_ceiling(QuotaResource::Workflows, big), Ok(big));
+        assert_eq!(
+            validate_ceiling(QuotaResource::Workflows, big + 1),
+            Err(QuotaError::TooLarge)
+        );
     }
 
     #[test]
@@ -393,8 +508,115 @@ mod tests {
     #[test]
     fn every_default_is_inside_the_range_a_limit_may_take() {
         for resource in QuotaResource::ALL {
-            assert!(resource.default_limit() <= MAX_LIMIT, "{resource}");
+            assert!(resource.default_limit() <= resource.maximum(), "{resource}");
             assert!(resource.default_limit() > 0, "{resource}");
         }
+    }
+
+    #[test]
+    fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
+        assert_eq!(QuotaResource::ALL.len(), 18);
+        for (resource, scope, kind, unit, maximum, default, has_usage) in [
+            (
+                QuotaResource::TenantContentBytes,
+                QuotaScope::Tenant,
+                QuotaKind::Storage,
+                QuotaUnit::Bytes,
+                1_u64 << 50,
+                10 * 1024 * 1024 * 1024,
+                true,
+            ),
+            (
+                QuotaResource::TenantLogBytes,
+                QuotaScope::Tenant,
+                QuotaKind::Storage,
+                QuotaUnit::Bytes,
+                1_u64 << 50,
+                1024 * 1024 * 1024,
+                true,
+            ),
+            (
+                QuotaResource::ApiRequestsPerSecond,
+                QuotaScope::Namespace,
+                QuotaKind::Rate,
+                QuotaUnit::RequestsPerSecond,
+                1_000_000,
+                100,
+                false,
+            ),
+            (
+                QuotaResource::EventsPerSecond,
+                QuotaScope::Namespace,
+                QuotaKind::Rate,
+                QuotaUnit::RequestsPerSecond,
+                1_000_000,
+                1_000,
+                false,
+            ),
+            (
+                QuotaResource::EventRetentionSeconds,
+                QuotaScope::Namespace,
+                QuotaKind::Retention,
+                QuotaUnit::Seconds,
+                2_592_000,
+                2_592_000,
+                false,
+            ),
+            (
+                QuotaResource::ScriptRetentionDays,
+                QuotaScope::Namespace,
+                QuotaKind::Retention,
+                QuotaUnit::Days,
+                365,
+                365,
+                false,
+            ),
+        ] {
+            assert_eq!(resource.scope(), scope, "{resource}");
+            assert_eq!(resource.kind(), kind, "{resource}");
+            assert_eq!(resource.unit(), unit, "{resource}");
+            assert_eq!(resource.maximum(), maximum, "{resource}");
+            assert_eq!(resource.default_limit(), default, "{resource}");
+            assert_eq!(resource.has_usage(), has_usage, "{resource}");
+        }
+    }
+
+    #[test]
+    fn resource_specific_ranges_do_not_expand_legacy_count_limits() {
+        assert_eq!(QuotaResource::Workflows.maximum(), MAX_LIMIT);
+        assert_eq!(
+            validate(
+                QuotaResource::TenantContentBytes,
+                false,
+                1_u64 << 50,
+                1_u64 << 50
+            ),
+            Ok(1_u64 << 50)
+        );
+        assert_eq!(
+            validate(
+                QuotaResource::TenantContentBytes,
+                false,
+                (1_u64 << 50) + 1,
+                1_u64 << 50
+            ),
+            Err(QuotaError::TooLarge)
+        );
+        assert_eq!(
+            validate(QuotaResource::Workflows, false, MAX_LIMIT + 1, 1_u64 << 50),
+            Err(QuotaError::TooLarge)
+        );
+        assert_eq!(
+            validate(QuotaResource::EventRetentionSeconds, true, 59, 2_592_000),
+            Err(QuotaError::OutsideRange)
+        );
+        assert_eq!(
+            validate(QuotaResource::EventRetentionSeconds, true, 60, 2_592_000),
+            Ok(60)
+        );
+        assert_eq!(
+            validate(QuotaResource::EventRetentionSeconds, true, 0, 2_592_000),
+            Ok(0)
+        );
     }
 }

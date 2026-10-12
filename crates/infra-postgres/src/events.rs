@@ -5,7 +5,9 @@
 //! the id for something else is decided by comparing the digest of the content, in the same
 //! transaction.
 
+use crate::content_usage::{self, EventRateSource};
 use crate::pool::BeginSafely;
+use sagat_application::quotas::RateDecision;
 use std::time::Duration;
 
 use sagat_application::definitions::DefinitionStore;
@@ -182,6 +184,14 @@ impl EventStore for PgRunStore {
             ));
         }
         ensure_room_for_endpoint(&mut tx, endpoint.tenant_id, endpoint.namespace_id, limit).await?;
+        content_usage::check_event_retention(
+            &mut tx,
+            endpoint.tenant_id,
+            endpoint.namespace_id,
+            endpoint.limits.dedupe_ttl(),
+            Some(endpoint.limits.skew()),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO event_endpoints \
              (id, tenant_id, namespace_id, slug, profile, secret_name, oidc_profile, oidc_subject, \
@@ -229,6 +239,23 @@ impl EventStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<bool, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let previous: Option<(i32, i32)> = sqlx::query_as(
+            "SELECT dedupe_ttl_seconds, skew_seconds FROM event_endpoints WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
+        ).bind(endpoint.tenant_id.as_uuid()).bind(endpoint.id.as_uuid())
+            .fetch_optional(&mut *tx).await.map_err(store_error)?;
+        let Some((ttl, skew)) = previous else {
+            return Ok(false);
+        };
+        if ttl != secs(endpoint.limits.dedupe_ttl()) || skew != secs(endpoint.limits.skew()) {
+            content_usage::check_event_retention(
+                &mut tx,
+                endpoint.tenant_id,
+                endpoint.namespace_id,
+                endpoint.limits.dedupe_ttl(),
+                Some(endpoint.limits.skew()),
+            )
+            .await?;
+        }
         let changed = sqlx::query(
             "UPDATE event_endpoints SET profile = $3, secret_name = $4, oidc_profile = $5, \
                  oidc_subject = $6, mtls_certificate_sha256 = $7, default_event_type = $8, \
@@ -354,7 +381,7 @@ impl EventStore for PgRunStore {
         audit: Option<&AuditRecord>,
     ) -> Result<Admission, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let admission = admit_within(&mut tx, event, backlog_limit).await?;
+        let admission = admit_within(&mut tx, event, backlog_limit, None).await?;
         if admission == Admission::Accepted {
             if let Some(audit) = audit {
                 insert_audit(&mut tx, audit).await?;
@@ -396,7 +423,13 @@ impl EventStore for PgRunStore {
             return Ok(WebhookAdmission::Refused(mismatch));
         }
 
-        let admission = admit_within(&mut tx, event, backlog_limit).await?;
+        let admission = admit_within(
+            &mut tx,
+            event,
+            backlog_limit,
+            Some(EventRateSource::Endpoint(expected.id)),
+        )
+        .await?;
         if admission == Admission::Accepted {
             tx.commit().await.map_err(store_error)?;
         }
@@ -476,8 +509,20 @@ pub(crate) async fn admit_within(
     tx: &mut sqlx::PgConnection,
     event: &NewEvent,
     backlog_limit: u64,
+    source: Option<EventRateSource>,
 ) -> Result<Admission, StoreError> {
     let key = &event.envelope.key;
+    let skew = lock_source(tx, event, source).await?;
+    // Serialize only this dedupe key before charging a bucket. Concurrent copies of the same
+    // event must not consume separate tokens when the losing insert becomes a replay.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!(
+            "event-admission:{}:{}:{}:{}",
+            event.tenant_id, event.namespace_id, key.source, key.event_id
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
     // An id whose window has ended is a new event again; the purge job is not the only thing
     // that can notice. An event that was never dispatched is not forgotten with its window.
     sqlx::query(
@@ -510,6 +555,24 @@ pub(crate) async fn admit_within(
     .map_err(store_error)?;
     if u64::try_from(pending).unwrap_or(u64::MAX) >= backlog_limit {
         return Ok(Admission::Backlogged);
+    }
+
+    content_usage::check_event_retention(
+        tx,
+        event.tenant_id,
+        event.namespace_id,
+        event.dedupe_ttl,
+        skew,
+    )
+    .await?;
+    sqlx::query("SAVEPOINT event_admission_budget")
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    if let RateDecision::Refused { retry_after_secs } =
+        content_usage::take_event_rate(tx, event.tenant_id, event.namespace_id, source).await?
+    {
+        return Ok(Admission::RateLimited { retry_after_secs });
     }
 
     let inserted = sqlx::query(
@@ -546,14 +609,55 @@ pub(crate) async fn admit_within(
     .rows_affected()
         > 0;
     if inserted {
+        sqlx::query("RELEASE SAVEPOINT event_admission_budget")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         return Ok(Admission::Accepted);
     }
+    // A writer from an earlier deployment may not take the advisory key fence. Its winning
+    // insert is still a duplicate, so undo this transaction's tentative bucket debit.
+    sqlx::query("ROLLBACK TO SAVEPOINT event_admission_budget")
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    sqlx::query("RELEASE SAVEPOINT event_admission_budget")
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
     // Somebody admitted the same key between the look and the insert: they decide.
     remembered(&mut *tx, event)
         .await?
         .ok_or(StoreError::Internal {
             detail: "an inbox row vanished while it was being admitted".to_owned(),
         })
+}
+
+/// Source configuration is locked before policy/bucket locks, matching source updates.
+async fn lock_source(
+    tx: &mut sqlx::PgConnection,
+    event: &NewEvent,
+    source: Option<EventRateSource>,
+) -> Result<Option<Duration>, StoreError> {
+    match source {
+        None => Ok(None),
+        Some(EventRateSource::Endpoint(id)) => {
+            let skew: i32 = sqlx::query_scalar("SELECT skew_seconds FROM event_endpoints WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR SHARE")
+                .bind(event.tenant_id.as_uuid()).bind(event.namespace_id.as_uuid()).bind(id.as_uuid())
+                .fetch_optional(tx).await.map_err(store_error)?.ok_or(StoreError::MissingReference)?;
+            Ok(Some(Duration::from_secs(u64::try_from(skew).map_err(
+                |_| StoreError::Internal {
+                    detail: "invalid stored webhook skew".into(),
+                },
+            )?)))
+        }
+        Some(EventRateSource::Connector(id)) => {
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM event_connectors WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR SHARE")
+                .bind(event.tenant_id.as_uuid()).bind(event.namespace_id.as_uuid()).bind(id.as_uuid())
+                .fetch_optional(tx).await.map_err(store_error)?.ok_or(StoreError::MissingReference)?;
+            Ok(None)
+        }
+    }
 }
 
 /// What the inbox already says about this event's key: a retry (same content) or a reuse of the id.

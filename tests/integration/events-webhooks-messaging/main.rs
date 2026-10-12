@@ -11,6 +11,7 @@ mod dispatch;
 mod ingress;
 mod outbound;
 mod outbound_brokers;
+mod rate_quotas;
 mod sender;
 
 use sagat_application::events::{EndpointRecord, EndpointSettings, WebhookRequest};

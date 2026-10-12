@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 use tokio_stream::StreamExt;
 
+use crate::admission::admit_resolved_namespace;
 use crate::error::ApiError;
 use crate::exec::Exec;
 use crate::extract::Caller;
@@ -83,20 +84,6 @@ pub(crate) async fn upload<B: Exec>(
     let namespace = header(&headers, "x-octopus-namespace")?
         .filter(|v| !v.is_empty() && v.len() <= 63)
         .ok_or_else(|| ApiError::bad_request("the X-Octopus-Namespace header is required"))?;
-    let access = state
-        .runs()
-        .input_blob_access(&caller.session.principal, namespace)
-        .await?;
-    let blobs = state
-        .runs()
-        .input_blobs()
-        .ok_or_else(ApiError::unavailable)?;
-    let _slot = state
-        .blob_transfers()
-        .slots
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError::unavailable_after(1))?;
     let content_type = header(&headers, "content-type")?
         .map(ContentType::parse)
         .transpose()
@@ -117,6 +104,21 @@ pub(crate) async fn upload<B: Exec>(
                 .ok_or_else(|| ApiError::validation("invalid expected blob digest"))
         })
         .transpose()?;
+    let blobs = state
+        .runs()
+        .input_blobs()
+        .ok_or_else(ApiError::unavailable)?;
+    let access = state
+        .runs()
+        .input_blob_access(&caller.session.principal, namespace)
+        .await?;
+    admit_resolved_namespace(&state, &caller, access.namespace_id).await?;
+    let _slot = state
+        .blob_transfers()
+        .slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::unavailable_after(1))?;
     let expires = Duration::from_secs(caller.token_expires_at.saturating_sub(
         u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp()).unwrap_or(0),
     ));

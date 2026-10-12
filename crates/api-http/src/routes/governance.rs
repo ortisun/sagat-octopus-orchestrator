@@ -4,10 +4,12 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::workflow::ActivityName;
 
+use crate::admission::admit;
 use crate::dto_gov::{
     ActivityQuotaBody, ActivityQuotaListBody, BindingBody, BindingListBody, EgressPolicyBody,
     QuotaBody, QuotaListBody, RevokedBody, SecretAccessBody, SecretBody, SecretListBody,
@@ -19,6 +21,17 @@ use crate::governance::Governance;
 
 fn namespace_id(raw: &str) -> Result<NamespaceId, ApiError> {
     raw.parse().map_err(|_| ApiError::not_found())
+}
+
+async fn admitted_namespace<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw: &str,
+    operation: ApiOperation,
+) -> Result<NamespaceId, ApiError> {
+    let namespace = namespace_id(raw)?;
+    admit(state, caller, operation, ApiTarget::Namespace(namespace)).await?;
+    Ok(namespace)
 }
 
 fn resource(raw: &str) -> Result<QuotaResource, ApiError> {
@@ -87,13 +100,13 @@ pub async fn list_namespace_quotas<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<QuotaListBody>, ApiError> {
+    // Quota policy is the recovery control for a zero API rate. The use case performs the same
+    // permission check and canonical tenant/namespace lookup, but this route deliberately does not
+    // debit the bucket it administers.
+    let namespace = namespace_id(&namespace)?;
     let views = state
         .quotas()
-        .list(
-            &caller.session.principal,
-            Some(namespace_id(&namespace)?),
-            &caller.ctx,
-        )
+        .list(&caller.session.principal, Some(namespace), &caller.ctx)
         .await?;
     Ok(Json(QuotaListBody {
         items: views.iter().map(QuotaBody::from).collect(),
@@ -106,12 +119,14 @@ pub async fn set_namespace_quota<B: Governance>(
     Path((namespace, name)): Path<(String, String)>,
     ApiJson(body): ApiJson<SetQuotaBody>,
 ) -> Result<Json<QuotaBody>, ApiError> {
+    let resource = resource(&name)?;
+    let namespace = namespace_id(&namespace)?;
     let view = state
         .quotas()
         .set(
             &caller.session.principal,
-            Some(namespace_id(&namespace)?),
-            resource(&name)?,
+            Some(namespace),
+            resource,
             body.limit,
             &caller.ctx,
         )
@@ -124,12 +139,14 @@ pub async fn clear_namespace_quota<B: Governance>(
     State(state): State<B>,
     Path((namespace, name)): Path<(String, String)>,
 ) -> Result<Json<QuotaBody>, ApiError> {
+    let resource = resource(&name)?;
+    let namespace = namespace_id(&namespace)?;
     let view = state
         .quotas()
         .clear(
             &caller.session.principal,
-            Some(namespace_id(&namespace)?),
-            resource(&name)?,
+            Some(namespace),
+            resource,
             &caller.ctx,
         )
         .await?;
@@ -141,13 +158,10 @@ pub async fn list_activity_quotas<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<ActivityQuotaListBody>, ApiError> {
+    let namespace = namespace_id(&namespace)?;
     let views = state
         .quotas()
-        .list_activity_limits(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .list_activity_limits(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(ActivityQuotaListBody {
         items: views.iter().map(ActivityQuotaBody::from).collect(),
@@ -160,12 +174,14 @@ pub async fn set_activity_quota<B: Governance>(
     Path((namespace, activity_name)): Path<(String, String)>,
     ApiJson(body): ApiJson<SetQuotaBody>,
 ) -> Result<Json<ActivityQuotaBody>, ApiError> {
+    let activity = activity(&activity_name)?;
+    let namespace = namespace_id(&namespace)?;
     let view = state
         .quotas()
         .set_activity_limit(
             &caller.session.principal,
-            namespace_id(&namespace)?,
-            activity(&activity_name)?,
+            namespace,
+            activity,
             body.limit,
             &caller.ctx,
         )
@@ -178,14 +194,11 @@ pub async fn clear_activity_quota<B: Governance>(
     State(state): State<B>,
     Path((namespace, activity_name)): Path<(String, String)>,
 ) -> Result<Json<ActivityQuotaBody>, ApiError> {
+    let activity = activity(&activity_name)?;
+    let namespace = namespace_id(&namespace)?;
     let view = state
         .quotas()
-        .clear_activity_limit(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            activity(&activity_name)?,
-            &caller.ctx,
-        )
+        .clear_activity_limit(&caller.session.principal, namespace, activity, &caller.ctx)
         .await?;
     Ok(Json(ActivityQuotaBody::from(&view)))
 }
@@ -197,13 +210,11 @@ pub async fn list_bindings<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<BindingListBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::WorkerBind).await?;
     let views = state
         .bindings()
-        .list(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .list(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(BindingListBody {
         items: views.iter().map(BindingBody::listed).collect(),
@@ -216,11 +227,13 @@ pub async fn bind_worker<B: Governance>(
     Path((namespace, subject)): Path<(String, String)>,
     ApiJson(body): ApiJson<SetBindingBody>,
 ) -> Result<Json<BindingBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::WorkerBind).await?;
     let view = state
         .bindings()
         .bind(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             &subject,
             &body.activities,
             &caller.ctx,
@@ -234,14 +247,11 @@ pub async fn unbind_worker<B: Governance>(
     State(state): State<B>,
     Path((namespace, subject)): Path<(String, String)>,
 ) -> Result<Json<RevokedBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::WorkerBind).await?;
     let revoked = state
         .bindings()
-        .unbind(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &subject,
-            &caller.ctx,
-        )
+        .unbind(&caller.session.principal, namespace, &subject, &caller.ctx)
         .await?;
     Ok(Json(RevokedBody::from(revoked)))
 }
@@ -259,12 +269,10 @@ pub async fn list_secrets<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<SecretListBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretRead).await?;
     let views = secrets(&state)?
-        .list(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .list(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(SecretListBody {
         items: views.iter().map(SecretBody::from).collect(),
@@ -277,10 +285,12 @@ pub async fn put_secret<B: Governance>(
     Path((namespace, name)): Path<(String, String)>,
     ApiJson(body): ApiJson<SetSecretBody>,
 ) -> Result<Json<SecretBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
     let view = secrets(&state)?
         .put(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             &name,
             body.value.into_bytes(),
             &caller.ctx,
@@ -294,13 +304,10 @@ pub async fn delete_secret<B: Governance>(
     State(state): State<B>,
     Path((namespace, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
     secrets(&state)?
-        .delete(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &name,
-            &caller.ctx,
-        )
+        .delete(&caller.session.principal, namespace, &name, &caller.ctx)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -310,13 +317,10 @@ pub async fn list_secret_access<B: Governance>(
     State(state): State<B>,
     Path((namespace, name)): Path<(String, String)>,
 ) -> Result<Json<SecretAccessBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
     let subjects = secrets(&state)?
-        .access(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &name,
-            &caller.ctx,
-        )
+        .access(&caller.session.principal, namespace, &name, &caller.ctx)
         .await?;
     Ok(Json(SecretAccessBody { subjects }))
 }
@@ -326,10 +330,12 @@ pub async fn grant_secret_access<B: Governance>(
     State(state): State<B>,
     Path((namespace, name, subject)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
     secrets(&state)?
         .grant(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             &name,
             &subject,
             &caller.ctx,
@@ -343,10 +349,12 @@ pub async fn revoke_secret_access<B: Governance>(
     State(state): State<B>,
     Path((namespace, name, subject)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::SecretManage).await?;
     secrets(&state)?
         .revoke(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             &name,
             &subject,
             &caller.ctx,
@@ -362,13 +370,11 @@ pub async fn get_egress_policy<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<EgressPolicyBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EgressManage).await?;
     let policy = state
         .egress()
-        .get(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .get(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(EgressPolicyBody::from(&policy)))
 }
@@ -379,11 +385,13 @@ pub async fn set_egress_policy<B: Governance>(
     Path(namespace): Path<String>,
     ApiJson(body): ApiJson<SetEgressPolicyBody>,
 ) -> Result<Json<EgressPolicyBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EgressManage).await?;
     let policy = state
         .egress()
         .set(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             &body.rules,
             &body.ports,
             body.allow_http,
@@ -398,13 +406,11 @@ pub async fn reset_egress_policy<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EgressManage).await?;
     state
         .egress()
-        .reset(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .reset(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

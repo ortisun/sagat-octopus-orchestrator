@@ -8,6 +8,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::outbound::{BrokerSubscriptionSettings, SubscriptionSettings};
 use sagat_domain::connectors::ConnectorKind;
 use sagat_domain::identity::{NamespaceId, Slug};
@@ -18,6 +19,7 @@ use sagat_domain::outbound::{
 use sagat_domain::secrets::SecretName;
 use serde::Deserialize;
 
+use crate::admission::admit;
 use crate::dto_events::{
     BrokerSubscriptionBody, BrokerSubscriptionListBody, CreateBrokerSubscriptionBody,
     CreateSubscriptionBody, DeliveryBody, DeliveryPageBody, OutboundKafkaSettingsBody,
@@ -44,6 +46,47 @@ fn outbound<B: Governance>(
     state: &B,
 ) -> Result<&sagat_application::outbound::OutboundService<B::Store, B::Clock>, ApiError> {
     state.outbound().ok_or_else(ApiError::not_found)
+}
+
+async fn admitted_namespace<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw: &str,
+    operation: ApiOperation,
+) -> Result<NamespaceId, ApiError> {
+    let namespace = namespace_id(raw)?;
+    admit(state, caller, operation, ApiTarget::Namespace(namespace)).await?;
+    Ok(namespace)
+}
+
+async fn admitted_subscription<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw_namespace: &str,
+    raw_subscription: &str,
+    broker: bool,
+    operation: ApiOperation,
+) -> Result<sagat_application::outbound::SubscriptionRecord, ApiError> {
+    let namespace = namespace_id(raw_namespace)?;
+    let id = subscription_id(raw_subscription)?;
+    let subscription = if broker {
+        outbound(state)?
+            .get_broker(&caller.session.principal, id)
+            .await?
+    } else {
+        outbound(state)?.get(&caller.session.principal, id).await?
+    };
+    if subscription.namespace_id != namespace {
+        return Err(ApiError::not_found());
+    }
+    admit(
+        state,
+        caller,
+        operation,
+        ApiTarget::Namespace(subscription.namespace_id),
+    )
+    .await?;
+    Ok(subscription)
 }
 
 fn settings(
@@ -109,10 +152,12 @@ pub async fn create_subscription<B: Governance>(
     )?;
     let name =
         Slug::parse(&body.name).map_err(|_| ApiError::validation("the name is not valid"))?;
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventManage).await?;
     let created = outbound(&state)?
         .create(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             name,
             settings,
             &caller.ctx,
@@ -126,12 +171,10 @@ pub async fn list_subscriptions<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<SubscriptionListBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventRead).await?;
     let items = outbound(&state)?
-        .list(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .list(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     let reveal = can_see_urls(&caller);
     Ok(Json(SubscriptionListBody {
@@ -145,18 +188,24 @@ pub async fn list_subscriptions<B: Governance>(
 pub async fn get_subscription<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<Json<SubscriptionBody>, ApiError> {
-    let found = outbound(&state)?
-        .get(&caller.session.principal, subscription_id(&id)?)
-        .await?;
+    let found = admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        false,
+        ApiOperation::EventRead,
+    )
+    .await?;
     Ok(Json(SubscriptionBody::of(&found, can_see_urls(&caller))))
 }
 
 pub async fn update_subscription<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<UpdateSubscriptionBody>,
 ) -> Result<Json<SubscriptionBody>, ApiError> {
     let settings = settings(
@@ -167,6 +216,15 @@ pub async fn update_subscription<B: Governance>(
         body.timeout_ms,
         body.status.as_deref(),
     )?;
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        false,
+        ApiOperation::EventManage,
+    )
+    .await?;
     let updated = outbound(&state)?
         .update(
             &caller.session.principal,
@@ -181,8 +239,17 @@ pub async fn update_subscription<B: Governance>(
 pub async fn delete_subscription<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        false,
+        ApiOperation::EventManage,
+    )
+    .await?;
     outbound(&state)?
         .delete(
             &caller.session.principal,
@@ -203,7 +270,7 @@ pub struct DeliveryQuery {
 pub async fn list_deliveries<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     Query(query): Query<DeliveryQuery>,
 ) -> Result<Json<DeliveryPageBody>, ApiError> {
     let status = query
@@ -223,6 +290,15 @@ pub async fn list_deliveries<B: Governance>(
         })
         .transpose()?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        false,
+        ApiOperation::EventRead,
+    )
+    .await?;
     let mut items = outbound(&state)?
         .deliveries(
             &caller.session.principal,
@@ -248,14 +324,20 @@ pub async fn list_deliveries<B: Governance>(
 pub async fn get_delivery<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id, delivery)): Path<(String, String, String)>,
+    Path((namespace, id, delivery)): Path<(String, String, String)>,
 ) -> Result<Json<DeliveryBody>, ApiError> {
+    let delivery = delivery_id(&delivery)?;
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        false,
+        ApiOperation::EventRead,
+    )
+    .await?;
     let (delivery, attempts) = outbound(&state)?
-        .delivery(
-            &caller.session.principal,
-            subscription_id(&id)?,
-            delivery_id(&delivery)?,
-        )
+        .delivery(&caller.session.principal, subscription_id(&id)?, delivery)
         .await?;
     Ok(Json(DeliveryBody::detailed(&delivery, &attempts)))
 }
@@ -263,13 +345,23 @@ pub async fn get_delivery<B: Governance>(
 pub async fn redrive_delivery<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id, delivery)): Path<(String, String, String)>,
+    Path((namespace, id, delivery)): Path<(String, String, String)>,
 ) -> Result<Json<RedrivenBody>, ApiError> {
+    let delivery = delivery_id(&delivery)?;
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        false,
+        ApiOperation::EventManage,
+    )
+    .await?;
     let redriven = outbound(&state)?
         .redrive(
             &caller.session.principal,
             subscription_id(&id)?,
-            Some(delivery_id(&delivery)?),
+            Some(delivery),
             1,
             &caller.ctx,
         )
@@ -286,10 +378,19 @@ pub async fn redrive_delivery<B: Governance>(
 pub async fn redrive_dead<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<RedriveBody>,
 ) -> Result<Json<RedrivenBody>, ApiError> {
     let limit = body.limit.unwrap_or(100);
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        false,
+        ApiOperation::EventManage,
+    )
+    .await?;
     let redriven = outbound(&state)?
         .redrive(
             &caller.session.principal,
@@ -381,10 +482,12 @@ pub async fn create_broker_subscription<B: Governance>(
     )?;
     let name =
         Slug::parse(&body.name).map_err(|_| ApiError::validation("the name is not valid"))?;
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventManage).await?;
     let created = outbound(&state)?
         .create_broker(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             name,
             settings,
             &caller.ctx,
@@ -401,12 +504,10 @@ pub async fn list_broker_subscriptions<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<BrokerSubscriptionListBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventRead).await?;
     let items = outbound(&state)?
-        .list_brokers(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .list_brokers(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(BrokerSubscriptionListBody {
         items: items.iter().map(BrokerSubscriptionBody::from).collect(),
@@ -416,18 +517,24 @@ pub async fn list_broker_subscriptions<B: Governance>(
 pub async fn get_broker_subscription<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<Json<BrokerSubscriptionBody>, ApiError> {
-    let found = outbound(&state)?
-        .get_broker(&caller.session.principal, subscription_id(&id)?)
-        .await?;
+    let found = admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        true,
+        ApiOperation::EventRead,
+    )
+    .await?;
     Ok(Json(BrokerSubscriptionBody::from(&found)))
 }
 
 pub async fn update_broker_subscription<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<UpdateBrokerSubscriptionBody>,
 ) -> Result<Json<BrokerSubscriptionBody>, ApiError> {
     let settings = broker_settings(
@@ -439,6 +546,15 @@ pub async fn update_broker_subscription<B: Governance>(
         body.timeout_ms,
         body.status.as_deref(),
     )?;
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        true,
+        ApiOperation::EventManage,
+    )
+    .await?;
     let updated = outbound(&state)?
         .update_broker(
             &caller.session.principal,
@@ -453,8 +569,17 @@ pub async fn update_broker_subscription<B: Governance>(
 pub async fn delete_broker_subscription<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        true,
+        ApiOperation::EventManage,
+    )
+    .await?;
     outbound(&state)?
         .delete_broker(
             &caller.session.principal,
@@ -468,7 +593,7 @@ pub async fn delete_broker_subscription<B: Governance>(
 pub async fn list_broker_deliveries<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     Query(query): Query<DeliveryQuery>,
 ) -> Result<Json<DeliveryPageBody>, ApiError> {
     let status = query
@@ -488,6 +613,15 @@ pub async fn list_broker_deliveries<B: Governance>(
         })
         .transpose()?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        true,
+        ApiOperation::EventRead,
+    )
+    .await?;
     let mut items = outbound(&state)?
         .broker_deliveries(
             &caller.session.principal,
@@ -512,14 +646,20 @@ pub async fn list_broker_deliveries<B: Governance>(
 pub async fn get_broker_delivery<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id, delivery)): Path<(String, String, String)>,
+    Path((namespace, id, delivery)): Path<(String, String, String)>,
 ) -> Result<Json<DeliveryBody>, ApiError> {
+    let delivery = delivery_id(&delivery)?;
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        true,
+        ApiOperation::EventRead,
+    )
+    .await?;
     let (delivery, attempts) = outbound(&state)?
-        .broker_delivery(
-            &caller.session.principal,
-            subscription_id(&id)?,
-            delivery_id(&delivery)?,
-        )
+        .broker_delivery(&caller.session.principal, subscription_id(&id)?, delivery)
         .await?;
     Ok(Json(DeliveryBody::detailed(&delivery, &attempts)))
 }
@@ -527,13 +667,23 @@ pub async fn get_broker_delivery<B: Governance>(
 pub async fn redrive_broker_delivery<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id, delivery)): Path<(String, String, String)>,
+    Path((namespace, id, delivery)): Path<(String, String, String)>,
 ) -> Result<Json<RedrivenBody>, ApiError> {
+    let delivery = delivery_id(&delivery)?;
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        true,
+        ApiOperation::EventManage,
+    )
+    .await?;
     let redriven = outbound(&state)?
         .redrive_broker(
             &caller.session.principal,
             subscription_id(&id)?,
-            Some(delivery_id(&delivery)?),
+            Some(delivery),
             1,
             &caller.ctx,
         )
@@ -549,9 +699,18 @@ pub async fn redrive_broker_delivery<B: Governance>(
 pub async fn redrive_broker_dead<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<RedriveBody>,
 ) -> Result<Json<RedrivenBody>, ApiError> {
+    admitted_subscription(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        true,
+        ApiOperation::EventManage,
+    )
+    .await?;
     let redriven = outbound(&state)?
         .redrive_broker(
             &caller.session.principal,

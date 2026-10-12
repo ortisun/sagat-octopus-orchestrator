@@ -6,6 +6,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::connectors::ConnectorChoices;
 use sagat_domain::connectors::{
     ConnectorId, ConnectorKind, ConnectorSettings, ConnectorStatus, StartFrom,
@@ -17,6 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::admission::admit;
 use crate::dto_events::{
     AcceptedBody, ConnectorBody, ConnectorListBody, CreateConnectorBody, DeadLetterBody,
     DeadLetterPageBody, KafkaSettingsBody, NatsSettingsBody, SqsSettingsBody, UpdateConnectorBody,
@@ -45,6 +47,41 @@ fn connectors<B: Governance>(
 
 fn invalid(message: &'static str) -> ApiError {
     ApiError::validation(message)
+}
+
+async fn admitted_namespace<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw: &str,
+    operation: ApiOperation,
+) -> Result<NamespaceId, ApiError> {
+    let namespace = namespace_id(raw)?;
+    admit(state, caller, operation, ApiTarget::Namespace(namespace)).await?;
+    Ok(namespace)
+}
+
+async fn admitted_connector<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw_namespace: &str,
+    raw_connector: &str,
+    operation: ApiOperation,
+) -> Result<sagat_application::connectors::ConnectorRecord, ApiError> {
+    let namespace = namespace_id(raw_namespace)?;
+    let connector = connectors(state)?
+        .get(&caller.session.principal, connector_id(raw_connector)?)
+        .await?;
+    if connector.namespace_id != namespace {
+        return Err(ApiError::not_found());
+    }
+    admit(
+        state,
+        caller,
+        operation,
+        ApiTarget::Namespace(connector.namespace_id),
+    )
+    .await?;
+    Ok(connector)
 }
 
 /// The settings of the kind named, from the JSON a caller sent.
@@ -124,10 +161,12 @@ pub async fn create_connector<B: Governance>(
         body.status.as_deref(),
     )?;
     let slug = Slug::parse(&body.slug).map_err(|_| invalid("the slug is not valid"))?;
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventManage).await?;
     let created = connectors(&state)?
         .create(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             slug,
             choices,
             &caller.ctx,
@@ -141,12 +180,10 @@ pub async fn list_connectors<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<ConnectorListBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventRead).await?;
     let items = connectors(&state)?
-        .list(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .list(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(ConnectorListBody {
         items: items.iter().map(ConnectorBody::from).collect(),
@@ -156,18 +193,17 @@ pub async fn list_connectors<B: Governance>(
 pub async fn get_connector<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<Json<ConnectorBody>, ApiError> {
-    let found = connectors(&state)?
-        .get(&caller.session.principal, connector_id(&id)?)
-        .await?;
+    let found =
+        admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventRead).await?;
     Ok(Json(ConnectorBody::from(&found)))
 }
 
 pub async fn update_connector<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<UpdateConnectorBody>,
 ) -> Result<Json<ConnectorBody>, ApiError> {
     let choices = choices(
@@ -178,6 +214,7 @@ pub async fn update_connector<B: Governance>(
         body.rate_per_second,
         body.status.as_deref(),
     )?;
+    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventManage).await?;
     let updated = connectors(&state)?
         .update(
             &caller.session.principal,
@@ -192,8 +229,9 @@ pub async fn update_connector<B: Governance>(
 pub async fn delete_connector<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventManage).await?;
     connectors(&state)?
         .delete(&caller.session.principal, connector_id(&id)?, &caller.ctx)
         .await?;
@@ -209,7 +247,7 @@ pub struct PageQuery {
 pub async fn list_dead_letters<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<DeadLetterPageBody>, ApiError> {
     let before = query
@@ -221,6 +259,7 @@ pub async fn list_dead_letters<B: Governance>(
         })
         .transpose()?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventRead).await?;
     let mut items = connectors(&state)?
         .dead_letters(
             &caller.session.principal,
@@ -244,14 +283,12 @@ pub async fn list_dead_letters<B: Governance>(
 pub async fn get_dead_letter<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id, letter)): Path<(String, String, String)>,
+    Path((namespace, id, letter)): Path<(String, String, String)>,
 ) -> Result<Json<DeadLetterBody>, ApiError> {
+    let letter = letter_id(&letter)?;
+    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventRead).await?;
     let found = connectors(&state)?
-        .dead_letter(
-            &caller.session.principal,
-            connector_id(&id)?,
-            letter_id(&letter)?,
-        )
+        .dead_letter(&caller.session.principal, connector_id(&id)?, letter)
         .await?;
     Ok(Json(DeadLetterBody::from(&found)))
 }
@@ -259,13 +296,15 @@ pub async fn get_dead_letter<B: Governance>(
 pub async fn discard_dead_letter<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id, letter)): Path<(String, String, String)>,
+    Path((namespace, id, letter)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    let letter = letter_id(&letter)?;
+    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventManage).await?;
     connectors(&state)?
         .discard(
             &caller.session.principal,
             connector_id(&id)?,
-            letter_id(&letter)?,
+            letter,
             &caller.ctx,
         )
         .await?;
@@ -275,13 +314,15 @@ pub async fn discard_dead_letter<B: Governance>(
 pub async fn redrive_dead_letter<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id, letter)): Path<(String, String, String)>,
+    Path((namespace, id, letter)): Path<(String, String, String)>,
 ) -> Result<Json<AcceptedBody>, ApiError> {
+    let letter = letter_id(&letter)?;
+    admitted_connector(&state, &caller, &namespace, &id, ApiOperation::EventManage).await?;
     let key = connectors(&state)?
         .redrive(
             &caller.session.principal,
             connector_id(&id)?,
-            letter_id(&letter)?,
+            letter,
             &caller.ctx,
         )
         .await?;

@@ -337,7 +337,7 @@ fn end_attempt(
         // whichever came first, the cancellation or the lost lease.
         if *def_node.origin() == NodeOrigin::Declared
             && matches!(def_node.kind(), NodeKind::Activity { .. })
-            && is_ambiguous(&code)
+            && (is_ambiguous(&code) || code == FailureCode::storage_quota_exceeded())
         {
             let lost = RunEvent::StepRetryScheduled {
                 node: node.clone(),
@@ -419,6 +419,87 @@ pub fn fail_step(
     now: OffsetDateTime,
 ) -> Result<Progress, ExecutionError> {
     end_attempt(def, state, node, failure, now)
+}
+
+/// Fails a successful worker report whose atomic persistence exceeded the retained-content quota.
+///
+/// For a forward report, a new stop request is applied before the failed attempt is settled. This
+/// prevents an `onError` edge from releasing more forward work while retaining the ordinary stop
+/// drain: already owed saga compensation and reconciliation still run to completion. A failed
+/// reconciliation instead retains the forward step for review. If the run is already stopping, its
+/// original reason and code remain authoritative.
+///
+/// # Errors
+/// As [`fail_step`], plus the stop transition errors of [`stop_run`].
+pub fn fail_step_for_storage_quota(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    fence: Fence,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    fail_step_after_storage_quota(
+        def,
+        state,
+        node,
+        fence,
+        FailureCode::storage_quota_exceeded(),
+        now,
+    )
+}
+
+/// Preserves a worker-reported failure when routing that failure exceeded retained storage.
+///
+/// The run is stopped before the original, known failure is settled, so an `onError` route cannot
+/// allocate the content that made the first transaction fail. The original failure code remains on
+/// the step and does not imply that its external effect happened.
+///
+/// # Errors
+/// As [`fail_step_for_storage_quota`].
+pub fn fail_report_for_storage_quota(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    fence: Fence,
+    code: FailureCode,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    fail_step_after_storage_quota(def, state, node, fence, code, now)
+}
+
+fn fail_step_after_storage_quota(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    node: &NodeId,
+    fence: Fence,
+    code: FailureCode,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    let stop = (state.stop_reason().is_none() && !node.is_reconciliation()).then(|| {
+        RunEvent::RunStopRequested {
+            reason: StopReason::Failed,
+            code: Some(FailureCode::storage_quota_exceeded()),
+        }
+    });
+    if let Some(event) = stop.as_ref() {
+        state.apply(event)?;
+    }
+    let mut progress = end_attempt(
+        def,
+        state,
+        node,
+        Failure {
+            fence,
+            code,
+            retryable: false,
+            jitter_sample: 0.0,
+        },
+        now,
+    )?;
+    if let Some(event) = stop {
+        progress.events.insert(0, event);
+    }
+    Ok(progress)
 }
 
 /// The attempt ended without a report (lease expiry or attempt timeout). Both consume an attempt
@@ -556,6 +637,31 @@ pub fn stop_run(
     now: OffsetDateTime,
 ) -> Result<Progress, ExecutionError> {
     apply_then_settle(def, state, now, RunEvent::RunStopRequested { reason, code })
+}
+
+/// Stops a run whose automatic transition could not fit within retained storage.
+///
+/// A prior stop remains authoritative. In that case this only advances its existing drain; it
+/// never replaces cancellation, timeout, or a prior failure with the storage failure.
+///
+/// # Errors
+/// As [`stop_run`].
+pub fn stop_for_storage_quota(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    if state.stop_reason().is_some() {
+        settle(def, state, now, Vec::new())
+    } else {
+        stop_run(
+            def,
+            state,
+            StopReason::Failed,
+            Some(FailureCode::storage_quota_exceeded()),
+            now,
+        )
+    }
 }
 
 /// Pauses the run: nothing new is released or leased until it is resumed.

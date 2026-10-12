@@ -152,3 +152,34 @@ Validation on 2026-10-12: 31 focused component tests and all three Chromium US01
 including schema completions, an invalid-type diagnostic and preservation when switching editor
 modes. Typecheck, lint and production build passed. This focused browser run used the explicit
 no-sandbox harness mode; it does not revalidate the separate US02 inline-script runner journey.
+
+### Authorized structural payload inspection
+
+An Admin or Operator can open a run, select the run input or a journal event, and choose **Inspect
+redacted payload**. The response follows `structure-only-v1`: it shows container types and counts,
+labels children only by ordinal position, and never returns object keys or scalar values. External
+payloads show verified catalog metadata without downloading content. Missing, unsupported and
+truncated payloads have explicit states. Changing run, node, tenant or session clears the result and
+aborts an in-flight request.
+
+The focused validation run on 2026-10-12 was:
+
+```text
+cargo test -p sagat-tests --test e2e_workflow_studio payload_inspection -- --nocapture
+cargo test -p sagat-application --test payloads
+cargo test -p sagat-infra-ir --test payload_projection
+cargo test -p sagat-domain --test identity
+cd frontend && npm test -- PayloadInspection RunDetailPage TimelineView NodePanel
+cd frontend && npm run lint && npm run typecheck && npm run build
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_GREP="operator inspects useful redacted input" \
+  cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+Results: 2/2 real PostgreSQL/API tests, 6/6 application tests, 4/4 projector tests, 27/27
+permission tests, 70/70 focused Studio tests, and one real Chromium journey passed. The browser
+journey exercised the real API and engine; no sandbox script was involved. The suites cover exact
+Admin/Operator permissions, all refused roles, foreign/missing opacity, audit failure and collapse,
+historical selection after retry, forged blob-shaped JSON, verified external metadata, invalid and
+oversized input, depth/node/child/response caps, UTF-8, and stale query/session cancellation. Canary
+keys, strings, numbers, booleans and schema annotations are asserted absent from HTTP responses and
+the DOM. Customer classification and raw-value disclosure remain pending under G42/G39.

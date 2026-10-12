@@ -349,6 +349,38 @@ async fn what_a_worker_advertises_is_validated_and_bounded() {
             "{bad:?} -> {refused:?}"
         );
     }
+    for bad in [
+        Capabilities {
+            activities: vec!["a".repeat(129)],
+            ..capabilities(vec![])
+        },
+        Capabilities {
+            activities: (0..=256).map(|i| format!("act.{i}")).collect(),
+            ..capabilities(vec![])
+        },
+        Capabilities {
+            pools: vec!["x".repeat(65)],
+            ..capabilities(vec![])
+        },
+        Capabilities {
+            pools: (0..=MAX_LABELS).map(|i| format!("p{i}")).collect(),
+            ..capabilities(vec![])
+        },
+    ] {
+        let refused = w
+            .workers
+            .register(&w.worker, "payments", "validated-bounds", &bad)
+            .await;
+        assert!(matches!(refused, Err(AppError::NotAllowed(_))), "{bad:?}");
+    }
+    for bad_name in ["x".repeat(121), "line\nbreak".to_owned()] {
+        assert!(matches!(
+            w.workers
+                .register(&w.worker, "payments", &bad_name, &capabilities(vec![]))
+                .await,
+            Err(AppError::NotAllowed(_))
+        ));
+    }
 }
 
 #[tokio::test]

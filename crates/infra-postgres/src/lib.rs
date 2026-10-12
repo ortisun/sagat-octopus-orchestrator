@@ -6,9 +6,11 @@
 
 use sqlx::migrate::Migrator;
 
+mod api_admission;
 mod bindings;
 mod breaker;
 mod connectors;
+mod content_usage;
 mod definitions;
 mod dispatch;
 mod egress;
@@ -20,6 +22,7 @@ mod maintenance;
 mod operations;
 mod outbound;
 mod partitioning;
+mod payload_inspection;
 mod pool;
 mod privilege;
 mod quotas;

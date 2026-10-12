@@ -10,6 +10,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::error::AppError;
 use sagat_application::events::{EndpointSettings, PublishRequest, WebhookRequest};
 use sagat_application::identity::TraceLink;
@@ -23,6 +24,7 @@ use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::EventType;
 use sagat_telemetry::TraceContext;
 
+use crate::admission::{admit, namespace_slug};
 use crate::dto_events::{
     AcceptedBody, CreateEndpointBody, EndpointBody, EndpointListBody, EventBody, PublishEventBody,
     UpdateEndpointBody,
@@ -58,6 +60,41 @@ fn events<B: Governance>(
 
 fn invalid(message: &'static str) -> ApiError {
     ApiError::validation(message)
+}
+
+async fn admitted_namespace<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw: &str,
+    operation: ApiOperation,
+) -> Result<NamespaceId, ApiError> {
+    let namespace = namespace_id(raw)?;
+    admit(state, caller, operation, ApiTarget::Namespace(namespace)).await?;
+    Ok(namespace)
+}
+
+async fn admitted_endpoint<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw_namespace: &str,
+    raw_endpoint: &str,
+    operation: ApiOperation,
+) -> Result<sagat_application::events::EndpointRecord, ApiError> {
+    let namespace = namespace_id(raw_namespace)?;
+    let endpoint = events(state)?
+        .get_endpoint(&caller.session.principal, endpoint_id(raw_endpoint)?)
+        .await?;
+    if endpoint.namespace_id != namespace {
+        return Err(ApiError::not_found());
+    }
+    admit(
+        state,
+        caller,
+        operation,
+        ApiTarget::Namespace(endpoint.namespace_id),
+    )
+    .await?;
+    Ok(endpoint)
 }
 
 /// The settings of a request, with the defaults of an endpoint for what it leaves out.
@@ -134,10 +171,12 @@ pub async fn create_endpoint<B: Governance>(
         body.status.as_deref(),
     )?;
     let slug = Slug::parse(&body.slug).map_err(|_| invalid("the slug is not valid"))?;
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventManage).await?;
     let endpoint = events(&state)?
         .create_endpoint(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             slug,
             settings,
             &caller.ctx,
@@ -151,12 +190,10 @@ pub async fn list_endpoints<B: Governance>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<EndpointListBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventRead).await?;
     let items = events(&state)?
-        .list_endpoints(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &caller.ctx,
-        )
+        .list_endpoints(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(EndpointListBody {
         items: items.iter().map(EndpointBody::from).collect(),
@@ -166,18 +203,17 @@ pub async fn list_endpoints<B: Governance>(
 pub async fn get_endpoint<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<Json<EndpointBody>, ApiError> {
-    let endpoint = events(&state)?
-        .get_endpoint(&caller.session.principal, endpoint_id(&id)?)
-        .await?;
+    let endpoint =
+        admitted_endpoint(&state, &caller, &namespace, &id, ApiOperation::EventRead).await?;
     Ok(Json(EndpointBody::from(&endpoint)))
 }
 
 pub async fn update_endpoint<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
     ApiJson(body): ApiJson<UpdateEndpointBody>,
 ) -> Result<Json<EndpointBody>, ApiError> {
     let settings = settings(
@@ -189,6 +225,7 @@ pub async fn update_endpoint<B: Governance>(
         body.rate_per_second,
         body.status.as_deref(),
     )?;
+    admitted_endpoint(&state, &caller, &namespace, &id, ApiOperation::EventManage).await?;
     let endpoint = events(&state)?
         .update_endpoint(
             &caller.session.principal,
@@ -203,8 +240,9 @@ pub async fn update_endpoint<B: Governance>(
 pub async fn delete_endpoint<B: Governance>(
     caller: Caller,
     State(state): State<B>,
-    Path((_namespace, id)): Path<(String, String)>,
+    Path((namespace, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    admitted_endpoint(&state, &caller, &namespace, &id, ApiOperation::EventManage).await?;
     events(&state)?
         .delete_endpoint(&caller.session.principal, endpoint_id(&id)?, &caller.ctx)
         .await?;
@@ -226,32 +264,36 @@ pub async fn publish_event<B: Governance>(
         .ok_or_else(|| ApiError::bad_request("the X-Octopus-Namespace header is required"))?;
     let data = serde_json::to_vec(&body.data)
         .map_err(|_| ApiError::bad_request("the event data cannot be encoded"))?;
+    let request = PublishRequest {
+        namespace: namespace.to_owned(),
+        event_id: body
+            .event_id
+            .as_deref()
+            .map(EventId::parse)
+            .transpose()
+            .map_err(|e| ApiError::validation(e.to_string()))?,
+        event_type: EventType::parse(&body.event_type)
+            .map_err(|_| invalid("the event type is not valid"))?,
+        subject: body.subject,
+        correlation_key: body
+            .correlation_key
+            .as_deref()
+            .map(CorrelationKey::parse)
+            .transpose()
+            .map_err(|_| invalid("the correlation key is not usable"))?,
+        occurred_at: body.occurred_at,
+        data,
+        dedupe_ttl: body.dedupe_ttl_seconds.map(Duration::from_secs),
+    };
+    admit(
+        &state,
+        &caller,
+        ApiOperation::EventPublish,
+        ApiTarget::NamespaceSlug(namespace_slug(namespace)?),
+    )
+    .await?;
     let received = events(&state)?
-        .publish(
-            &caller.session.principal,
-            PublishRequest {
-                namespace: namespace.to_owned(),
-                event_id: body
-                    .event_id
-                    .as_deref()
-                    .map(EventId::parse)
-                    .transpose()
-                    .map_err(|e| ApiError::validation(e.to_string()))?,
-                event_type: EventType::parse(&body.event_type)
-                    .map_err(|_| invalid("the event type is not valid"))?,
-                subject: body.subject,
-                correlation_key: body
-                    .correlation_key
-                    .as_deref()
-                    .map(CorrelationKey::parse)
-                    .transpose()
-                    .map_err(|_| invalid("the correlation key is not usable"))?,
-                occurred_at: body.occurred_at,
-                data,
-                dedupe_ttl: body.dedupe_ttl_seconds.map(Duration::from_secs),
-            },
-            &caller.ctx,
-        )
+        .publish(&caller.session.principal, request, &caller.ctx)
         .await?;
     Ok((StatusCode::ACCEPTED, Json(AcceptedBody::from(&received))))
 }
@@ -265,13 +307,10 @@ pub async fn get_event<B: Governance>(
         source: Slug::parse(&source).map_err(|_| ApiError::not_found())?,
         event_id: EventId::parse(&event_id).map_err(|_| ApiError::not_found())?,
     };
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::EventRead).await?;
     let event = events(&state)?
-        .event(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            &key,
-            &caller.ctx,
-        )
+        .event(&caller.session.principal, namespace, &key, &caller.ctx)
         .await?;
     Ok(Json(EventBody::from(&event)))
 }

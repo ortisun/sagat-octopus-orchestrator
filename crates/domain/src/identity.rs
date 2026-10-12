@@ -282,6 +282,8 @@ pub enum Permission {
     RunStart,
     /// Read runs, their journal and runtime graph.
     RunRead,
+    /// Inspect only the redacted structure of a run input or retained journal payload.
+    RunPayloadInspect,
     /// Cancel, pause or resume a run.
     RunOperate,
     /// Deliver a signal to a run.
@@ -341,7 +343,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission, used to grant the admin role and to test the full matrix.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::WorkspaceRead,
         Self::WorkspaceCreate,
         Self::NamespaceRead,
@@ -353,6 +355,7 @@ impl Permission {
         Self::AuditRead,
         Self::RunStart,
         Self::RunRead,
+        Self::RunPayloadInspect,
         Self::RunOperate,
         Self::RunSignal,
         Self::WorkerExecute,
@@ -393,6 +396,7 @@ impl Permission {
             Self::AuditRead => "audit:read",
             Self::RunStart => "run:start",
             Self::RunRead => "run:read",
+            Self::RunPayloadInspect => "run:payload:inspect",
             Self::RunOperate => "run:operate",
             Self::RunSignal => "run:signal",
             Self::WorkerExecute => "worker:execute",
@@ -460,10 +464,10 @@ impl Role {
     pub const fn permissions(self) -> &'static [Permission] {
         use Permission::{
             DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish,
-            EventRead, NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunRead,
-            RunSignal, RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
-            ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
-            WorkspaceRead,
+            EventRead, NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate,
+            RunPayloadInspect, RunRead, RunSignal, RunStart, ScriptBuild, ScriptExecute,
+            ScriptPublish, ScriptRead, ScriptWrite, SecretRead, SecretUse, VersionActivate,
+            WorkerExecute, WorkerManage, WorkspaceRead,
         };
         match self {
             Self::Admin => &Permission::ALL,
@@ -493,6 +497,7 @@ impl Role {
                 DefinitionRead,
                 RunStart,
                 RunRead,
+                RunPayloadInspect,
                 RunOperate,
                 RunSignal,
                 QuotaRead,

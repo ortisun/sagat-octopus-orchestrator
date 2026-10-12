@@ -169,7 +169,7 @@ impl<R: ConnectorRuntime> Ingest<R> {
                 self.set_aside(message, DeadLetter::IdReused, checkpoint)
                     .await
             }
-            Ok(Admission::Backlogged) => Outcome::Backlogged,
+            Ok(Admission::Backlogged | Admission::RateLimited { .. }) => Outcome::Backlogged,
             Err(StoreError::RevisionConflict { .. }) => Outcome::Superseded,
             Err(error) => {
                 tracing::warn!(%error, connector = %self.connector.id, "admitting a message failed");

@@ -20,6 +20,7 @@ import { NotAllowed } from './NotAllowed';
 import { NowProvider, Relative } from './Now';
 import { OperationDialog } from './OperationDialog';
 import type { Decision } from './OperationDialog';
+import { PayloadInspector } from './PayloadInspection';
 import { runOperations, stepOperations } from './ops';
 import type { Operation, RunFacts } from './ops';
 import { useVersions, versionLabel } from './queries';
@@ -258,6 +259,8 @@ function RunDetail({ runId }: { runId: string }) {
           refreshing={snapshot.reloading}
         />
 
+        <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
+
         {snapshot.lagMs > 0 ? (
           <Banner tone="info" title="The graph may be behind the journal.">
             When it was read, the projection of the graph was {formatDuration(snapshot.lagMs)} behind the journal. It catches up as updates arrive; the timeline is always the journal itself.
@@ -298,6 +301,7 @@ function RunDetail({ runId }: { runId: string }) {
           {selectedId !== undefined && model !== undefined ? (
             <NodePanel
               node={selectedNode}
+              runId={runId}
               selectedId={selectedId}
               model={model}
               journal={journal}

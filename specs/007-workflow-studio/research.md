@@ -172,9 +172,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   again whether its subject is still a member with the right to read. Before the independent review each tick read the whole
   graph (120 scans of the steps table in four seconds for one quiet stream). A push from the engine (`LISTEN/NOTIFY` or NATS)
   belongs to feature 010 with the rest of the scale work.
-- **G144 — No payload is shown.** The journal and the graph carry no input, output or error text (a `payloadRef` digest
-  and a `failureCode` only), so "redacted payload" holds by construction and the Studio cannot show a step's data. Showing
-  it needs a redaction policy per payload class (feature 009's classification is not built, G37) and a read API.
+- **G144 — Structural payload inspection is implemented; value disclosure remains out of scope.** The journal and graph
+  still carry only a `payloadRef` digest and a `failureCode`. An Admin or Operator may explicitly inspect the run input or
+  an immutable journal sequence through ADR-0028's authorized, audited `structure-only-v1` endpoint. The server removes
+  every object key and scalar, bounds the tree, and returns only verified catalog metadata for external content. Customer
+  classification and any policy that could disclose values remain pending under G42/G39.
 - **G145 — "Retry run as new" and "mark manual review" are not available** (`422` from the API, G58): the Studio shows
   them disabled with the reason, it does not fake them.
 - **G146 — Accessibility is checked by tools and a keyboard walkthrough**, not by people using a screen reader; WCAG 2.2

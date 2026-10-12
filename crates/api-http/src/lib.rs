@@ -16,6 +16,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutLayer};
 
+mod admission;
 pub mod auth;
 pub mod blobs;
 mod concurrency;
@@ -212,10 +213,6 @@ where
             axum::routing::post(identity::create_namespace::<S, C>),
         )
         .route("/namespaces", get(identity::list_namespaces::<S, C>))
-        .route(
-            "/namespaces/{namespace_id}",
-            get(identity::get_namespace::<S, C>),
-        )
         .route_layer(axum::middleware::from_fn_with_state(
             slots,
             limits::shed_excess,
@@ -257,6 +254,7 @@ where
     S: IdentityStore + 'static,
     C: Clock + 'static,
     G: sagat_application::quotas::QuotaStore
+        + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::egress::EgressStore
@@ -286,6 +284,7 @@ where
     S: IdentityStore + 'static,
     C: Clock + 'static,
     G: sagat_application::quotas::QuotaStore
+        + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::egress::EgressStore
@@ -671,6 +670,21 @@ where
         Router::new()
     };
 
+    let payload_inspections = if state.payload_inspections().is_some() {
+        Router::new()
+            .route(
+                "/runs/{run_id}/payload-inspections",
+                axum::routing::post(
+                    routes::payload_inspection::inspect_payload::<B<S, C, P, X, E>>,
+                ),
+            )
+            .layer(RequestBodyLimitLayer::new(1024))
+            .route_layer(shed())
+            .with_state(state.clone())
+    } else {
+        Router::new()
+    };
+
     let identity_routes = Router::new()
         .route("/auth/context", get(identity::auth_context))
         .route("/version", get(identity::platform_version))
@@ -687,10 +701,6 @@ where
             axum::routing::post(identity::create_namespace::<S, C>),
         )
         .route("/namespaces", get(identity::list_namespaces::<S, C>))
-        .route(
-            "/namespaces/{namespace_id}",
-            get(identity::get_namespace::<S, C>),
-        )
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .route_layer(shed())
         .with_state(core.clone());
@@ -747,6 +757,10 @@ where
 
     let exec_routes = Router::new()
         .merge(versioning_routes)
+        .route(
+            "/namespaces/{namespace_id}",
+            get(get_namespace_admitted::<S, C, P, X, E>),
+        )
         .route(
             "/workflows",
             get(ex::list_workflows::<B<S, C, P, X, E>>)
@@ -826,6 +840,7 @@ where
         .route("/health", get(health::health))
         .route("/ready", get(health::ready::<S, C>))
         .merge(identity_routes)
+        .merge(payload_inspections)
         .merge(exec_routes)
         .merge(extra_routes)
         .route_layer(from_fn(context::record_route))
@@ -848,6 +863,37 @@ where
         outer,
     )
     .merge(uploads)
+}
+
+async fn get_namespace_admitted<S, C, P, X, E>(
+    caller: extract::Caller,
+    axum::extract::State(state): axum::extract::State<ExecState<S, C, P, X, E>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<axum::Json<dto::NamespaceBody>, error::ApiError>
+where
+    S: IdentityStore + 'static,
+    C: Clock + 'static,
+    ExecState<S, C, P, X, E>: Exec,
+{
+    use sagat_application::api_admission::{ApiOperation, ApiTarget};
+    use sagat_domain::identity::NamespaceId;
+
+    let id = id
+        .parse::<NamespaceId>()
+        .map_err(|_| error::ApiError::not_found())?;
+    admission::admit(
+        &state,
+        &caller,
+        ApiOperation::NamespaceRead,
+        ApiTarget::Namespace(id),
+    )
+    .await?;
+    let namespace = state
+        .core
+        .identity
+        .get_namespace(&caller.session.principal, id, &caller.ctx)
+        .await?;
+    Ok(axum::Json(dto::NamespaceBody::from(&namespace)))
 }
 
 /// Wraps a router with the protections every endpoint must have: panic containment, a request

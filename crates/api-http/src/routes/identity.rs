@@ -10,7 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use sagat_application::clock::Clock;
 use sagat_application::identity::{IdentityStore, Page, PageRequest};
-use sagat_domain::identity::{NamespaceId, WorkspaceId};
+use sagat_domain::identity::WorkspaceId;
 
 use crate::AppState;
 use crate::dto::{
@@ -188,21 +188,4 @@ where
         .list_namespaces(&caller.session.principal, &page_request(query))
         .await?;
     Ok(Json(page_body(&page)))
-}
-
-pub async fn get_namespace<S, C>(
-    caller: Caller,
-    State(state): State<AppState<S, C>>,
-    Path(id): Path<String>,
-) -> Result<Json<NamespaceBody>, ApiError>
-where
-    S: IdentityStore + 'static,
-    C: Clock + 'static,
-{
-    let id = parse_id::<NamespaceId>(&id)?;
-    let namespace = state
-        .identity
-        .get_namespace(&caller.session.principal, id, &caller.ctx)
-        .await?;
-    Ok(Json(NamespaceBody::from(&namespace)))
 }

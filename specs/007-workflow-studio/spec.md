@@ -68,6 +68,12 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **FR-007-003**: The system MUST compile/verify the graph into Workflow IR with versioned node IDs, with no illegal cycles or broken references.
 - **FR-007-004**: The system MUST implement Draft/Published versions, diff, and a warning for contract-breaking changes, with no in-place modification of the published version.
 - **FR-007-005**: The system MUST project the journal into an execution graph with attempts, retries, compensations, trace links, redacted payload.
+  The redacted-payload implementation is the authorized, audited structural inspection in
+  [ADR-0028](../../docs/adr/ADR-0028-authorized-structural-payload-inspection.md): actual persisted
+  input or journal-selected output, with every scalar value and object key hidden, bounded
+  structure/type/count/size metadata, and explicit unavailable/external-content states. It requires
+  `run:payload:inspect` in addition to run read access. No schema annotation authorizes value
+  disclosure. Implementation and its evidence remain pending under T007-048.
 - **FR-007-006**: The system MUST offer SSE/WebSocket incremental updates and polling fallback, avoiding full DAG reload.
 - **FR-007-007**: The system MUST enforce operational actions via RBAC and confirmation explaining the consequences of retry/compensation.
 - **FR-007-008**: The system MUST implement a WCAG AA accessibility target and an alternative table/list view.
@@ -130,6 +136,8 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 
 - Define capacity/quota values per tier, after benchmark and security testing.
 - Confirm the payload classification/retention scheme per customer and regulator.
+  This remains open for value disclosure and retention policy; ADR-0028's `structure-only-v1`
+  inspection makes neither decision and reveals no scalar value or object key.
 - Adjust SDK ergonomics based on interviews and proof-of-concept.
 - The design's owner: the light theme and the screens beyond Runs (editor, scripts, sign-in, states), the logo, where Scripts sits in the navigation, and whether *Send signal* and the per-step *Timeline* bars are part of this feature (G160–G163, G167, G168).
 

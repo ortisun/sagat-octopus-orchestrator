@@ -1324,6 +1324,7 @@ fn trace_id(traceparent: &str) -> Option<String> {
 /// the data it was handed. The detail is in the execution record, which has a retention.
 fn failure_message(failure: Failure) -> &'static str {
     match failure {
+        Failure::StorageQuotaExceeded => "the tenant retained-content quota was exhausted",
         Failure::Error => "the script raised an error; see its execution record",
         Failure::Timeout => "the script ran out of time",
         Failure::OutOfMemory => "the script used more memory than it was given",

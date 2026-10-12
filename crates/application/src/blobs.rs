@@ -178,24 +178,41 @@ pub struct BlobRecord {
     pub created_by: String,
 }
 
+/// A durable deletion attempt whose backend acknowledgement may finalize only this exact claim.
+/// Carrying the scope, blob and monotonically increasing attempt together prevents a delayed
+/// response from an older DELETE from releasing bytes covered by a newer cleanup attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BlobDeleteClaim {
+    pub access: BlobAccess,
+    pub id: BlobId,
+    pub attempt: u32,
+}
+
 /// The record of which blobs exist, per tenant and namespace.
 ///
 /// Every lookup is scoped by both boundaries, so a blob from another tenant or namespace is simply
 /// not there. Times are the database's own clock.
 pub trait BlobCatalog: Send + Sync + fmt::Debug + 'static {
-    /// Reserves `id` (state `Uploading`) before any byte is stored. The tenant may hold at most
-    /// `max_pending` active blobs that nothing uses yet: [`StoreError::QuotaExceeded`] beyond that.
-    /// Confirmed cleanup tombstones retain reconciliation evidence without consuming an active slot.
+    /// Reserves `id` and `reservation_bytes` (state `Uploading`) before any byte is stored. The
+    /// tenant may hold at most `max_pending` active blobs that nothing uses yet:
+    /// [`StoreError::QuotaExceeded`] beyond either bound. Confirmed cleanup tombstones retain
+    /// reconciliation evidence without consuming an active slot or releasing their byte
+    /// reservation while a PUT may still finish late.
     fn reserve<'a>(
         &'a self,
         owner: BlobOwner,
         id: BlobId,
         content_type: &'a ContentType,
         created_by: &'a str,
+        reservation_bytes: u64,
         max_pending: u32,
     ) -> BoxFuture<'a, Result<(), StoreError>>;
 
-    /// Records that the store holds all `size` bytes with this `digest`: `Uploading` → `Uploaded`.
+    /// Records that the store acknowledged all `size` bytes with this `digest`. This atomically
+    /// converts the precharged reservation to measured retained content. `Uploading` becomes
+    /// `Uploaded`; a concurrent `Deleting` remains `Deleting` and returns
+    /// [`StoreError::MissingReference`] after recording the measurement, so the caller deletes the
+    /// acknowledged late PUT without ever exposing it as usable.
     fn mark_uploaded<'a>(
         &'a self,
         access: BlobAccess,
@@ -211,13 +228,14 @@ pub trait BlobCatalog: Send + Sync + fmt::Debug + 'static {
     ) -> BoxFuture<'a, Result<Option<BlobRecord>, StoreError>>;
 
     /// Claims one unused blob for deletion and records the attempt before external I/O. Returns
-    /// `false` when it is missing, committed, or a previous failed attempt is not due yet.
+    /// that immutable attempt number, or `None` when it is missing, committed, or a previous failed
+    /// attempt is not due yet.
     fn claim_delete<'a>(
         &'a self,
         access: BlobAccess,
         id: BlobId,
         retry_after: Duration,
-    ) -> BoxFuture<'a, Result<bool, StoreError>>;
+    ) -> BoxFuture<'a, Result<Option<BlobDeleteClaim>, StoreError>>;
 
     /// Claims and returns up to `limit` blobs that nothing refers to: expired uploads, expired
     /// uploaded blobs, and failed deletes whose retry time arrived. Each row moves to `Deleting`
@@ -228,18 +246,16 @@ pub trait BlobCatalog: Send + Sync + fmt::Debug + 'static {
         unused_for: Duration,
         retry_after: Duration,
         limit: u32,
-    ) -> BoxFuture<'a, Result<Vec<(BlobAccess, BlobId)>, StoreError>>;
+    ) -> BoxFuture<'a, Result<Vec<BlobDeleteClaim>, StoreError>>;
 
     /// Records confirmed backend deletion, atomically with its first audit. A finalized upload's
     /// row may be removed. An upload never confirmed as `Uploaded` retains a `Deleting` tombstone
     /// and its retry schedule: a PUT with an unknown outcome may still finish after deletion. A
-    /// confirmed tombstone no longer occupies an active upload slot. Idempotent; committed blobs
-    /// are never changed.
-    fn finish_delete<'a>(
-        &'a self,
-        access: BlobAccess,
-        id: BlobId,
-    ) -> BoxFuture<'a, Result<(), StoreError>>;
+    /// confirmed tombstone no longer occupies an active upload slot. `attempt` must be the exact
+    /// claim whose backend DELETE returned; stale acknowledgements cannot finalize a newer claim.
+    /// Idempotent; committed blobs are never changed.
+    fn finish_delete<'a>(&'a self, claim: BlobDeleteClaim)
+    -> BoxFuture<'a, Result<(), StoreError>>;
 }
 
 /// A blob that a record about to be stored refers to (a step output). The store marks it
@@ -455,12 +471,16 @@ impl BlobService {
         }
         let id = BlobId::generate();
         let access = owner.access();
+        // A declared size is the exact maximum this upload may consume. Unknown-length streams
+        // reserve the configured hard bound. The catalog commits this capacity before backend I/O.
+        let reservation_bytes = request.expected_size.unwrap_or(self.limits.max_bytes);
         self.catalog
             .reserve(
                 owner,
                 id,
                 &request.content_type,
                 created_by,
+                reservation_bytes,
                 self.limits.max_pending,
             )
             .await
@@ -474,12 +494,18 @@ impl BlobService {
             })?;
         let key = BlobKey::of(access, id);
 
-        let (measured, probe) = Measured::new(body, self.limits.max_bytes);
+        let (measured, probe) = Measured::new(body, reservation_bytes);
         let stored = self.backend.put(&key, Box::pin(measured)).await;
         if let Err(failure) = stored {
             self.forget(access, id, &key).await;
             return Err(match failure {
-                BackendFailure::Body(BlobIoError::TooLarge) => BlobWriteError::TooLarge,
+                BackendFailure::Body(BlobIoError::TooLarge) => {
+                    if request.expected_size.is_some() {
+                        BlobWriteError::SizeMismatch
+                    } else {
+                        BlobWriteError::TooLarge
+                    }
+                }
                 BackendFailure::Body(_) => BlobWriteError::Interrupted,
                 BackendFailure::NotFound | BackendFailure::Unavailable => {
                     BlobWriteError::Unavailable
@@ -502,11 +528,15 @@ impl BlobService {
         } else {
             None
         };
+        // The provider acknowledged the PUT, so persist its exact measurement before any cleanup.
+        // This distinguishes it from an interrupted or ambiguous PUT: once measured, a confirmed
+        // delete can release the capacity instead of retaining an unknown-upload reservation.
+        let finalized = self.catalog.mark_uploaded(access, id, size, &digest).await;
         if let Some(error) = mismatch {
             self.forget(access, id, &key).await;
             return Err(error);
         }
-        if let Err(error) = self.catalog.mark_uploaded(access, id, size, &digest).await {
+        if let Err(error) = finalized {
             self.forget(access, id, &key).await;
             return Err(match error {
                 StoreError::Unavailable { .. } => BlobWriteError::Unavailable,
@@ -634,14 +664,18 @@ impl BlobService {
             )
             .await?;
         let mut removed = 0usize;
-        for (access, id) in &due {
-            match self.backend.delete(&BlobKey::of(*access, *id)).await {
+        for claim in &due {
+            match self
+                .backend
+                .delete(&BlobKey::of(claim.access, claim.id))
+                .await
+            {
                 Ok(()) => {
-                    self.catalog.finish_delete(*access, *id).await?;
+                    self.catalog.finish_delete(*claim).await?;
                     removed += 1;
                 }
                 Err(_) => {
-                    tracing::warn!(blob = %id, "the bytes of a swept blob could not be deleted; the catalog retained the retry");
+                    tracing::warn!(blob = %claim.id, "the bytes of a swept blob could not be deleted; the catalog retained the retry");
                     metrics::counter!("blob_delete_failures_total").increment(1);
                 }
             }
@@ -658,9 +692,9 @@ impl BlobService {
             .claim_delete(access, id, DEFAULT_DELETE_RETRY)
             .await
         {
-            Ok(true) => match self.backend.delete(key).await {
+            Ok(Some(claim)) => match self.backend.delete(key).await {
                 Ok(()) => {
-                    if self.catalog.finish_delete(access, id).await.is_err() {
+                    if self.catalog.finish_delete(claim).await.is_err() {
                         tracing::warn!(blob = %id, "deleted blob bytes still have a retryable catalog row");
                     }
                 }
@@ -669,7 +703,7 @@ impl BlobService {
                     metrics::counter!("blob_delete_failures_total").increment(1);
                 }
             },
-            Ok(false) => {}
+            Ok(None) => {}
             Err(_) => {
                 tracing::warn!(blob = %id, "failed-upload cleanup could not be claimed; the catalog retained the blob");
             }

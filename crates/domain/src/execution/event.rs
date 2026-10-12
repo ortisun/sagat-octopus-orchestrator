@@ -88,15 +88,16 @@ impl FailureCode {
     }
 
     /// Whether a step that ended with this code may have had its effect: the attempt was lost, timed
-    /// out, said it did not know, or its lookup could not say. (A worker that answered with an
-    /// ordinary failure knows the effect did not happen; a lookup that said so is
-    /// `RECONCILED_NOT_APPLIED`.)
+    /// out, said it did not know, its successful report could not be retained, or its lookup could
+    /// not say. (A worker that answered with an ordinary failure knows the effect did not happen; a
+    /// lookup that said so is `RECONCILED_NOT_APPLIED`.)
     #[must_use]
     pub fn leaves_outcome_unknown(&self) -> bool {
         [
             Self::lease_expired(),
             Self::attempt_timeout(),
             Self::outcome_unknown(),
+            Self::storage_quota_exceeded(),
             Self::reconciliation_failed(),
             Self::reconciliation_unknown(),
         ]
@@ -201,6 +202,12 @@ impl FailureCode {
     #[must_use]
     pub fn secret_in_output() -> Self {
         Self::system("SECRET_IN_OUTPUT")
+    }
+
+    /// The attempt's otherwise successful terminal record could not fit in retained storage.
+    #[must_use]
+    pub fn storage_quota_exceeded() -> Self {
+        Self::system("STORAGE_QUOTA_EXCEEDED")
     }
 
     /// An operator held the step for a person to decide, before it ran.

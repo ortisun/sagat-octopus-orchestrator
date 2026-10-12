@@ -484,6 +484,19 @@ pub trait RunTx: Send {
         activity: &ActivityName,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// Freezes the retention of every script execution this new lease can create. For a forward
+    /// attempt this includes its immutable compensation and reconciliation activities; for either
+    /// derived obligation it inherits the pin recorded by the originating forward attempt.
+    ///
+    /// `false` leaves a new forward step ready when the current retention policy is zero. The
+    /// adapter keeps the selected pins in this transaction and adds them to the immutable
+    /// `step.leased` journal detail when the lease is persisted.
+    fn script_execution_admitted(
+        &mut self,
+        node: &NodeId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// Whether `token_hash` is the hash of the lease currently held on `node`.
     fn lease_matches(
         &mut self,

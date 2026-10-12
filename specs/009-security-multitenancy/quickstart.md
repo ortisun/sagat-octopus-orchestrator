@@ -117,3 +117,22 @@ The smaller points of finding 8:
 ## Not built (so nobody assumes it)
 
 Still open: stored per-namespace API-rate quotas and byte/retention quotas for storage and logs (G37/G117); a general customer-selected dependency catalog and policy for future vulnerability disclosures (G38/G97); custom roles (G39); a KMS or HSM behind the key ring (G43); certificate-bound tokens (G44); product-decided quota values per tier (G42); restricting a secret to the activities or fleets that may receive it (G48); separating the power to bind from the power to read (G49, needs custom roles); and a category-only bounded incident path for feature 004's existing webhook/connector egress consumers (G50). Webhook replay, script build quotas, signed artifacts, CycloneDX SBOMs and the approved C# catalog are delivered cross-feature evidence, not open items.
+
+
+## Durable quota verification (2026-10-12)
+
+The resource model, exact PostgreSQL accounting manifest, backfill, shared API/event rate buckets
+and retention ceilings follow ADR-0027. The current real-PostgreSQL security integration suite
+passed 94/94; forward/rollback/reapply/concurrent migration tests passed 5/5. HTTP admission tests
+passed 10/10 across two server instances, including canonical namespace authorization, denied and
+malformed request non-debit, SSE reconnect charging and quota administration recovery at zero.
+Event integration passed 109/109, including transactional bucket rollback, concurrent duplicate
+admission and connector checkpoint/ack refusal. Script execution provenance and pinned-retention
+tests passed 9/9, including legacy leases, corrupt pins and policy lowering between lease/report.
+
+The [new lock measurement](../../tests/performance/reports/durable-quotas.md) records 2,000 committed
+operations with exact charged bytes, two rounds and one/two-tenant scenarios. It describes the
+loaded host and debug profile and makes no production capacity claim. Follow the
+[coordinated upgrade and trace-ID preflight](../../docs/runbooks/security-governance.md#upgrade-and-rollback)
+before enabling byte enforcement. T009-039 remains open until all asynchronous runtime completion
+paths and the final activation migration pass integrated verification.

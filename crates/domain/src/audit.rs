@@ -30,6 +30,10 @@ pub enum AuditAction {
     RunCancelRequested,
     RunPaused,
     RunResumed,
+    /// An operator inspected a payload's uniformly redacted structure.
+    PayloadInspected,
+    /// An authenticated caller without the dedicated permission tried to inspect a payload.
+    PayloadInspectionDenied,
     /// A signal was delivered to a waiting run.
     RunSignalled,
     /// The caller asked for a resource that exists only in another tenant. The record carries the
@@ -161,6 +165,8 @@ impl AuditAction {
                 | Self::ScriptViolation
                 | Self::AuditRead
                 | Self::PublicationDenied
+                | Self::PayloadInspected
+                | Self::PayloadInspectionDenied
         )
     }
 
@@ -171,7 +177,10 @@ impl AuditAction {
     #[must_use]
     pub const fn repeat_window(self) -> Option<std::time::Duration> {
         match self {
-            Self::AuditRead | Self::PublicationDenied => Some(std::time::Duration::from_secs(300)),
+            Self::AuditRead
+            | Self::PublicationDenied
+            | Self::PayloadInspected
+            | Self::PayloadInspectionDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
     }
@@ -201,6 +210,8 @@ impl AuditAction {
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
+            Self::PayloadInspected => "payload.inspected",
+            Self::PayloadInspectionDenied => "payload.inspection_denied",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::SecretStored => "secret.stored",

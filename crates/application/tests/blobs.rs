@@ -14,9 +14,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use sagat_application::blobs::{
-    BackendFailure, BlobAccess, BlobBackend, BlobCatalog, BlobIoError, BlobKey, BlobLimits,
-    BlobOwner, BlobReadError, BlobRecord, BlobScope, BlobService, BlobWriteError, BoxFuture,
-    ByteStream, WriteRequest, byte_stream, descriptor_json,
+    BackendFailure, BlobAccess, BlobBackend, BlobCatalog, BlobDeleteClaim, BlobIoError, BlobKey,
+    BlobLimits, BlobOwner, BlobReadError, BlobRecord, BlobScope, BlobService, BlobWriteError,
+    BoxFuture, ByteStream, WriteRequest, byte_stream, descriptor_json,
 };
 use sagat_application::error::StoreError;
 use sagat_domain::blobs::{BlobDescriptor, BlobId, BlobState, ContentType};
@@ -141,6 +141,7 @@ impl BlobBackend for FakeBackend {
 struct Row {
     record: BlobRecord,
     created_by: String,
+    allowed_bytes: u64,
     /// How long ago it was reserved, set by the test (the real catalog uses the database clock).
     age: Duration,
     deletion_attempts: u32,
@@ -183,6 +184,7 @@ impl BlobCatalog for FakeCatalog {
         id: BlobId,
         content_type: &'a ContentType,
         created_by: &'a str,
+        reservation_bytes: u64,
         max_pending: u32,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
@@ -216,6 +218,7 @@ impl BlobCatalog for FakeCatalog {
                             created_by: created_by.to_owned(),
                         },
                         created_by: created_by.to_owned(),
+                        allowed_bytes: reservation_bytes,
                         age: Duration::ZERO,
                         deletion_attempts: 0,
                         retry_due: false,
@@ -236,16 +239,19 @@ impl BlobCatalog for FakeCatalog {
         digest: &'a Digest,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
-            self.with(|rows| {
+            let deleting = self.with(|rows| {
                 let row = rows
                     .0
                     .get_mut(&(access, id))
                     .ok_or(StoreError::MissingReference)?;
-                row.record.state = row
-                    .record
-                    .state
-                    .uploaded()
-                    .map_err(|_| StoreError::MissingReference)?;
+                let deleting = row.record.state == BlobState::Deleting;
+                if !deleting {
+                    row.record.state = row
+                        .record
+                        .state
+                        .uploaded()
+                        .map_err(|_| StoreError::MissingReference)?;
+                }
                 row.record.descriptor = BlobDescriptor::new(
                     id,
                     size,
@@ -253,8 +259,19 @@ impl BlobCatalog for FakeCatalog {
                     row.record.descriptor.content_type().clone(),
                 );
                 row.uploaded = true;
+                if deleting {
+                    // Retire the DELETE that began before this provider-acknowledged PUT. The next
+                    // cleanup receives a later token; an old response can no longer finalize it.
+                    row.deletion_attempts += 1;
+                    row.retry_due = true;
+                }
+                Ok(deleting)
+            })?;
+            if deleting {
+                Err(StoreError::MissingReference)
+            } else {
                 Ok(())
-            })
+            }
         })
     }
 
@@ -273,21 +290,23 @@ impl BlobCatalog for FakeCatalog {
         access: BlobAccess,
         id: BlobId,
         _retry_after: Duration,
-    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+    ) -> BoxFuture<'a, Result<Option<BlobDeleteClaim>, StoreError>> {
         Box::pin(async move {
             Ok(self.with(|rows| {
-                let Some(row) = rows.0.get_mut(&(access, id)) else {
-                    return false;
-                };
+                let row = rows.0.get_mut(&(access, id))?;
                 if matches!(row.record.state, BlobState::Uploading | BlobState::Uploaded)
                     || (row.record.state == BlobState::Deleting && row.retry_due)
                 {
                     row.record.state = BlobState::Deleting;
                     row.deletion_attempts += 1;
                     row.retry_due = false;
-                    true
+                    Some(BlobDeleteClaim {
+                        access,
+                        id,
+                        attempt: row.deletion_attempts,
+                    })
                 } else {
-                    false
+                    None
                 }
             }))
         })
@@ -299,7 +318,7 @@ impl BlobCatalog for FakeCatalog {
         unused_for: Duration,
         _retry_after: Duration,
         limit: u32,
-    ) -> BoxFuture<'a, Result<Vec<(BlobAccess, BlobId)>, StoreError>> {
+    ) -> BoxFuture<'a, Result<Vec<BlobDeleteClaim>, StoreError>> {
         Box::pin(async move {
             Ok(self.with(|rows| {
                 let due: Vec<_> = rows
@@ -320,26 +339,41 @@ impl BlobCatalog for FakeCatalog {
                     row.deletion_attempts += 1;
                     row.retry_due = false;
                 }
-                due
+                due.into_iter()
+                    .map(|(access, id)| {
+                        let attempt = rows
+                            .0
+                            .get(&(access, id))
+                            .expect("claimed row")
+                            .deletion_attempts;
+                        BlobDeleteClaim {
+                            access,
+                            id,
+                            attempt,
+                        }
+                    })
+                    .collect()
             }))
         })
     }
 
     fn finish_delete<'a>(
         &'a self,
-        access: BlobAccess,
-        id: BlobId,
+        claim: BlobDeleteClaim,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
             self.with(|rows| {
-                let Some(row) = rows.0.get_mut(&(access, id)) else {
+                let Some(row) = rows.0.get_mut(&(claim.access, claim.id)) else {
                     return;
                 };
                 if row.record.state != BlobState::Deleting {
                     return;
                 }
+                if row.deletion_attempts != claim.attempt {
+                    return;
+                }
                 if row.uploaded {
-                    rows.0.remove(&(access, id));
+                    rows.0.remove(&(claim.access, claim.id));
                 } else {
                     row.deletion_confirmed = true;
                 }
@@ -466,6 +500,10 @@ async fn a_written_blob_is_measured_stored_under_its_tenant_and_described() {
         "not referenced by anything yet"
     );
     assert_eq!(row.created_by, "wendy");
+    assert_eq!(
+        row.allowed_bytes, 1024,
+        "an unknown-length upload reserves the configured maximum"
+    );
 }
 
 #[tokio::test]
@@ -535,6 +573,29 @@ async fn a_body_over_the_limit_is_refused_and_leaves_nothing_behind() {
 }
 
 #[tokio::test]
+async fn a_declared_size_is_the_stream_bound_and_an_oversized_declaration_reserves_nothing() {
+    let w = world();
+    let mut declared = request();
+    declared.expected_size = Some(5);
+    assert_eq!(
+        w.service
+            .write(w.scope(), "wendy", declared, body(&[b"sixsix"]))
+            .await,
+        Err(BlobWriteError::SizeMismatch),
+        "the backend stream stops at the committed reservation"
+    );
+    let mut oversized = request();
+    oversized.expected_size = Some(1025);
+    assert_eq!(
+        w.service
+            .write(w.scope(), "wendy", oversized, body(&[]))
+            .await,
+        Err(BlobWriteError::TooLarge)
+    );
+    assert_eq!(w.catalog.pending(), 0);
+}
+
+#[tokio::test]
 async fn a_body_exactly_at_the_limit_is_accepted() {
     let w = world();
     let exact = vec![1u8; 1024];
@@ -553,7 +614,7 @@ async fn a_stated_size_or_digest_that_does_not_match_the_bytes_is_refused_and_cl
     let w = world();
 
     let mut wrong_size = request();
-    wrong_size.expected_size = Some(5);
+    wrong_size.expected_size = Some(12);
     let result = w
         .service
         .write(w.scope(), "wendy", wrong_size, body(&[b"hello world"]))
@@ -577,16 +638,27 @@ async fn a_stated_size_or_digest_that_does_not_match_the_bytes_is_refused_and_cl
         0,
         "the active reservation was released"
     );
+    assert!(
+        w.catalog.with(|rows| rows.0.is_empty()),
+        "provider-acknowledged mismatches are measured before confirmed cleanup"
+    );
     assert!(!w.backend.with(|o| o.deletes.is_empty()));
 
     let mut right = request();
     right.expected_size = Some(11);
     right.expected_digest = Some(sha(b"hello world"));
-    assert!(
-        w.service
-            .write(w.scope(), "wendy", right, body(&[b"hello world"]))
-            .await
-            .is_ok()
+    let written = w
+        .service
+        .write(w.scope(), "wendy", right, body(&[b"hello world"]))
+        .await
+        .expect("matching declared upload");
+    assert_eq!(
+        w.catalog.with(|rows| rows
+            .0
+            .get(&(w.access(), written.id()))
+            .expect("row")
+            .allowed_bytes),
+        11
     );
 }
 
@@ -772,6 +844,7 @@ async fn a_blob_whose_upload_never_finished_cannot_be_read() {
             id,
             &content_type,
             "wendy",
+            1024,
             4,
         )
         .await
@@ -846,20 +919,12 @@ async fn a_put_finishing_after_cleanup_remains_tracked_and_is_deleted_again() {
 
     gate.release();
     assert_eq!(upload.await, Err(BlobWriteError::Internal));
-    assert!(
-        w.backend.with(|objects| !objects.stored.is_empty()),
-        "provider finalized after deletion"
-    );
-    w.catalog.with(|rows| {
-        let row = rows
-            .0
-            .get_mut(&(w.access(), id))
-            .expect("late PUT still has durable cleanup evidence");
-        assert_eq!(row.record.state, BlobState::Deleting);
-        row.retry_due = true;
-    });
-    assert_eq!(w.service.sweep(10).await.expect("reconciliation"), 1);
     assert!(w.backend.with(|objects| objects.stored.is_empty()));
+    assert!(
+        w.catalog
+            .with(|rows| !rows.0.contains_key(&(w.access(), id))),
+        "the acknowledged late PUT is measured and deleted by a new attempt"
+    );
     assert!(matches!(
         w.service.read(w.access(), id).await,
         Err(BlobReadError::NotFound)
@@ -1042,6 +1107,7 @@ async fn an_abandoned_upload_is_swept_much_sooner_than_an_uploaded_blob_nobody_u
             abandoned,
             &ContentType::octet_stream(),
             "wendy",
+            1024,
             10,
         )
         .await

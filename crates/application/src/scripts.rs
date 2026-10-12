@@ -141,6 +141,8 @@ pub struct VersionRecord {
     pub key_id: Option<String>,
     pub toolchain: Option<String>,
     pub build_log: Option<String>,
+    pub build_log_truncated: bool,
+    pub failure_code: Option<Failure>,
     /// Why the build produced nothing, when it did not.
     pub failure: Option<String>,
     pub created_by: String,
@@ -345,6 +347,7 @@ pub struct VersionSummary {
     pub key_id: Option<String>,
     pub toolchain: Option<String>,
     pub failure: Option<String>,
+    pub failure_code: Option<Failure>,
     pub created_by: String,
     pub created_at: OffsetDateTime,
     pub built_at: Option<OffsetDateTime>,
@@ -726,6 +729,7 @@ pub trait RunnerStore: NamespaceDirectory {
         hold: Hold<'_>,
         reason: &str,
         log: &str,
+        log_truncated: bool,
         retry: bool,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Finished, StoreError>> + Send;
@@ -813,6 +817,7 @@ pub struct BuiltArtifact {
     pub artifact: ArtifactRecord,
     pub build_key: Digest,
     pub log: String,
+    pub log_truncated: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1717,20 +1722,43 @@ where
                     },
                     build_key: key,
                     log: clip(&log, MAX_BUILD_LOG_BYTES),
+                    log_truncated: log.len() > MAX_BUILD_LOG_BYTES,
                 };
                 let audit = self.built_audit(principal, version, &digest, "built", ctx);
-                self.store
-                    .finish_build(
-                        Hold {
-                            tenant,
-                            job,
-                            token_hash: &hash,
+                let hold = Hold {
+                    tenant,
+                    job,
+                    token_hash: &hash,
+                    now,
+                };
+                match self.store.finish_build(hold, &built, &audit).await {
+                    Err(StoreError::QuotaExceeded { what })
+                        if what
+                            == sagat_domain::quota::QuotaResource::TenantContentBytes
+                                .limit_name() =>
+                    {
+                        let failed = AuditRecord::by(
+                            principal,
+                            AuditAction::ScriptBuilt,
+                            ResourceType::ScriptVersion,
+                            version.id.to_string(),
+                            ctx.trace_id.clone(),
                             now,
-                        },
-                        &built,
-                        &audit,
-                    )
-                    .await?
+                        )
+                        .with_reason("build failed (STORAGE_QUOTA_EXCEEDED)".to_owned());
+                        self.store
+                            .fail_build(
+                                hold,
+                                Failure::StorageQuotaExceeded.code(),
+                                "",
+                                false,
+                                false,
+                                &failed,
+                            )
+                            .await?
+                    }
+                    result => result?,
+                }
             }
             BuildReport::Failed { kind, message, log } => {
                 let reason = format!("{}: {}", kind.as_str(), clip(&message, 1024));
@@ -1753,6 +1781,7 @@ where
                         },
                         &reason,
                         &clip(&log, MAX_BUILD_LOG_BYTES),
+                        log.len() > MAX_BUILD_LOG_BYTES || message.len() > 1024,
                         kind.retryable(),
                         &audit,
                     )
@@ -1842,6 +1871,7 @@ where
         {
             return Err(AppError::PayloadTooLarge("a result is at most 240 KiB"));
         }
+        report.log_truncated |= report.log.len() > 1024 * 1024;
         report.log = clip(&report.log, 1024 * 1024);
         tidy_denied(&mut report.denied);
         let now = self.clock.now();
@@ -1852,12 +1882,12 @@ where
             .test_script(principal.tenant_id(), run)
             .await?
             .ok_or(AppError::StaleAttempt)?;
-        let audits: Vec<AuditRecord> = report
+        let mut audits: Vec<AuditRecord> = report
             .denied
             .iter()
             .map(|what| self.violation_audit(principal, script.to_string(), what, ctx))
             .collect();
-        match self
+        let completed = self
             .store
             .finish_test(
                 principal.tenant_id(),
@@ -1867,8 +1897,39 @@ where
                 now,
                 &audits,
             )
-            .await?
-        {
+            .await;
+        let finished = match completed {
+            Err(StoreError::QuotaExceeded { what })
+                if what == sagat_domain::quota::QuotaResource::TenantContentBytes.limit_name() =>
+            {
+                audits.push(
+                    AuditRecord::by(
+                        principal,
+                        AuditAction::ScriptTested,
+                        ResourceType::Script,
+                        script.to_string(),
+                        ctx.trace_id.clone(),
+                        now,
+                    )
+                    .with_reason("test failed (STORAGE_QUOTA_EXCEEDED)".to_owned()),
+                );
+                report.result = Err(Failure::StorageQuotaExceeded);
+                report.inferred_input_schema = None;
+                report.inferred_output_schema = None;
+                self.store
+                    .finish_test(
+                        principal.tenant_id(),
+                        run,
+                        &Token::hash_of(lease_token),
+                        &report,
+                        now,
+                        &audits,
+                    )
+                    .await?
+            }
+            result => result?,
+        };
+        match finished {
             Finished::Done | Finished::AlreadyDone => Ok(()),
             Finished::Stale => Err(AppError::StaleAttempt),
         }
@@ -1925,6 +1986,17 @@ where
         ctx: &RequestContext,
     ) -> Result<bool, AppError> {
         principal.authorize(Permission::ScriptExecute)?;
+        if execution.trace_id.as_ref().is_some_and(|id| {
+            id.len() != 32
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || id.bytes().all(|b| b == b'0')
+        }) {
+            return Err(AppError::NotAllowed(
+                "traceId must be a nonzero 32-character lowercase hexadecimal trace identifier",
+            ));
+        }
         let tenant = principal.tenant_id();
         require_namespace(
             &self.store,
@@ -1939,6 +2011,7 @@ where
             .retention_of(tenant, &execution.digest)
             .await?
             .ok_or(AppError::NotFound)?;
+        execution.log_truncated |= execution.log.len() > 1024 * 1024;
         execution.log = clip(&execution.log, 1024 * 1024);
         tidy_denied(&mut execution.denied);
         let now = self.clock.now();

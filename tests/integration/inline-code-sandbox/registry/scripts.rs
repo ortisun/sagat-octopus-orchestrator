@@ -697,3 +697,104 @@ async fn publishing_and_trying_the_same_script_at_the_same_time_never_wait_for_e
             .expect("clear");
     }
 }
+
+#[tokio::test]
+async fn durable_retention_ceiling_guards_new_script_choices_publication_and_tests() {
+    use sagat_domain::scripts::Retention;
+    let w = world().await;
+    let existing = create(&w, "retention-before").await;
+    let published = publish(&w, &existing).await;
+    w.quotas
+        .set(
+            &w.admin,
+            Some(w.namespace.id()),
+            QuotaResource::ScriptRetentionDays,
+            1,
+            &ctx(),
+        )
+        .await
+        .expect("lower ceiling");
+    assert!(matches!(
+        w.scripts
+            .create(&w.admin, w.namespace.id(), ts("too-long"), &ctx())
+            .await,
+        Err(AppError::QuotaExceeded(_))
+    ));
+    assert!(matches!(
+        w.scripts
+            .test(
+                &w.admin,
+                w.namespace.id(),
+                existing.id,
+                b"{}".to_vec(),
+                &ctx()
+            )
+            .await,
+        Err(AppError::QuotaExceeded(_))
+    ));
+    // Exact publication replay remains the existing version, even after policy lowering.
+    let replay = publish(&w, &existing).await;
+    assert_eq!(published.version.id, replay.version.id);
+    let changed = w
+        .scripts
+        .update(
+            &w.admin,
+            w.namespace.id(),
+            existing.id,
+            DraftChange {
+                retention: Some(Retention::days(2).expect("days")),
+                ..DraftChange::default()
+            },
+            existing.revision,
+            &ctx(),
+        )
+        .await;
+    assert!(matches!(changed, Err(AppError::QuotaExceeded(_))));
+    let bounded = w
+        .scripts
+        .update(
+            &w.admin,
+            w.namespace.id(),
+            existing.id,
+            DraftChange {
+                retention: Some(Retention::days(1).expect("days")),
+                ..DraftChange::default()
+            },
+            existing.revision,
+            &ctx(),
+        )
+        .await
+        .expect("bounded choice");
+    w.scripts
+        .test(
+            &w.admin,
+            w.namespace.id(),
+            bounded.id,
+            b"{}".to_vec(),
+            &ctx(),
+        )
+        .await
+        .expect("bounded new test");
+    let old: i16 = sqlx::query_scalar("SELECT retention_days FROM script_versions WHERE id=$1")
+        .bind(published.version.id.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("immutable retention");
+    assert_eq!(old, existing.draft.retention.get() as i16);
+    w.quotas
+        .set(
+            &w.admin,
+            Some(w.namespace.id()),
+            QuotaResource::ScriptRetentionDays,
+            0,
+            &ctx(),
+        )
+        .await
+        .expect("disable new retention");
+    assert!(matches!(
+        w.scripts
+            .publish(&w.admin, w.namespace.id(), bounded.id, &ctx())
+            .await,
+        Err(AppError::QuotaExceeded(_))
+    ));
+}

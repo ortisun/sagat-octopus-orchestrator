@@ -133,7 +133,7 @@ tokens, so a value cannot drift back.
 | Aguardando sinal · Pendente · Cancelado | Waiting for a signal · Pending · Cancelled (the platform's own state names win where they differ) |
 | Cancelar / Reexecutar / Enviar sinal | Cancel / Re-run (disabled with the reason, G145) / Send signal (G167) |
 | Início · Duração · Gatilho · Fila · Worker | Started · Duration · Started by (G164) · — · — |
-| Grafo · Linha do tempo · Histórico de eventos · Entrada / Saída | Graph · *(no counterpart: the bars per step, G168)* · **Timeline** (the Studio's tab of that name is the journal, the prototype's *Event history*) · *(not drawn, G144)* |
+| Grafo · Linha do tempo · Histórico de eventos · Entrada / Saída | Graph · *(no counterpart: the bars per step, G168)* · **Timeline** (the Studio's tab of that name is the journal, the prototype's *Event history*) · **Payload structure inspection** (ADR-0028; raw values hidden) |
 | Etapa selecionada · Tipo · Tentativas · Início · Duração | Selected step · Kind · Attempts · Started · Duration |
 | Atividade · Workflow filho · Sinal · Timer · Loop | the Studio's node names (Step, Child, Wait, Timer, …) |
 | *(not in the prototype)* | **Table**: the accessible alternative to the graph (FR-007-008); it stays, as a tab of its own |
@@ -147,7 +147,7 @@ tokens, so a value cannot drift back.
 | Counts in the navigation and the filters, over all runs | the API pages by cursor and has no count | no count that needs the whole set; a count of what is loaded may be shown if it says so (G163) |
 | Active workers, queue backlog (sidebar) | no read API (features 004 and 010 own it) | omits the box (G163) |
 | Schedules, Workers, Task queues, Secrets, Settings | pages of other features | no link to a page that does not exist (G163) |
-| Input / Output tab and the failure text in the step strip | the journal and the graph carry a `payloadRef` digest and a `failureCode`, no payload and no text (G144) | not drawn; the strip shows the code |
+| Input / Output tab and the failure text in the step strip | the journal and graph retain digest/code references; raw values need a separately approved disclosure policy | explicit Admin/Operator inspection reads input or the selected immutable journal record through `payload-inspections`, showing only structure or verified external metadata; the strip still shows the typed failure code (ADR-0028, T007-048) |
 | Event history with names such as `ActivityTaskScheduled` | those are another engine's event types | the platform's own journal events, in the Studio's *Timeline* tab, restyled |
 | Timeline: a bar per step over elapsed time | the Studio has no such view (its *Timeline* is the journal); the bars would be a new view over the graph's step times | not built by this restyle (G168) |
 | Re-run | `422` (G145) | disabled, with the reason |

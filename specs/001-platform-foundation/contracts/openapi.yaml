@@ -45,6 +45,7 @@ paths:
       responses:
         '200': {description: 'The process is alive', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '500': {$ref: '#/components/responses/InternalError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/InternalError'}
   /ready:
     get:
@@ -55,6 +56,7 @@ paths:
       responses:
         '200': {description: 'Ready to serve traffic', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '503': {$ref: '#/components/responses/Unavailable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/InternalError'}
   /auth/context:
     get:
@@ -507,6 +509,48 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/payload-inspections:
+    post:
+      operationId: inspectRunPayload
+      summary: Inspect retained payload structure with every key and value hidden
+      tags: [Runs]
+      x-implemented: '007'
+      description: |
+        Requires both `run:read` and `run:payload:inspect` (Admin or Operator). Selects the
+        run input or the immutable payload referenced by one journal sequence. The server
+        commits a bounded audit before returning data. `structure-only-v1` hides all object
+        keys and scalar values, including values annotated as public in a schema. No raw
+        download or external-object read is performed. External metadata is returned only
+        from a committed tenant-bound catalog entry. Missing retained content is explicit.
+        The request is limited to 1 KiB; the projection to depth 16, 256 nodes, 32 children
+        per container and a 64 KiB response. Responses have `Cache-Control: private, no-store`.
+        Canonical namespace API admission is charged once after authorization.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PayloadInspectionSelector'}
+      responses:
+        '200':
+          description: Audited structural projection or an explicit unavailable/external state
+          headers:
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+            Cache-Control: {schema: {type: string, const: 'private, no-store'}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PayloadInspection'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -2482,7 +2526,7 @@ paths:
       tags: [Scripts]
       x-implemented: '005'
       description: |
-        Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED` or `SCRIPT_SANDBOX_UNAVAILABLE`.
+        Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED`, `SCRIPT_SANDBOX_UNAVAILABLE` or non-retryable `STORAGE_QUOTA_EXCEEDED`. Retained content exhaustion commits the fenced terminal failure without the rejected result or inferred schemas; retained log exhaustion clips at a UTF-8 boundary and sets truncation evidence.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
@@ -2994,6 +3038,71 @@ components:
       required: false
       schema: {type: string, format: uuid}
   schemas:
+    PayloadInspectionSelector:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [source]
+          properties:
+            source: {type: string, const: input}
+        - type: object
+          additionalProperties: false
+          required: [source, sequence]
+          properties:
+            source: {type: string, const: journal}
+            sequence: {type: integer, minimum: 1, maximum: 9223372036854775807}
+    PayloadStructure:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, childCount, children, omittedChildren]
+          properties:
+            type: {type: string, enum: [object, array]}
+            childCount: {type: integer, minimum: 0}
+            children:
+              type: array
+              maxItems: 32
+              items: {$ref: '#/components/schemas/PayloadStructure'}
+            omittedChildren: {type: integer, minimum: 0}
+        - type: object
+          additionalProperties: false
+          required: [type, redacted]
+          properties:
+            type: {type: string, enum: [string, number, boolean, 'null']}
+            redacted: {type: boolean, const: true}
+    PayloadInspection:
+      allOf:
+        - type: object
+          required: [runId, runVersion, selection, policy]
+          properties:
+            runId: {type: string, format: uuid}
+            runVersion: {type: integer, minimum: 0}
+            selection: {$ref: '#/components/schemas/PayloadInspectionSelector'}
+            nodeId: {type: string}
+            attempt: {type: integer, minimum: 0}
+            policy: {type: string, const: structure-only-v1}
+        - oneOf:
+            - type: object
+              required: [kind, sizeBytes, truncated, tree]
+              properties:
+                kind: {type: string, const: inline-json}
+                sizeBytes: {type: integer, minimum: 0}
+                truncated: {type: boolean}
+                tree: {$ref: '#/components/schemas/PayloadStructure'}
+            - type: object
+              required: [kind, sizeBytes, contentKind, reason]
+              properties:
+                kind: {type: string, const: external}
+                sizeBytes: {type: integer, minimum: 0}
+                contentKind: {type: string, enum: [json, text, binary, other]}
+                reason: {type: string, const: EXTERNAL_CONTENT_NOT_INSPECTED}
+            - type: object
+              required: [kind, reason]
+              properties:
+                kind: {type: string, const: unavailable}
+                reason: {type: string, enum: [NO_RETAINED_PAYLOAD, UNSUPPORTED_FORMAT]}
+                sizeBytes: {type: integer, minimum: 0}
+      unevaluatedProperties: false
     JsonObject: {type: object, additionalProperties: true}
     Error:
       type: object
@@ -3596,7 +3705,7 @@ components:
         occurredAt: {type: string, format: date-time}
         correlationKey: {type: string, maxLength: 256, description: 'What a waiting step correlates on.'}
         data: {$ref: '#/components/schemas/JsonObject'}
-        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, description: 'How long the event id is remembered (24 hours by default).'}
+        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, description: 'How long the event id is remembered (24 hours by default), bounded by the current namespace event_retention_seconds policy. A remembered duplicate preserves its original expiry.'}
     EventAccepted:
       type: object
       required: [eventId, source, status]
@@ -3674,7 +3783,7 @@ components:
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
         authentication: {$ref: '#/components/schemas/WebhookAuthentication'}
         defaultEventType: {type: string}
-        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, default: 86400, description: 'At least twice skewSeconds and 60 seconds more, or a replay of a signed request could be admitted as a new event.'}
+        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, default: 86400, description: 'At least twice skewSeconds and 60 seconds more, bounded by event_retention_seconds. Incompatible windows are rejected, never silently shortened.'}
         skewSeconds: {type: integer, minimum: 1, maximum: 3600, default: 300}
         maxBodyBytes: {type: integer, minimum: 1024, maximum: 245760, default: 245760}
         ratePerSecond: {type: integer, minimum: 1, maximum: 10000, default: 50}
@@ -4159,7 +4268,7 @@ components:
         inputSchema: {type: object}
         outputSchema: {type: object}
         policy: {$ref: '#/components/schemas/ScriptPolicy'}
-        retentionDays: {type: integer, minimum: 1, maximum: 365, default: 14}
+        retentionDays: {type: integer, minimum: 1, maximum: 365, default: 14, description: "New choices, publications and test admissions must fit the current namespace script_retention_days policy. Lowering policy preserves existing records and exact publication replay."}
     UpdateScriptRequest:
       type: object
       additionalProperties: false
@@ -4194,7 +4303,9 @@ components:
         keyId: {type: string}
         toolchain: {type: string}
         buildLog: {type: string}
-        failure: {type: string, description: 'Why the build made nothing: `rejected:`, `lockfile:`, `limit:`, `unsupported:` or `unavailable:` and the first message of the toolchain.'}
+        buildLogTruncated: {type: boolean, description: "True when the retained build diagnostic or log was truncated, including an empty log at zero allowance."}
+        failureCode: {type: string, enum: [SCRIPT_BUILD_REJECTED, SCRIPT_SANDBOX_UNAVAILABLE, STORAGE_QUOTA_EXCEEDED]}
+        failure: {type: string, description: 'Retained build diagnostic, possibly empty when the log allowance is exhausted. failureCode preserves the terminal category independently; buildLogTruncated records omitted diagnostics.'}
         createdBy: {type: string}
         createdAt: {type: string, format: date-time}
         builtAt: {type: string, format: date-time}
@@ -4217,6 +4328,7 @@ components:
         keyId: {type: string}
         toolchain: {type: string}
         failure: {type: string}
+        failureCode: {type: string, enum: [SCRIPT_BUILD_REJECTED, SCRIPT_SANDBOX_UNAVAILABLE, STORAGE_QUOTA_EXCEEDED]}
         createdBy: {type: string}
         createdAt: {type: string, format: date-time}
         builtAt: {type: string, format: date-time}
@@ -4258,7 +4370,7 @@ components:
         status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED]}
         input: {}
         result: {}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         retryable: {type: boolean}
         log: {type: string}
         logTruncated: {type: boolean}
@@ -4281,7 +4393,7 @@ components:
         scriptId: {type: string, format: uuid}
         language: {type: string}
         status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED]}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         wallMs: {type: integer}
         startMs: {type: integer}
         createdBy: {type: string}
@@ -4310,7 +4422,7 @@ components:
         wallMs: {type: integer}
         startMs: {type: integer}
         memoryPeakBytes: {type: integer}
-        traceId: {type: string}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$', not: {const: '00000000000000000000000000000000'}}
         createdAt: {type: string, format: date-time}
         expiresAt: {type: string, format: date-time}
     ScriptExecutionSummary:
@@ -4331,7 +4443,7 @@ components:
         wallMs: {type: integer}
         startMs: {type: integer}
         memoryPeakBytes: {type: integer}
-        traceId: {type: string}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$', not: {const: '00000000000000000000000000000000'}}
         createdAt: {type: string, format: date-time}
         expiresAt: {type: string, format: date-time}
     ScriptExecutionList:
@@ -4414,7 +4526,7 @@ components:
       properties:
         leaseToken: {type: string}
         result: {}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         log: {type: string}
         logTruncated: {type: boolean}
         denied: {type: array, items: {type: string}}
@@ -4464,7 +4576,7 @@ components:
         node: {type: string}
         attempt: {type: integer, minimum: 0}
         status: {type: string, enum: [SUCCEEDED, FAILED]}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         exitCode: {type: integer}
         log: {type: string}
         logTruncated: {type: boolean}
@@ -4472,7 +4584,7 @@ components:
         wallMs: {type: integer, minimum: 0}
         startMs: {type: integer, minimum: 0}
         memoryPeakBytes: {type: integer, minimum: 0}
-        traceId: {type: string}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$', not: {const: '00000000000000000000000000000000'}}
     Recorded:
       type: object
       required: [recorded]
