@@ -21,6 +21,39 @@ async fn platform() -> Platform {
     .await
 }
 
+#[tokio::test]
+async fn upload_routes_preserve_protected_unknown_routes_and_method_errors() {
+    let p = platform().await;
+    for (path, status, code) in [
+        ("/v1/no-such-route", 404, "NOT_FOUND"),
+        ("/no-such-route", 404, "NOT_FOUND"),
+        ("/v1/run-input-blobs", 405, "BAD_REQUEST"),
+    ] {
+        let response = reqwest::get(format!("{}{path}", p.api.origin()))
+            .await
+            .expect("request");
+        assert_eq!(response.status().as_u16(), status, "{path}");
+        let trace = response
+            .headers()
+            .get("x-trace-id")
+            .expect("trace header")
+            .to_str()
+            .expect("trace text")
+            .to_owned();
+        let request = response
+            .headers()
+            .get("x-request-id")
+            .expect("request header")
+            .to_str()
+            .expect("request text")
+            .to_owned();
+        let body = json_of(response).await;
+        assert_eq!(body["traceId"], trace);
+        assert_eq!(body["requestId"], request);
+        assert_eq!(body["code"], code);
+    }
+}
+
 fn upload(p: &Platform, who: &str, namespace: &str, data: Vec<u8>) -> RequestBuilder {
     p.api
         .as_user(Method::POST, "/run-input-blobs", who, "acme")
@@ -383,14 +416,32 @@ async fn uploads_enforce_size_digest_normal_body_limit_and_expire_unused_inputs(
         .await
         .expect("mismatch");
     assert_eq!(mismatch.status(), 422);
-    assert_eq!(
-        upload(&p, "alice", "payments", vec![0; 4 * 1024 * 1024 + 1])
-            .send()
-            .await
-            .expect("limit")
-            .status(),
-        413
+    // The declared over-limit body is refused before it is sent. Sending megabytes concurrently
+    // with an early HTTP/1 rejection races the client's body writer against connection closure.
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let address = p
+        .api
+        .origin()
+        .strip_prefix("http://")
+        .expect("HTTP fixture");
+    let mut stream = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("connect");
+    let token = p.api.idp.token("alice", "acme").build();
+    let headers = format!(
+        "POST /v1/run-input-blobs HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nx-octopus-namespace: payments\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        4 * 1024 * 1024 + 1,
     );
+    stream.write_all(headers.as_bytes()).await.expect("headers");
+    let mut response = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_to_string(&mut response),
+    )
+    .await
+    .expect("bounded early rejection")
+    .expect("response");
+    assert!(response.starts_with("HTTP/1.1 413"), "{response}");
     let wf = p
         .publish("ordinary-limit", &chain_ir("ordinary-limit"))
         .await;

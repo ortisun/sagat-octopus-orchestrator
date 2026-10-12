@@ -2660,9 +2660,17 @@ export interface components {
             /** @default false */
             allowHttp: boolean;
         };
+        /**
+         * @description Limits use resource-specific units: existing count resources are items (maximum 1,000,000,000);
+         *     tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
+         *     api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
+         *     fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
+         *     script_retention_days is 0..365 days. Zero disables new admission for that resource.
+         *     Lowering a limit does not erase retained content or rewrite existing expiry.
+         */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
             /** Format: int64 */
             limit: number;
             /**
@@ -2677,13 +2685,18 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact count now. Absent for a per-namespace resource in the tenant-wide view.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.
              */
             used?: number;
         };
         QuotaList: {
             items: components["schemas"]["Quota"][];
         };
+        /**
+         * @description The selected path resource determines the unit and valid range documented by Quota.
+         *     Values outside that range or above the operator ceiling return 422. The general schema
+         *     maximum accommodates byte quotas; it does not raise the maximum of count resources.
+         */
         SetQuotaRequest: {
             /** Format: int64 */
             limit: number;
@@ -3281,7 +3294,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             source: string;
             lockfile?: string;
             inputSchema?: Record<string, never>;
@@ -3304,7 +3317,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             policy: components["schemas"]["ScriptPolicyView"];
             retentionDays: number;
             revision: number;
@@ -3348,7 +3361,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             source: string;
@@ -3384,7 +3397,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             policy: components["schemas"]["ScriptPolicyView"];
@@ -3931,7 +3944,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;

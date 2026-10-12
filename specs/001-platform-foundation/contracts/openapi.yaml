@@ -2917,7 +2917,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
     ActivityName:
       name: activity
       in: path
@@ -3535,25 +3535,36 @@ components:
         ports: {type: array, maxItems: 32, items: {type: integer, minimum: 1, maximum: 65535}}
         allowHttp: {type: boolean, default: false}
     Quota:
+      description: |
+        Limits use resource-specific units: existing count resources are items (maximum 1,000,000,000);
+        tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
+        api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
+        fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
+        script_retention_days is 0..365 days. Zero disables new admission for that resource.
+        Lowering a limit does not erase retained content or rewrite existing expiry.
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs]}
-        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
-        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
-        used: {type: integer, format: int64, minimum: 0, description: 'Exact count now. Absent for a per-namespace resource in the tenant-wide view.'}
+        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
+        used: {type: integer, format: int64, minimum: 0, description: 'Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.'}
     QuotaList:
       type: object
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/Quota'}}
     SetQuotaRequest:
+      description: |
+        The selected path resource determines the unit and valid range documented by Quota.
+        Values outside that range or above the operator ceiling return 422. The general schema
+        maximum accommodates byte quotas; it does not raise the maximum of count resources.
       type: object
       additionalProperties: false
       required: [limit]
       properties:
-        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
     ActivityQuota:
       type: object
       required: [activity, limit, used, ceiling, overridden]
@@ -4102,7 +4113,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         source: {type: string}
         lockfile: {type: string}
         inputSchema: {type: object}
@@ -4122,7 +4133,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer, minimum: 1, maximum: 365}
         revision: {type: integer}
@@ -4168,7 +4179,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         source: {type: string}
         lockfile: {type: string}
@@ -4195,7 +4206,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer}

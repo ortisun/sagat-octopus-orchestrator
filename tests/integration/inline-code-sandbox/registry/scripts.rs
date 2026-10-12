@@ -149,7 +149,7 @@ async fn only_a_script_that_can_be_built_is_accepted() {
             .create(
                 &w.admin,
                 w.namespace.id(),
-                spec(language.as_str(), language, "x"),
+                spec(&format!("{}-script", language.as_str()), language, "x"),
                 &ctx(),
             )
             .await

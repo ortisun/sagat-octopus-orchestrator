@@ -839,7 +839,15 @@ where
             .max(routes::runner::RUNNER_MAX_BODY_BYTES),
         ..limits
     };
-    protect(Router::new().nest("/v1", v1), outer).merge(uploads)
+    // Keep the protected fallback explicit: merging the upload router's default fallback must
+    // not replace the error envelope, correlation headers and telemetry of unmatched routes.
+    protect(
+        Router::new()
+            .nest("/v1", v1)
+            .fallback(|| async { axum::http::StatusCode::NOT_FOUND }),
+        outer,
+    )
+    .merge(uploads)
 }
 
 /// Wraps a router with the protections every endpoint must have: panic containment, a request

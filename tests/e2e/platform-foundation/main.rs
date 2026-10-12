@@ -28,11 +28,19 @@ fn trace_id(response: &Response) -> String {
     id
 }
 
-/// An error body with its `traceId` removed, so bodies of different requests can be compared.
+/// Remove per-request correlation identifiers before comparing public error semantics.
 fn without_trace(mut body: Value) -> Value {
     body.as_object_mut()
         .expect("object")
         .remove("traceId")
         .expect("error bodies carry traceId");
+    let request_id = body
+        .as_object_mut()
+        .expect("object")
+        .remove("requestId")
+        .expect("error bodies carry requestId");
+    let request_id = request_id.as_str().expect("requestId is text");
+    assert_eq!(request_id.len(), 32);
+    assert!(request_id.bytes().all(|b| b.is_ascii_hexdigit()));
     body
 }
