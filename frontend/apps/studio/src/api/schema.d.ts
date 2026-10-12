@@ -1908,6 +1908,8 @@ export interface components {
             message: string;
             retryable: boolean;
             traceId: string;
+            /** @description Server-generated request correlation id; equals X-Request-Id. Absent on older servers. */
+            requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
             /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. */
@@ -3581,6 +3583,8 @@ export interface components {
         };
     };
     parameters: {
+        /** @description Optional retry key for identity creation. Same tenant, operation and key with the same body returns the original 201 response without another audit record. A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped to the workspace. Without a key, a repeated slug returns 409 as before. Replay records follow the platform command retention window (7 days by default). */
+        OptionalIdempotencyKey: string;
         /** @description Namespace; authorization derives tenant from token, not header. */
         Namespace: string;
         IdempotencyKey: string;
@@ -3615,6 +3619,8 @@ export interface components {
     };
     requestBodies: never;
     headers: {
+        /** @description Server-generated id unique to this HTTP request; independent of the caller's traceparent or X-Request-Id. */
+        HttpRequestId: string;
         /** @description W3C trace id (32 lowercase hex characters) of the request, for log and trace correlation. */
         TraceId: string;
     };
@@ -3635,6 +3641,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3658,6 +3665,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3681,6 +3689,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3706,6 +3715,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3736,6 +3746,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3753,7 +3764,10 @@ export interface operations {
     createWorkspace: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional retry key for identity creation. Same tenant, operation and key with the same body returns the original 201 response without another audit record. A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped to the workspace. Without a key, a repeated slug returns 409 as before. Replay records follow the platform command retention window (7 days by default). */
+                "Idempotency-Key"?: components["parameters"]["OptionalIdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -3767,12 +3781,14 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["Workspace"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
@@ -3797,6 +3813,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3814,7 +3831,10 @@ export interface operations {
     createNamespace: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional retry key for identity creation. Same tenant, operation and key with the same body returns the original 201 response without another audit record. A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped to the workspace. Without a key, a repeated slug returns 409 as before. Replay records follow the platform command retention window (7 days by default). */
+                "Idempotency-Key"?: components["parameters"]["OptionalIdempotencyKey"];
+            };
             path: {
                 workspaceId: string;
             };
@@ -3830,12 +3850,14 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["NamespaceResource"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -3864,6 +3886,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3893,6 +3916,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3928,6 +3952,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3965,6 +3990,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3997,6 +4023,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4030,6 +4057,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4068,6 +4096,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4104,6 +4133,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4140,6 +4170,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4175,6 +4206,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4205,6 +4237,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4235,6 +4268,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4272,6 +4306,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4309,6 +4344,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4341,6 +4377,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4375,6 +4412,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4404,6 +4442,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4433,6 +4472,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4462,6 +4502,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4493,6 +4534,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4526,6 +4568,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4562,6 +4605,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4601,6 +4645,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4631,6 +4676,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4664,6 +4710,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4695,6 +4742,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4724,6 +4772,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4758,6 +4807,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4790,6 +4840,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4819,6 +4870,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4854,6 +4906,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4887,6 +4940,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4916,6 +4970,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4950,6 +5005,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4982,6 +5038,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5010,6 +5067,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5042,6 +5100,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5072,6 +5131,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5099,6 +5159,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5132,6 +5193,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5163,6 +5225,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5197,6 +5260,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5228,6 +5292,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5263,6 +5328,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5300,6 +5366,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5342,6 +5409,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5372,6 +5440,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5405,6 +5474,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5442,6 +5512,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5476,6 +5547,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5508,6 +5580,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5541,6 +5614,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5577,6 +5651,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5609,6 +5684,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5641,6 +5717,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5678,6 +5755,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5712,6 +5790,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5751,6 +5830,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5761,6 +5841,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5771,6 +5852,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5808,6 +5890,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5852,6 +5935,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5881,6 +5965,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5914,6 +5999,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5947,6 +6033,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5981,6 +6068,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6013,6 +6101,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6042,6 +6131,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6071,6 +6161,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6104,6 +6195,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6137,6 +6229,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6171,6 +6264,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6203,6 +6297,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6237,6 +6332,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6269,6 +6365,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6300,6 +6397,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6335,6 +6433,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6366,6 +6465,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6399,6 +6499,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6432,6 +6533,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6466,6 +6568,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6498,6 +6601,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6531,6 +6635,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6563,6 +6668,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6594,6 +6700,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6623,6 +6730,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6657,6 +6765,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6690,6 +6799,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6723,6 +6833,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6753,6 +6864,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6786,6 +6898,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6822,6 +6935,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6852,6 +6966,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6862,6 +6977,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6894,6 +7010,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6926,6 +7043,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6960,6 +7078,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6994,6 +7113,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7027,6 +7147,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7059,6 +7180,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7088,6 +7210,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7119,6 +7242,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7129,6 +7253,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7161,6 +7286,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7197,6 +7323,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7230,6 +7357,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7240,6 +7368,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7272,6 +7401,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7308,6 +7438,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7339,6 +7470,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7366,6 +7498,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7394,6 +7527,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7423,6 +7557,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7454,6 +7589,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7488,6 +7624,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;

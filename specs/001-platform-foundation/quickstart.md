@@ -71,8 +71,8 @@ seeding twice, is automated and is what CI runs:
 scripts/smoke-compose.sh
 ```
 
-Not part of the environment yet: an S3-compatible object store (optional in this phase), and the
-NATS broker is not used by the control plane until feature 002.
+The optional S3-compatible object store is still absent. NATS is now used by the feature-002
+execution engine for redeliverable hints; PostgreSQL remains the authority.
 
 ## 3. Run the control plane without Docker
 
@@ -139,10 +139,10 @@ contract syntax checks through its contracts job.
 
 ## Known limits
 
-Recorded in [`research.md`](./research.md): no token revocation list (G7), create operations are not
-idempotent through `Idempotency-Key` (G8), `403`s are not audited (G9), no OTLP span export (G6;
-logs, trace ids and Prometheus metrics exist), and rate
-limits that are per process (G13; a shared limiter is feature 010). Access-token `typ` enforcement
+Recorded in [`research.md`](./research.md): no token revocation list (G7), `403`s are not audited
+(G9), and HTTP rate limits remain per process (G13). Create operations are now database-backed and
+idempotent under an optional `Idempotency-Key` (G8 resolved). G6 is closed by feature 008's bounded OTLP/HTTP JSON span
+exporter; protobuf/gRPC OTLP remains feature 008's explicit G169. Access-token `typ` enforcement
 is available but off by default (G14). Operations: [`docs/runbooks/control-plane.md`](../../docs/runbooks/control-plane.md).
 
 ## Security review evidence (T001-034)

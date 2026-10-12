@@ -83,3 +83,11 @@ tests/e2e/platform-foundation/
 ## Delivery Gate
 
 Contract/API + tenant isolation suite and reproducible local environment with migrations executed twice.
+
+## Integrated completion
+
+T001-036 adds server-generated per-request correlation in the outer HTTP middleware,
+OpenAPI and all live contract checks. The additive optional schema field allows older
+servers to remain representable; the current server always emits it on errors.
+T001-037 reuses tenant-scoped command deduplication for optional identity creation keys,
+committing the resource, audit and replay record atomically.

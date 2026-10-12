@@ -49,6 +49,14 @@ fn namespace(headers: &HeaderMap) -> Result<&str, ApiError> {
         .ok_or_else(|| ApiError::bad_request("the X-Octopus-Namespace header is required"))
 }
 
+/// Identity creation predates mandatory keys; absent preserves the original conflict behavior.
+pub(crate) fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
+    if !headers.contains_key(IDEMPOTENCY_HEADER) {
+        return Ok(None);
+    }
+    idempotency_key(headers).map(Some)
+}
+
 /// `Idempotency-Key` is mandatory on every operation that creates or changes something, so a client
 /// that retries after an ambiguous failure can never apply it twice.
 fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {

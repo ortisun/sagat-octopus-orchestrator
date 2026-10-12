@@ -72,3 +72,14 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## Integrated requirement completion
+
+- [x] T001-036 Complete FR-001-006 request correlation: independently generated request id in headers/errors/log spans; test repeated trace parents and forged request headers.
+- [x] T001-037 Close G8 with optional idempotency keys for workspace/namespace creation, atomic audit and tenant-scoped replay; live REST and PostgreSQL race tests.
+
+Completion evidence: the HTTP context regression passed; `identity_service` 30/30;
+`contract_rest_platform_foundation` 8/8 and `integration_platform_foundation` 55/55
+before the final added races; the expanded focused idempotency suites passed 6 REST
+and 8 PostgreSQL tests with no failures/ignored tests. They cover namespace scope,
+different-body races, audit failure rollback, service restart and permission revocation.

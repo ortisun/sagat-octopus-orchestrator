@@ -70,9 +70,9 @@ Made from `specs/001-platform-foundation/contracts/openapi.yaml` (version 0.3.0)
 | `getReadiness` | `GET /ready` | Readiness probe (checks the database) | 200 |  | 001 |
 | `getPlatformVersion` | `GET /version` | Say which build, which API and which worker protocols this platform speaks | 200 |  | 012 |
 | `listWorkspaces` | `GET /workspaces` | List workspaces of the caller's tenant | 200 |  | 001 |
-| `createWorkspace` | `POST /workspaces` | Create a workspace | 201 |  | 001 |
+| `createWorkspace` | `POST /workspaces` | Create a workspace | 201 | yes | 001 |
 | `getWorkspace` | `GET /workspaces/{workspaceId}` | Get a workspace | 200 |  | 001 |
-| `createNamespace` | `POST /workspaces/{workspaceId}/namespaces` | Create a namespace inside a workspace | 201 |  | 001 |
+| `createNamespace` | `POST /workspaces/{workspaceId}/namespaces` | Create a namespace inside a workspace | 201 | yes | 001 |
 
 ## Operations
 

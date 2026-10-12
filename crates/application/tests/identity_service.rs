@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use sagat_application::clock::Clock;
+use sagat_application::definitions::{Applied, Idempotency};
 use sagat_application::error::{AppError, ConflictKind, StoreError};
 use sagat_application::identity::{
     IdentityService, IdentityStore, MAX_PAGE_SIZE, PageRequest, RequestContext,
@@ -36,6 +37,8 @@ struct State {
     workspaces: Vec<Workspace>,
     namespaces: Vec<Namespace>,
     audits: Vec<AuditRecord>,
+    /// `(tenant, scope, key, fingerprint, resource)` of every idempotent write, like `command_dedupe`.
+    dedupe: Vec<(TenantId, String, String, Vec<u8>, String)>,
     fail_audit_writes: bool,
     fail_everything: Option<StoreError>,
 }
@@ -46,6 +49,24 @@ struct FakeStore(Arc<Mutex<State>>);
 impl FakeStore {
     fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         f(&mut self.0.lock().expect("lock"))
+    }
+
+    /// The contract of an idempotent write: a known key with the same request is a replay, with a
+    /// different one an error, and an unknown key is recorded together with the write.
+    fn replay(
+        s: &State,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<String>, StoreError> {
+        match s
+            .dedupe
+            .iter()
+            .find(|d| d.0 == tenant && d.1 == idempotency.scope && d.2 == idempotency.key)
+        {
+            None => Ok(None),
+            Some(d) if d.3 == idempotency.fingerprint => Ok(Some(d.4.clone())),
+            Some(_) => Err(StoreError::IdempotencyKeyReused),
+        }
     }
 
     fn check(&self) -> Result<(), StoreError> {
@@ -89,6 +110,36 @@ impl IdentityStore for FakeStore {
             s.workspaces.push(workspace.clone());
             s.audits.push(audit.clone());
             Ok(())
+        })
+    }
+
+    async fn create_workspace_idempotent(
+        &self,
+        workspace: &Workspace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> Result<Applied<()>, StoreError> {
+        self.check()?;
+        self.with(|s| {
+            if let Some(resource) = Self::replay(s, workspace.tenant_id(), idempotency)? {
+                return Ok(Applied::Replayed(resource));
+            }
+            if s.workspaces
+                .iter()
+                .any(|w| w.tenant_id() == workspace.tenant_id() && w.slug() == workspace.slug())
+            {
+                return Err(StoreError::Conflict(ConflictKind::WorkspaceSlug));
+            }
+            s.workspaces.push(workspace.clone());
+            s.audits.push(audit.clone());
+            s.dedupe.push((
+                workspace.tenant_id(),
+                idempotency.scope.clone(),
+                idempotency.key.clone(),
+                idempotency.fingerprint.clone(),
+                workspace.id().to_string(),
+            ));
+            Ok(Applied::Done(()))
         })
     }
 
@@ -142,6 +193,36 @@ impl IdentityStore for FakeStore {
             s.namespaces.push(namespace.clone());
             s.audits.push(audit.clone());
             Ok(())
+        })
+    }
+
+    async fn create_namespace_idempotent(
+        &self,
+        namespace: &Namespace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> Result<Applied<()>, StoreError> {
+        self.check()?;
+        self.with(|s| {
+            if let Some(resource) = Self::replay(s, namespace.tenant_id(), idempotency)? {
+                return Ok(Applied::Replayed(resource));
+            }
+            if s.namespaces
+                .iter()
+                .any(|n| n.tenant_id() == namespace.tenant_id() && n.slug() == namespace.slug())
+            {
+                return Err(StoreError::Conflict(ConflictKind::NamespaceSlug));
+            }
+            s.namespaces.push(namespace.clone());
+            s.audits.push(audit.clone());
+            s.dedupe.push((
+                namespace.tenant_id(),
+                idempotency.scope.clone(),
+                idempotency.key.clone(),
+                idempotency.fingerprint.clone(),
+                namespace.id().to_string(),
+            ));
+            Ok(Applied::Done(()))
         })
     }
 
@@ -842,4 +923,142 @@ async fn ping_reflects_storage_health() {
         })
     });
     assert_eq!(w.svc.ping().await, Err(AppError::Unavailable));
+}
+
+// ------------------------------------------------------------- idempotent creation (G8)
+
+const KEY: &str = "create-platform-0001";
+
+#[tokio::test]
+async fn repeating_a_workspace_creation_with_the_same_key_returns_the_first_one_and_audits_once() {
+    let w = world();
+
+    let first = w
+        .svc
+        .create_workspace_idempotent(&w.admin_a, "platform", KEY, &ctx())
+        .await
+        .expect("created");
+    let again = w
+        .svc
+        .create_workspace_idempotent(&w.admin_a, "platform", KEY, &ctx())
+        .await
+        .expect("the retry is answered, not refused");
+
+    assert_eq!(
+        again.id(),
+        first.id(),
+        "the same resource, not a second one"
+    );
+    assert_eq!(w.store.with(|s| s.workspaces.len()), 1);
+    assert_eq!(audits(&w).len(), 1, "a replay is not a second event");
+}
+
+#[tokio::test]
+async fn the_same_key_for_a_different_request_is_refused_and_changes_nothing() {
+    let w = world();
+    w.svc
+        .create_workspace_idempotent(&w.admin_a, "platform", KEY, &ctx())
+        .await
+        .expect("created");
+
+    let other = w
+        .svc
+        .create_workspace_idempotent(&w.admin_a, "billing", KEY, &ctx())
+        .await;
+
+    assert_eq!(other, Err(AppError::IdempotencyKeyReused));
+    assert_eq!(w.store.with(|s| s.workspaces.len()), 1);
+}
+
+#[tokio::test]
+async fn a_key_means_one_thing_per_tenant() {
+    let w = world();
+
+    let a = w
+        .svc
+        .create_workspace_idempotent(&w.admin_a, "platform", KEY, &ctx())
+        .await
+        .expect("acme");
+    let b = w
+        .svc
+        .create_workspace_idempotent(&w.admin_b, "billing", KEY, &ctx())
+        .await
+        .expect("globex may use the same key text for its own request");
+
+    assert_ne!(a.id(), b.id());
+    assert_eq!(a.tenant_id(), w.tenant_a.id());
+    assert_eq!(b.tenant_id(), w.tenant_b.id());
+}
+
+#[tokio::test]
+async fn without_a_key_a_repeat_still_conflicts_on_the_slug() {
+    let w = world();
+    w.svc
+        .create_workspace(&w.admin_a, "platform", &ctx())
+        .await
+        .expect("created");
+
+    let again = w.svc.create_workspace(&w.admin_a, "platform", &ctx()).await;
+
+    assert_eq!(again, Err(AppError::Conflict(ConflictKind::WorkspaceSlug)));
+}
+
+#[tokio::test]
+async fn a_key_does_not_skip_authorization_or_validation() {
+    let w = world();
+    let viewer = grant(&w, &w.tenant_a, "vera", Role::Viewer);
+
+    let refused = w
+        .svc
+        .create_workspace_idempotent(&viewer, "platform", KEY, &ctx())
+        .await;
+    assert!(
+        matches!(refused, Err(AppError::Forbidden { .. })),
+        "{refused:?}"
+    );
+
+    let invalid = w
+        .svc
+        .create_workspace_idempotent(&w.admin_a, "Not A Slug!", KEY, &ctx())
+        .await;
+    assert!(matches!(invalid, Err(AppError::Invalid(_))), "{invalid:?}");
+    assert_eq!(w.store.with(|s| s.workspaces.len()), 0);
+    assert_eq!(
+        w.store.with(|s| s.dedupe.len()),
+        0,
+        "a refusal records no key"
+    );
+}
+
+#[tokio::test]
+async fn repeating_a_namespace_creation_with_the_same_key_returns_the_first_one() {
+    let w = world();
+    let ws = w
+        .svc
+        .create_workspace(&w.admin_a, "platform", &ctx())
+        .await
+        .expect("workspace");
+
+    let first = w
+        .svc
+        .create_namespace_idempotent(&w.admin_a, ws.id(), "dev", "dev", KEY, &ctx())
+        .await
+        .expect("created");
+    let again = w
+        .svc
+        .create_namespace_idempotent(&w.admin_a, ws.id(), "dev", "dev", KEY, &ctx())
+        .await
+        .expect("replayed");
+    let other = w
+        .svc
+        .create_namespace_idempotent(&w.admin_a, ws.id(), "dev", "prod", KEY, &ctx())
+        .await;
+
+    assert_eq!(again.id(), first.id());
+    assert_eq!(
+        other,
+        Err(AppError::IdempotencyKeyReused),
+        "environment is part of the request"
+    );
+    assert_eq!(w.store.with(|s| s.namespaces.len()), 1);
 }

@@ -290,6 +290,11 @@ pub async fn check_body(
         }
         if status >= 400 {
             assert_eq!(
+                body["requestId"],
+                headers["x-request-id"].to_str().expect("ASCII"),
+                "{label}: error requestId == X-Request-Id"
+            );
+            assert_eq!(
                 body["traceId"],
                 headers["x-trace-id"].to_str().expect("ascii"),
                 "{label}: error traceId == X-Trace-Id"

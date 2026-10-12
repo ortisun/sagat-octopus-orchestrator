@@ -1214,7 +1214,7 @@ pub(crate) fn publication_idempotency(
 }
 
 /// Length-prefixed concatenation, so `("ab", "c")` and `("a", "bc")` differ.
-fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn fingerprint(parts: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     for part in parts {
         out.extend_from_slice(&(part.len() as u64).to_be_bytes());

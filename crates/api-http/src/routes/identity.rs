@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use sagat_application::clock::Clock;
 use sagat_application::identity::{IdentityStore, Page, PageRequest};
 use sagat_domain::identity::{NamespaceId, WorkspaceId};
@@ -19,6 +19,7 @@ use crate::dto::{
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
+use crate::routes::execution::optional_idempotency_key;
 
 fn page_request(query: PageQuery) -> PageRequest {
     PageRequest {
@@ -72,16 +73,28 @@ pub async fn platform_version(_caller: Caller) -> Json<crate::dto::VersionBody> 
 pub async fn create_workspace<S, C>(
     caller: Caller,
     State(state): State<AppState<S, C>>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<CreateWorkspaceBody>,
 ) -> Result<(StatusCode, Json<WorkspaceBody>), ApiError>
 where
     S: IdentityStore + 'static,
     C: Clock + 'static,
 {
-    let workspace = state
-        .identity
-        .create_workspace(&caller.session.principal, &body.slug, &caller.ctx)
-        .await?;
+    let principal = &caller.session.principal;
+    let workspace = match optional_idempotency_key(&headers)? {
+        Some(key) => {
+            state
+                .identity
+                .create_workspace_idempotent(principal, &body.slug, key, &caller.ctx)
+                .await?
+        }
+        None => {
+            state
+                .identity
+                .create_workspace(principal, &body.slug, &caller.ctx)
+                .await?
+        }
+    };
     Ok((StatusCode::CREATED, Json(WorkspaceBody::from(&workspace))))
 }
 
@@ -122,6 +135,7 @@ pub async fn create_namespace<S, C>(
     caller: Caller,
     State(state): State<AppState<S, C>>,
     Path(workspace_id): Path<String>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<CreateNamespaceBody>,
 ) -> Result<(StatusCode, Json<NamespaceBody>), ApiError>
 where
@@ -129,16 +143,34 @@ where
     C: Clock + 'static,
 {
     let workspace_id = parse_id::<WorkspaceId>(&workspace_id)?;
-    let namespace = state
-        .identity
-        .create_namespace(
-            &caller.session.principal,
-            workspace_id,
-            &body.slug,
-            &body.environment,
-            &caller.ctx,
-        )
-        .await?;
+    let principal = &caller.session.principal;
+    let namespace = match optional_idempotency_key(&headers)? {
+        Some(key) => {
+            state
+                .identity
+                .create_namespace_idempotent(
+                    principal,
+                    workspace_id,
+                    &body.slug,
+                    &body.environment,
+                    key,
+                    &caller.ctx,
+                )
+                .await?
+        }
+        None => {
+            state
+                .identity
+                .create_namespace(
+                    principal,
+                    workspace_id,
+                    &body.slug,
+                    &body.environment,
+                    &caller.ctx,
+                )
+                .await?
+        }
+    };
     Ok((StatusCode::CREATED, Json(NamespaceBody::from(&namespace))))
 }
 

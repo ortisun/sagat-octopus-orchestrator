@@ -43,7 +43,7 @@ paths:
       tags: [Identity]
       security: []
       responses:
-        '200': {description: 'The process is alive', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '200': {description: 'The process is alive', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '500': {$ref: '#/components/responses/InternalError'}
         default: {$ref: '#/components/responses/InternalError'}
   /ready:
@@ -53,7 +53,7 @@ paths:
       tags: [Identity]
       security: []
       responses:
-        '200': {description: 'Ready to serve traffic', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '200': {description: 'Ready to serve traffic', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
   /auth/context:
@@ -62,7 +62,7 @@ paths:
       summary: Describe the authenticated caller
       tags: [Identity]
       responses:
-        '200': {description: 'Resolved identity of the caller', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
+        '200': {description: 'Resolved identity of the caller', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -78,7 +78,7 @@ paths:
         `version` is the build, `apiVersion` the path prefix, `workerProtocol` the lowest and highest protocol a
         worker may offer. A platform older than feature 012 answers `404 ROUTE_NOT_FOUND`.
       responses:
-        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PlatformVersion'}}}}
+        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PlatformVersion'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -92,7 +92,7 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
-        '200': {description: 'Page of workspaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspacePage'}}}}
+        '200': {description: 'Page of workspaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspacePage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -103,13 +103,16 @@ paths:
       operationId: createWorkspace
       summary: Create a workspace
       tags: [Identity]
+      parameters:
+        - $ref: '#/components/parameters/OptionalIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/CreateWorkspaceRequest'}
       responses:
-        '201': {description: 'Workspace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '201': {description: 'Workspace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -128,7 +131,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
-        '200': {description: 'The workspace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '200': {description: 'The workspace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -141,6 +144,7 @@ paths:
       summary: Create a namespace inside a workspace
       tags: [Identity]
       parameters:
+        - $ref: '#/components/parameters/OptionalIdempotencyKey'
         - name: workspaceId
           in: path
           required: true
@@ -151,7 +155,8 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateNamespaceRequest'}
       responses:
-        '201': {description: 'Namespace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '201': {description: 'Namespace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -169,7 +174,7 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
-        '200': {description: 'Page of namespaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePage'}}}}
+        '200': {description: 'Page of namespaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -187,7 +192,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
-        '200': {description: 'The namespace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '200': {description: 'The namespace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -205,7 +210,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'Page of workflows', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowPage'}}}}
+        '200': {description: 'Page of workflows', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -228,7 +233,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateWorkflowRequest'}
       responses:
-        '201': {description: 'Draft created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '201': {description: 'Draft created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -247,7 +252,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/WorkflowId'}
       responses:
-        '200': {description: 'The workflow', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '200': {description: 'The workflow', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -267,7 +272,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateDraftRequest'}
       responses:
-        '200': {description: 'Draft updated', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '200': {description: 'Draft updated', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -293,7 +298,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/PublishRequest'}
       responses:
-        '201': {description: 'Immutable version published (or an identical one re-activated)', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '201': {description: 'Immutable version published (or an identical one re-activated)', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -325,7 +330,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ValidateRequest'}
       responses:
-        '200': {description: 'The problems found, possibly none', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Validation'}}}}
+        '200': {description: 'The problems found, possibly none', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Validation'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -354,7 +359,7 @@ paths:
         - {name: from, in: query, required: false, schema: {type: string, pattern: '^(draft|[1-9][0-9]{0,8})$'}, description: 'The older side: `draft` or a version number. Default: the active version.'}
         - {name: to, in: query, required: false, schema: {type: string, pattern: '^(draft|[1-9][0-9]{0,8})$'}, description: 'The newer side. Default: `draft`.'}
       responses:
-        '200': {description: 'The differences', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DefinitionDiff'}}}}
+        '200': {description: 'The differences', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DefinitionDiff'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -373,7 +378,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'Page of versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/VersionPage'}}}}
+        '200': {description: 'Page of versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/VersionPage'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -390,7 +395,7 @@ paths:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/VersionNumber'}
       responses:
-        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersionDocument'}}}}
+        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersionDocument'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -408,7 +413,7 @@ paths:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/VersionNumber'}
       responses:
-        '200': {description: 'The plans', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CompensationPlans'}}}}
+        '200': {description: 'The plans', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CompensationPlans'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -428,7 +433,7 @@ paths:
         - {name: workflowId, in: query, schema: {type: string}}
         - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
       responses:
-        '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
+        '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -451,7 +456,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/StartRunRequest'}
       responses:
-        '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -470,7 +475,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'Run state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '200': {description: 'Run state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -488,7 +493,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'Paged journal timeline', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/JournalPage'}}}}
+        '200': {description: 'Paged journal timeline', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/JournalPage'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -506,7 +511,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'The state of the run''s telemetry', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunTelemetry'}}}}
+        '200': {description: 'The state of the run''s telemetry', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunTelemetry'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -524,7 +529,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'The attempts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AttemptList'}}}}
+        '200': {description: 'The attempts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AttemptList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -540,7 +545,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'Runtime graph', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
+        '200': {description: 'Runtime graph', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -564,7 +569,7 @@ paths:
         - {$ref: '#/components/parameters/RunId'}
         - {name: since, in: query, required: true, schema: {type: integer, format: int64, minimum: 0}}
       responses:
-        '200': {description: 'The changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/GraphChanges'}}}}
+        '200': {description: 'The changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/GraphChanges'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -591,7 +596,7 @@ paths:
         - {$ref: '#/components/parameters/RunId'}
         - {name: after, in: query, required: false, schema: {type: integer, format: int64, minimum: 0}, description: 'The projection sequence the client has; `Last-Event-ID` wins when both are sent.'}
       responses:
-        '200': {description: 'The stream', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {text/event-stream: {schema: {type: string}}}}
+        '200': {description: 'The stream', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {text/event-stream: {schema: {type: string}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -620,7 +625,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/OperationRequest'}
       responses:
-        '202': {description: 'Operation accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResult'}}}}
+        '202': {description: 'Operation accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResult'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -647,7 +652,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/EventPayload'}
       responses:
-        '202': {description: 'Signal durably admitted; names the waiting steps it woke', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SignalResult'}}}}
+        '202': {description: 'Signal durably admitted; names the waiting steps it woke', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SignalResult'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -665,7 +670,7 @@ paths:
       x-implemented: '009'
       description: Needs `quota:read`. A resource counted per namespace shows the tenant-wide setting (the default of its namespaces) and no usage.
       responses:
-        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -687,7 +692,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetQuotaRequest'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -705,7 +710,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/QuotaResourceName'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -722,7 +727,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -745,7 +750,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetQuotaRequest'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -764,7 +769,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/QuotaResourceName'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -781,7 +786,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The bindings', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBindingList'}}}}
+        '200': {description: 'The bindings', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBindingList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -805,7 +810,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetWorkerBindingRequest'}
       responses:
-        '200': {description: 'The binding now in force and what the change released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBinding'}}}}
+        '200': {description: 'The binding now in force and what the change released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBinding'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -824,7 +829,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/WorkerSubject'}
       responses:
-        '200': {description: 'What the removal released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RevokedWorkers'}}}}
+        '200': {description: 'What the removal released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RevokedWorkers'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -842,7 +847,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The secrets', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretList'}}}}
+        '200': {description: 'The secrets', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -866,7 +871,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetSecretRequest'}
       responses:
-        '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -885,7 +890,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SecretName'}
       responses:
-        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -903,7 +908,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SecretName'}
       responses:
-        '200': {description: 'The identities on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretAccess'}}}}
+        '200': {description: 'The identities on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretAccess'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -922,7 +927,7 @@ paths:
         - {$ref: '#/components/parameters/SecretName'}
         - {$ref: '#/components/parameters/WorkerSubject'}
       responses:
-        '204': {description: 'The identity is on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The identity is on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -940,7 +945,7 @@ paths:
         - {$ref: '#/components/parameters/SecretName'}
         - {$ref: '#/components/parameters/WorkerSubject'}
       responses:
-        '204': {description: 'The identity is off the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The identity is off the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -958,7 +963,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -980,7 +985,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetEgressPolicyRequest'}
       responses:
-        '200': {description: 'The policy now in force, in canonical text', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '200': {description: 'The policy now in force, in canonical text', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -998,7 +1003,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '204': {description: 'The policy is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The policy is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1023,7 +1028,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of alerts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AlertPage'}}}}
+        '200': {description: 'A page of alerts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AlertPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1043,7 +1048,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The workers', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerList'}}}}
+        '200': {description: 'The workers', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1067,7 +1072,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'The identity is drained', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Drain'}}}}
+        '200': {description: 'The identity is drained', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Drain'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1093,7 +1098,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'Done', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Undrain'}}}}
+        '200': {description: 'Done', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Undrain'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1120,7 +1125,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of records', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuditPage'}}}}
+        '200': {description: 'A page of records', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuditPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1139,7 +1144,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1161,7 +1166,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetPublicationPolicy'}
       responses:
-        '200': {description: 'The policy now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
+        '200': {description: 'The policy now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1186,7 +1191,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/OpenPublicationRequest'}
       responses:
-        '201': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '201': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1208,7 +1213,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of requests', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequestPage'}}}}
+        '200': {description: 'A page of requests', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequestPage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1226,7 +1231,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RequestId'}
       responses:
-        '200': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1249,7 +1254,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1274,7 +1279,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1294,7 +1299,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RequestId'}
       responses:
-        '200': {description: 'The withdrawn request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The withdrawn request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1314,7 +1319,7 @@ paths:
         - {$ref: '#/components/parameters/RequestId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
-        '201': {description: 'The version published', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '201': {description: 'The version published', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1337,7 +1342,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationPage'}}}}
+        '200': {description: 'A page of changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationPage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1361,7 +1366,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ActivateVersion'}
       responses:
-        '200': {description: 'The change, or the unchanged state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationResult'}}}}
+        '200': {description: 'The change, or the unchanged state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationResult'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1389,9 +1394,9 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/PromoteVersion'}
       responses:
-        '200': {description: 'The target runs this document already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
-        '201': {description: 'Published into the target', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
-        '202': {description: 'A request is waiting for approvals', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '200': {description: 'The target runs this document already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '201': {description: 'Published into the target', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '202': {description: 'A request is waiting for approvals', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1417,7 +1422,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/IncomingEvent'}
       responses:
-        '202': {description: 'The event is in the inbox, now or since before', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '202': {description: 'The event is in the inbox, now or since before', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1450,7 +1455,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/EventPayload'}
       responses:
-        '202': {description: "Signature verified, event durably admitted (or already admitted before)", headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '202': {description: "Signature verified, event durably admitted (or already admitted before)", headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1468,7 +1473,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The endpoints', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpointList'}}}}
+        '200': {description: 'The endpoints', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpointList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1490,7 +1495,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateEventEndpointRequest'}
       responses:
-        '201': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
+        '201': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1512,7 +1517,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/EndpointId'}
       responses:
-        '200': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
+        '200': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1535,7 +1540,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateEventEndpointRequest'}
       responses:
-        '200': {description: 'The endpoint now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
+        '200': {description: 'The endpoint now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1555,7 +1560,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/EndpointId'}
       responses:
-        '204': {description: 'The endpoint is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The endpoint is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1575,7 +1580,7 @@ paths:
         - {name: source, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
         - {name: eventId, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
       responses:
-        '200': {description: 'The event', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/InboxEvent'}}}}
+        '200': {description: 'The event', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/InboxEvent'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1593,7 +1598,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The subscriptions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscriptionList'}}}}
+        '200': {description: 'The subscriptions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscriptionList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1615,7 +1620,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateWebhookSubscriptionRequest'}
       responses:
-        '201': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
+        '201': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1637,7 +1642,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SubscriptionId'}
       responses:
-        '200': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
+        '200': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1660,7 +1665,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateWebhookSubscriptionRequest'}
       responses:
-        '200': {description: 'The subscription now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
+        '200': {description: 'The subscription now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1680,7 +1685,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SubscriptionId'}
       responses:
-        '204': {description: 'The subscription is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The subscription is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1702,7 +1707,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of deliveries', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDeliveryPage'}}}}
+        '200': {description: 'A page of deliveries', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDeliveryPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1723,7 +1728,7 @@ paths:
         - {$ref: '#/components/parameters/SubscriptionId'}
         - {$ref: '#/components/parameters/DeliveryId'}
       responses:
-        '200': {description: 'The delivery', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDelivery'}}}}
+        '200': {description: 'The delivery', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDelivery'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1743,7 +1748,7 @@ paths:
         - {$ref: '#/components/parameters/SubscriptionId'}
         - {$ref: '#/components/parameters/DeliveryId'}
       responses:
-        '200': {description: 'The delivery is queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '200': {description: 'The delivery is queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
         '409': {$ref: '#/components/responses/Conflict'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1768,7 +1773,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/RedriveRequest'}
       responses:
-        '200': {description: 'How many were queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '200': {description: 'How many were queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1788,7 +1793,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The connectors', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectorList'}}}}
+        '200': {description: 'The connectors', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectorList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1810,7 +1815,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateConnectorRequest'}
       responses:
-        '201': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
+        '201': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1832,7 +1837,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ConnectorId'}
       responses:
-        '200': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
+        '200': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1855,7 +1860,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateConnectorRequest'}
       responses:
-        '200': {description: 'The connector now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
+        '200': {description: 'The connector now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1875,7 +1880,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ConnectorId'}
       responses:
-        '204': {description: 'The connector is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The connector is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1896,7 +1901,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of dead letters', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetterPage'}}}}
+        '200': {description: 'A page of dead letters', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetterPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1917,7 +1922,7 @@ paths:
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/DeadLetterId'}
       responses:
-        '200': {description: 'The dead letter', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetter'}}}}
+        '200': {description: 'The dead letter', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetter'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1936,7 +1941,7 @@ paths:
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/DeadLetterId'}
       responses:
-        '204': {description: 'The dead letter is forgotten', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The dead letter is forgotten', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1956,7 +1961,7 @@ paths:
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/DeadLetterId'}
       responses:
-        '200': {description: 'The event the message became', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '200': {description: 'The event the message became', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1978,7 +1983,7 @@ paths:
         - {$ref: '#/components/parameters/ScriptAfter'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The scripts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptList'}}}}
+        '200': {description: 'The scripts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2003,7 +2008,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateScriptRequest'}
       responses:
-        '201': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '201': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2025,7 +2030,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
       responses:
-        '200': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '200': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2048,7 +2053,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateScriptRequest'}
       responses:
-        '200': {description: 'The script now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '200': {description: 'The script now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2069,7 +2074,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
       responses:
-        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2091,7 +2096,7 @@ paths:
         - {$ref: '#/components/parameters/VersionBefore'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersionList'}}}}
+        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersionList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2110,8 +2115,8 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
       responses:
-        '202': {description: 'The version, building', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
-        '200': {description: 'The draft was already the latest version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
+        '202': {description: 'The version, building', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
+        '200': {description: 'The draft was already the latest version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2132,7 +2137,7 @@ paths:
         - {$ref: '#/components/parameters/ScriptId'}
         - {$ref: '#/components/parameters/VersionNumber'}
       responses:
-        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersion'}}}}
+        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersion'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2152,7 +2157,7 @@ paths:
         - {$ref: '#/components/parameters/ScriptId'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The test runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRunList'}}}}
+        '200': {description: 'The test runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRunList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2175,7 +2180,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/TestRunRequest'}
       responses:
-        '202': {description: 'The test run, queued', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
+        '202': {description: 'The test run, queued', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2198,7 +2203,7 @@ paths:
         - {$ref: '#/components/parameters/ScriptId'}
         - {$ref: '#/components/parameters/TestRunId'}
       responses:
-        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
+        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2219,7 +2224,7 @@ paths:
         - {$ref: '#/components/parameters/ExecutionBefore'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The executions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecutionList'}}}}
+        '200': {description: 'The executions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecutionList'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2240,7 +2245,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ExecutionId'}
       responses:
-        '200': {description: 'The execution', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecution'}}}}
+        '200': {description: 'The execution', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecution'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2258,7 +2263,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ArtifactDigest'}
       responses:
-        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptArtifact'}}}}
+        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptArtifact'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2279,8 +2284,8 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ClaimBuildRequest'}
       responses:
-        '200': {description: 'The build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BuildAssignment'}}}}
-        '204': {description: 'Nothing to build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '200': {description: 'The build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BuildAssignment'}}}}
+        '204': {description: 'Nothing to build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2304,7 +2309,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/LeaseRequest'}
       responses:
-        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
+        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2330,7 +2335,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CompleteBuildRequest'}
       responses:
-        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2355,8 +2360,8 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ClaimTestRequest'}
       responses:
-        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/TestAssignment'}}}}
-        '204': {description: 'Nothing to run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/TestAssignment'}}}}
+        '204': {description: 'Nothing to run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2380,7 +2385,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/LeaseRequest'}
       responses:
-        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
+        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2406,7 +2411,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CompleteTestRequest'}
       responses:
-        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2428,7 +2433,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ArtifactDigest'}
       responses:
-        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerArtifact'}}}}
+        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerArtifact'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2444,7 +2449,7 @@ paths:
       description: |
         Needs `script:execute`. A runner that has not been given the key out of band asks for it (trust on first use).
       responses:
-        '200': {description: 'The key', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SigningKey'}}}}
+        '200': {description: 'The key', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SigningKey'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
@@ -2461,7 +2466,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerEgressPolicy'}}}}
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerEgressPolicy'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2479,7 +2484,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The activities', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PendingActivities'}}}}
+        '200': {description: 'The activities', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PendingActivities'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2500,7 +2505,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/RecordExecutionRequest'}
       responses:
-        '201': {description: 'Recorded', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Recorded'}}}}
+        '201': {description: 'Recorded', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Recorded'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2528,7 +2533,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/RecordRunnerIncidentRequest'}
       responses:
-        '204': {description: 'Incident committed, or committed already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Incident committed, or committed already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
@@ -2540,10 +2545,24 @@ components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
   headers:
+    HttpRequestId:
+      description: Server-generated id unique to this HTTP request; independent of the caller's traceparent or X-Request-Id.
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
     TraceId:
       description: W3C trace id (32 lowercase hex characters) of the request, for log and trace correlation.
       schema: {type: string, pattern: '^[0-9a-f]{32}$'}
   parameters:
+    OptionalIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Optional retry key for identity creation. Same tenant, operation and key with the
+        same body returns the original 201 response without another audit record.
+        A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped
+        to the workspace. Without a key, a repeated slug returns 409 as before.
+        Replay records follow the platform command retention window (7 days by default).
+      schema: {type: string, minLength: 8, maxLength: 160, pattern: '^[!-~]+$'}
     Namespace:
       name: X-Octopus-Namespace
       in: header
@@ -2694,6 +2713,7 @@ components:
         message: {type: string, description: "Safe, human-readable summary. Never contains secrets, payloads or other tenants' data."}
         retryable: {type: boolean}
         traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
+        requestId: {type: string, pattern: '^[0-9a-f]{32}$', description: 'Server-generated request correlation id; equals X-Request-Id. Absent on older servers.'}
         remediation:
           type: string
           description: >-

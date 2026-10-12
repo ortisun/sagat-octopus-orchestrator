@@ -15,7 +15,7 @@ use sagat_api_http::{
 use sagat_application::bindings::BindingService;
 use sagat_application::clock::SystemClock;
 use sagat_application::connectors::ConnectorService;
-use sagat_application::definitions::DefinitionService;
+use sagat_application::definitions::{Applied, DefinitionService, Idempotency};
 use sagat_application::egress::EgressService;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::StoreError;
@@ -110,6 +110,17 @@ impl IdentityStore for CountingStore {
         self.inner.create_workspace(workspace, audit).await
     }
 
+    async fn create_workspace_idempotent(
+        &self,
+        workspace: &Workspace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> Result<Applied<()>, StoreError> {
+        self.inner
+            .create_workspace_idempotent(workspace, audit, idempotency)
+            .await
+    }
+
     async fn get_workspace(
         &self,
         tenant: TenantId,
@@ -133,6 +144,17 @@ impl IdentityStore for CountingStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         self.inner.create_namespace(namespace, audit).await
+    }
+
+    async fn create_namespace_idempotent(
+        &self,
+        namespace: &Namespace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> Result<Applied<()>, StoreError> {
+        self.inner
+            .create_namespace_idempotent(namespace, audit, idempotency)
+            .await
     }
 
     async fn get_namespace(

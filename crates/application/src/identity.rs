@@ -13,6 +13,7 @@ use sagat_domain::identity::{
 };
 
 use crate::clock::Clock;
+use crate::definitions::{Applied, Idempotency, fingerprint};
 use crate::error::{AppError, StoreError};
 
 /// Default and maximum page sizes of list operations.
@@ -104,6 +105,17 @@ pub trait IdentityStore: Send + Sync {
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Like [`Self::create_workspace`], recording `idempotency` in the same transaction. A request
+    /// that repeats a recorded one (same key, same fingerprint) writes nothing and is
+    /// [`Applied::Replayed`] with the id it created; the same key with a different request is
+    /// [`StoreError::IdempotencyKeyReused`]. Racing requests with one key create exactly one.
+    fn create_workspace_idempotent(
+        &self,
+        workspace: &Workspace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Applied<()>, StoreError>> + Send;
+
     fn get_workspace(
         &self,
         tenant: TenantId,
@@ -124,6 +136,14 @@ pub trait IdentityStore: Send + Sync {
         namespace: &Namespace,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// The namespace counterpart of [`Self::create_workspace_idempotent`].
+    fn create_namespace_idempotent(
+        &self,
+        namespace: &Namespace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Applied<()>, StoreError>> + Send;
 
     fn get_namespace(
         &self,
@@ -226,6 +246,33 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
         slug: &str,
         ctx: &RequestContext,
     ) -> Result<Workspace, AppError> {
+        self.create_workspace_as(principal, slug, None, ctx).await
+    }
+
+    /// [`Self::create_workspace`] that is safe to retry: a repeat with the same `key` and slug
+    /// returns the workspace the first call created (nothing is written, nothing is audited again).
+    ///
+    /// # Errors
+    /// As [`Self::create_workspace`]; [`AppError::IdempotencyKeyReused`] when `key` was already
+    /// used, in this tenant, for a different workspace.
+    pub async fn create_workspace_idempotent(
+        &self,
+        principal: &Principal,
+        slug: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<Workspace, AppError> {
+        self.create_workspace_as(principal, slug, Some(key), ctx)
+            .await
+    }
+
+    async fn create_workspace_as(
+        &self,
+        principal: &Principal,
+        slug: &str,
+        key: Option<&str>,
+        ctx: &RequestContext,
+    ) -> Result<Workspace, AppError> {
         principal.authorize(Permission::WorkspaceCreate)?;
         let slug = Slug::parse(slug)?;
         let now = self.clock.now();
@@ -238,8 +285,29 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
             ctx.trace_id.clone(),
             now,
         );
-        self.store.create_workspace(&workspace, &audit).await?;
-        Ok(workspace)
+        let Some(key) = key else {
+            self.store.create_workspace(&workspace, &audit).await?;
+            return Ok(workspace);
+        };
+        let idempotency = Idempotency {
+            scope: "workspace.create".to_owned(),
+            key: key.to_owned(),
+            fingerprint: fingerprint(&[workspace.slug().as_str().as_bytes()]),
+        };
+        match self
+            .store
+            .create_workspace_idempotent(&workspace, &audit, &idempotency)
+            .await?
+        {
+            Applied::Done(()) => Ok(workspace),
+            Applied::Replayed(id) => {
+                let id = id.parse::<WorkspaceId>().map_err(|_| AppError::Internal)?;
+                self.store
+                    .get_workspace(principal.tenant_id(), id)
+                    .await?
+                    .ok_or(AppError::Internal)
+            }
+        }
     }
 
     /// # Errors
@@ -291,6 +359,37 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
         environment: &str,
         ctx: &RequestContext,
     ) -> Result<Namespace, AppError> {
+        self.create_namespace_as(principal, workspace_id, slug, environment, None, ctx)
+            .await
+    }
+
+    /// [`Self::create_namespace`] that is safe to retry; see [`Self::create_workspace_idempotent`].
+    ///
+    /// # Errors
+    /// As [`Self::create_namespace`]; [`AppError::IdempotencyKeyReused`] when `key` was already
+    /// used, in this tenant and workspace, for a different namespace or environment.
+    pub async fn create_namespace_idempotent(
+        &self,
+        principal: &Principal,
+        workspace_id: WorkspaceId,
+        slug: &str,
+        environment: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<Namespace, AppError> {
+        self.create_namespace_as(principal, workspace_id, slug, environment, Some(key), ctx)
+            .await
+    }
+
+    async fn create_namespace_as(
+        &self,
+        principal: &Principal,
+        workspace_id: WorkspaceId,
+        slug: &str,
+        environment: &str,
+        key: Option<&str>,
+        ctx: &RequestContext,
+    ) -> Result<Namespace, AppError> {
         principal.authorize(Permission::NamespaceCreate)?;
         let slug = Slug::parse(slug)?;
         let environment = environment.parse::<Environment>()?;
@@ -318,8 +417,32 @@ impl<S: IdentityStore, C: Clock> IdentityService<S, C> {
             ctx.trace_id.clone(),
             now,
         );
-        self.store.create_namespace(&namespace, &audit).await?;
-        Ok(namespace)
+        let Some(key) = key else {
+            self.store.create_namespace(&namespace, &audit).await?;
+            return Ok(namespace);
+        };
+        let idempotency = Idempotency {
+            scope: format!("namespace.create:{workspace_id}"),
+            key: key.to_owned(),
+            fingerprint: fingerprint(&[
+                namespace.slug().as_str().as_bytes(),
+                environment.as_str().as_bytes(),
+            ]),
+        };
+        match self
+            .store
+            .create_namespace_idempotent(&namespace, &audit, &idempotency)
+            .await?
+        {
+            Applied::Done(()) => Ok(namespace),
+            Applied::Replayed(id) => {
+                let id = id.parse::<NamespaceId>().map_err(|_| AppError::Internal)?;
+                self.store
+                    .get_namespace(principal.tenant_id(), id)
+                    .await?
+                    .ok_or(AppError::Internal)
+            }
+        }
     }
 
     /// # Errors

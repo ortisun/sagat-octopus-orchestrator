@@ -186,7 +186,7 @@ async fn killing_every_connection_never_produces_a_500_and_nothing_is_lost() {
 
 #[tokio::test]
 async fn retrying_a_create_after_an_ambiguous_response_is_a_409_and_the_original_is_intact() {
-    // Documents the known idempotency gap (research.md G7): without an Idempotency-Key a retry of a
+    // Preserves legacy compatibility: without an Idempotency-Key a retry of a
     // create that actually succeeded is reported as a conflict, and never creates a duplicate.
     let api = start().await;
     api.tenant("acme", "alice").await;

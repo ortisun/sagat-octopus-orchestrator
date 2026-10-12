@@ -1,7 +1,9 @@
 //! `IdentityStore` implementation over PostgreSQL (T001-010, T001-019).
 
+use crate::definitions::{hash, remember, replay};
 use crate::pool::BeginSafely;
 use crate::privilege::{self, LeastPrivilegeError};
+use sagat_application::definitions::{Applied, Idempotency};
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityStore;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -33,6 +35,27 @@ pub struct PgIdentityStore {
 }
 
 impl PgIdentityStore {
+    /// A creation that hit a uniqueness conflict while holding an idempotency key. Two requests
+    /// with one key can pass the replay check before either commits; the loser then collides with
+    /// the winner's row. If the winner has recorded the key by now, the loser is a replay of it and
+    /// is answered with the winner's resource, not told it conflicts; any other error (or a
+    /// conflict with somebody else's row) is returned unchanged.
+    async fn conflict_or_replay(
+        &self,
+        error: StoreError,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+        hash: &[u8],
+    ) -> Result<Applied<()>, StoreError> {
+        if matches!(error, StoreError::Conflict(_)) {
+            let mut conn = self.pool.acquire().await.map_err(store_error)?;
+            if let Some(resource) = replay(&mut conn, tenant, idempotency, hash).await? {
+                return Ok(Applied::Replayed(resource));
+            }
+        }
+        Err(error)
+    }
+
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self {
@@ -144,6 +167,41 @@ async fn insert_membership(
     .bind(membership.subject().as_str())
     .bind(membership.role().as_str())
     .bind(membership.created_at())
+    .execute(conn)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
+
+async fn insert_workspace(
+    conn: &mut PgConnection,
+    workspace: &Workspace,
+) -> Result<(), StoreError> {
+    sqlx::query("INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES ($1, $2, $3, $4)")
+        .bind(workspace.id().as_uuid())
+        .bind(workspace.tenant_id().as_uuid())
+        .bind(workspace.slug().as_str())
+        .bind(workspace.created_at())
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
+async fn insert_namespace(
+    conn: &mut PgConnection,
+    namespace: &Namespace,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(namespace.id().as_uuid())
+    .bind(namespace.tenant_id().as_uuid())
+    .bind(namespace.workspace_id().as_uuid())
+    .bind(namespace.slug().as_str())
+    .bind(namespace.environment().as_str())
+    .bind(namespace.created_at())
     .execute(conn)
     .await
     .map_err(store_error)?;
@@ -295,18 +353,50 @@ impl IdentityStore for PgIdentityStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        sqlx::query(
-            "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(workspace.id().as_uuid())
-        .bind(workspace.tenant_id().as_uuid())
-        .bind(workspace.slug().as_str())
-        .bind(workspace.created_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        insert_workspace(&mut tx, workspace).await?;
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)
+    }
+
+    async fn create_workspace_idempotent(
+        &self,
+        workspace: &Workspace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> Result<Applied<()>, StoreError> {
+        let hash = hash(&idempotency.fingerprint);
+        // Two attempts: the second only runs when a concurrent request with the same key committed
+        // between our lookup and our insert, in which case the lookup now finds it.
+        for _ in 0..2 {
+            let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+            if let Some(resource) =
+                replay(&mut tx, workspace.tenant_id(), idempotency, &hash).await?
+            {
+                return Ok(Applied::Replayed(resource));
+            }
+            if let Err(error) = insert_workspace(&mut tx, workspace).await {
+                drop(tx);
+                return self
+                    .conflict_or_replay(error, workspace.tenant_id(), idempotency, &hash)
+                    .await;
+            }
+            insert_audit(&mut tx, audit).await?;
+            if remember(
+                &mut tx,
+                workspace.tenant_id(),
+                idempotency,
+                &hash,
+                &workspace.id().to_string(),
+            )
+            .await?
+            {
+                tx.commit().await.map_err(store_error)?;
+                return Ok(Applied::Done(()));
+            }
+        }
+        Err(StoreError::Unavailable {
+            detail: "idempotency record kept changing under concurrent requests".into(),
+        })
     }
 
     async fn get_workspace(
@@ -352,21 +442,48 @@ impl IdentityStore for PgIdentityStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        sqlx::query(
-            "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(namespace.id().as_uuid())
-        .bind(namespace.tenant_id().as_uuid())
-        .bind(namespace.workspace_id().as_uuid())
-        .bind(namespace.slug().as_str())
-        .bind(namespace.environment().as_str())
-        .bind(namespace.created_at())
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        insert_namespace(&mut tx, namespace).await?;
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)
+    }
+
+    async fn create_namespace_idempotent(
+        &self,
+        namespace: &Namespace,
+        audit: &AuditRecord,
+        idempotency: &Idempotency,
+    ) -> Result<Applied<()>, StoreError> {
+        let hash = hash(&idempotency.fingerprint);
+        for _ in 0..2 {
+            let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+            if let Some(resource) =
+                replay(&mut tx, namespace.tenant_id(), idempotency, &hash).await?
+            {
+                return Ok(Applied::Replayed(resource));
+            }
+            if let Err(error) = insert_namespace(&mut tx, namespace).await {
+                drop(tx);
+                return self
+                    .conflict_or_replay(error, namespace.tenant_id(), idempotency, &hash)
+                    .await;
+            }
+            insert_audit(&mut tx, audit).await?;
+            if remember(
+                &mut tx,
+                namespace.tenant_id(),
+                idempotency,
+                &hash,
+                &namespace.id().to_string(),
+            )
+            .await?
+            {
+                tx.commit().await.map_err(store_error)?;
+                return Ok(Applied::Done(()));
+            }
+        }
+        Err(StoreError::Unavailable {
+            detail: "idempotency record kept changing under concurrent requests".into(),
+        })
     }
 
     async fn get_namespace(
