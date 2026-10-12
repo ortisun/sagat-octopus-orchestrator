@@ -896,3 +896,43 @@ async fn runtime_role_cannot_mutate_or_bypass_private_accounting() {
         .expect("release log bytes");
     assert_eq!(usage(&w.db.pool, tenant).await.2, after.2);
 }
+
+#[tokio::test]
+async fn final_activation_enables_both_byte_guards_and_rolls_back_without_erasing_usage() {
+    let w = world().await;
+    let before: (i64, i64, i64) = sqlx::query_as(
+        "SELECT content_bytes, content_reserved_bytes, log_bytes FROM tenant_retained_usage WHERE tenant_id=$1",
+    ).bind(w.admin.tenant_id().as_uuid()).fetch_one(&w.db.pool).await.expect("usage");
+    let flags: (bool, bool) = sqlx::query_as(
+        "SELECT content_enforcement_enabled, log_enforcement_enabled FROM quota_accounting_control",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("active guards");
+    assert_eq!(flags, (true, true));
+    sagat_infra_postgres::MIGRATOR
+        .undo(&w.db.pool, 20_261_025_000_000)
+        .await
+        .expect("disable through migration rollback");
+    let flags: (bool, bool) = sqlx::query_as(
+        "SELECT content_enforcement_enabled, log_enforcement_enabled FROM quota_accounting_control",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("inactive guards");
+    assert_eq!(flags, (false, false));
+    sagat_infra_postgres::migrate(&w.db.pool)
+        .await
+        .expect("reactivate");
+    let flags: (bool, bool) = sqlx::query_as(
+        "SELECT content_enforcement_enabled, log_enforcement_enabled FROM quota_accounting_control",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("reactivated guards");
+    assert_eq!(flags, (true, true));
+    let after: (i64, i64, i64) = sqlx::query_as(
+        "SELECT content_bytes, content_reserved_bytes, log_bytes FROM tenant_retained_usage WHERE tenant_id=$1",
+    ).bind(w.admin.tenant_id().as_uuid()).fetch_one(&w.db.pool).await.expect("usage preserved");
+    assert_eq!(before, after);
+}

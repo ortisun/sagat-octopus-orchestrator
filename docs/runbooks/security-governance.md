@@ -355,8 +355,10 @@ the migration does not delete, print, or silently grandfather arbitrary historic
 New reports accept only nonzero, 32-character lowercase hexadecimal trace IDs.
 
 Migration `20261024000000` backfills counters and initially leaves content/log enforcement disabled
-in the owner-only `quota_accounting_control` row so consumer integration can be verified. Do not
-manually enable it with older binaries. API/event rates and retention admission are application
+in the owner-only `quota_accounting_control` row so consumer integration can be verified. Final
+migration `20261026000000` enables both guards after the verified consumer changes; a fresh database
+with all migrations has enforcement on. Its rollback disables the guards without deleting usage or
+reservations. Both directions refuse a missing control row. Do not enable it with older binaries. API/event rates and retention admission are application
 policies and require the matching binaries independently of these byte switches. Rollback refuses
 to discard outstanding reservations or non-default new policies; `20261025000000` additionally
 refuses rollback while truncation/failure-code evidence exists. Restore or forward-fix according to

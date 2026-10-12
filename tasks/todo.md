@@ -5,7 +5,7 @@
 - [x] T001-037: Add optional idempotency keys to workspace/namespace creation; prove replay, mismatched payload, concurrency, audit atomicity and tenant isolation.
 - [x] T010-037: Supervise all critical engine loops; prove unexpected exit/panic stops service and requested shutdown stays clean.
 - [x] T010-038: Execute complete product Helm deployment and KEDA scale/recovery in a disposable cluster, record reproducible evidence.
-- [ ] Classify remaining requirements from the independent architectural audit and implement the approved V1 slices.
+- [x] Classify remaining requirements from the independent architectural audit and implement the approved V1 slices.
 - [ ] Run integrated gates and independent consequential-change review.
 - [ ] Prepare release integration with the verified completion changes.
 
@@ -16,7 +16,7 @@ Accepted limits (offline dependency catalog, no physical exactly-once, destructi
 without a policy) are not silently expanded or reclassified as implemented.
 
 - [x] FR-002-008: lease/tenant-scoped blob references, server inputs/results and five-SDK conformance; carefully port the existing draft without breaking protocol 1.2.
-- [ ] FR-009-006: exact storage/log-byte, retention-ceiling and event-rate admission quotas with concurrent/crash tests.
+- [x] FR-009-006: exact storage/log-byte, retention-ceiling and event-rate admission quotas with concurrent/crash tests; final activation migration passed enabled-by-default durable/security/script suites (176/95/54) and independent review.
 - [x] FR-010-002: per-activity concurrency quotas with fair retry and tenant isolation.
 - [x] FR-004-004: OIDC/mTLS webhook authentication profiles with replay/SSRF/failure tests.
 - [x] FR-004-005: durable outgoing NATS/Kafka/SQS deliveries with stable idempotency keys, ACK ambiguity and DLQ/redrive tests.

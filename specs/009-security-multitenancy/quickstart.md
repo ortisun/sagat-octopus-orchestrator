@@ -123,10 +123,10 @@ Still open: stored per-namespace API-rate quotas and byte/retention quotas for s
 
 The resource model, exact PostgreSQL accounting manifest, backfill, shared API/event rate buckets
 and retention ceilings follow ADR-0027. The current real-PostgreSQL security integration suite
-passed 94/94; forward/rollback/reapply/concurrent migration tests passed 5/5. HTTP admission tests
+passed 95/95; forward/rollback/reapply/concurrent migration tests passed 5/5. HTTP admission tests
 passed 10/10 across two server instances, including canonical namespace authorization, denied and
 malformed request non-debit, SSE reconnect charging and quota administration recovery at zero.
-Event integration passed 109/109, including transactional bucket rollback, concurrent duplicate
+Event integration passed 111/111, including transactional bucket rollback, concurrent duplicate
 admission and connector checkpoint/ack refusal. Script execution provenance and pinned-retention
 tests passed 9/9, including legacy leases, corrupt pins and policy lowering between lease/report.
 
@@ -134,5 +134,6 @@ The [new lock measurement](../../tests/performance/reports/durable-quotas.md) re
 operations with exact charged bytes, two rounds and one/two-tenant scenarios. It describes the
 loaded host and debug profile and makes no production capacity claim. Follow the
 [coordinated upgrade and trace-ID preflight](../../docs/runbooks/security-governance.md#upgrade-and-rollback)
-before enabling byte enforcement. T009-039 remains open until all asynchronous runtime completion
-paths and the final activation migration pass integrated verification.
+before enabling byte enforcement. T009-039 is complete: migration `20261026000000` enables both guards by default. With that migration
+applied, durable execution passed 176/176, security 95/95 and scripts 54/54. Activation rollback and
+reapply preserve usage; scoped runtime and complete workspace Clippy passed with warnings denied.
