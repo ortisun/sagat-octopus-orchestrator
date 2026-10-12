@@ -12,6 +12,8 @@ use std::process::Command;
 use regex::Regex;
 use serde_json::Value;
 
+mod tls_chart;
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }

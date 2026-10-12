@@ -4252,6 +4252,8 @@ version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "rcgen",
+ "reqwest",
  "sagat-api-http",
  "sagat-application",
  "sagat-domain",

@@ -51,7 +51,20 @@ async fn run(command: Command) -> Result<(), RunError> {
     if command == Command::Healthcheck {
         let addr =
             env_lookup("SAGAT_HEALTHCHECK_ADDR").unwrap_or_else(|| "127.0.0.1:8080".to_owned());
-        return sagat_control_plane::healthcheck(&addr).await;
+        let tls = sagat_control_plane::HealthcheckTlsConfig::from_lookup(env_lookup)?;
+        return match tls {
+            Some(tls) => {
+                let addr = addr.parse().map_err(|_| {
+                    sagat_control_plane::config::ConfigError::Invalid {
+                        name: "SAGAT_HEALTHCHECK_ADDR",
+                        reason: "must be an exact IP socket address for a TLS healthcheck"
+                            .to_owned(),
+                    }
+                })?;
+                sagat_control_plane::healthcheck_tls(addr, &tls).await
+            }
+            None => sagat_control_plane::healthcheck(&addr).await,
+        };
     }
 
     let config = Config::from_lookup(&env_lookup)?;

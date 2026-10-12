@@ -23,6 +23,7 @@ path = "src/main.rs"
 serde_json.workspace = true
 axum.workspace = true
 base64 = "0.22"
+reqwest.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
@@ -36,3 +37,6 @@ thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "io-util"] }
 tracing.workspace = true
+
+[dev-dependencies]
+rcgen = "0.13"

@@ -3,6 +3,8 @@
 //! `main.rs` only parses arguments and the environment; everything testable lives here.
 
 use std::future::Future;
+use std::io::Read as _;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -762,6 +764,166 @@ pub fn new_script_key() -> Result<String, RunError> {
 /// [`RunError::Unhealthy`] unless a `200` arrives within three seconds.
 pub async fn healthcheck(addr: &str) -> Result<(), RunError> {
     probe(addr, "/v1/health").await
+}
+
+/// Verified TLS settings for the self-contained container health check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthcheckTlsConfig {
+    /// The DNS name checked against the server certificate and sent as TLS SNI.
+    pub server_name: String,
+    /// Optional server trust roots. These are deliberately separate from the client CA accepted by
+    /// the API: trusting clients and trusting this server are different operator decisions.
+    pub ca_pem: Option<Vec<u8>>,
+}
+
+impl HealthcheckTlsConfig {
+    const MAX_CA_BYTES: usize = 256 * 1024;
+
+    /// Reads only the healthcheck's TLS variables. It does not load the database or serve config.
+    /// `SAGAT_HTTP_TLS_CERT` selects HTTPS because it is the server's native-TLS switch.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Option<Self>, ConfigError> {
+        let native_tls = get("SAGAT_HTTP_TLS_CERT").is_some_and(|value| !value.trim().is_empty());
+        let configured_name =
+            get("SAGAT_HEALTHCHECK_TLS_SERVER_NAME").filter(|value| !value.trim().is_empty());
+        let ca_file = get("SAGAT_HEALTHCHECK_TLS_CA_FILE").filter(|value| !value.trim().is_empty());
+        if !native_tls {
+            if configured_name.is_some() || ca_file.is_some() {
+                return Err(ConfigError::Invalid {
+                    name: "SAGAT_HEALTHCHECK_TLS_SERVER_NAME",
+                    reason: "needs SAGAT_HTTP_TLS_CERT because the local API is otherwise probed over plain HTTP"
+                        .to_owned(),
+                });
+            }
+            return Ok(None);
+        }
+        let server_name = configured_name.unwrap_or_else(|| "localhost".to_owned());
+        if !valid_dns_name(&server_name) {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_HEALTHCHECK_TLS_SERVER_NAME",
+                reason: "must be a DNS hostname of at most 253 ASCII characters".to_owned(),
+            });
+        }
+        let ca_pem = ca_file.map(|path| read_healthcheck_ca(&path)).transpose()?;
+        Ok(Some(Self {
+            server_name: server_name.to_ascii_lowercase(),
+            ca_pem,
+        }))
+    }
+}
+
+fn valid_dns_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+        // URL parsing recognizes decimal/hexadecimal IPv4 aliases as IP literals. Those bypass
+        // DNS overrides, so accepting them would defeat pinning to the configured local socket.
+        && reqwest::Url::parse(&format!("https://{name}"))
+            .is_ok_and(|url| url.domain().is_some())
+}
+
+fn read_healthcheck_ca(path: &str) -> Result<Vec<u8>, ConfigError> {
+    let invalid = |reason: &str| ConfigError::Invalid {
+        name: "SAGAT_HEALTHCHECK_TLS_CA_FILE",
+        reason: reason.to_owned(),
+    };
+    // Follow Kubernetes Secret symlinks, but never open a FIFO/device that can block before the
+    // network deadline. Configuration paths are controlled by the deployment operator.
+    if !std::fs::metadata(path)
+        .map_err(|_| invalid("cannot be read"))?
+        .is_file()
+    {
+        return Err(invalid("must refer to a regular file"));
+    }
+    let file = std::fs::File::open(path).map_err(|_| invalid("cannot be read"))?;
+    if !file
+        .metadata()
+        .map_err(|_| invalid("cannot be read"))?
+        .is_file()
+    {
+        return Err(invalid("must refer to a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(HealthcheckTlsConfig::MAX_CA_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid("cannot be read"))?;
+    if bytes.len() > HealthcheckTlsConfig::MAX_CA_BYTES {
+        return Err(invalid("must be at most 256 KiB"));
+    }
+    Ok(bytes)
+}
+
+/// Probes the native HTTPS listener while pinning name resolution to the exact local socket.
+/// Certificate and hostname verification stay enabled; redirects and proxy configuration are
+/// ignored so a healthcheck can neither leave the pod nor be redirected to another endpoint.
+///
+/// # Errors
+/// [`RunError::Unhealthy`] unless a verified `200` arrives within three seconds.
+pub async fn healthcheck_tls(
+    addr: SocketAddr,
+    config: &HealthcheckTlsConfig,
+) -> Result<(), RunError> {
+    if !valid_dns_name(&config.server_name) {
+        return Err(RunError::Unhealthy(
+            "TLS server name must be a DNS hostname".into(),
+        ));
+    }
+    if config
+        .ca_pem
+        .as_ref()
+        .is_some_and(|pem| pem.len() > HealthcheckTlsConfig::MAX_CA_BYTES)
+    {
+        return Err(RunError::Unhealthy("TLS CA must be at most 256 KiB".into()));
+    }
+    sagat_api_http::auth::install_crypto_provider();
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(3))
+        .resolve(&config.server_name, addr);
+    if let Some(pem) = &config.ca_pem {
+        let roots = reqwest::Certificate::from_pem_bundle(pem)
+            .map_err(|_| RunError::Unhealthy("the TLS CA file is not valid PEM".to_owned()))?;
+        if roots.is_empty() {
+            return Err(RunError::Unhealthy(
+                "the TLS CA file contains no certificate".to_owned(),
+            ));
+        }
+        for root in roots {
+            builder = builder.add_root_certificate(root);
+        }
+    }
+    let client = builder
+        .build()
+        .map_err(|error| RunError::Unhealthy(error.to_string()))?;
+    let url = format!("https://{}:{}/v1/health", config.server_name, addr.port());
+    let probe = async {
+        let response = client.get(url).send().await.map_err(|error| {
+            if error.is_timeout() {
+                "timed out".to_owned()
+            } else {
+                error.to_string()
+            }
+        })?;
+        if response.status() == reqwest::StatusCode::OK {
+            Ok(())
+        } else {
+            Err(format!("unexpected response '{}'", response.status()))
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(3), probe).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(reason)) => Err(RunError::Unhealthy(reason)),
+        Err(_) => Err(RunError::Unhealthy("timed out".to_owned())),
+    }
 }
 
 /// Probes `GET <path>` on `addr` the same way; used by every process's container health check.

@@ -70,6 +70,17 @@ controlPlane:
   # True only when TLS is terminated in front of the API (an ingress or a mesh): the control plane
   # receives secret values and refuses to run outside dev without being told.
   allowPlaintextSecrets: false
+  # Native HTTPS for the public API. Both Secrets are required together: tlsSecret contains
+  # tls.crt/tls.key; clientCaSecret contains ca.crt and enables verified webhook client identity.
+  nativeTls:
+    tlsSecret: ""
+    clientCaSecret: ""
+    # Optional trust roots used only by `control-plane healthcheck`. They are not inferred from the
+    # client CA above: a CA trusted to identify callers is not automatically trusted as this server.
+    healthcheckCaSecret: ""     # a Secret containing ca.crt
+    healthcheckServerName: localhost
+  # Optional Secret containing profiles.json for SAGAT_WEBHOOK_OIDC_PROFILES_FILE.
+  webhookOidcProfilesSecret: ""
 
 engine:
   # The scheduler's work is split in 64 shards and every replica holds a lease on its share, so a

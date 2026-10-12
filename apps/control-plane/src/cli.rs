@@ -116,6 +116,9 @@ ENVIRONMENT (serve):
                                       secret routes do not exist. The engine needs the same ring
     SAGAT_API_ALLOW_PLAINTEXT_SECRETS  with a key ring, outside dev, say that TLS is terminated in
                                       front of this API (it receives secret values) [false]
+    SAGAT_HTTP_TLS_CERT / _KEY         serve the public API over native TLS (PEM files)
+    SAGAT_HTTP_TLS_CLIENT_CA           CA for optional verified webhook client certificates (PEM)
+    SAGAT_WEBHOOK_OIDC_PROFILES_FILE   bounded JSON array of deployment-approved webhook issuers
     SAGAT_STUDIO_DIR                  directory of the built Studio, served under /studio/; unset or empty:
                                       the Studio is not served (the image ships it in /srv/studio)
     SAGAT_SCRIPT_SIGNING_KEY          Ed25519 key (PKCS#8, base64) that signs artifacts; without it the
@@ -138,4 +141,6 @@ ENVIRONMENT (provision-tenant):
 
 ENVIRONMENT (healthcheck):
     SAGAT_HEALTHCHECK_ADDR            address to probe                [127.0.0.1:8080]
+    SAGAT_HEALTHCHECK_TLS_SERVER_NAME certificate DNS name/SNI when native TLS is configured [localhost]
+    SAGAT_HEALTHCHECK_TLS_CA_FILE     optional server trust roots, PEM, at most 256 KiB
 ";

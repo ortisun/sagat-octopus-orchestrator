@@ -47,6 +47,20 @@ app.kubernetes.io/component: {{ .component }}
 {{- if and .Values.oidc.allowInsecureJwksHttp (ne .Values.environment "dev") -}}
 {{- fail "oidc.allowInsecureJwksHttp is accepted only when environment=dev" -}}
 {{- end -}}
+{{- $cpTls := ne .Values.controlPlane.nativeTls.tlsSecret "" -}}
+{{- $cpClientCa := ne .Values.controlPlane.nativeTls.clientCaSecret "" -}}
+{{- if ne $cpTls $cpClientCa -}}
+{{- fail "controlPlane.nativeTls.tlsSecret and controlPlane.nativeTls.clientCaSecret are required together" -}}
+{{- end -}}
+{{- if and $cpTls .Values.controlPlane.allowPlaintextSecrets -}}
+{{- fail "controlPlane.nativeTls and controlPlane.allowPlaintextSecrets contradict each other" -}}
+{{- end -}}
+{{- if and $cpTls (not .Values.controlPlane.nativeTls.healthcheckServerName) -}}
+{{- fail "controlPlane.nativeTls.healthcheckServerName is required with native TLS" -}}
+{{- end -}}
+{{- if and (not $cpTls) .Values.controlPlane.nativeTls.healthcheckCaSecret -}}
+{{- fail "controlPlane.nativeTls.healthcheckCaSecret needs native TLS" -}}
+{{- end -}}
 {{- if and .Values.engine.autoscaling.keda.enabled .Values.engine.autoscaling.hpa.enabled -}}
 {{- fail "enable at most one of engine.autoscaling.keda and engine.autoscaling.hpa" -}}
 {{- end -}}
@@ -84,8 +98,8 @@ app.kubernetes.io/component: {{ .component }}
 {{- fail "engine.shardLeaseSeconds must be between 3 and 600" -}}
 {{- end -}}
 {{- if and .Values.secrets.existingSecret (ne .Values.environment "dev") -}}
-{{- if not .Values.controlPlane.allowPlaintextSecrets -}}
-{{- fail "secrets.existingSecret is set, so the API receives secret values and listens in plaintext: set controlPlane.allowPlaintextSecrets=true to state that TLS is terminated in front of it (the control plane refuses to start otherwise)" -}}
+{{- if not (or $cpTls .Values.controlPlane.allowPlaintextSecrets) -}}
+{{- fail "secrets.existingSecret is set, so configure controlPlane.nativeTls or set controlPlane.allowPlaintextSecrets=true to state that TLS is terminated in front of the API" -}}
 {{- end -}}
 {{- if not (or .Values.engine.grpc.tlsSecret .Values.engine.grpc.allowPlaintextSecrets) -}}
 {{- fail "secrets.existingSecret is set, so the engine hands secret values to workers: set engine.grpc.tlsSecret (the engine terminates TLS) or engine.grpc.allowPlaintextSecrets=true if a mesh does (the engine refuses to start otherwise)" -}}
