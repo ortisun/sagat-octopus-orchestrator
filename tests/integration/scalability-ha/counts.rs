@@ -208,11 +208,7 @@ async fn the_runtime_role_keeps_the_counters_by_writing_runs_and_cannot_write_th
 
     let w = world().await;
     let (wf, _) = w.publish(chain("least-privilege")).await;
-    let config = PoolConfig::new(w.db.url.replacen(
-        "postgres:postgres",
-        &format!("{RUNTIME_ROLE}:{RUNTIME_ROLE_PASSWORD}"),
-        1,
-    ));
+    let config = PoolConfig::new(w.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD));
     let pool = connect(&config).await.expect("connect as the runtime role");
     let cache = DefinitionCache::new(std::sync::Arc::new(JsonIrCodec), 8);
     let store = PgRunStore::new(pool.clone(), cache.clone());
@@ -268,11 +264,7 @@ async fn a_temporary_table_cannot_stand_in_for_the_counters_or_borrow_the_functi
 
     let w = world().await;
     let (wf, _) = w.publish(chain("temp-shadow")).await;
-    let mut config = PoolConfig::new(w.db.url.replacen(
-        "postgres:postgres",
-        &format!("{RUNTIME_ROLE}:{RUNTIME_ROLE_PASSWORD}"),
-        1,
-    ));
+    let mut config = PoolConfig::new(w.db.url_for(RUNTIME_ROLE, RUNTIME_ROLE_PASSWORD));
     config.max_connections = 2;
     let pool = connect(&config).await.expect("connect as the runtime role");
 
