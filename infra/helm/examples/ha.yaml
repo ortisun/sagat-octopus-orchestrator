@@ -14,9 +14,11 @@ database:
   serverMaxConnections: 400          # the server's max_connections: (3 + 12) x 20 = 300 at the autoscaler's ceiling, with room to spare
 
 oidc:
-  issuer: https://idp.example.com/
+  # This example keeps the provider inside the cluster so a NetworkPolicy can select its pods.
+  # For an external provider, replace the selector below with the operator-owned service CIDRs.
+  issuer: https://identity-provider.identity.svc.cluster.local/
   audience: sagat
-  jwksUri: https://idp.example.com/.well-known/jwks.json
+  jwksUri: https://identity-provider.identity.svc.cluster.local/.well-known/jwks.json
 
 secrets:
   existingSecret: sagat-keys         # SAGAT_SECRETS_KEYS, the same ring for the API and the engine
@@ -59,9 +61,72 @@ workerPools:
         valueFrom: {secretKeyRef: {name: payments-worker-token, key: token}}
     resources:
       requests: {cpu: 250m, memory: 256Mi}
+    networkPolicy:
+      # This pool needs only DNS and the platform APIs, which the chart adds. Add explicit peers and
+      # integer ports here only when an activity has another infrastructure dependency.
+      extraEgress: []
+      extraIngress: []
     autoscaling:
       enabled: true
       minReplicaCount: 2
       maxReplicaCount: 30
       readyPerReplica: 50
       lagThresholdSeconds: 30
+
+# Every peer is explicit. Adapt dependency labels to the PostgreSQL, identity, NATS, DNS,
+# ingress and Prometheus installations that this release actually uses. Do not replace these with
+# 0.0.0.0/0 or ::/0: the chart refuses global peers.
+networkPolicy:
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: monitoring}
+      podSelector:
+        matchLabels: {app.kubernetes.io/name: prometheus}
+  apiFrom:
+    - namespaceSelector:
+        matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      podSelector:
+        matchLabels: {app.kubernetes.io/name: ingress-nginx}
+    # This example assumes the documented `helm install sagat ...` release name. Keep these
+    # identity labels aligned if the release is renamed.
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
+          app.kubernetes.io/component: worker-payments
+  workersFrom:
+    # A podSelector-only peer is also limited to this release namespace.
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: sagat-octopus-orchestrator
+          app.kubernetes.io/instance: sagat
+          app.kubernetes.io/component: worker-payments
+  egress:
+    dnsTo:
+      - namespaceSelector:
+          matchLabels: {kubernetes.io/metadata.name: kube-system}
+        podSelector:
+          matchLabels: {k8s-app: kube-dns}
+    postgres:
+      port: 5432
+      to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: database}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: postgresql}
+    oidc:
+      port: 443
+      to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: identity}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: identity-provider}
+    nats:
+      port: 4222
+      to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nats}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: nats}
+    controlPlaneExtra: []
+    engineExtra: []

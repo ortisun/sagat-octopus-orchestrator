@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, gate, json, mountEditor, putsOf, urlText, validationsOf } from '../../../test/workflowsHarness';
 
@@ -76,28 +76,31 @@ describe('validation', () => {
   });
 
   it('waits 600 ms of quiet after a change before it asks again', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { user, platform } = await opened({ fakeTimers: true, realTimings: true });
+    const { platform } = await opened({ realTimings: true });
+    await waitFor(() => expect(summary()).toHaveTextContent('0 problems'));
     await waitFor(() => expect(validationsOf(platform)).toHaveLength(1));
-    await user.click(screen.getByRole('button', { name: 'Delete done' }));
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
     await act(() => vi.advanceTimersByTimeAsync(450));
     expect(validationsOf(platform)).toHaveLength(1);
     // Another change inside the quiet time starts the wait again.
-    await user.click(screen.getByRole('button', { name: 'Delete pay' }));
-    await act(() => vi.advanceTimersByTimeAsync(450));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete pay' }));
+    await act(() => vi.advanceTimersByTimeAsync(599));
     expect(validationsOf(platform)).toHaveLength(1);
-    await act(() => vi.advanceTimersByTimeAsync(300));
-    await waitFor(() => expect(validationsOf(platform)).toHaveLength(2));
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(validationsOf(platform)).toHaveLength(2);
     const body = bodyOf<{ ir: { nodes: { id: string }[] } }>(validationsOf(platform)[1]?.init);
     expect(body.ir.nodes.map((n) => n.id)).toEqual(['check']);
   });
 
   it('checks again for every change that sticks, not for a change that was undone before the wait ended', async () => {
-    const { user, platform } = await opened({ timings: { validateMs: 100, autosaveMs: 60_000 } });
+    const { platform } = await opened({ timings: { validateMs: 100, autosaveMs: 60_000 } });
+    await waitFor(() => expect(summary()).toHaveTextContent('0 problems'));
     await waitFor(() => expect(validationsOf(platform)).toHaveLength(1));
-    await user.click(screen.getByRole('button', { name: 'Delete done' }));
-    await user.click(screen.getByRole('button', { name: 'Undo' }));
-    await new Promise((r) => setTimeout(r, 250));
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await act(() => vi.advanceTimersByTimeAsync(250));
     // The document is the one that was already checked; nothing new to ask.
     expect(validationsOf(platform)).toHaveLength(1);
   });

@@ -51,9 +51,15 @@ tests/contract/security-multitenancy/      rest/ (conformance, cross-tenant batt
 tests/e2e/security-multitenancy/           us01, us02, us04 through REST and gRPC
 tests/fault/security-multitenancy/         connection kills around quota and secret transactions
 tests/performance/security-multitenancy/   benchmark, report in tests/performance/reports/
+infra/helm/templates/{networkpolicy,networkpolicy-egress}.yaml   integrated 010 chart plus 009 isolation
+tests/security/sandbox/kubernetes-network-policy.sh              real Cilium/admission verifier
+tests/contract/scalability-ha/                                   exact Helm role/peer/port contracts
 ```
 
-Not built, and why: `crates/sandbox/src/policy.rs` and the sandbox itself (feature 005; G35), `infra/helm/templates/networkpolicy.yaml` (no Helm chart exists; G45).
+Published dependency implementations are reused rather than duplicated: Feature 005 supplies the
+production Docker sandbox used by the egress E2E/fault tests, and Feature 010 supplies the deployment
+chart extended by the Feature 009 NetworkPolicies. The chart proof applies policies, service accounts
+and controlled canaries; a full product/KEDA installation remains Feature 010's deployment gap.
 
 ## Implementation phases
 

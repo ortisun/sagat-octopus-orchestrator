@@ -40,7 +40,9 @@ use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
-use crate::api::{ControlPlane, ExecutionReport, RunnerError, TestJob, TestResult, policy_of};
+use crate::api::{
+    ControlPlane, ExecutionReport, IncidentTarget, RunnerError, TestJob, TestResult, policy_of,
+};
 pub use crate::config::{NamespaceTarget, RunnerConfig};
 use crate::host::ScriptHost;
 
@@ -473,20 +475,17 @@ impl<S: Sandbox + 'static> Runner<S> {
         };
         // A test run may reach the network only if the script's policy and the namespace's say so;
         // it never has the secrets of the namespace.
-        let egress = match policy.egress {
-            // A policy that cannot be read is no network at all.
-            sagat_domain::scripts::Egress::Namespace => {
-                self.api.egress_policy(&job.namespace_id).await.ok()
-            }
-            sagat_domain::scripts::Egress::None => None,
-        };
-        let Ok(host) = ScriptHost::open(egress.as_ref(), HashMap::new()) else {
-            return TestResult {
-                failure: Some(Failure::Unavailable.code().to_owned()),
-                log: "the egress policy of the namespace could not be applied".to_owned(),
-                ..TestResult::default()
-            };
-        };
+        let host = ScriptHost::live(
+            self.api.clone(),
+            job.namespace_id.clone(),
+            IncidentTarget::Test {
+                namespace_id: job.namespace_id.clone(),
+                test_run_id: job.run_id.clone(),
+                lease_token: job.lease_token.clone(),
+            },
+            matches!(policy.egress, sagat_domain::scripts::Egress::Namespace),
+            HashMap::new(),
+        );
         let outcome = self
             .sandbox
             .run(
@@ -874,36 +873,21 @@ impl<S: Sandbox + 'static> Runner<S> {
             }
         };
         let policy = loaded.policy.within(&self.config.ceiling);
-        let egress = match policy.egress {
-            sagat_domain::scripts::Egress::Namespace => {
-                match self.api.egress_policy(&task.namespace.id.to_string()).await {
-                    Ok(view) => Some(view),
-                    // Not knowing the policy is not the same as there being none: a script run with
-                    // no network because the read failed would be refused what it may have, and
-                    // audited for asking.
-                    Err(error) => {
-                        tracing::warn!(%error, "the egress policy could not be read; the step goes back");
-                        return self
-                            .fail_step(
-                                &task,
-                                Failure::Unavailable,
-                                "the egress policy could not be read",
-                            )
-                            .await;
-                    }
-                }
-            }
-            sagat_domain::scripts::Egress::None => None,
-        };
-        let Ok(host) = ScriptHost::open(egress.as_ref(), secrets) else {
-            return self
-                .fail_step(
-                    &task,
-                    Failure::Unavailable,
-                    "the egress policy could not be applied",
-                )
-                .await;
-        };
+        let namespace_id = task.namespace.id.to_string();
+        let host = ScriptHost::live(
+            self.api.clone(),
+            namespace_id.clone(),
+            IncidentTarget::Production {
+                namespace_id,
+                run_id: lease.run_id.clone(),
+                step_id: lease.step_id.clone(),
+                attempt: lease.attempt,
+                generation: lease.generation,
+                lease_token: lease.lease_token.clone(),
+            },
+            matches!(policy.egress, sagat_domain::scripts::Egress::Namespace),
+            secrets,
+        );
         let request = RunRequest {
             language: loaded.language,
             artifact: loaded.bytes.clone(),

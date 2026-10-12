@@ -31,6 +31,8 @@ use uuid::Uuid;
 
 use crate::execution::PgRunStore;
 use crate::identity::{col, corrupt, insert_audit, store_error};
+
+mod incident;
 use crate::quotas::{
     ensure_room_for_script, ensure_room_for_script_job, lock_script_jobs, lock_scripts,
 };
@@ -1537,7 +1539,7 @@ impl RunnerStore for PgRunStore {
     ) -> Result<Finished, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let held = sqlx::query(
-            "SELECT status FROM script_test_runs \
+            "SELECT status, attempts FROM script_test_runs \
              WHERE tenant_id = $1 AND id = $2 AND lease_token_hash = $3 FOR UPDATE",
         )
         .bind(tenant.as_uuid())
@@ -1582,7 +1584,21 @@ impl RunnerStore for PgRunStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        let attempt: i32 = col(&held, "attempts")?;
+        let durable_egress = if let Some(actor) = audits.first().map(AuditRecord::actor) {
+            incident::test_was_recorded(&mut tx, tenant, actor.as_str(), run.as_uuid(), attempt)
+                .await?
+        } else {
+            false
+        };
         for audit in audits {
+            if durable_egress
+                && audit
+                    .reason()
+                    .is_some_and(|reason| reason.starts_with("fetch "))
+            {
+                continue;
+            }
             insert_audit(&mut tx, audit).await?;
         }
         tx.commit().await.map_err(store_error)?;
@@ -1693,11 +1709,44 @@ impl RunnerStore for PgRunStore {
         .rows_affected()
             > 0;
         if inserted {
+            let durable_egress = match (audits.first().map(AuditRecord::actor), e.run_id, e.attempt)
+            {
+                (Some(actor), Some(run), Some(attempt)) => {
+                    incident::production_was_recorded(
+                        &mut tx,
+                        record.tenant_id,
+                        actor.as_str(),
+                        run,
+                        e.node.as_deref().unwrap_or(""),
+                        attempt,
+                    )
+                    .await?
+                }
+                _ => false,
+            };
             for audit in audits {
+                if durable_egress
+                    && audit
+                        .reason()
+                        .is_some_and(|reason| reason.starts_with("fetch "))
+                {
+                    continue;
+                }
                 insert_audit(&mut tx, audit).await?;
             }
         }
         tx.commit().await.map_err(store_error)?;
         Ok(inserted)
+    }
+
+    async fn record_incident(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        target: &sagat_application::scripts::StoredIncidentTarget,
+        category: sagat_application::scripts::IncidentCategory,
+        trace_id: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<bool, StoreError> {
+        incident::record(self, principal, target, category, trace_id, now).await
     }
 }
