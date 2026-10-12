@@ -122,7 +122,9 @@ async fn a_replica_held_up_past_its_lease_in_the_middle_of_an_action_is_refused_
     assert_eq!(beta.placement().owned(), ShardSet::all());
 
     // The hold-up ends.
-    drop(lock);
+    sagat_application::execution::RunTx::commit(lock)
+        .await
+        .expect("the hold-up ends");
     let report = tokio::time::timeout(Duration::from_secs(10), pass)
         .await
         .expect("alpha's pass ends")
