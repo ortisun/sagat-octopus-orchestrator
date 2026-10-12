@@ -53,19 +53,28 @@ describe('autosave (D146)', () => {
   });
 
   it('sends one save for a burst of changes', async () => {
-    const { user, platform } = await opened({ timings: { validateMs: 15, autosaveMs: 150 } });
-    await removeDone(user);
-    await user.click(screen.getByRole('button', { name: 'Delete pay' }));
-    await user.click(screen.getByRole('button', { name: 'Undo' }));
-    await waitFor(() => expect(state()).toHaveTextContent('Saved · revision 2'));
+    const { platform } = await opened({ timings: { validateMs: 15, autosaveMs: 150 } });
+    // Freeze after the asynchronous load; synchronous clicks cannot cross the debounce by wall time.
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete pay' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(putsOf(platform)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(149));
+    expect(putsOf(platform)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(state()).toHaveTextContent('Saved · revision 2');
     expect(putsOf(platform)).toHaveLength(1);
   });
 
   it('sends nothing for a change that was undone before the save', async () => {
-    const { user, platform } = await opened({ timings: { validateMs: 15, autosaveMs: 100 } });
-    await removeDone(user);
-    await user.click(screen.getByRole('button', { name: 'Undo' }));
-    await settle(300);
+    const { platform } = await opened({ timings: { validateMs: 15, autosaveMs: 100 } });
+    // The mutation and its undo happen at the same instant; only this test advances the clock.
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(putsOf(platform)).toHaveLength(0);
+    await act(() => vi.advanceTimersByTimeAsync(300));
     expect(putsOf(platform)).toHaveLength(0);
     expect(state()).toHaveTextContent('Saved · revision 1');
   });
