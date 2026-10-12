@@ -1,8 +1,8 @@
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
-using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using SagatOctopusOrchestrator.Protocol.V1;
 using SagatOctopusOrchestrator.Sdk.Internal;

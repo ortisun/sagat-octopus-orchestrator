@@ -45,9 +45,15 @@ internal static partial class Blobs
 
         var header = new WriteBlobHeader
         {
-            TaskId = lease.TaskId, RunId = lease.RunId, StepId = lease.StepId, Attempt = lease.Attempt,
-            Generation = lease.Generation, LeaseToken = lease.LeaseToken, ContentType = options.ContentType,
-            ExpectedSize = options.ExpectedSize, ExpectedSha256 = options.ExpectedSha256,
+            TaskId = lease.TaskId,
+            RunId = lease.RunId,
+            StepId = lease.StepId,
+            Attempt = lease.Attempt,
+            Generation = lease.Generation,
+            LeaseToken = lease.LeaseToken,
+            ContentType = options.ContentType,
+            ExpectedSize = options.ExpectedSize,
+            ExpectedSha256 = options.ExpectedSha256,
         };
         var (response, size, sha256) = await rpc.WriteBlobAsync(header, source, lease.Traceparent, cancellationToken).ConfigureAwait(false);
         var descriptor = new BlobDescriptor(response.BlobId, response.Size, response.Sha256, response.ContentType);
@@ -72,8 +78,13 @@ internal static partial class Blobs
         var headerSeen = false;
         var request = new ReadBlobRequest
         {
-            TaskId = lease.TaskId, RunId = lease.RunId, StepId = lease.StepId, Attempt = lease.Attempt,
-            Generation = lease.Generation, LeaseToken = lease.LeaseToken, BlobId = descriptor.Id,
+            TaskId = lease.TaskId,
+            RunId = lease.RunId,
+            StepId = lease.StepId,
+            Attempt = lease.Attempt,
+            Generation = lease.Generation,
+            LeaseToken = lease.LeaseToken,
+            BlobId = descriptor.Id,
         };
         await foreach (var part in rpc.ReadBlobAsync(request, lease.Traceparent, cancellationToken).ConfigureAwait(false))
         {

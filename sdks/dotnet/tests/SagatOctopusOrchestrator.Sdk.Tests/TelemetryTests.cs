@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
-using OpenTelemetry.Trace;
 using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using SagatOctopusOrchestrator.Sdk.Tests.Support;
 using SagatOctopusOrchestrator.Sdk.Workers;
 using Xunit;
