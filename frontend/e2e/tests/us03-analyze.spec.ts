@@ -28,6 +28,8 @@ test('US03 an operator opens a run that retried and took one branch: attempts, s
   await expect(card(page, 'validate')).toBeVisible();
   await expect(card(page, 'validate')).toContainText(/Ready|Pending|Not started/);
   await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Live', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+  // The graph opens at a readable scale; choose the overview before following every branch at once.
+  await page.getByRole('button', { name: 'Fit View', exact: true }).click();
 
   // A worker comes: the first step fails once (retry), the payment is declined, the reservation is undone.
   const attempts = new Map<string, number>();

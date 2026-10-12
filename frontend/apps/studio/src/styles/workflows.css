@@ -146,6 +146,21 @@
   grid-column: 3;
 }
 
+@media (max-width: 87.5rem) {
+  .wf-body {
+    grid-template-columns: minmax(0, 1fr) minmax(16.25rem, 20rem);
+  }
+  .wf-palette {
+    grid-column: 1 / -1;
+  }
+  .wf-main {
+    grid-column: 1;
+  }
+  .wf-inspector {
+    grid-column: 2;
+  }
+}
+
 @media (max-width: 68.75rem) {
   .wf-body {
     grid-template-columns: minmax(0, 1fr);
@@ -192,7 +207,7 @@
   gap: var(--space-3);
 }
 
-@media (max-width: 68.75rem) {
+@media (max-width: 87.5rem) {
   .wf-palette {
     width: auto;
     max-height: none;
@@ -200,6 +215,10 @@
   .wf-palette ul {
     flex-direction: row;
     flex-wrap: wrap;
+  }
+  .wf-palette ul > li {
+    flex: 1 1 7.5rem;
+    min-width: 0;
   }
 }
 
@@ -823,6 +842,10 @@ dialog {
   .wf-canvas .react-flow__node.selected .wf-card {
     outline: 3px solid Highlight;
   }
+  .btn[aria-pressed="true"]:hover:not(:disabled),
+  .wf-dock [role="tab"][aria-selected="true"]:hover:not(:disabled) {
+    filter: none;
+  }
 }
 
 /* The cells that name a row are not column headers: base.css shouts those. */
@@ -847,11 +870,8 @@ table.data tbody th[scope="row"] {
 }
 
 /* On a laptop the canvas needs the room more than the palette needs its sentences: the description of a kind
-   stays for assistive technology and for the title of the button, and the palette is a column of names. */
+   stays for assistive technology and for the title of the button. */
 @media (min-width: 68.8125rem) and (max-width: 99.9375rem) {
-  .wf-palette {
-    width: 9.375rem;
-  }
   .wf-kind-desc {
     position: absolute;
     width: 1px;
@@ -859,5 +879,12 @@ table.data tbody th[scope="row"] {
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
+  }
+}
+
+/* The palette only stays as a narrow column while the editor has room for three columns. */
+@media (min-width: 87.5625rem) and (max-width: 99.9375rem) {
+  .wf-palette {
+    width: 9.375rem;
   }
 }

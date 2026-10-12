@@ -46,6 +46,9 @@ put both behind one host.
 - **Act on a failure**: choose the step, *Retry*, *Retry compensation*, *Skip compensation* or *Resolve*; each asks for a reason, says what it will do, and is recorded with your name.
   Skipping or resolving needs the administrator permission `saga:override`.
 - **Everything the canvas does, the list view does** (*Canvas | List* toggle), for keyboard and screen-reader use.
+- Graphs initially open at reading size on their starting node; **Fit View** shows the complete
+  overview. In a run, **Run details** expands tenant/namespace, correlation, trace, deadline and
+  parent facts. Small-screen Scripts tables can be focused and scrolled horizontally with the keyboard.
 - **A reader** (`definition:read` without `definition:write`) can open every workflow but is not sent to the platform's checks, which answer only people who can change a workflow; the
   validation panel says so. The same reader on a run sees every action, disabled, with the permission it needs.
 

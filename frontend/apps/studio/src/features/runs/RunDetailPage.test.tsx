@@ -40,6 +40,20 @@ const JOURNAL = [
 ];
 
 describe('the run page: header', () => {
+  it('keeps technical metadata available in a disclosure without crowding the graph', async () => {
+    const user = userEvent.setup();
+    await open();
+    const summary = await screen.findByText('Run details');
+    const details = summary.closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: 'Copy run id' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Copy trace id' })).not.toBeVisible();
+    await user.click(summary);
+    expect(details).toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: 'Copy trace id' })).toBeVisible();
+    expect(screen.getByText(/acme \/ dev/)).toBeVisible();
+  });
+
   it('says what the run is, who started it and where it stands, with the meaning of the status in words', async () => {
     await open({ run: runOf({ status: 'MANUAL_REVIEW', deadline: '2099-01-01T00:00:00Z' }) });
     expect(await screen.findByRole('heading', { level: 1, name: new RegExp(RUN_ID) })).toBeInTheDocument();

@@ -183,3 +183,44 @@ historical selection after retry, forged blob-shaped JSON, verified external met
 oversized input, depth/node/child/response caps, UTF-8, and stale query/session cancellation. Canary
 keys, strings, numbers, booleans and schema annotations are asserted absent from HTTP responses and
 the DOM. Customer classification and raw-value disclosure remain pending under G42/G39.
+
+### Visual defect correction — 2026-10-12 (T007-049)
+
+Independent agent reviews used GPT-6 Astra for UX direction and GPT-5.6 Sol for frontend fixes,
+geometry tests and code review. The root agent integrated the fixes and ran the final checks.
+Graphs now open at 1:1 on a forward root/trigger, with Fit View as the explicit overview. Secondary
+run facts are in **Run details**; the canvas uses the actual remaining layout height. Editor fields,
+palettes, dialogs, forced-colour selection and populated mobile Scripts tables remain within
+their containers. The API contract and tenant/audit/OTel behaviour are unchanged.
+
+Final local results:
+
+- `npm test`: **1 049 passed in 67 files**.
+- `npm run lint`, app typecheck through `npm run build`, `npm run typecheck --workspace @sagat/e2e`,
+  `npm run check:api` and `git diff --check`: passed.
+- Production build: passed.
+- Real Chromium with real PostgreSQL, API and engine: **23 passed, zero failed, two skipped** in
+  49.8 seconds. Skips are the opt-in performance benchmarks. **US02 was excluded explicitly**;
+  this run does not revalidate sandbox script execution.
+
+Reproduce from the repository root after `cd frontend && npm run build`:
+
+```sh
+SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0 \
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
+cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+The `VISUAL` journeys assert readable initial zoom, visible graph controls, inspector bounds and
+non-overlapping run headings, at 320/768/1024/1280/1470px as applicable. They cover real populated
+Scripts tables, keyboard menus/disclosures and selected controls in forced colours. Existing
+journeys retain their security/runtime assertions and explicitly open Run details or Fit View when
+they need those presentations. Earlier iterations exposed a forward-vs-compensation root bug,
+attribution-link contrast and an absolutely positioned table label that escaped the scroller;
+all were corrected before the passing run. An intermediate run also missed the US04 fixture's
+manual-review state; both US04 journeys passed in the final clean platform run without backend changes.
+
+Eight [review captures](./design/README.md#visual-corrections-2026-10-12-t007-049) preserve before/after,
+editable/read-only, dark/light/forced colours and mobile evidence. These are agent-reviewed images;
+no new human acceptance, screen-reader study, non-Chromium result or performance benchmark is claimed.

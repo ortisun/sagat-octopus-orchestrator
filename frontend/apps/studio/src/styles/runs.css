@@ -86,13 +86,14 @@
 /* --------------------------------------------------------------- runs master/detail */
 .rn-master-detail {
   min-width: 0;
+  height: 100%;
 }
 
 .rn-master-detail.is-wide {
   display: grid;
   grid-template-columns: var(--runs-master-width) minmax(0, 1fr);
   align-items: start;
-  min-height: calc(100% + var(--space-page-y) * 2);
+  height: calc(100% + var(--space-page-y) * 2);
   margin: calc(var(--space-page-y) * -1) calc(var(--space-page-x) * -1);
 }
 
@@ -107,6 +108,17 @@
 .rn-master-detail.is-wide .rn-run {
   min-width: 0;
   padding: var(--space-page-y) var(--space-page-x);
+}
+
+.rn-run {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+.rn-run > :not(.rn-body) {
+  flex: none;
 }
 
 .rn-runs-master-page {
@@ -225,11 +237,43 @@
 
 .rn-run-reference {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
   margin-bottom: var(--space-4);
   color: var(--fg-muted);
   font-size: var(--font-size-mono);
+}
+
+.rn-run-reference code {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.rn-status-help {
+  flex-basis: 100%;
+}
+
+.rn-run-details > summary {
+  width: fit-content;
+  min-height: var(--control-height);
+  align-content: center;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.rn-run-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.rn-run-context > .rn-payload,
+.rn-run-context > .hint {
+  min-width: 0;
+  margin: 0;
 }
 
 .rn-facts {
@@ -309,7 +353,7 @@
 
 /* The facts of the run, a few to a line: the graph is what the page is for, and it should be on the first screen. */
 .rn-facts.rn-grid {
-  grid-template-columns: repeat(auto-fit, minmax(calc(var(--runs-master-width) * 0.66), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
   gap: 0;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
@@ -331,15 +375,15 @@
   text-transform: uppercase;
 }
 
-/* At the review viewport, keep the graph itself on the first screen while retaining every fact. */
-@media (min-width: 88rem) {
+/* Compact the summary at tablet and desktop widths, including the narrower master/detail pane. */
+@media (min-width: 48.001rem) {
   .rn-header {
     margin-bottom: var(--space-4);
   }
 
   .rn-title {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) max-content;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
     align-items: center;
     gap: var(--space-3) var(--gap);
@@ -352,21 +396,21 @@
   }
 
   .rn-run-reference {
-    grid-column: 1;
+    grid-column: 1 / -1;
     grid-row: 2;
     margin-bottom: 0;
   }
 
   .rn-title > .toolbar {
     grid-column: 2;
-    grid-row: 1 / 3;
-    flex-wrap: nowrap;
+    grid-row: 1;
     justify-content: flex-end;
     margin-bottom: 0;
   }
 
-  .rn-title > .toolbar .spacer {
-    display: none;
+  .rn-status-help {
+    flex-basis: auto;
+    margin-left: auto;
   }
 
   .rn-facts.rn-grid {
@@ -378,10 +422,6 @@
   .rn-facts.rn-grid > div {
     gap: var(--space-1);
     padding: var(--space-4) var(--space-5);
-  }
-
-  .rn-run > .hint {
-    margin: 0 0 var(--space-4);
   }
 
   .rn-main > div > [role='tablist'],
@@ -401,20 +441,21 @@
 }
 
 .rn-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   gap: var(--gap);
-  align-items: start;
 }
 
-.rn-body.with-panel {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-@media (max-width: 1000px) {
-  .rn-body.with-panel {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* The graph takes the space left by its actual header. Keep intrinsic minimum heights so opening
+   details or a selected step scrolls the main region instead of overlapping or clipping content. */
+.rn-main,
+.rn-main > div,
+.rn-main > div > [role='tabpanel'],
+.rn-graph {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
 }
 
 .rn-main {
@@ -426,6 +467,7 @@
 }
 
 .rn-panel {
+  flex: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
   padding: var(--gap);
@@ -685,8 +727,9 @@ tr[data-tone='bad'] td:first-child {
 
 /* --------------------------------------------------------------- graph */
 .rn-canvas {
-  height: 68vh;
-  min-height: 420px;
+  flex: 1;
+  min-height: 18rem;
+  max-height: 38rem;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-panel);
   overflow: hidden;
@@ -700,6 +743,10 @@ tr[data-tone='bad'] td:first-child {
 .rn-canvas .react-flow__pane,
 .rn-canvas .react-flow__renderer {
   background: transparent;
+}
+
+.rn-canvas .react-flow__attribution a {
+  color: var(--fg-muted);
 }
 
 .rn-after:focus {

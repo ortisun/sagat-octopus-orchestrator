@@ -82,6 +82,17 @@ tests/e2e/workflow-studio/
 
 E2E create→validate→publish→trigger→fail→compensate→inspect journal/traces.
 
+## Visual defect correction (2026-10-12)
+
+Preserve the approved tokens and English labels. Separate readable initial graph framing from the
+explicit fit-all command, keeping fixed-size nodes, virtualisation and the user's camera after
+updates. Reflow palette/canvas/inspector according to available width; keep selected system-colour
+controls legible. Compact the run header, retain all technical facts in a native disclosure, and
+size the run canvas to the remaining viewport. Verify with the existing real-platform browser
+harness plus geometry assertions and review captures. No API, tenant, audit, typed-error or OTel
+semantics change; existing protected operations remain the data source (browser telemetry remains
+the documented G159 gap).
+
 ## Workflow schema editor completion (2026-10-12)
 
 Reuse the existing script editor's lazy-loaded Monaco JSON service and bundled meta-schema for

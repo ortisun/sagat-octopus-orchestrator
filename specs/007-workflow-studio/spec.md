@@ -89,6 +89,14 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   link to nothing: it is omitted, or shown unavailable with the reason (queue, worker and trigger kind of a run, counts, workers and
   backlog of the platform, pages of other features, the payload tab). The table of such elements is in `design/README.md`.
 
+Visual defect acceptance (2026-10-12, FR-007-008/009): initial workflow and run graphs must show
+readable cards rather than shrinking the entire graph to microscopic text. Explicit fit/zoom and
+the alternative list/table remain available. At desktop widths the run graph controls must fit in
+the visible canvas; workflow palettes and inspectors must not squeeze the canvas or overflow their
+panels. Run identity/actions remain legible, with secondary metadata available through an accessible
+disclosure. Verify rendered geometry at 320, 768, 1024, 1280 and 1470px and selected controls in light,
+dark and forced-colour modes; presence-only and page-width checks are insufficient.
+
 ## Edge Cases
 
 - graph with 50k nodes.

@@ -80,10 +80,9 @@ export function RunHeader({
         </div>
         <div className="rn-run-reference">
           <code title={run.runId}>{run.runId}</code> <CopyButton text={run.runId} what="run id" />
+          <span className="rn-status-help">{view.help}</span>
         </div>
         <div className="toolbar">
-          <span className="hint">{view.help}</span>
-          <span className="spacer" />
           <FollowIndicator state={follow} />
           <button type="button" className="btn" onClick={onRefresh} disabled={refreshing}>
             {refreshing ? 'Refreshing…' : 'Refresh'}
@@ -95,9 +94,6 @@ export function RunHeader({
         <dl className="rn-facts rn-grid">
           <Fact label="Workflow">
             <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${run.workflowId.slice(0, 8)}`}</Link>, {version}
-          </Fact>
-          <Fact label="Tenant / namespace">
-            {tenant ? clip(tenant, 60) : 'unknown'} / {namespace ? clip(namespace, 60) : 'none chosen'}
           </Fact>
           <Fact label="Started">
             <Moment at={run.createdAt} />
@@ -118,31 +114,39 @@ export function RunHeader({
             )}
           </Fact>
           <Fact label="Started by">{run.startedBy ? clip(run.startedBy, 80) : 'unknown'}</Fact>
-          <Fact label="Correlation id">{run.correlationId ? <code>{clip(run.correlationId, 100)}</code> : 'none'}</Fact>
-          <Fact label="Trace id">
-            {run.traceId ? (
-              <>
-                <code>{clip(run.traceId, 64)}</code> <CopyButton text={run.traceId} what="trace id" />
-              </>
-            ) : (
-              'no trace'
-            )}
-          </Fact>
-          <Fact label="Deadline">
-            {run.deadline ? (
-              <>
-                <Moment at={run.deadline} /> (<Relative at={run.deadline} />)
-              </>
-            ) : (
-              'none'
-            )}
-          </Fact>
-          {run.parent ? (
-            <Fact label="Child of">
-              <Link to={path`/runs/${run.parent.runId}`}>run {run.parent.runId.slice(0, 8)}</Link>, step {clip(run.parent.node, 60)}
-            </Fact>
-          ) : null}
         </dl>
+        <details className="rn-run-details">
+          <summary>Run details</summary>
+          <dl className="rn-facts rn-grid">
+            <Fact label="Tenant / namespace">
+              {tenant ? clip(tenant, 60) : 'unknown'} / {namespace ? clip(namespace, 60) : 'none chosen'}
+            </Fact>
+            <Fact label="Correlation id">{run.correlationId ? <code>{clip(run.correlationId, 100)}</code> : 'none'}</Fact>
+            <Fact label="Trace id">
+              {run.traceId ? (
+                <>
+                  <code>{clip(run.traceId, 64)}</code> <CopyButton text={run.traceId} what="trace id" />
+                </>
+              ) : (
+                'no trace'
+              )}
+            </Fact>
+            <Fact label="Deadline">
+              {run.deadline ? (
+                <>
+                  <Moment at={run.deadline} /> (<Relative at={run.deadline} />)
+                </>
+              ) : (
+                'none'
+              )}
+            </Fact>
+            {run.parent ? (
+              <Fact label="Child of">
+                <Link to={path`/runs/${run.parent.runId}`}>run {run.parent.runId.slice(0, 8)}</Link>, step {clip(run.parent.node, 60)}
+              </Fact>
+            ) : null}
+          </dl>
+        </details>
       </NowProvider>
     </header>
   );

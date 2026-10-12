@@ -1,52 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { initialGraphViewportOffset } from './GraphView';
+import { initialRunViewport } from './GraphView';
 
-describe('initialGraphViewportOffset', () => {
-  it('anchors the first row at the visible top of a canvas that extends below the page fold', () => {
-    expect(
-      initialGraphViewportOffset({
-        canvasTop: 560,
-        canvasBottom: 1_112,
-        viewportHeight: 812,
-        graphTop: 230,
-        firstRowHeight: 62,
-      }),
-    ).toBe(-214);
+describe('initialRunViewport', () => {
+  it('opens on the root run step at a readable scale even when ids sort differently', () => {
+    const positions = new Map([
+      ['validate', { x: 420, y: 230 }],
+      ['charge', { x: 2_400, y: 800 }],
+    ]);
+
+    expect(initialRunViewport(['charge', 'validate'], positions, [{ from: 'validate', to: 'charge' }], new Map())).toEqual({ x: -404, y: -214, zoom: 1 });
   });
 
-  it('leaves an initial graph alone when its first row is already anchored', () => {
-    expect(
-      initialGraphViewportOffset({
-        canvasTop: 420,
-        canvasBottom: 972,
-        viewportHeight: 812,
-        graphTop: 16,
-        firstRowHeight: 62,
-      }),
-    ).toBe(0);
+  it('skips missing projected steps without fitting the remaining graph', () => {
+    expect(initialRunViewport(['missing', 'charge'], new Map([['charge', { x: 600, y: 16 }]]), [], new Map())).toEqual({ x: -584, y: 0, zoom: 1 });
   });
 
-  it('uses the same canvas-relative anchor after content above the graph grows', () => {
-    const graph = { viewportHeight: 812, graphTop: 230, firstRowHeight: 62 };
-    expect(initialGraphViewportOffset({ ...graph, canvasTop: 420, canvasBottom: 972 })).toBe(-214);
-    expect(initialGraphViewportOffset({ ...graph, canvasTop: 560, canvasBottom: 1_112 })).toBe(-214);
-  });
+  it('prefers the forward root when a compensation root sorts first', () => {
+    const positions = new Map([
+      ['submit~c', { x: 16, y: 16 }],
+      ['validate', { x: 420, y: 230 }],
+    ]);
+    const nodes = new Map([
+      ['submit~c', { kind: 'COMPENSATION' as const }],
+      ['validate', {}],
+    ]);
 
-  it('anchors below the window top when the canvas starts above it', () => {
-    expect(
-      initialGraphViewportOffset({
-        canvasTop: -100,
-        canvasBottom: 452,
-        viewportHeight: 812,
-        graphTop: 276,
-        firstRowHeight: 62,
-      }),
-    ).toBe(-160);
-  });
-
-  it('does not move the camera when the visible canvas slice cannot contain one row', () => {
-    expect(
-      initialGraphViewportOffset({ canvasTop: 770, canvasBottom: 1_322, viewportHeight: 812, graphTop: 20, firstRowHeight: 62 }),
-    ).toBe(0);
+    expect(initialRunViewport(['submit~c', 'validate'], positions, [], nodes)).toEqual({ x: -404, y: -214, zoom: 1 });
   });
 });

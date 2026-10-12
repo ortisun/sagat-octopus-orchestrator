@@ -204,6 +204,23 @@ pre.diff {
   font-family: var(--mono);
 }
 
+.scripts-table-scroll {
+  /* Contain absolutely positioned accessible captions/labels within the table's own scroller. */
+  position: relative;
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+}
+
+.scripts-table {
+  min-width: 48rem;
+}
+
+.scripts-table tr:last-child > * {
+  border-bottom: 0;
+}
+
 @media (forced-colors: active) {
   .diff-added,
   .diff-removed {

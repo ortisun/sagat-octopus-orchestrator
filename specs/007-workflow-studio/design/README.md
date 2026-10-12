@@ -12,6 +12,37 @@ project reaches the Studio by updating this record first.
 | **Not used** | the logo page (the choice is not made, G162) and the Temporal × Windmill analysis (a market comparison, not a visual specification) |
 | **History of this record** | first written from a capture of the running prototype (colours sampled from a JPEG); rewritten the same day from the export. **A correction:** the first version reported the list's secondary text at 3.98 : 1; the export shows its role is lightness 0.60, which is 4.98 : 1. The sample had hit an anti-aliased pixel |
 
+## Visual corrections, 2026-10-12 (T007-049)
+
+The UX and frontend review found that fitting an entire graph initially reduced labels to roughly
+5–6 rendered pixels, and that run headers plus a `68vh` canvas pushed graph controls below the
+screen. The visual interaction contract now opens graphs at 1:1 on their starting node; the
+existing **Fit View** control is the explicit full-graph overview. Live updates preserve the camera.
+The run header shows workflow/version, start, duration/finish and actor; **Run details** exposes
+tenant/namespace, correlation, trace, deadline and parent without removing those facts.
+The graph consumes the remaining layout height with a readable minimum, and long content or an
+expanded disclosure can scroll normally. This changes presentation only, not the journal projection.
+
+At intermediate widths the workflow palette becomes a compact horizontal list before the canvas
+and inspector are squeezed. Inputs stay within their panels; a populated Scripts table has its
+own keyboard-accessible horizontal scroll region. Selected controls and the monogram explicitly
+retain the system `Highlight`/`HighlightText` pair in forced-colour mode, avoiding invisible labels
+from the browser's colour substitution. All other forced-colour adaptation remains enabled.
+
+Regression coverage: `frontend/e2e/tests/visual-layout.spec.ts` checks real element geometry,
+initial scale, controls within the viewport, inspector bounds, disclosure and keyboard actions,
+system-colour ink and populated-table reflow. Results and review images are recorded in
+`../quickstart.md`; automated geometry does not replace the owner's visual acceptance.
+
+Review captures: [editor before](./review-2026-10-12/editor-before.png) →
+[editor after](./review-2026-10-12/editor-after.png),
+[Runs before](./review-2026-10-12/runs-before.png) →
+[Runs after](./review-2026-10-12/runs-after.png),
+[editable editor](./review-2026-10-12/editable-editor-after.png),
+[forced-colour editor](./review-2026-10-12/editor-forced-after.png),
+[light run](./review-2026-10-12/run-light-after.png), and
+[populated Scripts at 320px](./review-2026-10-12/scripts-mobile-after.png).
+
 ## What is exact and what is not
 
 **Exact** (read from the source, in `oklch`, converted to sRGB by the standard formulae and rounded): the dark theme's colours

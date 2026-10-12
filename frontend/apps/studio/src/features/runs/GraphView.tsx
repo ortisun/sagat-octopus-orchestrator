@@ -1,11 +1,13 @@
-import { Controls, MiniMap, ReactFlow, useReactFlow } from '@xyflow/react';
+import { Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import type { NodeChange } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useEffect, useMemo, useRef } from 'react';
-import type { RefObject } from 'react';
+import { useMemo, useRef } from 'react';
+import type { RuntimeNode } from '../../api/types';
+import { readableInitialViewport } from '../../model/initialViewport';
 import { layoutGraph } from '../../model/layout';
+import type { Point } from '../../model/layout';
 import type { RunModel } from '../../model/runGraph';
-import { flowEdges, flowNodes, layoutNodes, sizeFor } from './canvas';
+import { flowEdges, flowNodes, layoutNodes } from './canvas';
 import type { CardNode, ViewPolicy } from './canvas';
 import { NODE_TYPES } from './RunNodeCard';
 
@@ -17,57 +19,22 @@ const ARIA = {
   'minimap.ariaLabel': 'Overview of the graph',
 };
 
-const FIRST_STEP_MARGIN = 16;
-
-interface InitialGraphGeometry {
-  canvasTop: number;
-  canvasBottom: number;
-  viewportHeight: number;
-  graphTop: number;
-  firstRowHeight: number;
-}
-
-/**
- * Fit view centres a small graph vertically. Anchor its first row at the visible top of the canvas
- * so content that resolves above the canvas cannot later push every card below the page fold.
- */
-export function initialGraphViewportOffset(geometry: InitialGraphGeometry): number {
-  const visibleTop = Math.max(0, -geometry.canvasTop) + FIRST_STEP_MARGIN;
-  const visibleBottom = Math.min(geometry.viewportHeight, geometry.canvasBottom) - geometry.canvasTop - FIRST_STEP_MARGIN;
-  if (geometry.firstRowHeight <= 0 || visibleBottom - visibleTop < geometry.firstRowHeight) return 0;
-  return visibleTop - geometry.graphTop;
-}
-
-/** Fits exactly once, after React Flow has initialized its viewport. The nodes declare fixed sizes,
- * so fitting does not depend on virtualized nodes being measured. Later data updates and user
- * camera changes do not run this effect again. */
-function InitialViewport({ canvas, detail }: { canvas: RefObject<HTMLDivElement | null>; detail: ViewPolicy['detail'] }) {
-  const flow = useReactFlow<CardNode>();
-  const started = useRef(false);
-
-  useEffect(() => {
-    if (!flow.viewportInitialized || started.current) return;
-    started.current = true;
-    void (async () => {
-      const fitted = await flow.fitView({ padding: 0.1, duration: 0 });
-      if (!fitted) return;
-      const element = canvas.current;
-      if (element === null) return;
-      const viewport = flow.getViewport();
-      const graph = flow.getNodesBounds(flow.getNodes());
-      const bounds = element.getBoundingClientRect();
-      const offset = initialGraphViewportOffset({
-        canvasTop: bounds.top,
-        canvasBottom: bounds.bottom,
-        viewportHeight: window.innerHeight,
-        graphTop: viewport.y + graph.y * viewport.zoom,
-        firstRowHeight: sizeFor(detail).height * viewport.zoom,
-      });
-      if (offset !== 0) await flow.setViewport({ ...viewport, y: viewport.y + offset }, { duration: 0 });
-    })();
-  }, [canvas, detail, flow]);
-
-  return null;
+export function initialRunViewport(
+  order: readonly string[],
+  positions: ReadonlyMap<string, Point>,
+  edges: readonly { from: string; to: string }[],
+  nodes: ReadonlyMap<string, Pick<RuntimeNode, 'kind'>>,
+) {
+  const targets = new Set(edges.map((edge) => edge.to));
+  const roots = order.filter((id) => positions.has(id) && !targets.has(id));
+  const first =
+    roots.find((id) => {
+      const kind = nodes.get(id)?.kind;
+      return kind === undefined || kind === 'FORWARD';
+    }) ??
+    roots[0] ??
+    order.find((id) => positions.has(id));
+  return readableInitialViewport(first === undefined ? undefined : positions.get(first));
 }
 
 /** The colour of a step in the overview: only a hint, the cards say it in words. */
@@ -81,9 +48,9 @@ function overviewColor(node: { data?: unknown }): string {
 
 /**
  * The definition's graph with the state of the run on it (read-only). The layout depends only on
- * the shape of the graph, so an update never moves anything, and the viewport is only fitted when
- * the canvas opens. Every step can be reached and chosen with the keyboard; the table lists the
- * same steps with the same actions for anyone who prefers a list.
+ * the shape of the graph, so an update never moves anything, and the viewport is positioned only
+ * when the canvas opens. Every step can be reached and chosen with the keyboard; the table lists
+ * the same steps with the same actions for anyone who prefers a list.
  */
 export function GraphView({
   model,
@@ -103,8 +70,8 @@ export function GraphView({
   onShowTable: () => void;
 }) {
   const after = useRef<HTMLDivElement>(null);
-  const canvas = useRef<HTMLDivElement>(null);
   const positions = useMemo(() => layoutGraph(layoutNodes(order, policy.detail), model.edges, 'LR'), [order, model.edges, policy.detail]);
+  const initialViewport = useMemo(() => initialRunViewport(order, positions, model.edges, model.nodes), [order, positions, model.edges, model.nodes]);
   const nodes = useMemo<CardNode[]>(
     () => flowNodes({ nodes: model.nodes, order, positions, detail: policy.detail, selectedId, flash }),
     [model.nodes, order, positions, policy.detail, selectedId, flash],
@@ -142,7 +109,7 @@ export function GraphView({
         </li>
         <li>Dashed card: an undo or a lookup the platform added</li>
       </ul>
-      <div ref={canvas} className="rn-canvas" role="group" aria-label="Graph of the run">
+      <div className="rn-canvas" role="group" aria-label="Graph of the run">
         <ReactFlow<CardNode>
           nodes={nodes}
           edges={edges}
@@ -155,13 +122,13 @@ export function GraphView({
           edgesFocusable={false}
           elementsSelectable
           deleteKeyCode={null}
+          defaultViewport={initialViewport}
           minZoom={0.02}
           maxZoom={1.5}
           onlyRenderVisibleElements
           ariaLabelConfig={ARIA}
           colorMode="system"
         >
-          <InitialViewport canvas={canvas} detail={policy.detail} />
           <Controls showInteractive={false} />
           {policy.minimap ? <MiniMap pannable zoomable nodeColor={overviewColor} style={{ width: 150, height: 96 }} /> : null}
         </ReactFlow>

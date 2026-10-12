@@ -126,6 +126,17 @@ the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 j
 
 - [x] T007-047 Provide schema-aware workflow input/output editors (FR-007-002), using bundled Monaco JSON validation/autocomplete with independent models and an accessible plain-text fallback. Preserve incomplete edits across blur and editor-mode changes. Evidence: 31 focused component tests, typecheck/lint/build, and all three real Chromium US01 journeys passed on 2026-10-12; the new journey checks completions, schema diagnostics and lossless fallback.
 
+## Visual defect regression (FR-007-008/009, SC-007-005)
+
+- [x] T007-049 Correct unreadable initial graph zoom, intermediate-width editor layout, selected
+  forced-colour controls and the run header/canvas geometry. Add real-browser regressions in
+  `frontend/e2e/tests/visual-layout.spec.ts`, retain API and interaction coverage, and record actual
+  tests/captures in the design record and quickstart. No backend or wire-contract change. Evidence
+  on 2026-10-12: 1 049 Vitest tests in 67 files; lint, app/E2E types, production build and generated
+  API checks passed. Real Chromium/API/engine suite: 23 passed, zero failed, two opt-in benchmarks
+  skipped; US02 explicitly excluded in no-sandbox mode. Eight before/after captures are in
+  `design/review-2026-10-12/`. UX and frontend agent review completed; no new human acceptance claimed.
+
 ## Remaining V1 payload inspection
 
 - [x] T007-048 [US03] [US04] Implement the authorized, audited `structure-only-v1` payload inspection in ADR-0028 (FR-007-005, FR-007-010, FR-008-006, FR-009-004): input or immutable journal-sequence selectors, new `run:payload:inspect` permission, tenant-scoped payload read plus committed bounded audit, server-side removal of every value and key with strict projection caps, verified external metadata and honest no-payload states. Evidence on 2026-10-12: the real PostgreSQL/API inspection suite passed 2/2; application projector and identity suites passed 6/6, 4/4 and 27/27; 70 focused Studio tests plus lint/typecheck/build passed; and one real Chromium journey against the real API/engine passed with key/value canaries absent. Tests cover role and tenant boundaries, audit failure/collapse, historical selection, forged descriptors, external metadata, size/depth/UTF-8 caps and stale session/query cancellation. Customer classification, retention decisions and raw-value disclosure remain pending under G42/G39.

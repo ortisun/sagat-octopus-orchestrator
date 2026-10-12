@@ -58,6 +58,12 @@ virtualized Runs list beside the selected run; choosing another run retains the 
 list and detail routes. Facts come from the API: missing terminal duration is unknown, and queue, worker, trigger-kind and
 global counts are not invented. Graph, Table and Timeline remain available; Timeline means the journal, not per-step bars.
 
+Graphs open at a readable 1:1 scale on their starting node; **Fit View** shows the whole graph on
+request. Run **details** keeps technical identifiers available without crowding the graph. The
+editor reflows its palette before squeezing the canvas, and populated Scripts tables scroll inside
+an accessible region on small screens. The `VISUAL` browser journeys measure these layouts at
+320, 768, 1024, 1280 and 1470px, in addition to the accessibility suite.
+
 The workflow editor, Scripts, sign-in and light theme are derived proposals. The owner approved the visual proposal on 2026-10-11. Current test results and remaining gaps are in
 [the validation record](../specs/007-workflow-studio/quickstart.md#visual-direction-validation--2026-10-11). The passing browser suite's
 [ten review captures](../specs/007-workflow-studio/design/README.md#owner-review-captures--2026-10-11) are available for the owner.

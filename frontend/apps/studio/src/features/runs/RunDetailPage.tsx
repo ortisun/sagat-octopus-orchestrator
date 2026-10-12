@@ -259,7 +259,14 @@ function RunDetail({ runId }: { runId: string }) {
           refreshing={snapshot.reloading}
         />
 
-        <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
+        <div className="rn-run-context">
+          <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
+          {finished ? (
+            <p className="hint">
+              {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
+            </p>
+          ) : null}
+        </div>
 
         {snapshot.lagMs > 0 ? (
           <Banner tone="info" title="The graph may be behind the journal.">
@@ -279,11 +286,6 @@ function RunDetail({ runId }: { runId: string }) {
         {snapshot.follow === 'polling' ? <Banner tone="info">The live stream is not available. The Studio asks the platform for changes every few seconds instead.</Banner> : null}
         {snapshot.reloadError !== undefined ? <ErrorState error={snapshot.reloadError} what="Reading the graph again" onRetry={() => void live.refresh()} /> : null}
         {run.isError ? <ErrorState error={run.error} what="Refreshing the run" onRetry={() => void run.refetch()} /> : null}
-        {finished ? (
-          <p className="hint">
-            {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
-          </p>
-        ) : null}
 
         <div className={selectedId === undefined ? 'rn-body' : 'rn-body with-panel'}>
           <div className="rn-main" ref={main} tabIndex={-1}>

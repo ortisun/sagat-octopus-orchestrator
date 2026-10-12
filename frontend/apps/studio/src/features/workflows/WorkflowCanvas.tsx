@@ -3,6 +3,7 @@ import { Background, Controls, Handle, MiniMap, Position, ReactFlow, ReactFlowPr
 import type { Connection, NodeChange, NodeProps } from '@xyflow/react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, FocusEvent, KeyboardEvent } from 'react';
+import { readableInitialViewport } from '../../model/initialViewport';
 import type { IrDocument } from '../../model/ir';
 import type { Direction, Point } from '../../model/layout';
 import { kindOf } from '../../model/registry';
@@ -160,8 +161,11 @@ function CanvasInner(props: WorkflowCanvasProps) {
     () => builder.build(doc, { mode, direction, manual: props.manual, selectedId, focusId, problems: props.problems, advice: props.advice }),
     [builder, doc, mode, direction, props.manual, selectedId, focusId, props.problems, props.advice],
   );
-  // A big graph opens at its beginning, at a size that can be read, instead of all of it as a line of dots.
-  const [initialFit] = useState(() => (mode === 'simplified' ? { nodes: model.nodes.slice(0, 24).map((n) => ({ id: n.id })), padding: 0.2, minZoom: 0.4, maxZoom: 1 } : undefined));
+  const initialCard = useMemo(
+    () => model.nodes.find((node) => isTriggerCard(node.id)) ?? model.nodes.find((node) => node.id === doc.entrypoint) ?? model.nodes[0],
+    [doc.entrypoint, model.nodes],
+  );
+  const initialViewport = useMemo(() => readableInitialViewport(initialCard?.position), [initialCard]);
   const nodes = useMemo(
     () => (dragging.size === 0 ? model.nodes : model.nodes.map((n) => (dragging.has(n.id) ? { ...n, position: dragging.get(n.id) ?? n.position } : n))),
     [model.nodes, dragging],
@@ -328,8 +332,7 @@ function CanvasInner(props: WorkflowCanvasProps) {
         multiSelectionKeyCode={null}
         zoomOnDoubleClick={false}
         onlyRenderVisibleElements={mode === 'simplified'}
-        fitView
-        {...(initialFit ? { fitViewOptions: initialFit } : {})}
+        defaultViewport={initialViewport}
         minZoom={0.05}
         maxZoom={2}
         colorMode="system"
