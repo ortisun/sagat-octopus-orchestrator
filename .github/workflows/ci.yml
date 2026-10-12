@@ -52,7 +52,7 @@ jobs:
           docker build -f runners/java/Dockerfile.builder -t sagat/java-builder:17.0.16 .
           docker build -f runners/java/Dockerfile.runtime -t sagat/java-runtime:17.0.16 .
       - name: prove exact production isolation and native loading
-        run: cargo test -p sagat-infra-sandbox --locked native_ -- --ignored --test-threads=1
+        run: cargo test -p sagat-infra-sandbox --lib --locked -- --ignored --nocapture --test-threads=1
 
   architecture:
     name: architecture rules

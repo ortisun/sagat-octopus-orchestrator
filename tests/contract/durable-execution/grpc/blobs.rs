@@ -1144,8 +1144,7 @@ async fn stalled_download_releases_tenant_and_transfer_slots_at_its_deadline() {
     let refused = w
         .read_blob(&lease, &stored.blob_id)
         .await
-        .err()
-        .expect("tenant slot held by stream");
+        .expect_err("tenant slot held by stream");
     assert_eq!(refused.code(), Code::ResourceExhausted);
     // No message() calls: HTTP/2 receive flow control stops body polling on the server.
     tokio::time::sleep(Duration::from_millis(2300)).await;

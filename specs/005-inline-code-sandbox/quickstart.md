@@ -168,3 +168,5 @@ Two independent read-only reviews (security, correctness) of the whole feature p
 - Reproducible, annotated errors: every failure has a stable `SCRIPT_*` code, the envelope's `traceId`, and a reason that never repeats the script's words or a secret.
 - No confirmed transition lost: a build and a test run are leased and fenced; a script step is the engine's own lease; a late report from a runner that lost its lease is refused.
 - `[x]` in `tasks.md` only for what a test above proves.
+
+Native AMD64 proof subsequently passed for commit `4aeb618`: [CI startup probe and six-sample Go/Java execution](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38200759888/job/114653433277). Configure the deployment target explicitly even when both architecture jobs pass; a single eligible pool still cannot mix targets.

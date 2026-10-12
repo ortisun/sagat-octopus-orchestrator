@@ -39,10 +39,14 @@ describe('a viewer (definition:read only)', () => {
   });
 
   it('shows the settings and the triggers read only', async () => {
-    await opened(viewer);
+    const { user } = await opened(viewer);
     expect(screen.getByRole('textbox', { name: 'Description' })).toBeDisabled();
     expect(screen.getByRole('combobox', { name: 'First step' })).toBeDisabled();
-    expect(screen.getByRole('textbox', { name: 'Input schema' })).toBeDisabled();
+    const schema = screen.getByRole('textbox', { name: 'Input schema' });
+    expect(schema).toHaveAttribute('readonly');
+    const original = (schema as HTMLTextAreaElement).value;
+    await user.type(schema, 'must not change');
+    expect(schema).toHaveValue(original);
     expect(screen.queryByRole('button', { name: 'Add trigger' })).not.toBeInTheDocument();
   });
 

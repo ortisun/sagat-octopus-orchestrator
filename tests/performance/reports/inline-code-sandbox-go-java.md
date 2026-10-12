@@ -82,3 +82,7 @@ These are native ARM64 measurements only. They do not establish Linux AMD64 supp
 disabled until the equivalent compile, v3 validation, startup probe and sealed-memory execution pass
 on a native AMD64 CI runner. Six local samples under a loaded development VM are a regression
 baseline, not a production SLO or a tail-latency estimate.
+
+## Independent native CI proof
+
+Commit `4aeb618` passed the native AMD64 production startup probe and six build/run samples per language in [job 114653433277](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38200759888/job/114653433277) (2 tests, 32.18 s). Native ARM64 job 114653433252 also passed. These tests establish native execution; the detailed local timing table above remains ARM64-only. Subsequent CI runs execute all five ignored native tests, including host-call, network and CPU enforcement tests.

@@ -1,6 +1,6 @@
 # ADR-0024 — Go and Java use signed v3 artifacts and dedicated trusted hosts
 
-Status: **Accepted; ARM64 implementation verified, AMD64 Go enablement pending native CI** | Date:
+Status: **Accepted; native ARM64 and AMD64 startup proofs verified** | Date:
 2026-10-12 | Feature: 005
 
 Supersedes only ADR-0013's refusal of Go and Java. The isolation, signing, tenant, lease,
@@ -118,3 +118,5 @@ was rejected in favor of a pinned, reviewed library.
 - [Java 17 class-file format](https://docs.oracle.com/javase/specs/jvms/se17/html/jvms-4.html)
 - [Go command build cache](https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching)
 - ADR-0013 and `specs/005-inline-code-sandbox/spec.md`.
+
+Native AMD64 startup and six-sample Go/Java production execution passed on commit `4aeb618` in [CI job 114653433277](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38200759888/job/114653433277), alongside native ARM64 job 114653433252. The CI job also runs the full native host-call and resource suite on subsequent revisions.
