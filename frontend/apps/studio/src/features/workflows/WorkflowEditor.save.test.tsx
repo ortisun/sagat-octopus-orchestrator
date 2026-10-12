@@ -38,17 +38,17 @@ describe('autosave (D146)', () => {
   });
 
   it('waits 1.5 s of quiet, and a change inside the wait postpones it; the indicator says so', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { user, platform } = await opened({ fakeTimers: true, realTimings: true });
-    await removeDone(user);
+    const { platform } = await opened({ realTimings: true });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete done' }));
     await act(() => vi.advanceTimersByTimeAsync(1_000));
     expect(putsOf(platform)).toHaveLength(0);
-    await user.click(screen.getByRole('button', { name: 'Delete pay' }));
-    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete pay' }));
+    await act(() => vi.advanceTimersByTimeAsync(1_499));
     expect(putsOf(platform)).toHaveLength(0);
     expect(state()).toHaveTextContent('Unsaved changes');
-    await act(() => vi.advanceTimersByTimeAsync(700));
-    await waitFor(() => expect(putsOf(platform)).toHaveLength(1));
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(putsOf(platform)).toHaveLength(1);
     expect(nodesOf(putsOf(platform)[0]!)).toEqual(['check']);
   });
 
