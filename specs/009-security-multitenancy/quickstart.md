@@ -20,6 +20,12 @@ Everything below was run against this repository. The pieces that are **not** bu
    cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-secrets -p sagat-execution-engine -p sagat-control-plane
    ```
 
+   Focused revalidation on 2026-10-11 at `a08ae9b`: `contract_scalability_ha` **16/16**,
+   `e2e_security_multitenancy` **7/7**, `fault_security_multitenancy` **10/10**; no failures or ignored
+   tests. The latter two used real PostgreSQL and sandbox containers through Colima's Docker socket
+   (`DOCKER_HOST`), with `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=0` and two test threads.
+   This covers T009-018 and T009-022, including all six egress fault scenarios.
+
 2. **The battery of the gate** (spec SC-009-001). One suite per class; a release with any failing test is not shippable:
 
    | Class | Suite | What it does |
@@ -41,6 +47,18 @@ Everything below was run against this repository. The pieces that are **not** bu
    ```
 
 5. **Operating it:** `docs/runbooks/security-governance.md`.
+
+6. **Kubernetes isolation on kind** (T009-031): follow the [local kind recipe](../../docs/runbooks/security-governance.md#local-verification-with-kind),
+   which installs Cilium and runs `tests/security/sandbox/kubernetes-network-policy.sh` against the
+   integrated chart. Revalidated on 2026-10-11 at `a08ae9b` with kind 0.33.0, Kubernetes 1.37.0,
+   Cilium 1.20.2 and Helm 4.2.4 on ARM64, using the existing disposable `sagat-security` cluster
+   through the `colima-sagat-remaining` Docker context and a separate kubeconfig. The verifier exited
+   0: restricted Pod Security, declared TCP/DNS paths and denied API/role/namespace/pool paths passed.
+   The complete recipe then passed on a fresh cluster created from `tests/security/sandbox/kind.yaml`,
+   installing the versioned Cilium OCI chart and rerunning the same verifier. Test namespaces and the
+   new cluster were removed afterwards. This validates network policy and admission, not a full
+   product installation or autoscaling under load. The OCI source avoids depending on unrelated
+   entries in the operator's Helm repository cache.
 
 ## Story evidence
 

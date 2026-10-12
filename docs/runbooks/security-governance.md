@@ -227,7 +227,7 @@ KUBECONFIG=/path/to/disposable-kubeconfig \
   CHART_DIR=infra/helm tests/security/sandbox/kubernetes-network-policy.sh
 ```
 
-The verifier rejects unsafe values before cluster creation, applies the rendered policies and service
+The verifier rejects unsafe values before creating its test namespaces, applies the rendered policies and service
 accounts, validates PodSpecs derived from every workload template against restricted Pod Security
 admission, and uses controlled TCP listeners for PostgreSQL, NATS, OIDC, control-plane and engine
 ports. It proves declared TCP paths work, undeclared Kubernetes API and cross-role paths fail,
@@ -236,6 +236,42 @@ another pool's overrides. The integrated chart passed this matrix on Cilium. Thi
 admission proof: it does not install the product Deployments or KEDA objects and does not exercise
 real PostgreSQL, NATS or OIDC protocols. `contract_scalability_ha` separately verifies the complete
 render and the exact role, port, peer, optional-NATS, pool-override and disabled-policy contracts.
+
+### Local verification with kind
+
+Run from the repository root with Docker, kind, Helm, kubectl and jq installed. This recipe uses
+Kubernetes 1.37.0 and Cilium 1.20.2. It follows the [Cilium kind installation guide](https://docs.cilium.io/en/stable/installation/kind/):
+the default CNI is disabled and Cilium uses Kubernetes IPAM. The node becomes ready after Cilium is
+installed. A unique cluster name and a separate kubeconfig keep the current cluster context intact.
+Select a working Docker engine first; with Colima, set `DOCKER_CONTEXT` to its named context.
+
+```sh
+security_dir=$(mktemp -d)
+security_cluster="sagat-security-$(date +%s)-$$"
+export KUBECONFIG="$security_dir/kubeconfig"
+
+kind create cluster --name "$security_cluster" \
+  --config tests/security/sandbox/kind.yaml --kubeconfig "$KUBECONFIG"
+helm install cilium oci://quay.io/cilium/charts/cilium \
+  --version 1.20.2 --namespace kube-system \
+  --set ipam.mode=kubernetes --set operator.replicas=1 \
+  --set image.pullPolicy=IfNotPresent --wait --timeout 5m
+kubectl wait --for=condition=Ready nodes --all --timeout=120s
+CHART_DIR=infra/helm tests/security/sandbox/kubernetes-network-policy.sh
+```
+
+The verifier removes its own namespaces on success or failure. After inspecting the result, remove
+only the cluster created above and its temporary kubeconfig:
+
+```sh
+kind delete cluster --name "$security_cluster"
+rm -rf -- "$security_dir"
+unset KUBECONFIG
+```
+
+For an existing disposable kind cluster, export its kubeconfig to a separate file with
+`kind export kubeconfig --name <cluster> --kubeconfig <file>`, then run the verifier with
+`KUBECONFIG=<file>`. The verifier does not create, reconfigure or delete that cluster.
 
 ## 7. Not covered
 
