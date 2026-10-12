@@ -54,3 +54,37 @@ Invariants (tested in `tests/e2e/workflow-studio`):
 
 None. The contract changes are additive: the original four operations and the payload-inspection operation use
 existing immutable payload, journal and blob-catalog records.
+
+### Namespace creation UI contract (T007-052)
+
+`namespace:create` from `/auth/context` exposes **New namespace** on the `/namespaces` page.
+The **Namespaces** navigation menu opens the list; the shell selector only changes context.
+The dialog reads all pages of `GET /workspaces` and posts generated `CreateNamespaceRequest`
+(`slug`, `environment`: dev/staging/prod) to `POST /workspaces/{workspaceId}/namespaces`.
+It never supplies a tenant ID: authenticated server admission remains authoritative. Successful
+creation adds the returned resource to the selector and selects its slug; a refusal retains input
+and the previous selection. Conflicts explain tenant-wide name uniqueness. Empty workspace lists
+explain the API prerequisite. Existing identity audit, typed errors and HTTP traces/metrics apply;
+no wire schema or execution semantics change.
+
+### Integrations UI contract (T007-053)
+
+`/integrations` lists `/namespaces/{id}/connectors` with `event:read`; `event:manage` enables
+creation and editing of the existing NATS/Kafka/SQS settings and ACTIVE/PAUSED configuration.
+Each namespace mounts an independent form/list. Health is the server's error category and message
+receipt evidence, never a fabricated connectivity result. New connectors start paused.
+
+New credentials require `secret:manage` and are sent only to `PUT /namespaces/{id}/secrets/{name}`
+under a generated unique name. The following connector write contains only `secretName`.
+The two writes are not atomic: after a successful secret write and failed connector write, the form
+clears credential fields and retains the reference for retry. Cancelled/failed setup can leave an
+unused encrypted secret; it is not deleted automatically or mistaken for an active integration.
+Editing never retrieves a stored credential value. Rotation makes a new secret and preserves the
+old one; administrators can remove unused versions/references through the existing secrets API.
+
+`egress:manage` exposes the namespace's existing network policy with explicit save. Its scope is
+all outbound connections in the namespace, not only the selected connector. No implicit network
+permission or bypass is added; existing server policy checks, quotas, tenant admission, audit and
+HTTP/connector telemetry remain authoritative. The UI rejects credentials in broker addresses and
+requires TLS for entered credentials. Secret request errors are rendered without response messages,
+which could otherwise echo a value. Secrets never enter query caches or browser persistence.

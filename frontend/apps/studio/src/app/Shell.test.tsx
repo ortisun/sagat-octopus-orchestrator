@@ -33,7 +33,7 @@ describe('Shell', () => {
     expect(within(sidebar).getByText('sagat-octopus')).toBeInTheDocument();
     expect(within(sidebar).getByLabelText('Namespace')).toHaveValue('production');
     const navigation = within(sidebar).getByRole('navigation', { name: 'Main' });
-    expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Runs', 'Scripts']);
+    expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Runs', 'Scripts', 'Integrations', 'Namespaces']);
     expect(within(navigation).getByRole('link', { name: 'Runs' })).toHaveAttribute('aria-current', 'page');
   });
 
@@ -55,3 +55,9 @@ describe('Shell', () => {
     await waitFor(() => expect(screen.getByRole('main')).toHaveFocus());
   });
 });
+
+ it('provides a namespace menu instead of a sidebar creation button', async () => {
+    await mount();
+    expect(screen.getByRole('link', { name: 'Namespaces' })).toHaveAttribute('href', '/namespaces');
+    expect(screen.queryByRole('button', { name: 'New namespace' })).not.toBeInTheDocument();
+ });

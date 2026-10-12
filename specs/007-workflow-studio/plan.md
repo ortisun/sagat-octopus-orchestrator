@@ -143,3 +143,35 @@ responses unchanged. Check generated OpenAPI types, late-response cancellation a
 journey. At implementation delivery update `data-model.md`, `research.md` G144, the design table,
 traceability and quickstart with the actual tests. T007-048 is not complete at design acceptance;
 customer classification and raw-value disclosure remain explicitly pending afterward.
+
+## Namespace creation (T007-052)
+
+Use the already approved feature 001 identity dependency: GET /workspaces and POST
+/workspaces/{workspaceId}/namespaces, generated wire types, existing tenant/RBAC admission,
+transactional audit and HTTP telemetry. Add a dedicated Namespaces route with a creation dialog gated by namespace:create. Keep the
+current namespace until creation succeeds, then update the namespace cache and selection together.
+Reuse accessible dialog/field/error components. No server semantics or new permissions are introduced.
+
+Owner correction (T007-052): **Namespaces** is a dedicated navigation menu and `/namespaces`
+page, listing namespaces and hosting **New namespace**. The sidebar selector remains for
+switching context; creation is not a sidebar button. Reuse identity contracts and permissions.
+
+## Integrations management (T007-053)
+
+Approved dependencies are feature 004 connector APIs and feature 009 namespace secrets. Reuse
+`event:read`, `event:manage` and `secret:manage`, tenant admission, encrypted storage, audit and
+HTTP/connector telemetry. The Studio lists configured inbound connectors, health categories and
+ACTIVE/PAUSED configuration; create/edit uses generated settings types. Authentication supports
+NATS token/user-password/creds, Kafka SASL, SQS keys, existing secret references and no credentials.
+Never read secret values, persist credentials in browser storage, embed credentials in URLs or show
+raw credential-request failures. Save a new uniquely named secret before assigning its reference;
+if the connector save fails retain that reference and explain the partial save, allowing retry
+without rotating shared credentials. Unmount forms on namespace/session changes; suppress stale
+callbacks. Default new connectors to paused so explicit activation starts consumption. No endpoint
+claims to test connectivity; health remains runtime evidence. TLS required for entered credentials.
+
+Namespace egress is default-deny, including connector creation. The Integrations page therefore
+also exposes the existing policy through an explicit `egress:manage` form; it loads current rules
+and never grants access merely because a user submitted a connector. This is the same feature 009
+contract, not a new network/authentication model. Test preservation of current rules and port/TLS
+choices, plus actual policy admission in the browser/API journey.

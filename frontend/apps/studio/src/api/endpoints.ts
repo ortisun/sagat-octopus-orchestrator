@@ -13,6 +13,17 @@ export type VersionDocument = Schemas['WorkflowVersionDocument'];
 export function endpoints(api: ApiClient) {
   return {
     authContext: (signal?: AbortSignal) => api.get<AuthContext>('/auth/context', { signal }),
+    workspaces: async (signal?: AbortSignal) => {
+      const items: Schemas['Workspace'][] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await api.get<Schemas['WorkspacePage']>('/workspaces', { query: { limit: 200, cursor }, signal });
+        items.push(...page.items);
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      return items;
+    },
+    createNamespace: (workspace: string, body: Schemas['CreateNamespaceRequest']) => api.post<NamespaceResource>(path`/workspaces/${workspace}/namespaces`, { body }),
     namespaces: (signal?: AbortSignal) => api.get<Page<NamespaceResource>>('/namespaces', { query: { limit: 200 }, signal }),
 
     listWorkflows: (query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<Workflow>>('/workflows', { query, signal }),

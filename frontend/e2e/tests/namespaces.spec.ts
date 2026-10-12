@@ -1,0 +1,37 @@
+import { expect, test } from '@playwright/test';
+import { env } from '../support/env';
+import { failOnBrowserErrors, signIn } from '../support/studio';
+
+test('creates a persisted namespace from its navigation page and explains duplicate names', async ({ page }) => {
+  const errors = failOnBrowserErrors(page);
+  const slug = `studio-ns-${Date.now()}`;
+  await signIn(page, env.tokens.admin);
+  await page.getByRole('link', { name: 'Namespaces', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Namespaces', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New namespace', exact: true }).click();
+  await expect(page.getByLabel('Workspace')).toBeEnabled();
+  await page.getByLabel('Namespace name').fill(slug);
+  await page.getByLabel('Environment', { exact: true }).selectOption('dev');
+  await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByLabel('Namespace', { exact: true })).toHaveValue(slug);
+  await expect(page.getByRole('heading', { name: 'Namespaces', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New namespace', exact: true }).click();
+  await page.getByLabel('Namespace name').fill(slug);
+  await page.getByRole('button', { name: 'Create namespace', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('already exists');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await signIn(page, env.tokens.admin);
+  await page.getByRole('link', { name: 'Namespaces', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Namespaces', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: slug, exact: true })).toHaveCount(1);
+  await page.getByLabel('Namespace', { exact: true }).selectOption(env.namespace);
+  await page.getByRole('button', { name: `Use namespace ${slug}`, exact: true }).click();
+  await expect(page.getByLabel('Namespace', { exact: true })).toHaveValue(slug);
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.getByRole('button', { name: 'New namespace', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(errors.filter((error) => !error.includes('409'))).toEqual([]);
+});

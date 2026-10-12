@@ -8,6 +8,8 @@ const NAV = [
   { to: '/workflows', label: 'Workflows' },
   { to: '/runs', label: 'Runs' },
   { to: '/scripts', label: 'Scripts' },
+  { to: '/integrations', label: 'Integrations' },
+  { to: '/namespaces', label: 'Namespaces' },
 ] as const;
 
 function pageName(pathname: string): string {

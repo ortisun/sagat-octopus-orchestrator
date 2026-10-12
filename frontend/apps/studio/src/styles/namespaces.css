@@ -1,0 +1,16 @@
+.namespaces-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.namespaces-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.namespaces-table th[scope='row'] {
+  overflow-wrap: anywhere;
+}

@@ -175,3 +175,17 @@ Implementation status (2026-10-11): FR-007-009/010 visual changes and technical 
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
 after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
 automated CI evidence for this branch is recorded separately.
+
+Namespace creation acceptance (T007-052): an authorized user can open **Namespaces** in the main menu, then **New namespace**, choose a tenant workspace and environment, and create a valid unique slug.
+The created namespace becomes selected without a reload. Empty workspace lists, validation,
+conflicts and API failures are actionable; unauthorized users have no creation action.
+
+Owner correction (T007-052): **Namespaces** is a dedicated navigation menu and `/namespaces`
+page, listing namespaces and hosting **New namespace**. The sidebar selector remains for
+switching context; creation is not a sidebar button. Reuse identity contracts and permissions.
+
+Integrations acceptance (T007-053, owner request): a dedicated **Integrations** menu lists the
+current namespace's inbound broker connectors and provides create/edit forms for NATS, Kafka and
+SQS. Type-specific connection and authentication fields use the existing connector/secret APIs.
+Credentials are write-only, never returned or stored in browser persistence, and never put in broker
+URLs or connector settings. Configuration status is not represented as a successful connection test.

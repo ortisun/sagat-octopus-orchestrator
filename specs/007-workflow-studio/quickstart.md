@@ -271,6 +271,20 @@ This fixes the serving/UI contracts in the [runbook](../../docs/runbooks/studio.
 tenant checks, operation audit and OTel contracts are unchanged. Browser telemetry remains G159.
 No sandbox, performance, full-workspace Rust or non-Chromium validation is claimed for this fix.
 
+### Create a namespace in Studio (T007-052, 2026-10-12)
+
+Sign in with `namespace:create` (the local dev administrator has it). Open **Namespaces** in the sidebar menu, then click **New namespace**, choose a workspace, enter a unique slug and choose Development,
+Staging or Production. Submit **Create namespace**: the new namespace becomes selected. A duplicate
+name leaves the dialog open and asks for another name. If there are no workspaces, create one through
+`POST /v1/workspaces` first. Refresh an already open Studio tab to load the new action; sign in again
+if required (the token is held only in memory).
+
+Validation: the new shell regression failed before implementation; 10 focused Vitest tests passed,
+along with lint, TypeScript checking/production build and the real Chromium/API journey
+`frontend/e2e/tests/namespaces.spec.ts` (creation, selection, persistence after login, duplicate and
+375px dialog). Full-suite run: 1,059 passed and six failed in concurrent graph-layout work
+(`tokens`, `RunDetailPage`, `operations`); these are not reported as passing namespace validation.
+
 ## Graph text and inspector correction — 2026-10-12 (T007-051)
 
 The owner's Temporal/Windmill direction is recorded in the [design mapping and captures](design/README.md#graph-reading-and-selection-2026-10-12-t007-051).
@@ -317,3 +331,46 @@ cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --noc
 Reproduce the integrated run using the T007-050 command above. The wire/API, transaction,
 tenant/RBAC, audit and OTel contracts are unchanged; browser telemetry remains G159.
 No sandbox execution, non-Chromium testing or new human acceptance is claimed here.
+
+Owner navigation correction: namespace management now has its own **Namespaces** menu and
+`/studio/namespaces` page. The page lists tenant namespaces and environments, marks the current
+one and offers **Use namespace** and authorized **New namespace**. The sidebar selector remains.
+Validation after this correction: all 1,066 Vitest tests passed (70 files), lint, app/E2E typechecks,
+production build and the real Chromium/API namespace journey passed. This newer full-suite run
+supersedes the six concurrent graph-layout failures recorded above.
+
+### Configure a broker through Integrations (T007-053)
+
+Open **Integrations** for the selected namespace. An administrator can expand **Network access**
+and explicitly allow the broker hosts/networks and ports, preserving any rules other integrations
+need. The policy applies namespace-wide. Private addresses require an explicit CIDR; platform
+network restrictions still apply. Users without `egress:manage` ask an administrator to configure it.
+
+Choose **New integration**, a name and Kafka, NATS JetStream or Amazon SQS. Enter servers and
+specific settings (Kafka topic/initial offset; NATS stream/durable consumer/optional subject filter;
+SQS queue URL/region). Choose no credentials, an existing namespace secret, or enter the supported
+credentials with `secret:manage`. Kafka supports SASL PLAIN/SCRAM-SHA-256/SCRAM-SHA-512;
+NATS supports a token, username/password or complete credentials-file text; SQS supports access
+keys and an optional session token. Enter TLS addresses for credentials. Custom TLS CA/client
+certificate configuration is not exposed by the existing adapters and is not implied by this form.
+
+Save initially **Paused**, then **Edit** and choose **Active** when ready to consume. Active is a
+configuration state, not a connectivity test. Review runtime errors/message receipt on the list.
+Bind a workflow message trigger to the integration name using feature 004's existing trigger contract.
+The current page manages inbound connectors; outbound event subscriptions remain their separate API.
+The internal Sagat NATS uses deployment `SAGAT_NATS_URL`/`SAGAT_NATS_CREDENTIALS_FILE` settings.
+
+Credentials are encrypted by the existing vault, write-only in Studio and referenced by name.
+After a partial save the form explains that credentials were saved and retries only the connector.
+No automatic deletion of unused secrets occurs. After replacing credentials, pause and resume an
+active connector to ensure that its reader reloads them, per the events runbook.
+
+Validation: 11 focused component tests passed (Kafka/NATS/SQS shapes, secret separation and failure
+redaction, partial-save retry, permissions, namespace changes, updates/activation and explicit network
+policy edits). A real Chromium/API journey passed: isolated namespace, explicit network policy,
+Kafka synthetic credential save/edit, NATS save, new login/persistence, no credential redisplay or
+browser persistence and a 375px dialog. Test connectors remain paused; no connectivity to a user's
+broker or production credential was claimed or exercised.
+
+Final T007-053 gates: 1,077 frontend tests in 71 files, lint, app/E2E typechecks, production build,
+generated OpenAPI consistency and the real Chromium/API journey passed against the rebuilt Studio.

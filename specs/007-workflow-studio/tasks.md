@@ -159,3 +159,18 @@ the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 j
 ## Remaining V1 payload inspection
 
 - [x] T007-048 [US03] [US04] Implement the authorized, audited `structure-only-v1` payload inspection in ADR-0028 (FR-007-005, FR-007-010, FR-008-006, FR-009-004): input or immutable journal-sequence selectors, new `run:payload:inspect` permission, tenant-scoped payload read plus committed bounded audit, server-side removal of every value and key with strict projection caps, verified external metadata and honest no-payload states. Evidence on 2026-10-12: the real PostgreSQL/API inspection suite passed 2/2; application projector and identity suites passed 6/6, 4/4 and 27/27; 70 focused Studio tests plus lint/typecheck/build passed; and one real Chromium journey against the real API/engine passed with key/value canaries absent. Tests cover role and tenant boundaries, audit failure/collapse, historical selection, forged descriptors, external metadata, size/depth/UTF-8 caps and stale session/query cancellation. Customer classification, retention decisions and raw-value disclosure remain pending under G42/G39.
+
+- [x] T007-052 Add a Namespaces navigation menu and page with authorized creation and context selection; test creation/selection,
+  invalid input, permission denial and API failure, then verify against the running API in Chromium.
+  Evidence: 10 focused tests, lint/typecheck/build and one real Chromium/API journey passed;
+  full-suite concurrent graph-layout failures are recorded separately in quickstart.md.
+  Owner's menu correction verified: dedicated `/namespaces` navigation/list/creation page;
+  1,066 frontend tests, lint/typechecks/build and real API/Chromium journey passed.
+
+- [x] T007-053 Implement Integrations menu, typed connector forms, safe credential storage and
+  create/edit/activate flows; prove permission, namespace, partial-save and redaction boundaries
+  with component tests and real browser/API persistence checks.
+
+  T007-053 evidence: 1,077 frontend tests (71 files), lint, app/E2E types, production build,
+  generated API consistency and the real Chromium/API integration journey passed. The journey
+  exercises configuration persistence with paused synthetic brokers, not real external connectivity.

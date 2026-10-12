@@ -264,3 +264,15 @@ Validate profile changes against `contract_rest_events_webhooks_messaging`,
 The real transport contract covers native TLS, spoofed certificate headers, OIDC
 without a platform tenant claim, subject mismatch, duplicate/reused event IDs and
 cross-tenant management reads.
+
+## Studio configuration
+
+The **Integrations** menu (`/studio/integrations`) manages namespace inbound NATS, Kafka and SQS
+connectors. **Network access** exposes the existing namespace-wide egress policy to administrators;
+**New integration** and **Edit** expose type-specific connection, authentication and status fields.
+Credentials go through the namespace secrets API and only their reference goes into the connector.
+A successful secret save followed by a connector failure is explicitly a partial save; retry reuses
+that reference. Unused secrets are not automatically deleted. A saved/Active configuration does not
+mean that a live connection succeeded: inspect runtime health and message receipt. See feature 007's
+quickstart for the supported auth modes and the full UI procedure. Outbound subscriptions and the
+platform's internal broker retain their existing configuration paths.
