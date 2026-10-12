@@ -9,7 +9,7 @@ use base64::engine::general_purpose::STANDARD;
 use sagat_control_plane::config::{ConfigError, Environment, Lookup, optional, required};
 use sagat_domain::identity::NamespaceId;
 use sagat_domain::scripts::Policy;
-use sagat_infra_sandbox::Images;
+use sagat_infra_sandbox::{GoTarget, Images};
 
 use crate::api::Credentials;
 
@@ -43,6 +43,10 @@ pub struct RunnerConfig {
     /// for its key (trust on first use).
     pub trusted_keys: Vec<Vec<u8>>,
     pub images: Images,
+    /// One native architecture for every Go runner eligible for this pool.
+    pub go_target: Option<GoTarget>,
+    /// Refuse startup if the native Go capability probe fails.
+    pub go_required: bool,
     /// Where `/metrics` and `/livez` are served; `None` disables the listener.
     pub admin_addr: Option<SocketAddr>,
     /// Containers older than this that nobody owns are removed (a runner that died mid-run).
@@ -73,6 +77,25 @@ impl RunnerConfig {
     /// # Errors
     /// [`ConfigError`] naming the first missing or invalid variable.
     pub fn from_lookup(get: Lookup<'_>) -> Result<Self, ConfigError> {
+        let go_target = get("SAGAT_RUNNER_GO_TARGET")
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<GoTarget>()
+                    .map_err(|reason| ConfigError::Invalid {
+                        name: "SAGAT_RUNNER_GO_TARGET",
+                        reason: reason.to_owned(),
+                    })
+            })
+            .transpose()?;
+        let go_required = optional(get, "SAGAT_RUNNER_GO_REQUIRED", false)?;
+        if go_required && go_target.is_none() {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_RUNNER_GO_REQUIRED",
+                reason: "requires SAGAT_RUNNER_GO_TARGET".to_owned(),
+            });
+        }
         let environment: Environment = optional(get, "SAGAT_ENV", Environment::Prod)?;
         let api_url = required(get, "SAGAT_RUNNER_API_URL")?;
         let grpc_url = required(get, "SAGAT_RUNNER_GRPC_URL")?;
@@ -178,6 +201,8 @@ impl RunnerConfig {
             poll_interval: Duration::from_millis(optional(get, "SAGAT_RUNNER_POLL_MS", 500)?),
             ceiling,
             trusted_keys,
+            go_target,
+            go_required,
             images: Images {
                 typescript: optional(get, "SAGAT_RUNNER_IMAGE_TYPESCRIPT", defaults.typescript)?,
                 python: optional(get, "SAGAT_RUNNER_IMAGE_PYTHON", defaults.python)?,
@@ -190,6 +215,14 @@ impl RunnerConfig {
                     get,
                     "SAGAT_RUNNER_IMAGE_CSHARP_RUNTIME",
                     defaults.csharp_runtime,
+                )?,
+                go_build: optional(get, "SAGAT_RUNNER_IMAGE_GO_BUILD", defaults.go_build)?,
+                go_runtime: optional(get, "SAGAT_RUNNER_IMAGE_GO_RUNTIME", defaults.go_runtime)?,
+                java_build: optional(get, "SAGAT_RUNNER_IMAGE_JAVA_BUILD", defaults.java_build)?,
+                java_runtime: optional(
+                    get,
+                    "SAGAT_RUNNER_IMAGE_JAVA_RUNTIME",
+                    defaults.java_runtime,
                 )?,
             },
             admin_addr,
@@ -278,6 +311,33 @@ mod tests {
                 "{name}={value}"
             );
         }
+    }
+
+    #[test]
+    fn native_go_requires_an_explicit_supported_target() {
+        for (target, expected) in [
+            ("linux-arm64", GoTarget::LinuxArm64),
+            ("linux-amd64", GoTarget::LinuxAmd64),
+        ] {
+            let mut pairs = BASE.to_vec();
+            pairs.extend([
+                ("SAGAT_RUNNER_GO_TARGET", target),
+                ("SAGAT_RUNNER_GO_REQUIRED", "true"),
+            ]);
+            let config = RunnerConfig::from_lookup(&lookup(&pairs)).expect("native target");
+            assert_eq!(config.go_target, Some(expected));
+            assert!(config.go_required);
+        }
+        for pair in [
+            ("SAGAT_RUNNER_GO_TARGET", "darwin-arm64"),
+            ("SAGAT_RUNNER_GO_REQUIRED", "true"),
+        ] {
+            let mut pairs = BASE.to_vec();
+            pairs.push(pair);
+            assert!(RunnerConfig::from_lookup(&lookup(&pairs)).is_err());
+        }
+        let config = RunnerConfig::from_lookup(&lookup(&BASE)).expect("default");
+        assert!(config.go_target.is_none() && !config.go_required);
     }
 
     #[test]

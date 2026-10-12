@@ -4454,6 +4454,7 @@ name = "sagat-infra-schema"
 version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "jsonschema",
  "sagat-application",
  "sagat-domain",

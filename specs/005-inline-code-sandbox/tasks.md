@@ -60,6 +60,25 @@
 - [x] T005-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/005-inline-code-sandbox/quickstart.md`. — two independent reviews, security and correctness, 35 findings, each checked against the code (D116); `docs/runbooks/scripts.md`, `docs/architecture/security-and-sandbox.md`, ADR-0013, `README.md`; evidence in `quickstart.md`.
 - [x] T005-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — The 005 evidence table now records the isolated C# runner, exact offline NuGet catalog, schema-validated SBOM, executable Studio starter and syntax grammar. Go/Java runners, arbitrary dependencies and TypeScript/Python package installation remain outside the proven scope.
 
+## Phase 7: US05/US06 — Native Go and Java 17 runners
+
+**Independent Go test:** a real isolated builder produces a signed target-specific static ELF; a
+runner whose native startup probe passed executes it from a sealed memory file under the production
+profile and mediates fetch, secret, log and idempotency calls.
+
+**Independent Java test:** a real isolated builder produces only Java 17 `Script` class files; the
+production runtime verifies and loads them from memory and mediates the same host-call protocol.
+
+- [x] T005-037 [US05] [US06] Record artifact, toolchain, isolation, native-target and rollout decisions in `docs/adr/ADR-0024-go-and-java-use-native-v3-artifacts.md`, `spec.md` and `plan.md`.
+- [x] T005-038 [US05] [US06] Add exact additive v3 validation in `crates/infra-schema/src/bundle.rs`: canonical/base64 gzip, decompression bomb and malformed-member rejection, target-specific static ELF checks, Java 17 class name/version/count checks, duplicate/unknown-field rejection and unchanged v1/v2 fixtures.
+- [x] T005-039 [US05] Implement and prove `runners/go/` under the exact build/runtime limits: fixed offline module, read-only prebuilt standard-library cache, canonical gzip, signed native target and four-seal direct-fd execution with sealed input fd 3. — The native ARM64 `DockerSandbox::probe_go` passed the production build, validator and runtime path in 1.26 s with 256 MiB, one CPU, 64 processes and 32 MiB `noexec` scratch. The proof artifact was a 1,835,156-byte static ELF and 778,628-byte canonical gzip. AMD64 remains independently gated by T005-043.
+- [x] T005-040 [US06] Implement `runners/java/`: fixed `javac --release 17 -proc:none` builder, pinned trusted API/Jackson, bounded `Script.class`/nested classes, parent-first in-memory runtime and JSON map/list/primitive contract. — Native ARM64 build/runtime containers passed the unchanged isolation profile; shared supervisor host-call tests remain T005-042.
+- [x] T005-041 [US05] Configure one Go target per runner deployment and run the bundled compile-and-execute startup probe before capability advertisement; omit optional Go on failure and fail readiness/startup when Go is required. Add homogeneous-pool deployment validation until worker claims become target-aware. — `SAGAT_RUNNER_GO_TARGET` accepts only the exact v3 targets, `SAGAT_RUNNER_GO_REQUIRED` makes failure fatal, and runner startup probes before collecting/advertising toolchains; config/startup tests pass 17/17. Deployment homogeneity is required by ADR-0024 and the quickstart until claims become target-aware.
+- [x] T005-042 [US05] [US06] Add real-container supervisor tests for successful compile/run, fetch, secret, log, idempotency, redaction, network denial, timeout/resource enforcement, non-empty lockfile rejection, target mismatch and cleanup. Run existing TypeScript/Python/C# real-container regressions unchanged. — Native ARM64 production-path tests passed Go/Java mediation, redaction, direct-network denial, target mismatch, Go CPU timeout and zero leftovers; v3 malformed/lockfile units pass; the existing TS/Python/C# real-container suite passed 30/30 serial cases.
+- [ ] T005-043 [US05] Add a native Linux AMD64 CI proof through the exact production builder, validator, startup probe and sealed-memory runtime before enabling `linux-amd64`. Do not substitute ARM emulation, executable scratch or a relaxed seccomp profile.
+- [x] T005-044 [US05] [US06] Bind compiler/ABI/target/compression-or-JSON/image identities into build provenance and SBOM metadata, keep compressed Go startup frames bounded, and preserve artifact signature coverage of all v3 metadata.
+- [x] T005-045 [US05] [US06] Publish cold/warm measurements and final image identities in the feature 005 performance report and quickstart for every enabled native target; never include an unproven target. — `tests/performance/reports/inline-code-sandbox-go-java.md` records six native ARM64 isolated build/run samples per language, exact toolchain identities, resource/profile evidence and zero leftovers. The report and quickstart explicitly leave AMD64 pending T005-043 rather than inferring it from ARM64; its native result must be added before that target is enabled.
+
 ## Dependencies & independent delivery
 
 - This feature requires: 001, 002, 009.

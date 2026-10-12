@@ -6,7 +6,7 @@
 
 Allow writing and publishing code directly on the platform without manual application build/deploy.
 
-**Technical approach:** ScriptRegistry controls src/digest and the build pipeline; the sandbox runner manages isolated containers. TypeScript/Python and compiled C# execute outside privileged processes. Go and Java remain explicit future languages.
+**Technical approach:** ScriptRegistry controls src/digest and the build pipeline; the sandbox runner manages isolated containers. TypeScript/Python, compiled C#, native Go and Java 17 bytecode execute outside privileged processes. Artifact v3 adds exact target/ABI/encoding metadata without changing stored v1/v2 artifacts. Go is advertised only after a native production-path startup probe for one configured homogeneous pool target.
 
 ## Technical Context
 
@@ -44,8 +44,10 @@ crates/application/src/scripts.rs                  ScriptService (authors), Runn
 crates/application/src/sandbox.rs                  Sandbox and HostCalls ports, the build key
 crates/application/src/script_signing.rs           Ed25519 signer and verifier of artifacts
 crates/infra-sandbox/                              the container driver, JSON-line protocol, lockfile policy and Node/Python shims
-crates/infra-schema/                               JSON Schema plus v1 text/v2 binary artifact validation before signing
+crates/infra-schema/                               JSON Schema plus v1 text/v2 binary/v3 target-aware artifact validation before signing
 runners/dotnet/                                    pinned Roslyn build host, closed NuGet catalog and separate .NET runtime host
+runners/go/                                        fixed-module Go builder, prebuilt read-only std cache and sealed-memfd runtime loader
+runners/java/                                      fixed javac 17 builder, trusted API/Jackson and parent-first in-memory runtime host
 crates/infra-postgres/src/scripts.rs               the SQL; migration 20261014000000_scripts
 crates/infra-ir/src/convert.rs                     a script node becomes the activity script.sha256-<hex>
 crates/api-http/src/routes/{scripts,runner}.rs     25 operations
@@ -67,6 +69,7 @@ tests/performance/inline-code-sandbox/         the benchmark; report in tests/pe
 4. Happy path flow with e2e tests.
 5. Fault injection, redelivery, timeouts, concurrency and regression.
 6. Security/performance review, documentation and release gate.
+7. Enable each Go native target only after its own native compile-and-execute CI proof; keep runner pools homogeneous until target-aware claims exist.
 
 ## Data Model / Contracts
 
@@ -79,6 +82,8 @@ tests/performance/inline-code-sandbox/         the benchmark; report in tests/pe
 - **Functional risk:** dependency changed remotely. The C# catalog pins package identity, version, NuGet content hash, archive SHA-512 and selected assembly SHA-256 in the immutable builder image; customer builds have no registry access.
 - **Operational risk:** throughput below target; perf profiling and scaling driven by metrics, never a promise without a benchmark.
 - **Compatibility risk:** schema/SDK diverges; schema evolution and golden fixtures.
+- **Native-target risk:** language-only claims cannot distinguish Go architecture; configure exactly one target per eligible runner pool, sign it in v3 and fail startup/readiness when required native capability is absent.
+- **Artifact-parser risk:** compressed native code and class files are hostile input; validate canonical encoding, bounded expansion and structural invariants before signing and again at the runtime boundary.
 - **Security risk:** tenant/sandbox boundary; adversarial tests and fail closed.
 
 ## Complexity Tracking
@@ -88,7 +93,10 @@ tests/performance/inline-code-sandbox/         the benchmark; report in tests/pe
 | Rust modular monolith | Learning curve | Centralized invariants and gradual evolution |
 | DB transactional outbox | Extra reads/writes | Avoid losing a wakeup after commit |
 | Multi-SDK via proto | More CI and tests | Real parity and low coupling |
+| Native Go target per runner pool | Separate ARM64/AMD64 images and native proof | Current worker claims carry language but no target; homogeneity prevents incompatible scheduling |
+| Go sealed-memory execution | Trusted loader and Linux-only path | Preserves the `noexec` scratch mount and default seccomp profile |
+| Java class files instead of JAR/project | Narrower author surface | One inline class needs no manifests, plugins, dependency resolver or build tool |
 
 ## Delivery Gate
 
-TS/Python/C# script goes from the editor to execution; escape tests and CPU/memory/network limits verified.
+TS/Python/C#/Go/Java script goes from the editor to execution; malformed v3 and v1/v2 regression tests pass; escape and CPU/memory/network limits are verified. Every advertised Go target has a native startup-probe and CI proof. ARM64 proof does not enable AMD64.

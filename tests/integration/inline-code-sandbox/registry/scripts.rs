@@ -145,18 +145,15 @@ async fn only_a_script_that_can_be_built_is_accepted() {
         .await
         .expect("C# is built");
     for language in [Language::Go, Language::Java] {
-        assert_eq!(
-            w.scripts
-                .create(
-                    &w.admin,
-                    w.namespace.id(),
-                    spec("later", language, "x"),
-                    &ctx()
-                )
-                .await,
-            Err(AppError::InvalidScript(ScriptError::LanguageNotBuilt)),
-            "{language}"
-        );
+        w.scripts
+            .create(
+                &w.admin,
+                w.namespace.id(),
+                spec(language.as_str(), language, "x"),
+                &ctx(),
+            )
+            .await
+            .expect("dedicated builder supported");
     }
     let mut bad_schema = ts("bad-schema");
     bad_schema.input_schema = Some(br#"{"type": 12}"#.to_vec());

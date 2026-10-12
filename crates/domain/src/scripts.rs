@@ -107,7 +107,10 @@ impl Language {
     /// Whether the platform has a builder and a runner for it.
     #[must_use]
     pub const fn is_built(self) -> bool {
-        matches!(self, Self::TypeScript | Self::Python | Self::CSharp)
+        matches!(
+            self,
+            Self::TypeScript | Self::Python | Self::CSharp | Self::Go | Self::Java
+        )
     }
 
     /// The extension of the file the source is written to.
@@ -940,7 +943,7 @@ mod tests {
                 && Language::Python.is_built()
                 && Language::CSharp.is_built()
         );
-        assert!(!Language::Go.is_built() && !Language::Java.is_built());
+        assert!(Language::Go.is_built() && Language::Java.is_built());
     }
 
     #[test]

@@ -12,6 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+flate2 = "1"
 base64 = "0.22"
 sagat-application.workspace = true
 sagat-domain.workspace = true
