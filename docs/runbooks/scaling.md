@@ -52,8 +52,8 @@ It writes a table the runtime role cannot, so it is run with the owner role from
 
 ## 3. Upgrade
 
-Chart `0.4.0` adds required, fail-closed NetworkPolicy peers without changing the application image
-version. Before upgrading from chart `0.3.x`, populate `networkPolicy.apiFrom`, `workersFrom` and
+Chart `0.4.0` adds required, fail-closed NetworkPolicy peers and sets the application image
+version to `0.4.0`. Before upgrading from chart `0.3.x`, populate `networkPolicy.apiFrom`, `workersFrom` and
 `egress.{dnsTo,postgres.to,oidc.to}`; also populate `egress.nats.to` when `nats.url` is set. Render the
 release first. The chart refuses the upgrade if a peer is missing, empty or global.
 
