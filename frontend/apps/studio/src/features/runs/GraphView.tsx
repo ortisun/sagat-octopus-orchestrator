@@ -1,7 +1,7 @@
 import { Controls, MiniMap, ReactFlow } from '@xyflow/react';
-import type { NodeChange } from '@xyflow/react';
+import type { NodeChange, ReactFlowInstance } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { layoutGraph } from '../../model/layout';
 import type { RunModel } from '../../model/runGraph';
 import { flowEdges, flowNodes, layoutNodes } from './canvas';
@@ -15,6 +15,30 @@ const ARIA = {
   'controls.ariaLabel': 'Graph view controls',
   'minimap.ariaLabel': 'Overview of the graph',
 };
+
+const FIRST_STEP_MARGIN = 16;
+
+interface InitialStepGeometry {
+  canvasTop: number;
+  canvasBottom: number;
+  viewportHeight: number;
+  stepTop: number;
+  stepBottom: number;
+}
+
+/**
+ * The initial camera fits the whole graph inside its canvas. A small graph is therefore centred
+ * vertically, even when only the top of the canvas is above the page fold. Move that first row to
+ * the visible top of the canvas only when a complete card would otherwise be clipped by the page.
+ */
+export function initialStepViewportOffset(geometry: InitialStepGeometry): number {
+  const visibleTop = Math.max(0, geometry.canvasTop) + FIRST_STEP_MARGIN;
+  const visibleBottom = Math.min(geometry.viewportHeight, geometry.canvasBottom) - FIRST_STEP_MARGIN;
+  const stepHeight = geometry.stepBottom - geometry.stepTop;
+  if (stepHeight <= 0 || visibleBottom - visibleTop < stepHeight) return 0;
+  if (geometry.stepTop >= visibleTop && geometry.stepBottom <= visibleBottom) return 0;
+  return visibleTop - geometry.stepTop;
+}
 
 /** The colour of a step in the overview: only a hint, the cards say it in words. */
 function overviewColor(node: { data?: unknown }): string {
@@ -49,6 +73,7 @@ export function GraphView({
   onShowTable: () => void;
 }) {
   const after = useRef<HTMLDivElement>(null);
+  const canvas = useRef<HTMLDivElement>(null);
   const positions = useMemo(() => layoutGraph(layoutNodes(order, policy.detail), model.edges, 'LR'), [order, model.edges, policy.detail]);
   const nodes = useMemo<CardNode[]>(
     () => flowNodes({ nodes: model.nodes, order, positions, detail: policy.detail, selectedId, flash }),
@@ -60,6 +85,32 @@ export function GraphView({
   const onNodesChange = (changes: NodeChange<CardNode>[]) => {
     for (const change of changes) if (change.type === 'select' && change.selected) onSelect(change.id);
   };
+
+  const fitInitialViewport = useCallback((flow: ReactFlowInstance<CardNode>) => {
+    void (async () => {
+      const fitted = await flow.fitView({ padding: 0.1, duration: 0 });
+      if (!fitted) return;
+      await document.fonts.ready;
+      requestAnimationFrame(() => {
+        const element = canvas.current;
+        if (element === null) return;
+        const steps = [...element.querySelectorAll<HTMLElement>('.react-flow__node')];
+        const first = steps.map((step) => step.getBoundingClientRect()).sort((left, right) => left.top - right.top)[0];
+        if (first === undefined) return;
+        const bounds = element.getBoundingClientRect();
+        const offset = initialStepViewportOffset({
+          canvasTop: bounds.top,
+          canvasBottom: bounds.bottom,
+          viewportHeight: window.innerHeight,
+          stepTop: first.top,
+          stepBottom: first.bottom,
+        });
+        if (offset === 0) return;
+        const viewport = flow.getViewport();
+        void flow.setViewport({ ...viewport, y: viewport.y + offset }, { duration: 0 });
+      });
+    })();
+  }, []);
 
   return (
     <div className="rn-graph">
@@ -87,7 +138,7 @@ export function GraphView({
         </li>
         <li>Dashed card: an undo or a lookup the platform added</li>
       </ul>
-      <div className="rn-canvas" role="group" aria-label="Graph of the run">
+      <div ref={canvas} className="rn-canvas" role="group" aria-label="Graph of the run">
         <ReactFlow<CardNode>
           nodes={nodes}
           edges={edges}
@@ -100,8 +151,7 @@ export function GraphView({
           edgesFocusable={false}
           elementsSelectable
           deleteKeyCode={null}
-          fitView
-          fitViewOptions={{ padding: 0.1 }}
+          onInit={fitInitialViewport}
           minZoom={0.02}
           maxZoom={1.5}
           onlyRenderVisibleElements
