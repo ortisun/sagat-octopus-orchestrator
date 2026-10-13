@@ -160,6 +160,14 @@ describe('OperationsPage', () => {
     expect(screen.getByLabelText('Reason')).toHaveValue('Investigating repeated worker failures');
   });
 
+  it('discards confirmation when the same subject signs in again', async () => {
+    const { user, app } = await mount();
+    await user.click(await screen.findByRole('button', { name: 'Drain worker identity worker/alpha' }));
+    await user.type(screen.getByLabelText('Reason'), 'Rolling worker update');
+    await act(async () => app.session.signIn(TOKEN, () => Promise.resolve({ ...AUTH_CONTEXT, permissions: ['ops:read', 'worker:manage'] } as never)));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
   it('aborts a mutation and discards its form when the namespace changes', async () => {
     let mutationStarted = false;
     let mutationAborted = false;

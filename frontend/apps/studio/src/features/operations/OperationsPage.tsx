@@ -8,9 +8,9 @@ import './operations.css';
 
 /** Alerts and worker controls backed by feature 008's namespace-scoped operational read models. */
 export function OperationsPage() {
-  const { api, ep } = useApp();
+  const { api, ep, session } = useApp();
   const current = useNamespace();
-  const session = useSession();
+  useSession();
   const canRead = useCan('ops:read');
   const canManage = useCan('worker:manage');
   const namespaces = useQuery({
@@ -33,7 +33,7 @@ export function OperationsPage() {
     return <section><h1>Operations</h1><p>Select a namespace to inspect its alerts and workers.</p></section>;
   }
 
-  const sessionKey = `${session.info?.tenant ?? 'signed-out'}:${session.info?.subject ?? 'signed-out'}:${session.expiresAt ?? 'session'}`;
+  const sessionKey = String(session.revision());
   const service = operationsApi(api, namespace.id);
   return (
     <section className="operations-page" aria-labelledby="operations-title" key={`${sessionKey}:${namespace.id}`}>

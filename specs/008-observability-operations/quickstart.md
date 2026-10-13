@@ -110,3 +110,5 @@ it through the browser, verifies the persisted drain with the API, and guarantee
 OTLP over protobuf and gRPC (G169); exemplars (G173); alerts by pager or email (G175); thresholds per namespace (G174); completion of the real-browser gate for the new Studio Operations screen (G181/T008-036); retention and export of the audit trail (G182); a sampler the caller cannot choose (G187); a bounded monitor for a very large outbox (G186, G188); the visual direction of the Studio (feature 007).
 
 Operations completion evidence (2026-10-12): `frontend/e2e/tests/operations.spec.ts` passed against the running REST/gRPC platform in Chromium. It creates an isolated namespace and activity-bound worker, drains and resumes the identity through the UI, and removes the binding during cleanup. Automated browser evidence does not replace the separately pending human usability evaluation.
+
+Same-subject reauthentication now resets the Operations confirmation using the session revision, including unchanged token expiry. The regression failed before the correction; all six Operations tests, full lint, typecheck and build passed afterward.
