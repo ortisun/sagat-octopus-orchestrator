@@ -82,21 +82,22 @@ was served once and then starved until the rest was over. The floor is a tenth o
 proportional to what the search costs, and the scenario's timers are given an explicit order so that the three policies
 are given the same work.
 
-What the original reviews could not look at remains historical evidence. The subsequent feature-009 completion ran the
-NetworkPolicy and restricted-admission subset in kind/Cilium. A full product/KEDA installation, node-drain behavior, real
-dependency protocols, the database under a real network partition and the original local PostgreSQL-16 comparison remain
-outside that evidence (G247).
+The original reviews did not install the chart in a cluster. Release CI run
+[38189200062](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38189200062) at
+`20793c2` (PR #20) subsequently passed the whole workspace on PostgreSQL 16, the container suites,
+compose smoke, SDKs, Studio, Helm lint, a small load harness and the DR drill. Four earlier runs found
+and fixed a non-writable benchmark socket directory, fixed-port and fail-fast defects in the drill,
+and three machine-speed-dependent tests.
+
+Later feature-009 completion ran the NetworkPolicy and restricted-admission subset in kind/Cilium,
+and T010-038 superseded the original chart-installation gap: a disposable single-node kind/Cilium
+deployment ran the actual product, 60 durable runs, KEDA 1→3→1, engine replacement and policy checks.
+See [`kubernetes-validation.md`](../../tests/performance/reports/kubernetes-validation.md). This does
+not prove multi-node drain, zone failure, real dependency protocols, database behavior under a real
+network partition or a production throughput objective (G247).
 
 Current integrated CI evidence: [run 38192086606](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38192086606)
 on `65841f33cd5b1af462ba4b6a41e92b918939c63d` passed the full Rust workspace, formatting, Clippy,
-architecture, contracts, observability, dependency audit, Helm lint, the small load harness and the small DR drill. CI
-syntax-checks the Cilium verifier; the live cluster execution recorded above was separate and must not be inferred from that
-run.
-
-## Completion evidence reconciliation — 2026-10-12
-
-Earlier references above to an untested full product/KEDA installation describe the original
-checkpoint. T010-038 supersedes that portion: the disposable single-node kind/Cilium deployment
-ran the actual product, 60 durable runs, KEDA 1→3→1, engine replacement and policy checks. See
-[`kubernetes-validation.md`](../../tests/performance/reports/kubernetes-validation.md). This does
-not prove multi-node drain, zone failure or a production throughput objective.
+architecture, contracts, observability, dependency audit, Helm lint, the small load harness and the
+small DR drill. CI syntax-checks the live policy verifier; the separate kind/Cilium run above is its
+execution evidence.
