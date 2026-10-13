@@ -355,10 +355,16 @@ T007-054 closes incomplete namespace listing: all cursor pages are loaded, with 
 after failure or cancellation (three focused tests). T007-056 closes G167: authorized, explicit
 signal confirmation, JSON/UTF-8 size validation and stable retries; nine component tests and one
 real Chromium/API/engine run passed, including the persisted `wait.satisfied` event. T007-055 trace
-links have the runtime serving/configuration and browser evidence above. Integrated gates for this
-follow-up remain pending. ADR-0029/T006-040..042 define the implemented finite-credit task transport. Server contracts,
+links have the runtime serving/configuration and browser evidence above. Local integrated gates and corrected fixture evidence are recorded in `tasks/todo.md`;
+PR #22 records the final Linux CI result. ADR-0029/T006-040..042 define the implemented finite-credit task transport. Server contracts,
 concurrency, authority, cancellation and five-language conformance pass. The 30-row release
 comparison is recorded; final packages from `517c657` pass all five clean consumers. The named `stream_telemetry` contract also proves
 bounded metric labels, open-stream cleanup, trace propagation and absence of secret canaries in logs.
 
 T008-036 closes G181 with the Operations menu: namespace alerts, live sessions and persistent identity drains, explicit audited reason, permission boundaries and late-response protection. The isolated real Chromium/API drain/resume journey passed on 2026-10-12.
+
+Final local checkpoint (2026-10-13): full Rust execution recorded 2,253 passes and one reproduced
+observability-fixture failure; the corrected affected target passed 26/26 at two-thread and default
+parallelism. Namespace-dialog fixture isolation passed all six focused and 1,105 Studio tests.
+Full-workspace Clippy, integrated 0.4.0 builds, readiness probes and four real Chromium journeys pass.
+Neither the initial failed runs nor the external publication/human-acceptance gates are marked green.

@@ -71,7 +71,7 @@ The earlier checked entries describe delivered slices, not total product complet
 - [ ] FR-006-008: publish verified SDK artifacts under confirmed registry identities, record immutable versions and consumer evidence (awaiting registry identity information).
 - [ ] SC-008-001 / SC-012-001: record genuine human usability evaluation under the existing protocol; no simulated human acceptance.
 - [x] Finish the architectural gap audit and add remaining justified slices with acceptance criteria before implementation.
-- [ ] Run integrated checks for the resulting changes, review the diff, commit and push with traced Conventional Commits.
+- [x] Run integrated checks for the resulting changes, review the diff, commit and push with traced Conventional Commits.
 - [x] T008-036 / G181: Operations menu for namespace alerts and audited worker drain/resume, including persistent drains and permission/context boundaries.
 
 - [x] T007-056 / G167: Send signal with explicit confirmation, permissions, payload limits and retry/context safety; nine component tests (including same-subject session replacement) and real browser journey passed.
@@ -84,4 +84,28 @@ Protocol 1.4 completion: source commit `517c657`; five final package clean-consu
 The release poll/stream comparison passed all 30 rows (292.59s), with raw results and clock/counter
 attribution limitations in `tests/performance/reports/sdk-streaming.md`. A real held-subject-cap
 test proves heartbeat/completion and other-tenant progress; independent review is closed.
-Full-workspace validation for this delivery remains in progress.
+The final local checkpoint and corrected fixture evidence are recorded below.
+
+## Integrated checkpoint — 2026-10-13
+
+The full local Rust workspace run completed: 2,253 passed, one observability fixture failed, and
+48 opt-in cases were ignored. This is not reported as an all-green run. The failure was reproduced
+with two test threads and traced to process-wide tracing callsite interest caching during concurrent
+scoped subscriber installation. The test-only correction retains live-server span assertions, adds
+an empty global registry and scopes collector subscriber lifetimes. The complete affected 26-test
+target then passed with both two threads and default parallelism; independent review is closed.
+
+CI exposed namespace-dialog fixture state leaking through persisted localStorage. A one-line setup
+reset reproduced/fixed both failures; all six focused tests and the complete 1,105-test Studio suite
+pass. The subsequent CI Studio job also passed browser journeys and onboarding.
+
+`develop` release 0.4.0 was integrated without changing server/SDK/UI implementation; its version,
+chart, OpenAPI and release history are retained. Locked metadata, generated API checks, Helm lint,
+advisory gates, architecture and final full-workspace Clippy with warnings denied pass. All five
+services compile at 0.4.0. The local API/engine readiness checks, runner health, and four real
+Chromium signal/operations/trace journeys pass after updating the local processes. SDK packaging
+and clean consumers also pass in CI on the integrated source. Final Linux CI status is recorded
+in PR #22; the initial failing runs remain visible rather than being relabeled successful.
+
+Remaining unchecked delivery items are public registry publication and genuine human acceptance.
+The accepted architecture/performance limitations in traceability remain explicit.
