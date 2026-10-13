@@ -1,6 +1,6 @@
 # ADR-0029 — Worker task streams spend finite receive credit
 
-Status: **Accepted and implemented; server/five-SDK integration verified, comparative performance pending** | Date: 2026-10-12 | Feature: 006 | Refines ADR-0015; preserves ADR-0002 and ADR-0023
+Status: **Accepted and implemented; server/five-SDK integration verified, comparative measurement recorded with explicit limits** | Date: 2026-10-12 | Feature: 006 | Refines ADR-0015; preserves ADR-0002 and ADR-0023
 
 ## Context
 

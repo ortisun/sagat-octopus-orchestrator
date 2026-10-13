@@ -81,7 +81,7 @@ Everything below was run against this repository. The pieces that are **not** bu
 | SC-004-001 signed webhooks, duplicates, retries, out-of-order and event/timeout race in integration tests | Met: `integration_events_webhooks_messaging`, `fault_events_webhooks_messaging` |
 | SC-004-002 100% of US01..US04 pass in a reproducible automated suite | Met for the scenarios of the specification (`e2e_events_webhooks_messaging`, 11 tests, with real brokers) |
 | SC-004-003 no violation of the Constitution gates and no silent loss of persisted state | Partial: no loss is provable by the tests above; only principle II has an automated gate (architecture check); the constitution was ratified on 2026-10-11 |
-| SC-004-004 critical errors expose `code`, `trace_id` and remediation without leaking | Partial, as in 003 and 009: `code`, `traceId` and a stable `details.reason` are proven; no separate `remediation` field |
+| SC-004-004 critical errors expose `code`, `trace_id` and remediation without leaking | Historical result, as in 003 and 009: `code`, `traceId` and a stable `details.reason` are proven; at that checkpoint no separate `remediation` field existed; superseded for REST by feature 008 D177 and T001-036 (`crates/api-http/src/error.rs` and request-context tests) |
 
 ## The review (T004-035)
 

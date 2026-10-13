@@ -26,3 +26,22 @@ from a checklist or from a test double.
 Every implementation slice receives focused regression/fault tests, updated contract and
 feature task evidence. Final gates: fmt, clippy, architecture, locked workspace tests,
 contracts, SDKs, Studio, Compose, advisories and the disposable Kubernetes proof.
+
+## Renewed completion request — 2026-10-12
+
+The owner requested completion of everything still missing after the previous delivery.
+Re-audit historical gap statements against code and named evidence before adding scope.
+Track unresolved work explicitly below; an old completed implementation checklist is not
+proof that every product criterion is fulfilled.
+
+Immediate independent slices: complete tenant namespace pagination; runtime-configured
+trace links (FR-007-005/G156); reconcile stale traceability. Then address remaining written
+requirements identified by the read-only architectural audit, starting with SDK task
+streaming/backpressure (NFR-006-PERF) and operational surfaces where existing APIs suffice.
+External package publication needs the owner's registry namespaces/available identities;
+no credentials should be sent in chat. Human usability outcomes must come from real people.
+Accepted self-hosted key-ring encryption, offline dependency catalogs and retention that
+protects pinned artifacts are not silently replaced by unrelated architectural projects.
+
+For each slice: update its feature acceptance/plan/tasks, reproduce the gap, implement,
+run focused tests and relevant integrated gates, record the result, then check the item.

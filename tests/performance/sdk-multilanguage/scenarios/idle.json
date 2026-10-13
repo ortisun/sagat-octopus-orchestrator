@@ -15,6 +15,7 @@
  },
  "workers": {
   "w1": {
+   "transport": "poll",
    "workerName": "perf-idle-1",
    "maxInflight": 16,
    "autostart": true,
@@ -29,6 +30,7 @@
    }
   },
   "w2": {
+   "transport": "poll",
    "workerName": "perf-idle-2",
    "maxInflight": 16,
    "autostart": true,
@@ -43,6 +45,7 @@
    }
   },
   "w3": {
+   "transport": "poll",
    "workerName": "perf-idle-3",
    "maxInflight": 16,
    "autostart": true,

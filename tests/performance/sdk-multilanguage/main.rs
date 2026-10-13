@@ -29,7 +29,7 @@ use sagat_application::worker::WorkerSettings;
 fn scenario(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("performance")
-        .join("006-sdk-multilanguage")
+        .join("sdk-multilanguage")
         .join("scenarios")
         .join(format!("{name}.json"))
 }
@@ -362,3 +362,6 @@ fn benchmark() {
         );
     });
 }
+
+#[path = "streaming.rs"]
+mod streaming;

@@ -1,6 +1,6 @@
 # Worker task streaming completion contract
 
-Status: **Server and five-SDK integration implemented and verified; comparative benchmark and final package gates in progress** (2026-10-12).
+Status: **Implemented and verified; five-SDK integration, comparative measurement and clean-consumer packages recorded** (2026-10-12).
 Traces: NFR-006-PERF, NFR-006-SEC/DUR/OBS/COMP, FR-006-001/003/005/006,
 FR-001-003/007, FR-002-003/004/008. Decision:
 [ADR-0029](../../docs/adr/ADR-0029-worker-task-streams-spend-finite-receive-credit.md).

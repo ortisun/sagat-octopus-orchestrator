@@ -92,3 +92,11 @@ on `65841f33cd5b1af462ba4b6a41e92b918939c63d` passed the full Rust workspace, fo
 architecture, contracts, observability, dependency audit, Helm lint, the small load harness and the small DR drill. CI
 syntax-checks the Cilium verifier; the live cluster execution recorded above was separate and must not be inferred from that
 run.
+
+## Completion evidence reconciliation — 2026-10-12
+
+Earlier references above to an untested full product/KEDA installation describe the original
+checkpoint. T010-038 supersedes that portion: the disposable single-node kind/Cilium deployment
+ran the actual product, 60 durable runs, KEDA 1→3→1, engine replacement and policy checks. See
+[`kubernetes-validation.md`](../../tests/performance/reports/kubernetes-validation.md). This does
+not prove multi-node drain, zone failure or a production throughput objective.

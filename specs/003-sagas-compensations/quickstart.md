@@ -80,7 +80,7 @@ Everything below was run against this repository. The pieces that are **not** bu
 | SC-003-001 E2E reserve→submit fails→release; ambiguous provider requires reconciliation; release failure triggers manual review | Met: `us02`, `us03`, `us04` against the engine as a process and real PostgreSQL |
 | SC-003-002 100% of US01..US04 pass in a reproducible automated suite | Met for the scenarios of the specification (`e2e_sagas_compensations`, 20 tests) |
 | SC-003-003 no violation of the Constitution gates and no silent loss of persisted state | Partial: the tests above prove no confirmed loss in their scope; the v1.0.0 Constitution was ratified on 2026-10-11; only principle II has a dedicated automated architecture gate |
-| SC-003-004 critical errors expose `code`, `trace_id` and remediation without leaking payload or secrets | Partial, as in 009: `code`, `traceId` and a stable message are proven (`us04_a_decision_that_makes_no_sense_is_refused_precisely`); no separate `remediation` field exists |
+| SC-003-004 critical errors expose `code`, `trace_id` and remediation without leaking payload or secrets | Historical result, as in 009: `code`, `traceId` and a stable message are proven (`us04_a_decision_that_makes_no_sense_is_refused_precisely`); at that checkpoint no separate `remediation` field existed; superseded for REST by feature 008 D177 and T001-036 (`crates/api-http/src/error.rs` and request-context tests) |
 
 ## The review (T003-034)
 

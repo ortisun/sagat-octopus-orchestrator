@@ -116,5 +116,5 @@ contract proves bounded labels, stream gauge cleanup, trace propagation, and no 
 canaries in captured metrics or TRACE logs. The companion held-cap contract proves heartbeat,
 completion and another tenant’s streamed work progress while further same-subject streams are refused.
 Two engine-runtime restart/reclaim tests pass; they are
-not OS-process crash evidence. Comparative performance and final package regeneration remain in
-T006-042. Registry publication and genuine human acceptance remain external gates.
+not OS-process crash evidence. The 30-row comparative report and final five-consumer package checks are recorded in
+T006-042; the report explicitly preserves clock and claim-attribution measurement limitations. Registry publication and genuine human acceptance remain external gates.

@@ -1331,6 +1331,43 @@ fn prometheus_counter(text: &str, metric: &str) -> f64 {
         .sum()
 }
 
+fn prometheus_counter_delta(before: &str, after: &str, metric: &str) -> f64 {
+    prometheus_counter(after, metric) - prometheus_counter(before, metric)
+}
+
+#[test]
+fn a_measurement_subtracts_process_global_stream_claim_history() {
+    let previous_row_after = r#"
+worker_task_stream_claims_total{outcome="empty"} 100
+worker_task_stream_claims_total{outcome="ready"} 20
+"#;
+    let before = r#"
+worker_task_stream_claims_total{outcome="empty"} 102
+worker_task_stream_claims_total{outcome="ready"} 21
+worker_task_stream_claims_total_created{outcome="ready"} 900
+"#;
+    let after = r#"
+worker_task_stream_claims_total{outcome="empty"} 109
+worker_task_stream_claims_total{outcome="ready"} 26
+worker_task_stream_claims_total_created{outcome="ready"} 901
+"#;
+
+    assert_eq!(
+        prometheus_counter_delta(
+            previous_row_after,
+            before,
+            "worker_task_stream_claims_total"
+        ),
+        3.0,
+        "late cleanup before this row remains in the cumulative source"
+    );
+    assert_eq!(
+        prometheus_counter_delta(before, after, "worker_task_stream_claims_total"),
+        12.0,
+        "this row reports only increments after its own before snapshot"
+    );
+}
+
 /// Plays a scenario file (any path, not only the suite's) in one language on a platform of its own and
 /// measures it. Nothing is compared: this is for the benchmark.
 pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, String> {
@@ -1375,10 +1412,9 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&out_path);
     let before = grpc_counters(&run).await;
-    let stream_claims_before = prometheus_counter(
-        &run.engine.body("/metrics").await,
-        "worker_task_stream_claims_total",
-    );
+    // `ONE_AT_A_TIME` is held until the preceding platform has stopped. Its late cleanup is therefore
+    // already part of this process-global baseline, and cannot be charged to the new runner.
+    let metrics_before = run.engine.body("/metrics").await;
     let started = std::time::Instant::now();
     let result = measured_script(
         &root,
@@ -1394,9 +1430,11 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .await;
     let wall = started.elapsed();
     let after = grpc_counters(&run).await;
+    // Deliberately close the window when the runner exits. Claims made only while stopping this row's
+    // platform are outside client-active measurement and become part of the next row's baseline.
     let metrics = run.engine.body("/metrics").await;
     let stream_claim_attempts =
-        prometheus_counter(&metrics, "worker_task_stream_claims_total") - stream_claims_before;
+        prometheus_counter_delta(&metrics_before, &metrics, "worker_task_stream_claims_total");
     let database_measurements = async {
         let ready_to_lease_ms: Vec<f64> = sqlx::query_scalar(
             "SELECT (extract(epoch FROM (l.occurred_at - r.occurred_at))*1000)::float8 \

@@ -87,7 +87,7 @@ T006-039 completion evidence: five-language real blob and run-input conformance,
 - [x] T006-041 Implement TypeScript/Python/Go/C#/Java public WorkerHost streaming with common
   auto/poll/stream behavior, immediate frame dispatch, bounded capacity, partial-delivery survival,
   shutdown and older-server fallback; regenerate each canonical protocol copy.
-- [ ] T006-042 Extend and execute shared five-language conformance and faults for streaming,
+- [x] T006-042 Extend and execute shared five-language conformance and faults for streaming,
   measure poll/stream idle RPCs, claim attempts, latency, throughput and backpressure; update
   contracts, runbooks, version matrix and packages. Close G125 only with integrated evidence.
 
@@ -105,3 +105,12 @@ heartbeat/completion plus another tenant’s streamed work progress before the h
 evidence is below; benchmark/package gates remain T006-042.
 
 T006-041 integrated evidence (2026-10-12): 19 common scenarios × five SDKs (95 executions), six end-to-end tests and nine injected-fault tests all pass against the real platform. Protocol probes explicitly cover 1.0–1.4 and a newer offered minor; the new stream scenario preserves partial deliveries through injected receive failure. All five protocol copies are byte-identical to the canonical schema. Final performance/package evidence remains T006-042.
+
+T006-042 measurement evidence (2026-10-12): all 30 release comparison rows passed in 292.59s;
+see `tests/performance/reports/sdk-streaming.md` and its raw capture. Stream claim counts
+are reconstructed snapshot deltas with the documented shutdown-attribution caveat; the harness
+now records explicit before/after snapshots. Signed ready→handler samples retain unknown cross-clock
+offset; RSS covers the sampled runner process tree. No universal speedup or production throughput
+is claimed. Final packages from SDK source commit `517c657` passed all five clean-consumer checks
+(`target/sdk-packages-517c657`, 11 distributables plus checksums). G125 is closed within the
+report’s stated measurement limitations; public registry publication remains separate.

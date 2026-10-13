@@ -89,10 +89,11 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   (`worker-transport-faults`: a registration that never leaves, refused polls, an UNAUTHENTICATED poll, refused
   heartbeats and completions) but do not stop the engine; the engine would come back on another port. Each SDK's
   unit tests cover a session that is gone.
-- **G125 — Streaming implemented; comparative measurement pending (2026-10-12).** ADR-0029
+- **G125 — Implemented and measured (2026-10-12).** ADR-0029
   and protocol 1.4 add finite-credit task streams in all five SDKs. The 95 common conformance
-  executions, six E2E and nine fault tests pass. T006-042 remains open for the poll/stream
-  comparison and final artifact regeneration.
+  executions, six E2E and nine fault tests pass. T006-042 records the 30-row poll/stream
+  comparison and final five clean-consumer packages. The report preserves unknown clock offset
+  and reconstructed claim-snapshot attribution limitations; no universal speedup is claimed.
 - **G126 — Resolved for opt-in ecosystem integration (2026-10-12).** TypeScript, Python, Go and
   Java bridge the existing hooks to real OpenTelemetry APIs; C# retains native ActivitySource/Meter.
   In-memory SDK exporter tests prove parentage, bounded attributes/metrics and exporter failure
