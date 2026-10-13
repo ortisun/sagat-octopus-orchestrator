@@ -14,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
+use serde_saphyr::options::{DuplicateKeyPolicy, MergeKeyPolicy};
 use std::cell::Cell;
 
 /// The `apiVersion` of the manifest.
@@ -100,18 +101,19 @@ const MAX_EXPANDED: usize = 32 * 1024 * 1024;
 /// Reads YAML into a JSON value, refusing one that expands beyond [`MAX_EXPANDED`].
 pub fn yaml_to_value(text: &str) -> Result<Value, String> {
     let spent = Cell::new(0usize);
-    let deserializer = serde_yaml_ng::Deserializer::from_str(text);
-    let mut documents = deserializer.into_iter();
-    let value = match documents.next() {
-        Some(document) => Bounded(&spent)
-            .deserialize(document)
-            .map_err(|e| e.to_string())?,
-        None => Value::Null,
+    let options = serde_saphyr::options! {
+        // Preserve the YAML 1.2 scalar and mapping behavior of the previous reader.
+        strict_booleans: true,
+        duplicate_keys: DuplicateKeyPolicy::LastWins,
+        merge_keys: MergeKeyPolicy::AsOrdinary,
+        ignore_binary_tag_for_string: true,
+        // A parser diagnostic must never quote source text that may contain a secret.
+        with_snippet: false,
     };
-    if documents.next().is_some() {
-        return Err("more than one YAML document in the file".to_owned());
-    }
-    Ok(value)
+    serde_saphyr::with_deserializer_from_str_with_options(text, options, |document| {
+        Bounded(&spent).deserialize(document)
+    })
+    .map_err(|e| e.to_string())
 }
 
 struct Bounded<'a>(&'a Cell<usize>);

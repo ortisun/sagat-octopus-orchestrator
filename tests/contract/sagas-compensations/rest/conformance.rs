@@ -242,7 +242,7 @@ fn every_way_a_run_can_end_is_in_the_run_finished_event_contract() {
         env!("CARGO_MANIFEST_DIR"),
         "/../specs/001-platform-foundation/contracts/events.asyncapi.yaml"
     );
-    let doc: Value = serde_yaml_ng::from_str(&std::fs::read_to_string(path).expect("asyncapi"))
+    let doc: Value = serde_saphyr::from_str(&std::fs::read_to_string(path).expect("asyncapi"))
         .expect("valid YAML");
     let documented: Vec<&str> =
         doc["components"]["messages"]["RunFinished"]["payload"]["properties"]["status"]["enum"]

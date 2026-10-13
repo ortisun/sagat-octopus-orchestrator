@@ -19,7 +19,7 @@ impl OpenApi {
             "/../specs/001-platform-foundation/contracts/openapi.yaml"
         );
         let text = std::fs::read_to_string(path).expect("openapi.yaml");
-        let doc: Value = serde_yaml_ng::from_str(&text).expect("valid YAML");
+        let doc: Value = serde_saphyr::from_str(&text).expect("valid YAML");
         Self { doc }
     }
 

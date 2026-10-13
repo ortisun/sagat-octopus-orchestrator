@@ -87,3 +87,5 @@ different-body races, audit failure rollback, service restart and permission rev
 - [x] T001-038 Own HTTP connection tasks through shutdown and cancel unfinished handlers after the configured grace period. A real TCP regression first reproduced detached sockets; all 9 `fault_platform_foundation server::` tests passed after the fix. Native TLS uses the same lifecycle.
 
 - [x] T001-039 Preserve the protected unmatched-route fallback when merging independently bounded blob-upload routes. Real HTTP regression proves 404 and 405 envelopes and correlation headers with uploads enabled; the full foundation E2E suite passes 41/41, including unmatched-route metrics and opaque tenant/authentication errors. Error comparison excludes the separately validated per-request identifiers (FR-001-007).
+
+- [x] T001-040 Pin Monaco's transitive DOMPurify dependency to patched 3.4.16. — **evidence:** `npm explain dompurify` reports the 3.4.16 override for Monaco 0.57.0; `npm audit --audit-level=low` reports zero vulnerabilities; Studio tests 1105/1105, lint, typecheck and production build passed.

@@ -27,14 +27,14 @@ fn fixture(name: &str) -> String {
 
 /// The values the tests install the chart with: `fixtures/base.yaml`.
 fn base() -> Value {
-    serde_yaml_ng::from_str(&fixture("base.yaml")).expect("base.yaml is YAML")
+    serde_saphyr::from_str(&fixture("base.yaml")).expect("base.yaml is YAML")
 }
 
 fn ha_example() -> Value {
     let path = repo().join("infra/helm/examples/ha.yaml");
     let yaml = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    serde_yaml_ng::from_str(&yaml).expect("HA example is YAML")
+    serde_saphyr::from_str(&yaml).expect("HA example is YAML")
 }
 
 /// `base()` with `changes` laid over it (objects are merged, anything else replaced).
@@ -71,7 +71,7 @@ fn helm(values: &Value) -> Result<Vec<Value>, String> {
     }
     let text = String::from_utf8(out.stdout).expect("utf8");
     text.split("\n---\n")
-        .map(|doc| serde_yaml_ng::from_str::<Value>(doc).map_err(|e| format!("yaml: {e}")))
+        .map(|doc| serde_saphyr::from_str::<Value>(doc).map_err(|e| format!("yaml: {e}")))
         .filter(|doc| !matches!(doc, Ok(Value::Null)))
         .collect()
 }
@@ -708,7 +708,7 @@ fn the_autoscalers_scale_on_metrics_the_platform_emits_and_on_nothing_else() {
 #[test]
 fn the_chart_refuses_what_the_platform_would_refuse() {
     let cases: Vec<Value> =
-        serde_yaml_ng::from_str(&fixture("refused.yaml")).expect("refused.yaml is YAML");
+        serde_saphyr::from_str(&fixture("refused.yaml")).expect("refused.yaml is YAML");
     assert!(
         cases.len() >= 14,
         "the list of refusals shrank to {}",
@@ -778,7 +778,7 @@ fn no_candidate_query_bounds_an_index_range_with_a_volatile_clock() {
 fn the_example_an_operator_starts_from_renders_and_the_engine_accepts_it() {
     let text =
         std::fs::read_to_string(repo().join("infra/helm/examples/ha.yaml")).expect("example");
-    let example: Value = serde_yaml_ng::from_str(&text).expect("the example is YAML");
+    let example: Value = serde_saphyr::from_str(&text).expect("the example is YAML");
     let docs = render(&example);
     let engine = named(&docs, "Deployment", "sagat-octopus-orchestrator-engine");
     let env = env_of(engine);
