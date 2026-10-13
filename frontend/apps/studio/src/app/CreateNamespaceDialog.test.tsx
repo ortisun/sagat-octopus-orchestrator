@@ -16,6 +16,7 @@ async function mount(options: { allowed?: boolean; failure?: number; empty?: boo
     [`POST /workspaces/${workspace.id}/namespaces`]: () => options.failure ? new Response(JSON.stringify({ code: options.failure === 409 ? 'CONFLICT' : 'FORBIDDEN', message: 'Request refused.', retryable: false, traceId: 'a'.repeat(32) }), { status: options.failure, headers: { 'content-type': 'application/json' } }) : created,
   });
   const app = createApp({ fetch: platform.fetcher });
+  app.namespace.set(undefined);
   await app.session.signIn(TOKEN, () => Promise.resolve({ ...AUTH_CONTEXT, permissions: options.allowed === false ? [] : ['namespace:create'] } as never));
   renderApp(<Routes><Route element={<Shell />}><Route path="/namespaces" element={<NamespacesPage />} /></Route></Routes>, { app, path: '/namespaces' });
   return { app, platform, user: userEvent.setup() };
