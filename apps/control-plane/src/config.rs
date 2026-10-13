@@ -631,10 +631,9 @@ fn read_streams(
     })
 }
 
-/// The Studio, from `SAGAT_STUDIO_DIR` and, for the browser sign-in, `SAGAT_STUDIO_OIDC_ISSUER`,
-/// `SAGAT_STUDIO_OIDC_CLIENT_ID` and `SAGAT_STUDIO_OIDC_SCOPE`. The issuer must be an `https` URL
-/// (an `http` one only on a loopback address) with no credentials in it: the page is told to call
-/// it with a token. Nothing here is secret: a public client has an id and no secret.
+/// The Studio, from `SAGAT_STUDIO_DIR`; its public sign-in settings; and the optional
+/// `SAGAT_STUDIO_TRACE_URL` template. Browser-facing URLs require HTTPS (HTTP is accepted only on
+/// loopback) and no credentials. Nothing here is secret: a public client has an id and no secret.
 fn read_studio(
     get: Lookup<'_>,
 ) -> Result<Option<sagat_api_http::studio::StudioConfig>, ConfigError> {
@@ -646,6 +645,15 @@ fn read_studio(
     };
     let issuer = value("SAGAT_STUDIO_OIDC_ISSUER");
     let client_id = value("SAGAT_STUDIO_OIDC_CLIENT_ID");
+    let trace_url = value("SAGAT_STUDIO_TRACE_URL");
+    if let Some(template) = &trace_url {
+        sagat_api_http::studio::validate_trace_url_template(template).map_err(|_| {
+            ConfigError::Invalid {
+                name: "SAGAT_STUDIO_TRACE_URL",
+                reason: "must be an absolute https URL (http only on a loopback address), contain exactly one {traceId} placeholder and have no credentials".to_owned(),
+            }
+        })?;
+    }
     let oidc = match (issuer, client_id) {
         (None, None) => None,
         (Some(_), None) => {
@@ -706,6 +714,7 @@ fn read_studio(
     Ok(value("SAGAT_STUDIO_DIR").map(|dir| StudioConfig {
         dir: dir.into(),
         oidc,
+        trace_url,
         limits: sagat_api_http::studio::StudioLimits::default(),
     }))
 }

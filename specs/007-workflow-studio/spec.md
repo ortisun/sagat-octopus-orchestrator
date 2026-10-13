@@ -68,6 +68,12 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **FR-007-003**: The system MUST compile/verify the graph into Workflow IR with versioned node IDs, with no illegal cycles or broken references.
 - **FR-007-004**: The system MUST implement Draft/Published versions, diff, and a warning for contract-breaking changes, with no in-place modification of the published version.
 - **FR-007-005**: The system MUST project the journal into an execution graph with attempts, retries, compensations, trace links, redacted payload.
+  A deployment may publish `SAGAT_STUDIO_TRACE_URL` with exactly one `{traceId}` placeholder. The
+  Studio shows **Open trace** only for a nonzero 32-hex trace id and a safe absolute template:
+  HTTPS, or HTTP on a loopback address, without URL credentials. The link is explicit, opens in a
+  separate tab with `noopener noreferrer`, and never causes an automatic tracing-tool request.
+  Missing or invalid configuration leaves the trace id and copy action intact without inventing a
+  link. The setting is read from runtime `/studio/config.json`, so it does not require a new build.
   The redacted-payload implementation is the authorized, audited structural inspection in
   [ADR-0028](../../docs/adr/ADR-0028-authorized-structural-payload-inspection.md): actual persisted
   input or journal-selected output, with every scalar value and object key hidden, bounded
@@ -189,3 +195,10 @@ current namespace's inbound broker connectors and provides create/edit forms for
 SQS. Type-specific connection and authentication fields use the existing connector/secret APIs.
 Credentials are write-only, never returned or stored in browser persistence, and never put in broker
 URLs or connector settings. Configuration status is not represented as a successful connection test.
+
+Namespace completeness (T007-054): namespace selection and the Namespaces page must follow every
+cursor. A later-page error or cancellation must not publish a partial list as a successful result.
+
+Send signal acceptance (T007-056/G167): [`signal-completion.md`](./signal-completion.md) defines
+the authorized confirmation, bounded JSON input, retry identity and context-disposal behavior.
+It uses the existing durable feature 002 signal API; no execution or audit semantics change.

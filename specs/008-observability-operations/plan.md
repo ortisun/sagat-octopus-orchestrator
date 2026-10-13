@@ -88,3 +88,14 @@ Phases 1 to 6 were run for US01 to US04; the evidence per story, the review of t
 ## Delivery Gate
 
 Operator diagnoses a failure in fewer than N interactions during a UX test, with run journal and trace correlated.
+
+## Studio operations completion — T008-036
+
+Reuse feature 007 shell/UI and existing feature 008 namespace alerts/workers/drain/undrain
+contracts; no new backend permissions or execution semantics. Generated wire types and the
+same-origin API client preserve tenant admission, canonical errors, HTTP traces and server-side
+transactional audit. Load alerts by cursor; show both current worker sessions and stored drains
+so an identity remains resumable after its session expires. Unmount namespace-scoped content
+when context changes, preserve request scope, suppress late mutation callbacks. Do not infer
+liveness from registration alone. Verify permission denial, paging, failures, drain/resume
+confirmation and cross-context responses with component tests and a real browser/API journey.

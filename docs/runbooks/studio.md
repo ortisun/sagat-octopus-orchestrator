@@ -134,3 +134,35 @@ The selected journal sequence identifies historical output, not the node's lates
 the run, event or authenticated session clears the prior result and cancels its request. Responses
 use `Cache-Control: private, no-store`. Customer payload classification and permission to disclose
 actual values remain separate decisions; structure-only inspection does not infer those permissions.
+
+## Trace links and signals
+
+Set `SAGAT_STUDIO_TRACE_URL` on the control plane to a public URL template with exactly one
+`{traceId}`, for example `http://127.0.0.1:16686/trace/{traceId}` for local Jaeger. HTTPS is
+required outside loopback; embedded credentials are refused. Restart the control plane after
+changing its environment. The browser loads this setting from `/studio/config.json`; no Studio
+rebuild is needed. Run details retain **Copy trace id** and add **Open trace** when configured.
+The link opens only on user action and sends no authorization header or referrer. The trace
+backend must enforce its own access policy. A missing trace in that backend is not proof of a
+missing journal transition.
+
+**Send signal** is available on unfinished runs with `run:signal`. Enter the exact awaited event
+name and a JSON object up to 256 KiB, read the consequences and choose **Confirm signal**. All
+matching waiting steps receive the payload; signals are not buffered. A conflict means the run
+may no longer be waiting. Repeating an unchanged request after a lost response keeps its
+idempotency key. Changing fields creates a new request. Closing the dialog clears the local
+payload; closing during a request does not undo a signal already committed by the server.
+
+
+## Operations menu
+
+Select a namespace and open **Operations** to inspect alerts and worker sessions. Alert filters
+follow every result page. Persistent drained identities remain visible even after their last
+session expires. Read access requires `ops:read`; drain and resume require `worker:manage`.
+
+A drain applies to every session of that identity in the selected namespace. It prevents new
+claims and does not cancel work already leased. Confirm the identity, namespace and reason in the
+dialog; the platform audits the decision. Resume enables new claims again. A failed request keeps
+its retry identity while the input is unchanged. Changing namespace or authentication context
+clears confirmation and ignores late responses. Runbook links require safe HTTP(S) destinations;
+repository-relative paths are shown as text to locate in the project documentation.

@@ -121,6 +121,8 @@ ENVIRONMENT (serve):
     SAGAT_WEBHOOK_OIDC_PROFILES_FILE   bounded JSON array of deployment-approved webhook issuers
     SAGAT_STUDIO_DIR                  directory of the built Studio, served under /studio/; unset or empty:
                                       the Studio is not served (the image ships it in /srv/studio)
+    SAGAT_STUDIO_TRACE_URL            optional tracing-tool URL template with one {traceId}; absolute
+                                      https, or http on a loopback address, with no URL credentials
     SAGAT_SCRIPT_SIGNING_KEY          Ed25519 key (PKCS#8, base64) that signs artifacts; without it the
                                       script routes do not exist (make one with `script-key`)
     SAGAT_SCRIPT_CEILING              the most any script may be given, as

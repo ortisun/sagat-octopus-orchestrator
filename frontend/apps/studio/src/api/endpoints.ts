@@ -9,22 +9,27 @@ export type AuthContext = Schemas['AuthContext'];
 export type NamespaceResource = Schemas['NamespaceResource'];
 export type VersionDocument = Schemas['WorkflowVersionDocument'];
 
+async function collectPages<T>(load: (cursor: string | undefined) => Promise<Page<T>>): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await load(cursor);
+    items.push(...page.items);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return items;
+}
+
 /** The operations of the API that the Studio uses, with the shapes of the contract. */
 export function endpoints(api: ApiClient) {
   return {
     authContext: (signal?: AbortSignal) => api.get<AuthContext>('/auth/context', { signal }),
-    workspaces: async (signal?: AbortSignal) => {
-      const items: Schemas['Workspace'][] = [];
-      let cursor: string | undefined;
-      do {
-        const page = await api.get<Schemas['WorkspacePage']>('/workspaces', { query: { limit: 200, cursor }, signal });
-        items.push(...page.items);
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor);
-      return items;
-    },
+    workspaces: (signal?: AbortSignal) => collectPages((cursor) => api.get<Schemas['WorkspacePage']>('/workspaces', { query: { limit: 200, cursor }, signal })),
     createNamespace: (workspace: string, body: Schemas['CreateNamespaceRequest']) => api.post<NamespaceResource>(path`/workspaces/${workspace}/namespaces`, { body }),
-    namespaces: (signal?: AbortSignal) => api.get<Page<NamespaceResource>>('/namespaces', { query: { limit: 200 }, signal }),
+    namespaces: async (signal?: AbortSignal): Promise<Page<NamespaceResource>> => ({
+      items: await collectPages((cursor) => api.get<Page<NamespaceResource>>('/namespaces', { query: { limit: 200, cursor }, signal })),
+      nextCursor: null,
+    }),
 
     listWorkflows: (query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<Workflow>>('/workflows', { query, signal }),
     getWorkflow: (id: string, signal?: AbortSignal) => api.get<Workflow>(path`/workflows/${id}`, { signal }),

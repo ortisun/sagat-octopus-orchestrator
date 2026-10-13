@@ -14,6 +14,7 @@ export const routes: RouteObject[] = [
       { index: true, element: <Navigate to="/workflows" replace /> },
       { path: 'integrations', lazy: async () => ({ Component: (await import('../features/integrations/IntegrationsPage')).IntegrationsPage }) },
       { path: 'namespaces', lazy: async () => ({ Component: (await import('./NamespacesPage')).NamespacesPage }) },
+      { path: 'operations', lazy: async () => ({ Component: (await import('../features/operations/OperationsPage')).OperationsPage }) },
       { path: 'workflows', lazy: async () => ({ Component: (await import('../features/workflows/WorkflowsPage')).WorkflowsPage }) },
       { path: 'workflows/:workflowId', lazy: async () => ({ Component: (await import('../features/workflows/WorkflowEditorPage')).WorkflowEditorPage }) },
       { path: 'runs', lazy: async () => ({ Component: (await import('../features/runs/RunsPage')).RunsPage }) },

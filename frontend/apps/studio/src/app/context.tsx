@@ -10,6 +10,7 @@ import { NamespaceStore } from './namespace';
 /** The deployment's public settings (`/studio/config.json`). */
 export interface StudioSettings {
   oidc: { issuer: string; clientId: string; scope: string } | null;
+  traceUrl?: string | null;
 }
 
 export interface App {
@@ -52,7 +53,7 @@ export function createApp(options: AppOptions = {}): App {
   session.subscribe(() => {
     if (session.snapshot().info === undefined) queries.clear();
   });
-  return { session, namespace, api, ep: endpoints(api), queries, settings: options.settings ?? { oidc: null } };
+  return { session, namespace, api, ep: endpoints(api), queries, settings: options.settings ?? { oidc: null, traceUrl: null } };
 }
 
 export const AppContext = createContext<App | null>(null);

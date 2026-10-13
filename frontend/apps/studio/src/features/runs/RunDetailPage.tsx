@@ -25,6 +25,7 @@ import { runOperations, stepOperations } from './ops';
 import type { Operation, RunFacts } from './ops';
 import { useVersions, versionLabel } from './queries';
 import { RunHeader } from './RunHeader';
+import { SendSignal } from './SendSignal';
 import { RunsPage } from './RunsPage';
 import { TableView } from './TableView';
 import { TimelineView } from './TimelineView';
@@ -260,6 +261,7 @@ function RunDetail({ runId }: { runId: string }) {
         />
 
         <div className="rn-run-context">
+          <SendSignal runId={runId} status={status} onSent={refresh} />
           <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
           {finished ? (
             <p className="hint">

@@ -66,6 +66,7 @@ async fn serve_studio_with(root: &Path, oidc: Option<StudioOidc>, limits: Studio
     let app = studio_router(StudioConfig {
         dir: root.to_path_buf(),
         oidc,
+        trace_url: None,
         limits,
     })
     .expect("a directory with an index.html");
@@ -429,17 +430,87 @@ async fn the_config_says_where_to_sign_in_and_allows_only_that_origin_to_be_call
 }
 
 #[tokio::test]
+async fn the_config_publishes_an_optional_safe_trace_url_template() {
+    let (_dir, root) = site();
+    let template = "https://traces.example.test/explore?trace={traceId}";
+    let app = studio_router(StudioConfig {
+        dir: root,
+        oidc: None,
+        trace_url: Some(template.into()),
+        limits: StudioLimits::default(),
+    })
+    .expect("safe trace URL");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(serve(
+        listener,
+        app,
+        ServerConfig::default(),
+        std::future::pending(),
+    ));
+
+    let response = client()
+        .get(format!("http://{addr}/studio/config.json"))
+        .send()
+        .await
+        .expect("get");
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.bytes().await.expect("body")).expect("json");
+    assert_eq!(
+        body,
+        serde_json::json!({"oidc": null, "traceUrl": template})
+    );
+}
+
+#[test]
+fn unsafe_trace_url_templates_are_refused_before_the_studio_is_served() {
+    let (_dir, root) = site();
+    for template in [
+        "http://traces.example.test/{traceId}",
+        "https://user:password@traces.example.test/{traceId}",
+        "/traces/{traceId}",
+        "javascript:alert({traceId})",
+        "https://traces.example.test/no-placeholder",
+        "https://traces.example.test/{traceId}/{traceId}",
+    ] {
+        let result = studio_router(StudioConfig {
+            dir: root.clone(),
+            oidc: None,
+            trace_url: Some(template.into()),
+            limits: StudioLimits::default(),
+        });
+        assert!(result.is_err(), "accepted {template}");
+    }
+
+    for template in [
+        "http://localhost:16686/trace/{traceId}",
+        "http://127.1.2.3:16686/trace/{traceId}",
+        "http://[::1]:16686/trace/{traceId}",
+    ] {
+        let result = studio_router(StudioConfig {
+            dir: root.clone(),
+            oidc: None,
+            trace_url: Some(template.into()),
+            limits: StudioLimits::default(),
+        });
+        assert!(result.is_ok(), "refused {template}");
+    }
+}
+
+#[tokio::test]
 async fn a_directory_without_an_index_is_refused_at_start_up() {
     let dir = tempdir::Dir::new();
     let refused = studio_router(StudioConfig {
         dir: dir.path().to_path_buf(),
         oidc: None,
+        trace_url: None,
         limits: StudioLimits::default(),
     });
     assert!(refused.is_err());
     let missing = studio_router(StudioConfig {
         dir: dir.path().join("nope"),
         oidc: None,
+        trace_url: None,
         limits: StudioLimits::default(),
     });
     assert!(missing.is_err());

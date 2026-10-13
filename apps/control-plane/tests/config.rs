@@ -754,6 +754,53 @@ fn a_directory_alone_serves_the_studio_with_a_pasted_token_sign_in() {
         .expect("on");
     assert_eq!(studio.dir, std::path::PathBuf::from("/srv/studio"));
     assert!(studio.oidc.is_none());
+    assert!(studio.trace_url.is_none());
+}
+
+#[test]
+fn a_safe_trace_url_template_is_published_to_the_studio_at_runtime() {
+    let template = "https://traces.example.test/explore?trace={traceId}";
+    let studio = serve_with(&[
+        ("SAGAT_STUDIO_DIR", "/srv/studio"),
+        ("SAGAT_STUDIO_TRACE_URL", template),
+    ])
+    .expect("config")
+    .studio
+    .expect("on");
+    assert_eq!(studio.trace_url.as_deref(), Some(template));
+
+    let local = serve_with(&[
+        ("SAGAT_STUDIO_DIR", "/srv/studio"),
+        (
+            "SAGAT_STUDIO_TRACE_URL",
+            "http://127.0.0.2:16686/trace/{traceId}",
+        ),
+    ])
+    .expect("loopback trace tool")
+    .studio
+    .expect("on");
+    assert!(local.trace_url.is_some());
+}
+
+#[test]
+fn unsafe_or_malformed_trace_url_templates_are_refused() {
+    for template in [
+        "http://traces.example.test/{traceId}",
+        "https://user:password@traces.example.test/{traceId}",
+        "traces.example.test/{traceId}",
+        "https://traces.example.test/no-placeholder",
+        "https://traces.example.test/{traceId}/{traceId}",
+    ] {
+        let error = serve_with(&[
+            ("SAGAT_STUDIO_DIR", "/srv/studio"),
+            ("SAGAT_STUDIO_TRACE_URL", template),
+        ])
+        .expect_err(template);
+        assert!(
+            error.to_string().contains("SAGAT_STUDIO_TRACE_URL"),
+            "{template}: {error}"
+        );
+    }
 }
 
 #[test]

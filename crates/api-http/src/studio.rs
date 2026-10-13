@@ -51,6 +51,8 @@ pub struct StudioConfig {
     pub dir: PathBuf,
     /// The issuer the browser signs in with, when the deployment has one.
     pub oidc: Option<StudioOidc>,
+    /// A public URL template for opening a trace, with one `{traceId}` placeholder.
+    pub trace_url: Option<String>,
     /// How much of the platform the files may hold.
     pub limits: StudioLimits,
 }
@@ -94,6 +96,10 @@ pub enum StudioError {
     NoIndex(String),
     #[error("the OIDC issuer {0} is not an https URL (or an http URL on a loopback address)")]
     BadIssuer(String),
+    #[error(
+        "the Studio trace URL must be an absolute https URL (or loopback http URL), contain one {{traceId}} placeholder and have no credentials"
+    )]
+    BadTraceUrl,
 }
 
 #[derive(Clone)]
@@ -119,16 +125,22 @@ pub fn studio_router(config: StudioConfig) -> Result<Router, StudioError> {
         Some(oidc) => Some(origin_of(&oidc.issuer)?),
         None => None,
     };
+    if let Some(template) = &config.trace_url {
+        validate_trace_url_template(template)?;
+    }
+    let mut public_config = json!({
+        "oidc": config.oidc.as_ref().map(|oidc| json!({
+            "issuer": oidc.issuer,
+            "clientId": oidc.client_id,
+            "scope": oidc.scope,
+        })),
+    });
+    if let Some(template) = &config.trace_url {
+        public_config["traceUrl"] = json!(template);
+    }
     let site = Site {
         root,
-        config: serde_json::to_vec(&json!({
-            "oidc": config.oidc.as_ref().map(|oidc| json!({
-                "issuer": oidc.issuer,
-                "clientId": oidc.client_id,
-                "scope": oidc.scope,
-            })),
-        }))
-        .unwrap_or_default(),
+        config: serde_json::to_vec(&public_config).unwrap_or_default(),
         csp: HeaderValue::from_str(&policy(connect.as_deref()))
             .map_err(|_| StudioError::BadIssuer(String::new()))?,
         transfers: Arc::new(Semaphore::new(config.limits.max_transfers.max(1))),
@@ -141,6 +153,45 @@ pub fn studio_router(config: StudioConfig) -> Result<Router, StudioError> {
         .route("/studio/config.json", get(settings).head(settings))
         .route("/studio/{*path}", get(file).head(file))
         .with_state(site))
+}
+
+/// Validate the deployment-provided trace URL before it is made public to browsers.
+///
+/// The template has exactly one literal `{traceId}` placeholder. It is parsed after substitution
+/// so the placeholder cannot hide an invalid URL component. HTTPS is required except for tracing
+/// tools bound to a loopback address during local development.
+///
+/// # Errors
+/// [`StudioError::BadTraceUrl`] when the template is not a safe absolute URL.
+pub fn validate_trace_url_template(template: &str) -> Result<(), StudioError> {
+    const PLACEHOLDER: &str = "{traceId}";
+    let bad = || StudioError::BadTraceUrl;
+    if template.is_empty()
+        || template.len() > 2_048
+        || template.chars().any(char::is_whitespace)
+        || template.matches(PLACEHOLDER).count() != 1
+    {
+        return Err(bad());
+    }
+    let expanded = template.replace(PLACEHOLDER, "0123456789abcdef0123456789abcdef");
+    let url = reqwest::Url::parse(&expanded).map_err(|_| bad())?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(bad());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(bad)?
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if loopback => Ok(()),
+        _ => Err(bad()),
+    }
 }
 
 /// The origin (`scheme://host[:port]`) of the issuer, which the page is allowed to call.

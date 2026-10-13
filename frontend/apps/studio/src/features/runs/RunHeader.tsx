@@ -12,6 +12,8 @@ import { Elapsed, Moment, NowProvider, Relative } from './Now';
 import { ActionsMenu } from './Operations';
 import type { Operation } from './ops';
 import { clip } from './time';
+import { useApp } from '../../app/context';
+import { TraceLink } from './TraceLink';
 
 const FOLLOW_SYMBOL: Record<LiveFollow, string> = { idle: '○', connecting: '◌', live: '●', polling: '↻', reconnecting: '↯', ended: '■', unauthorized: '✕', failed: '✕' };
 const FOLLOW_TONE: Record<LiveFollow, string> = { idle: 'idle', connecting: 'idle', live: 'ok', polling: 'waiting', reconnecting: 'waiting', ended: 'skip', unauthorized: 'bad', failed: 'bad' };
@@ -66,6 +68,7 @@ export function RunHeader({
   onRefresh: () => void;
   refreshing: boolean;
 }) {
+  const { settings } = useApp();
   const view = runStatus(status);
   const finished = isTerminal(status);
   return (
@@ -125,7 +128,8 @@ export function RunHeader({
             <Fact label="Trace id">
               {run.traceId ? (
                 <>
-                  <code>{clip(run.traceId, 64)}</code> <CopyButton text={run.traceId} what="trace id" />
+                  <code>{clip(run.traceId, 64)}</code> <CopyButton text={run.traceId} what="trace id" />{' '}
+                  <TraceLink template={settings.traceUrl} traceId={run.traceId} />
                 </>
               ) : (
                 'no trace'

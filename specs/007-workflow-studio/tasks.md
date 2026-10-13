@@ -174,3 +174,21 @@ the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 j
   T007-053 evidence: 1,077 frontend tests (71 files), lint, app/E2E types, production build,
   generated API consistency and the real Chromium/API integration journey passed. The journey
   exercises configuration persistence with paused synthetic brokers, not real external connectivity.
+
+- [x] T007-055 [US03] [US04] Close G156 with configurable runtime trace links (FR-007-005): parse
+  and serve `SAGAT_STUDIO_TRACE_URL` through `/studio/config.json`, require one `{traceId}` in an
+  absolute HTTPS or loopback-HTTP URL without credentials, and show **Open trace** only for a
+  nonzero 32-hex run trace. Preserve copy-only behavior when absent or invalid; use a separate tab
+  with `noopener noreferrer` and make no automatic request. Evidence: 15 Studio-serving tests,
+  all 34 control-plane config tests, 76 focused run/config/link component tests, frontend lint,
+  application/E2E typechecks and production build passed. Both real Chromium scenarios passed
+  against the actual API/UI with runtime public-config interception: configured safe link and
+  missing-config copy fallback.
+
+- [x] T007-054 Complete namespace cursor loading for both the menu and selector, preserving the
+  existing Page interface; reject partial success on later-page failure/cancellation. Three focused
+  endpoint tests, scoped ESLint and TypeScript checks passed on 2026-10-12. Integrated gates follow.
+- [x] T007-056 Add Send signal with permission/terminal gating, explicit consequences, bounded
+  JSON-object validation, stable retry keys and context disposal (G167). Eight focused component
+  tests and the real Chromium/API/engine signal journey passed on 2026-10-12; an actual waitEvent
+  run reached SUCCEEDED and retained `wait.satisfied` in its journal. Integrated gates follow.

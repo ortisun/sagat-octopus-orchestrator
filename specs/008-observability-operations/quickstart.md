@@ -83,6 +83,23 @@ An earlier finding came from the cross-tenant battery of feature 009 when it met
 
 ## What was and was not run
 
+### T008-036 Studio operations completion (browser gate pending)
+
+The Operations page now uses the existing generated feature 008 contracts to page and filter
+namespace alerts, list worker sessions together with persistent identity drains, and drain or
+resume an identity after an audited reason and explicit consequence confirmation. Reads require
+`ops:read`; actions additionally require `worker:manage`. Repository runbook references remain
+visible text because the control plane does not serve repository documentation, while explicit
+HTTPS or same-origin absolute references may be opened.
+
+Focused Vitest evidence is `features/operations/OperationsPage.test.tsx` (5 scenarios: permission
+separation, alert cursor/state filtering and runbook safety, reason plus drain/resume paths,
+actionable mutation failure, and namespace-change cancellation) plus `app/Shell.test.tsx` for the
+menu and current-location label. Studio and Playwright TypeScript checks and focused ESLint pass.
+`frontend/e2e/tests/operations.spec.ts` creates an isolated namespace and worker, drains and resumes
+it through the browser, verifies the persisted drain with the API, and guarantees resume in
+`finally`. That journey has not yet been executed, so T008-036 remains unchecked.
+
 - **On the machine where it was written:** `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `scripts/check-architecture.py` and `cargo test --workspace --locked --no-fail-fast`: 1 525 passed. 63 tests did not run there, those that need containers other than PostgreSQL (NATS, Kafka, ElasticMQ and the script sandbox's containers: `e2e_durable_execution` (1), `integration_durable_execution` (3), `e2e_events_webhooks_messaging` (5), `e2e_inline_code_sandbox` (24), `fault_inline_code_sandbox` (7), `integration_inline_code_sandbox_containers` (23)), because Docker Desktop's filesystem had gone read-only after the disk filled. None of them touches code changed here.
 - **On GitHub (PR #8, on the final code):** all eight jobs of CI pass, among them `rust (fmt, clippy, tests)` with the container suites above on real Docker, `sdks`, `studio` (lint, types, unit tests, build, the Playwright journeys, the script one included), `contracts`, `local environment (docker compose smoke test)`, and the new `observability` job (`promtool check config` and `check rules`, the Collector's `validate`, the dashboards as JSON, with the images the compose overlay pins).
 - **The database** here was PostgreSQL 18.6 on the same machine, not 16 in a container; CI ran 16. The benchmark says which settings it ran with (`fsync`, `synchronous_commit`, `wal_sync_method`) and that on macOS commits are faster than on a server's storage.
@@ -90,4 +107,6 @@ An earlier finding came from the cross-tenant battery of feature 009 when it met
 
 ## Not built
 
-OTLP over protobuf and gRPC (G169); exemplars (G173); alerts by pager or email (G175); thresholds per namespace (G174); a Studio screen for alerts and a control to drain a worker (G181); retention and export of the audit trail (G182); a sampler the caller cannot choose (G187); a bounded monitor for a very large outbox (G186, G188); the visual direction of the Studio (feature 007).
+OTLP over protobuf and gRPC (G169); exemplars (G173); alerts by pager or email (G175); thresholds per namespace (G174); completion of the real-browser gate for the new Studio Operations screen (G181/T008-036); retention and export of the audit trail (G182); a sampler the caller cannot choose (G187); a bounded monitor for a very large outbox (G186, G188); the visual direction of the Studio (feature 007).
+
+Operations completion evidence (2026-10-12): `frontend/e2e/tests/operations.spec.ts` passed against the running REST/gRPC platform in Chromium. It creates an isolated namespace and activity-bound worker, drains and resumes the identity through the UI, and removes the binding during cleanup. Automated browser evidence does not replace the separately pending human usability evaluation.

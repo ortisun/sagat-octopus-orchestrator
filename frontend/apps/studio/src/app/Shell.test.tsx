@@ -17,6 +17,7 @@ async function mount(path = '/workflows') {
       <Route element={<Shell />}>
         <Route path="workflows" element={<h1>Workflow library</h1>} />
         <Route path="runs" element={<h1>Run history</h1>} />
+        <Route path="operations" element={<h1>Operations center</h1>} />
         <Route path="scripts" element={<h1>Script library</h1>} />
       </Route>
     </Routes>,
@@ -33,7 +34,7 @@ describe('Shell', () => {
     expect(within(sidebar).getByText('sagat-octopus')).toBeInTheDocument();
     expect(within(sidebar).getByLabelText('Namespace')).toHaveValue('production');
     const navigation = within(sidebar).getByRole('navigation', { name: 'Main' });
-    expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Runs', 'Scripts', 'Integrations', 'Namespaces']);
+    expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['Workflows', 'Runs', 'Operations', 'Scripts', 'Integrations', 'Namespaces']);
     expect(within(navigation).getByRole('link', { name: 'Runs' })).toHaveAttribute('aria-current', 'page');
   });
 
@@ -53,6 +54,12 @@ describe('Shell', () => {
     await user.click(screen.getByRole('link', { name: 'Runs' }));
     await screen.findByRole('heading', { name: 'Run history' });
     await waitFor(() => expect(screen.getByRole('main')).toHaveFocus());
+  });
+
+  it('names the Operations destination in the top bar', async () => {
+    await mount('/operations');
+    expect(screen.getByRole('banner')).toHaveTextContent('Operations');
+    expect(screen.getByRole('link', { name: 'Operations' })).toHaveAttribute('aria-current', 'page');
   });
 });
 

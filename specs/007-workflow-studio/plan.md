@@ -175,3 +175,21 @@ also exposes the existing policy through an explicit `egress:manage` form; it lo
 and never grants access merely because a user submitted a connector. This is the same feature 009
 contract, not a new network/authentication model. Test preservation of current rules and port/TLS
 choices, plus actual policy admission in the browser/API journey.
+
+## Runtime trace links (T007-055)
+
+Extend the existing public, no-store `/studio/config.json` document with optional `traceUrl`.
+Parse `SAGAT_STUDIO_TRACE_URL` at control-plane startup and validate it again at the static-serving
+boundary: exactly one `{traceId}`, no credentials, HTTPS except loopback HTTP. The compiled Studio
+remains deployment-independent. Retain the run trace id and copy action and add an explicit link
+only after browser-side validation of the same URL rules and a nonzero 32-hex trace id. Rendering
+performs no remote fetch. This changes no run, tenant, audit, transaction, typed-error or OTel contract.
+
+## Namespace completeness and signals
+
+T007-054 aggregates the existing paginated namespace contract before returning its shared cached
+result; the menu and selector consume the same full list. Abort and later-page failure reject the
+whole request. T007-056 uses the feature 002 signal API directly, generated response types and
+same-origin client. Its ephemeral confirmation form is scoped to the current run/session/namespace;
+identical retries retain their idempotency key, and unmounted forms suppress late responses.
+The acceptance and test matrix are in [`signal-completion.md`](./signal-completion.md).

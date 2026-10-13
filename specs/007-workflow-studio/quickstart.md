@@ -374,3 +374,42 @@ broker or production credential was claimed or exercised.
 
 Final T007-053 gates: 1,077 frontend tests in 71 files, lint, app/E2E typechecks, production build,
 generated OpenAPI consistency and the real Chromium/API journey passed against the rebuilt Studio.
+
+### Open a run trace in the deployment's tracing tool (T007-055)
+
+Set an absolute URL template when starting the control plane, for example:
+
+```sh
+SAGAT_STUDIO_TRACE_URL='https://traces.example.test/explore?trace={traceId}'
+```
+
+Exactly one literal `{traceId}` is required. HTTPS is required except for loopback development
+tools such as `http://localhost:16686/trace/{traceId}`. URL credentials, relative URLs, other
+schemes and remote plain HTTP fail process configuration. The value is public runtime config; do
+not put a token or password in it.
+
+Open a run, expand **Run details**, and choose **Open trace**. The Studio substitutes only a
+nonzero 32-hex trace id, opens a new separated tab and does not prefetch the tracing tool. Without
+the setting, the trace id and **Copy trace id** remain and no link is shown. Changing the setting
+requires a control-plane restart to reread its environment, but no frontend rebuild.
+
+Validation on 2026-10-12: all 15 static Studio serving tests and all 34 control-plane config tests
+passed with the shared target directory. Seventy-six focused run/config/link Vitest tests passed,
+as did focused ESLint, Studio and E2E TypeScript checks, and the production build. Both scenarios
+in `frontend/e2e/tests/trace-links.spec.ts` passed in real Chromium against the actual API/UI with
+runtime `/studio/config.json` interception: exact safe link attributes without an automatic
+external request, and the no-config copy fallback. Browser log:
+`target/usability/trace-browser.log`.
+
+## Completion follow-up — namespaces and signals (2026-10-12)
+
+T007-054: `src/api/endpoints.test.ts` passed 3/3 including 201 namespaces, a later-page failure
+and abort propagation. T007-056: `src/features/runs/SendSignal.test.tsx` passed 8/8 including
+permission/terminal state, explicit confirmation, UTF-8 byte bound, stable retry keys and stale
+responses. `frontend/e2e/tests/signals.spec.ts` passed 1/1 against the running real local API and
+engine: publish a waitEvent workflow, start WAITING, signal through Studio, observe SUCCEEDED
+and the persisted `wait.satisfied` journal event. The first browser assertion used an incorrect
+invented event name and failed; it was corrected against the domain's canonical event kind and
+rerun successfully. Logs: ignored `target/usability/signal-{tests,browser}.log`.
+
+Integrated completion check (2026-10-12): all 1,104 Studio unit tests, full ESLint, TypeScript checking and the production build pass. The signal form also discards its payload after same-subject reauthentication, covered by a failing-first regression.

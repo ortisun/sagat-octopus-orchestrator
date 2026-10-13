@@ -94,7 +94,9 @@ The token lasts one hour; run `sagat dev token --out target/local/admin.token` a
 Studio holds the token in memory, so a page refresh can require signing in again.
 
 In Studio, **Namespaces** lists and creates namespaces; the sidebar selector changes the active
-namespace. **Workflows**, **Runs**, **Scripts** and **Integrations** operate in that context.
+namespace. **Workflows**, **Runs**, **Scripts**, **Integrations** and **Operations** operate in that context.
+**Operations** shows alerts and worker sessions; authorized operators can drain or resume a worker identity with an audited reason.
+On an unfinished run, authorized users can **Send signal** and explicitly confirm its JSON payload.
 
 ### Inspect, stop and restart
 
@@ -149,6 +151,7 @@ arbitrary variable to `.env` does not automatically inject it into a container.
 | Development mode | `SAGAT_ENV=dev` | Required by `seed-dev` and `dev-idp`; never use the development issuer in production |
 | Secret encryption | `SAGAT_SECRETS_KEYS` | Same persistent key ring on API and engine; format `key-id:base64` |
 | Script artifacts | `SAGAT_SCRIPT_SIGNING_KEY` | Persistent Ed25519 signing key on every control-plane replica |
+| Trace links | `SAGAT_STUDIO_TRACE_URL` | Public URL template, e.g. `http://127.0.0.1:16686/trace/{traceId}`; HTTPS required outside loopback |
 | Studio files | `SAGAT_STUDIO_DIR` | `/srv/studio` in the image; an absolute path to `frontend/apps/studio/dist` natively |
 | Internal broker | `SAGAT_NATS_URL`, `SAGAT_NATS_REQUIRE_TLS`, `SAGAT_NATS_CREDENTIALS_FILE` | Native/deployment configuration; Compose uses its local `nats` service |
 | Telemetry | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `SAGAT_LOG_FORMAT` | Point each process at the collector it can reach |

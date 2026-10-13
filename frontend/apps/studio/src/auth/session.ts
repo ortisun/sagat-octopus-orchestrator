@@ -39,6 +39,7 @@ export function expiryOf(token: string): number | undefined {
  */
 export class SessionStore {
   #token: string | undefined;
+  #revision = 0;
   #snapshot: SessionSnapshot = { info: undefined, ended: undefined, expiresAt: undefined };
   readonly #listeners = new Set<() => void>();
   #timer: ReturnType<typeof setTimeout> | undefined;
@@ -49,6 +50,9 @@ export class SessionStore {
   }
 
   token = (): string | undefined => this.#token;
+
+  /** Non-secret identity of the current authentication context, including same-subject sign-ins. */
+  revision = (): number => this.#revision;
 
   snapshot = (): SessionSnapshot => this.#snapshot;
 
@@ -100,6 +104,7 @@ export class SessionStore {
   }
 
   #set(next: SessionSnapshot): void {
+    this.#revision++;
     this.#snapshot = next;
     for (const listener of [...this.#listeners]) listener();
   }
