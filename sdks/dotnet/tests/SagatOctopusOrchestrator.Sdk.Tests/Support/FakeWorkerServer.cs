@@ -27,10 +27,32 @@ internal sealed class FakeWorkerState
     private readonly List<RecordedCall> calls = [];
     private readonly List<TaskLease> leases = [];
     private readonly Dictionary<string, Queue<Scripted>> failures = [];
+    private readonly Queue<string> acceptedVersions = [];
 
     private int polls;
 
+    private int streams;
+
     internal string AcceptedVersion { get; set; } = "1.2";
+
+    internal void AcceptVersions(params string[] versions)
+    {
+        lock (gate)
+        {
+            foreach (var version in versions)
+            {
+                acceptedVersions.Enqueue(version);
+            }
+        }
+    }
+
+    internal string TakeAcceptedVersion()
+    {
+        lock (gate)
+        {
+            return acceptedVersions.Count > 0 ? acceptedVersions.Dequeue() : AcceptedVersion;
+        }
+    }
 
     /// <summary>A server that hands out every lease it holds, whatever <c>max_tasks</c> says.</summary>
     internal bool IgnoreMax { get; set; }
@@ -43,7 +65,22 @@ internal sealed class FakeWorkerState
 
     internal int Polls => Volatile.Read(ref polls);
 
+    internal int Streams => Volatile.Read(ref streams);
+
     internal void CountPoll() => Interlocked.Increment(ref polls);
+
+    internal void CountStream() => Interlocked.Increment(ref streams);
+
+    /// <summary>How many leases each nonempty stream frame carries.</summary>
+    internal int StreamFrameSize { get; set; } = int.MaxValue;
+
+    /// <summary>Keep a stream open after its scripted frames until the client cancels it.</summary>
+    internal bool HoldStreamOpen { get; set; }
+
+    /// <summary>An error delivered after the first nonempty frame.</summary>
+    internal Scripted? StreamFailureAfterFirst { get; set; }
+
+    internal bool StreamCancelled { get; set; }
 
     /// <summary>The same error for the next <paramref name="times"/> calls of a method.</summary>
     internal void FailAlways(string method, Scripted error, int times = 1_000_000) => Fail(method, Enumerable.Repeat(error, times).ToArray());
@@ -124,7 +161,7 @@ internal sealed class FakeWorkerState
 internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.WorkerServiceBase
 {
     public override Task<RegisterWorkerResponse> RegisterWorker(RegisterWorkerRequest request, ServerCallContext context) =>
-        Answer("RegisterWorker", request, context, () => new RegisterWorkerResponse { WorkerId = "w-1", SessionToken = "session-1", AcceptedProtocolVersion = state.AcceptedVersion });
+        Answer("RegisterWorker", request, context, () => new RegisterWorkerResponse { WorkerId = "w-1", SessionToken = "session-1", AcceptedProtocolVersion = state.TakeAcceptedVersion() });
 
     public override async Task<PollTasksResponse> PollTasks(PollTasksRequest request, ServerCallContext context)
     {
@@ -141,6 +178,54 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
         var answer = new PollTasksResponse { RetryAfterMs = state.PollRetryAfterMs };
         answer.Tasks.AddRange(early ?? state.Take(max));
         return answer;
+    }
+
+    public override async Task StreamTasks(PollTasksRequest request, IServerStreamWriter<PollTasksResponse> responseStream, ServerCallContext context)
+    {
+        state.Record("StreamTasks", request, context.RequestHeaders, ClientCertificateOf(context));
+        state.CountStream();
+        Throw("StreamTasks");
+        var remaining = state.IgnoreMax ? int.MaxValue : request.MaxTasks;
+        var sentFrame = false;
+        try
+        {
+            while (remaining > 0)
+            {
+                var batch = state.Take(Math.Min(remaining, state.StreamFrameSize));
+                if (batch.Count == 0)
+                {
+                    break;
+                }
+
+                var frame = new PollTasksResponse();
+                frame.Tasks.AddRange(batch);
+                await responseStream.WriteAsync(frame, context.CancellationToken).ConfigureAwait(false);
+                remaining -= batch.Count;
+                if (!sentFrame && state.StreamFailureAfterFirst is { } failure)
+                {
+                    state.StreamFailureAfterFirst = null;
+                    throw Rpc(failure);
+                }
+
+                sentFrame = true;
+            }
+
+            if (state.HoldStreamOpen)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken).ConfigureAwait(false);
+            }
+
+            if (remaining > 0)
+            {
+                await responseStream.WriteAsync(
+                    new PollTasksResponse { RetryAfterMs = state.PollRetryAfterMs },
+                    context.CancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            state.StreamCancelled = true;
+        }
     }
 
     public override Task<HeartbeatResponse> Heartbeat(HeartbeatRequest request, ServerCallContext context) =>
@@ -180,6 +265,11 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
             return;
         }
 
+        throw Rpc(scripted);
+    }
+
+    private static RpcException Rpc(Scripted scripted)
+    {
         var trailers = new Metadata();
         if (scripted.Reason is not null)
         {
@@ -191,7 +281,7 @@ internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.W
             trailers.Add("retry-after-ms", ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
-        throw new RpcException(new Status(scripted.Code, "scripted"), trailers);
+        return new RpcException(new Status(scripted.Code, "scripted"), trailers);
     }
 }
 

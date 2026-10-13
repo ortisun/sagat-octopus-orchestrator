@@ -91,3 +91,11 @@ OpenTelemetry bridges remain opt-in and use the application's provider/exporter;
 failures must not change workflow results or emit payloads, credentials or arbitrary exception text.
 Worker protocol 1.3 blob support depends on the transactional catalog and bounded transport of
 feature 002; all five languages share its contract and common conformance scenarios.
+
+## Task streaming completion
+
+Implement [`stream-completion.md`](./stream-completion.md) in this order: canonical additive
+schema and shared durable admission; bounded authenticated server stream; five independent
+SDK adapters/host lifecycles; shared conformance, failure matrix and comparative measurement.
+Features 001 and 002 are approved dependencies. Protocol minor 1.4 is independent of package
+SemVer. Root integration owns shared fixtures and reviews; SDK writers own only their subtree.

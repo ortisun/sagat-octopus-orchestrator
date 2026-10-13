@@ -54,6 +54,7 @@ and a `remediation` sentence. It never repeats a payload, a token or a secret.
 const host = new WorkerHost({
   grpcUrl: 'https://octopus.example.com:443', namespace: 'payments',
   token: () => process.env['OCTOPUS_TOKEN'] ?? '', workerName: 'payments-worker-1', maxInflight: 16,
+  transport: 'auto', // default: stream at protocol 1.4+, poll an older server
 });
 
 host.registerActivity('payments.charge', async (input, ctx) => {
@@ -67,8 +68,9 @@ await host.start();
 process.on('SIGTERM', () => void host.stop());
 ```
 
-The host registers the activities it can run, negotiates the protocol version, polls without ever
-busy-polling (an empty answer is always followed by a wait), heartbeats every lease, cancels an activity
+The host registers the activities it can run, negotiates the protocol version, and receives tasks without
+busy-polling (an empty answer is always followed by a wait). `transport` is `auto` (the default), `poll`, or
+`stream`; auto streams at protocol 1.4+ and polls older servers. The host heartbeats every lease, cancels an activity
 (`ctx.signal`) when the run is cancelled, the lease is lost or the host stops, and reports each result with
 a key that is the same on every retry. A handler fails on purpose with `ActivityFailure.retryable(code, message)`,
 `ActivityFailure.permanent(...)` or `ActivityFailure.outcomeUnknown(...)`; any other error is reported as
@@ -123,7 +125,7 @@ a saga without a body). `build()` returns the document; `toJson()` its canonical
 
 **SemVer.** `0.x` is pre-release: a minor may change the public API and says so in the changelog. From `1.0`
 the public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has
-its own version, negotiated at registration: this SDK offers `1.3`; a server that speaks an older minor
+its own version, negotiated at registration: this SDK offers `1.4`; a server that speaks an older minor
 serves it at that minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL`
 ([ADR-0015](../../docs/adr/ADR-0015-sdks-meet-the-server-by-minor-version-and-are-held-to-one-conformance-suite.md)).
 
@@ -131,7 +133,7 @@ serves it at that minor, a server of another major refuses with `UNSUPPORTED_PRO
 
 | Runtime | Status |
 |---|---|
-| Node.js 26.8.1 | **tested**: unit tests (98) and the conformance suite |
+| Node.js 26.11.1 | **tested**: unit tests (108); conformance requires the repository harness |
 | Node.js 20, 22, 24 | declared (`engines.node >= 20`), **not run here** |
 | Browsers, Deno, Bun | not supported (the worker host uses `@grpc/grpc-js`; the client uses the global `fetch`) |
 
@@ -141,7 +143,7 @@ Dependencies: `@grpc/grpc-js`, `@grpc/proto-loader`. The package is ESM only. Th
 ## Develop
 
 ```text
-npm test                 # builds, then 98 unit tests against fakes and the in-memory OpenTelemetry SDK
+npm test                 # builds, then 108 unit tests against fakes and the in-memory OpenTelemetry SDK
 npm run sync             # copies worker.proto and the error catalog from the repository; npm test fails when behind
 cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root
 ```

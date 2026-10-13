@@ -9,7 +9,7 @@ public final class SagatSdk {
     public static final String LANGUAGE = "java";
 
     /** The newest minor version of worker protocol 1 this SDK speaks (SPEC section 6.1). */
-    public static final String PROTOCOL_VERSION = "1.3";
+    public static final String PROTOCOL_VERSION = "1.4";
 
     private SagatSdk() {}
 

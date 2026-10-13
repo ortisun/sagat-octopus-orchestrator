@@ -4625,6 +4625,7 @@ dependencies = [
  "hmac 0.13.0",
  "jsonschema",
  "jsonwebtoken",
+ "metrics",
  "p256",
  "prost",
  "rcgen",

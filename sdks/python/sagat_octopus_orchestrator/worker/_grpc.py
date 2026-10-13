@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -18,7 +18,8 @@ from ..retry import capped_ms, parse_ms
 from ..traceparent import is_traceparent
 
 METHODS = (
-    "RegisterWorker", "PollTasks", "Heartbeat", "CompleteStep", "FailStep", "ResolveSecrets", "WriteBlob", "ReadBlob"
+    "RegisterWorker", "PollTasks", "StreamTasks", "Heartbeat", "CompleteStep", "FailStep", "ResolveSecrets",
+    "WriteBlob", "ReadBlob"
 )
 
 
@@ -91,6 +92,10 @@ def error_of_status(method: str, error: grpc.aio.AioRpcError) -> SagatError:
         return safe("TRANSPORT", "no answer from the worker service")
     if status == grpc.StatusCode.CANCELLED:
         return SagatError("CANCELLED", "the call was cancelled", status=name)
+    if status == grpc.StatusCode.UNIMPLEMENTED:
+        if method == "StreamTasks":
+            return safe("UNSUPPORTED_PROTOCOL", "the worker service does not implement task streaming")
+        return safe("INTERNAL", "the worker service failed")
     if status == grpc.StatusCode.DATA_LOSS:
         return safe("PROTOCOL", "the blob stream failed its integrity check")
     return safe("INTERNAL", "the worker service failed")
@@ -162,6 +167,21 @@ class WorkerRpc:
     async def poll_tasks(self, request: pb.PollTasksRequest) -> pb.PollTasksResponse:
         response: pb.PollTasksResponse = await self._call("PollTasks", request)
         return response
+
+    async def stream_tasks(self, request: pb.PollTasksRequest) -> AsyncGenerator[pb.PollTasksResponse, None]:
+        call = self._stub.StreamTasks(
+            # The server window is five seconds; one extra second bounds trailer delivery.
+            request, metadata=await self._metadata(None), timeout=min(self._config.timeout, 6.0)
+        )
+        try:
+            async for response in call:
+                yield response
+        except grpc.aio.AioRpcError as error:
+            raise error_of_status("StreamTasks", error) from None
+        except grpc.aio.BaseError:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
+        finally:
+            call.cancel()
 
     async def heartbeat(self, request: pb.HeartbeatRequest, traceparent: str | None = None) -> pb.HeartbeatResponse:
         response: pb.HeartbeatResponse = await self._call("Heartbeat", request, traceparent)

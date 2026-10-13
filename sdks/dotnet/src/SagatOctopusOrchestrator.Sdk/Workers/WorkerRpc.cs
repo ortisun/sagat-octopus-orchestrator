@@ -51,6 +51,38 @@ internal sealed class WorkerRpc : IDisposable
     internal Task<PollTasksResponse> PollAsync(PollTasksRequest request, CancellationToken cancellationToken) =>
         CallAsync("PollTasks", null, (headers, call) => client.PollTasksAsync(request, Options(headers, call, cancellationToken)), cancellationToken);
 
+    internal async IAsyncEnumerable<PollTasksResponse> StreamTasksAsync(
+        PollTasksRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var token = await options.ResolveTokenAsync(cancellationToken).ConfigureAwait(false);
+        var headers = new Metadata { { "authorization", "Bearer " + token } };
+        var deadline = DateTime.UtcNow + (options.Timeout < TimeSpan.FromSeconds(6) ? options.Timeout : TimeSpan.FromSeconds(6));
+        using var call = client.StreamTasks(request, Options(headers, deadline, cancellationToken));
+        while (true)
+        {
+            bool more;
+            try
+            {
+                more = await call.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false);
+            }
+            catch (RpcException error) when (error.StatusCode == StatusCode.Unimplemented)
+            {
+                throw new StreamTasksUnimplementedException();
+            }
+            catch (RpcException error)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                throw GrpcErrors.Map("StreamTasks", error);
+            }
+            if (!more)
+            {
+                yield break;
+            }
+            yield return call.ResponseStream.Current;
+        }
+    }
+
     internal Task<HeartbeatResponse> HeartbeatAsync(HeartbeatRequest request, string? traceparent, CancellationToken cancellationToken) =>
         CallAsync("Heartbeat", traceparent, (headers, call) => client.HeartbeatAsync(request, Options(headers, call, cancellationToken)), cancellationToken);
 
@@ -176,3 +208,5 @@ internal sealed class WorkerRpc : IDisposable
         }
     }
 }
+
+internal sealed class StreamTasksUnimplementedException : Exception { }

@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
@@ -49,6 +50,7 @@ import java.util.regex.Pattern;
 public final class WorkerHost implements AutoCloseable {
     private static final int MAX_OUTPUT_BYTES = 256 * 1024;
     private static final int MAX_POLL = 64;
+    private static final int MAX_STREAM_INPUT_BYTES = 8 * 1024 * 1024;
     private static final int MAX_REPORT_ATTEMPTS = 5;
     private static final Pattern CODE = Pattern.compile("^[A-Z0-9_]{1,64}$");
     private static final Pattern VERSION = Pattern.compile("^1(?:\\.(\\d+))?$");
@@ -91,6 +93,8 @@ public final class WorkerHost implements AutoCloseable {
     private volatile String workerId = "";
     private volatile String session = "";
     private volatile String accepted = "";
+    private volatile boolean streamUnavailable;
+    private volatile WorkerRpc.TaskStream receive;
     private volatile Map<String, Registered> active = Map.of();
     private Thread loop;
     private ExecutorService tasks;
@@ -231,6 +235,10 @@ public final class WorkerHost implements AutoCloseable {
             channel = rpc;
         }
         wake();
+        WorkerRpc.TaskStream activeReceive = receive;
+        if (activeReceive != null) {
+            activeReceive.close();
+        }
         long end = System.nanoTime() + Math.max(0, timeout.toNanos());
         try {
             // The poll in progress ends and no other starts; what it leased is in flight from here on.
@@ -326,6 +334,10 @@ public final class WorkerHost implements AutoCloseable {
                 workerId = response.getWorkerId();
                 session = response.getSessionToken();
                 accepted = response.getAcceptedProtocolVersion();
+                streamUnavailable = false;
+                if (config.transport() == WorkerTransport.STREAM && minorOf(accepted) < 4) {
+                    throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "stream transport requires worker protocol 1.4");
+                }
                 Hooks.log(log, System.Logger.Level.INFO, "worker registered worker=" + config.workerName() + " protocol=" + accepted);
                 emit(new WorkerEvent.Registered(accepted));
                 return;
@@ -405,6 +417,7 @@ public final class WorkerHost implements AutoCloseable {
         // Polls in a row that were refused as UNAUTHENTICATED since the last one that was not (reset by a good poll).
         int refused = 0;
         while (!stopping) {
+            boolean meaningful = false;
             try {
                 int free = config.maxInflight() - inflight.size();
                 if (free <= 0) {
@@ -412,6 +425,60 @@ public final class WorkerHost implements AutoCloseable {
                     continue;
                 }
                 int asked = Math.min(free, MAX_POLL);
+                if (config.transport() == WorkerTransport.STREAM && minorOf(accepted) < 4) {
+                    throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "stream transport requires worker protocol 1.4");
+                }
+                if (minorOf(accepted) >= 4 && config.transport() != WorkerTransport.POLL && !streamUnavailable) {
+                    int delivered = 0;
+                    int inputBytes = 0;
+                    long hint = 0;
+                    try {
+                        try (WorkerRpc.TaskStream opened = rpc.streamTasks(Worker.PollTasksRequest.newBuilder()
+                                .setWorkerId(workerId).setSessionToken(session).setMaxTasks(asked).build())) {
+                            receive = opened;
+                            if (stopping) {
+                                return;
+                            }
+                            Iterator<Worker.PollTasksResponse> frames = opened.frames();
+                            while (frames.hasNext()) {
+                                Worker.PollTasksResponse frame = frames.next();
+                                if (frame.getTasksCount() == 0) { hint = frame.getRetryAfterMs(); continue; }
+                                int allowed = Math.min(asked - delivered, config.maxInflight() - inflight.size());
+                                boolean excess = frame.getTasksCount() > allowed;
+                                for (int i = 0; i < Math.min(frame.getTasksCount(), Math.max(0, allowed)); i++) {
+                                    Worker.TaskLease lease = frame.getTasks(i);
+                                    int size = lease.getInputJson().getBytes(StandardCharsets.UTF_8).length;
+                                    if (size > MAX_STREAM_INPUT_BYTES - inputBytes) {
+                                        throw SagatException.invalid("a task stream exceeded its input budget");
+                                    }
+                                    inputBytes += size;
+                                    dispatch(lease);
+                                    delivered++;
+                                    meaningful = true;
+                                }
+                                if (excess) {
+                                    throw SagatException.invalid("a task stream exceeded its receive credit");
+                                }
+                            }
+                        } finally {
+                            receive = null;
+                        }
+                    } catch (WorkerRpc.StreamTasksUnimplemented unsupported) {
+                        if (config.transport() == WorkerTransport.STREAM) {
+                            throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "StreamTasks is not implemented by the server");
+                        }
+                        streamUnavailable = true;
+                        backoff(100);
+                        continue;
+                    }
+                    failures = 0;
+                    refused = 0;
+                    if (delivered < asked) {
+                        long wait = Math.max(50, hint > 0 ? hint : 1000);
+                        idle(jitteredWait(wait, ThreadLocalRandom.current().nextDouble(), config.maxServerWait().toMillis()));
+                    }
+                    continue;
+                }
                 Worker.PollTasksResponse response = rpc.pollTasks(Worker.PollTasksRequest.newBuilder()
                         .setWorkerId(workerId)
                         .setSessionToken(session)
@@ -437,6 +504,10 @@ public final class WorkerHost implements AutoCloseable {
                 if (stopping) {
                     return;
                 }
+                if (meaningful) {
+                    failures = 0;
+                }
+                emit(new WorkerEvent.ReceiveFailed(error.code().name()));
                 // A token provider that failed is not a session that is gone: nothing reached the service. It is waited out
                 // like an outage (below), and the session is not registered again for it.
                 if (error.code() == ErrorCode.UNAUTHENTICATED && !error.isTokenProviderFailure()) {

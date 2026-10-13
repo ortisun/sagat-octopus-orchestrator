@@ -372,6 +372,7 @@ public final class Runner {
     private static final class WorkerEntry {
         final JsonNode def;
         final List<ObjectNode> log = Collections.synchronizedList(new ArrayList<>());
+        final Behaviors.Measurements measurements = new Behaviors.Measurements();
         WorkerHost host;
 
         WorkerEntry(JsonNode def) {
@@ -379,7 +380,8 @@ public final class Runner {
         }
     }
 
-    private static WorkerHost hostOf(JsonNode def, JsonNode config, FaultPlan plan, List<ObjectNode> log) {
+    private static WorkerHost hostOf(
+            JsonNode def, JsonNode config, FaultPlan plan, List<ObjectNode> log, Behaviors.Measurements measurements) {
         WorkerConfig.Builder builder = WorkerConfig.builder()
                 .grpcUrl(config.get("grpcUrl").asText())
                 .namespace(config.get("namespace").asText())
@@ -390,6 +392,9 @@ public final class Runner {
         if (def.has("protocolVersion")) {
             builder.protocolVersion(def.get("protocolVersion").asText());
         }
+        if (def.has("transport")) {
+            builder.transport(dev.sagatoctopusorchestrator.sdk.worker.WorkerTransport.valueOf(def.get("transport").asText().toUpperCase(java.util.Locale.ROOT)));
+        }
         if (def.has("heartbeatIntervalMs")) {
             builder.heartbeatInterval(Duration.ofMillis(def.get("heartbeatIntervalMs").asLong()));
         }
@@ -398,7 +403,7 @@ public final class Runner {
         def.path("activities").properties().forEach(e -> {
             String name = e.getKey();
             String kind = e.getValue().path("as").asText("activity");
-            var handler = Behaviors.handler(name, kind, e.getValue().path("behavior"), log);
+            var handler = Behaviors.handler(name, kind, e.getValue().path("behavior"), log, measurements);
             switch (kind) {
                 case "compensation" -> host.registerCompensation(name, handler);
                 case "reconciler" -> host.registerReconciler(name, (input, ctx) -> (dev.sagatoctopusorchestrator.sdk.worker.Verdict) handler.handle(input, ctx));
@@ -475,11 +480,13 @@ public final class Runner {
         }
 
         ObjectNode workerLog = F.objectNode();
+        ObjectNode workerMeasurements = F.objectNode();
         for (Map.Entry<String, WorkerEntry> entry : hosts.entrySet()) {
             ArrayNode log = workerLog.putArray(entry.getKey());
             synchronized (entry.getValue().log) {
                 entry.getValue().log.forEach(log::add);
             }
+            workerMeasurements.set(entry.getKey(), entry.getValue().measurements.snapshot());
         }
         ObjectNode out = F.objectNode();
         out.put("scenario", scenario.get("name").asText());
@@ -487,6 +494,7 @@ public final class Runner {
         out.put("sdkVersion", SagatSdk.VERSION);
         out.set("observations", observations);
         out.set("workerLog", workerLog);
+        out.set("workerMeasurements", workerMeasurements);
         ArrayNode applied = out.putArray("faultsApplied");
         for (long count : plan.applied()) {
             applied.add(count);
@@ -495,7 +503,7 @@ public final class Runner {
     }
 
     private static ObjectNode startWorker(WorkerEntry entry, JsonNode config, FaultPlan plan) {
-        entry.host = hostOf(entry.def, config, plan, entry.log);
+        entry.host = hostOf(entry.def, config, plan, entry.log, entry.measurements);
         entry.host.start();
         ObjectNode result = F.objectNode();
         result.put("protocolVersion", entry.host.protocolVersion());

@@ -222,3 +222,18 @@ the acceptance scenario: both calls are the same run, and the run's `traceId` is
 
 `expected/<scenario>.json` is the normalized result. It is reviewed by a person: a blessed file that is
 wrong makes five SDKs wrong the same way.
+
+## Protocol 1.4 streaming completion
+
+Workers accept `transport: "auto" | "poll" | "stream"` (auto by default), as specified by
+[ADR-0029](../../../docs/adr/ADR-0029-worker-task-streams-spend-finite-receive-credit.md).
+Existing scenarios that specifically inject PollTasks faults explicitly select poll. Other
+default hosts use the negotiated transport. `worker-stream-faults` requires streaming and
+injects faults into StreamTasks itself.
+
+The gRPC-only `dropStreamAfterFirst` fault opens the real server stream, forwards its first
+nonempty task frame intact to the SDK, then cancels only that receive stream and makes the next
+read fail with UNAVAILABLE. It must not cancel task handlers or silently discard the first frame.
+Its plan is counted once when the matching stream is opened, with the same `times`/`after` rules
+as unary faults. A scenario must contain queued work so the nonempty frame is actually reached.
+The runner must not manufacture a task or substitute a unary poll for this operation.

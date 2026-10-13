@@ -51,9 +51,11 @@ from .activity import (
 
 T = TypeVar("T")
 Kind = Literal["activity", "compensation", "reconciler"]
+WorkerTransport = Literal["auto", "poll", "stream"]
 
 MAX_OUTPUT_BYTES = 256 * 1024
 MAX_POLL = 64
+MAX_RECEIVE_INPUT_BYTES = 8 * 1024 * 1024
 REPORT_ATTEMPTS = 5
 _CODE = re.compile(r"[A-Z0-9_]{1,64}")
 _SURROGATES = re.compile(r"[\ud800-\udfff]")
@@ -81,6 +83,7 @@ class WorkerEvent:
         "task.stale",
         "task.dropped",
         "heartbeat",
+        "receive.failed",
         "reconnect",
     ]
     task_id: str | None = None
@@ -116,6 +119,8 @@ class WorkerConfig:
     retry: RetryPolicy = field(default_factory=lambda: DEFAULT_RETRY)
     protocol_version: str | None = None
     """Overrides the newest protocol minor the host offers (tests play an older or a newer SDK with it)."""
+    transport: WorkerTransport = "auto"
+    """Task receive transport. ``auto`` streams at protocol 1.4+ and polls older servers."""
     heartbeat_interval: float | None = None
     """Overrides the heartbeat interval (otherwise a third of the lease, 0.5 to 10 s)."""
     logger: logging.Logger = LOG
@@ -189,6 +194,8 @@ class WorkerHost:
     def __init__(self, config: WorkerConfig) -> None:
         if not isinstance(config.max_inflight, int) or not 1 <= config.max_inflight <= 1000:
             raise SagatError("VALIDATION_FAILED", "max_inflight is between 1 and 1000")
+        if config.transport not in ("auto", "poll", "stream"):
+            raise SagatError("VALIDATION_FAILED", "transport is auto, poll or stream")
         self._config = config
         self._log = config.logger
         self._handlers: dict[str, _Registered] = {}
@@ -197,6 +204,7 @@ class WorkerHost:
         self._worker_id = ""
         self._session = Secret("")
         self._accepted = ""
+        self._stream_unavailable = False
         self._running = False
         self._stopping = False
         self._loop_task: asyncio.Task[None] | None = None
@@ -299,6 +307,8 @@ class WorkerHost:
         )
         try:
             await self._register()
+            if self._config.transport == "stream" and _minor_of(self._accepted) < 4:
+                raise SagatError("UNSUPPORTED_PROTOCOL", "task streaming requires worker protocol 1.4")
         except BaseException:
             rpc, self._rpc = self._rpc, None
             await rpc.close()
@@ -330,11 +340,9 @@ class WorkerHost:
         self._wake.set()
         clock = asyncio.get_running_loop().time
         grace_ends = clock() + timeout
-        # The poll in progress ends and no other starts; what it leased is in flight from here on.
-        await asyncio.wait({self._loop_task}, timeout=timeout)
-        if not self._loop_task.done():
-            self._loop_task.cancel()
-            await asyncio.gather(self._loop_task, return_exceptions=True)
+        # The receive owns no handler: cancel it promptly while delivered handlers keep their lifecycle.
+        self._loop_task.cancel()
+        await asyncio.gather(self._loop_task, return_exceptions=True)
         pending = {task.runner for task in self._inflight if task.runner is not None}
         if pending:
             _, late = await asyncio.wait(pending, timeout=max(0.0, grace_ends - clock()))
@@ -404,6 +412,7 @@ class WorkerHost:
             self._worker_id = response.worker_id
             self._session = Secret(response.session_token)
             self._accepted = response.accepted_protocol_version
+            self._stream_unavailable = False
             log(self._log, logging.INFO, "worker registered", worker=self._config.worker_name, protocol=self._accepted)
             self._emit(WorkerEvent("registered", protocol_version=self._accepted))
             return
@@ -426,18 +435,83 @@ class WorkerHost:
         refusals = 0  # polls refused as UNAUTHENTICATED in a row
         max_inflight = self._config.max_inflight
         while not self._stopping:
+            streaming = False
+            meaningful = False
             try:
                 free = max_inflight - len(self._inflight)
                 if free <= 0:
                     await self._idle(0.05)
                     continue
                 asked = min(free, MAX_POLL)
+                streaming = self._config.transport == "stream" or (
+                    self._config.transport == "auto"
+                    and _minor_of(self._accepted) >= 4
+                    and not self._stream_unavailable
+                )
+                if streaming and self._config.transport == "stream" and _minor_of(self._accepted) < 4:
+                    raise SagatError("UNSUPPORTED_PROTOCOL", "task streaming requires worker protocol 1.4")
+                if streaming:
+                    request = pb.PollTasksRequest(
+                        worker_id=self._worker_id, session_token=self._session.reveal(), max_tasks=asked
+                    )
+                    received = 0
+                    input_bytes = 0
+                    wait_ms: int | None = None
+                    malformed = False
+                    task_ids: set[str] = set()
+                    stream = self._rpc.stream_tasks(request)
+                    try:
+                        async for response in stream:
+                            if self._stopping:
+                                return
+                            leases = list(response.tasks)
+                            if not leases:
+                                wait_ms = response.retry_after_ms if response.retry_after_ms > 0 else 1000
+                                malformed = response.retry_after_ms <= 0
+                                break
+                            if response.retry_after_ms != 0:
+                                malformed = True
+                            accepted = 0
+                            for lease in leases:
+                                size = len(lease.input_json.encode("utf-8"))
+                                if (
+                                    received >= asked
+                                    or len(self._inflight) >= max_inflight
+                                    or input_bytes + size > MAX_RECEIVE_INPUT_BYTES
+                                    or lease.task_id in task_ids
+                                ):
+                                    malformed = True
+                                    break
+                                task_ids.add(lease.task_id)
+                                received += 1
+                                accepted += 1
+                                input_bytes += size
+                                meaningful = True
+                                self._dispatch(lease)
+                            self._emit(WorkerEvent("poll", tasks=accepted))
+                            if malformed:
+                                break
+                    finally:
+                        await stream.aclose()
+                    if meaningful:
+                        failures = 0
+                    refusals = 0
+                    if malformed:
+                        log(self._log, logging.WARNING, "the task stream exceeded its bounded receive contract")
+                        await self._idle(min(MAX_SERVER_WAIT, max(0.05, (wait_ms or 1000) / 1000)))
+                    elif received < asked:
+                        # An underfilled EOF without the terminal hint is interrupted, never a busy reopen.
+                        pause_ms = max(50, wait_ms or 1000)
+                        await self._idle(min(MAX_SERVER_WAIT, pause_ms / 1000 * (0.8 + random.random() * 0.4)))
+                    continue
                 response = await self._rpc.poll_tasks(
                     pb.PollTasksRequest(
                         worker_id=self._worker_id, session_token=self._session.reveal(), max_tasks=asked
                     )
                 )
-                failures = refusals = 0
+                if len(response.tasks) > 0:
+                    failures = 0
+                refusals = 0
                 leases = list(response.tasks)
                 if len(leases) > asked:
                     # The host runs as many tasks as it asked for; the rest are left to lapse (SPEC section 6.2).
@@ -459,6 +533,14 @@ class WorkerHost:
             except SagatError as error:
                 if self._stopping:
                     return
+                if meaningful:
+                    failures = 0
+                self._emit(WorkerEvent("receive.failed", code=error.code))
+                if streaming and self._config.transport == "auto" and error.status == "UNIMPLEMENTED":
+                    self._stream_unavailable = True
+                    await self._idle(max(0.1, backoff_delay(self._config.retry, failures)))
+                    failures += 1
+                    continue
                 if isinstance(error, ProviderFailure):
                     # The token provider failed before the poll was sent: the session is not in question.
                     log(self._log, logging.WARNING, "the token provider failed: polling again after a pause")
@@ -492,7 +574,7 @@ class WorkerHost:
             except Exception as error:  # a bug of ours must not stop the host
                 if self._stopping:
                     return
-                log(self._log, logging.ERROR, "the poll loop failed", error=type(error).__name__)
+                log(self._log, logging.ERROR, "the receive loop failed", error=type(error).__name__)
                 await self._idle(1.0)
 
     # ---------------------------------------------------------------------------------------------------- tasks

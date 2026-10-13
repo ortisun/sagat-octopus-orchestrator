@@ -41,10 +41,12 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_da
 /// The newest minor version of worker protocol 1 this server speaks. Every minor version adds fields
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
 /// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
-/// `ResolveSecrets`; 1.3 adds streaming blob upload/download.
-pub const PROTOCOL_MINOR: u32 = 3;
+/// `ResolveSecrets`; 1.3 adds streaming blob upload/download; 1.4 adds bounded task streams.
+pub const PROTOCOL_MINOR: u32 = 4;
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
+/// Server-streaming task receive first became available in protocol 1.4.
+pub const STREAM_PROTOCOL_MINOR: u32 = 4;
 
 /// What registration says when it refuses the protocol version (a stable reason for SDKs).
 pub const UNSUPPORTED_PROTOCOL: &str = "unsupported protocol version";
@@ -218,13 +220,6 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         limit: u32,
         accepted_protocol_minor: u32,
     ) -> impl Future<Output = Result<Vec<RunId>, StoreError>> + Send;
-
-    /// Steps currently leased to the worker session `id`.
-    fn inflight(
-        &self,
-        tenant: TenantId,
-        id: Uuid,
-    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
 }
 
 /// The result of registering.
@@ -375,6 +370,7 @@ pub struct HeartbeatAck {
 }
 
 /// The worker protocol use cases.
+#[derive(Clone)]
 pub struct WorkerService<S, C, E, R> {
     store: S,
     clock: C,
@@ -601,6 +597,21 @@ where
         Ok(session)
     }
 
+    /// Validates that a session negotiated the task-stream protocol before response headers are
+    /// returned. Claims still repeat session validation inside their transaction.
+    pub async fn stream_session(
+        &self,
+        principal: &Principal,
+        worker_id: Uuid,
+        token: &str,
+    ) -> Result<SessionRecord, AppError> {
+        let session = self.session(principal, worker_id, token).await?;
+        if session.accepted_protocol_minor < STREAM_PROTOCOL_MINOR {
+            return Err(AppError::NotAllowed(UNSUPPORTED_PROTOCOL));
+        }
+        Ok(session)
+    }
+
     /// Claims up to `max_tasks` ready steps for the session, granting a lease on each.
     ///
     /// Candidate runs come from an index scan; each is then locked with `SKIP LOCKED`, so two
@@ -616,6 +627,29 @@ where
         max_tasks: u32,
         trace_id: Option<&str>,
     ) -> Result<Vec<ClaimedTask>, AppError> {
+        self.poll_bounded(
+            principal,
+            worker_id,
+            session_token,
+            max_tasks,
+            MAX_POLL_BYTES,
+            trace_id,
+        )
+        .await
+    }
+
+    /// Claims through the canonical poll path while respecting a caller-owned aggregate byte
+    /// budget. Task streams pass their remaining finite-window budget here; unary polling passes
+    /// [`MAX_POLL_BYTES`].
+    pub async fn poll_bounded(
+        &self,
+        principal: &Principal,
+        worker_id: Uuid,
+        session_token: &str,
+        max_tasks: u32,
+        max_bytes: usize,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<ClaimedTask>, AppError> {
         let session = self.session(principal, worker_id, session_token).await?;
         // A drained identity keeps its session (it renews it, it reports what it holds) and is given
         // nothing new: the operator waits for what is in flight to end, then stops the process.
@@ -623,10 +657,9 @@ where
             metrics::counter!("worker_polls_drained_total").increment(1);
             return Ok(Vec::new());
         }
-        let inflight = self.store.inflight(session.tenant_id, session.id).await?;
-        let room = session.max_inflight.saturating_sub(inflight);
-        let wanted = max_tasks.clamp(1, MAX_POLL).min(room);
-        if wanted == 0 {
+        let wanted = max_tasks.clamp(1, MAX_POLL);
+        let byte_budget = max_bytes.min(MAX_POLL_BYTES);
+        if byte_budget == 0 {
             return Ok(Vec::new());
         }
         let candidates = self
@@ -642,8 +675,10 @@ where
         let mut claimed = Vec::new();
         self.claim(
             &session,
+            &Token::hash_of(session_token),
             candidates,
             wanted as usize,
+            byte_budget,
             trace_id,
             &mut claimed,
         )
@@ -659,11 +694,14 @@ where
     /// A run that cannot be leased (a corrupt journal, a constraint) is skipped, so one bad run never
     /// keeps a tenant's workers from the others. The error is returned only when nothing at all was
     /// claimed; an unavailable store ends the poll at once.
+    #[allow(clippy::too_many_arguments)] // task, byte and authority budgets travel together
     async fn claim(
         &self,
         session: &SessionRecord,
+        session_token_hash: &[u8],
         candidates: Vec<RunId>,
         wanted: usize,
+        byte_budget: usize,
         trace_id: Option<&str>,
         claimed: &mut Vec<ClaimedTask>,
     ) -> Result<(), AppError> {
@@ -672,11 +710,19 @@ where
         let mut first_error = None;
         for run in candidates {
             let remaining = wanted - claimed.len();
-            if remaining == 0 || bytes >= MAX_POLL_BYTES {
+            if remaining == 0 || bytes >= byte_budget {
                 break;
             }
             match self
-                .claim_run(session, run, remaining, trace_id, &mut bytes)
+                .claim_run(
+                    session,
+                    session_token_hash,
+                    run,
+                    remaining,
+                    byte_budget,
+                    trace_id,
+                    &mut bytes,
+                )
                 .await
             {
                 Ok(tasks) => claimed.extend(tasks),
@@ -698,11 +744,14 @@ where
     }
 
     /// Leases up to `remaining` ready steps of one run in one transaction and commits it.
+    #[allow(clippy::too_many_arguments)] // one run receives the same bounded claim context
     async fn claim_run(
         &self,
         session: &SessionRecord,
+        session_token_hash: &[u8],
         run: RunId,
         remaining: usize,
+        byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
     ) -> Result<Vec<ClaimedTask>, AppError> {
@@ -717,6 +766,13 @@ where
         // made again here, under the lock a drain waits for, so a drain that has returned has
         // stopped every poll that had not leased yet.
         if tx.worker_drained(&session.subject).await? {
+            return Ok(Vec::new());
+        }
+        let room = tx
+            .worker_session_room(session.id, session_token_hash, &session.subject)
+            .await?;
+        let remaining = remaining.min(room as usize);
+        if remaining == 0 {
             return Ok(Vec::new());
         }
         // Candidate selection is only a bounded hint. Recheck catalog-backed capability needs
@@ -759,7 +815,7 @@ where
             // Every task carries the run's data; the response is bounded by what it carries.
             // `remaining` bounds what is *leased*, not what is looked at: a step the circuit
             // breaker holds back must not use up the place of one that can run.
-            if *bytes + run_bytes >= MAX_POLL_BYTES || leased.len() >= remaining {
+            if *bytes + run_bytes >= byte_budget || leased.len() >= remaining {
                 break;
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
@@ -774,7 +830,7 @@ where
                     Err(other) => return Err(other),
                 }
             }
-            if input.len() > MAX_POLL_BYTES - *bytes - run_bytes {
+            if input.len() > byte_budget - *bytes - run_bytes {
                 // This task fits a fresh response. Leave it READY, without consuming an attempt,
                 // and return every lease already made in this transaction.
                 break;

@@ -25,6 +25,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 hmac = "0.13"
 jsonwebtoken.workspace = true
+metrics.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 h2 = "0.4"
 rcgen = "0.13"

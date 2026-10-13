@@ -24,6 +24,9 @@ public sealed interface WorkerEvent {
 
     record Heartbeat(String taskId) implements WorkerEvent {}
 
+    /** A receive window failed; the code is bounded and carries no remote exception text. */
+    record ReceiveFailed(String code) implements WorkerEvent {}
+
     /** The session was lost or the service was unreachable and the host goes on after a pause or a new registration. */
     record Reconnect() implements WorkerEvent {}
 }

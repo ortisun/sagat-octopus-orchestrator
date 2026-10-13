@@ -58,7 +58,7 @@ export interface ReadBlobRequest {
 export interface ReadBlobResponse { header?: WriteBlobResponse; chunk?: Buffer; part?: string }
 export interface StepCommandResponse { command_id: string; already_applied: boolean; step_status: string; run_status: string }
 
-export type Method = 'RegisterWorker' | 'PollTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets' | 'WriteBlob' | 'ReadBlob';
+export type Method = 'RegisterWorker' | 'PollTasks' | 'StreamTasks' | 'Heartbeat' | 'CompleteStep' | 'FailStep' | 'ResolveSecrets' | 'WriteBlob' | 'ReadBlob';
 
 export interface GrpcConfig {
   grpcUrl: string;
@@ -138,6 +138,10 @@ export function errorOfStatus(method: Method, error: grpc.ServiceError): SagatEr
       return new SagatError({ code: 'TRANSPORT', message: 'no answer from the worker service', status: statusName, reason, retryAfterMs });
     case grpc.status.CANCELLED:
       return new SagatError({ code: 'CANCELLED', message: 'the call was cancelled', status: statusName });
+    case grpc.status.UNIMPLEMENTED:
+      return method === 'StreamTasks'
+        ? safe('UNSUPPORTED_PROTOCOL', 'the worker service does not implement task streaming')
+        : safe('INTERNAL', 'the worker service failed');
     case grpc.status.DATA_LOSS:
       return safe('PROTOCOL', 'the blob stream failed its integrity check');
     default:
@@ -200,10 +204,12 @@ export class WorkerRpc {
   /** Calls in flight: closing the channel does not end them, so they are cancelled with it. */
   readonly #calls = new Set<grpc.ClientUnaryCall>();
   readonly #polls = new Set<grpc.ClientUnaryCall>();
+  readonly #streams = new Set<grpc.ClientReadableStream<PollTasksResponse>>();
 
-  /** Cancels the polls in flight and nothing else: a report that is on its way is left to arrive. */
-  cancelPolls(): void {
+  /** Cancels task receives and nothing else: a report already on its way is left to arrive. */
+  cancelReceives(): void {
     for (const call of this.#polls) call.cancel();
+    for (const call of this.#streams) call.cancel();
   }
 
   close(): void {
@@ -240,6 +246,31 @@ export class WorkerRpc {
   }
   pollTasks(request: PollTasksRequest): Promise<PollTasksResponse> {
     return this.call('PollTasks', request);
+  }
+  async *streamTasks(request: PollTasksRequest): AsyncIterable<PollTasksResponse> {
+    const metadata = new grpc.Metadata();
+    metadata.set('authorization', `Bearer ${await resolveToken(this.#config.token)}`);
+    const fn = this.client.streamTasks as (
+      request: PollTasksRequest,
+      metadata: grpc.Metadata,
+      options: grpc.CallOptions,
+    ) => grpc.ClientReadableStream<PollTasksResponse>;
+    const call = fn.call(this.client, request, metadata, {
+      // The server window is five seconds; one extra second bounds trailer delivery without holding stop forever.
+      deadline: new Date(Date.now() + Math.min(this.#config.timeoutMs ?? 30_000, 6_000)),
+    });
+    this.#streams.add(call);
+    try {
+      for await (const response of call as unknown as AsyncIterable<PollTasksResponse>) yield response;
+    } catch (error) {
+      if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'number') {
+        throw errorOfStatus('StreamTasks', error as grpc.ServiceError);
+      }
+      throw new SagatError({ code: 'INTERNAL', message: 'the task stream failed' });
+    } finally {
+      this.#streams.delete(call);
+      if (!call.destroyed) call.cancel();
+    }
   }
   heartbeat(request: HeartbeatRequest, traceparent?: string): Promise<HeartbeatResponse> {
     return this.call('Heartbeat', request, traceparent);

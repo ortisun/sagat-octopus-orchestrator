@@ -5,7 +5,7 @@ using SagatOctopusOrchestrator.Sdk.Workers;
 namespace SagatOctopusOrchestrator.Sdk.Conformance;
 
 /// <summary>The behaviours of the activities a scenario registers (README, "Worker activities"), as handlers of the SDK.</summary>
-internal sealed class Behaviors(string workerKey, List<JsonObject> log)
+internal sealed class Behaviors(string workerKey, List<JsonObject> log, WorkerMeasurements measurements)
 {
     private readonly object gate = new();
 
@@ -13,6 +13,7 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
 
     internal async Task<object?> ActivityAsync(string name, string kind, JsonObject behavior, JsonNode? input, ActivityExecutionContext context, CancellationToken cancellationToken)
     {
+        using var active = measurements.Enter(context);
         var outcome = "returned";
         try
         {
@@ -27,6 +28,7 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
 
     internal async Task<Verdict> ReconcilerAsync(string name, JsonObject behavior, JsonNode? input, ActivityExecutionContext context, CancellationToken cancellationToken)
     {
+        using var active = measurements.Enter(context);
         var outcome = "returned";
         try
         {
@@ -269,6 +271,61 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
             lock (gate)
             {
                 return log.Count;
+            }
+        }
+    }
+}
+
+/// <summary>Benchmark-only handler admission evidence; excluded from conformance golden normalization.</summary>
+internal sealed class WorkerMeasurements
+{
+    private readonly object gate = new();
+    private readonly List<JsonObject> deliveries = [];
+    private int active;
+    private int peak;
+
+    internal IDisposable Enter(ActivityExecutionContext context)
+    {
+        var now = Interlocked.Increment(ref active);
+        int seen;
+        while ((seen = Volatile.Read(ref peak)) < now && Interlocked.CompareExchange(ref peak, now, seen) != seen)
+        {
+        }
+
+        lock (gate)
+        {
+            deliveries.Add(new JsonObject
+            {
+                ["runId"] = context.RunId,
+                ["node"] = context.Node,
+                ["takenAtUnixMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+        }
+
+        return new Exit(this);
+    }
+
+    internal JsonObject Snapshot()
+    {
+        lock (gate)
+        {
+            return new JsonObject
+            {
+                ["peakInflight"] = Volatile.Read(ref peak),
+                ["deliveries"] = new JsonArray([.. deliveries.Select(item => (JsonNode?)item.DeepClone())]),
+            };
+        }
+    }
+
+    private sealed class Exit(WorkerMeasurements owner) : IDisposable
+    {
+        private int disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) == 0)
+            {
+                Interlocked.Decrement(ref owner.active);
             }
         }
     }

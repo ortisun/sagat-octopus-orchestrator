@@ -35,6 +35,8 @@ internal sealed class RunMode : IAsyncDisposable
         internal WorkerHost? Host { get; set; }
 
         internal Behaviors? Behaviors { get; set; }
+
+        internal WorkerMeasurements Measurements { get; } = new();
     }
 
     /// <summary>Replaces <c>{{unique}}</c> in every string value of the scenario.</summary>
@@ -99,6 +101,12 @@ internal sealed class RunMode : IAsyncDisposable
         options.Worker.Name = (string)definition["workerName"]!;
         options.Worker.MaxInflight = (int?)definition["maxInflight"] ?? 4;
         options.Worker.ProtocolVersion = (string?)definition["protocolVersion"];
+        options.Worker.Transport = ((string?)definition["transport"]) switch
+        {
+            "poll" => WorkerTransport.Poll,
+            "stream" => WorkerTransport.Stream,
+            _ => WorkerTransport.Auto,
+        };
         options.Worker.HeartbeatInterval = definition["heartbeatIntervalMs"] is { } beat ? TimeSpan.FromMilliseconds((int)beat) : null;
         if (plan.HasGrpc)
         {
@@ -166,7 +174,7 @@ internal sealed class RunMode : IAsyncDisposable
         {
             var log = new List<JsonObject>();
             hosts[key] = new HostEntry(definition!.AsObject(), log);
-            hosts[key].Behaviors = new Behaviors(key, log);
+            hosts[key].Behaviors = new Behaviors(key, log, hosts[key].Measurements);
         }
 
         foreach (var (key, entry) in hosts)
@@ -221,6 +229,7 @@ internal sealed class RunMode : IAsyncDisposable
         }
 
         var workerLog = new JsonObject();
+        var workerMeasurements = new JsonObject();
         foreach (var (key, entry) in hosts)
         {
             JsonObject[] copy;
@@ -230,6 +239,7 @@ internal sealed class RunMode : IAsyncDisposable
             }
 
             workerLog[key] = new JsonArray([.. copy.Select(item => (JsonNode?)item)]);
+            workerMeasurements[key] = entry.Measurements.Snapshot();
         }
 
         return new JsonObject
@@ -239,6 +249,7 @@ internal sealed class RunMode : IAsyncDisposable
             ["sdkVersion"] = SdkInfo.Version,
             ["observations"] = observations,
             ["workerLog"] = workerLog,
+            ["workerMeasurements"] = workerMeasurements,
             ["faultsApplied"] = new JsonArray([.. plan.Applied().Select(count => (JsonNode?)JsonValue.Create(count))]),
         };
     }

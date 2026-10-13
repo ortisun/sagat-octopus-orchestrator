@@ -12,6 +12,7 @@ mod normalize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use reqwest::Method;
@@ -104,6 +105,100 @@ async fn script(
     Ok((
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
+}
+
+fn process_tree_rss_kib(root: u32) -> u64 {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,rss="])
+        .output()
+    else {
+        return 0;
+    };
+    let rows: Vec<(u32, u32, u64)> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+            ))
+        })
+        .collect();
+    let mut tree = std::collections::BTreeSet::from([root]);
+    loop {
+        let before = tree.len();
+        for (pid, parent, _) in &rows {
+            if tree.contains(parent) {
+                tree.insert(*pid);
+            }
+        }
+        if tree.len() == before {
+            break;
+        }
+    }
+    rows.iter()
+        .filter(|(pid, _, _)| tree.contains(pid))
+        .map(|(_, _, rss)| *rss)
+        .sum()
+}
+
+/// Runs one benchmark subject and samples the resident set of the runner process tree. The runner
+/// scripts `exec` their language runtime, while the descendant walk also covers runtime helpers.
+async fn measured_script(
+    dir: &Path,
+    name: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(String, String, u64), String> {
+    let path = dir.join(name);
+    if !path.exists() {
+        return Err(format!("{} does not exist", path.display()));
+    }
+    let child = Command::new("bash")
+        .arg(&path)
+        .args(args)
+        .current_dir(dir)
+        .env("TZ", "Asia/Kolkata")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("cannot run {}: {e}", path.display()))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| format!("{} has no process id", path.display()))?;
+    let sampling = Arc::new(AtomicBool::new(true));
+    let peak = Arc::new(AtomicU64::new(0));
+    let sampling_task = {
+        let sampling = Arc::clone(&sampling);
+        let peak = Arc::clone(&peak);
+        tokio::spawn(async move {
+            while sampling.load(Ordering::Relaxed) {
+                peak.fetch_max(process_tree_rss_kib(pid), Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    };
+    let waited = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    sampling.store(false, Ordering::Relaxed);
+    let _ = sampling_task.await;
+    let output = waited
+        .map_err(|_| format!("{} {args:?} took longer than {timeout:?}", path.display()))?
+        .map_err(|e| format!("{e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} {args:?} exited with {}:\n{}",
+            path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        peak.load(Ordering::Relaxed),
     ))
 }
 
@@ -1188,6 +1283,18 @@ pub struct Measured {
     pub refused: std::collections::BTreeMap<String, u64>,
     /// The raw output of the runner.
     pub out: Value,
+    /// Server-side task claim attempts made while this runner was active.
+    pub stream_claim_attempts: f64,
+    /// Persisted ready-to-lease delay (not network delivery latency), milliseconds.
+    pub ready_to_lease_ms: Vec<f64>,
+    /// Peak concurrent durable leases from journal intervals in a successful workload.
+    pub peak_leases: i64,
+    /// Durable ready event to public handler entry, using the runner's wall-clock timestamp.
+    pub delivery_latency_ms: Vec<f64>,
+    /// Peak handlers concurrently executing inside the SDK host.
+    pub peak_local_inflight: u64,
+    /// Peak resident set sampled for the runner process and its descendants, in KiB.
+    pub peak_rss_kib: u64,
 }
 
 /// The `grpc_requests_total` counters of the engine, by (method, code).
@@ -1213,6 +1320,15 @@ async fn grpc_counters(run: &Run) -> std::collections::BTreeMap<(String, String)
         counters.insert((label("method"), label("code")), value as u64);
     }
     counters
+}
+
+fn prometheus_counter(text: &str, metric: &str) -> f64 {
+    text.lines()
+        .filter(|line| {
+            line.starts_with(&format!("{metric}{{")) || line.starts_with(&format!("{metric} "))
+        })
+        .filter_map(|line| line.split_whitespace().last()?.parse::<f64>().ok())
+        .sum()
 }
 
 /// Plays a scenario file (any path, not only the suite's) in one language on a platform of its own and
@@ -1259,8 +1375,12 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&out_path);
     let before = grpc_counters(&run).await;
+    let stream_claims_before = prometheus_counter(
+        &run.engine.body("/metrics").await,
+        "worker_task_stream_claims_total",
+    );
     let started = std::time::Instant::now();
-    let result = script(
+    let result = measured_script(
         &root,
         "run.sh",
         &[
@@ -1274,12 +1394,80 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .await;
     let wall = started.elapsed();
     let after = grpc_counters(&run).await;
+    let metrics = run.engine.body("/metrics").await;
+    let stream_claim_attempts =
+        prometheus_counter(&metrics, "worker_task_stream_claims_total") - stream_claims_before;
+    let database_measurements = async {
+        let ready_to_lease_ms: Vec<f64> = sqlx::query_scalar(
+            "SELECT (extract(epoch FROM (l.occurred_at - r.occurred_at))*1000)::float8 \
+             FROM run_events l JOIN LATERAL (SELECT occurred_at FROM run_events \
+             WHERE run_id=l.run_id AND node=l.node AND seq<l.seq \
+             AND event_type IN ('step.released','step.retry_due') ORDER BY seq DESC LIMIT 1) r ON true \
+             WHERE l.event_type='step.leased' ORDER BY l.occurred_at",
+        )
+        .fetch_all(&run.platform.api.db.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let peak_leases: i64 = sqlx::query_scalar(
+            "SELECT coalesce(max(active),0)::bigint FROM ( \
+             SELECT sum(delta) OVER (ORDER BY at,delta) active FROM ( \
+             SELECT occurred_at at, 1 delta FROM run_events WHERE event_type='step.leased' UNION ALL \
+             SELECT c.occurred_at at, -1 delta FROM run_events c \
+             WHERE c.event_type IN ('step.completed','step.failed','step.lease_expired') \
+             AND EXISTS (SELECT 1 FROM run_events l WHERE l.run_id=c.run_id AND l.node=c.node \
+             AND l.seq<c.seq AND l.event_type='step.leased')) changes) counts",
+        )
+        .fetch_one(&run.platform.api.db.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let ready_by_step: std::collections::BTreeMap<(String, String), i64> =
+            sqlx::query_as::<_, (String, String, i64)>(
+            "SELECT l.run_id::text, l.node, floor(extract(epoch FROM r.occurred_at)*1000)::bigint \
+             FROM run_events l JOIN LATERAL (SELECT occurred_at FROM run_events \
+             WHERE run_id=l.run_id AND node=l.node AND seq<l.seq \
+             AND event_type IN ('step.released','step.retry_due') ORDER BY seq DESC LIMIT 1) r ON true \
+             WHERE l.event_type='step.leased'",
+            )
+            .fetch_all(&run.platform.api.db.pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(run_id, node, ready_at)| ((run_id, node), ready_at))
+            .collect();
+        Ok::<_, String>((ready_to_lease_ms, peak_leases, ready_by_step))
+    }
+    .await;
     run.stop().await;
-    result?;
+    let (_, _, peak_rss_kib) = result?;
+    let (ready_to_lease_ms, peak_leases, ready_by_step) = database_measurements?;
     let out: Value = std::fs::read(&out_path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .ok_or_else(|| format!("{language} wrote no readable {}", out_path.display()))?;
+    let mut delivery_latency_ms = Vec::new();
+    let mut peak_local_inflight = 0;
+    for measurement in out["workerMeasurements"]
+        .as_object()
+        .into_iter()
+        .flat_map(|workers| workers.values())
+    {
+        peak_local_inflight =
+            peak_local_inflight.max(measurement["peakInflight"].as_u64().unwrap_or_default());
+        for delivery in measurement["deliveries"].as_array().into_iter().flatten() {
+            let Some(run_id) = delivery["runId"].as_str() else {
+                continue;
+            };
+            let Some(node) = delivery["node"].as_str() else {
+                continue;
+            };
+            let Some(taken_at) = delivery["takenAtUnixMs"].as_i64() else {
+                continue;
+            };
+            if let Some(ready_at) = ready_by_step.get(&(run_id.to_owned(), node.to_owned())) {
+                delivery_latency_ms.push((taken_at - ready_at) as f64);
+            }
+        }
+    }
     let mut calls = std::collections::BTreeMap::new();
     let mut refused = std::collections::BTreeMap::new();
     for ((method, code), n) in &after {
@@ -1298,6 +1486,12 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
         calls,
         refused,
         out,
+        stream_claim_attempts,
+        ready_to_lease_ms,
+        peak_leases,
+        delivery_latency_ms,
+        peak_local_inflight,
+        peak_rss_kib,
     })
 }
 

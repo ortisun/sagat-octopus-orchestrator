@@ -97,10 +97,29 @@ impl Default for GrpcConfig {
     }
 }
 
+/// Lets the production worker adapter share the server's actual admission gate with each stream
+/// claim. Transport-only fixtures return `None` because they never claim durable work.
+#[doc(hidden)]
+pub trait AdmissionProvider {
+    fn grpc_admission(&self) -> Option<Admission> {
+        None
+    }
+}
+
+/// A worker handler plus its process admission gate.
+pub struct WorkerApi<T> {
+    service: WorkerServiceServer<T>,
+    admission: Option<Admission>,
+}
+
 /// Wraps a handler into the tonic service, applying the message size limit.
 #[must_use]
-pub fn worker_service<T: WorkerService>(handler: T) -> WorkerServiceServer<T> {
-    WorkerServiceServer::new(handler).max_decoding_message_size(MAX_MESSAGE_BYTES)
+pub fn worker_service<T: WorkerService + AdmissionProvider>(handler: T) -> WorkerApi<T> {
+    let admission = handler.grpc_admission();
+    WorkerApi {
+        service: WorkerServiceServer::new(handler).max_decoding_message_size(MAX_MESSAGE_BYTES),
+        admission,
+    }
 }
 
 /// Serves `service` on `listener` until `shutdown` completes, then drains in-flight calls.
@@ -109,10 +128,14 @@ pub fn worker_service<T: WorkerService>(handler: T) -> WorkerServiceServer<T> {
 /// The transport error that stopped the server.
 pub async fn serve<T: WorkerService>(
     listener: TcpListener,
-    service: WorkerServiceServer<T>,
+    service: WorkerApi<T>,
     config: GrpcConfig,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), tonic::transport::Error> {
+    let admission = service
+        .admission
+        .unwrap_or_else(|| Admission::new(config.max_in_flight, config.request_timeout));
+    admission.configure(config.max_in_flight, config.request_timeout);
     let mut builder = Server::builder();
     if let Some(tls) = &config.tls {
         let mut server_tls = ServerTlsConfig::new().identity(Identity::from_pem(
@@ -135,8 +158,8 @@ pub async fn serve<T: WorkerService>(
         // Calls in flight when the age is reached have as long as any call has to finish.
         .max_connection_age(config.max_connection_age)
         .max_connection_age_grace(config.request_timeout)
-        .layer(Admission::new(config.max_in_flight, config.request_timeout))
-        .add_service(service)
+        .layer(admission)
+        .add_service(service.service)
         .serve_with_incoming_shutdown(
             Incoming::new(
                 listener,

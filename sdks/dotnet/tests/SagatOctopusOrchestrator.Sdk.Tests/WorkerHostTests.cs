@@ -79,7 +79,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         Assert.Equal(["a.undo", "b.second", "c.lookup"], request.Capabilities.Activities);
         Assert.Empty(request.Capabilities.Pools);
         Assert.Equal(7, request.Capabilities.MaxInflight);
-        Assert.Equal("1.3", request.Capabilities.ProtocolVersion);
+        Assert.Equal("1.4", request.Capabilities.ProtocolVersion);
         Assert.Equal("Bearer tok", register.Headers.GetValue("authorization"));
         Assert.Equal("1.2", host.ProtocolVersion);
         Assert.True(host.IsRunning);
@@ -544,6 +544,167 @@ public sealed class WorkerHostTests : IAsyncLifetime
         State.Lease(Lease());
         await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the task after it");
         Assert.True(meters.Total("sagat.worker.reconnects") >= 1);
+    }
+
+    [Fact]
+    public async Task Protocol14StreamsTwoFramesDispatchesBeforeEofAndCancelsTheIdleReceiveOnStop()
+    {
+        State.AcceptedVersion = "1.4";
+        State.StreamFrameSize = 1;
+        State.HoldStreamOpen = true;
+        State.Lease(
+            Lease(l => { l.TaskId = "run-1/charge/1"; l.RunId = "run-1"; }),
+            Lease(l => { l.TaskId = "run-2/charge/1"; l.RunId = "run-2"; }));
+        var host = Host(o => o.Worker.MaxInflight = 3);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 2, "both streamed tasks before EOF");
+
+        var stream = Assert.Single(State.Of("StreamTasks"));
+        Assert.Equal(3, ((PollTasksRequest)stream.Request).MaxTasks);
+        Assert.Empty(State.Of("PollTasks"));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        await host.StopAsync(TimeSpan.FromSeconds(1));
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"stop took {clock.Elapsed}");
+        Assert.True(State.StreamCancelled);
+    }
+
+    [Fact]
+    public async Task AStreamErrorAfterAFramePreservesTheHandlerAndReconnectsOnlyReceiving()
+    {
+        State.AcceptedVersion = "1.4";
+        State.StreamFailureAfterFirst = new Scripted(StatusCode.Unavailable);
+        State.HoldStreamOpen = true;
+        State.Lease(Lease());
+        var host = Host(o => o.Worker.MaxInflight = 2);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the partial delivery");
+        await Eventually.UntilAsync(() => State.Of("StreamTasks").Count >= 2, "a receive reconnect");
+        Assert.Empty(State.Of("PollTasks"));
+    }
+
+    [Fact]
+    public async Task AutoFallsBackOnlyWhenStreamingIsUnimplemented()
+    {
+        State.AcceptedVersion = "1.4";
+        State.Fail("StreamTasks", new Scripted(StatusCode.Unimplemented));
+        State.Lease(Lease());
+        var host = Host();
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the task through polling fallback");
+        Assert.Single(State.Of("StreamTasks"));
+        Assert.NotEmpty(State.Of("PollTasks"));
+    }
+
+    [Fact]
+    public async Task ExplicitStreamingReportsUnimplementedWithoutPolling()
+    {
+        State.AcceptedVersion = "1.4";
+        State.FailAlways("StreamTasks", new Scripted(StatusCode.Unimplemented));
+        var logs = new CapturingLoggerProvider();
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var host = Host(o => o.Worker.Transport = WorkerTransport.Stream, factory);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => logs.Lines.Any(line => line.Contains("UNSUPPORTED_PROTOCOL", StringComparison.Ordinal)), "the unsupported diagnostic");
+        Assert.Empty(State.Of("PollTasks"));
+    }
+
+    [Fact]
+    public async Task ExplicitStreamingRefusesAnOlderNegotiatedServerBeforeReceiving()
+    {
+        State.AcceptedVersion = "1.3";
+        var host = Host(o => o.Worker.Transport = WorkerTransport.Stream);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        var error = await Assert.ThrowsAsync<SagatException>(() => host.StartAsync());
+        Assert.Equal(SagatErrorCode.UnsupportedProtocol, error.Code);
+        Assert.Empty(State.Of("StreamTasks"));
+        Assert.Empty(State.Of("PollTasks"));
+    }
+
+    [Fact]
+    public async Task ExplicitStreamingNeverPollsAfterReregistrationNegotiatesAnOlderProtocol()
+    {
+        State.AcceptVersions("1.4", "1.3");
+        State.Fail("StreamTasks", new Scripted(StatusCode.Unauthenticated));
+        var logs = new CapturingLoggerProvider();
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var host = Host(o => o.Worker.Transport = WorkerTransport.Stream, factory);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Registrations >= 2, "the replacement registration");
+        await Eventually.UntilAsync(
+            () => logs.Lines.Any(line => line.Contains("UNSUPPORTED_PROTOCOL", StringComparison.Ordinal)),
+            "the downgrade diagnostic");
+        await Task.Delay(100);
+
+        Assert.Empty(State.Of("PollTasks"));
+        Assert.Single(State.Of("StreamTasks"));
+    }
+
+    [Fact]
+    public async Task AStreamOverCapacityRunsOnlyTheCreditItWasGiven()
+    {
+        State.AcceptedVersion = "1.4";
+        State.IgnoreMax = true;
+        State.HoldStreamOpen = true;
+        State.Lease(
+            Lease(l => { l.TaskId = "run-1/charge/1"; l.RunId = "run-1"; }),
+            Lease(l => { l.TaskId = "run-2/charge/1"; l.RunId = "run-2"; }));
+        var host = Host(o => o.Worker.MaxInflight = 1);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "one bounded task");
+        await Task.Delay(100);
+        Assert.Single(State.Of("CompleteStep"));
+        Assert.Equal(1, ((PollTasksRequest)State.Of("StreamTasks")[0].Request).MaxTasks);
+    }
+
+    [Fact]
+    public async Task AStreamRequestsAtMost64Credits()
+    {
+        State.AcceptedVersion = "1.4";
+        State.HoldStreamOpen = true;
+        var host = Host(o => o.Worker.MaxInflight = 100);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) => Task.FromResult(1));
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("StreamTasks").Count == 1, "the receive window");
+        Assert.Equal(64, ((PollTasksRequest)State.Of("StreamTasks")[0].Request).MaxTasks);
+    }
+
+    [Fact]
+    public async Task AStreamCannotExceedTheAggregateEightMiBInputBudget()
+    {
+        State.AcceptedVersion = "1.4";
+        State.StreamFrameSize = 1;
+        var document = "{\"input\":\"" + new string('x', 4 * 1024 * 1024) + "\"}";
+        State.Lease(
+            Lease(l => { l.TaskId = "run-1/charge/1"; l.RunId = "run-1"; l.InputJson = document; }),
+            Lease(l => { l.TaskId = "run-2/charge/1"; l.RunId = "run-2"; l.InputJson = document; }));
+        var handled = 0;
+        var host = Host(o => o.Worker.MaxInflight = 2);
+        host.RegisterActivity<JsonNode?, int>("charge", (_, _, _) =>
+        {
+            Interlocked.Increment(ref handled);
+            return Task.FromResult(1);
+        });
+
+        await host.StartAsync();
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the first frame within the aggregate budget");
+        await Task.Delay(150);
+        Assert.Equal(1, Volatile.Read(ref handled));
+        Assert.Single(State.Of("CompleteStep"));
+        Assert.Empty(State.Of("FailStep"));
     }
 
     [Fact]

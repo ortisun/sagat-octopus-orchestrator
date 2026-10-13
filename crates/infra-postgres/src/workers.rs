@@ -272,17 +272,4 @@ impl WorkerStore for PgRunStore {
             .map(RunId::new)
             .collect())
     }
-
-    async fn inflight(&self, tenant: TenantId, id: Uuid) -> Result<u32, StoreError> {
-        let n: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM steps WHERE tenant_id = $1 AND status IN ('LEASED', 'RUNNING') \
-             AND leased_by = $2",
-        )
-        .bind(tenant.as_uuid())
-        .bind(id.to_string())
-        .fetch_one(self.pool())
-        .await
-        .map_err(store_error)?;
-        Ok(u32::try_from(n).unwrap_or(u32::MAX))
-    }
 }

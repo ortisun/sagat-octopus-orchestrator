@@ -127,6 +127,46 @@ final class WorkerRpc implements AutoCloseable {
         return call("PollTasks", null, s -> s.pollTasks(request));
     }
 
+    record TaskStream(Iterator<Worker.PollTasksResponse> frames, Context.CancellableContext context) implements AutoCloseable {
+        @Override public void close() { context.cancel(null); }
+    }
+
+    TaskStream streamTasks(Worker.PollTasksRequest request) {
+        Metadata metadata = new Metadata();
+        metadata.put(AUTHORIZATION, "Bearer " + TokenProvider.resolve(config.tokenProvider()));
+        long timeout = Math.min(config.timeout().toMillis(), 6_000L);
+        Context.CancellableContext context = Context.current().withCancellation();
+        try {
+            Iterator<Worker.PollTasksResponse> source = context.call(() ->
+                    stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
+                            .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
+                            .streamTasks(request));
+            Iterator<Worker.PollTasksResponse> frames = new Iterator<>() {
+                @Override public boolean hasNext() {
+                    try { return source.hasNext(); } catch (StatusRuntimeException e) { throw streamError(e); }
+                }
+                @Override public Worker.PollTasksResponse next() {
+                    try { return source.next(); } catch (StatusRuntimeException e) { throw streamError(e); }
+                }
+            };
+            return new TaskStream(frames, context);
+        } catch (StatusRuntimeException e) {
+            context.cancel(e);
+            if (e.getStatus().getCode() == io.grpc.Status.Code.UNIMPLEMENTED) throw new StreamTasksUnimplemented();
+            throw GrpcErrors.of("StreamTasks", e);
+        } catch (Exception e) {
+            context.cancel(e);
+            throw SagatException.of(ErrorCode.INTERNAL, "the task stream could not be opened");
+        }
+    }
+
+    private static RuntimeException streamError(StatusRuntimeException error) {
+        if (error.getStatus().getCode() == io.grpc.Status.Code.UNIMPLEMENTED) return new StreamTasksUnimplemented();
+        return GrpcErrors.of("StreamTasks", error);
+    }
+
+    static final class StreamTasksUnimplemented extends RuntimeException {}
+
     Worker.HeartbeatResponse heartbeat(Worker.HeartbeatRequest request, String traceparent) {
         return call("Heartbeat", traceparent, s -> s.heartbeat(request));
     }

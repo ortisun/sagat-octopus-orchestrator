@@ -15,19 +15,21 @@ use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv6Addr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::Waker;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use sagat_api_http::error::ApiError;
+use sagat_domain::identity::TenantId;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant, Sleep};
 use tokio_stream::Stream;
 use tonic::codegen::{Service, http};
-use tonic::transport::server::{Connected, TcpConnectInfo};
+use tonic::transport::server::Connected;
 use tower_layer::Layer;
 
 use crate::status::to_status;
@@ -36,6 +38,106 @@ use crate::status::to_status;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// Suggested wait of a caller that was shed.
 const SHED_RETRY: Duration = Duration::from_secs(1);
+
+// ------------------------------------------------------------------------------ task streams
+
+/// Dedicated response-body limits for finite task streams. They are independent from request
+/// admission because tonic returns the streaming response headers before the body ends.
+#[derive(Debug)]
+pub(crate) struct TaskStreams {
+    open: Mutex<TaskStreamCounts>,
+}
+
+#[derive(Debug, Default)]
+struct TaskStreamCounts {
+    process: usize,
+    tenants: HashMap<TenantId, usize>,
+    subjects: HashMap<(TenantId, String), usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StreamRefused {
+    Process,
+    Tenant,
+    Subject,
+}
+
+impl StreamRefused {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Tenant => "tenant",
+            Self::Subject => "subject",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct TaskStreamTicket {
+    owner: Arc<TaskStreams>,
+    tenant: TenantId,
+    subject: String,
+}
+
+impl TaskStreams {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            open: Mutex::new(TaskStreamCounts::default()),
+        })
+    }
+
+    pub(crate) fn admit(
+        self: &Arc<Self>,
+        tenant: TenantId,
+        subject: &str,
+    ) -> Result<TaskStreamTicket, StreamRefused> {
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (tenant, subject.to_owned());
+        if open.process >= 32 {
+            return Err(StreamRefused::Process);
+        }
+        if open.subjects.get(&key).copied().unwrap_or(0) >= 2 {
+            return Err(StreamRefused::Subject);
+        }
+        if open.tenants.get(&tenant).copied().unwrap_or(0) >= 8 {
+            return Err(StreamRefused::Tenant);
+        }
+        open.process += 1;
+        *open.tenants.entry(tenant).or_insert(0) += 1;
+        *open.subjects.entry(key).or_insert(0) += 1;
+        metrics::gauge!("worker_task_streams_open").set(open.process as f64);
+        Ok(TaskStreamTicket {
+            owner: Arc::clone(self),
+            tenant,
+            subject: subject.to_owned(),
+        })
+    }
+}
+
+impl Drop for TaskStreamTicket {
+    fn drop(&mut self) {
+        let mut open = self
+            .owner
+            .open
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        open.process = open.process.saturating_sub(1);
+        let key = (self.tenant, self.subject.clone());
+        if let Some(count) = open.tenants.get_mut(&self.tenant) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.tenants.remove(&self.tenant);
+            }
+        }
+        if let Some(count) = open.subjects.get_mut(&key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.subjects.remove(&key);
+            }
+        }
+        metrics::gauge!("worker_task_streams_open").set(open.process as f64);
+    }
+}
 
 // ------------------------------------------------------------------------------ connections
 
@@ -184,6 +286,7 @@ impl Stream for Incoming {
                             socket,
                             _permit: permit,
                             _slot: slot,
+                            watchdog: Arc::new(ConnectionWatchdog::default()),
                             deadline: Box::pin(tokio::time::sleep(this.limits.first_byte)),
                             idle: this.limits.idle,
                             heard: false,
@@ -210,16 +313,93 @@ pub(crate) struct Capped {
     socket: TcpStream,
     _permit: OwnedSemaphorePermit,
     _slot: PeerSlot,
+    watchdog: Arc<ConnectionWatchdog>,
     deadline: Pin<Box<Sleep>>,
     idle: Duration,
     heard: bool,
 }
 
+/// Per-connection escape hatch used by finite response streams. HTTP/2 stops polling a response
+/// body while its peer withholds flow-control credit, so a timer inside the body cannot tear down a
+/// stalled send. The task-stream deadline trips this handle instead; waking the connection's I/O
+/// future makes hyper drop every body on that connection and release their lifetime tickets.
+#[derive(Clone, Debug)]
+pub(crate) struct CappedConnectInfo {
+    watchdog: Arc<ConnectionWatchdog>,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionWatchdog {
+    tripped: AtomicUsize,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl ConnectionWatchdog {
+    fn poll(&self, cx: &Context<'_>) -> bool {
+        if self.tripped.load(Ordering::Acquire) != 0 {
+            return true;
+        }
+        let mut waker = self.waker.lock().unwrap_or_else(PoisonError::into_inner);
+        if !waker
+            .as_ref()
+            .is_some_and(|stored| stored.will_wake(cx.waker()))
+        {
+            *waker = Some(cx.waker().clone());
+        }
+        self.tripped.load(Ordering::Acquire) != 0
+    }
+
+    fn trip(&self) {
+        if self.tripped.swap(1, Ordering::AcqRel) == 0
+            && let Some(waker) = self
+                .waker
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+        {
+            waker.wake();
+        }
+    }
+}
+
+impl CappedConnectInfo {
+    /// Closes the whole HTTP/2 connection at `deadline` unless the returned guard is dropped first.
+    /// Connection-wide cancellation is deliberate: h2 exposes no per-stream reset handle to a
+    /// tonic response body once flow control has stopped polling that body.
+    pub(crate) fn arm(&self, deadline: Instant) -> ConnectionDeadline {
+        let watchdog = Arc::clone(&self.watchdog);
+        ConnectionDeadline {
+            task: tokio::spawn(async move {
+                tokio::time::sleep_until(deadline).await;
+                metrics::counter!(
+                    "grpc_connections_closed_total",
+                    "reason" => "task_stream_deadline"
+                )
+                .increment(1);
+                watchdog.trip();
+            }),
+        }
+    }
+}
+
+/// Cancels a pending connection deadline when its response body completed normally.
+pub(crate) struct ConnectionDeadline {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ConnectionDeadline {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 impl Connected for Capped {
-    type ConnectInfo = TcpConnectInfo;
+    type ConnectInfo = CappedConnectInfo;
 
     fn connect_info(&self) -> Self::ConnectInfo {
-        self.socket.connect_info()
+        CappedConnectInfo {
+            watchdog: Arc::clone(&self.watchdog),
+        }
     }
 }
 
@@ -230,6 +410,12 @@ impl AsyncRead for Capped {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = &mut *self;
+        if this.watchdog.poll(cx) {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "a task stream exceeded its receive window",
+            )));
+        }
         if this.deadline.as_mut().poll(cx).is_ready() {
             let reason = if this.heard { "idle" } else { "silent" };
             metrics::counter!("grpc_connections_closed_total", "reason" => reason).increment(1);
@@ -254,10 +440,22 @@ impl AsyncWrite for Capped {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if self.watchdog.poll(cx) {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "a task stream exceeded its receive window",
+            )));
+        }
         Pin::new(&mut self.socket).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.watchdog.poll(cx) {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "a task stream exceeded its receive window",
+            )));
+        }
         Pin::new(&mut self.socket).poll_flush(cx)
     }
 
@@ -270,6 +468,12 @@ impl AsyncWrite for Capped {
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
+        if self.watchdog.poll(cx) {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "a task stream exceeded its receive window",
+            )));
+        }
         Pin::new(&mut self.socket).poll_write_vectored(cx, bufs)
     }
 
@@ -314,19 +518,19 @@ impl Class {
 struct Shared {
     in_flight: AtomicUsize,
     /// Calls running at once, of any class.
-    max: usize,
+    max: AtomicUsize,
     /// Calls running at once above which discovery calls are shed.
-    discovery_max: usize,
+    discovery_max: AtomicUsize,
     /// The longest a call other than a blob transfer may take. The transport's own timeout has to
     /// allow the longest transfer, so this is where the shorter limit of everything else is kept.
-    unary_timeout: Duration,
+    unary_timeout_ms: AtomicU64,
 }
 
 impl Shared {
     fn admit(self: &Arc<Self>, class: Class) -> Option<Ticket> {
         let limit = match class {
-            Class::Discovery => self.discovery_max,
-            Class::Lease | Class::Transfer => self.max,
+            Class::Discovery => self.discovery_max.load(Ordering::Acquire),
+            Class::Lease | Class::Transfer => self.max.load(Ordering::Acquire),
         };
         let running = self.in_flight.fetch_add(1, Ordering::AcqRel);
         if running >= limit {
@@ -342,7 +546,7 @@ impl Shared {
 }
 
 /// A place among the calls running; released when the call ends, however it ends.
-struct Ticket {
+pub(crate) struct Ticket {
     shared: Arc<Shared>,
 }
 
@@ -356,7 +560,8 @@ impl Drop for Ticket {
 
 /// Limits the calls running at once across all connections. Cloning shares the counter.
 #[derive(Clone)]
-pub(crate) struct Admission {
+#[doc(hidden)]
+pub struct Admission {
     shared: Arc<Shared>,
 }
 
@@ -368,11 +573,32 @@ impl Admission {
         Self {
             shared: Arc::new(Shared {
                 in_flight: AtomicUsize::new(0),
-                max,
-                discovery_max: (max * 3 / 4).max(1),
-                unary_timeout,
+                max: AtomicUsize::new(max),
+                discovery_max: AtomicUsize::new((max * 3 / 4).max(1)),
+                unary_timeout_ms: AtomicU64::new(
+                    u64::try_from(unary_timeout.as_millis()).unwrap_or(u64::MAX),
+                ),
             }),
         }
+    }
+
+    /// Reconciles the shared gate with the server's runtime configuration before it accepts calls.
+    pub(crate) fn configure(&self, max: usize, unary_timeout: Duration) {
+        let max = max.max(1);
+        self.shared.max.store(max, Ordering::Release);
+        self.shared
+            .discovery_max
+            .store((max * 3 / 4).max(1), Ordering::Release);
+        self.shared.unary_timeout_ms.store(
+            u64::try_from(unary_timeout.as_millis()).unwrap_or(u64::MAX),
+            Ordering::Release,
+        );
+    }
+
+    /// Uses the exact discovery reserve shared with unary registration/polling. The returned ticket
+    /// is held only through one stream authentication and database claim.
+    pub(crate) fn admit_discovery(&self) -> Option<Ticket> {
+        self.shared.admit(Class::Discovery)
     }
 }
 
@@ -388,7 +614,8 @@ impl<S> Layer<S> for Admission {
 }
 
 #[derive(Clone)]
-pub(crate) struct Admit<S> {
+#[doc(hidden)]
+pub struct Admit<S> {
     inner: S,
     shared: Arc<Shared>,
 }
@@ -416,7 +643,8 @@ where
             return Box::pin(std::future::ready(Ok(shed)));
         };
         let call = self.inner.call(request);
-        let limit = (class != Class::Transfer).then_some(self.shared.unary_timeout);
+        let limit = (class != Class::Transfer)
+            .then(|| Duration::from_millis(self.shared.unary_timeout_ms.load(Ordering::Acquire)));
         Box::pin(async move {
             let response = match limit {
                 None => call.await,
@@ -464,7 +692,9 @@ mod tests {
 
     #[test]
     fn a_reserve_is_left_for_leased_work_and_every_ticket_is_given_back() {
-        let shared = Admission::new(8, Duration::from_secs(30)).shared;
+        let admission = Admission::new(8, Duration::from_secs(30));
+        let stream_claims = admission.clone();
+        let shared = admission.shared;
         let tickets: Vec<_> = (0..6)
             .map(|_| {
                 shared
@@ -473,8 +703,8 @@ mod tests {
             })
             .collect();
         assert!(
-            shared.admit(Class::Discovery).is_none(),
-            "discovery is shed at 6 of 8"
+            stream_claims.admit_discovery().is_none(),
+            "a stream claim shares unary discovery saturation and cannot borrow the two lease-report places"
         );
         let reserve: Vec<_> = (0..2)
             .map(|_| shared.admit(Class::Lease).expect("the reserve"))
@@ -485,6 +715,48 @@ mod tests {
         drop(reserve);
         assert_eq!(shared.in_flight.load(Ordering::Acquire), 0, "nothing leaks");
         assert!(shared.admit(Class::Discovery).is_some());
+    }
+
+    #[test]
+    fn task_stream_lifetime_caps_are_exact_and_release_on_drop() {
+        let streams = TaskStreams::new();
+        let tenant = TenantId::new(uuid::Uuid::now_v7());
+        let first = streams.admit(tenant, "alice").expect("first subject slot");
+        let second = streams.admit(tenant, "alice").expect("second subject slot");
+        assert!(matches!(
+            streams.admit(tenant, "alice"),
+            Err(StreamRefused::Subject)
+        ));
+        drop((first, second));
+        assert!(streams.admit(tenant, "alice").is_ok(), "slots return");
+
+        let tenant_streams = TaskStreams::new();
+        let held: Vec<_> = (0..8)
+            .map(|index| {
+                tenant_streams
+                    .admit(tenant, &format!("subject-{index}"))
+                    .expect("tenant place")
+            })
+            .collect();
+        assert!(matches!(
+            tenant_streams.admit(tenant, "ninth"),
+            Err(StreamRefused::Tenant)
+        ));
+        drop(held);
+
+        let process_streams = TaskStreams::new();
+        let process_held: Vec<_> = (0..32)
+            .map(|_| {
+                process_streams
+                    .admit(TenantId::new(uuid::Uuid::now_v7()), "one")
+                    .expect("process place")
+            })
+            .collect();
+        assert!(matches!(
+            process_streams.admit(TenantId::new(uuid::Uuid::now_v7()), "one"),
+            Err(StreamRefused::Process)
+        ));
+        drop(process_held);
     }
 
     fn ip(text: &str) -> IpAddr {

@@ -50,15 +50,16 @@ type EventType string
 
 // The events a host reports, the hook for metrics.
 const (
-	EventRegistered EventType = "registered"
-	EventPoll       EventType = "poll"
-	EventTaskTaken  EventType = "task.taken"
-	EventCompleted  EventType = "task.completed"
-	EventFailed     EventType = "task.failed"
-	EventStale      EventType = "task.stale"
-	EventDropped    EventType = "task.dropped"
-	EventHeartbeat  EventType = "heartbeat"
-	EventReconnect  EventType = "reconnect"
+	EventRegistered    EventType = "registered"
+	EventPoll          EventType = "poll"
+	EventTaskTaken     EventType = "task.taken"
+	EventCompleted     EventType = "task.completed"
+	EventFailed        EventType = "task.failed"
+	EventStale         EventType = "task.stale"
+	EventDropped       EventType = "task.dropped"
+	EventHeartbeat     EventType = "heartbeat"
+	EventReconnect     EventType = "reconnect"
+	EventReceiveFailed EventType = "receive.failed"
 )
 
 // Event is a thing that happened in the host. Only the fields that belong to its Type are set. An
@@ -70,13 +71,15 @@ type Event struct {
 	TaskID          string
 	Activity        string
 	Attempt         int
-	Code            string        // EventFailed: the error code reported; EventDropped: why
-	Retryable       bool          // EventFailed
+	Code            string        // EventFailed/EventReceiveFailed: canonical error code; EventDropped: why
+	Retryable       bool          // EventFailed, EventReceiveFailed
 	Duration        time.Duration // EventCompleted, EventFailed: the time since the task was taken
 	Traceparent     string        // EventTaskTaken: the lease's W3C parent, or empty
 }
 
 type config struct {
+	transport Transport
+
 	maxInflight       int
 	languages         []string
 	pools             []string
@@ -89,6 +92,18 @@ type config struct {
 	onEvent           func(Event)
 	dialOptions       []grpc.DialOption
 }
+
+// Transport selects how task leases are received. Auto streams on protocol 1.4 and polls older servers.
+type Transport string
+
+const (
+	TransportAuto   Transport = "auto"
+	TransportPoll   Transport = "poll"
+	TransportStream Transport = "stream"
+)
+
+// WithTransport selects auto (default), poll or stream. Stream requires protocol 1.4.
+func WithTransport(mode Transport) Option { return func(c *config) { c.transport = mode } }
 
 // Option configures a Host.
 type Option func(*config)
@@ -159,14 +174,15 @@ type running struct {
 // Host is a worker host. Register the handlers, then Start it; Stop ends it. A Host can be started
 // again after it was stopped.
 type Host struct {
-	grpcURL   string
-	namespace string
-	name      string
-	token     sagat.TokenSource
-	cfg       config
-	log       *slog.Logger
-	retry     sagat.RetryPolicy
-	timeout   time.Duration
+	receiveCancel context.CancelFunc // protected by mu; receive only, never a handler
+	grpcURL       string
+	namespace     string
+	name          string
+	token         sagat.TokenSource
+	cfg           config
+	log           *slog.Logger
+	retry         sagat.RetryPolicy
+	timeout       time.Duration
 
 	lifecycle sync.Mutex // serializes Start and Stop
 
@@ -199,7 +215,7 @@ type link struct {
 // session: there is one live session per worker name and identity, and registering again replaces
 // it. Nothing is connected until Start.
 func New(grpcURL, namespace, workerName string, token sagat.TokenSource, opts ...Option) (*Host, error) {
-	cfg := config{maxInflight: defaultMaxInflight, protocolVersion: sagat.ProtocolVersion}
+	cfg := config{transport: TransportAuto, maxInflight: defaultMaxInflight, protocolVersion: sagat.ProtocolVersion}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -208,6 +224,9 @@ func New(grpcURL, namespace, workerName string, token sagat.TokenSource, opts ..
 	}
 	if token == nil {
 		return nil, sagat.Invalid("a token source is required")
+	}
+	if cfg.transport != TransportAuto && cfg.transport != TransportPoll && cfg.transport != TransportStream {
+		return nil, sagat.Invalid("transport is auto, poll or stream")
 	}
 	if cfg.maxInflight < 1 || cfg.maxInflight > 1000 {
 		return nil, sagat.Invalid("maxInflight is between 1 and 1000")
@@ -392,6 +411,11 @@ func (h *Host) Start(ctx context.Context) error {
 		_ = conn.Close()
 		return err
 	}
+	if h.cfg.transport == TransportStream && !supportsStream(h.session.Load().accepted) {
+		endLife()
+		_ = conn.Close()
+		return sagat.NewError(sagat.CodeUnsupportedProtocol, "task streaming requires worker protocol 1.4")
+	}
 	h.mu.Lock()
 	h.active = true
 	h.mu.Unlock()
@@ -431,6 +455,12 @@ func (h *Host) Stop(ctx context.Context) error {
 		defer cancel()
 	}
 	h.stopping.Store(true)
+	h.mu.Lock()
+	receiveCancel := h.receiveCancel
+	h.mu.Unlock()
+	if receiveCancel != nil {
+		receiveCancel()
+	}
 	h.signal()
 	// The poll in progress ends and no other starts; what it leased is in flight from here on.
 	l := h.current

@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WorkerService_RegisterWorker_FullMethodName = "/sagat_octopus_orchestrator.v1.WorkerService/RegisterWorker"
 	WorkerService_PollTasks_FullMethodName      = "/sagat_octopus_orchestrator.v1.WorkerService/PollTasks"
+	WorkerService_StreamTasks_FullMethodName    = "/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks"
 	WorkerService_Heartbeat_FullMethodName      = "/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat"
 	WorkerService_CompleteStep_FullMethodName   = "/sagat_octopus_orchestrator.v1.WorkerService/CompleteStep"
 	WorkerService_FailStep_FullMethodName       = "/sagat_octopus_orchestrator.v1.WorkerService/FailStep"
@@ -57,6 +58,12 @@ const (
 type WorkerServiceClient interface {
 	RegisterWorker(ctx context.Context, in *RegisterWorkerRequest, opts ...grpc.CallOption) (*RegisterWorkerResponse, error)
 	PollTasks(ctx context.Context, in *PollTasksRequest, opts ...grpc.CallOption) (*PollTasksResponse, error)
+	// Added in 1.4 (additive, ADR-0029). `max_tasks` is finite receive credit for this call, not a
+	// per-frame batch size: each delivered lease spends one credit. The server may emit several
+	// nonempty frames, then closes after spending the credit, the aggregate 8 MiB task-input budget,
+	// or the bounded receive window. An underfilled normal window ends with one empty response whose
+	// `retry_after_ms` is positive. Protocol 1.0-1.3 workers continue to use PollTasks.
+	StreamTasks(ctx context.Context, in *PollTasksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PollTasksResponse], error)
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 	CompleteStep(ctx context.Context, in *CompleteStepRequest, opts ...grpc.CallOption) (*StepCommandResponse, error)
 	FailStep(ctx context.Context, in *FailStepRequest, opts ...grpc.CallOption) (*StepCommandResponse, error)
@@ -114,6 +121,25 @@ func (c *workerServiceClient) PollTasks(ctx context.Context, in *PollTasksReques
 	return out, nil
 }
 
+func (c *workerServiceClient) StreamTasks(ctx context.Context, in *PollTasksRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PollTasksResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[0], WorkerService_StreamTasks_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[PollTasksRequest, PollTasksResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_StreamTasksClient = grpc.ServerStreamingClient[PollTasksResponse]
+
 func (c *workerServiceClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HeartbeatResponse)
@@ -156,7 +182,7 @@ func (c *workerServiceClient) ResolveSecrets(ctx context.Context, in *ResolveSec
 
 func (c *workerServiceClient) WriteBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteBlobRequest, WriteBlobResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[0], WorkerService_WriteBlob_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[1], WorkerService_WriteBlob_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +195,7 @@ type WorkerService_WriteBlobClient = grpc.ClientStreamingClient[WriteBlobRequest
 
 func (c *workerServiceClient) ReadBlob(ctx context.Context, in *ReadBlobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadBlobResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[1], WorkerService_ReadBlob_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WorkerService_ServiceDesc.Streams[2], WorkerService_ReadBlob_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +240,12 @@ type WorkerService_ReadBlobClient = grpc.ServerStreamingClient[ReadBlobResponse]
 type WorkerServiceServer interface {
 	RegisterWorker(context.Context, *RegisterWorkerRequest) (*RegisterWorkerResponse, error)
 	PollTasks(context.Context, *PollTasksRequest) (*PollTasksResponse, error)
+	// Added in 1.4 (additive, ADR-0029). `max_tasks` is finite receive credit for this call, not a
+	// per-frame batch size: each delivered lease spends one credit. The server may emit several
+	// nonempty frames, then closes after spending the credit, the aggregate 8 MiB task-input budget,
+	// or the bounded receive window. An underfilled normal window ends with one empty response whose
+	// `retry_after_ms` is positive. Protocol 1.0-1.3 workers continue to use PollTasks.
+	StreamTasks(*PollTasksRequest, grpc.ServerStreamingServer[PollTasksResponse]) error
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	CompleteStep(context.Context, *CompleteStepRequest) (*StepCommandResponse, error)
 	FailStep(context.Context, *FailStepRequest) (*StepCommandResponse, error)
@@ -256,6 +288,9 @@ func (UnimplementedWorkerServiceServer) RegisterWorker(context.Context, *Registe
 }
 func (UnimplementedWorkerServiceServer) PollTasks(context.Context, *PollTasksRequest) (*PollTasksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PollTasks not implemented")
+}
+func (UnimplementedWorkerServiceServer) StreamTasks(*PollTasksRequest, grpc.ServerStreamingServer[PollTasksResponse]) error {
+	return status.Error(codes.Unimplemented, "method StreamTasks not implemented")
 }
 func (UnimplementedWorkerServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
@@ -331,6 +366,17 @@ func _WorkerService_PollTasks_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _WorkerService_StreamTasks_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(PollTasksRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(WorkerServiceServer).StreamTasks(m, &grpc.GenericServerStream[PollTasksRequest, PollTasksResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkerService_StreamTasksServer = grpc.ServerStreamingServer[PollTasksResponse]
 
 func _WorkerService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(HeartbeatRequest)
@@ -455,6 +501,11 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamTasks",
+			Handler:       _WorkerService_StreamTasks_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "WriteBlob",
 			Handler:       _WorkerService_WriteBlob_Handler,

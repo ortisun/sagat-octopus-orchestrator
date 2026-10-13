@@ -183,13 +183,15 @@ func run(scenario, config object) (object, error) {
 	}
 
 	logs := object{}
+	measurements := object{}
 	for key, entry := range hosts {
 		stopWorker(entry, 2*time.Second)
 		logs[key] = entry.log.snapshot()
+		measurements[key] = entry.log.measurements()
 	}
 	return object{
 		"scenario": scenario["name"], "language": "go", "sdkVersion": sagat.Version,
-		"observations": observations, "workerLog": logs, "faultsApplied": p.applied(),
+		"observations": observations, "workerLog": logs, "workerMeasurements": measurements, "faultsApplied": p.applied(),
 	}, nil
 }
 

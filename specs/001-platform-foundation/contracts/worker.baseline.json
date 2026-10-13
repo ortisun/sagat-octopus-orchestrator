@@ -615,6 +615,12 @@
         "output": ".sagat_octopus_orchestrator.v1.ResolveSecretsResponse",
         "serverStreaming": false
       },
+      "StreamTasks": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.PollTasksRequest",
+        "output": ".sagat_octopus_orchestrator.v1.PollTasksResponse",
+        "serverStreaming": true
+      },
       "WriteBlob": {
         "clientStreaming": true,
         "input": ".sagat_octopus_orchestrator.v1.WriteBlobRequest",

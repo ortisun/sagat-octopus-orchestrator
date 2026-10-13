@@ -68,7 +68,8 @@
             }
           }
         }
-      }
+      },
+      "transport": "poll"
     }
   },
   "steps": [

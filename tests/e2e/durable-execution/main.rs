@@ -7,3 +7,5 @@ mod support;
 
 mod engine;
 mod stories;
+
+mod stream_recovery;

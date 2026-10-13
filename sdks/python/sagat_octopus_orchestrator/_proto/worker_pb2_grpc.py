@@ -63,6 +63,11 @@ class WorkerServiceStub:
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
                 response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
                 _registered_method=True)
+        self.StreamTasks = channel.unary_stream(
+                '/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
+                _registered_method=True)
         self.Heartbeat = channel.unary_unary(
                 '/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat',
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.HeartbeatRequest.SerializeToString,
@@ -125,6 +130,17 @@ class WorkerServiceServicer:
 
     def PollTasks(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StreamTasks(self, request, context):
+        """Added in 1.4 (additive, ADR-0029). `max_tasks` is finite receive credit for this call, not a
+        per-frame batch size: each delivered lease spends one credit. The server may emit several
+        nonempty frames, then closes after spending the credit, the aggregate 8 MiB task-input budget,
+        or the bounded receive window. An underfilled normal window ends with one empty response whose
+        `retry_after_ms` is positive. Protocol 1.0-1.3 workers continue to use PollTasks.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -195,6 +211,11 @@ def add_WorkerServiceServicer_to_server(servicer, server):
             ),
             'PollTasks': grpc.unary_unary_rpc_method_handler(
                     servicer.PollTasks,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.SerializeToString,
+            ),
+            'StreamTasks': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamTasks,
                     request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.FromString,
                     response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.SerializeToString,
             ),
@@ -300,6 +321,33 @@ class WorkerService:
             request,
             target,
             '/sagat_octopus_orchestrator.v1.WorkerService/PollTasks',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamTasks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks',
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
             options,

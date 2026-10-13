@@ -175,6 +175,11 @@ func errorOfStatus(caller context.Context, method string, err error, header, tra
 		e := sagat.NewError(sagat.CodeCancelled, "the call was cancelled")
 		e.GRPCStatus = statusName(code)
 		return e.WithCause(err)
+	case codes.Unimplemented:
+		if method == "StreamTasks" {
+			return fail(sagat.CodeUnsupportedProtocol, "the worker service does not support task streaming")
+		}
+		return fail(sagat.CodeInternal, "the worker service failed")
 	case codes.DataLoss:
 		return fail(sagat.CodeProtocol, "the blob stream failed its integrity check")
 	default:

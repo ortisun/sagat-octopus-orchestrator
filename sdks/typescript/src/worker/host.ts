@@ -37,6 +37,8 @@ export interface WorkerConfig {
   retry?: Partial<RetryPolicy>;
   /** Overrides the newest protocol minor the host offers (tests use it to play an older or a newer SDK). */
   protocolVersion?: string;
+  /** Task receive transport. `auto` streams at protocol 1.4+ and polls older servers. */
+  transport?: WorkerTransport;
   /** Overrides the heartbeat interval (otherwise a third of the lease, 500 ms to 10 s). */
   heartbeatIntervalMs?: number;
   logger?: Logger;
@@ -44,6 +46,8 @@ export interface WorkerConfig {
   /** Called for each thing that happens in the host: the hook for metrics. */
   onEvent?: (event: WorkerEvent) => void;
 }
+
+export type WorkerTransport = 'auto' | 'poll' | 'stream';
 
 export type WorkerEvent =
   | { type: 'registered'; protocolVersion: string }
@@ -54,6 +58,7 @@ export type WorkerEvent =
   | { type: 'task.stale'; taskId: string }
   | { type: 'task.dropped'; taskId: string; reason: string }
   | { type: 'heartbeat'; taskId: string }
+  | { type: 'receive.failed'; code: string }
   | { type: 'reconnect' };
 
 type Kind = 'activity' | 'compensation' | 'reconciler';
@@ -66,6 +71,7 @@ interface Registered {
 
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_POLL = 64;
+const MAX_RECEIVE_INPUT_BYTES = 8 * 1024 * 1024;
 const CODE = /^[A-Z0-9_]{1,64}$/;
 
 function minorOf(version: string): number {
@@ -88,6 +94,7 @@ export class WorkerHost {
   private workerId = '';
   #session = '';
   private accepted = '';
+  private streamUnavailable = false;
   private running = false;
   private stopping = false;
   private loop: Promise<void> | undefined;
@@ -99,6 +106,9 @@ export class WorkerHost {
     this.maxInflight = config.maxInflight ?? 10;
     if (!Number.isInteger(this.maxInflight) || this.maxInflight < 1 || this.maxInflight > 1000) {
       throw new SagatError({ code: 'VALIDATION_FAILED', message: 'maxInflight is between 1 and 1000' });
+    }
+    if (config.transport !== undefined && !['auto', 'poll', 'stream'].includes(config.transport)) {
+      throw new SagatError({ code: 'VALIDATION_FAILED', message: 'transport is auto, poll or stream' });
     }
     this.log = safeLogger(config.logger ?? silentLogger);
     this.retry = { ...DEFAULT_RETRY, ...config.retry };
@@ -174,6 +184,11 @@ export class WorkerHost {
     if (this.handlers.size === 0) throw new SagatError({ code: 'VALIDATION_FAILED', message: 'register at least one activity before start' });
     warnIfNotSecure(this.#config.grpcUrl, this.log);
     await this.register();
+    if (this.#config.transport === 'stream' && minorOf(this.accepted) < 4) {
+      this.#rpc?.close();
+      this.#rpc = undefined;
+      throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: 'task streaming requires worker protocol 1.4' });
+    }
     this.running = true;
     this.stopping = false;
     this.loop = this.run();
@@ -197,6 +212,8 @@ export class WorkerHost {
     if (!this.running) return;
     this.stopping = true;
     this.wake?.();
+    // The receive owns no handler: cancel it promptly while already delivered handlers retain their lifecycle.
+    this.#rpc?.cancelReceives();
     const grace = Date.now() + timeoutMs;
     const within = async (promise: Promise<unknown>, ms: number): Promise<'done' | 'late'> => {
       let timer: NodeJS.Timeout | undefined;
@@ -207,10 +224,10 @@ export class WorkerHost {
       clearTimeout(timer);
       return outcome;
     };
-    // The poll in progress ends and no other starts; what it leased is in flight from here on.
+    // The receive in progress ends and no other starts; what it leased is in flight from here on.
     if (this.loop && (await within(this.loop, timeoutMs)) === 'late') {
-      // Only the poll the server holds is cancelled: a report on its way may still arrive within the grace.
-      this.#rpc?.cancelPolls();
+      // Only receives are cancelled: a report on its way may still arrive within the grace.
+      this.#rpc?.cancelReceives();
       await this.loop.catch(() => undefined);
     }
     const pending = Promise.all([...this.inflight.values()].map((task) => task.done));
@@ -247,6 +264,7 @@ export class WorkerHost {
         this.workerId = response.worker_id;
         this.#session = response.session_token;
         this.accepted = response.accepted_protocol_version;
+        this.streamUnavailable = false;
         this.log.info('worker registered', { worker: this.#config.workerName, protocol: this.accepted });
         this.#emit({ type: 'registered', protocolVersion: this.accepted });
         return;
@@ -287,14 +305,67 @@ export class WorkerHost {
     // it at once is not asked again at once (SPEC §6.2).
     let refused = 0;
     while (!this.stopping) {
+      let streaming = false;
+      let meaningful = false;
       try {
         const free = this.maxInflight - this.inflight.size;
         if (free <= 0) {
           await this.idle(50);
           continue;
         }
-        const response = await this.#channel().pollTasks({ worker_id: this.workerId, session_token: this.#session, max_tasks: Math.min(free, MAX_POLL) });
-        failures = 0;
+        const asked = Math.min(free, MAX_POLL);
+        streaming = this.#config.transport === 'stream'
+          || ((this.#config.transport ?? 'auto') === 'auto' && minorOf(this.accepted) >= 4 && !this.streamUnavailable);
+        if (streaming && this.#config.transport === 'stream' && minorOf(this.accepted) < 4) {
+          throw new SagatError({ code: 'UNSUPPORTED_PROTOCOL', message: 'task streaming requires worker protocol 1.4' });
+        }
+        if (streaming) {
+          const request = { worker_id: this.workerId, session_token: this.#session, max_tasks: asked };
+          let received = 0;
+          let inputBytes = 0;
+          let waitMs: number | undefined;
+          let malformed = false;
+          const ids = new Set<string>();
+          for await (const response of this.#channel().streamTasks(request)) {
+            if (this.stopping) return;
+            if (response.tasks.length === 0) {
+              waitMs = response.retry_after_ms > 0 ? response.retry_after_ms : 1000;
+              malformed = response.retry_after_ms <= 0;
+              break;
+            }
+            if (response.retry_after_ms !== 0) malformed = true;
+            let accepted = 0;
+            for (const lease of response.tasks) {
+              const bytes = Buffer.byteLength(lease.input_json, 'utf8');
+              if (received >= asked || this.inflight.size >= this.maxInflight
+                || inputBytes + bytes > MAX_RECEIVE_INPUT_BYTES || ids.has(lease.task_id)) {
+                malformed = true;
+                break;
+              }
+              ids.add(lease.task_id);
+              received += 1;
+              accepted += 1;
+              inputBytes += bytes;
+              meaningful = true;
+              this.dispatch(lease);
+            }
+            this.#emit({ type: 'poll', tasks: accepted });
+            if (malformed) break;
+          }
+          if (meaningful) failures = 0;
+          refused = 0;
+          if (malformed) {
+            this.log.warn('the task stream exceeded its bounded receive contract');
+            await this.idle(Math.min(MAX_WAIT_MS, Math.max(50, waitMs ?? 1000)));
+          } else if (received < asked) {
+            // An underfilled EOF without the terminal hint is an interrupted receive, never a busy reopen.
+            const wait = Math.min(MAX_WAIT_MS, Math.max(50, waitMs ?? 1000));
+            await this.idle(Math.round(wait * (0.8 + Math.random() * 0.4)));
+          }
+          continue;
+        }
+        const response = await this.#channel().pollTasks({ worker_id: this.workerId, session_token: this.#session, max_tasks: asked });
+        if (response.tasks.length > 0) failures = 0;
         refused = 0;
         this.#emit({ type: 'poll', tasks: response.tasks.length });
         // At most as many as there is room for: the platform honours `max_tasks`, a broken one is not believed.
@@ -308,9 +379,16 @@ export class WorkerHost {
         }
       } catch (error) {
         if (this.stopping) return;
+        if (meaningful) failures = 0;
         if (!(error instanceof SagatError)) {
-          this.log.error('the poll loop failed', { error: error instanceof Error ? error.name : 'unknown' });
+          this.log.error('the receive loop failed', { error: error instanceof Error ? error.name : 'unknown' });
           await this.idle(1000);
+          continue;
+        }
+        this.#emit({ type: 'receive.failed', code: error.code });
+        if (streaming && (this.#config.transport ?? 'auto') === 'auto' && error.status === 'UNIMPLEMENTED') {
+          this.streamUnavailable = true;
+          await this.idle(Math.max(100, backoffDelayMs(this.retry, failures++)));
           continue;
         }
         if (error.code === 'UNAUTHENTICATED') {

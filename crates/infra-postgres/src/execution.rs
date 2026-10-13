@@ -1221,6 +1221,45 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn worker_session_room(
+        &mut self,
+        session_id: Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> Result<u32, StoreError> {
+        // This row lock serialises claims for the session across runs and replicas. Replacement
+        // and binding revocation update or lock this same row, so stale authority cannot lease
+        // after either operation commits. It is taken after the drain fence and before activity
+        // policy locks to preserve a single lock order.
+        let max_inflight: Option<i32> = sqlx::query_scalar(
+            "SELECT max_inflight FROM worker_sessions \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 AND token_hash = $4 \
+               AND subject = $5 AND expires_at > clock_timestamp() FOR UPDATE",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(session_id)
+        .bind(token_hash)
+        .bind(subject)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let Some(max_inflight) = max_inflight else {
+            return Ok(0);
+        };
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM steps WHERE tenant_id = $1 \
+             AND status IN ('LEASED', 'RUNNING') AND leased_by = $2",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(session_id.to_string())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let limit = u32::try_from(max_inflight).map_err(|_| corrupt("max inflight"))?;
+        Ok(limit.saturating_sub(u32::try_from(active).unwrap_or(u32::MAX)))
+    }
+
     async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
         sqlx::query_scalar(
             "SELECT pattern FROM worker_bindings \

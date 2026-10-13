@@ -128,7 +128,7 @@ async fn mixed_workers_only_lease_run_input_blobs_to_protocol_1_3() {
     assert_eq!(blob_lease.run_id, blob_run);
     assert_eq!(blob_lease.input_blob_ref, blob);
 
-    register(&mut old, "old-input", "1.999", "1.3").await;
+    register(&mut old, "old-input", "1.999", "1.4").await;
     let replaced_minor: i32 =
         sqlx::query_scalar("SELECT accepted_protocol_minor FROM worker_sessions WHERE id = $1")
             .bind(Uuid::parse_str(&old.worker_id).expect("worker uuid"))
@@ -136,7 +136,7 @@ async fn mixed_workers_only_lease_run_input_blobs_to_protocol_1_3() {
             .await
             .expect("updated minor");
     assert_eq!(
-        replaced_minor, 3,
+        replaced_minor, 4,
         "a reconnect persists the negotiated minor"
     );
 }

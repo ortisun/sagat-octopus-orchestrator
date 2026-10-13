@@ -20,8 +20,29 @@ import (
 
 // workerLog is the log of one worker: an entry is appended when a handler ends.
 type workerLog struct {
-	mu      sync.Mutex
-	entries []any
+	mu           sync.Mutex
+	entries      []any
+	inflight     int
+	peakInflight int
+	deliveries   []any
+}
+
+// entered measures the actual handler boundary; it is separate from normalized contract logs.
+func (l *workerLog) entered(ctx context.Context) func() {
+	taken := time.Now().UnixMilli()
+	task := worker.TaskFrom(ctx)
+	l.mu.Lock()
+	l.inflight++
+	l.peakInflight = max(l.peakInflight, l.inflight)
+	l.deliveries = append(l.deliveries, object{"runId": task.RunID, "node": task.Node, "takenAtUnixMs": taken})
+	l.mu.Unlock()
+	return func() { l.mu.Lock(); l.inflight--; l.mu.Unlock() }
+}
+
+func (l *workerLog) measurements() object {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return object{"peakInflight": l.peakInflight, "deliveries": append([]any{}, l.deliveries...)}
 }
 
 func (l *workerLog) add(entry object) {
@@ -248,8 +269,11 @@ func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, e
 	}
 	opts := []worker.Option{
 		worker.WithMaxInflight(maxInflight),
-		worker.WithDialOptions(grpc.WithChainUnaryInterceptor(p.unary())),
+		worker.WithDialOptions(grpc.WithChainUnaryInterceptor(p.unary()), grpc.WithChainStreamInterceptor(p.stream())),
 		worker.WithRetry(sagat.RetryPolicy{InitialDelay: 20 * time.Millisecond, MaxDelay: 200 * time.Millisecond}),
+	}
+	if mode := asString(def["transport"]); mode != "" {
+		opts = append(opts, worker.WithTransport(worker.Transport(mode)))
 	}
 	if v := asString(def["protocolVersion"]); v != "" {
 		opts = append(opts, worker.WithProtocolVersion(v))
@@ -274,6 +298,8 @@ func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, e
 		switch kind {
 		case "reconciler":
 			registerErr = host.RegisterReconciler(name, func(ctx context.Context, input json.RawMessage) (verdict worker.Verdict, err error) {
+				leave := log.entered(ctx)
+				defer leave()
 				outcome := "returned"
 				defer func() { log.add(logEntry(ctx, name, kind, input, outcome)) }()
 				_, verdict, err = behave(ctx, behavior, input, &outcome)
@@ -281,6 +307,8 @@ func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, e
 			})
 		default:
 			handler := func(ctx context.Context, input json.RawMessage) (any, error) {
+				leave := log.entered(ctx)
+				defer leave()
 				outcome := "returned"
 				defer func() { log.add(logEntry(ctx, name, kind, input, outcome)) }()
 				result, _, err := behave(ctx, behavior, input, &outcome)

@@ -1,0 +1,108 @@
+{
+  "name": "worker-stream-faults",
+  "description": "Protocol 1.4 public host: streaming refusals, re-registration and partial delivery preserve heartbeats and exactly one committed completion. Fault plan proves the stream path was executed.",
+  "server": {
+    "leaseTtlSeconds": 3
+  },
+  "workflows": {
+    "one": {
+      "name": "transport-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "net.work"
+        }
+      ]
+    }
+  },
+  "faults": [
+    {
+      "channel": "grpc",
+      "match": "RegisterWorker",
+      "action": "failBefore",
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "StreamTasks",
+      "action": "status",
+      "code": "UNAVAILABLE",
+      "times": 2
+    },
+    {
+      "channel": "grpc",
+      "match": "StreamTasks",
+      "action": "status",
+      "code": "UNAUTHENTICATED",
+      "after": 2,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "StreamTasks",
+      "action": "dropStreamAfterFirst",
+      "after": 3,
+      "times": 1
+    },
+    {
+      "channel": "grpc",
+      "match": "Heartbeat",
+      "action": "status",
+      "code": "UNAVAILABLE",
+      "times": 2
+    },
+    {
+      "channel": "grpc",
+      "match": "CompleteStep",
+      "action": "status",
+      "code": "UNAVAILABLE",
+      "times": 2
+    }
+  ],
+  "workers": {
+    "w1": {
+      "workerName": "net-worker",
+      "maxInflight": 2,
+      "autostart": false,
+      "heartbeatIntervalMs": 150,
+      "activities": {
+        "net.work": {
+          "behavior": {
+            "sleepMs": 1200,
+            "returns": {
+              "done": true
+            }
+          }
+        }
+      },
+      "transport": "stream"
+    }
+  },
+  "steps": [
+    {
+      "id": "run",
+      "op": "start",
+      "workflow": "one",
+      "input": {
+        "n": 1
+      }
+    },
+    {
+      "id": "worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "done",
+      "op": "waitForCompletion",
+      "run": "run",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "journal",
+      "op": "events",
+      "run": "run"
+    }
+  ]
+}

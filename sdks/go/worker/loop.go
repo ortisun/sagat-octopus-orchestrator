@@ -38,6 +38,7 @@ func (h *Host) idle(ctx context.Context, d time.Duration) {
 func (h *Host) run(ctx context.Context, l *link) {
 	defer close(l.loopDone)
 	failures, refused := 0, 0
+	var fallback *session
 	for !h.stopping.Load() {
 		free := h.cfg.maxInflight - h.inflight()
 		if free <= 0 {
@@ -45,6 +46,36 @@ func (h *Host) run(ctx context.Context, l *link) {
 			continue
 		}
 		sess := h.session.Load()
+		if h.cfg.transport != TransportPoll && supportsStream(sess.accepted) && fallback != sess {
+			retry, err := h.receive(ctx, l, sess, min(free, maxPoll))
+			if err != nil {
+				if h.stopping.Load() {
+					return
+				}
+				var se *sagat.Error
+				if errors.As(err, &se) {
+					h.emit(Event{Type: EventReceiveFailed, Code: string(se.Code), Retryable: se.Retryable})
+				}
+				if errors.As(err, &se) && se.GRPCStatus == "UNIMPLEMENTED" && h.cfg.transport == TransportAuto {
+					fallback = sess
+					h.log.Warn("task streaming unavailable; using polling for this registration")
+					h.idle(ctx, 100*time.Millisecond)
+				} else {
+					h.pollFailed(ctx, l, err, &failures, &refused)
+				}
+			} else {
+				failures, refused = 0, 0
+				if retry > 0 {
+					h.idle(ctx, boff.Jitter(pollWait(retry)))
+				}
+			}
+			continue
+		}
+		if h.cfg.transport == TransportStream && !supportsStream(sess.accepted) {
+			h.emit(Event{Type: EventReceiveFailed, Code: string(sagat.CodeUnsupportedProtocol)})
+			h.pollFailed(ctx, l, sagat.NewError(sagat.CodeUnsupportedProtocol, "task streaming requires worker protocol 1.4"), &failures, &refused)
+			continue
+		}
 		response, err := l.rpc.poll(ctx, &pb.PollTasksRequest{
 			WorkerId: sess.workerID, SessionToken: sess.token, MaxTasks: int32(min(free, maxPoll)),
 		})

@@ -13,7 +13,7 @@ from .activity import (
     Verdict,
     run_blocking,
 )
-from .host import WorkerConfig, WorkerEvent, WorkerHost
+from .host import WorkerConfig, WorkerEvent, WorkerHost, WorkerTransport
 
 __all__ = [
     "ActivityContext",
@@ -29,5 +29,6 @@ __all__ = [
     "WorkerConfig",
     "WorkerEvent",
     "WorkerHost",
+    "WorkerTransport",
     "run_blocking",
 ]

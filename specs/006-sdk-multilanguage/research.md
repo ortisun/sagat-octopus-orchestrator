@@ -84,13 +84,15 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   feature 002; each SDK copies it with a script and a test fails when its copy is behind. Moving it would touch
   every feature's contracts for no gain.
 - **G122 — Resolved as a product decision: MIT.** The owner selected the MIT License on 2026-10-11. The root licence and all five SDK package licences/metadata are aligned, and clean-consumer package tests pass. Registry publication remains G123.
-- **G123 — Local distribution is verified; registry release remains open.** `scripts/package-sdks.sh` builds eight artifacts with checksums, verifies embedded MIT licences and installs all five SDKs into clean consumers. Paired builds with a fixed source revision matched hashes. `.github/workflows/sdk-packages.yml` runs this credential-free and stores CI artifacts. Actual npm/PyPI/NuGet/Maven/Go-proxy releases, signing, release notes, Maven sources/Javadocs and durable release retention still require completion; see `docs/runbooks/sdk-packaging.md`.
+- **G123 — Local distribution is verified; registry release remains open.** `scripts/package-sdks.sh` builds eight artifacts with checksums, verifies embedded MIT licences and installs all five SDKs into clean consumers. Paired builds with a fixed source revision matched hashes. `.github/workflows/sdk-packages.yml` runs this credential-free and stores CI artifacts. The candidate includes release notes and Maven sources/Javadocs (T006-037). Actual npm/PyPI/NuGet/Maven/Go-proxy publication, release signing and durable release retention remain open; see `docs/runbooks/sdk-packaging.md`.
 - **G124 — A server restart is not in the conformance suite.** The scenarios fail the transport and the session
   (`worker-transport-faults`: a registration that never leaves, refused polls, an UNAUTHENTICATED poll, refused
   heartbeats and completions) but do not stop the engine; the engine would come back on another port. Each SDK's
   unit tests cover a session that is gone.
-- **G125 — The worker protocol polls; streaming of tasks is not built.** The benchmark measures polling and
-  backpressure only (NFR-006-PERF asks to measure streaming too).
+- **G125 — Streaming implemented; comparative measurement pending (2026-10-12).** ADR-0029
+  and protocol 1.4 add finite-credit task streams in all five SDKs. The 95 common conformance
+  executions, six E2E and nine fault tests pass. T006-042 remains open for the poll/stream
+  comparison and final artifact regeneration.
 - **G126 — Resolved for opt-in ecosystem integration (2026-10-12).** TypeScript, Python, Go and
   Java bridge the existing hooks to real OpenTelemetry APIs; C# retains native ActivitySource/Meter.
   In-memory SDK exporter tests prove parentage, bounded attributes/metrics and exporter failure

@@ -433,6 +433,17 @@ pub trait RunTx: Send {
         subject: &str,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// Locks and revalidates the worker session that is about to receive a lease, then returns the
+    /// exact number of leases it can still hold. The lock is retained to commit, so claims on
+    /// different runs and replicas cannot race the session's `max_inflight` limit. Call this after
+    /// the run/drain fences and before activity admission to keep one global lock order.
+    fn worker_session_room(
+        &mut self,
+        session_id: uuid::Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
     /// The activity patterns `subject` is bound to in this run's namespace. Read on the
     /// transaction's own connection: a caller that holds one connection and waits for a second
     /// from the same pool can starve it under load.

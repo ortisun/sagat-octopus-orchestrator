@@ -71,7 +71,7 @@ async def test_a_worker_registers_its_activities_and_the_newest_protocol_it_spea
     assert list(request.capabilities.languages) == ["python"]
     assert list(request.capabilities.activities) == ["a.undo", "b.second", "c.lookup"]
     assert list(request.capabilities.pools) == []
-    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.3")
+    assert (request.capabilities.max_inflight, request.capabilities.protocol_version) == (7, "1.4")
     assert register.metadata["authorization"] == "Bearer tok"
     assert host.protocol_version == "1.2"
 
@@ -458,6 +458,176 @@ async def test_a_session_that_is_gone_is_registered_again_and_the_worker_goes_on
     fake.leases = [lease()]
     await until(lambda: len(fake.of("CompleteStep")) == 1, "the task after it")
     assert any(e.type == "reconnect" for e in events)
+
+
+async def test_protocol_1_4_streams_two_frames_and_dispatches_them_before_the_receive_ends(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.hold_stream = True
+    fake.stream_batches = [
+        [lease(task_id="run-1/charge/1")],
+        [lease(task_id="run-2/charge/1", run_id="run-2")],
+    ]
+    host = make_host(max_inflight=3)
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 2, "both streamed tasks before EOF")
+    assert len(fake.of("StreamTasks")) == 1
+    assert fake.of("StreamTasks")[0].request.max_tasks == 3
+    assert fake.of("PollTasks") == []
+    began = time.monotonic()
+    await host.stop(0.5)
+    assert time.monotonic() - began < 1
+
+
+async def test_a_stream_error_after_a_frame_preserves_that_handler_and_reconnects_only_receiving(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.stream_batches = [[lease()]]
+    fake.stream_failure_after_first = grpc.StatusCode.UNAVAILABLE
+    host = make_host(max_inflight=2)
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the partial delivery to complete")
+    await until(lambda: len(fake.of("StreamTasks")) >= 2, "a receive reconnect")
+    assert fake.of("PollTasks") == []
+
+
+async def test_a_full_credit_frame_does_not_hide_an_unimplemented_trailer_from_auto_fallback(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.stream_batches = [[lease()]]
+    fake.stream_failure_after_first = grpc.StatusCode.UNIMPLEMENTED
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the full-credit frame to complete")
+    await until(lambda: len(fake.of("PollTasks")) >= 1, "polling after the trailer was classified")
+    assert len(fake.of("StreamTasks")) == 1
+
+
+async def test_auto_falls_back_only_when_task_streaming_is_unimplemented(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.failures["StreamTasks"] = [Scripted(grpc.StatusCode.UNIMPLEMENTED)]
+    fake.leases = [lease()]
+    host = make_host()
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the task through fallback polling")
+    assert len(fake.of("StreamTasks")) == 1
+    assert len(fake.of("PollTasks")) >= 1
+
+
+async def test_explicit_streaming_refuses_an_older_negotiated_server(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    host = make_host(transport="stream")
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    with pytest.raises(SagatError) as refused:
+        await host.start()
+    assert refused.value.code == "UNSUPPORTED_PROTOCOL"
+    assert fake.of("PollTasks") == []
+
+
+async def test_explicit_streaming_reports_unimplemented_as_unsupported_without_polling(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.failures["StreamTasks"] = [Scripted(grpc.StatusCode.UNIMPLEMENTED)]
+    events: list[WorkerEvent] = []
+    host = make_host(transport="stream", on_event=events.append)
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    await host.start()
+    await until(lambda: any(event.type == "receive.failed" for event in events), "the safe receive failure event")
+    failed = next(event for event in events if event.type == "receive.failed")
+    assert failed.code == "UNSUPPORTED_PROTOCOL"
+    assert fake.of("PollTasks") == []
+
+
+async def test_explicit_streaming_does_not_call_stream_tasks_after_reregistration_negotiates_1_3(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.stream_batches = [[lease()]]
+    fake.stream_failure_after_first = grpc.StatusCode.UNAUTHENTICATED
+    events: list[WorkerEvent] = []
+    host = make_host(transport="stream", max_inflight=1, on_event=events.append)
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("StreamTasks")) == 1, "the first stream")
+    fake.accepted_version = "1.3"
+    await until(lambda: len(fake.of("RegisterWorker")) == 2, "the downgraded registration")
+    await until(
+        lambda: any(event.type == "receive.failed" and event.code == "UNSUPPORTED_PROTOCOL" for event in events),
+        "the local unsupported-protocol receive failure",
+    )
+    assert len(fake.of("CompleteStep")) == 1
+    assert len(fake.of("StreamTasks")) == 1
+    assert fake.of("PollTasks") == []
+
+
+async def test_a_stream_that_exceeds_capacity_runs_bounded_work_and_is_cancelled(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.hold_stream = True
+    fake.stream_batches = [[
+        lease(task_id="run-1/charge/1"),
+        lease(task_id="run-2/charge/1", run_id="run-2"),
+    ]]
+    handled = 0
+
+    async def charge(_input: Any, ctx: ActivityContext) -> None:
+        nonlocal handled
+        handled += 1
+        await ctx.cancellation.wait()
+
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", charge)
+    await host.start()
+    await until(lambda: handled == 1, "one bounded handler")
+    await asyncio.sleep(0.1)
+    assert handled == 1
+    assert len(fake.of("StreamTasks")) == 1
+    assert fake.of("StreamTasks")[0].request.max_tasks == 1
+    await host.stop(0.05)
+
+
+async def test_a_stream_cannot_make_the_host_own_more_than_the_aggregate_input_budget(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.stream_batches = [[lease(input_json="x" * (8 * 1024 * 1024 + 1))]]
+    handled = False
+
+    def charge(_input: Any, _ctx: ActivityContext) -> None:
+        nonlocal handled
+        handled = True
+
+    host = make_host(max_inflight=1)
+    host.register_activity("charge", charge, blocking=False)
+    await host.start()
+    await asyncio.sleep(0.15)
+    assert handled is False
+    assert len(fake.of("CompleteStep")) + len(fake.of("FailStep")) == 0
+
+
+async def test_an_empty_stream_hint_is_followed_by_a_wait_never_by_another_receive_at_once(
+    fake: FakeWorkerService, make_host: MakeHost
+) -> None:
+    fake.accepted_version = "1.4"
+    host = make_host()
+    host.register_activity("charge", lambda _i, _c: None, blocking=False)
+    await host.start()
+    await asyncio.sleep(0.4)
+    receives = len(fake.of("StreamTasks"))
+    assert 2 <= receives <= 10, f"{receives} empty receive windows in 400 ms"
+    assert fake.of("PollTasks") == []
 
 
 async def test_a_poll_that_fails_is_followed_by_another_after_a_pause_and_a_registration_that_never_left_is_repeated(

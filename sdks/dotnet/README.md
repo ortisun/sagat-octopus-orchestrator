@@ -263,7 +263,7 @@ duration that is not a whole number of milliseconds (`TimeSpan.FromTicks(15_000)
 SemVer. Before 1.0 a minor version may change the .NET API; the **wire** contract does not move with it: REST is additive within
 `/v1` and the worker protocol is additive within `1.x` (the host negotiates; a newer SDK against an older server runs at the
 server's version, an older SDK ignores fields it does not know). After 1.0 a breaking change of the API is a major version.
-`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.3`) the newest worker protocol minor the SDK speaks.
+`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.4`) the newest worker protocol minor the SDK speaks.
 
 ## Runtime version matrix
 

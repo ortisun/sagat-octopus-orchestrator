@@ -102,6 +102,466 @@ async fn nothing_to_do_is_an_empty_answer_with_a_retry_hint_not_an_error() {
     assert_eq!(answer.retry_after_ms, 500);
 }
 
+async fn register_stream_worker(worker: &mut Worker<'_>, max_inflight: i32) {
+    let mut message = Worker::register_message(&["act.a"], max_inflight);
+    message
+        .capabilities
+        .as_mut()
+        .expect("capabilities")
+        .protocol_version = "1.4".into();
+    let registered = worker
+        .client
+        .register_worker(worker.req(message))
+        .await
+        .expect("register 1.4")
+        .into_inner();
+    assert_eq!(registered.accepted_protocol_version, "1.4");
+    worker.worker_id = registered.worker_id;
+    worker.session = registered.session_token;
+}
+
+#[tokio::test]
+async fn a_task_stream_spends_credit_across_successive_frames() {
+    let p = platform().await;
+    let wf = p
+        .publish("stream-waves", &single_ir("stream-waves", None))
+        .await;
+    let mut w = p.worker("wendy").await;
+    register_stream_worker(&mut w, 2).await;
+    let response = w
+        .client
+        .stream_tasks(w.req(w.poll_message(2)))
+        .await
+        .expect("open stream");
+    let mut stream = response.into_inner();
+
+    let first_run = p.start(&wf, &json!({"wave": 1})).await;
+    let first = stream
+        .message()
+        .await
+        .expect("first frame")
+        .expect("first frame present");
+    assert_eq!(first.tasks.len(), 1);
+    assert_eq!(first.tasks[0].run_id, first_run);
+
+    let second_run = p.start(&wf, &json!({"wave": 2})).await;
+    let second = stream
+        .message()
+        .await
+        .expect("second frame")
+        .expect("second frame present");
+    assert_eq!(second.tasks.len(), 1);
+    assert_eq!(second.tasks[0].run_id, second_run);
+    assert!(stream.message().await.expect("filled eof").is_none());
+}
+
+#[tokio::test]
+async fn task_stream_byte_credit_is_cumulative_across_frames() {
+    let p = platform().await;
+    let wf = p
+        .publish("stream-byte-credit", &single_ir("stream-byte-credit", None))
+        .await;
+    let mut all_runs = Vec::new();
+    for index in 0..10 {
+        all_runs.push(
+            p.start(&wf, &json!({"index": index, "large": "x".repeat(220_000)}))
+                .await,
+        );
+    }
+    let mut w = p.worker("wendy").await;
+    register_stream_worker(&mut w, 64).await;
+    let mut stream = w
+        .client
+        .stream_tasks(w.req(w.poll_message(64)))
+        .await
+        .expect("open stream")
+        .into_inner();
+    let first = stream
+        .message()
+        .await
+        .expect("first byte frame")
+        .expect("first byte frame present");
+    assert!(!first.tasks.is_empty());
+
+    for index in 10..40 {
+        all_runs.push(
+            p.start(&wf, &json!({"index": index, "large": "x".repeat(220_000)}))
+                .await,
+        );
+    }
+    let mut frames = 1;
+    let mut bytes = first
+        .tasks
+        .iter()
+        .map(|task| task.input_json.len())
+        .sum::<usize>();
+    let mut smallest_task = first
+        .tasks
+        .iter()
+        .map(|task| task.input_json.len())
+        .min()
+        .expect("first frame has tasks");
+    let mut delivered = first.tasks.len();
+    let mut terminal = 0;
+    while let Some(frame) = stream.message().await.expect("byte-budget frame") {
+        if frame.tasks.is_empty() {
+            terminal += 1;
+            assert!(frame.retry_after_ms > 0);
+        } else {
+            frames += 1;
+            delivered += frame.tasks.len();
+            bytes += frame
+                .tasks
+                .iter()
+                .map(|task| task.input_json.len())
+                .sum::<usize>();
+            smallest_task = smallest_task.min(
+                frame
+                    .tasks
+                    .iter()
+                    .map(|task| task.input_json.len())
+                    .min()
+                    .expect("data frame has tasks"),
+            );
+        }
+    }
+    assert!(frames >= 2, "the byte budget was spent across frames");
+    assert!(
+        bytes <= sagat_application::worker::MAX_POLL_BYTES,
+        "the aggregate receive window exceeded its byte credit"
+    );
+    assert!(
+        sagat_application::worker::MAX_POLL_BYTES - bytes < smallest_task,
+        "the unused credit must be too small for even the smallest task"
+    );
+    assert_eq!(terminal, 1, "byte exhaustion has one terminal hint");
+    assert!(
+        delivered < all_runs.len(),
+        "one task must not fit the remainder"
+    );
+
+    let run_ids = all_runs
+        .iter()
+        .map(|run| uuid::Uuid::parse_str(run).expect("run id"))
+        .collect::<Vec<_>>();
+    let untouched: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id = $1 AND run_id = ANY($2) \
+         AND node = 'a' AND status = 'READY' AND attempt = 0 AND leased_by IS NULL",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(&run_ids)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("unclaimed remainder");
+    assert!(
+        untouched > 0,
+        "a task too large for the remainder stays ready"
+    );
+}
+
+#[tokio::test]
+async fn unary_and_stream_claims_share_the_exact_session_limit() {
+    let p = platform().await;
+    let wf = p
+        .publish("mixed-claims", &single_ir("mixed-claims", None))
+        .await;
+    for index in 0..12 {
+        p.start(&wf, &json!({"index": index})).await;
+    }
+    let mut w = p.worker("wendy").await;
+    register_stream_worker(&mut w, 2).await;
+    let mut stream_client = w.client.clone();
+    let mut poll_client = w.client.clone();
+    let stream_request = w.req(w.poll_message(8));
+    let poll_request = w.req(w.poll_message(8));
+    let (stream, poll) = tokio::join!(
+        stream_client.stream_tasks(stream_request),
+        poll_client.poll_tasks(poll_request)
+    );
+    let mut stream = stream.expect("stream call").into_inner();
+    let polled = poll.expect("unary poll").into_inner();
+    let mut streamed = 0;
+    let mut terminal_frames = 0;
+    while let Some(frame) = stream.message().await.expect("stream frame") {
+        if frame.tasks.is_empty() {
+            terminal_frames += 1;
+            assert!(frame.retry_after_ms > 0);
+        } else {
+            streamed += frame.tasks.len();
+        }
+    }
+    assert_eq!(
+        streamed + polled.tasks.len(),
+        2,
+        "mixed transports cannot race past the durable session cap"
+    );
+    assert_eq!(terminal_frames, 1, "one underfilled terminal hint");
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id = $1 \
+         AND status IN ('LEASED', 'RUNNING') AND leased_by = $2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(&w.worker_id)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("active leases");
+    assert_eq!(active, 2, "no later stream claim overshot the cap");
+}
+
+#[tokio::test]
+async fn task_stream_credit_is_validated_and_old_sessions_cannot_lease() {
+    let p = platform().await;
+    let wf = p
+        .publish("old-stream", &single_ir("old-stream", None))
+        .await;
+    p.start(&wf, &json!({})).await;
+    let mut old = p.worker("old-worker").await;
+    old.register(&["act.a"]).await;
+    let refused = old.client.stream_tasks(old.req(old.poll_message(1))).await;
+    assert_code(refused, Code::InvalidArgument, "UNSUPPORTED_PROTOCOL");
+    assert_eq!(old.poll(1).await.len(), 1, "stream refusal leased nothing");
+
+    let mut current = p.worker("current-worker").await;
+    register_stream_worker(&mut current, 4).await;
+    for credit in [0, 65, -1] {
+        let status = current
+            .client
+            .stream_tasks(current.req(current.poll_message(credit)))
+            .await
+            .expect_err("invalid stream credit");
+        assert_eq!(status.code(), Code::InvalidArgument);
+    }
+}
+
+#[tokio::test]
+async fn task_stream_lifetime_admission_survives_headers_and_is_released_on_drop() {
+    let p = platform().await;
+    let wf = p
+        .publish("stalled-streams", &single_ir("stalled-streams", None))
+        .await;
+    for index in 0..2 {
+        p.start(&wf, &json!({"index": index, "large": "x".repeat(180_000)}))
+            .await;
+    }
+    let mut w = p.worker("wendy").await;
+    register_stream_worker(&mut w, 4).await;
+    let mut first_client = p.connect("wendy", TENANT).await;
+    first_client.worker_id.clone_from(&w.worker_id);
+    first_client.session.clone_from(&w.session);
+    first_client.client = sagat_api_grpc::pb::worker_service_client::WorkerServiceClient::new(
+        tonic::transport::Endpoint::from_shared(p.api.grpc_url.clone())
+            .expect("gRPC endpoint")
+            .initial_stream_window_size(0_u32)
+            .connect()
+            .await
+            .expect("zero-window connection"),
+    );
+    let mut second_client = p.connect("wendy", TENANT).await;
+    second_client.worker_id.clone_from(&w.worker_id);
+    second_client.session.clone_from(&w.session);
+    second_client.client = sagat_api_grpc::pb::worker_service_client::WorkerServiceClient::new(
+        tonic::transport::Endpoint::from_shared(p.api.grpc_url.clone())
+            .expect("gRPC endpoint")
+            .initial_stream_window_size(0_u32)
+            .connect()
+            .await
+            .expect("zero-window connection"),
+    );
+    let mut refused_client = p.connect("wendy", TENANT).await;
+    refused_client.worker_id.clone_from(&w.worker_id);
+    refused_client.session.clone_from(&w.session);
+
+    let first = first_client
+        .client
+        .stream_tasks(first_client.req(first_client.poll_message(1)))
+        .await
+        .expect("first stream");
+    let second = second_client
+        .client
+        .stream_tasks(second_client.req(second_client.poll_message(1)))
+        .await
+        .expect("second stream");
+    let refused = refused_client
+        .client
+        .stream_tasks(refused_client.req(refused_client.poll_message(1)))
+        .await
+        .expect_err("the subject cap is held past response headers");
+    assert_eq!(refused.code(), Code::ResourceExhausted);
+
+    // Neither response body is read or dropped, and these two connections advertise a zero stream
+    // window, so both server sends stop on flow-control capacity. The connection watchdog,
+    // rather than another body poll, must tear them down and release the body-owned tickets.
+    tokio::time::sleep(Duration::from_millis(5_100)).await;
+    p.start(&wf, &json!({"index": 3, "large": "x".repeat(180_000)}))
+        .await;
+    let mut replacement_client = p.connect("wendy", TENANT).await;
+    replacement_client.worker_id.clone_from(&w.worker_id);
+    replacement_client.session.clone_from(&w.session);
+    let replacement = replacement_client
+        .client
+        .stream_tasks(replacement_client.req(replacement_client.poll_message(1)))
+        .await
+        .expect("the transport watchdog releases the stalled bodies");
+    let mut replacement = replacement.into_inner();
+    let frame = replacement
+        .message()
+        .await
+        .expect("replacement frame")
+        .expect("replacement frame present");
+    assert_eq!(frame.tasks.len(), 1);
+    assert!(
+        replacement
+            .message()
+            .await
+            .expect("replacement eof")
+            .is_none()
+    );
+
+    // A normally consumed body cancels its watchdog. A second stream on the same HTTP/2
+    // connection remains alive past the first stream's former deadline and receives later work.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut survivor = replacement_client
+        .client
+        .stream_tasks(replacement_client.req(replacement_client.poll_message(1)))
+        .await
+        .expect("open stream on the same connection")
+        .into_inner();
+    tokio::time::sleep(Duration::from_millis(4_100)).await;
+    let last_run = p
+        .start(&wf, &json!({"index": 4, "large": "x".repeat(180_000)}))
+        .await;
+    let frame = survivor
+        .message()
+        .await
+        .expect("surviving stream")
+        .expect("surviving frame");
+    assert_eq!(frame.tasks.len(), 1);
+    assert_eq!(frame.tasks[0].run_id, last_run);
+    drop((first, second));
+}
+
+#[tokio::test]
+async fn an_underfilled_task_stream_ends_with_one_positive_retry_hint() {
+    let p = platform().await;
+    let mut w = p.worker("wendy").await;
+    register_stream_worker(&mut w, 4).await;
+    let mut stream = w
+        .client
+        .stream_tasks(w.req(w.poll_message(2)))
+        .await
+        .expect("open stream")
+        .into_inner();
+    let terminal = stream
+        .message()
+        .await
+        .expect("terminal frame")
+        .expect("terminal frame present");
+    assert!(terminal.tasks.is_empty());
+    assert!(terminal.retry_after_ms > 0);
+    assert!(stream.message().await.expect("normal eof").is_none());
+}
+
+#[tokio::test]
+async fn cancelling_while_a_claim_waits_rolls_back_before_the_fence_opens() {
+    let p = platform().await;
+    let wf = p
+        .publish("cancel-mid-claim", &single_ir("cancel-mid-claim", None))
+        .await;
+    let run = p.start(&wf, &json!({})).await;
+    let mut w = p.worker("wendy").await;
+    register_stream_worker(&mut w, 4).await;
+
+    let namespace = p.namespace_id().await;
+    let drain_key = format!("drain:{}:{namespace}:wendy", p.tenant);
+    let mut fence = p.api.db.pool.begin().await.expect("begin drain fence");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&drain_key)
+        .execute(&mut *fence)
+        .await
+        .expect("hold drain fence");
+    let fence_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *fence)
+        .await
+        .expect("fence backend");
+
+    let mut cancelling = p.connect("wendy", TENANT).await;
+    cancelling.worker_id.clone_from(&w.worker_id);
+    cancelling.session.clone_from(&w.session);
+    let stream = cancelling
+        .client
+        .stream_tasks(cancelling.req(cancelling.poll_message(1)))
+        .await
+        .expect("open stream")
+        .into_inner();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity waiter \
+                 WHERE waiter.datname = current_database() \
+                   AND $1 = ANY(pg_blocking_pids(waiter.pid)))",
+            )
+            .bind(fence_pid)
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("observe claim wait");
+            if blocked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("claim reached the drain fence");
+
+    drop(stream);
+    drop(cancelling);
+    fence.commit().await.expect("release drain fence");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity waiter \
+                 WHERE waiter.datname = current_database() \
+                   AND $1 = ANY(pg_blocking_pids(waiter.pid)))",
+            )
+            .bind(fence_pid)
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("observe cancellation");
+            if !blocked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled claim left the database wait");
+
+    let projection: (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT status, attempt, leased_by FROM steps \
+         WHERE tenant_id = $1 AND run_id = $2 AND node = 'a'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(uuid::Uuid::parse_str(&run).expect("run id"))
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("step projection");
+    assert_eq!(projection, ("READY".into(), 0, None));
+
+    let mut recovery = w
+        .client
+        .stream_tasks(w.req(w.poll_message(1)))
+        .await
+        .expect("recovery stream")
+        .into_inner();
+    let frame = recovery
+        .message()
+        .await
+        .expect("recovery read")
+        .expect("recovery frame");
+    assert_eq!(frame.tasks.len(), 1);
+    assert_eq!(frame.tasks[0].run_id, run);
+}
+
 #[tokio::test]
 async fn an_activity_without_a_result_completes_with_an_empty_output() {
     let p = platform().await;

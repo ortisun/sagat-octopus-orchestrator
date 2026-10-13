@@ -120,3 +120,14 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-006-###` and criteria `SC-006-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Task streaming completion (2026-10-12)
+
+The finite-credit protocol 1.4 implementation follows
+[`stream-completion.md`](./stream-completion.md) and ADR-0029. Closing NFR-006-PERF also requires
+the final comparative benchmark and shared integration gate. The accepted design requires
+successive bounded delivery, fresh claim authorization, exact shared session admission, safe
+partial-delivery recovery and all-five public WorkerHost parity. Polling remains supported for
+older servers and explicit diagnostics. The comparative benchmark must report both RPC and
+claim rates; streaming does not imply reduced database polling or guaranteed throughput gains.
+This acceptance text records intended behavior, not implementation or validation results.

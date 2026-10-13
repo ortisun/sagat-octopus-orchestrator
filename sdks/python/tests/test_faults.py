@@ -107,6 +107,22 @@ async def test_grpc_faults_fail_before_answer_with_a_status_or_lose_the_answer_a
     assert {call.request.idempotency_key for call in fake.of("CompleteStep")} == {"done-run-1/charge/1"}
 
 
+async def test_the_partial_stream_fault_forwards_the_first_frame_then_fails_only_receiving(
+    fake: FakeWorkerService, make_host: Callable[..., WorkerHost]
+) -> None:
+    fake.accepted_version = "1.4"
+    fake.stream_batches = [[lease()]]
+    plan = FaultPlan(
+        [Fault.of({"channel": "grpc", "match": "StreamTasks", "action": "dropStreamAfterFirst", "times": 1})]
+    )
+    host = make_host(max_inflight=2, transport="stream", interceptors=plan.interceptors())
+    host.register_activity("charge", lambda _i, _c: {"ok": True}, blocking=False)
+    await host.start()
+    await until(lambda: len(fake.of("CompleteStep")) == 1, "the frame forwarded by the fault")
+    await until(lambda: len(fake.of("StreamTasks")) >= 2, "the receive after the injected disconnect")
+    assert plan.applied() == [1]
+
+
 def test_a_plan_with_no_grpc_fault_installs_no_interceptor() -> None:
     assert FaultPlan([fault(match="GET /runs")]).interceptors() == []
     assert FaultPlan([Fault.of({"channel": "grpc", "match": "X", "action": "failBefore"})]).interceptors() != []

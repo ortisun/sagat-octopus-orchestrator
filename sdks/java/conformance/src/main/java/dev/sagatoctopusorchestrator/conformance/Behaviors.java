@@ -17,10 +17,12 @@ import java.io.ByteArrayOutputStream;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** The activity behaviours of a scenario (tests/contract/sdk-conformance/README.md, "Worker activities"). */
 final class Behaviors {
@@ -37,8 +39,10 @@ final class Behaviors {
     }
 
     /** The handler of one activity; every attempt appends an entry to {@code log} when the handler ends. */
-    static ActivityHandler<JsonNode, Object> handler(String name, String kind, JsonNode behavior, List<ObjectNode> log) {
+    static ActivityHandler<JsonNode, Object> handler(
+            String name, String kind, JsonNode behavior, List<ObjectNode> log, Measurements measurements) {
         return (input, ctx) -> {
+            measurements.enter(ctx);
             String outcome = "returned";
             try {
                 if (behavior.has("failsUntilAttempt") && ctx.attempt() < behavior.get("failsUntilAttempt").asInt()) {
@@ -175,9 +179,46 @@ final class Behaviors {
                 }
                 return orNull(behavior.get("returns"));
             } finally {
-                log.add(entry(name, kind, input, ctx, outcome));
+                try {
+                    log.add(entry(name, kind, input, ctx, outcome));
+                } finally {
+                    measurements.leave();
+                }
             }
         };
+    }
+
+    /** Benchmark-only handler admission evidence; excluded from conformance golden normalization. */
+    static final class Measurements {
+        private final AtomicInteger active = new AtomicInteger();
+        private final AtomicInteger peak = new AtomicInteger();
+        private final List<ObjectNode> deliveries = new ArrayList<>();
+
+        void enter(ActivityContext context) {
+            int now = active.incrementAndGet();
+            peak.accumulateAndGet(now, Math::max);
+            ObjectNode delivery = F.objectNode();
+            delivery.put("runId", context.runId());
+            delivery.put("node", context.node());
+            delivery.put("takenAtUnixMs", System.currentTimeMillis());
+            synchronized (deliveries) {
+                deliveries.add(delivery);
+            }
+        }
+
+        void leave() {
+            active.decrementAndGet();
+        }
+
+        ObjectNode snapshot() {
+            ObjectNode out = F.objectNode();
+            out.put("peakInflight", peak.get());
+            var values = out.putArray("deliveries");
+            synchronized (deliveries) {
+                deliveries.forEach(values::add);
+            }
+            return out;
+        }
     }
 
     private static ObjectNode stepsOf(ActivityContext ctx) {

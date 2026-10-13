@@ -40,7 +40,7 @@ func TestAWorkerRegistersItsActivitiesAndTheNewestProtocolItSpeaksWithTheTokenAs
 	capabilities := request.GetCapabilities()
 	if request.GetWorkerName() != "test-worker" || request.GetNamespace() != "payments" ||
 		fmt.Sprint(capabilities.GetLanguages()) != "[go]" || fmt.Sprint(capabilities.GetActivities()) != "[a.undo b.second c.lookup]" ||
-		len(capabilities.GetPools()) != 0 || capabilities.GetMaxInflight() != 7 || capabilities.GetProtocolVersion() != "1.3" {
+		len(capabilities.GetPools()) != 0 || capabilities.GetMaxInflight() != 7 || capabilities.GetProtocolVersion() != "1.4" {
 		t.Errorf("%v", request)
 	}
 	if got := registers[0].md.Get("authorization"); len(got) != 1 || got[0] != "Bearer tok" {

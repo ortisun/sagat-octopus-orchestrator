@@ -187,7 +187,7 @@ pools, max_inflight, protocol_version}}`:
   1 to 256.
 - `max_inflight`: the host's concurrency limit, 1 to 1000 (default 10).
 - `protocol_version`: the newest minor version of protocol 1 the SDK speaks — a constant of the SDK,
-  `1.3` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
+  `1.4` for SDK 0.1 (`1` is `1.0`). The server answers `accepted_protocol_version`: the newest both
   speak (the worker's own if it is not newer than the server's, the server's otherwise). The host **MUST**
   use only the features of the accepted version: against `1` it sends `Heartbeat` without the step
   identity (`run_id`, `step_id`, `attempt`) and does not call `ResolveSecrets`; against `1.1` it does
@@ -439,3 +439,20 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
 Client, worker host, builders, errors (catalog), a README with a minimal example per capability, unit
 tests, the conformance runner (`sdks/<language>/conformance`), a package manifest with the runtime
 matrix, and nothing that needs a network to be tested except the conformance suite itself.
+
+## 10. Task streaming (worker protocol 1.4)
+
+The normative receive contract is
+[`stream-completion.md`](../specs/006-sdk-multilanguage/stream-completion.md), ADR-0029.
+Each public WorkerHost MUST support auto (default), poll and stream transport selection.
+Auto MUST use StreamTasks for a negotiated minor >= 1.4 and PollTasks for older accepted minors.
+An UNIMPLEMENTED stream permits auto fallback for that registration; permission/authentication
+errors do not. Explicit stream on an unsupported minor fails with UNSUPPORTED_PROTOCOL.
+
+A host MUST request only available execution slots, at most 64 total leases per receive window,
+dispatch each frame immediately, keep partial deliveries alive across receive failures and
+cancel pending receiving promptly on stop while preserving its existing handler drain.
+The stream has a five-second server lifetime; clients additionally bound receiving to six
+seconds or their shorter configured call timeout. A normal underfilled window ends with a
+positive empty retry hint. An unexpected underfilled EOF MUST wait before reconnecting.
+Protocol version changes do not themselves change package SemVer.

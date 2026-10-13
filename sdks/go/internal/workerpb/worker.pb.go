@@ -1835,10 +1835,11 @@ const file_sagat_octopus_orchestrator_v1_worker_proto_rawDesc = "" +
 	"\vstep_status\x18\x03 \x01(\tR\n" +
 	"stepStatus\x12\x1d\n" +
 	"\n" +
-	"run_status\x18\x04 \x01(\tR\trunStatus2\xb6\a\n" +
+	"run_status\x18\x04 \x01(\tR\trunStatus2\xaa\b\n" +
 	"\rWorkerService\x12}\n" +
 	"\x0eRegisterWorker\x124.sagat_octopus_orchestrator.v1.RegisterWorkerRequest\x1a5.sagat_octopus_orchestrator.v1.RegisterWorkerResponse\x12n\n" +
-	"\tPollTasks\x12/.sagat_octopus_orchestrator.v1.PollTasksRequest\x1a0.sagat_octopus_orchestrator.v1.PollTasksResponse\x12n\n" +
+	"\tPollTasks\x12/.sagat_octopus_orchestrator.v1.PollTasksRequest\x1a0.sagat_octopus_orchestrator.v1.PollTasksResponse\x12r\n" +
+	"\vStreamTasks\x12/.sagat_octopus_orchestrator.v1.PollTasksRequest\x1a0.sagat_octopus_orchestrator.v1.PollTasksResponse0\x01\x12n\n" +
 	"\tHeartbeat\x12/.sagat_octopus_orchestrator.v1.HeartbeatRequest\x1a0.sagat_octopus_orchestrator.v1.HeartbeatResponse\x12v\n" +
 	"\fCompleteStep\x122.sagat_octopus_orchestrator.v1.CompleteStepRequest\x1a2.sagat_octopus_orchestrator.v1.StepCommandResponse\x12n\n" +
 	"\bFailStep\x12..sagat_octopus_orchestrator.v1.FailStepRequest\x1a2.sagat_octopus_orchestrator.v1.StepCommandResponse\x12}\n" +
@@ -1890,22 +1891,24 @@ var file_sagat_octopus_orchestrator_v1_worker_proto_depIdxs = []int32{
 	18, // 4: sagat_octopus_orchestrator.v1.ReadBlobResponse.header:type_name -> sagat_octopus_orchestrator.v1.ReadBlobHeader
 	1,  // 5: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:input_type -> sagat_octopus_orchestrator.v1.RegisterWorkerRequest
 	3,  // 6: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
-	6,  // 7: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
-	8,  // 8: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
-	9,  // 9: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
-	10, // 10: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
-	13, // 11: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
-	16, // 12: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
-	2,  // 13: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
-	5,  // 14: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
-	7,  // 15: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
-	19, // 16: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	19, // 17: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
-	12, // 18: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
-	15, // 19: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
-	17, // 20: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
-	13, // [13:21] is the sub-list for method output_type
-	5,  // [5:13] is the sub-list for method input_type
+	3,  // 7: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:input_type -> sagat_octopus_orchestrator.v1.PollTasksRequest
+	6,  // 8: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:input_type -> sagat_octopus_orchestrator.v1.HeartbeatRequest
+	8,  // 9: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:input_type -> sagat_octopus_orchestrator.v1.CompleteStepRequest
+	9,  // 10: sagat_octopus_orchestrator.v1.WorkerService.FailStep:input_type -> sagat_octopus_orchestrator.v1.FailStepRequest
+	10, // 11: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:input_type -> sagat_octopus_orchestrator.v1.ResolveSecretsRequest
+	13, // 12: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:input_type -> sagat_octopus_orchestrator.v1.WriteBlobRequest
+	16, // 13: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:input_type -> sagat_octopus_orchestrator.v1.ReadBlobRequest
+	2,  // 14: sagat_octopus_orchestrator.v1.WorkerService.RegisterWorker:output_type -> sagat_octopus_orchestrator.v1.RegisterWorkerResponse
+	5,  // 15: sagat_octopus_orchestrator.v1.WorkerService.PollTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	5,  // 16: sagat_octopus_orchestrator.v1.WorkerService.StreamTasks:output_type -> sagat_octopus_orchestrator.v1.PollTasksResponse
+	7,  // 17: sagat_octopus_orchestrator.v1.WorkerService.Heartbeat:output_type -> sagat_octopus_orchestrator.v1.HeartbeatResponse
+	19, // 18: sagat_octopus_orchestrator.v1.WorkerService.CompleteStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	19, // 19: sagat_octopus_orchestrator.v1.WorkerService.FailStep:output_type -> sagat_octopus_orchestrator.v1.StepCommandResponse
+	12, // 20: sagat_octopus_orchestrator.v1.WorkerService.ResolveSecrets:output_type -> sagat_octopus_orchestrator.v1.ResolveSecretsResponse
+	15, // 21: sagat_octopus_orchestrator.v1.WorkerService.WriteBlob:output_type -> sagat_octopus_orchestrator.v1.WriteBlobResponse
+	17, // 22: sagat_octopus_orchestrator.v1.WorkerService.ReadBlob:output_type -> sagat_octopus_orchestrator.v1.ReadBlobResponse
+	14, // [14:23] is the sub-list for method output_type
+	5,  // [5:14] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name

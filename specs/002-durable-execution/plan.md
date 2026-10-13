@@ -101,3 +101,14 @@ Render and measure a task context before leasing it. Admit at most 8 MiB of seri
 ## Run-input blob slice
 
 Extend the existing catalog with tagged ownership and nullable pre-start run identity; reuse streaming storage, limits, audit and tombstone cleanup. Add authorized raw REST upload, stable pre-catalog start replay, transactional run-input binding, bounded descriptor schema validation and durable lease input reference. Configure the same storage provider in control plane and engine. Verify the REST-to-worker path with PostgreSQL and the in-process storage test backend, then exercise production configuration and compatibility. ADR-0023 specifies the input semantics; The server path is covered by real REST/PostgreSQL/gRPC tests in `grpc/input_blobs.rs`; T002-040 is verified by all-five SDK conformance over shared filesystem storage, with terminal-state, descriptor/digest and early-response integrity assertions.
+
+
+## Approved feature-006 streaming dependency (2026-10-12)
+
+ADR-0029 reuses the canonical claim path and adds exact per-session admission across polling and
+streaming. PostgreSQL lock order is run row → shared drain fence → session row → sorted activity
+policy/quota locks. Session replacement and binding revocation serialize on the session row;
+current token/ownership/expiry, binding and available durable capacity are rechecked before leasing.
+The fence is held only for the claim transaction, never for an idle receive window. See
+[execution semantics](../../docs/architecture/execution-semantics.md#worker-session-claim-admission)
+and the feature-006 completion contract and named concurrency/recovery evidence.

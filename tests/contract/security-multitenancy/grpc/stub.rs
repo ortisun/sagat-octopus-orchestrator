@@ -9,10 +9,16 @@ use sagat_api_grpc::pb::{
 };
 use tonic::{Request, Response, Status};
 
+use sagat_api_grpc::AdmissionProvider;
+
 pub struct Stub;
+
+impl AdmissionProvider for Stub {}
 
 #[tonic::async_trait]
 impl WorkerService for Stub {
+    type StreamTasksStream = tokio_stream::Empty<Result<PollTasksResponse, Status>>;
+
     async fn write_blob(
         &self,
         _: Request<tonic::Streaming<sagat_api_grpc::pb::WriteBlobRequest>>,
@@ -40,6 +46,14 @@ impl WorkerService for Stub {
         _: Request<PollTasksRequest>,
     ) -> Result<Response<PollTasksResponse>, Status> {
         Ok(Response::new(PollTasksResponse::default()))
+    }
+    async fn stream_tasks(
+        &self,
+        _: Request<PollTasksRequest>,
+    ) -> Result<Response<Self::StreamTasksStream>, Status> {
+        Err(Status::unimplemented(
+            "the transport fixture has no task source",
+        ))
     }
     async fn heartbeat(
         &self,

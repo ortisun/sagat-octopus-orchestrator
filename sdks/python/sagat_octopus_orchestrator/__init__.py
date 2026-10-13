@@ -47,6 +47,7 @@ from .worker import (
     WorkerConfig,
     WorkerEvent,
     WorkerHost,
+    WorkerTransport,
     run_blocking,
 )
 from .workflow import Flow, RetryOptions, WorkflowBuilder, flow, workflow
@@ -94,6 +95,7 @@ __all__ = [
     "WorkerConfig",
     "WorkerEvent",
     "WorkerHost",
+    "WorkerTransport",
     "WorkflowBuilder",
     "backoff_delay",
     "canonical_json",
