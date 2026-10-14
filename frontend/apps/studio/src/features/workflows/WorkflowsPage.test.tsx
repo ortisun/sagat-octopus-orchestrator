@@ -7,6 +7,7 @@ import { installStorage } from '../../../test/storage';
 import { NS_ID, apiError, bodyOf, json, keyOf } from '../../../test/workflowsHarness';
 import { createApp } from '../../app/context';
 import type { Routes as FakeRoutes } from '../../../test/render';
+import { formatLocal } from '../runs/time';
 import { WorkflowsPage } from './WorkflowsPage';
 
 const draft = (n: number, extra: Record<string, unknown> = {}) => ({
@@ -187,5 +188,60 @@ describe('creating a workflow', () => {
     await user.click(await screen.findByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument());
     expect(button).toHaveFocus();
+  });
+});
+
+describe('WorkflowsPage: finding and reading times', () => {
+  const three = {
+    'GET /workflows': () => ({ items: [draft(1, { name: 'payment-saga' }), draft(2, { name: 'refund' }), draft(3, { name: 'payment-retry' })], nextCursor: null }),
+  };
+
+  it('finds a workflow by a part of its name, says how many match, and keeps the search in the address', async () => {
+    const { user } = await mount(three);
+    const table = await screen.findByRole('table', { name: /Workflows of the namespace dev/ });
+    expect(within(table).getAllByRole('row')).toHaveLength(4);
+    await user.type(screen.getByRole('searchbox', { name: 'Find a workflow' }), 'PAYMENT');
+    expect(within(screen.getByRole('table')).getAllByRole('row').slice(1).map((row) => within(row).getByRole('link').textContent)).toEqual(['payment-saga', 'payment-retry']);
+    expect(screen.getByText('2 of 3 workflows')).toBeInTheDocument();
+  });
+
+  it('says so when nothing loaded matches, and offers the whole list back by clearing the search', async () => {
+    const { user } = await mount(three);
+    await screen.findByRole('table');
+    const field = screen.getByRole('searchbox', { name: 'Find a workflow' });
+    await user.type(field, 'zzz');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.getByText(/No loaded workflow has "zzz" in its name/)).toBeInTheDocument();
+    await user.clear(field);
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+  });
+
+  it('tells the last update in the one format of the Studio, with the UTC time to hover', async () => {
+    await mount(three);
+    const table = await screen.findByRole('table');
+    const cell = within(within(table).getAllByRole('row')[1]!).getAllByRole('cell')[2]!;
+    const time = cell.querySelector('time');
+    expect(time).toHaveTextContent(formatLocal('2026-03-01T10:00:00Z'));
+    expect(time).toHaveAttribute('title', '2026-03-01 10:00:00 UTC');
+  });
+});
+
+describe('WorkflowsPage: starting a run from the list', () => {
+  const published = { activeVersion: { workflowId: 'w', versionId: 'v', versionNumber: 1, digest: 'sha256:x' } };
+  const list = { 'GET /workflows': () => ({ items: [draft(1, published), draft(2)], nextCursor: null }) };
+
+  it('offers Start run… on the row of a workflow that has a published version, for somebody who may start runs, and on no other', async () => {
+    await mount(list, ['definition:read', 'run:start']);
+    const table = await screen.findByRole('table');
+    const rows = within(table).getAllByRole('row');
+    expect(within(rows[1]!).getByRole('button', { name: 'Start run… of flow-1' })).toBeInTheDocument();
+    expect(within(rows[2]!).queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('adds no column and no button for somebody who may not start runs', async () => {
+    await mount(list);
+    const table = await screen.findByRole('table');
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(4);
+    expect(within(table).queryByRole('button', { name: /Start run/ })).not.toBeInTheDocument();
   });
 });
