@@ -83,6 +83,29 @@
   align-items: flex-end;
 }
 
+/* A field has a margin of its own; in a row that is aligned by its foot it would lift the fields above their buttons. */
+.rn-filters .field,
+.rn-open-run .field {
+  margin-bottom: 0;
+}
+
+.rn-open-run {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  margin-left: auto;
+}
+
+@media (max-width: 74rem) {
+  .rn-open-run {
+    margin-left: 0;
+  }
+}
+
+.rn-runs-master-page .rn-filters > .btn {
+  grid-column: 1 / -1;
+}
+
 /* --------------------------------------------------------------- runs master/detail */
 .rn-master-detail {
   min-width: 0;
@@ -115,6 +138,8 @@
   flex-direction: column;
   height: 100%;
   min-width: 0;
+  /* What fits beside the graph depends on the width of the page area, not of the window (the runs list takes some). */
+  container: run / inline-size;
 }
 
 .rn-run > :not(.rn-body) {
@@ -476,6 +501,25 @@
   overflow: auto;
 }
 
+/* With room for it the selected step is a side panel: the graph stays in view while its details are read. */
+@container run (min-width: 62rem) {
+  .rn-body.with-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(22rem, 27rem);
+    align-items: start;
+  }
+
+  .rn-body.with-panel .rn-panel {
+    position: sticky;
+    top: 0;
+    max-height: calc(100vh - var(--topbar-height) - var(--space-page-y) * 2);
+  }
+
+  .rn-body.with-panel .rn-selected-step {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .rn-selected-step {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
@@ -701,30 +745,48 @@
 .rn-runs th:nth-child(6) { width: 160px; }
 
 .rn-steps {
-  min-width: 1220px;
+  min-width: 1030px;
 }
-.rn-steps th:nth-child(1) { width: 180px; }
-.rn-steps th:nth-child(2) { width: 130px; }
-.rn-steps th:nth-child(3) { width: 140px; }
-.rn-steps th:nth-child(4) { width: 90px; }
-.rn-steps th:nth-child(5) { width: 190px; }
-.rn-steps th:nth-child(6) { width: 160px; }
-.rn-steps th:nth-child(7) { width: 120px; }
-.rn-steps th:nth-child(8) { width: 190px; }
+.rn-steps th:nth-child(1) { width: 190px; }
+.rn-steps th:nth-child(2) { width: 110px; }
+.rn-steps th:nth-child(3) { width: 130px; }
+.rn-steps th:nth-child(4) { width: 70px; }
+.rn-steps th:nth-child(5) { width: 150px; }
+.rn-steps th:nth-child(6) { width: 130px; }
+.rn-steps th:nth-child(7) { width: 140px; }
+.rn-steps th:nth-child(8) { width: 110px; }
 
+/* Nine columns, nine widths (the old rule had eight, so Step got 80 px and Payload what was left: rows of 190 px).
+   Seq, Time, Event and Step come first because they are what a reader looks for; the rest is a scroll away. */
 .rn-journal {
-  min-width: 1500px;
+  min-width: 1416px;
 }
-.rn-journal th:nth-child(1) { width: 70px; }
+.rn-journal th:nth-child(1) { width: 64px; }
 .rn-journal th:nth-child(2) { width: 190px; }
-.rn-journal th:nth-child(3) { width: 270px; }
-.rn-journal th:nth-child(4) { width: 170px; }
-.rn-journal th:nth-child(5) { width: 80px; }
-.rn-journal th:nth-child(6) { width: 150px; }
-.rn-journal th:nth-child(7) { width: 290px; }
-.rn-journal th:nth-child(8) { width: 280px; }
+.rn-journal th:nth-child(3) { width: 220px; }
+.rn-journal th:nth-child(4) { width: 130px; }
+.rn-journal th:nth-child(5) { width: 160px; }
+.rn-journal th:nth-child(6) { width: 72px; }
+.rn-journal th:nth-child(7) { width: 120px; }
+.rn-journal th:nth-child(8) { width: 260px; }
+.rn-journal th:nth-child(9) { width: 200px; }
 
-tr[data-selected='true'] td {
+/* Where a table scrolls sideways the first column stays: the row keeps its name. */
+.rn-steps :is(th, td):first-child,
+.rn-journal :is(th, td):first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg);
+}
+
+.rn-fixed thead th:first-child {
+  z-index: 2;
+  background: var(--bg-subtle);
+}
+
+tr[data-selected='true'] td,
+tr[data-selected='true'] td:first-child {
   background: var(--info-bg);
 }
 
@@ -734,15 +796,28 @@ tr[data-tone='bad'] td:first-child {
 
 /* --------------------------------------------------------------- graph */
 .rn-canvas {
-  flex: 1;
-  min-height: 18rem;
-  max-height: 38rem;
+  /* A graph needs height more than anything: about two thirds of the window, not a strip of 18 rem. The height is a length,
+     not what a flex container leaves, so the canvas keeps it where the details sit beside it (a percentage inside it needs one). */
+  flex: none;
+  height: clamp(22rem, 68vh, 46rem);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-panel);
   overflow: hidden;
   background-color: var(--bg-canvas);
   background-image: radial-gradient(var(--graph-grid-color) var(--graph-dot-size), transparent var(--graph-dot-size));
   background-size: var(--graph-grid-size) var(--graph-grid-size);
+}
+
+/* The controls, the overview map and the credit take the Studio's tokens, so none of them stays light in the dark theme. */
+.rn-canvas .react-flow {
+  --xy-controls-button-background-color-default: var(--bg-raised);
+  --xy-controls-button-background-color-hover-default: var(--bg-subtle);
+  --xy-controls-button-color-default: var(--fg);
+  --xy-controls-button-border-color-default: var(--border);
+  --xy-minimap-background-color-default: var(--bg-raised);
+  --xy-minimap-mask-background-color-default: var(--minimap-mask);
+  --xy-minimap-node-background-color-default: var(--fg-muted);
+  --xy-attribution-background-color-default: var(--bg-raised);
 }
 
 /* React Flow's dark theme otherwise covers the semantic canvas and its dotted grid. */

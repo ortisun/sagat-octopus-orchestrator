@@ -1,7 +1,7 @@
 import { Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import type { NodeChange } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { RuntimeNode } from '../../api/types';
 import { readableInitialViewport } from '../../model/initialViewport';
 import { layoutGraph } from '../../model/layout';
@@ -70,6 +70,8 @@ export function GraphView({
   onShowTable: () => void;
 }) {
   const after = useRef<HTMLDivElement>(null);
+  // The overview map sits over the corner of the graph, where a card may be: it is there when asked for (UX review 2026-10-14).
+  const [overview, setOverview] = useState(false);
   const positions = useMemo(() => layoutGraph(layoutNodes(order, policy.detail), model.edges, 'LR'), [order, model.edges, policy.detail]);
   const initialViewport = useMemo(() => initialRunViewport(order, positions, model.edges, model.nodes), [order, positions, model.edges, model.nodes]);
   const nodes = useMemo<CardNode[]>(
@@ -93,6 +95,11 @@ export function GraphView({
         <button type="button" className="btn" onClick={onShowTable}>
           Open the table view
         </button>
+        {policy.minimap ? (
+          <button type="button" className="btn" aria-pressed={overview} onClick={() => setOverview((value) => !value)}>
+            Overview map
+          </button>
+        ) : null}
         <button type="button" className="btn" onClick={() => after.current?.focus()}>
           Skip the graph
         </button>
@@ -128,9 +135,10 @@ export function GraphView({
           onlyRenderVisibleElements
           ariaLabelConfig={ARIA}
           colorMode="system"
+          attributionPosition="bottom-center"
         >
           <Controls showInteractive={false} />
-          {policy.minimap ? <MiniMap pannable zoomable nodeColor={overviewColor} style={{ width: 150, height: 96 }} /> : null}
+          {policy.minimap && overview ? <MiniMap pannable zoomable nodeColor={overviewColor} style={{ width: 150, height: 96 }} /> : null}
         </ReactFlow>
       </div>
       <div ref={after} tabIndex={-1} className="rn-after" aria-label="After the graph" role="group">

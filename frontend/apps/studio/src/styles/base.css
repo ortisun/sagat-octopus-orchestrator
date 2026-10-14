@@ -658,10 +658,20 @@ dialog::backdrop {
 }
 
 @media (max-width: 45rem) {
+  /* The navigation, the top bar and the page scroll together: pinning them would leave a 320 px phone
+     with less than 60% of its height for the page (UX review 2026-10-14). */
   .shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
+    display: block;
     overflow: auto;
+  }
+  .shell-frame {
+    display: block;
+  }
+  /* Sideways overflow stays inside the page area (as it always did) instead of moving the navigation with it; the height is
+     the content's, so nothing scrolls up and down in it. */
+  .shell-frame > main {
+    overflow-x: auto;
+    overflow-y: visible;
   }
   .shell-sidebar {
     gap: var(--space-4);
