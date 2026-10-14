@@ -12,7 +12,7 @@ PostgreSQL is the source of truth. NATS JetStream transports notifications; Kafk
 connectors integrate external systems. External effects are **at-least-once**: use idempotency keys
 and reconciliation for operations such as payments.
 
-**License:** [MIT](LICENSE). **Implementation and validation status:**
+**Version:** [0.1.0](docs/releases/0.1.0.md). **License:** [MIT](LICENSE). **Implementation and validation status:**
 [requirement traceability](docs/traceability.md). This README documents the source checkout; it does
 not assume that application images, CLI binaries or SDK packages have been published to a registry.
 Studio labels and project documentation are in English.

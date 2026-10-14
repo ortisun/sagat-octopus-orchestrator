@@ -116,3 +116,9 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-001-###` and criteria `SC-001-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Release numbering decision
+
+The maintainer selected product version 0.1.0 for the completed delivery. Platform, Studio, Helm
+and OpenAPI document metadata align to it; protocol versions remain independent and unchanged (NFR-001-COMP).
+The owner also authorized replacing the historical v0.4.0 tag with v0.1.0.

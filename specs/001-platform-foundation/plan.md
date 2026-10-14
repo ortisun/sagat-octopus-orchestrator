@@ -98,3 +98,9 @@ The listener owns connection tasks, including native TLS handshakes, until they 
 After shutdown grace expires it cancels and drains remaining tasks before returning;
 a detached handler must not retain a socket, body or admission permit. The fault suite
 uses a handler that never completes and verifies the client socket actually closes.
+
+## Product version 0.1.0
+
+T001-041 aligns release metadata and generated lockfiles, records the owner-requested numbering
+reset in release notes, preserves wire protocol 1.4, replaces the old v0.4.0 tag only after validation, and validates package
+metadata, generated API types and Helm rendering before main/develop integration.
