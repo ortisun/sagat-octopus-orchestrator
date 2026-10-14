@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { env } from '../support/env';
-import { failOnBrowserErrors, signIn } from '../support/studio';
+import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
 
 test('the Studio is served with its policy, signs a user in and shows the shell of their namespace', async ({ page, request }) => {
   const problems = failOnBrowserErrors(page);
@@ -23,6 +23,30 @@ test('the Studio is served with its policy, signs a user in and shows the shell 
   expect(stored).not.toContain(env.tokens.admin.slice(0, 20));
   await page.reload();
   await expect(page.getByLabel('Access token')).toBeVisible();
+
+  expect(problems).toEqual([]);
+});
+
+test('the menu follows the hierarchy: only the namespaces until one is chosen, then what lives in it', async ({ page }) => {
+  const problems = failOnBrowserErrors(page);
+  await signIn(page, env.tokens.admin, { namespace: null });
+  const menu = page.getByRole('navigation', { name: 'Main' });
+  const select = page.getByLabel('Namespace', { exact: true });
+
+  // A first visit: the Studio chooses nothing, so the menu offers the tenant's namespaces and nothing of a namespace.
+  await expect(select).toHaveValue('');
+  await expect(menu.getByRole('link')).toHaveText(['Namespaces']);
+  for (const name of ['Workflows', 'Runs', 'Operations', 'Scripts', 'Integrations']) await expect(menu.getByRole('link', { name, exact: true })).toHaveCount(0);
+
+  // A page of a namespace, reached by its address, says how to choose one.
+  await goTo(page, '/runs');
+  await expect(page.getByRole('heading', { name: 'Choose a namespace', level: 1 })).toBeVisible();
+
+  // Choosing one opens its menu, under it, and the page the person was on.
+  await select.selectOption(env.namespace);
+  await expect(page.getByRole('list', { name: `In ${env.namespace}` }).getByRole('link')).toHaveText(['Workflows', 'Runs', 'Operations', 'Scripts', 'Integrations']);
+  await expect(page.getByRole('heading', { name: 'Choose a namespace', level: 1 })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/studio\/runs$/);
 
   expect(problems).toEqual([]);
 });

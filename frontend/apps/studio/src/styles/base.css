@@ -574,6 +574,28 @@ dialog::backdrop {
   gap: var(--space-1);
 }
 
+/* The namespace and what is in it: the selector, then its destinations under a guide line, so the menu reads as a hierarchy. */
+.shell-scope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.shell-sidebar nav ul.shell-subnav {
+  margin-left: var(--space-5);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border);
+}
+
+.shell-hint {
+  margin: 0;
+  padding-inline: var(--space-4);
+  color: var(--fg-muted);
+  font-size: var(--font-size-micro);
+  line-height: 1.5;
+}
+
 .shell-sidebar nav a {
   display: block;
   padding: var(--space-3) var(--space-5);
@@ -686,9 +708,13 @@ dialog::backdrop {
   .shell-namespace {
     max-width: 18rem;
   }
-  .shell-sidebar nav ul {
+  /* The tenant's link, then the namespace with its destinations in a row that wraps. */
+  .shell-sidebar nav ul.shell-subnav {
     flex-direction: row;
     flex-wrap: wrap;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
   }
   .shell-topbar {
     height: auto;
