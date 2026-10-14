@@ -94,6 +94,31 @@ Implementation evidence (2026-10-11; owner approval and sandbox CI validation re
 - **T007-045:** README, runbook, design/research record, quickstart and traceability describe the implementation, final local
   results, owner approval and the successful Studio CI job.
 
+## Browser UX review 2026-10-14 (FR-007-008/009, SC-007-005)
+
+- [x] T007-057 Correct the sizing, overlap and navigation defects a real-browser review of the built Studio found (15 screens at 320, 390,
+  768, 1024, 1280, 1470 and 1920 px, light and dark). No backend, wire-contract or execution-semantics change. Changes, each with a test:
+  the shell scrolls as one document below 45rem (the pinned navigation took 41% of a 320x640 screen); the run graph has a canvas of
+  `clamp(22rem, 68vh, 46rem)` and the selected step sits beside it (a sticky panel in a `run` size container) where the page area is at
+  least 62rem; the overview map is off until the *Overview map* toggle is pressed, takes the Studio tokens (it stayed light in the dark
+  theme) and the React Flow credit moves to the bottom centre; the journal table had nine columns and eight widths (Step got 80 px,
+  Payload what was left: rows of ~190 px), and the steps table is narrower, with the first column kept in view; Runs filters
+  (`?status=`, `?workflow=`) and the Workflows search (`?q=`) live in the address, opening a run keeps them, *Clear filters*, *Open a
+  run by id*; the runs list is a list of cards below 74rem; *Start run…* (needs `run:start`, uses the existing `POST /runs`, a JSON
+  object of at most 256 KiB, one idempotency key per identical request) on the Workflows list and the Runs page; one time format with the UTC time on hover on Workflows, Versions, Operations
+  and Scripts; one shared reason is said once under the action list instead of under each button; the editor toolbar keeps save and
+  publish together, the palette is a strip without sentences below 100rem, *Add trigger* stays on one line and the description is not
+  monospace. Evidence on 2026-10-14: 1 133 Vitest tests in 77 files (28 added; the test that counts the journal's columns against its widths was
+  checked to fail when a width is removed), `tsc --noEmit`, ESLint and the production build pass; the built bundle was served against the running
+  control plane and re-audited in Chromium with the same checks as the review (105 screen/width pairs: no page overflow before or after;
+  canvas cuts 14 to 9, occluded text 39 to 23, small targets 178 to 163; the remaining occlusion is the edge-label background that
+  has `pointer-events: none`, and the remaining truncation is the runs list's names, which now carry a tooltip). Sideways overflow of
+  the shell and the page area was measured on ten routes at 320, 390 and 640 px: only the Monaco script editor at 320 px overflows
+  (it did before, 48 px against 66 px now). The *Start run* dialog was opened in the browser; **no run was started in the live
+  namespace**, so its request is proved by the component tests only. **Not run:** the Playwright journeys of `frontend/e2e`
+  (they build and start the Rust platform, which was not built for this change), so `visual-layout.spec.ts` and the
+  benchmark geometry have not been re-measured against this change. Deferred items are listed in `research.md` (UX review 2026-10-14).
+
 ## Final Phase: Hardening / rollout
 - [x] T007-032 Run the relevant REST/gRPC/AsyncAPI contract suite in `tests/contract/workflow-studio/`. — REST only: this feature adds no gRPC and no event contract; `tests/contract/workflow-studio/rest/conformance.rs` (the new operations on their normal and error paths against the OpenAPI) and `npm run check:api` (the generated types equal the contract).
 - [x] T007-033 Apply lint and acyclic dependency checks in `crates/` and product rules in `docs/architecture/`. — Restyle: Rust fmt, workspace/all-targets clippy and architecture passed locally, as did frontend lint/typecheck/generated API/advisory checks. Final post-Monaco-fix frontend checks passed; prior baseline `cargo audit` evidence is recorded separately in `quickstart.md`.

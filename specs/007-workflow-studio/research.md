@@ -288,3 +288,33 @@ automated CI evidence for this branch is recorded separately.
 G167 resolved by T007-056 (2026-10-12): the authorized Studio confirmation uses the existing
 signal endpoint; eight component tests and a real browser/API/engine waiting-run journey pass.
 The earlier entry describes the restyle's scope, not the current action set.
+
+
+## UX review 2026-10-14 (T007-057)
+
+A review of the built Studio in Chromium against the running control plane (15 screens, seven widths from 320 to 1920 px, light
+and dark; page overflow, clipped or overlapping text, occluded text, touch-target size, scroll regions) compared with the Temporal Web
+UI and the Windmill flow editor. Findings are labelled UXR-nn here instead of taking D/G numbers, which other branches are claiming.
+
+| | Finding | Status |
+|---|---|---|
+| UXR-01 | On a phone the navigation and top bar stayed pinned: 262 of 640 px. | Fixed (T007-057): one scrolling document below 45rem. |
+| UXR-02 | The run canvas was 286 px tall at 768 px and began 700-1050 px down; the selected step opened below it. | Fixed: canvas height is a length (`clamp(22rem, 68vh, 46rem)`); the step is a sticky side panel where the *page area* (not the window: the runs list takes some) is 62rem or wider. Below that it still opens under the graph and scrolls into view, as D158 had it. |
+| UXR-03 | The overview map covered cards, was light in the dark theme; the credit overlapped a failure label. | Fixed: map on request, themed; credit at the bottom centre. React Flow's credit is kept. |
+| UXR-04 | Journal table: nine columns, eight widths. | Fixed, with a test that counts columns against widths. |
+| UXR-05 | Filters lost on reload/back and not shareable; no way to open a run by id; no way to start a run. | Fixed for status and workflow (address), Workflows search (`?q=`, over the workflows loaded so far, and it says so), open by id, *Start run…*. Time-range and correlation-id filters need API support: not built. |
+| UXR-06 | Three date formats and no UTC on hover outside Runs. | Fixed: one formatter (`formatLocal`), `Moment` with the UTC tooltip. A relative/UTC switch is not built. |
+| UXR-07 | Five disabled actions each repeating "The run is finished." | Fixed: said once when it is the same for all, each button still described by it (`aria-describedby`). |
+| UXR-08 | Editor: toolbar orphaned *Publish…*, palette sentences pushed the canvas down at 1024 px, *Add trigger* wrapped, description in monospace. | Fixed. The editor is still not a full-height application layout. |
+| UXR-09 | The runs list was a table of six columns at 768 px (748 px of sideways scroll, status off screen). | Fixed: cards below 74rem. On a phone the Workflows list hides the draft revision and the last update (they are there from 45rem). |
+
+Not done, and why (each is a feature, not a defect, and needs its own spec delta and tests):
+
+- **A start-run form generated from the workflow's input schema.** *Start run…* exists (T007-057) with a typed JSON object, but the
+  input is not validated against `inputSchema` in the browser (the platform answers 422 and the Studio shows it) and has no
+  fields, defaults or saved inputs. It also takes no version, correlation id or deadline.
+- **A real timeline of bars** (already G168), **compact cards or an automatic fit** (D-era decision: graphs open at a readable 1:1, T007-049), a **⌘K
+  palette**, **saved views**, **batch actions**, **test-up-to-step** in the editor, a saga drawn as a group with a compensation lane.
+- **A sticky runs list** beside a long run: the list scrolls away with the detail on wide screens.
+- **Keeping the session across a reload** needs an ADR (D144 keeps the token in memory on purpose).
+- Not measured: screen readers, touch devices, slow networks, runs of more than the 12 in the demo namespace.

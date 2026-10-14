@@ -61,7 +61,8 @@ same origin with their SIL OFL licence in `apps/studio/public/licenses/geist-OFL
 
 The shell puts the namespace and the three real destinations in the sidebar. On wide screens, `/runs/:runId` keeps a filtered,
 virtualized Runs list beside the selected run; choosing another run retains the list's state. Narrow screens keep the separate
-list and detail routes. Facts come from the API: missing terminal duration is unknown, and queue, worker, trigger-kind and
+list and detail routes. The Runs filters are query parameters (`status`, `workflow`) and the Workflows search is `q`, so links carry
+them. Facts come from the API: missing terminal duration is unknown, and queue, worker, trigger-kind and
 global counts are not invented. Graph, Table and Timeline remain available; Timeline means the journal, not per-step bars.
 
 Graphs open at a readable 1:1 scale on their starting node; **Fit View** shows the whole graph on

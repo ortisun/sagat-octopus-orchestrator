@@ -55,7 +55,11 @@ memory until restart). A browser-cache purge cannot correct that old server beha
   platform run as you work and are listed with the node each is about; advice the platform does not give is listed apart. The draft is saved by itself; if someone else saved first you are
   shown the difference and nothing is overwritten without it. *Publish…* shows what changes against the active version and which changes can break callers.
 - **Watch a run**: on wide screens the filtered Runs list stays beside the detail; selecting another run preserves its filters,
-  loaded rows and scroll position. On narrow screens, use the separate Runs list and detail routes. The graph shows each step's
+  loaded rows and scroll position. The filters are in the address (`/runs?status=FAILED&workflow=<id>`), so a link carries them;
+  *Open a run by id* takes a pasted id. Below 74rem the list is cards, and on narrow screens use the separate Runs list and detail
+  routes. Where the page area is 62rem or wider the selected step opens beside the graph, not under it; the *Overview map* toggle
+  shows a map of the graph. *Start run…* (Workflows list, Runs page; needs `run:start`) starts a run of a published workflow
+  from a JSON input you type; the platform checks it against the workflow's input schema and says what is wrong. The graph shows each step's
   identity, type, state and the way the run took. Select a step for attempts, failure/wait details,
   saga information and child-run links; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner
   tells how the view is kept current (live, polling, reconnecting). Missing finish times stay unknown rather than counting through now.
