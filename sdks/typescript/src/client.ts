@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { safeLogger, silentLogger, warnIfNotSecure, type ClientConfig } from './config.js';
 import { SagatError, invalid } from './errors.js';
 import { HttpTransport, type HttpResponse } from './http.js';
 import { instant } from './json.js';
 import { sleep } from './retry.js';
 import { checkTraceparent } from './traceparent.js';
+import type { BlobDescriptor } from './worker/activity.js';
 
 export type RunStatus =
   | 'RUNNING' | 'WAITING' | 'PAUSED' | 'CANCELLING' | 'COMPENSATING' | 'MANUAL_REVIEW'
@@ -50,6 +53,12 @@ export interface StartOptions {
   /** The same, as a duration from now, computed once before the first attempt. */
   deadlineInMs?: number;
   traceparent?: string;
+}
+
+export interface UploadRunInputOptions {
+  contentType?: string;
+  expectedSize?: number;
+  expectedSha256?: string;
 }
 
 export interface ListOptions {
@@ -256,6 +265,65 @@ export class SagatClient {
       traceparent,
       safeToRepeat: true,
     });
+    return toRun(response.body);
+  }
+
+  /** Uploads a one-pass run input. The returned descriptor is accepted only when it matches the bytes sent. */
+  async uploadRunInput(
+    source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+    options: UploadRunInputOptions = {},
+  ): Promise<BlobDescriptor> {
+    if (options.expectedSize !== undefined && (!Number.isSafeInteger(options.expectedSize) || options.expectedSize < 0)) {
+      throw invalid('blob expectedSize is a non-negative safe integer');
+    }
+    if (options.expectedSha256 !== undefined && !/^[0-9a-f]{64}$/.test(options.expectedSha256)) {
+      throw invalid('blob expectedSha256 is lowercase SHA-256 hex');
+    }
+    const digest = createHash('sha256');
+    let size = 0;
+    let sourceEof = false;
+    const measured = async function* (): AsyncIterable<Buffer> {
+      for await (const value of source) {
+        if (!(value instanceof Uint8Array)) throw invalid('a blob source yields Uint8Array chunks');
+        const chunk = Buffer.from(value);
+        size += chunk.length;
+        digest.update(chunk);
+        yield chunk;
+      }
+      sourceEof = true;
+    };
+    const headers: Record<string, string> = {};
+    if (options.expectedSize !== undefined) headers['x-octopus-blob-size'] = String(options.expectedSize);
+    if (options.expectedSha256 !== undefined) headers['x-octopus-blob-sha256'] = options.expectedSha256;
+    const response = await this.#http.request({
+      method: 'POST', path: '/run-input-blobs', rawBody: Readable.from(measured()),
+      contentType: options.contentType, headers, safeToRepeat: false, traceparent: this.trace(),
+    });
+    const sha256 = digest.digest('hex');
+    const raw = object(response.body, 'a blob descriptor');
+    const descriptor = { id: str(raw, 'id'), size: num(raw, 'size', -1), sha256: str(raw, 'sha256'), contentType: str(raw, 'contentType') };
+    if (!sourceEof || !UUID.test(descriptor.id) || descriptor.size !== size || descriptor.sha256 !== sha256 || descriptor.contentType === '') {
+      throw new SagatError({ code: 'PROTOCOL', message: 'the run-input descriptor does not match the uploaded bytes' });
+    }
+    return descriptor;
+  }
+
+  /** Starts a run by atomically claiming a descriptor returned by uploadRunInput. */
+  async startWithBlob(workflow: string, descriptor: BlobDescriptor, options: StartOptions = {}): Promise<Run> {
+    if (!descriptor || !UUID.test(descriptor.id) || !Number.isSafeInteger(descriptor.size) || descriptor.size < 0 ||
+        !/^[0-9a-f]{64}$/.test(descriptor.sha256) || !descriptor.contentType) {
+      throw invalid('a run-input blob descriptor is malformed');
+    }
+    const idempotencyKey = this.key(options.idempotencyKey);
+    const traceparent = this.trace(options.traceparent);
+    const workflowId = await this.resolveWorkflow(workflow);
+    let deadline = options.deadline;
+    if (options.deadlineInMs !== undefined) deadline = new Date(Date.now() + options.deadlineInMs);
+    const body: Record<string, unknown> = { workflowId, inputBlobRef: descriptor.id };
+    if (options.versionId) body['versionId'] = options.versionId;
+    if (options.correlationId !== undefined) body['correlationId'] = options.correlationId;
+    if (deadline) body['deadline'] = instant(deadline);
+    const response = await this.#http.request({ method: 'POST', path: '/runs', body, idempotencyKey, traceparent, safeToRepeat: true });
     return toRun(response.body);
   }
 

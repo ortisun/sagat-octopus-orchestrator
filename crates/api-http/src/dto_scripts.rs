@@ -300,6 +300,9 @@ pub struct VersionBody {
     pub toolchain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_log: Option<String>,
+    pub build_log_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
     pub created_by: String,
@@ -334,6 +337,8 @@ impl From<&VersionRecord> for VersionBody {
             key_id: version.key_id.clone(),
             toolchain: version.toolchain.clone(),
             build_log: version.build_log.clone(),
+            build_log_truncated: version.build_log_truncated,
+            failure_code: version.failure_code.map(|code| code.code().to_owned()),
             failure: version.failure.clone(),
             created_by: version.created_by.clone(),
             created_at: version.created_at,
@@ -366,6 +371,8 @@ pub struct VersionSummaryBody {
     pub toolchain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
     pub created_by: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
@@ -393,6 +400,7 @@ impl From<&VersionSummary> for VersionSummaryBody {
             key_id: version.key_id.clone(),
             toolchain: version.toolchain.clone(),
             failure: version.failure.clone(),
+            failure_code: version.failure_code.map(|code| code.code().to_owned()),
             created_by: version.created_by.clone(),
             created_at: version.created_at,
             built_at: version.built_at,

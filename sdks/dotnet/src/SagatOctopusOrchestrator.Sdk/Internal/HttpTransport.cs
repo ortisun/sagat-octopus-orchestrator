@@ -17,7 +17,9 @@ internal sealed record HttpCall(
     byte[]? Body,
     string? IdempotencyKey,
     string? Traceparent,
-    bool SafeToRepeat);
+    bool SafeToRepeat,
+    HttpContent? RawContent = null,
+    IReadOnlyDictionary<string, string>? Headers = null);
 
 internal sealed record HttpAnswer(int Status, string TraceId, JsonElement? Body);
 
@@ -149,6 +151,18 @@ internal sealed class HttpTransport : IDisposable
         {
             request.Content = new ByteArrayContent(call.Body);
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        }
+        else if (call.RawContent is not null)
+        {
+            request.Content = call.RawContent;
+        }
+
+        if (call.Headers is not null)
+        {
+            foreach (var (name, value) in call.Headers)
+            {
+                request.Headers.TryAddWithoutValidation(name, value);
+            }
         }
 
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

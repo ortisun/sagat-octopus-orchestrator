@@ -11,6 +11,7 @@ pub mod guard;
 pub mod ingest;
 pub mod kafka;
 pub mod nats;
+pub mod publish;
 pub mod sqs;
 pub mod supervisor;
 pub mod webhook;

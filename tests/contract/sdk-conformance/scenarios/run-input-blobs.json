@@ -1,0 +1,26 @@
+{
+  "name": "run-input-blobs",
+  "description": "FR-002-008/FR-006-006: every SDK uploads a one-pass run input larger than one worker chunk, starts by opaque descriptor with an idempotency key, and reads the committed input through the lease-bound worker stream.",
+  "workflows": {
+    "input": {
+      "name": "blob-run-input",
+      "program": [
+        { "op": "step", "id": "input", "activity": "blob.input" }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "blob-input-worker",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "blob.input": { "behavior": { "blobInputBytes": 300000 } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "input", "op": "startWithBlob", "workflow": "input", "inputBlobBytes": 300000, "idempotencyKey": "run-input-{{unique}}", "correlationId": "blob-input-{{unique}}", "traceparent": "00-11111111111111111111111111111111-2222222222222222-01", "deadlineInMs": 60000 },
+    { "id": "input-done", "op": "waitForCompletion", "run": "input", "timeoutMs": 30000 }
+  ]
+}

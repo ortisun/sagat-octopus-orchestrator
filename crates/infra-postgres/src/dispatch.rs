@@ -5,6 +5,7 @@
 //! then starts runs and wakes steps in transactions of their own, and the delivery rows those
 //! transactions write make a repeated dispatch harmless.
 
+use crate::pool::BeginSafely;
 use std::time::Duration;
 
 use sagat_application::dispatch::{
@@ -177,7 +178,7 @@ impl EventDispatchStore for PgRunStore {
     async fn finish_event(&self, event: &ClaimedEvent) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE inbox_events SET status = 'DISPATCHED', dispatched_at = clock_timestamp(), \
-                 last_error = NULL \
+                 last_error = NULL, last_error_truncated = false \
              WHERE tenant_id = $1 AND namespace_id = $2 AND source = $3 AND event_id = $4 \
                AND status = 'PENDING'",
         )
@@ -201,9 +202,26 @@ impl EventDispatchStore for PgRunStore {
     ) -> Result<(), StoreError> {
         // What a dispatch says about its failure is ours to write, never a payload: keep it short.
         let error: String = error.chars().take(500).collect();
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let prior: Option<i64> = sqlx::query_scalar(
+            "SELECT coalesce(octet_length(last_error),0)::bigint FROM inbox_events \
+             WHERE tenant_id=$1 AND namespace_id=$2 AND source=$3 AND event_id=$4 AND status='PENDING' FOR UPDATE")
+            .bind(event.tenant_id.as_uuid()).bind(event.namespace_id.as_uuid())
+            .bind(event.envelope.key.source.as_str()).bind(event.envelope.key.event_id.as_str())
+            .fetch_optional(&mut *tx).await.map_err(store_error)?;
+        let Some(prior) = prior else {
+            return Ok(());
+        };
+        let log = crate::content_usage::take_log_prefix(
+            &mut tx,
+            event.tenant_id,
+            u64::try_from(prior).map_err(|_| crate::identity::corrupt("event error bytes"))?,
+            &error,
+        )
+        .await?;
         sqlx::query(
             "UPDATE inbox_events SET attempts = attempts + CASE WHEN $8 THEN 1 ELSE 0 END, \
-                 last_error = $5, \
+                 last_error = $5, last_error_truncated=$9, \
                  next_attempt_at = clock_timestamp() + make_interval(secs => $6), \
                  status = CASE WHEN $7 THEN 'DEAD' ELSE 'PENDING' END \
              WHERE tenant_id = $1 AND namespace_id = $2 AND source = $3 AND event_id = $4 \
@@ -213,14 +231,15 @@ impl EventDispatchStore for PgRunStore {
         .bind(event.namespace_id.as_uuid())
         .bind(event.envelope.key.source.as_str())
         .bind(event.envelope.key.event_id.as_str())
-        .bind(error)
+        .bind(&log.text)
         .bind(seconds(delay))
         .bind(dead)
         .bind(counted)
-        .execute(&self.pool)
+        .bind(log.truncated)
+        .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        Ok(())
+        tx.commit().await.map_err(store_error)
     }
 
     async fn triggers_matching(

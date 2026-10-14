@@ -9,11 +9,25 @@ import {
   type ActivityContext, type WorkerConfig, type WorkerEvent,
 } from '../src/index.js';
 import type { TaskLease } from '../src/worker/grpc.js';
+import { errorOfStatus } from '../src/worker/grpc.js';
+import { FaultPlan } from '../conformance/faults.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PROTO = join(here, '..', '..', 'proto', 'worker.proto');
 
 type Call = { method: string; request: Record<string, unknown>; metadata: grpc.Metadata };
+
+test('a blob integrity failure is a protocol error without server text', () => {
+  const metadata = new grpc.Metadata();
+  metadata.set('x-sagat-error', 'BLOB_CORRUPT');
+  const error = Object.assign(new Error('payload must not escape'), {
+    code: grpc.status.DATA_LOSS, details: 'payload must not escape', metadata,
+  }) as grpc.ServiceError;
+  const mapped = errorOfStatus('ReadBlob', error);
+  assert.equal(mapped.code, 'PROTOCOL');
+  assert.equal(mapped.reason, 'BLOB_CORRUPT');
+  assert.doesNotMatch(mapped.message, /payload must not escape/);
+});
 
 /** An in-memory worker service the tests script: queued leases, queued answers, a record of every call. */
 class FakeServer {
@@ -29,6 +43,10 @@ class FakeServer {
   pollDelayMs = 0;
   completeDelayMs = 0;
   pollRetryAfterMs = 50;
+  streamBatches: TaskLease[][] | undefined;
+  streamFailureAfterFirst: number | undefined;
+  holdStream = false;
+  streamCancelled = 0;
   private server = new grpc.Server();
   port = 0;
 
@@ -37,9 +55,9 @@ class FakeServer {
     const loaded = grpc.loadPackageDefinition(definition) as unknown as {
       sagat_octopus_orchestrator: { v1: { WorkerService: grpc.ServiceClientConstructor } };
     };
-    const impl: Record<string, grpc.handleUnaryCall<any, any>> = {};
+    const impl: Record<string, any> = {};
     const reply = (method: string, answer: (request: any) => unknown): void => {
-      impl[method] = (call, callback) => {
+      impl[method] = (call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) => {
         this.calls.push({ method, request: call.request as Record<string, unknown>, metadata: call.metadata });
         const queued = this.failures[method]?.shift();
         if (queued) {
@@ -50,7 +68,9 @@ class FakeServer {
           return;
         }
         if (method === 'pollTasks' && this.pollDelayMs > 0) {
-          setTimeout(() => callback(null, answer(call.request)), this.pollDelayMs);
+          const response = answer(call.request);
+          const timer = setTimeout(() => callback(null, response), this.pollDelayMs);
+          call.on('cancelled', () => clearTimeout(timer));
           return;
         }
         if (method === 'completeStep' && this.completeDelayMs > 0) {
@@ -66,6 +86,41 @@ class FakeServer {
       const tasks = this.leases.splice(0, request.max_tasks);
       return { tasks, retry_after_ms: this.pollRetryAfterMs };
     });
+    impl['streamTasks'] = (call: grpc.ServerWritableStream<{ max_tasks: number }, unknown>) => {
+      this.calls.push({ method: 'streamTasks', request: call.request as unknown as Record<string, unknown>, metadata: call.metadata });
+      let closed = false;
+      const closedOnce = (): void => {
+        if (!closed) this.streamCancelled += 1;
+        closed = true;
+      };
+      call.on('cancelled', closedOnce);
+      call.on('close', closedOnce);
+      const queued = this.failures['streamTasks']?.shift();
+      if (queued) {
+        const metadata = new grpc.Metadata();
+        if (queued.reason) metadata.set('x-sagat-error', queued.reason);
+        if (queued.retryAfterMs !== undefined) metadata.set('retry-after-ms', String(queued.retryAfterMs));
+        call.emit('error', { code: queued.code, details: 'scripted', metadata } as grpc.ServiceError);
+        return;
+      }
+      const batches = this.streamBatches ?? [this.leases.splice(0, call.request.max_tasks)];
+      let sent = 0;
+      for (const tasks of batches) {
+        if (tasks.length === 0) continue;
+        call.write({ tasks, retry_after_ms: 0 });
+        sent += tasks.length;
+        if (this.streamFailureAfterFirst !== undefined) {
+          const code = this.streamFailureAfterFirst;
+          this.streamFailureAfterFirst = undefined;
+          setTimeout(() => call.emit('error', { code, details: 'scripted', metadata: new grpc.Metadata() } as grpc.ServiceError), 20);
+          return;
+        }
+      }
+      this.streamBatches = undefined;
+      if (this.holdStream) return;
+      if (sent < call.request.max_tasks) call.write({ tasks: [], retry_after_ms: this.pollRetryAfterMs });
+      call.end();
+    };
     reply('heartbeat', () => ({ lease_expires_at_epoch_ms: this.heartbeatExpiresMs, cancel_requested: this.cancelRequested }));
     reply('completeStep', () => ({ command_id: 'c', already_applied: false, step_status: 'SUCCEEDED', run_status: 'RUNNING' }));
     reply('failStep', () => ({ command_id: 'c', already_applied: false, step_status: 'FAILED', run_status: 'RUNNING' }));
@@ -95,6 +150,10 @@ class FakeServer {
     this.pollDelayMs = 0;
     this.completeDelayMs = 0;
     this.pollRetryAfterMs = 50;
+    this.streamBatches = undefined;
+    this.streamFailureAfterFirst = undefined;
+    this.holdStream = false;
+    this.streamCancelled = 0;
   }
 }
 
@@ -142,7 +201,7 @@ test('a worker registers its activities and the newest protocol it speaks, with 
   assert.ok(register);
   assert.deepEqual(register.request, {
     worker_name: 'test-worker', namespace: 'payments',
-    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.2' },
+    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.4' },
   });
   assert.equal(register.metadata.get('authorization')[0], 'Bearer tok');
   assert.equal(h.protocolVersion, '1.2');
@@ -379,6 +438,160 @@ test('a session that is gone is registered again and the worker goes on', async 
   assert.ok(events.some((e) => e.type === 'reconnect'));
 });
 
+test('protocol 1.4 streams two frames and dispatches them before the receive ends', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.holdStream = true;
+  fake.streamBatches = [
+    [lease({ task_id: 'run-1/charge/1' })],
+    [lease({ task_id: 'run-2/charge/1', run_id: 'run-2' })],
+  ];
+  const worker = host({ maxInflight: 3 });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 2, 'both streamed tasks before EOF');
+  assert.equal(fake.of('streamTasks').length, 1);
+  assert.equal(fake.of('streamTasks')[0]!.request['max_tasks'], 3);
+  assert.equal(fake.of('pollTasks').length, 0);
+  const began = Date.now();
+  await worker.stop(500);
+  assert.ok(Date.now() - began < 1000, 'stop cancels the idle receive promptly');
+});
+
+test('a stream error after a frame preserves that handler and reconnects only receiving', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.streamBatches = [[lease()]];
+  fake.streamFailureAfterFirst = grpc.status.UNAVAILABLE;
+  const worker = host({ maxInflight: 2 });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 1, 'the partial delivery to complete');
+  await until(() => fake.of('streamTasks').length >= 2, 'a receive reconnect');
+  assert.equal(fake.of('pollTasks').length, 0);
+});
+
+test('a full-credit frame does not hide an unimplemented trailer from auto fallback', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.streamBatches = [[lease()]];
+  fake.streamFailureAfterFirst = grpc.status.UNIMPLEMENTED;
+  const worker = host({ maxInflight: 1 });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 1, 'the full-credit frame to complete');
+  await until(() => fake.of('pollTasks').length >= 1, 'polling after the trailer was classified');
+  assert.equal(fake.of('streamTasks').length, 1);
+});
+
+test('the conformance partial-stream fault forwards the first frame then fails receiving', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.streamBatches = [[lease()]];
+  const plan = new FaultPlan([{ channel: 'grpc', match: 'StreamTasks', action: 'dropStreamAfterFirst', times: 1 }]);
+  const worker = host({ maxInflight: 2, interceptors: plan.interceptors() });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 1, 'the frame forwarded by the fault');
+  await until(() => fake.of('streamTasks').length >= 2, 'the receive after the injected disconnect');
+  assert.deepEqual(plan.applied(), [1]);
+});
+
+test('auto falls back only when task streaming is unimplemented', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.failures['streamTasks'] = [{ code: grpc.status.UNIMPLEMENTED }];
+  fake.leases = [lease()];
+  const worker = host();
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('completeStep').length === 1, 'the task through fallback polling');
+  assert.equal(fake.of('streamTasks').length, 1);
+  assert.ok(fake.of('pollTasks').length >= 1);
+});
+
+test('explicit streaming refuses an older negotiated server', async () => {
+  const worker = host({ transport: 'stream' });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await assert.rejects(worker.start(), (error: unknown) =>
+    error instanceof SagatError && error.code === 'UNSUPPORTED_PROTOCOL');
+  assert.equal(fake.of('pollTasks').length, 0);
+});
+
+test('explicit streaming reports UNIMPLEMENTED as unsupported without polling', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.failures['streamTasks'] = [{ code: grpc.status.UNIMPLEMENTED }];
+  const events: WorkerEvent[] = [];
+  const worker = host({ transport: 'stream', onEvent: (event) => events.push(event) });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => events.some((event) => event.type === 'receive.failed'), 'the safe receive failure event');
+  const failed = events.find((event) => event.type === 'receive.failed');
+  assert.deepEqual(failed, { type: 'receive.failed', code: 'UNSUPPORTED_PROTOCOL' });
+  assert.equal(fake.of('pollTasks').length, 0);
+});
+
+test('explicit streaming does not call StreamTasks after re-registration negotiates 1.3', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.streamBatches = [[lease()]];
+  fake.streamFailureAfterFirst = grpc.status.UNAUTHENTICATED;
+  const events: WorkerEvent[] = [];
+  const worker = host({ transport: 'stream', maxInflight: 1, onEvent: (event) => events.push(event) });
+  worker.registerActivity('charge', () => ({ ok: true }));
+  await worker.start();
+  await until(() => fake.of('streamTasks').length === 1, 'the first stream');
+  fake.acceptedVersion = '1.3';
+  await until(() => fake.of('registerWorker').length === 2, 'the downgraded registration');
+  await until(
+    () => events.some((event) => event.type === 'receive.failed' && event.code === 'UNSUPPORTED_PROTOCOL'),
+    'the local unsupported-protocol receive failure',
+  );
+  assert.equal(fake.of('completeStep').length, 1, 'the frame delivered before re-registration finishes');
+  assert.equal(fake.of('streamTasks').length, 1, 'protocol 1.3 is refused before another stream call');
+  assert.equal(fake.of('pollTasks').length, 0);
+});
+
+test('a stream that exceeds capacity runs bounded work and is cancelled', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.holdStream = true;
+  fake.streamBatches = [[
+    lease({ task_id: 'run-1/charge/1' }),
+    lease({ task_id: 'run-2/charge/1', run_id: 'run-2' }),
+  ]];
+  let handled = 0;
+  const worker = host({ maxInflight: 1 });
+  worker.registerActivity('charge', async (_input, ctx) => {
+    handled += 1;
+    await new Promise<void>((resolve) => ctx.signal.addEventListener('abort', () => resolve(), { once: true }));
+    return null;
+  });
+  await worker.start();
+  await until(() => handled === 1, 'one bounded handler');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(handled, 1);
+  assert.equal(fake.of('streamTasks').length, 1, 'the malformed receive is not left open or reopened at once');
+  assert.equal(fake.of('streamTasks')[0]!.request['max_tasks'], 1);
+  await worker.stop(50);
+});
+
+test('a stream cannot make the host own more than the aggregate input budget', async () => {
+  fake.acceptedVersion = '1.4';
+  fake.streamBatches = [[lease({ input_json: 'x'.repeat(8 * 1024 * 1024 + 1) })]];
+  let handled = false;
+  const worker = host({ maxInflight: 1 });
+  worker.registerActivity('charge', () => { handled = true; });
+  await worker.start();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(handled, false);
+  assert.equal(fake.of('completeStep').length + fake.of('failStep').length, 0);
+});
+
+test('an empty stream hint is followed by a wait, never by another receive at once', async () => {
+  fake.acceptedVersion = '1.4';
+  const worker = host();
+  worker.registerActivity('charge', () => null);
+  await worker.start();
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const receives = fake.of('streamTasks').length;
+  assert.ok(receives >= 2 && receives <= 10, `${receives} empty receive windows in 400 ms`);
+  assert.equal(fake.of('pollTasks').length, 0);
+});
+
 test('an empty poll is followed by a wait, never by another poll at once', async () => {
   const h = host();
   h.registerActivity('charge', () => ({ ok: true }));
@@ -539,10 +752,11 @@ test('stop does not wait for a poll the server holds: it ends within its timeout
 });
 
 test('after a stop that timed out the heartbeats of a task that will not end stop too', async () => {
-  fake.leases = [lease()];
-  const worker = host({ heartbeatIntervalMs: 30 });
+  const worker = host({ heartbeatIntervalMs: 30, transport: 'poll' });
   worker.registerActivity('charge', () => new Promise(() => undefined));
   await worker.start();
+  await until(() => fake.of('pollTasks').length >= 1, 'the worker poll');
+  fake.leases = [lease()];
   await until(() => fake.of('heartbeat').length >= 2, 'heartbeats');
   await worker.stop(100);
   // A heartbeat that was already on its way when the host stopped may still arrive; none is sent after that.

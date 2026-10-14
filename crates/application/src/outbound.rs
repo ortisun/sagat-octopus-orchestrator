@@ -15,11 +15,11 @@ use std::time::Duration;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::outbound::{
-    AttemptOutcome, DeliveryId, DeliveryLimits, DeliveryStatus, OutboundKind, SubscriptionId,
-    SubscriptionStatus, TargetUrl, check_kinds,
+    AttemptOutcome, BrokerDestination, DeliveryId, DeliveryLimits, DeliveryStatus,
+    OutboundDestination, OutboundKind, SubscriptionId, SubscriptionStatus, TargetUrl, check_kinds,
 };
 use sagat_domain::quota::QuotaResource;
-use sagat_domain::secrets::SecretName;
+use sagat_domain::secrets::{SecretName, SecretValue};
 use time::OffsetDateTime;
 
 use crate::authz::{NamespaceDirectory, require_namespace};
@@ -48,9 +48,7 @@ pub struct SubscriptionRecord {
     pub tenant_id: TenantId,
     pub namespace_id: NamespaceId,
     pub name: Slug,
-    pub url: TargetUrl,
-    /// The secret of the namespace that signs what is sent: a name, never a value.
-    pub secret_name: SecretName,
+    pub destination: OutboundDestination,
     pub kinds: Vec<OutboundKind>,
     pub limits: DeliveryLimits,
     pub status: SubscriptionStatus,
@@ -68,6 +66,16 @@ pub struct SubscriptionSettings {
     pub kinds: Vec<OutboundKind>,
     pub limits: DeliveryLimits,
     /// `Active` or `Paused`; the platform alone sets `Disabled`.
+    pub status: SubscriptionStatus,
+}
+
+/// What an administrator chooses about a broker subscription.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokerSubscriptionSettings {
+    pub destination: BrokerDestination,
+    pub credentials_secret: Option<SecretName>,
+    pub kinds: Vec<OutboundKind>,
+    pub limits: DeliveryLimits,
     pub status: SubscriptionStatus,
 }
 
@@ -147,6 +155,7 @@ pub trait OutboundStore: NamespaceDirectory + QuotaLookup + SecretAccessLookup {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        brokers: bool,
     ) -> impl Future<Output = Result<Vec<SubscriptionRecord>, StoreError>> + Send;
 
     /// Deliveries of a subscription, newest first, with `id < before` when given.
@@ -225,8 +234,10 @@ where
             tenant_id: principal.tenant_id(),
             namespace_id: namespace,
             name,
-            url: settings.url,
-            secret_name: settings.secret_name,
+            destination: OutboundDestination::Webhook {
+                url: settings.url,
+                signing_secret: settings.secret_name,
+            },
             kinds: settings.kinds,
             limits: settings.limits,
             status: settings.status,
@@ -277,8 +288,10 @@ where
             .await?;
         let now = self.clock.now();
         let was_off = subscription.status != SubscriptionStatus::Active;
-        subscription.url = settings.url;
-        subscription.secret_name = settings.secret_name;
+        subscription.destination = OutboundDestination::Webhook {
+            url: settings.url,
+            signing_secret: settings.secret_name,
+        };
         subscription.kinds = settings.kinds;
         subscription.limits = settings.limits;
         subscription.status = settings.status;
@@ -368,7 +381,7 @@ where
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
         Ok(self
             .store
-            .subscriptions(principal.tenant_id(), namespace)
+            .subscriptions(principal.tenant_id(), namespace, false)
             .await?)
     }
 
@@ -455,15 +468,328 @@ where
             .await?)
     }
 
+    /// Creates a subscription that publishes to a tenant-operated broker.
+    pub async fn create_broker(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        name: Slug,
+        settings: BrokerSubscriptionSettings,
+        ctx: &RequestContext,
+    ) -> Result<SubscriptionRecord, AppError> {
+        principal.authorize(Permission::EventManage)?;
+        self.check_broker(principal, namespace, &settings, ctx)
+            .await?;
+        let now = self.clock.now();
+        let subscription = SubscriptionRecord {
+            id: SubscriptionId::generate(),
+            tenant_id: principal.tenant_id(),
+            namespace_id: namespace,
+            name,
+            destination: OutboundDestination::Broker {
+                settings: settings.destination,
+                credentials_secret: settings.credentials_secret,
+            },
+            kinds: settings.kinds,
+            limits: settings.limits,
+            status: settings.status,
+            health: Health::default(),
+            created_by: principal.subject().as_str().to_owned(),
+            created_at: now,
+            updated_at: now,
+        };
+        let limit = self
+            .store
+            .effective_limit(
+                principal.tenant_id(),
+                Some(namespace),
+                QuotaResource::BrokerSubscriptions,
+            )
+            .await?;
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::BrokerSubscriptionCreated,
+            ResourceType::BrokerSubscription,
+            subscription.id.to_string(),
+            ctx.trace_id.clone(),
+            now,
+        )
+        .with_reason(format!("broker subscription '{}'", subscription.name));
+        match self
+            .store
+            .create_subscription(&subscription, limit, &audit)
+            .await
+        {
+            Err(StoreError::Conflict(ConflictKind::WebhookSubscriptionName)) => {
+                Err(AppError::Conflict(ConflictKind::BrokerSubscriptionName))
+            }
+            Err(error) => Err(error.into()),
+            Ok(()) => Ok(subscription),
+        }
+    }
+
+    /// Replaces the settings of an outbound broker subscription; its broker kind does not change.
+    pub async fn update_broker(
+        &self,
+        principal: &Principal,
+        id: SubscriptionId,
+        settings: BrokerSubscriptionSettings,
+        ctx: &RequestContext,
+    ) -> Result<SubscriptionRecord, AppError> {
+        principal.authorize(Permission::EventManage)?;
+        let mut subscription = self.load_broker(principal, id).await?;
+        let OutboundDestination::Broker {
+            settings: current, ..
+        } = &subscription.destination
+        else {
+            return Err(AppError::NotFound);
+        };
+        if current.kind() != settings.destination.kind() {
+            return Err(AppError::NotAllowed(
+                "the kind of a broker subscription does not change; make another",
+            ));
+        }
+        self.check_broker(principal, subscription.namespace_id, &settings, ctx)
+            .await?;
+        let now = self.clock.now();
+        let was_off = subscription.status != SubscriptionStatus::Active;
+        subscription.destination = OutboundDestination::Broker {
+            settings: settings.destination,
+            credentials_secret: settings.credentials_secret,
+        };
+        subscription.kinds = settings.kinds;
+        subscription.limits = settings.limits;
+        subscription.status = settings.status;
+        subscription.updated_at = now;
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::BrokerSubscriptionChanged,
+            ResourceType::BrokerSubscription,
+            id.to_string(),
+            ctx.trace_id.clone(),
+            now,
+        )
+        .with_reason(format!(
+            "broker subscription '{}' is {}{}",
+            subscription.name,
+            subscription.status.as_str().to_lowercase(),
+            if was_off && subscription.status == SubscriptionStatus::Active {
+                ", turned back on"
+            } else {
+                ""
+            }
+        ));
+        if self
+            .store
+            .update_subscription(&subscription, &audit)
+            .await?
+            .is_none()
+        {
+            return Err(AppError::NotFound);
+        }
+        self.load_broker(principal, id).await
+    }
+
+    pub async fn get_broker(
+        &self,
+        principal: &Principal,
+        id: SubscriptionId,
+    ) -> Result<SubscriptionRecord, AppError> {
+        principal.authorize(Permission::EventRead)?;
+        self.load_broker(principal, id).await
+    }
+
+    pub async fn list_brokers(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<SubscriptionRecord>, AppError> {
+        principal.authorize(Permission::EventRead)?;
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        Ok(self
+            .store
+            .subscriptions(principal.tenant_id(), namespace, true)
+            .await?)
+    }
+
+    pub async fn delete_broker(
+        &self,
+        principal: &Principal,
+        id: SubscriptionId,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        principal.authorize(Permission::EventManage)?;
+        let subscription = self.load_broker(principal, id).await?;
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::BrokerSubscriptionDeleted,
+            ResourceType::BrokerSubscription,
+            id.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(format!("broker subscription '{}'", subscription.name));
+        if self
+            .store
+            .delete_subscription(principal.tenant_id(), id, &audit)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(AppError::NotFound)
+        }
+    }
+
+    pub async fn broker_deliveries(
+        &self,
+        principal: &Principal,
+        id: SubscriptionId,
+        status: Option<DeliveryStatus>,
+        before: Option<DeliveryId>,
+        limit: u32,
+    ) -> Result<Vec<DeliveryRecord>, AppError> {
+        principal.authorize(Permission::EventRead)?;
+        self.load_broker(principal, id).await?;
+        Ok(self
+            .store
+            .deliveries(
+                principal.tenant_id(),
+                id,
+                status,
+                before,
+                limit.clamp(1, 200),
+            )
+            .await?)
+    }
+
+    pub async fn broker_delivery(
+        &self,
+        principal: &Principal,
+        id: SubscriptionId,
+        delivery: DeliveryId,
+    ) -> Result<(DeliveryRecord, Vec<AttemptRecord>), AppError> {
+        principal.authorize(Permission::EventRead)?;
+        self.load_broker(principal, id).await?;
+        self.store
+            .delivery(principal.tenant_id(), id, delivery)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
+
+    pub async fn redrive_broker(
+        &self,
+        principal: &Principal,
+        id: SubscriptionId,
+        delivery: Option<DeliveryId>,
+        limit: u32,
+        ctx: &RequestContext,
+    ) -> Result<u64, AppError> {
+        principal.authorize(Permission::EventManage)?;
+        let subscription = self.load_broker(principal, id).await?;
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::BrokerDeliveryRedriven,
+            ResourceType::BrokerSubscription,
+            id.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(match delivery {
+            Some(one) => format!("delivery {one} of '{}'", subscription.name),
+            None => format!("dead deliveries of '{}'", subscription.name),
+        });
+        Ok(self
+            .store
+            .redrive(
+                principal.tenant_id(),
+                id,
+                delivery,
+                limit.clamp(1, 1000),
+                &audit,
+            )
+            .await?)
+    }
+
+    async fn load_broker(
+        &self,
+        principal: &Principal,
+        id: SubscriptionId,
+    ) -> Result<SubscriptionRecord, AppError> {
+        let found = self
+            .store
+            .subscription(principal.tenant_id(), id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if matches!(found.destination, OutboundDestination::Broker { .. }) {
+            Ok(found)
+        } else {
+            Err(AppError::NotFound)
+        }
+    }
+
+    async fn check_broker(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        settings: &BrokerSubscriptionSettings,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        check_kinds(&settings.kinds).map_err(|_| {
+            AppError::NotAllowed("a subscription names between 1 and 8 different event types")
+        })?;
+        if settings.status == SubscriptionStatus::Disabled {
+            return Err(AppError::NotAllowed(
+                "a subscription is switched off by the platform, never by a caller",
+            ));
+        }
+        require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
+        for server in settings.destination.servers() {
+            if self
+                .egress
+                .check(principal.tenant_id(), namespace, &server.destination())
+                .await?
+                .is_err()
+            {
+                return Err(AppError::NotAllowed(
+                    "the egress policy of the namespace does not allow that broker",
+                ));
+            }
+        }
+        if let Some(secret) = &settings.credentials_secret {
+            let states = self
+                .store
+                .secret_states(
+                    principal.tenant_id(),
+                    namespace,
+                    std::slice::from_ref(secret),
+                    principal.subject().as_str(),
+                )
+                .await?;
+            check_usable(Some(principal.role()), &states).map_err(|SecretProblem(name)| {
+                AppError::SecretUnavailable {
+                    name: name.to_string(),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
     async fn load(
         &self,
         principal: &Principal,
         id: SubscriptionId,
     ) -> Result<SubscriptionRecord, AppError> {
-        self.store
+        let found = self
+            .store
             .subscription(principal.tenant_id(), id)
             .await?
-            .ok_or(AppError::NotFound)
+            .ok_or(AppError::NotFound)?;
+        if matches!(found.destination, OutboundDestination::Webhook { .. }) {
+            Ok(found)
+        } else {
+            Err(AppError::NotFound)
+        }
     }
 
     /// What every create and update has to satisfy.
@@ -524,9 +850,21 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DueDelivery {
     pub delivery: DeliveryRecord,
-    pub url: TargetUrl,
-    pub secret_name: SecretName,
+    pub destination: OutboundDestination,
     pub limits: DeliveryLimits,
+}
+
+impl DueDelivery {
+    #[must_use]
+    pub const fn webhook(&self) -> Option<(&TargetUrl, &SecretName)> {
+        match &self.destination {
+            OutboundDestination::Webhook {
+                url,
+                signing_secret,
+            } => Some((url, signing_secret)),
+            OutboundDestination::Broker { .. } => None,
+        }
+    }
 }
 
 /// What the worker decided after an attempt.
@@ -623,6 +961,63 @@ pub trait WebhookSender: Send + Sync {
         &self,
         request: &OutboundRequest,
     ) -> impl Future<Output = Result<OutboundResponse, SendFailure>> + Send;
+}
+
+/// A broker publish request. The credentials value is redacted and zeroized by its domain type.
+#[derive(Clone)]
+pub struct BrokerRequest {
+    pub tenant_id: TenantId,
+    pub namespace_id: NamespaceId,
+    /// Stable FIFO ordering group for destinations that support ordered delivery.
+    pub subscription_id: SubscriptionId,
+    pub destination: BrokerDestination,
+    pub credentials: Option<SecretValue>,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub timeout: Duration,
+}
+
+impl std::fmt::Debug for BrokerRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrokerRequest")
+            .field("tenant_id", &self.tenant_id)
+            .field("namespace_id", &self.namespace_id)
+            .field("subscription_id", &self.subscription_id)
+            .field("destination", &self.destination)
+            .field(
+                "credentials",
+                &self.credentials.as_ref().map(|_| "<redacted>"),
+            )
+            .field("headers", &self.headers)
+            .field("body_bytes", &self.body.len())
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokerFailure {
+    Denied,
+    Timeout,
+    Network,
+    Rejected,
+}
+
+pub trait BrokerPublisher: Send + Sync {
+    fn publish(
+        &self,
+        request: &BrokerRequest,
+    ) -> impl Future<Output = Result<(), BrokerFailure>> + Send;
+}
+
+/// Safe default used by tests and instances that have no outbound broker publisher.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoBrokerPublisher;
+
+impl BrokerPublisher for NoBrokerPublisher {
+    async fn publish(&self, _: &BrokerRequest) -> Result<(), BrokerFailure> {
+        Err(BrokerFailure::Network)
+    }
 }
 
 /// Maps a conflict raised by the store.

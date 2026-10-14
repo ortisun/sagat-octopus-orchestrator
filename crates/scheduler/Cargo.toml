@@ -2,6 +2,7 @@
 name = "sagat-scheduler"
 description = "Background passes that move runs forward with no caller: timers, waits, retries, leases, deadlines and lost wake-ups."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

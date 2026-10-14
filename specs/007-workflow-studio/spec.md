@@ -68,6 +68,20 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **FR-007-003**: The system MUST compile/verify the graph into Workflow IR with versioned node IDs, with no illegal cycles or broken references.
 - **FR-007-004**: The system MUST implement Draft/Published versions, diff, and a warning for contract-breaking changes, with no in-place modification of the published version.
 - **FR-007-005**: The system MUST project the journal into an execution graph with attempts, retries, compensations, trace links, redacted payload.
+  A deployment may publish `SAGAT_STUDIO_TRACE_URL` with exactly one `{traceId}` placeholder. The
+  Studio shows **Open trace** only for a nonzero 32-hex trace id and a safe absolute template:
+  HTTPS, or HTTP on a loopback address, without URL credentials. The link is explicit, opens in a
+  separate tab with `noopener noreferrer`, and never causes an automatic tracing-tool request.
+  Missing or invalid configuration leaves the trace id and copy action intact without inventing a
+  link. The setting is read from runtime `/studio/config.json`, so it does not require a new build.
+  The redacted-payload implementation is the authorized, audited structural inspection in
+  [ADR-0028](../../docs/adr/ADR-0028-authorized-structural-payload-inspection.md): actual persisted
+  input or journal-selected output, with every scalar value and object key hidden, bounded
+  structure/type/count/size metadata, and explicit unavailable/external-content states. It requires
+  `run:payload:inspect` in addition to run read access. No schema annotation authorizes value
+  disclosure. T007-048 is implemented and verified; its PostgreSQL/API, application/projector,
+  identity, Studio and real-browser evidence is recorded in `tasks.md` and `quickstart.md`.
+  Customer classification and raw-value disclosure remain pending under G42/G39.
 - **FR-007-006**: The system MUST offer SSE/WebSocket incremental updates and polling fallback, avoiding full DAG reload.
 - **FR-007-007**: The system MUST enforce operational actions via RBAC and confirmation explaining the consequences of retry/compensation.
 - **FR-007-008**: The system MUST implement a WCAG AA accessibility target and an alternative table/list view.
@@ -80,6 +94,29 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
 - **FR-007-010**: An element of the design for which the platform has no data or no feature MUST NOT be drawn with sample values or as a
   link to nothing: it is omitted, or shown unavailable with the reason (queue, worker and trigger kind of a run, counts, workers and
   backlog of the platform, pages of other features, the payload tab). The table of such elements is in `design/README.md`.
+
+Asset recovery acceptance (T007-050, FR-007-008/009): after a completed Studio build is replaced,
+new page requests must reference the current assets without a control-plane restart. HTML is
+bounded and never cached; unavailable or unsafe HTML fails closed. A lazy route load failure must
+offer an accessible, explicit reload action, explain loss of unsaved edits and the need to sign in
+again, and hide exception text and stack traces. No automatic reload loop is allowed.
+
+Graph text acceptance (T007-051, FR-007-001/005/008/009): following the owner's Temporal/Windmill
+UX direction, separate the canvas summary from the selected step's detailed editor/inspection.
+Node identity, type and execution status must remain legible, without squeezed line boxes or
+ellipsis on valid node IDs. Give badges and connection labels their own space; rounded borders
+must not clip glyphs. Longer configuration/expression previews may be explicit summaries; the
+complete value stays available in the selected inspector. Keep duration amounts and their units
+usable independently. Verify actual text geometry, rich states, 64-character IDs, both layout
+directions and narrow viewports, while preserving stable runtime positions and virtualization.
+
+Visual defect acceptance (2026-10-12, FR-007-008/009): initial workflow and run graphs must show
+readable cards rather than shrinking the entire graph to microscopic text. Explicit fit/zoom and
+the alternative list/table remain available. At desktop widths the run graph controls must fit in
+the visible canvas; workflow palettes and inspectors must not squeeze the canvas or overflow their
+panels. Run identity/actions remain legible, with secondary metadata available through an accessible
+disclosure. Verify rendered geometry at 320, 768, 1024, 1280 and 1470px and selected controls in light,
+dark and forced-colour modes; presence-only and page-width checks are insufficient.
 
 ## Edge Cases
 
@@ -130,6 +167,8 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 
 - Define capacity/quota values per tier, after benchmark and security testing.
 - Confirm the payload classification/retention scheme per customer and regulator.
+  This remains open for value disclosure and retention policy; ADR-0028's `structure-only-v1`
+  inspection makes neither decision and reveals no scalar value or object key.
 - Adjust SDK ergonomics based on interviews and proof-of-concept.
 - The design's owner: the light theme and the screens beyond Runs (editor, scripts, sign-in, states), the logo, where Scripts sits in the navigation, and whether *Send signal* and the per-step *Timeline* bars are part of this feature (G160–G163, G167, G168).
 
@@ -142,3 +181,24 @@ Implementation status (2026-10-11): FR-007-009/010 visual changes and technical 
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
 after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
 automated CI evidence for this branch is recorded separately.
+
+Namespace creation acceptance (T007-052): an authorized user can open **Namespaces** in the main menu, then **New namespace**, choose a tenant workspace and environment, and create a valid unique slug.
+The created namespace becomes selected without a reload. Empty workspace lists, validation,
+conflicts and API failures are actionable; unauthorized users have no creation action.
+
+Owner correction (T007-052): **Namespaces** is a dedicated navigation menu and `/namespaces`
+page, listing namespaces and hosting **New namespace**. The sidebar selector remains for
+switching context; creation is not a sidebar button. Reuse identity contracts and permissions.
+
+Integrations acceptance (T007-053, owner request): a dedicated **Integrations** menu lists the
+current namespace's inbound broker connectors and provides create/edit forms for NATS, Kafka and
+SQS. Type-specific connection and authentication fields use the existing connector/secret APIs.
+Credentials are write-only, never returned or stored in browser persistence, and never put in broker
+URLs or connector settings. Configuration status is not represented as a successful connection test.
+
+Namespace completeness (T007-054): namespace selection and the Namespaces page must follow every
+cursor. A later-page error or cancellation must not publish a partial list as a successful result.
+
+Send signal acceptance (T007-056/G167): [`signal-completion.md`](./signal-completion.md) defines
+the authorized confirmation, bounded JSON input, retry identity and context-disposal behavior.
+It uses the existing durable feature 002 signal API; no execution or audit semantics change.

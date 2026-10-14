@@ -146,6 +146,21 @@
   grid-column: 3;
 }
 
+@media (max-width: 87.5rem) {
+  .wf-body {
+    grid-template-columns: minmax(0, 1fr) minmax(16.25rem, 20rem);
+  }
+  .wf-palette {
+    grid-column: 1 / -1;
+  }
+  .wf-main {
+    grid-column: 1;
+  }
+  .wf-inspector {
+    grid-column: 2;
+  }
+}
+
 @media (max-width: 68.75rem) {
   .wf-body {
     grid-template-columns: minmax(0, 1fr);
@@ -192,7 +207,7 @@
   gap: var(--space-3);
 }
 
-@media (max-width: 68.75rem) {
+@media (max-width: 87.5rem) {
   .wf-palette {
     width: auto;
     max-height: none;
@@ -200,6 +215,10 @@
   .wf-palette ul {
     flex-direction: row;
     flex-wrap: wrap;
+  }
+  .wf-palette ul > li {
+    flex: 1 1 7.5rem;
+    min-width: 0;
   }
 }
 
@@ -300,20 +319,25 @@
 }
 
 .wf-card {
+  --wf-port-rail: 5.25rem;
   position: relative;
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-3) 5.25rem var(--space-3) var(--space-5);
-  overflow: hidden;
+  padding: var(--space-4) var(--wf-port-rail) var(--space-4) var(--space-6);
   border: 2px solid var(--border);
   border-radius: var(--radius-nav);
   background: var(--bg-raised);
   color: var(--fg);
   font-size: var(--font-size-mono);
   line-height: 1.3;
+}
+
+/* Text keeps its line box; badges and ports cannot squeeze glyphs vertically. */
+.wf-card > * {
+  flex-shrink: 0;
 }
 
 .wf-card[data-simplified="true"] {
@@ -325,7 +349,8 @@
   border-left-width: 8px;
 }
 .wf-card[data-category="wait"] {
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-panel);
+  border-style: dashed;
 }
 .wf-card[data-category="saga"] {
   border-style: double;
@@ -333,12 +358,10 @@
 }
 .wf-card[data-category="end"] {
   border-width: 3px;
-  border-radius: var(--radius-pill);
-  padding-left: var(--space-page-y);
+  border-radius: var(--radius-panel);
 }
 .wf-card[data-category="start"] {
   border-style: dashed;
-  padding-right: var(--control-height);
 }
 
 .wf-card[data-problems="true"] {
@@ -347,7 +370,7 @@
 
 .wf-card-head {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: var(--space-3);
   min-width: 0;
 }
@@ -356,37 +379,23 @@
   flex: none;
 }
 
-.wf-type {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 55%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: var(--weight-semibold);
-}
-
 .wf-kind-line {
   font-weight: var(--weight-semibold);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .wf-id {
   flex: 1 1 auto;
   min-width: 0;
   font-weight: var(--weight-semibold);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   font-family: var(--mono);
 }
 
 .wf-detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   color: var(--fg-muted);
 }
 
@@ -427,7 +436,7 @@
   top: 0;
   bottom: 0;
   right: var(--space-6);
-  width: 4.375rem;
+  width: calc(var(--wf-port-rail) - var(--space-6) * 2);
   display: flex;
   flex-direction: column;
   pointer-events: none;
@@ -438,13 +447,13 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  font-size: var(--font-size-tagline);
+  font-size: var(--font-size-micro);
   color: var(--fg-muted);
   white-space: nowrap;
 }
 
 .wf-card[data-direction="TB"]:not([data-simplified="true"]) {
-  padding: var(--space-3) var(--space-5) 1.375rem;
+  padding: var(--space-4) var(--space-6) calc(var(--space-8) * 2);
 }
 
 .wf-card[data-direction="TB"] .wf-ports {
@@ -522,6 +531,34 @@
 
 .wf-duration-row input {
   flex: 1;
+}
+
+/* This row is also used by tags and rename controls; only durations have a unit selector. */
+.wf-duration > .wf-duration-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.75rem;
+}
+
+.wf-duration > .wf-duration-row input {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-duration > .wf-duration-row select {
+  width: 100%;
+}
+
+.wf-duration {
+  container-type: inline-size;
+}
+
+@container (max-width: 15rem) {
+  .wf-duration > .wf-duration-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wf-duration > .wf-duration-row select {
+    width: 4.75rem;
+  }
 }
 
 .wf-check label {
@@ -823,6 +860,10 @@ dialog {
   .wf-canvas .react-flow__node.selected .wf-card {
     outline: 3px solid Highlight;
   }
+  .btn[aria-pressed="true"]:hover:not(:disabled),
+  .wf-dock [role="tab"][aria-selected="true"]:hover:not(:disabled) {
+    filter: none;
+  }
 }
 
 /* The cells that name a row are not column headers: base.css shouts those. */
@@ -847,11 +888,8 @@ table.data tbody th[scope="row"] {
 }
 
 /* On a laptop the canvas needs the room more than the palette needs its sentences: the description of a kind
-   stays for assistive technology and for the title of the button, and the palette is a column of names. */
+   stays for assistive technology and for the title of the button. */
 @media (min-width: 68.8125rem) and (max-width: 99.9375rem) {
-  .wf-palette {
-    width: 9.375rem;
-  }
   .wf-kind-desc {
     position: absolute;
     width: 1px;
@@ -859,5 +897,12 @@ table.data tbody th[scope="row"] {
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
+  }
+}
+
+/* The palette only stays as a narrow column while the editor has room for three columns. */
+@media (min-width: 87.5625rem) and (max-width: 99.9375rem) {
+  .wf-palette {
+    width: 9.375rem;
   }
 }

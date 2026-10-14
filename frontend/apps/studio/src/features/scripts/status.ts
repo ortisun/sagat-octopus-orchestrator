@@ -36,6 +36,7 @@ export function isVersionFinal(status: string): boolean {
 
 /** What each failure code of a test run means (the list in `getScriptTestRun`). */
 const FAILURE: Record<string, string> = {
+  STORAGE_QUOTA_EXCEEDED: 'The tenant retained-content limit was reached. Free capacity before starting new work.',
   SCRIPT_ERROR: 'The script threw an error.',
   SCRIPT_TIMEOUT: 'The script ran past its time limit and was stopped.',
   SCRIPT_OUT_OF_MEMORY: 'The script used more memory than its limit and was killed.',
@@ -54,6 +55,9 @@ export function failureHelp(code: string | undefined): string {
 
 /** What the prefix of the `failure` of a version says about where the build stopped. */
 const BUILD_FAILURE: [string, string][] = [
+  ['STORAGE_QUOTA_EXCEEDED', 'The tenant retained-content limit was reached. Free capacity before publishing again.'],
+  ['SCRIPT_SANDBOX_UNAVAILABLE', 'No runner could complete the build.'],
+  ['SCRIPT_BUILD_REJECTED', 'The build was rejected; retained diagnostics may have been truncated.'],
   ['rejected:', 'The toolchain rejected the source.'],
   ['lockfile:', 'The lockfile pins a package; installing packages is not available yet.'],
   ['limit:', 'The build ran into a limit.'],

@@ -51,6 +51,7 @@ pub struct NewRun {
     pub info: RunInfo,
     pub definition: Arc<WorkflowDefinition>,
     pub input: Vec<u8>,
+    pub input_blob: Option<crate::blobs::RunInputBinding>,
     pub audit: AuditRecord,
     pub idempotency: Idempotency,
 }
@@ -156,6 +157,14 @@ pub struct RunFilter {
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait RunStore: QuotaLookup + crate::telemetry::TelemetryStore + Send + Sync {
     type Tx: RunTx;
+
+    /// Reads an already committed start before resolving an ephemeral upload. `create` repeats
+    /// this decision transactionally; conflicting fingerprints are never treated as misses.
+    fn replay_start(
+        &self,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
 
     /// Creates the run (row, input payload, empty state) and returns its open transaction, or
     /// reports that the same request already created one.
@@ -336,6 +345,10 @@ pub struct RunService<S, C, E> {
     engine: Engine<E>,
     cache: DefinitionCache,
     lag_budget: Duration,
+    input_blobs: Option<(
+        crate::blobs::BlobService,
+        Arc<dyn crate::blobs::RunInputChecker>,
+    )>,
 }
 
 /// The state of a run's telemetry and what it is judged by.
@@ -366,6 +379,7 @@ where
             engine,
             cache,
             lag_budget: Duration::from_secs(30),
+            input_blobs: None,
         }
     }
 
@@ -374,6 +388,35 @@ where
     pub const fn with_lag_budget(mut self, budget: Duration) -> Self {
         self.lag_budget = budget;
         self
+    }
+
+    #[must_use]
+    pub fn with_input_blobs(
+        mut self,
+        blobs: crate::blobs::BlobService,
+        checker: Arc<dyn crate::blobs::RunInputChecker>,
+    ) -> Self {
+        self.input_blobs = Some((blobs, checker));
+        self
+    }
+
+    #[must_use]
+    pub fn input_blobs(&self) -> Option<&crate::blobs::BlobService> {
+        self.input_blobs.as_ref().map(|(service, _)| service)
+    }
+
+    /// Authorizes the namespace of a pre-run upload before its stream is read.
+    pub async fn input_blob_access(
+        &self,
+        principal: &Principal,
+        namespace: &str,
+    ) -> Result<crate::blobs::BlobAccess, AppError> {
+        principal.authorize(Permission::RunStart)?;
+        let namespace = self.namespace(principal, namespace).await?;
+        Ok(crate::blobs::BlobAccess {
+            tenant_id: principal.tenant_id(),
+            namespace_id: namespace.id(),
+        })
     }
 
     /// Starts a run of a published version. The run is durable when this returns: its first steps
@@ -390,7 +433,20 @@ where
         request: &StartRun<'_>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
-        self.start_with(principal, request, None, ctx).await
+        self.start_with(principal, request, None, None, ctx).await
+    }
+
+    /// Starts with a staged upload belonging to this principal. The external bytes stay opaque;
+    /// the canonical descriptor is the input checked by the workflow's schema.
+    pub async fn start_with_blob(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        id: sagat_domain::blobs::BlobId,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        self.start_with(principal, request, None, Some(id), ctx)
+            .await
     }
 
     /// Starts a run again from an ended one (`RERUN_AS_NEW`): the same version of the same workflow,
@@ -442,6 +498,7 @@ where
                 key,
             },
             Some(Rerun { of: id, reason }),
+            None,
             ctx,
         )
         .await
@@ -452,13 +509,14 @@ where
         principal: &Principal,
         request: &StartRun<'_>,
         rerun: Option<Rerun<'_>>,
+        input_blob: Option<sagat_domain::blobs::BlobId>,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunStart)?;
-        if request.input.len() > MAX_PAYLOAD_BYTES {
+        if input_blob.is_none() && request.input.len() > MAX_PAYLOAD_BYTES {
             return Err(AppError::NotAllowed("the run input is larger than 256 KiB"));
         }
-        if !self.engine.evaluator().is_json_object(request.input) {
+        if input_blob.is_none() && !self.engine.evaluator().is_json_object(request.input) {
             return Err(AppError::NotAllowed("the run input must be a JSON object"));
         }
         if request
@@ -477,6 +535,38 @@ where
             .filter(|r| r.workflow.namespace_id() == namespace.id())
             .ok_or(AppError::NotFound)?
             .workflow;
+        let blob_idempotency = input_blob.map(|id| Idempotency {
+            scope: format!("run.start:{}", namespace.id()),
+            key: request.key.to_owned(),
+            fingerprint: fingerprint(&[
+                b"run.input.blob",
+                principal.subject().as_str().as_bytes(),
+                workflow.id().to_string().as_bytes(),
+                request
+                    .version
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+                    .as_bytes(),
+                id.to_string().as_bytes(),
+                request.correlation_id.unwrap_or_default().as_bytes(),
+                request
+                    .deadline
+                    .map(|d| d.unix_timestamp_nanos().to_be_bytes())
+                    .unwrap_or_default()
+                    .as_slice(),
+            ]),
+        });
+        if let Some(idempotency) = &blob_idempotency {
+            // A stable request identity does not depend on the catalog still containing an unused
+            // upload, or on which version is active when a lost response is retried.
+            if let Some(existing) = self
+                .store
+                .replay_start(principal.tenant_id(), idempotency)
+                .await?
+            {
+                return self.replayed_start(principal, &existing).await;
+            }
+        }
         let version_id = match request.version {
             Some(id) => id,
             None => workflow.active_version().ok_or(AppError::StateConflict(
@@ -545,7 +635,7 @@ where
             )
             .with_reason(format!("started again from {}: {}", rerun.of, rerun.reason)),
         };
-        let idempotency = Idempotency {
+        let mut idempotency = Idempotency {
             scope: format!("run.start:{}", namespace.id()),
             key: request.key.to_owned(),
             fingerprint: fingerprint(&[
@@ -564,12 +654,55 @@ where
                     .as_slice(),
             ]),
         };
+        if let Some(blob_idempotency) = blob_idempotency {
+            idempotency = blob_idempotency;
+        }
+        let (input, input_binding) = match input_blob {
+            Some(id) => {
+                let (blobs, checker) = self.input_blobs.as_ref().ok_or(AppError::Unavailable)?;
+                let access = crate::blobs::BlobAccess {
+                    tenant_id: principal.tenant_id(),
+                    namespace_id: namespace.id(),
+                };
+                let descriptor = match blobs
+                    .describe_input(access, id, principal.subject().as_str())
+                    .await
+                {
+                    Ok(descriptor) => descriptor,
+                    Err(crate::blobs::BlobReadError::NotFound) => {
+                        // A peer may have committed this exact start after the first replay read.
+                        if let Some(existing) = self
+                            .store
+                            .replay_start(principal.tenant_id(), &idempotency)
+                            .await?
+                        {
+                            return self.replayed_start(principal, &existing).await;
+                        }
+                        return Err(AppError::NotFound);
+                    }
+                    Err(_) => return Err(AppError::Unavailable),
+                };
+                let input = crate::blobs::descriptor_json(&descriptor);
+                checker
+                    .check(&version.document, &input)
+                    .map_err(AppError::NotAllowed)?;
+                (
+                    input,
+                    Some(crate::blobs::RunInputBinding::Uploaded(descriptor)),
+                )
+            }
+            None => (
+                request.input.to_vec(),
+                rerun.map(|r| crate::blobs::RunInputBinding::Inherit(r.of)),
+            ),
+        };
         let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id()).await?;
         let new = NewRun {
             limits,
             info,
             definition: Arc::clone(&definition),
-            input: request.input.to_vec(),
+            input,
+            input_blob: input_binding,
             audit,
             idempotency,
         };
@@ -601,6 +734,18 @@ where
                     .ok_or(AppError::Internal)
             }
         }
+    }
+
+    async fn replayed_start(
+        &self,
+        principal: &Principal,
+        existing: &str,
+    ) -> Result<RunRecord, AppError> {
+        let id = existing.parse::<RunId>().map_err(|_| AppError::Internal)?;
+        self.store
+            .get(principal.tenant_id(), id)
+            .await?
+            .ok_or(AppError::Internal)
     }
 
     /// # Errors

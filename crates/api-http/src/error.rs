@@ -461,6 +461,9 @@ impl From<AppError> for ApiError {
                     ConflictKind::WebhookSubscriptionName => {
                         "a webhook subscription with this name already exists"
                     }
+                    ConflictKind::BrokerSubscriptionName => {
+                        "an outbound broker subscription with this name already exists"
+                    }
                     ConflictKind::ConnectorSlug => "a connector with this slug already exists",
                     ConflictKind::ScriptName => "a script with this name already exists",
                     ConflictKind::RequestNotApproved => {
@@ -471,6 +474,7 @@ impl From<AppError> for ApiError {
                 e.parts.details = Some(match kind {
                     ConflictKind::WorkflowName
                     | ConflictKind::WebhookSubscriptionName
+                    | ConflictKind::BrokerSubscriptionName
                     | ConflictKind::ScriptName => {
                         json!({ "field": "name" })
                     }

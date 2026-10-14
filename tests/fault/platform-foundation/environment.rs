@@ -28,6 +28,11 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
         },
         ServeConfig {
             bind_addr: "127.0.0.1:0".parse().expect("addr"),
+            tls: None,
+            webhook_oidc: Vec::new(),
+            webhook_oidc_development: true,
+            blobs: None,
+            blob_transfer: sagat_api_http::HttpBlobTransfer::default(),
             auth,
             limits: HttpLimits::default(),
             server: sagat_api_http::ServerConfig::default(),

@@ -1,6 +1,7 @@
 package dev.sagatoctopusorchestrator.conformance;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.sagatoctopusorchestrator.protocol.v1.Worker;
 import dev.sagatoctopusorchestrator.sdk.HttpTransport;
 import dev.sagatoctopusorchestrator.sdk.Json;
 import io.grpc.CallOptions;
@@ -141,6 +142,9 @@ final class FaultPlan {
                     // The call never reaches the server: there is nothing underneath.
                     return new FailingCall<>(code.toStatus().withDescription("injected"), trailers);
                 }
+                if (fault.action().equals("dropStreamAfterFirst")) {
+                    return new DropAfterFirstCall<>(next.newCall(method, options));
+                }
                 // dropResponse: the server applies the call; its answer is replaced by a failure to deliver it.
                 return new ForwardingClientCall.SimpleForwardingClientCall<Q, R>(next.newCall(method, options)) {
                     @Override
@@ -160,6 +164,38 @@ final class FaultPlan {
                 };
             }
         });
+    }
+
+    /** Forwards one real nonempty task frame, then cancels only that receive and reports UNAVAILABLE. */
+    private static final class DropAfterFirstCall<Q, R> extends ForwardingClientCall.SimpleForwardingClientCall<Q, R> {
+        private boolean forwarded;
+
+        DropAfterFirstCall(ClientCall<Q, R> delegate) {
+            super(delegate);
+        }
+
+        @Override
+        public void start(Listener<R> listener, Metadata headers) {
+            super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<R>(listener) {
+                @Override
+                public void onMessage(R message) {
+                    super.onMessage(message);
+                    if (!forwarded && message instanceof Worker.PollTasksResponse frame && frame.getTasksCount() > 0) {
+                        forwarded = true;
+                        DropAfterFirstCall.this.cancel("injected", null);
+                    }
+                }
+
+                @Override
+                public void onClose(Status status, Metadata trailers) {
+                    if (forwarded) {
+                        super.onClose(Status.UNAVAILABLE.withDescription("injected"), new Metadata());
+                    } else {
+                        super.onClose(status, trailers);
+                    }
+                }
+            }, headers);
+        }
     }
 
     private static final class FailingCall<Q, R> extends ClientCall<Q, R> {

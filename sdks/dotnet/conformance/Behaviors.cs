@@ -1,22 +1,24 @@
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using SagatOctopusOrchestrator.Sdk.Workers;
 
 namespace SagatOctopusOrchestrator.Sdk.Conformance;
 
 /// <summary>The behaviours of the activities a scenario registers (README, "Worker activities"), as handlers of the SDK.</summary>
-internal sealed class Behaviors(string workerKey, List<JsonObject> log)
+internal sealed class Behaviors(string workerKey, List<JsonObject> log, WorkerMeasurements measurements)
 {
     private readonly object gate = new();
 
     internal string WorkerKey { get; } = workerKey;
 
-    internal async Task<JsonNode?> ActivityAsync(string name, string kind, JsonObject behavior, JsonNode? input, ActivityExecutionContext context, CancellationToken cancellationToken)
+    internal async Task<object?> ActivityAsync(string name, string kind, JsonObject behavior, JsonNode? input, ActivityExecutionContext context, CancellationToken cancellationToken)
     {
+        using var active = measurements.Enter(context);
         var outcome = "returned";
         try
         {
             var result = await RunAsync(behavior, input, context, value => outcome = value, cancellationToken).ConfigureAwait(false);
-            return result as JsonNode;
+            return result;
         }
         finally
         {
@@ -26,6 +28,7 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
 
     internal async Task<Verdict> ReconcilerAsync(string name, JsonObject behavior, JsonNode? input, ActivityExecutionContext context, CancellationToken cancellationToken)
     {
+        using var active = measurements.Enter(context);
         var outcome = "returned";
         try
         {
@@ -124,6 +127,68 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
             return answer;
         }
 
+        if (behavior["blobRoundTripBytes"] is { } blobLength)
+        {
+            var body = Enumerable.Repeat((byte)'x', (int)blobLength).ToArray();
+            var sha256 = Convert.ToHexString(SHA256.HashData(body)).ToLowerInvariant();
+            await using var source = new MemoryStream(body, writable: false);
+            var descriptor = await context.WriteBlobAsync(
+                source, new BlobWriteOptions("application/octet-stream", body.Length, sha256), cancellationToken).ConfigureAwait(false);
+            using var read = new MemoryStream();
+            await foreach (var chunk in context.ReadBlobAsync(descriptor, cancellationToken).ConfigureAwait(false))
+            {
+                await read.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!read.ToArray().AsSpan().SequenceEqual(body))
+            {
+                throw new InvalidOperationException("blob round trip failed");
+            }
+
+            return new JsonObject { ["blobSize"] = descriptor.Size, ["blobSha256"] = descriptor.Sha256, ["roundTrip"] = true };
+        }
+
+        if (behavior["blobInputBytes"] is { } inputLength)
+        {
+            var raw = input!["$blob"]!.AsObject();
+            var descriptor = new BlobDescriptor((string)raw["id"]!, (long)raw["size"]!, (string)raw["sha256"]!, (string)raw["contentType"]!);
+            using var read = new MemoryStream();
+            await foreach (var chunk in context.ReadBlobAsync(descriptor, cancellationToken).ConfigureAwait(false))
+            {
+                await read.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
+            }
+            if (!read.ToArray().AsSpan().SequenceEqual(Enumerable.Repeat((byte)'i', (int)inputLength).ToArray()))
+            {
+                throw new InvalidOperationException("run-input blob did not match");
+            }
+            return new JsonObject { ["inputBlobSize"] = descriptor.Size, ["inputBlobSha256"] = descriptor.Sha256 };
+        }
+
+        if (behavior["blobOutputBytes"] is { } outputLength)
+        {
+            await using var source = new MemoryStream(Enumerable.Repeat((byte)'y', (int)outputLength).ToArray(), writable: false);
+            var descriptor = await context.WriteBlobAsync(
+                source, new BlobWriteOptions("application/octet-stream"), cancellationToken).ConfigureAwait(false);
+            return new BlobOutput(descriptor);
+        }
+
+        if (behavior["blobInlineBytes"] is { } inlineLength)
+        {
+            await using var source = new MemoryStream(Enumerable.Repeat((byte)'z', (int)inlineLength).ToArray(), writable: false);
+            var descriptor = await context.WriteBlobAsync(
+                source, new BlobWriteOptions("application/octet-stream"), cancellationToken).ConfigureAwait(false);
+            return new JsonObject
+            {
+                ["$blob"] = new JsonObject
+                {
+                    ["id"] = descriptor.Id,
+                    ["size"] = descriptor.Size,
+                    ["sha256"] = descriptor.Sha256,
+                    ["contentType"] = descriptor.ContentType,
+                },
+            };
+        }
+
         if (behavior["verdict"] is { } verdict)
         {
             return (string)verdict! switch
@@ -206,6 +271,61 @@ internal sealed class Behaviors(string workerKey, List<JsonObject> log)
             lock (gate)
             {
                 return log.Count;
+            }
+        }
+    }
+}
+
+/// <summary>Benchmark-only handler admission evidence; excluded from conformance golden normalization.</summary>
+internal sealed class WorkerMeasurements
+{
+    private readonly object gate = new();
+    private readonly List<JsonObject> deliveries = [];
+    private int active;
+    private int peak;
+
+    internal IDisposable Enter(ActivityExecutionContext context)
+    {
+        var now = Interlocked.Increment(ref active);
+        int seen;
+        while ((seen = Volatile.Read(ref peak)) < now && Interlocked.CompareExchange(ref peak, now, seen) != seen)
+        {
+        }
+
+        lock (gate)
+        {
+            deliveries.Add(new JsonObject
+            {
+                ["runId"] = context.RunId,
+                ["node"] = context.Node,
+                ["takenAtUnixMs"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+        }
+
+        return new Exit(this);
+    }
+
+    internal JsonObject Snapshot()
+    {
+        lock (gate)
+        {
+            return new JsonObject
+            {
+                ["peakInflight"] = Volatile.Read(ref peak),
+                ["deliveries"] = new JsonArray([.. deliveries.Select(item => (JsonNode?)item.DeepClone())]),
+            };
+        }
+    }
+
+    private sealed class Exit(WorkerMeasurements owner) : IDisposable
+    {
+        private int disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) == 0)
+            {
+                Interlocked.Decrement(ref owner.active);
             }
         }
     }

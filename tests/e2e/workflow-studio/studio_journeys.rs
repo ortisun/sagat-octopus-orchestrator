@@ -113,6 +113,7 @@ async fn the_studio_journeys_pass_in_a_real_browser() {
         studio: Some(StudioConfig {
             dir: dist,
             oidc: None,
+            trace_url: None,
             limits: sagat_api_http::studio::StudioLimits::default(),
         }),
         ..Options::default()

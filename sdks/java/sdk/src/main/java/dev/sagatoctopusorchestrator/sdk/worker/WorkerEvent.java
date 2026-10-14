@@ -10,7 +10,7 @@ public sealed interface WorkerEvent {
     /** A poll answered with {@code tasks} tasks. */
     record Poll(int tasks) implements WorkerEvent {}
 
-    record TaskTaken(String taskId, String activity, int attempt) implements WorkerEvent {}
+    record TaskTaken(String taskId, String activity, int attempt, String traceparent) implements WorkerEvent {}
 
     record TaskCompleted(String taskId, Duration duration) implements WorkerEvent {}
 
@@ -23,6 +23,9 @@ public sealed interface WorkerEvent {
     record TaskDropped(String taskId, String reason) implements WorkerEvent {}
 
     record Heartbeat(String taskId) implements WorkerEvent {}
+
+    /** A receive window failed; the code is bounded and carries no remote exception text. */
+    record ReceiveFailed(String code) implements WorkerEvent {}
 
     /** The session was lost or the service was unreachable and the host goes on after a pause or a new registration. */
     record Reconnect() implements WorkerEvent {}

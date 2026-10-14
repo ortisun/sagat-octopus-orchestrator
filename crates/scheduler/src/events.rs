@@ -446,6 +446,7 @@ where
             info,
             definition: Arc::clone(&definition),
             input: document.to_vec(),
+            input_blob: None,
             audit,
             idempotency: Idempotency {
                 scope: format!("trigger:{}", trigger.registration.id),

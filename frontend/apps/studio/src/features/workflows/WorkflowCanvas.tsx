@@ -3,6 +3,7 @@ import { Background, Controls, Handle, MiniMap, Position, ReactFlow, ReactFlowPr
 import type { Connection, NodeChange, NodeProps } from '@xyflow/react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, FocusEvent, KeyboardEvent } from 'react';
+import { readableInitialViewport } from '../../model/initialViewport';
 import type { IrDocument } from '../../model/ir';
 import type { Direction, Point } from '../../model/layout';
 import { kindOf } from '../../model/registry';
@@ -68,7 +69,6 @@ const CardView = memo(function CardView({ id, data }: NodeProps<CardNode>) {
         <span className="wf-shape" aria-hidden="true">
           {data.shape}
         </span>
-        {data.simplified || data.role === 'trigger' ? <span className="wf-type">{data.typeLabel}</span> : null}
         <span className="wf-id">{data.title}</span>
         {data.simplified && data.problems > 0 ? (
           <span className="wf-badge" data-tone="bad">
@@ -77,9 +77,9 @@ const CardView = memo(function CardView({ id, data }: NodeProps<CardNode>) {
           </span>
         ) : null}
       </div>
+      <div className="wf-kind-line">{data.typeLabel}</div>
       {!data.simplified ? (
         <>
-          {data.role === 'node' ? <div className="wf-kind-line">{data.typeLabel}</div> : null}
           {data.detail !== '' ? <div className="wf-detail">{data.detail}</div> : null}
           <div className="wf-badges">
             {data.first ? (
@@ -160,8 +160,19 @@ function CanvasInner(props: WorkflowCanvasProps) {
     () => builder.build(doc, { mode, direction, manual: props.manual, selectedId, focusId, problems: props.problems, advice: props.advice }),
     [builder, doc, mode, direction, props.manual, selectedId, focusId, props.problems, props.advice],
   );
-  // A big graph opens at its beginning, at a size that can be read, instead of all of it as a line of dots.
-  const [initialFit] = useState(() => (mode === 'simplified' ? { nodes: model.nodes.slice(0, 24).map((n) => ({ id: n.id })), padding: 0.2, minZoom: 0.4, maxZoom: 1 } : undefined));
+  const initialCard = useMemo(
+    () => model.nodes.find((node) => isTriggerCard(node.id)) ?? model.nodes.find((node) => node.id === doc.entrypoint) ?? model.nodes[0],
+    [doc.entrypoint, model.nodes],
+  );
+  const initialViewport = useMemo(() => {
+    if (initialCard === undefined) return readableInitialViewport(undefined);
+    // A trigger is shorter than a step. Keep the entrypoint's title below the top edge too.
+    const entrypoint = model.nodes.find((node) => node.id === doc.entrypoint);
+    return readableInitialViewport({
+      x: initialCard.position.x,
+      y: Math.min(initialCard.position.y, entrypoint?.position.y ?? initialCard.position.y),
+    });
+  }, [doc.entrypoint, initialCard, model.nodes]);
   const nodes = useMemo(
     () => (dragging.size === 0 ? model.nodes : model.nodes.map((n) => (dragging.has(n.id) ? { ...n, position: dragging.get(n.id) ?? n.position } : n))),
     [model.nodes, dragging],
@@ -328,8 +339,7 @@ function CanvasInner(props: WorkflowCanvasProps) {
         multiSelectionKeyCode={null}
         zoomOnDoubleClick={false}
         onlyRenderVisibleElements={mode === 'simplified'}
-        fitView
-        {...(initialFit ? { fitViewOptions: initialFit } : {})}
+        defaultViewport={initialViewport}
         minZoom={0.05}
         maxZoom={2}
         colorMode="system"

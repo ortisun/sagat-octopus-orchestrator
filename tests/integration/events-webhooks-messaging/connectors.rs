@@ -924,3 +924,107 @@ async fn a_password_is_not_sent_over_a_connection_without_tls() {
         );
     }
 }
+
+#[tokio::test]
+async fn durable_source_rate_refusal_neither_debits_namespace_nor_acknowledges_or_moves_offset() {
+    let w = allowing_kafka().await;
+    let mut c = connector(&w, "orders", Some("order.created")).await;
+    c.rate_per_second = 1;
+    sqlx::query("UPDATE event_connectors SET rate_per_second=1 WHERE id=$1")
+        .bind(c.id.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("source rate");
+    let ingest = ingest(&w, &c);
+    assert_eq!(
+        ingest.ingest(&message("prime", &[], "{}"), None).await,
+        Outcome::Admitted
+    );
+    // Simulate a bucket whose database clock was ahead: a backwards clock must not mint tokens.
+    sqlx::query("UPDATE quota_rate_buckets SET microtokens=0, updated_at=clock_timestamp()+interval '1 day' WHERE source_kind='CONNECTOR'")
+        .execute(&w.db.pool).await.expect("deplete source bucket");
+    let before: (i64, time::OffsetDateTime) = sqlx::query_as(
+        "SELECT microtokens,updated_at FROM quota_rate_buckets WHERE resource='events_per_second' AND source_kind='NAMESPACE'",
+    ).fetch_one(&w.db.pool).await.expect("namespace bucket");
+    let checkpoint = Checkpoint {
+        stream: "orders/0".into(),
+        next_offset: 1,
+    };
+    let raw = message("orders/0/0", &[], "{}");
+    let outcome = ingest.ingest(&raw, Some((&checkpoint, 0))).await;
+    assert_eq!(outcome, Outcome::Backlogged);
+    assert!(
+        !outcome.done(),
+        "no broker acknowledgement before durable admission"
+    );
+    assert_eq!(offset(&w, &c, "orders/0").await, None);
+    let after: (i64, time::OffsetDateTime) = sqlx::query_as(
+        "SELECT microtokens,updated_at FROM quota_rate_buckets WHERE resource='events_per_second' AND source_kind='NAMESPACE'",
+    ).fetch_one(&w.db.pool).await.expect("namespace bucket");
+    assert_eq!(
+        before, after,
+        "source refusal does not debit the namespace bucket"
+    );
+    sqlx::query("UPDATE quota_rate_buckets SET updated_at=clock_timestamp()-interval '2 seconds' WHERE source_kind='CONNECTOR'")
+        .execute(&w.db.pool).await.expect("refill source");
+    assert_eq!(
+        ingest.ingest(&raw, Some((&checkpoint, 0))).await,
+        Outcome::Admitted
+    );
+    assert_eq!(offset(&w, &c, "orders/0").await, Some(1));
+}
+
+#[tokio::test]
+async fn a_full_log_budget_preserves_connector_progress_and_explicit_error_truncation() {
+    use sagat_application::connectors::Progress;
+    let w = allowing_kafka().await;
+    let connector = connector(&w, "log-budget", None).await;
+    w.quotas
+        .set(&w.admin, None, QuotaResource::TenantLogBytes, 0, &ctx())
+        .await
+        .expect("no logs");
+    sqlx::query("UPDATE quota_accounting_control SET log_enforcement_enabled=true")
+        .execute(&w.db.pool)
+        .await
+        .expect("enable log guard");
+    w.store
+        .progress(
+            connector.id,
+            &Progress {
+                consumed: 1,
+                dead_lettered: 0,
+                last_message_at: None,
+                error: Some(Some("échec diagnostic".into())),
+            },
+        )
+        .await
+        .expect("progress");
+    let row: (i64, String, bool) = sqlx::query_as(
+        "SELECT consumed_total,last_error,last_error_truncated FROM event_connectors WHERE id=$1",
+    )
+    .bind(connector.id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("connector");
+    assert_eq!(row, (1, String::new(), true));
+    w.store
+        .progress(
+            connector.id,
+            &Progress {
+                consumed: 1,
+                dead_lettered: 0,
+                last_message_at: None,
+                error: Some(None),
+            },
+        )
+        .await
+        .expect("clear error");
+    let row: (i64, Option<String>, bool) = sqlx::query_as(
+        "SELECT consumed_total,last_error,last_error_truncated FROM event_connectors WHERE id=$1",
+    )
+    .bind(connector.id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("connector");
+    assert_eq!(row, (2, None, false));
+}

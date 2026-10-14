@@ -1,6 +1,7 @@
 package dev.sagatoctopusorchestrator.sdk;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
@@ -30,7 +31,11 @@ public interface HttpTransport {
     }
 
     /** One request. */
-    record Call(String method, URI uri, Map<String, String> headers, byte[] body, Duration timeout) {}
+    record Call(String method, URI uri, Map<String, String> headers, byte[] body, InputStream stream, Duration timeout) {
+        public Call(String method, URI uri, Map<String, String> headers, byte[] body, Duration timeout) {
+            this(method, uri, headers, body, null, timeout);
+        }
+    }
 
     /** One answer. Header names are lower case. */
     record Result(int status, Map<String, List<String>> headers, byte[] body) {

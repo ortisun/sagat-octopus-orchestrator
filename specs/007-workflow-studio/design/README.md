@@ -12,6 +12,79 @@ project reaches the Studio by updating this record first.
 | **Not used** | the logo page (the choice is not made, G162) and the Temporal × Windmill analysis (a market comparison, not a visual specification) |
 | **History of this record** | first written from a capture of the running prototype (colours sampled from a JPEG); rewritten the same day from the export. **A correction:** the first version reported the list's secondary text at 3.98 : 1; the export shows its role is lightness 0.60, which is 4.98 : 1. The sample had hit an anti-aliased pixel |
 
+## Graph reading and selection, 2026-10-12 (T007-051)
+
+The owner requested Temporal and Windmill as UX references after reporting clipped graph text.
+The [Temporal Web UI documentation](https://docs.temporal.io/web-ui) separates execution state and
+metadata from selected history details. The [Windmill editor components](https://www.windmill.dev/docs/flows/editor_components)
+separate the flow canvas from the selected action's configuration/test editor. These patterns inform
+Sagat's information hierarchy; its existing tokens, runtime semantics and permissions remain.
+
+Editor cards put the full valid step ID above its type and a bounded configuration preview. Badges
+have their own wrapping row, and connection labels occupy an independent 84px rail (a footer in
+vertical layouts). Non-shrinking line boxes and moderate corners preserve glyphs. Full, simplified
+and trigger cards are respectively 320×192, 248×104 and 320×112px, shared by React Flow and layout.
+The initial camera keeps the top of both trigger and entrypoint inside the canvas at reading scale,
+so anchoring the shorter trigger cannot cut off the taller first step's title.
+The duration amount gets the remaining input width beside a bounded unit selector; narrow fields
+stack the two controls. This does not change the other controls reusing the generic row class.
+
+Run cards show step ID, type/relation and state in separate rows, plus one critical attention
+summary. Selecting a card opens the existing panel with attempts, complete failure code, wait
+reason, due time, saga details and child-run links. Those facts no longer depend on a hover popup.
+Full/simplified cards are 320×176 and 248×88px, with stable dimensions across live updates. IDs up
+to 80 characters wrap; larger runtime values use an explicit selection prompt instead of an
+ellipsis. Arbitrary configuration previews are summaries, with the complete value in the inspector.
+The original prototype's 184×62px runtime card is superseded by this content budget.
+
+`graph-text-layout.spec.ts` measures real glyph rectangles and intersections between text, badges
+and ports; element presence alone cannot establish legibility. Review images and actual validation
+are recorded below and in the quickstart. This is agent review, not new owner acceptance.
+
+Review captures: editor at reading scale [light](./review-2026-10-12-text/text-editor-reading-light.png)
+and [dark](./review-2026-10-12-text/text-editor-reading-dark.png); corrected camera
+[before](./review-2026-10-12-text/editor-camera-before.png) →
+[after](./review-2026-10-12-text/text-editor-reading-dark.png);
+[vertical overview](./review-2026-10-12-text/text-editor-overview-tb.png),
+[forced-colour overview](./review-2026-10-12-text/text-editor-overview-forced.png) and
+[12-digit duration at 320px](./review-2026-10-12-text/text-editor-inspector-320.png).
+Runs at reading scale [light](./review-2026-10-12-text/text-run-reading-light.png) and
+[dark](./review-2026-10-12-text/text-run-reading-dark.png); selected details in
+[dark](./review-2026-10-12-text/text-run-panel-dark.png) and
+[forced colours](./review-2026-10-12-text/text-run-panel-forced.png).
+The canvas remains pannable; overview captures are not claims of reading-scale text.
+
+## Visual corrections, 2026-10-12 (T007-049)
+
+The UX and frontend review found that fitting an entire graph initially reduced labels to roughly
+5–6 rendered pixels, and that run headers plus a `68vh` canvas pushed graph controls below the
+screen. The visual interaction contract now opens graphs at 1:1 on their starting node; the
+existing **Fit View** control is the explicit full-graph overview. Live updates preserve the camera.
+The run header shows workflow/version, start, duration/finish and actor; **Run details** exposes
+tenant/namespace, correlation, trace, deadline and parent without removing those facts.
+The graph consumes the remaining layout height with a readable minimum, and long content or an
+expanded disclosure can scroll normally. This changes presentation only, not the journal projection.
+
+At intermediate widths the workflow palette becomes a compact horizontal list before the canvas
+and inspector are squeezed. Inputs stay within their panels; a populated Scripts table has its
+own keyboard-accessible horizontal scroll region. Selected controls and the monogram explicitly
+retain the system `Highlight`/`HighlightText` pair in forced-colour mode, avoiding invisible labels
+from the browser's colour substitution. All other forced-colour adaptation remains enabled.
+
+Regression coverage: `frontend/e2e/tests/visual-layout.spec.ts` checks real element geometry,
+initial scale, controls within the viewport, inspector bounds, disclosure and keyboard actions,
+system-colour ink and populated-table reflow. Results and review images are recorded in
+`../quickstart.md`; automated geometry does not replace the owner's visual acceptance.
+
+Review captures: [editor before](./review-2026-10-12/editor-before.png) →
+[editor after](./review-2026-10-12/editor-after.png),
+[Runs before](./review-2026-10-12/runs-before.png) →
+[Runs after](./review-2026-10-12/runs-after.png),
+[editable editor](./review-2026-10-12/editable-editor-after.png),
+[forced-colour editor](./review-2026-10-12/editor-forced-after.png),
+[light run](./review-2026-10-12/run-light-after.png), and
+[populated Scripts at 320px](./review-2026-10-12/scripts-mobile-after.png).
+
 ## What is exact and what is not
 
 **Exact** (read from the source, in `oklch`, converted to sRGB by the standard formulae and rounded): the dark theme's colours
@@ -133,7 +206,7 @@ tokens, so a value cannot drift back.
 | Aguardando sinal · Pendente · Cancelado | Waiting for a signal · Pending · Cancelled (the platform's own state names win where they differ) |
 | Cancelar / Reexecutar / Enviar sinal | Cancel / Re-run (disabled with the reason, G145) / Send signal (G167) |
 | Início · Duração · Gatilho · Fila · Worker | Started · Duration · Started by (G164) · — · — |
-| Grafo · Linha do tempo · Histórico de eventos · Entrada / Saída | Graph · *(no counterpart: the bars per step, G168)* · **Timeline** (the Studio's tab of that name is the journal, the prototype's *Event history*) · *(not drawn, G144)* |
+| Grafo · Linha do tempo · Histórico de eventos · Entrada / Saída | Graph · *(no counterpart: the bars per step, G168)* · **Timeline** (the Studio's tab of that name is the journal, the prototype's *Event history*) · **Payload structure inspection** (ADR-0028; raw values hidden) |
 | Etapa selecionada · Tipo · Tentativas · Início · Duração | Selected step · Kind · Attempts · Started · Duration |
 | Atividade · Workflow filho · Sinal · Timer · Loop | the Studio's node names (Step, Child, Wait, Timer, …) |
 | *(not in the prototype)* | **Table**: the accessible alternative to the graph (FR-007-008); it stays, as a tab of its own |
@@ -147,7 +220,7 @@ tokens, so a value cannot drift back.
 | Counts in the navigation and the filters, over all runs | the API pages by cursor and has no count | no count that needs the whole set; a count of what is loaded may be shown if it says so (G163) |
 | Active workers, queue backlog (sidebar) | no read API (features 004 and 010 own it) | omits the box (G163) |
 | Schedules, Workers, Task queues, Secrets, Settings | pages of other features | no link to a page that does not exist (G163) |
-| Input / Output tab and the failure text in the step strip | the journal and the graph carry a `payloadRef` digest and a `failureCode`, no payload and no text (G144) | not drawn; the strip shows the code |
+| Input / Output tab and the failure text in the step strip | the journal and graph retain digest/code references; raw values need a separately approved disclosure policy | explicit Admin/Operator inspection reads input or the selected immutable journal record through `payload-inspections`, showing only structure or verified external metadata; the strip still shows the typed failure code (ADR-0028, T007-048) |
 | Event history with names such as `ActivityTaskScheduled` | those are another engine's event types | the platform's own journal events, in the Studio's *Timeline* tab, restyled |
 | Timeline: a bar per step over elapsed time | the Studio has no such view (its *Timeline* is the journal); the bars would be a new view over the graph's step times | not built by this restyle (G168) |
 | Re-run | `422` (G145) | disabled, with the reason |

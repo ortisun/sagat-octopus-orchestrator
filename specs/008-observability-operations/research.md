@@ -169,9 +169,11 @@ how to operate it is `docs/runbooks/alerts.md` and `docs/runbooks/observability.
 - **G180 — The quota panel draws refusals, not usage against the limit.** `quota_exceeded_total` is there; a
   gauge of usage per limit is not, because the exact count is taken under a lock on the write path (feature 009)
   and sampling it would repeat it.
-- **G181 — The Studio has no control for draining a worker, and no list of alerts.** Both are API-only. The
-  timeline carries the operator actions that existed before (retry, cancel, pause, resume, signal) and the new
-  ones (retry now, hold for review, rerun).
+- **G181 — The Studio Operations browser gate is pending.** T008-036 now has an Operations menu and focused
+  component evidence for paginated/state-filtered alerts, persistent drains, permission separation,
+  consequence/reason confirmation, actionable failures and late-context cancellation. The real API/browser
+  journey is written with an isolated namespace and guaranteed drain cleanup but has not yet run, so the task
+  remains open until that evidence exists.
 - **G182 — The audit trail has no retention or export.** Its growth is bounded only by the rules that collapse
   repeats; partitioning is feature 010 together with G28. A tenant that needs the trail elsewhere pages the API.
 - **G183 — A tenant cannot see attempts to reach it from outside, nor its own probes of other tenants.** The

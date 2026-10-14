@@ -90,6 +90,8 @@ pub struct Report {
     pub children_started: u32,
     pub children_finished: u32,
     pub children_cancelled: u32,
+    /// Runs stopped because an automatic transition could not fit retained content.
+    pub quota_stops: u32,
     /// Candidates another scheduler or a caller had already handled.
     pub skipped: u32,
     /// Candidates that failed for a reason other than losing a race (logged).
@@ -111,11 +113,13 @@ impl Report {
             + self.children_started
             + self.children_finished
             + self.children_cancelled
+            + self.quota_stops
             > 0
     }
 }
 
 /// What must still be true under the run's lock for a scheduler action to proceed.
+#[derive(Clone, Copy)]
 enum Condition<'a> {
     Always,
     /// The attempt on `node` is still over: its lease expired (or its own deadline passed) *now*, by
@@ -151,6 +155,8 @@ enum Outcome {
     Failed,
     /// The replica does not hold the run's shard any more.
     Fenced,
+    /// The attempted transition rolled back and the same run was stopped for retained storage.
+    QuotaStopped,
 }
 
 impl Outcome {
@@ -160,8 +166,38 @@ impl Outcome {
             Self::Skipped => "skipped",
             Self::Failed => "failed",
             Self::Fenced => "fenced",
+            Self::QuotaStopped => "quota_stopped",
         }
     }
+}
+
+fn content_quota(error: &EngineError) -> bool {
+    matches!(
+        error,
+        EngineError::Store(error) if content_store_quota(error)
+    )
+}
+
+fn content_store_quota(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::QuotaExceeded { what }
+            if *what == sagat_domain::quota::QuotaResource::TenantContentBytes.limit_name()
+    )
+}
+
+fn recovery_guard(
+    shard_held: bool,
+    expected_version: u64,
+    actual_version: u64,
+) -> Result<(), Outcome> {
+    if !shard_held {
+        return Err(Outcome::Fenced);
+    }
+    if actual_version != expected_version {
+        return Err(Outcome::Skipped);
+    }
+    Ok(())
 }
 
 /// What a tick works on: the shards it may look at, the weights of the tenants, and the snapshot
@@ -427,17 +463,47 @@ where
                 if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
                     return Ok(Outcome::Skipped);
                 }
+                let version = tx.parts().1.version();
                 match self.engine.run(&mut tx, effects, command).await {
-                    Ok(()) => {
-                        tx.commit().await.map_err(EngineError::Store)?;
-                        Ok(Outcome::Done)
-                    }
+                    Ok(()) => match tx.commit().await.map_err(EngineError::Store) {
+                        Ok(()) => Ok(Outcome::Done),
+                        Err(error) if content_quota(&error) => {
+                            self.stop_for_storage_quota(
+                                view,
+                                &hold,
+                                RunRef {
+                                    tenant_id: tenant,
+                                    run_id: run,
+                                },
+                                kind,
+                                condition,
+                                version,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    },
                     // The domain refused: the state moved since the candidate query (a worker
                     // answered, a signal arrived, the run was cancelled). Dropping `tx` rolls back.
                     Err(EngineError::Execution(error))
                         if !matches!(error, ExecutionError::Invariant(_)) =>
                     {
                         Ok(Outcome::Skipped)
+                    }
+                    Err(error) if content_quota(&error) => {
+                        drop(tx);
+                        self.stop_for_storage_quota(
+                            view,
+                            &hold,
+                            RunRef {
+                                tenant_id: tenant,
+                                run_id: run,
+                            },
+                            kind,
+                            condition,
+                            version,
+                        )
+                        .await
                     }
                     Err(other) => Err(other),
                 }
@@ -456,6 +522,51 @@ where
             metrics::counter!("scheduler_fenced_total", "kind" => kind).increment(1);
         }
         outcome
+    }
+
+    async fn stop_for_storage_quota(
+        &self,
+        view: &View,
+        hold: &Hold,
+        RunRef {
+            tenant_id: tenant,
+            run_id: run,
+        }: RunRef,
+        kind: &'static str,
+        condition: Condition<'_>,
+        version: u64,
+    ) -> Result<Outcome, EngineError> {
+        let Some(mut tx) = self
+            .store
+            .begin(tenant, run, Lock::Wait)
+            .await
+            .map_err(EngineError::Store)?
+        else {
+            return Ok(Outcome::Skipped);
+        };
+        let shard_held = view
+            .holds(&mut tx, hold)
+            .await
+            .map_err(EngineError::Store)?;
+        if let Err(outcome) = recovery_guard(shard_held, version, tx.parts().1.version()) {
+            return Ok(outcome);
+        }
+        if !condition.holds(&mut tx).await.map_err(EngineError::Store)? {
+            return Ok(Outcome::Skipped);
+        }
+        self.engine
+            .run(&mut tx, self.effects(), |def, state, now| {
+                Ok(((), execution::stop_for_storage_quota(def, state, now)?))
+            })
+            .await?;
+        tx.commit().await.map_err(EngineError::Store)?;
+        metrics::counter!(
+            "scheduler_quota_stops_total",
+            "limit" => sagat_domain::quota::QuotaResource::TenantContentBytes.limit_name(),
+            "kind" => kind,
+        )
+        .increment(1);
+        Ok(Outcome::QuotaStopped)
     }
 
     /// [`Self::apply_if`] with nothing to re-check: the domain command itself refuses what is stale.
@@ -499,6 +610,7 @@ where
             Outcome::Skipped => report.skipped += 1,
             Outcome::Failed => report.failed += 1,
             Outcome::Fenced => report.fenced += 1,
+            Outcome::QuotaStopped => report.quota_stops += 1,
         }
     }
 
@@ -1010,6 +1122,9 @@ where
             info,
             definition: std::sync::Arc::clone(&definition),
             input: pending.input.clone(),
+            input_blob: Some(sagat_application::blobs::RunInputBinding::Inherit(
+                parent_id,
+            )),
             audit,
             idempotency: Idempotency {
                 scope: format!("child:{parent_id}"),
@@ -1055,14 +1170,49 @@ where
                     return Ok((Outcome::Fenced, false));
                 }
                 let effects = Effects::by(Actor::System("scheduler"), parent.info.trace_id.clone());
-                self.engine
+                let started = self
+                    .engine
                     .run(&mut tx, effects, |def: &WorkflowDefinition, state, now| {
                         let (started, progress) = execution::start_run(def, child_id, now)?;
                         *state = started;
                         Ok(((), progress))
                     })
-                    .await?;
-                tx.commit().await?;
+                    .await;
+                if let Err(error) = started {
+                    drop(tx);
+                    if content_quota(&error) {
+                        return Ok((
+                            self.finish_with(
+                                view,
+                                tenant,
+                                parent_id,
+                                node.clone(),
+                                pending.child,
+                                ChildOutcome::Failed(FailureCode::child_quota_exceeded()),
+                            )
+                            .await,
+                            true,
+                        ));
+                    }
+                    return Err(error);
+                }
+                if let Err(error) = tx.commit().await {
+                    if content_store_quota(&error) {
+                        return Ok((
+                            self.finish_with(
+                                view,
+                                tenant,
+                                parent_id,
+                                node.clone(),
+                                pending.child,
+                                ChildOutcome::Failed(FailureCode::child_quota_exceeded()),
+                            )
+                            .await,
+                            true,
+                        ));
+                    }
+                    return Err(error.into());
+                }
                 metrics::counter!("child_runs_started_total").increment(1);
                 Ok((Outcome::Done, false))
             }
@@ -1190,5 +1340,28 @@ where
         for outcome in outcomes {
             Self::tally(report, outcome, |r| r.children_cancelled += 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Outcome, recovery_guard};
+
+    #[test]
+    fn quota_recovery_does_not_mutate_after_version_change_or_shard_loss() {
+        for (held, expected, actual, outcome) in [
+            (true, 7, 8, Outcome::Skipped),
+            (false, 7, 7, Outcome::Fenced),
+            (false, 7, 8, Outcome::Fenced),
+        ] {
+            let mut mutations = 0;
+            let result = recovery_guard(held, expected, actual);
+            if result.is_ok() {
+                mutations += 1;
+            }
+            assert_eq!(result, Err(outcome));
+            assert_eq!(mutations, 0);
+        }
+        assert_eq!(recovery_guard(true, 7, 7), Ok(()));
     }
 }

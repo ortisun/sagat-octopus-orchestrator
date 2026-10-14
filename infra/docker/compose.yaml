@@ -202,6 +202,9 @@ services:
       SAGAT_RUNNER_TOKEN_FILE: /run/secrets/runner.token
       SAGAT_RUNNER_NAMESPACES: ${SAGAT_RUNNER_NAMESPACES:-}
       SAGAT_RUNNER_TRUSTED_KEYS: ${SAGAT_RUNNER_TRUSTED_KEYS:-}
+      # All runners eligible for this tenant's Go queue must use this same native target.
+      SAGAT_RUNNER_GO_TARGET: ${SAGAT_RUNNER_GO_TARGET:-}
+      SAGAT_RUNNER_GO_REQUIRED: ${SAGAT_RUNNER_GO_REQUIRED:-false}
     depends_on:
       - control-plane
       - execution-engine

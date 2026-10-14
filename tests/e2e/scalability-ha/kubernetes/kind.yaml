@@ -1,0 +1,8 @@
+# Disposable G247 cluster. Cilium is installed before waiting for node readiness.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0

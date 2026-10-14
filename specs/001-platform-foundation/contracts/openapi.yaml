@@ -43,8 +43,9 @@ paths:
       tags: [Identity]
       security: []
       responses:
-        '200': {description: 'The process is alive', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '200': {description: 'The process is alive', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '500': {$ref: '#/components/responses/InternalError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/InternalError'}
   /ready:
     get:
@@ -53,8 +54,9 @@ paths:
       tags: [Identity]
       security: []
       responses:
-        '200': {description: 'Ready to serve traffic', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+        '200': {description: 'Ready to serve traffic', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
         '503': {$ref: '#/components/responses/Unavailable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/InternalError'}
   /auth/context:
     get:
@@ -62,7 +64,7 @@ paths:
       summary: Describe the authenticated caller
       tags: [Identity]
       responses:
-        '200': {description: 'Resolved identity of the caller', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
+        '200': {description: 'Resolved identity of the caller', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuthContext'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -78,7 +80,7 @@ paths:
         `version` is the build, `apiVersion` the path prefix, `workerProtocol` the lowest and highest protocol a
         worker may offer. A platform older than feature 012 answers `404 ROUTE_NOT_FOUND`.
       responses:
-        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PlatformVersion'}}}}
+        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PlatformVersion'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -92,7 +94,7 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
-        '200': {description: 'Page of workspaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspacePage'}}}}
+        '200': {description: 'Page of workspaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkspacePage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -103,13 +105,16 @@ paths:
       operationId: createWorkspace
       summary: Create a workspace
       tags: [Identity]
+      parameters:
+        - $ref: '#/components/parameters/OptionalIdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema: {$ref: '#/components/schemas/CreateWorkspaceRequest'}
       responses:
-        '201': {description: 'Workspace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '201': {description: 'Workspace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -128,7 +133,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
-        '200': {description: 'The workspace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
+        '200': {description: 'The workspace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -141,6 +146,7 @@ paths:
       summary: Create a namespace inside a workspace
       tags: [Identity]
       parameters:
+        - $ref: '#/components/parameters/OptionalIdempotencyKey'
         - name: workspaceId
           in: path
           required: true
@@ -151,7 +157,8 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateNamespaceRequest'}
       responses:
-        '201': {description: 'Namespace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '201': {description: 'Namespace created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -169,7 +176,7 @@ paths:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
-        '200': {description: 'Page of namespaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePage'}}}}
+        '200': {description: 'Page of namespaces', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespacePage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -187,7 +194,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
-        '200': {description: 'The namespace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
+        '200': {description: 'The namespace', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/NamespaceResource'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -205,7 +212,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'Page of workflows', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowPage'}}}}
+        '200': {description: 'Page of workflows', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -228,7 +235,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateWorkflowRequest'}
       responses:
-        '201': {description: 'Draft created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '201': {description: 'Draft created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -247,7 +254,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/WorkflowId'}
       responses:
-        '200': {description: 'The workflow', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '200': {description: 'The workflow', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -267,7 +274,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateDraftRequest'}
       responses:
-        '200': {description: 'Draft updated', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
+        '200': {description: 'Draft updated', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowDraft'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -293,7 +300,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/PublishRequest'}
       responses:
-        '201': {description: 'Immutable version published (or an identical one re-activated)', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '201': {description: 'Immutable version published (or an identical one re-activated)', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -325,7 +332,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ValidateRequest'}
       responses:
-        '200': {description: 'The problems found, possibly none', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Validation'}}}}
+        '200': {description: 'The problems found, possibly none', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Validation'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -354,7 +361,7 @@ paths:
         - {name: from, in: query, required: false, schema: {type: string, pattern: '^(draft|[1-9][0-9]{0,8})$'}, description: 'The older side: `draft` or a version number. Default: the active version.'}
         - {name: to, in: query, required: false, schema: {type: string, pattern: '^(draft|[1-9][0-9]{0,8})$'}, description: 'The newer side. Default: `draft`.'}
       responses:
-        '200': {description: 'The differences', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DefinitionDiff'}}}}
+        '200': {description: 'The differences', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DefinitionDiff'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -373,7 +380,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'Page of versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/VersionPage'}}}}
+        '200': {description: 'Page of versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/VersionPage'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -390,7 +397,7 @@ paths:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/VersionNumber'}
       responses:
-        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersionDocument'}}}}
+        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersionDocument'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -408,10 +415,38 @@ paths:
         - {$ref: '#/components/parameters/WorkflowId'}
         - {$ref: '#/components/parameters/VersionNumber'}
       responses:
-        '200': {description: 'The plans', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CompensationPlans'}}}}
+        '200': {description: 'The plans', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CompensationPlans'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /run-input-blobs:
+    post:
+      operationId: uploadRunInput
+      summary: Stage a streaming run input owned by the authenticated uploader
+      description: 'Requires run:start and a configured shared blob provider. The raw bytes remain opaque; starting a run validates the canonical $blob descriptor against its inputSchema. Staging is not automatically retried: an uncertain response may leave an unused upload for durable cleanup. The ordinary JSON body limit is unchanged.'
+      tags: [Runs]
+      x-implemented: '002'
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {name: X-Octopus-Blob-Size, in: header, required: false, schema: {type: integer, format: int64, minimum: 0}}
+        - {name: X-Octopus-Blob-Sha256, in: header, required: false, schema: {type: string, pattern: '^[0-9a-fA-F]{64}$'}}
+      requestBody:
+        required: true
+        content:
+          '*/*':
+            schema: {type: string, format: binary}
+      responses:
+        '201': {description: 'Fully measured staged input; only its uploader may bind it to one new run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BlobDescriptor'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '408': {description: 'The transfer deadline expired'}
+        '413': {description: 'The configured blob size limit was exceeded'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -428,7 +463,7 @@ paths:
         - {name: workflowId, in: query, schema: {type: string}}
         - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
       responses:
-        '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
+        '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -451,7 +486,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/StartRunRequest'}
       responses:
-        '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -470,10 +505,52 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'Run state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
+        '200': {description: 'Run state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/payload-inspections:
+    post:
+      operationId: inspectRunPayload
+      summary: Inspect retained payload structure with every key and value hidden
+      tags: [Runs]
+      x-implemented: '007'
+      description: |
+        Requires both `run:read` and `run:payload:inspect` (Admin or Operator). Selects the
+        run input or the immutable payload referenced by one journal sequence. The server
+        commits a bounded audit before returning data. `structure-only-v1` hides all object
+        keys and scalar values, including values annotated as public in a schema. No raw
+        download or external-object read is performed. External metadata is returned only
+        from a committed tenant-bound catalog entry. Missing retained content is explicit.
+        The request is limited to 1 KiB; the projection to depth 16, 256 nodes, 32 children
+        per container and a 64 KiB response. Responses have `Cache-Control: private, no-store`.
+        Canonical namespace API admission is charged once after authorization.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PayloadInspectionSelector'}
+      responses:
+        '200':
+          description: Audited structural projection or an explicit unavailable/external state
+          headers:
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+            Cache-Control: {schema: {type: string, const: 'private, no-store'}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PayloadInspection'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -488,7 +565,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'Paged journal timeline', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/JournalPage'}}}}
+        '200': {description: 'Paged journal timeline', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/JournalPage'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -506,7 +583,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'The state of the run''s telemetry', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunTelemetry'}}}}
+        '200': {description: 'The state of the run''s telemetry', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunTelemetry'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -524,7 +601,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'The attempts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AttemptList'}}}}
+        '200': {description: 'The attempts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AttemptList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -540,7 +617,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RunId'}
       responses:
-        '200': {description: 'Runtime graph', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
+        '200': {description: 'Runtime graph', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeGraph'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -564,7 +641,7 @@ paths:
         - {$ref: '#/components/parameters/RunId'}
         - {name: since, in: query, required: true, schema: {type: integer, format: int64, minimum: 0}}
       responses:
-        '200': {description: 'The changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/GraphChanges'}}}}
+        '200': {description: 'The changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/GraphChanges'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -591,7 +668,7 @@ paths:
         - {$ref: '#/components/parameters/RunId'}
         - {name: after, in: query, required: false, schema: {type: integer, format: int64, minimum: 0}, description: 'The projection sequence the client has; `Last-Event-ID` wins when both are sent.'}
       responses:
-        '200': {description: 'The stream', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {text/event-stream: {schema: {type: string}}}}
+        '200': {description: 'The stream', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {text/event-stream: {schema: {type: string}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -620,7 +697,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/OperationRequest'}
       responses:
-        '202': {description: 'Operation accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResult'}}}}
+        '202': {description: 'Operation accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/OperationResult'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -647,7 +724,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/EventPayload'}
       responses:
-        '202': {description: 'Signal durably admitted; names the waiting steps it woke', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SignalResult'}}}}
+        '202': {description: 'Signal durably admitted; names the waiting steps it woke', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SignalResult'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -665,7 +742,7 @@ paths:
       x-implemented: '009'
       description: Needs `quota:read`. A resource counted per namespace shows the tenant-wide setting (the default of its namespaces) and no usage.
       responses:
-        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -687,7 +764,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetQuotaRequest'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -705,7 +782,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/QuotaResourceName'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -722,7 +799,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
+        '200': {description: 'The quotas in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/QuotaList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -745,7 +822,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetQuotaRequest'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -764,7 +841,66 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/QuotaResourceName'}
       responses:
-        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '200': {description: 'The quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Quota'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/activity-quotas:
+    get:
+      operationId: listActivityQuotas
+      summary: List activity-specific concurrency overrides in a namespace
+      tags: [Governance]
+      x-implemented: '010'
+      description: Needs `quota:read`. Only explicit activity overrides are listed. Activities without an override use the namespace-wide or tenant-wide `activity_concurrency` quota. A namespace of another tenant is a 404, like one that does not exist.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The activity overrides', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivityQuotaList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/activity-quotas/{activity}:
+    put:
+      operationId: setActivityQuota
+      summary: Set the concurrency quota for one activity in a namespace
+      tags: [Governance]
+      x-implemented: '010'
+      description: Needs `quota:manage`. The value is the maximum number of tasks of this activity that may hold an unexpired lease in the namespace. It cannot exceed the tenant's `activity_concurrency` ceiling. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ActivityName'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetQuotaRequest'}
+      responses:
+        '200': {description: 'The activity quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivityQuota'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: clearActivityQuota
+      summary: Remove the concurrency override for one activity
+      tags: [Governance]
+      x-implemented: '010'
+      description: The namespace-wide or tenant-wide `activity_concurrency` quota applies again. Needs `quota:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ActivityName'}
+      responses:
+        '200': {description: 'The inherited activity quota now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivityQuota'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -781,7 +917,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The bindings', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBindingList'}}}}
+        '200': {description: 'The bindings', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBindingList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -805,7 +941,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetWorkerBindingRequest'}
       responses:
-        '200': {description: 'The binding now in force and what the change released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBinding'}}}}
+        '200': {description: 'The binding now in force and what the change released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerBinding'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -824,7 +960,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/WorkerSubject'}
       responses:
-        '200': {description: 'What the removal released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RevokedWorkers'}}}}
+        '200': {description: 'What the removal released', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RevokedWorkers'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -842,7 +978,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The secrets', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretList'}}}}
+        '200': {description: 'The secrets', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -866,7 +1002,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetSecretRequest'}
       responses:
-        '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
+        '200': {description: 'What is now stored: the name and the version, never the value', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Secret'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -885,7 +1021,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SecretName'}
       responses:
-        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -903,7 +1039,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SecretName'}
       responses:
-        '200': {description: 'The identities on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretAccess'}}}}
+        '200': {description: 'The identities on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SecretAccess'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -922,7 +1058,7 @@ paths:
         - {$ref: '#/components/parameters/SecretName'}
         - {$ref: '#/components/parameters/WorkerSubject'}
       responses:
-        '204': {description: 'The identity is on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The identity is on the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -940,7 +1076,7 @@ paths:
         - {$ref: '#/components/parameters/SecretName'}
         - {$ref: '#/components/parameters/WorkerSubject'}
       responses:
-        '204': {description: 'The identity is off the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The identity is off the list', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -958,7 +1094,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -980,7 +1116,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetEgressPolicyRequest'}
       responses:
-        '200': {description: 'The policy now in force, in canonical text', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
+        '200': {description: 'The policy now in force, in canonical text', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EgressPolicy'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -998,7 +1134,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '204': {description: 'The policy is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The policy is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1023,7 +1159,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of alerts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AlertPage'}}}}
+        '200': {description: 'A page of alerts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AlertPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1043,7 +1179,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The workers', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerList'}}}}
+        '200': {description: 'The workers', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkerList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1067,7 +1203,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'The identity is drained', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Drain'}}}}
+        '200': {description: 'The identity is drained', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Drain'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1093,7 +1229,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'Done', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Undrain'}}}}
+        '200': {description: 'Done', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Undrain'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1120,7 +1256,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of records', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuditPage'}}}}
+        '200': {description: 'A page of records', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/AuditPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1139,7 +1275,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1161,7 +1297,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/SetPublicationPolicy'}
       responses:
-        '200': {description: 'The policy now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
+        '200': {description: 'The policy now in force', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationPolicy'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1186,7 +1322,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/OpenPublicationRequest'}
       responses:
-        '201': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '201': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1208,7 +1344,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of requests', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequestPage'}}}}
+        '200': {description: 'A page of requests', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequestPage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1226,7 +1362,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RequestId'}
       responses:
-        '200': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1249,7 +1385,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1274,7 +1410,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Reason'}
       responses:
-        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The request after the decision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1294,7 +1430,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/RequestId'}
       responses:
-        '200': {description: 'The withdrawn request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
+        '200': {description: 'The withdrawn request', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationRequest'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1314,7 +1450,7 @@ paths:
         - {$ref: '#/components/parameters/RequestId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
       responses:
-        '201': {description: 'The version published', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
+        '201': {description: 'The version published', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WorkflowVersion'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1337,7 +1473,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationPage'}}}}
+        '200': {description: 'A page of changes', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationPage'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1361,7 +1497,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ActivateVersion'}
       responses:
-        '200': {description: 'The change, or the unchanged state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationResult'}}}}
+        '200': {description: 'The change, or the unchanged state', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ActivationResult'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1389,9 +1525,9 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/PromoteVersion'}
       responses:
-        '200': {description: 'The target runs this document already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
-        '201': {description: 'Published into the target', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
-        '202': {description: 'A request is waiting for approvals', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '200': {description: 'The target runs this document already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '201': {description: 'Published into the target', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
+        '202': {description: 'A request is waiting for approvals', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Promotion'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1417,7 +1553,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/IncomingEvent'}
       responses:
-        '202': {description: 'The event is in the inbox, now or since before', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '202': {description: 'The event is in the inbox, now or since before', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1429,16 +1565,19 @@ paths:
         default: {$ref: '#/components/responses/InternalError'}
   /webhooks/{endpointId}:
     post:
-      security: []
+      security:
+        - webhookHmac: []
+        - webhookOidc: []
+        - webhookMtls: []
       operationId: receiveSignedWebhook
-      summary: Receive a signed webhook
+      summary: Receive an authenticated webhook
       tags: [Events]
       x-implemented: '004'
       description: |
-        The public URL of an event endpoint; there is no bearer token, the signature is the credential. The signature is `v1=` and the hex HMAC-SHA256, under the endpoint's secret, of `"octopus-event-in-v1\n{timestamp}\n{eventId}\n{eventType}\n{subject}\n{correlationKey}\n"` followed by the body, where the type, the subject and the correlation key are the values of the headers of the same names *as sent* (an absent one is the empty string; the endpoint's default type is not signed). They are covered because the type chooses the workflows that start and the key the waits that wake. A secret of fewer than 16 bytes verifies nothing. The timestamp is in seconds and must be within the endpoint's allowed skew of the platform's clock (300 s unless set); a copy of a signed request replayed within the window is answered `DUPLICATE`, because the event id is remembered for at least twice the skew. Up to four comma-separated signatures (512 bytes at most) are accepted, so a secret can be rotated; the three newest versions of the secret are tried. A header that is too long, or a timestamp outside the window, is refused before any secret is read. **Every request that does not verify gets the same 401**: an unknown endpoint, a missing header, a stale timestamp, a wrong signature. The body must be a JSON object of at most the endpoint's limit (240 KiB at most). A paused endpoint answers 503, an endpoint over its rate 429, and a full backlog 429; both with `Retry-After`.
+        The public URL of an event endpoint. Authentication is selected by its persisted profile; profiles never fall back to one another. HMAC requires X-Octopus-Signature. OIDC requires an Authorization bearer token from the deployment-approved verifier and the exact configured subject. MTLS requires a native TLS client certificate with the configured verified leaf fingerprint; forwarded headers are ignored. OIDC and MTLS authenticate the sender over TLS, not a detached body signature. All profiles require the timestamp and event ID. An unavailable OIDC key provider returns 503. For HMAC, the signature is `v1=` and the hex HMAC-SHA256, under the endpoint's secret, of `"octopus-event-in-v1\n{timestamp}\n{eventId}\n{eventType}\n{subject}\n{correlationKey}\n"` followed by the body, where the type, the subject and the correlation key are the values of the headers of the same names *as sent* (an absent one is the empty string; the endpoint's default type is not signed). They are covered because the type chooses the workflows that start and the key the waits that wake. A secret of fewer than 16 bytes verifies nothing. The timestamp is in seconds and must be within the endpoint's allowed skew of the platform's clock (300 s unless set); a copy of a signed request replayed within the window is answered `DUPLICATE`, because the event id is remembered for at least twice the skew. Up to four comma-separated signatures (512 bytes at most) are accepted, so a secret can be rotated; the three newest versions of the secret are tried. A header that is too long, or a timestamp outside the window, is refused before any secret is read. **Every request that does not verify gets the same 401**: an unknown endpoint, a missing header, a stale timestamp, a wrong signature. The body must be a JSON object of at most the endpoint's limit (240 KiB at most). A paused endpoint answers 503, an endpoint over its rate 429, and a full backlog 429; both with `Retry-After`.
       parameters:
         - {name: endpointId, in: path, required: true, schema: {type: string}}
-        - {name: X-Octopus-Signature, in: header, required: true, schema: {type: string}}
+        - {name: X-Octopus-Signature, in: header, required: false, description: Required for the HMAC profile, schema: {type: string}}
         - {name: X-Octopus-Timestamp, in: header, required: true, schema: {type: string, pattern: '^[0-9]+$'}}
         - {name: X-Octopus-Event-Id, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
         - {name: X-Octopus-Event-Type, in: header, required: false, description: 'Required unless the endpoint has a default event type.', schema: {type: string}}
@@ -1450,7 +1589,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/EventPayload'}
       responses:
-        '202': {description: "Signature verified, event durably admitted (or already admitted before)", headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '202': {description: "Endpoint identity verified, event durably admitted (or already admitted before)", headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1468,7 +1607,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The endpoints', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpointList'}}}}
+        '200': {description: 'The endpoints', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpointList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1490,7 +1629,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateEventEndpointRequest'}
       responses:
-        '201': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
+        '201': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1512,7 +1651,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/EndpointId'}
       responses:
-        '200': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
+        '200': {description: 'The endpoint', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1535,7 +1674,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateEventEndpointRequest'}
       responses:
-        '200': {description: 'The endpoint now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
+        '200': {description: 'The endpoint now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventEndpoint'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1555,7 +1694,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/EndpointId'}
       responses:
-        '204': {description: 'The endpoint is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The endpoint is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1575,7 +1714,7 @@ paths:
         - {name: source, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
         - {name: eventId, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 200}}
       responses:
-        '200': {description: 'The event', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/InboxEvent'}}}}
+        '200': {description: 'The event', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/InboxEvent'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1593,7 +1732,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The subscriptions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscriptionList'}}}}
+        '200': {description: 'The subscriptions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscriptionList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1615,7 +1754,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateWebhookSubscriptionRequest'}
       responses:
-        '201': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
+        '201': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1637,7 +1776,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SubscriptionId'}
       responses:
-        '200': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
+        '200': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1660,7 +1799,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateWebhookSubscriptionRequest'}
       responses:
-        '200': {description: 'The subscription now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
+        '200': {description: 'The subscription now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookSubscription'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1680,7 +1819,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/SubscriptionId'}
       responses:
-        '204': {description: 'The subscription is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The subscription is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1702,7 +1841,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of deliveries', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDeliveryPage'}}}}
+        '200': {description: 'A page of deliveries', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDeliveryPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1723,7 +1862,7 @@ paths:
         - {$ref: '#/components/parameters/SubscriptionId'}
         - {$ref: '#/components/parameters/DeliveryId'}
       responses:
-        '200': {description: 'The delivery', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDelivery'}}}}
+        '200': {description: 'The delivery', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDelivery'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1743,7 +1882,7 @@ paths:
         - {$ref: '#/components/parameters/SubscriptionId'}
         - {$ref: '#/components/parameters/DeliveryId'}
       responses:
-        '200': {description: 'The delivery is queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '200': {description: 'The delivery is queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
         '409': {$ref: '#/components/responses/Conflict'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1768,7 +1907,202 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/RedriveRequest'}
       responses:
-        '200': {description: 'How many were queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '200': {description: 'How many were queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions:
+    get:
+      operationId: listBrokerSubscriptions
+      summary: List the outbound broker subscriptions of a namespace
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      responses:
+        '200': {description: 'The subscriptions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscriptionList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createBrokerSubscription
+      summary: Subscribe a broker destination to platform events
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. The destination is NATS JetStream, Kafka or SQS and must be allowed by the namespace egress policy at creation and every attempt. The stable `delivery-id` is sent as `Nats-Msg-Id`, the Kafka record key, or the SQS FIFO deduplication id. Success requires the broker acknowledgement. Delivery is at-least-once: an acknowledgement lost after the broker accepted a message can cause a repeat. Failures retry with backoff for twelve attempts, then become `DEAD` and can be redriven. A subscription with 10000 pending deliveries is disabled.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateBrokerSubscriptionRequest'}
+      responses:
+        '201': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscription'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}:
+    get:
+      operationId: getBrokerSubscription
+      summary: Read a subscription, with its health
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      responses:
+        '200': {description: 'The subscription', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscription'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateBrokerSubscription
+      summary: Replace the settings of a subscription
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Setting `status` to `ACTIVE` on a subscription the platform switched off (`DISABLED`, after 20 deliveries in a row were set aside) turns it back on, forgets its failures and puts its dead deliveries back in the queue.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateBrokerSubscriptionRequest'}
+      responses:
+        '200': {description: 'The subscription now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BrokerSubscription'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteBrokerSubscription
+      summary: Delete a subscription and what was queued for it
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Audited.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      responses:
+        '204': {description: 'The subscription is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries:
+    get:
+      operationId: listBrokerDeliveries
+      summary: List the deliveries of a subscription, newest first
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+        - {name: status, in: query, schema: {type: string, enum: [PENDING, DELIVERED, DEAD]}}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of deliveries', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDeliveryPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}:
+    get:
+      operationId: getBrokerDelivery
+      summary: Read a delivery with every attempt made
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:read`. What the receiver answered is never kept, only its status and a class of failure.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+        - {$ref: '#/components/parameters/DeliveryId'}
+      responses:
+        '200': {description: 'The delivery', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/WebhookDelivery'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}/redrive:
+    post:
+      operationId: redriveBrokerDelivery
+      summary: Put a dead delivery back in the queue
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Audited. The delivery gets a full set of attempts again; the attempts made are kept.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+        - {$ref: '#/components/parameters/DeliveryId'}
+      responses:
+        '200': {description: 'The delivery is queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/redrive:
+    post:
+      operationId: redriveBrokerDeliveries
+      summary: Put the dead deliveries of a subscription back in the queue
+      tags: [Events]
+      x-implemented: '004'
+      description: |
+        Needs `event:manage`. Audited. Up to `limit` (100 unless given, at most 1000), oldest first.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/SubscriptionId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RedriveRequest'}
+      responses:
+        '200': {description: 'How many were queued again', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Redriven'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1788,7 +2122,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The connectors', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectorList'}}}}
+        '200': {description: 'The connectors', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectorList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1810,7 +2144,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateConnectorRequest'}
       responses:
-        '201': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
+        '201': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
@@ -1832,7 +2166,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ConnectorId'}
       responses:
-        '200': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
+        '200': {description: 'The connector', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1855,7 +2189,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateConnectorRequest'}
       responses:
-        '200': {description: 'The connector now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
+        '200': {description: 'The connector now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Connector'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1875,7 +2209,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ConnectorId'}
       responses:
-        '204': {description: 'The connector is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The connector is removed', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1896,7 +2230,7 @@ paths:
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
       responses:
-        '200': {description: 'A page of dead letters', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetterPage'}}}}
+        '200': {description: 'A page of dead letters', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetterPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1917,7 +2251,7 @@ paths:
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/DeadLetterId'}
       responses:
-        '200': {description: 'The dead letter', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetter'}}}}
+        '200': {description: 'The dead letter', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/DeadLetter'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1936,7 +2270,7 @@ paths:
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/DeadLetterId'}
       responses:
-        '204': {description: 'The dead letter is forgotten', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'The dead letter is forgotten', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1956,7 +2290,7 @@ paths:
         - {$ref: '#/components/parameters/ConnectorId'}
         - {$ref: '#/components/parameters/DeadLetterId'}
       responses:
-        '200': {description: 'The event the message became', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
+        '200': {description: 'The event the message became', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/EventAccepted'}}}}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -1978,7 +2312,7 @@ paths:
         - {$ref: '#/components/parameters/ScriptAfter'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The scripts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptList'}}}}
+        '200': {description: 'The scripts', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2003,7 +2337,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CreateScriptRequest'}
       responses:
-        '201': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '201': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2025,7 +2359,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
       responses:
-        '200': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '200': {description: 'The script', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2048,7 +2382,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/UpdateScriptRequest'}
       responses:
-        '200': {description: 'The script now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
+        '200': {description: 'The script now', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Script'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2069,7 +2403,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
       responses:
-        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2091,7 +2425,7 @@ paths:
         - {$ref: '#/components/parameters/VersionBefore'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersionList'}}}}
+        '200': {description: 'The versions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersionList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2110,8 +2444,8 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
       responses:
-        '202': {description: 'The version, building', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
-        '200': {description: 'The draft was already the latest version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
+        '202': {description: 'The version, building', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
+        '200': {description: 'The draft was already the latest version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PublishedScriptVersion'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2132,7 +2466,7 @@ paths:
         - {$ref: '#/components/parameters/ScriptId'}
         - {$ref: '#/components/parameters/VersionNumber'}
       responses:
-        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersion'}}}}
+        '200': {description: 'The version', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptVersion'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2152,7 +2486,7 @@ paths:
         - {$ref: '#/components/parameters/ScriptId'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The test runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRunList'}}}}
+        '200': {description: 'The test runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRunList'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2175,7 +2509,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/TestRunRequest'}
       responses:
-        '202': {description: 'The test run, queued', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
+        '202': {description: 'The test run, queued', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2192,13 +2526,13 @@ paths:
       tags: [Scripts]
       x-implemented: '005'
       description: |
-        Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED` or `SCRIPT_SANDBOX_UNAVAILABLE`.
+        Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED`, `SCRIPT_SANDBOX_UNAVAILABLE` or non-retryable `STORAGE_QUOTA_EXCEEDED`. Retained content exhaustion commits the fenced terminal failure without the rejected result or inferred schemas; retained log exhaustion clips at a UTF-8 boundary and sets truncation evidence.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ScriptId'}
         - {$ref: '#/components/parameters/TestRunId'}
       responses:
-        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
+        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptTestRun'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2219,7 +2553,7 @@ paths:
         - {$ref: '#/components/parameters/ExecutionBefore'}
         - {$ref: '#/components/parameters/PageLimit'}
       responses:
-        '200': {description: 'The executions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecutionList'}}}}
+        '200': {description: 'The executions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecutionList'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2240,7 +2574,7 @@ paths:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/ExecutionId'}
       responses:
-        '200': {description: 'The execution', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecution'}}}}
+        '200': {description: 'The execution', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptExecution'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2258,7 +2592,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ArtifactDigest'}
       responses:
-        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptArtifact'}}}}
+        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScriptArtifact'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2279,8 +2613,8 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ClaimBuildRequest'}
       responses:
-        '200': {description: 'The build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BuildAssignment'}}}}
-        '204': {description: 'Nothing to build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '200': {description: 'The build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BuildAssignment'}}}}
+        '204': {description: 'Nothing to build', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2304,7 +2638,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/LeaseRequest'}
       responses:
-        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
+        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2330,7 +2664,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CompleteBuildRequest'}
       responses:
-        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2355,8 +2689,8 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ClaimTestRequest'}
       responses:
-        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/TestAssignment'}}}}
-        '204': {description: 'Nothing to run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '200': {description: 'The test run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/TestAssignment'}}}}
+        '204': {description: 'Nothing to run', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2380,7 +2714,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/LeaseRequest'}
       responses:
-        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
+        '200': {description: 'The lease, extended', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/LeaseExtended'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2406,7 +2740,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/CompleteTestRequest'}
       responses:
-        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2428,7 +2762,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ArtifactDigest'}
       responses:
-        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerArtifact'}}}}
+        '200': {description: 'The artifact', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerArtifact'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2444,7 +2778,7 @@ paths:
       description: |
         Needs `script:execute`. A runner that has not been given the key out of band asks for it (trust on first use).
       responses:
-        '200': {description: 'The key', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SigningKey'}}}}
+        '200': {description: 'The key', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SigningKey'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
@@ -2461,7 +2795,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerEgressPolicy'}}}}
+        '200': {description: 'The policy', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunnerEgressPolicy'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2479,7 +2813,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
       responses:
-        '200': {description: 'The activities', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PendingActivities'}}}}
+        '200': {description: 'The activities', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/PendingActivities'}}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -2500,7 +2834,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/RecordExecutionRequest'}
       responses:
-        '201': {description: 'Recorded', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Recorded'}}}}
+        '201': {description: 'Recorded', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Recorded'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2528,7 +2862,7 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/RecordRunnerIncidentRequest'}
       responses:
-        '204': {description: 'Incident committed, or committed already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}}}
+        '204': {description: 'Incident committed, or committed already', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
@@ -2538,12 +2872,29 @@ paths:
         default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
+    webhookHmac: {type: apiKey, in: header, name: X-Octopus-Signature, description: 'Required only for endpoints configured with the HMAC profile.'}
+    webhookOidc: {type: http, scheme: bearer, bearerFormat: JWT, description: 'Requires the exact deployment-approved verifier and endpoint subject.'}
+    webhookMtls: {type: mutualTLS, description: 'Native TLS client identity must match the endpoint leaf certificate fingerprint.'}
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
   headers:
+    HttpRequestId:
+      description: Server-generated id unique to this HTTP request; independent of the caller's traceparent or X-Request-Id.
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
     TraceId:
       description: W3C trace id (32 lowercase hex characters) of the request, for log and trace correlation.
       schema: {type: string, pattern: '^[0-9a-f]{32}$'}
   parameters:
+    OptionalIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Optional retry key for identity creation. Same tenant, operation and key with the
+        same body returns the original 201 response without another audit record.
+        A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped
+        to the workspace. Without a key, a repeated slug returns 409 as before.
+        Replay records follow the platform command retention window (7 days by default).
+      schema: {type: string, minLength: 8, maxLength: 160, pattern: '^[!-~]+$'}
     Namespace:
       name: X-Octopus-Namespace
       in: header
@@ -2610,7 +2961,12 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
+    ActivityName:
+      name: activity
+      in: path
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'}
     WorkflowId:
       name: workflowId
       in: path
@@ -2682,6 +3038,71 @@ components:
       required: false
       schema: {type: string, format: uuid}
   schemas:
+    PayloadInspectionSelector:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [source]
+          properties:
+            source: {type: string, const: input}
+        - type: object
+          additionalProperties: false
+          required: [source, sequence]
+          properties:
+            source: {type: string, const: journal}
+            sequence: {type: integer, minimum: 1, maximum: 9223372036854775807}
+    PayloadStructure:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, childCount, children, omittedChildren]
+          properties:
+            type: {type: string, enum: [object, array]}
+            childCount: {type: integer, minimum: 0}
+            children:
+              type: array
+              maxItems: 32
+              items: {$ref: '#/components/schemas/PayloadStructure'}
+            omittedChildren: {type: integer, minimum: 0}
+        - type: object
+          additionalProperties: false
+          required: [type, redacted]
+          properties:
+            type: {type: string, enum: [string, number, boolean, 'null']}
+            redacted: {type: boolean, const: true}
+    PayloadInspection:
+      allOf:
+        - type: object
+          required: [runId, runVersion, selection, policy]
+          properties:
+            runId: {type: string, format: uuid}
+            runVersion: {type: integer, minimum: 0}
+            selection: {$ref: '#/components/schemas/PayloadInspectionSelector'}
+            nodeId: {type: string}
+            attempt: {type: integer, minimum: 0}
+            policy: {type: string, const: structure-only-v1}
+        - oneOf:
+            - type: object
+              required: [kind, sizeBytes, truncated, tree]
+              properties:
+                kind: {type: string, const: inline-json}
+                sizeBytes: {type: integer, minimum: 0}
+                truncated: {type: boolean}
+                tree: {$ref: '#/components/schemas/PayloadStructure'}
+            - type: object
+              required: [kind, sizeBytes, contentKind, reason]
+              properties:
+                kind: {type: string, const: external}
+                sizeBytes: {type: integer, minimum: 0}
+                contentKind: {type: string, enum: [json, text, binary, other]}
+                reason: {type: string, const: EXTERNAL_CONTENT_NOT_INSPECTED}
+            - type: object
+              required: [kind, reason]
+              properties:
+                kind: {type: string, const: unavailable}
+                reason: {type: string, enum: [NO_RETAINED_PAYLOAD, UNSUPPORTED_FORMAT]}
+                sizeBytes: {type: integer, minimum: 0}
+      unevaluatedProperties: false
     JsonObject: {type: object, additionalProperties: true}
     Error:
       type: object
@@ -2694,6 +3115,7 @@ components:
         message: {type: string, description: "Safe, human-readable summary. Never contains secrets, payloads or other tenants' data."}
         retryable: {type: boolean}
         traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
+        requestId: {type: string, pattern: '^[0-9a-f]{32}$', description: 'Server-generated request correlation id; equals X-Request-Id. Absent on older servers.'}
         remediation:
           type: string
           description: >-
@@ -2851,14 +3273,29 @@ components:
         nextCursor: {type: [string, 'null']}
     StartRunRequest:
       type: object
-      required: [workflowId, input]
+      required: [workflowId]
       additionalProperties: false
+      oneOf:
+        - required: [input]
+          not: {required: [inputBlobRef]}
+        - required: [inputBlobRef]
+          not: {required: [input]}
       properties:
         workflowId: {type: string, format: uuid}
         versionId: {type: string, format: uuid, description: 'Optional explicit pin; the active version otherwise.'}
         input: {$ref: '#/components/schemas/JsonObject'}
+        inputBlobRef: {type: string, format: uuid, description: 'An unused run-input blob uploaded by this subject in this namespace. The run input is its canonical $blob descriptor.'}
         correlationId: {type: string, maxLength: 160}
         deadline: {type: string, format: date-time, description: 'Must be in the future and within a year; the run times out at this instant.'}
+    BlobDescriptor:
+      type: object
+      required: [id, size, sha256, contentType]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        size: {type: integer, format: int64, minimum: 0}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        contentType: {type: string, maxLength: 127}
     Run:
       type: object
       required: [runId, workflowId, versionId, status, version, createdAt]
@@ -3207,25 +3644,50 @@ components:
         ports: {type: array, maxItems: 32, items: {type: integer, minimum: 1, maximum: 65535}}
         allowHttp: {type: boolean, default: false}
     Quota:
+      description: |
+        Limits use resource-specific units: existing count resources are items (maximum 1,000,000,000);
+        tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
+        api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
+        fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
+        script_retention_days is 0..365 days. Zero disables new admission for that resource.
+        Lowering a limit does not erase retained content or rewrite existing expiry.
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, secrets, event_endpoints, webhook_subscriptions, event_connectors, scripts, script_jobs]}
-        limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days]}
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing and the ceiling applies.'}
-        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
-        used: {type: integer, format: int64, minimum: 0, description: 'Exact count now. Absent for a per-namespace resource in the tenant-wide view.'}
+        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
+        used: {type: integer, format: int64, minimum: 0, description: 'Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.'}
     QuotaList:
       type: object
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/Quota'}}
     SetQuotaRequest:
+      description: |
+        The selected path resource determines the unit and valid range documented by Quota.
+        Values outside that range or above the operator ceiling return 422. The general schema
+        maximum accommodates byte quotas; it does not raise the maximum of count resources.
       type: object
       additionalProperties: false
       required: [limit]
       properties:
+        limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
+    ActivityQuota:
+      type: object
+      required: [activity, limit, used, ceiling, overridden]
+      properties:
+        activity: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        used: {type: integer, format: int64, minimum: 0, description: 'Tasks of this activity holding an unexpired lease now.'}
+        ceiling: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: 'The most the tenant may set for activity concurrency.'}
+        overridden: {type: boolean, description: 'True for an explicit activity override; false after clearing it, when the generic limit applies.'}
+    ActivityQuotaList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ActivityQuota'}}
     SignalResult:
       type: object
       required: [deliveredTo]
@@ -3243,7 +3705,7 @@ components:
         occurredAt: {type: string, format: date-time}
         correlationKey: {type: string, maxLength: 256, description: 'What a waiting step correlates on.'}
         data: {$ref: '#/components/schemas/JsonObject'}
-        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, description: 'How long the event id is remembered (24 hours by default).'}
+        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, description: 'How long the event id is remembered (24 hours by default), bounded by the current namespace event_retention_seconds policy. A remembered duplicate preserves its original expiry.'}
     EventAccepted:
       type: object
       required: [eventId, source, status]
@@ -3251,14 +3713,44 @@ components:
         eventId: {type: string}
         source: {type: string, description: 'api, or the slug of the endpoint or connector the event came through.'}
         status: {type: string, enum: [ACCEPTED, DUPLICATE]}
+    WebhookAuthentication:
+      description: 'Omitted on writes means HMAC and requires secretName. OIDC and MTLS prohibit secretName; OIDC names a deployment-approved verifier, never a URL. All profiles require timestamp and event ID.'
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind]
+          properties:
+            kind: {type: string, const: HMAC}
+        - type: object
+          additionalProperties: false
+          required: [kind, profile, subject]
+          properties:
+            kind: {type: string, const: OIDC}
+            profile: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$', not: {pattern: '--'}}
+            subject: {type: string, minLength: 1, maxLength: 255, description: 'At most 255 UTF-8 bytes; control characters are prohibited.'}
+        - type: object
+          additionalProperties: false
+          required: [kind, certificateSha256]
+          properties:
+            kind: {type: string, const: MTLS}
+            certificateSha256: {type: string, pattern: '^[0-9a-f]{64}$'}
     EventEndpoint:
       type: object
-      required: [id, namespaceId, slug, secretName, dedupeTtlSeconds, skewSeconds, maxBodyBytes, ratePerSecond, status, webhookPath, createdBy, createdAt, updatedAt]
+      allOf:
+        - if:
+            properties:
+              authentication:
+                properties:
+                  kind: {const: HMAC}
+          then: {required: [secretName]}
+          else: {not: {required: [secretName]}}
+      required: [id, namespaceId, slug, authentication, dedupeTtlSeconds, skewSeconds, maxBodyBytes, ratePerSecond, status, webhookPath, createdBy, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         slug: {type: string, description: 'What a webhook trigger names, and the source of the events it admits.'}
         secretName: {type: string}
+        authentication: {$ref: '#/components/schemas/WebhookAuthentication'}
         defaultEventType: {type: string}
         dedupeTtlSeconds: {type: integer}
         skewSeconds: {type: integer}
@@ -3276,23 +3768,40 @@ components:
         items: {type: array, items: {$ref: '#/components/schemas/EventEndpoint'}}
     CreateEventEndpointRequest:
       type: object
+      allOf:
+        - if:
+            properties:
+              authentication:
+                properties:
+                  kind: {const: HMAC}
+          then: {required: [secretName]}
+          else: {not: {required: [secretName]}}
       additionalProperties: false
-      required: [slug, secretName]
+      required: [slug]
       properties:
         slug: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        authentication: {$ref: '#/components/schemas/WebhookAuthentication'}
         defaultEventType: {type: string}
-        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, default: 86400, description: 'At least twice skewSeconds and 60 seconds more, or a replay of a signed request could be admitted as a new event.'}
+        dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, default: 86400, description: 'At least twice skewSeconds and 60 seconds more, bounded by event_retention_seconds. Incompatible windows are rejected, never silently shortened.'}
         skewSeconds: {type: integer, minimum: 1, maximum: 3600, default: 300}
         maxBodyBytes: {type: integer, minimum: 1024, maximum: 245760, default: 245760}
         ratePerSecond: {type: integer, minimum: 1, maximum: 10000, default: 50}
         status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
     UpdateEventEndpointRequest:
       type: object
+      allOf:
+        - if:
+            properties:
+              authentication:
+                properties:
+                  kind: {const: HMAC}
+          then: {required: [secretName]}
+          else: {not: {required: [secretName]}}
       additionalProperties: false
-      required: [secretName]
       properties:
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        authentication: {$ref: '#/components/schemas/WebhookAuthentication'}
         defaultEventType: {type: string}
         dedupeTtlSeconds: {type: integer, minimum: 60, maximum: 2592000, default: 86400}
         skewSeconds: {type: integer, minimum: 1, maximum: 3600, default: 300}
@@ -3326,6 +3835,88 @@ components:
         dispatchedAt: {type: string, format: date-time}
         data: {$ref: '#/components/schemas/JsonObject'}
         deliveries: {type: array, items: {$ref: '#/components/schemas/EventDelivery'}}
+    BrokerSubscription:
+      type: object
+      required: [id, namespaceId, name, kind, settings, events, ratePerSecond, timeoutMs, status, health, createdBy, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        namespaceId: {type: string, format: uuid}
+        name: {type: string}
+        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
+        secretName: {type: string, description: 'Optional namespace secret containing the broker credentials JSON.'}
+        events: {type: array, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
+        ratePerSecond: {type: integer}
+        timeoutMs: {type: integer}
+        status: {type: string, enum: [ACTIVE, PAUSED, DISABLED]}
+        health: {$ref: '#/components/schemas/OutboundSubscriptionHealth'}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    BrokerSubscriptionList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/BrokerSubscription'}}
+    CreateBrokerSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [name, kind, settings, events]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
+        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
+        ratePerSecond: {type: integer, minimum: 1, maximum: 100, default: 10}
+        timeoutMs: {type: integer, minimum: 1000, maximum: 30000, default: 10000}
+        status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
+    UpdateBrokerSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, settings, events]
+      properties:
+        kind: {type: string, enum: [NATS, KAFKA, SQS], description: 'Must remain the subscription kind set at creation.'}
+        settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
+        secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
+        events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
+        ratePerSecond: {type: integer, minimum: 1, maximum: 100, default: 10}
+        timeoutMs: {type: integer, minimum: 1000, maximum: 30000, default: 10000}
+        status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
+    OutboundBrokerSettings:
+      oneOf:
+        - {$ref: '#/components/schemas/OutboundNatsSettings'}
+        - {$ref: '#/components/schemas/OutboundKafkaSettings'}
+        - {$ref: '#/components/schemas/OutboundSqsSettings'}
+    OutboundNatsSettings:
+      type: object
+      additionalProperties: false
+      required: [servers, subject]
+      properties:
+        servers: {type: array, minItems: 1, maxItems: 16, items: {type: string}}
+        subject: {type: string}
+    OutboundKafkaSettings:
+      type: object
+      additionalProperties: false
+      required: [servers, topic]
+      properties:
+        servers: {type: array, minItems: 1, maxItems: 16, items: {type: string}}
+        topic: {type: string}
+    OutboundSqsSettings:
+      type: object
+      additionalProperties: false
+      required: [queueUrl, region]
+      properties:
+        queueUrl: {type: string, maxLength: 2048}
+        region: {type: string}
+    OutboundSubscriptionHealth:
+      type: object
+      required: [consecutiveDead]
+      properties:
+        consecutiveDead: {type: integer}
+        lastSuccessAt: {type: string, format: date-time}
+        lastFailureAt: {type: string, format: date-time}
+        disabledReason: {type: string}
     WebhookSubscription:
       type: object
       required: [id, namespaceId, name, url, secretName, events, ratePerSecond, timeoutMs, status, health, createdBy, createdAt, updatedAt]
@@ -3385,7 +3976,7 @@ components:
         attempt: {type: integer}
         startedAt: {type: string, format: date-time}
         durationMs: {type: integer}
-        outcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED]}
+        outcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED, CREDENTIAL_UNAVAILABLE]}
         httpStatus: {type: integer}
         error: {type: string, description: 'A class of failure written by the platform; never the receiver''s words.'}
     WebhookDelivery:
@@ -3399,7 +3990,7 @@ components:
         status: {type: string, enum: [PENDING, DELIVERED, DEAD]}
         attempts: {type: integer, description: 'Attempts made in all.'}
         nextAttemptAt: {type: string, format: date-time}
-        lastOutcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED]}
+        lastOutcome: {type: string, enum: [DELIVERED, REJECTED, SERVER_ERROR, THROTTLED, TIMEOUT, NETWORK, DENIED, UNSIGNED, CREDENTIAL_UNAVAILABLE]}
         lastHttpStatus: {type: integer}
         lastError: {type: string}
         createdAt: {type: string, format: date-time}
@@ -3631,7 +4222,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         source: {type: string}
         lockfile: {type: string}
         inputSchema: {type: object}
@@ -3651,7 +4242,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer, minimum: 1, maximum: 365}
         revision: {type: integer}
@@ -3677,7 +4268,7 @@ components:
         inputSchema: {type: object}
         outputSchema: {type: object}
         policy: {$ref: '#/components/schemas/ScriptPolicy'}
-        retentionDays: {type: integer, minimum: 1, maximum: 365, default: 14}
+        retentionDays: {type: integer, minimum: 1, maximum: 365, default: 14, description: "New choices, publications and test admissions must fit the current namespace script_retention_days policy. Lowering policy preserves existing records and exact publication replay."}
     UpdateScriptRequest:
       type: object
       additionalProperties: false
@@ -3697,7 +4288,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         source: {type: string}
         lockfile: {type: string}
@@ -3712,7 +4303,9 @@ components:
         keyId: {type: string}
         toolchain: {type: string}
         buildLog: {type: string}
-        failure: {type: string, description: 'Why the build made nothing: `rejected:`, `lockfile:`, `limit:`, `unsupported:` or `unavailable:` and the first message of the toolchain.'}
+        buildLogTruncated: {type: boolean, description: "True when the retained build diagnostic or log was truncated, including an empty log at zero allowance."}
+        failureCode: {type: string, enum: [SCRIPT_BUILD_REJECTED, SCRIPT_SANDBOX_UNAVAILABLE, STORAGE_QUOTA_EXCEEDED]}
+        failure: {type: string, description: 'Retained build diagnostic, possibly empty when the log allowance is exhausted. failureCode preserves the terminal category independently; buildLogTruncated records omitted diagnostics.'}
         createdBy: {type: string}
         createdAt: {type: string, format: date-time}
         builtAt: {type: string, format: date-time}
@@ -3724,7 +4317,7 @@ components:
         id: {type: string, format: uuid}
         scriptId: {type: string, format: uuid}
         number: {type: integer, minimum: 1}
-        language: {type: string, enum: [typescript, python, csharp]}
+        language: {type: string, enum: [typescript, python, csharp, go, java]}
         status: {type: string, enum: [BUILDING, READY, FAILED]}
         policy: {$ref: '#/components/schemas/ScriptPolicyView'}
         retentionDays: {type: integer}
@@ -3735,6 +4328,7 @@ components:
         keyId: {type: string}
         toolchain: {type: string}
         failure: {type: string}
+        failureCode: {type: string, enum: [SCRIPT_BUILD_REJECTED, SCRIPT_SANDBOX_UNAVAILABLE, STORAGE_QUOTA_EXCEEDED]}
         createdBy: {type: string}
         createdAt: {type: string, format: date-time}
         builtAt: {type: string, format: date-time}
@@ -3776,7 +4370,7 @@ components:
         status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED]}
         input: {}
         result: {}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         retryable: {type: boolean}
         log: {type: string}
         logTruncated: {type: boolean}
@@ -3799,7 +4393,7 @@ components:
         scriptId: {type: string, format: uuid}
         language: {type: string}
         status: {type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED]}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         wallMs: {type: integer}
         startMs: {type: integer}
         createdBy: {type: string}
@@ -3828,7 +4422,7 @@ components:
         wallMs: {type: integer}
         startMs: {type: integer}
         memoryPeakBytes: {type: integer}
-        traceId: {type: string}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$', not: {const: '00000000000000000000000000000000'}}
         createdAt: {type: string, format: date-time}
         expiresAt: {type: string, format: date-time}
     ScriptExecutionSummary:
@@ -3849,7 +4443,7 @@ components:
         wallMs: {type: integer}
         startMs: {type: integer}
         memoryPeakBytes: {type: integer}
-        traceId: {type: string}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$', not: {const: '00000000000000000000000000000000'}}
         createdAt: {type: string, format: date-time}
         expiresAt: {type: string, format: date-time}
     ScriptExecutionList:
@@ -3932,7 +4526,7 @@ components:
       properties:
         leaseToken: {type: string}
         result: {}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         log: {type: string}
         logTruncated: {type: boolean}
         denied: {type: array, items: {type: string}}
@@ -3982,7 +4576,7 @@ components:
         node: {type: string}
         attempt: {type: integer, minimum: 0}
         status: {type: string, enum: [SUCCEEDED, FAILED]}
-        failure: {type: string, pattern: '^SCRIPT_[A-Z_]+$'}
+        failure: {type: string, pattern: '^(SCRIPT_[A-Z_]+|STORAGE_QUOTA_EXCEEDED)$'}
         exitCode: {type: integer}
         log: {type: string}
         logTruncated: {type: boolean}
@@ -3990,7 +4584,7 @@ components:
         wallMs: {type: integer, minimum: 0}
         startMs: {type: integer, minimum: 0}
         memoryPeakBytes: {type: integer, minimum: 0}
-        traceId: {type: string}
+        traceId: {type: string, pattern: '^[0-9a-f]{32}$', not: {const: '00000000000000000000000000000000'}}
     Recorded:
       type: object
       required: [recorded]

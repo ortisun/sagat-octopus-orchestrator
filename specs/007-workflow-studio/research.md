@@ -172,9 +172,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   again whether its subject is still a member with the right to read. Before the independent review each tick read the whole
   graph (120 scans of the steps table in four seconds for one quiet stream). A push from the engine (`LISTEN/NOTIFY` or NATS)
   belongs to feature 010 with the rest of the scale work.
-- **G144 — No payload is shown.** The journal and the graph carry no input, output or error text (a `payloadRef` digest
-  and a `failureCode` only), so "redacted payload" holds by construction and the Studio cannot show a step's data. Showing
-  it needs a redaction policy per payload class (feature 009's classification is not built, G37) and a read API.
+- **G144 — Structural payload inspection is implemented; value disclosure remains out of scope.** The journal and graph
+  still carry only a `payloadRef` digest and a `failureCode`. An Admin or Operator may explicitly inspect the run input or
+  an immutable journal sequence through ADR-0028's authorized, audited `structure-only-v1` endpoint. The server removes
+  every object key and scalar, bounds the tree, and returns only verified catalog metadata for external content. Customer
+  classification and any policy that could disclose values remain pending under G42/G39.
 - **G145 — "Retry run as new" and "mark manual review" are not available** (`422` from the API, G58): the Studio shows
   them disabled with the reason, it does not fake them.
 - **G146 — Accessibility is checked by tools and a keyboard walkthrough**, not by people using a screen reader; WCAG 2.2
@@ -193,13 +195,11 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   report (`tests/performance/reports/workflow-studio.md`) says which: headless Chromium on the machine it names. A low-end
   machine, Firefox and Safari are not measured, and the floors of the report ("usable": 30 frames per second, a few seconds to
   open) are this feature's reading of "usable", chosen before the measured rounds.
-- **G152 — Two low advisories remain in the Studio's production dependencies.** `monaco-editor` 0.57.0 bundles DOMPurify
-  `<=3.4.15` (GHSA-6688-9rhm-gjv2, an `IN_PLACE` sanitising case); npm's suggested fix is to go back to 0.56.0, which loses the
-  editor features the script page uses. The Studio does not hand the editor markup from outside (it shows the author's own
-  source and the platform's diagnostics as text), and the page's policy forbids inline script, so the advisory is accepted and
-  the CI job (`npm audit --audit-level=moderate`) lets lows through until Monaco ships a fixed bundle. The tooling advisories
-  that were open when the frontend was built (vitest's `tinypool`, `source-map-js`) are fixed by vitest 4.1.11 and a
-  lockfile update.
+- **G152 — Resolved: Monaco uses patched DOMPurify 3.4.16.** `monaco-editor` 0.57.0 declares DOMPurify 3.4.15, so the frontend
+  root pins that transitive dependency to 3.4.16, which fixes GHSA-p98j-92pf-mc4p and GHSA-6688-9rhm-gjv2 without downgrading
+  the editor. `npm explain dompurify` proves the override and `npm audit --audit-level=low` reports no vulnerabilities; the
+  Studio's 1,105 tests, lint, typecheck and production build pass. The tooling advisories that were open when the frontend was
+  built (vitest's `tinypool`, `source-map-js`) remain fixed by vitest 4.1.11 and the lockfile.
 - **G153 — The `operationId` of an operation is derived, not stored.** It is a version-8 UUID made from the run and the
   `Idempotency-Key`, so an operation sent again because its answer was lost is answered with the same id (before, every answer
   carried a new random one, which made a replay look like a second operation). It names the request: there is no table of
@@ -213,8 +213,12 @@ Offer intuitive authoring and operation of complex processes with a faithful dep
   It does not judge an output property that stops being required, a type gained where there was none, a narrower `enum`, a new
   `pattern` or limit, `additionalProperties: false`, the items of an array or a `oneOf`; the publish dialog says which kinds it
   checked instead of saying there were no breaking changes.
-- **G156 — A trace is shown as an id to copy, not a link** (FR-007-005 "trace links"): the Studio does not know where a deployment
-  keeps its traces. Opening one in a tracing tool needs a configurable URL template (`SAGAT_STUDIO_TRACE_URL`), not built.
+- **G156 — Resolved: trace links use deployment runtime configuration** (FR-007-005, T007-055).
+  `SAGAT_STUDIO_TRACE_URL` supplies one `{traceId}` placeholder through the existing public,
+  no-store Studio config. Startup and serving reject relative, credentialed and non-HTTPS URLs
+  (apart from loopback HTTP); the browser independently requires a nonzero 32-hex id and applies
+  the same URL boundary. No config omits the link while preserving copy, and rendering never
+  contacts the tracing tool.
 - **G157 — The code of a script is edited on the Scripts page; a script node pins a build.** The node's inspector does not open the
   editor (US02-AC01 says "edits code in a node"): what the user story needs, editing the code and having a workflow use the build,
   is done in two places, with the picker between them (`ScriptPicker`); a link from the node to the editor is not built.
@@ -280,3 +284,7 @@ and the passing final browser checks are in `quickstart.md`; owner review is app
 Owner review recorded on 2026-10-11: Marcelo explicitly approved the visual proposal ("Aprovo a proposta visual")
 after opening the local Studio. This approval covers Runs, the light theme, editor, Scripts and sign-in;
 automated CI evidence for this branch is recorded separately.
+
+G167 resolved by T007-056 (2026-10-12): the authorized Studio confirmation uses the existing
+signal endpoint; eight component tests and a real browser/API/engine waiting-run journey pass.
+The earlier entry describes the restyle's scope, not the current action set.

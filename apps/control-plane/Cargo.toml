@@ -2,6 +2,7 @@
 name = "sagat-control-plane"
 description = "Control plane process: HTTP API, schema migrations and development seed."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
@@ -19,12 +20,15 @@ name = "control-plane"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
 axum.workspace = true
 base64 = "0.22"
+reqwest.workspace = true
 sagat-api-http.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-ir.workspace = true
+sagat-infra-blobstore.workspace = true
 sagat-infra-postgres.workspace = true
 sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
@@ -33,3 +37,6 @@ thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "io-util"] }
 tracing.workspace = true
+
+[dev-dependencies]
+rcgen = "0.13"

@@ -28,7 +28,7 @@ fn a_worker_of_every_sdk_registers_receives_the_task_and_completes_the_step() {
             // the task once and the step is completed.
             assert_eq!(
                 observation(doc, "bound-registers")["result"]["protocolVersion"],
-                "1.2",
+                "1.4",
                 "{language}"
             );
             // Two attempts in its log: the run it served, and (after the restart below) a second one.
@@ -45,7 +45,7 @@ fn a_worker_of_every_sdk_registers_receives_the_task_and_completes_the_step() {
             // The host is restartable: stopped and started again, it serves a second run.
             assert_eq!(
                 observation(doc, "bound-restarts")["result"]["protocolVersion"],
-                "1.2",
+                "1.4",
                 "{language}"
             );
             assert_eq!(

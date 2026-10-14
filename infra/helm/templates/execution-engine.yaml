@@ -33,7 +33,7 @@ spec:
       automountServiceAccountToken: false
       # Long enough for the engine to stop its loops, give its shards back and drain its calls.
       terminationGracePeriodSeconds: {{ $e.terminationGracePeriodSeconds }}
-      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      securityContext: {runAsNonRoot: true, fsGroup: 10001, fsGroupChangePolicy: OnRootMismatch, seccompProfile: {type: RuntimeDefault}}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -101,7 +101,7 @@ spec:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         {{- if $e.grpc.tlsSecret }}
         - name: tls
-          secret: {secretName: {{ $e.grpc.tlsSecret | quote }}, defaultMode: 0440}
+          secret: {secretName: {{ $e.grpc.tlsSecret | quote }}, defaultMode: 288} # 0440
         {{- end }}
         {{- if and .Values.nats.url .Values.nats.credentialsSecret }}
         - name: nats-creds

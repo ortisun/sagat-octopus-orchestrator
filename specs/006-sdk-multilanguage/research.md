@@ -83,18 +83,22 @@ how to operate it is `docs/runbooks/sdks.md`; the behaviour of the SDKs is `sdks
   `proto/sagat_octopus_orchestrator/v1/worker.proto` as `plan.md` lists.** It has been the canonical file since
   feature 002; each SDK copies it with a script and a test fails when its copy is behind. Moving it would touch
   every feature's contracts for no gain.
-- **G122 — The repository declares no licence**, so every package says `UNLICENSED`. An owner decision.
-- **G123 — Publishing is not automated** (npm, PyPI, the Go proxy, NuGet, Maven Central), nor signing, nor a
-  changelog per SDK. `docs/runbooks/sdks.md` §7 lists the steps by hand.
+- **G122 — Resolved as a product decision: MIT.** The owner selected the MIT License on 2026-10-11. The root licence and all five SDK package licences/metadata are aligned, and clean-consumer package tests pass. Registry publication remains G123.
+- **G123 — Local distribution is verified; registry release remains open.** `scripts/package-sdks.sh` builds eight artifacts with checksums, verifies embedded MIT licences and installs all five SDKs into clean consumers. Paired builds with a fixed source revision matched hashes. `.github/workflows/sdk-packages.yml` runs this credential-free and stores CI artifacts. The candidate includes release notes and Maven sources/Javadocs (T006-037). Actual npm/PyPI/NuGet/Maven/Go-proxy publication, release signing and durable release retention remain open; see `docs/runbooks/sdk-packaging.md`.
 - **G124 — A server restart is not in the conformance suite.** The scenarios fail the transport and the session
   (`worker-transport-faults`: a registration that never leaves, refused polls, an UNAUTHENTICATED poll, refused
   heartbeats and completions) but do not stop the engine; the engine would come back on another port. Each SDK's
   unit tests cover a session that is gone.
-- **G125 — The worker protocol polls; streaming of tasks is not built.** The benchmark measures polling and
-  backpressure only (NFR-006-PERF asks to measure streaming too).
-- **G126 — OpenTelemetry is not a dependency of any SDK.** They propagate `traceparent`, take the ambient one
-  from a hook and report counters through a callback; C# uses `ActivitySource` and `System.Diagnostics.Metrics`.
-  No exporter is shipped and the hooks were not tried with each ecosystem's real OpenTelemetry API.
+- **G125 — Implemented and measured (2026-10-12).** ADR-0029
+  and protocol 1.4 add finite-credit task streams in all five SDKs. The 95 common conformance
+  executions, six E2E and nine fault tests pass. T006-042 records the 30-row poll/stream
+  comparison and final five clean-consumer packages. The report preserves unknown clock offset
+  and reconstructed claim-snapshot attribution limitations; no universal speedup is claimed.
+- **G126 — Resolved for opt-in ecosystem integration (2026-10-12).** TypeScript, Python, Go and
+  Java bridge the existing hooks to real OpenTelemetry APIs; C# retains native ActivitySource/Meter.
+  In-memory SDK exporter tests prove parentage, bounded attributes/metrics and exporter failure
+  isolation. Providers/exporters remain application-owned; no global exporter is installed by an SDK.
+  See `docs/runbooks/sdk-observability.md` and each SDK's OpenTelemetry tests.
 - **G127 — Runtime matrices say only what was run on this machine** (macOS arm64): one version of each runtime,
   except Python 3.10 (conformance) and 3.11–3.13 (unit tests, before the last change). Other versions and
   operating systems are declared, not tested. Each README says which.

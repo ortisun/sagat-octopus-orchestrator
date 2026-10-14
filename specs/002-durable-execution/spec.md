@@ -73,6 +73,8 @@ Ensure DAG progress, checkpoints, suspension, retries and failure recovery witho
 - **FR-002-008**: The system MUST bind all runs to the immutable version and control payload/result size via blob refs.
 - **FR-002-009**: The system MUST persist the child-run parent link and the cancellation propagation policy.
 
+`FR-002-008` resource contract: inline outputs remain limited to 256 KiB each and 4 MiB retained per run. Serialized task contexts, including JSON normalization and envelope overhead, must fit 8 MiB individually and in aggregate per poll. An oversized context produces a durable, non-retryable `RUN_DATA_LIMIT` before dispatch; a task that fits a fresh response stays ready when the current response has insufficient room.
+
 ## Edge Cases
 
 - crash after external effect and before the checkpoint.
@@ -120,3 +122,7 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-002-###` and criteria `SC-002-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Large run-input contract (T002-040)
+
+A caller authorized to start a run may stream an input blob into its namespace and use its returned id through the mutually exclusive `inputBlobRef` start field. The creator owns the unused upload; binding commits atomically with the run and replays idempotently. The run's input is an explicit claim-check descriptor, validated against a declared input schema, while the blob contents remain opaque. Worker reads require a current bound lease and committed input scope. Reruns and inherited child inputs preserve the source reference through durable provenance.

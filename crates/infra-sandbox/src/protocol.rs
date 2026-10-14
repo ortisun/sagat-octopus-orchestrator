@@ -108,6 +108,29 @@ pub fn run_message(input: &Value, files: &[(String, String)], key: Option<&str>)
 /// channel as canonical base64; the runtime never writes them to an executable filesystem.
 #[must_use]
 pub fn run_binary_message(input: &Value, files: &[BundleFile], key: Option<&str>) -> Vec<u8> {
+    run_encoded_message(input, files, key, "base64", None)
+}
+
+/// A v3 compiled artifact remains in its signed wire encoding on the startup frame. In particular,
+/// a Go executable crosses as compressed bytes and is expanded only inside the trusted loader.
+#[must_use]
+pub fn run_v3_message(
+    input: &Value,
+    files: &[BundleFile],
+    key: Option<&str>,
+    encoding: &str,
+    target: &str,
+) -> Vec<u8> {
+    run_encoded_message(input, files, key, encoding, Some(target))
+}
+
+fn run_encoded_message(
+    input: &Value,
+    files: &[BundleFile],
+    key: Option<&str>,
+    encoding: &str,
+    target: Option<&str>,
+) -> Vec<u8> {
     let files: serde_json::Map<String, Value> = files
         .iter()
         .map(|file| {
@@ -117,10 +140,14 @@ pub fn run_binary_message(input: &Value, files: &[BundleFile], key: Option<&str>
             )
         })
         .collect();
-    line(&json!({
-        "op": "run", "input": input, "encoding": "base64", "files": files,
+    let mut message = json!({
+        "op": "run", "input": input, "encoding": encoding, "files": files,
         "idempotencyKey": key
-    }))
+    });
+    if let Some(target) = target {
+        message["target"] = Value::String(target.to_owned());
+    }
+    line(&message)
 }
 
 /// The first thing the supervisor says to a builder: build this source.
@@ -265,5 +292,24 @@ mod tests {
         assert_eq!(value["packages"][0]["id"], "Newtonsoft.Json");
         assert_eq!(value["packages"][0]["version"], "13.0.4");
         assert_eq!(value["packages"][0]["contentHash"], "hash");
+    }
+
+    #[test]
+    fn a_v3_startup_frame_keeps_compressed_bytes_and_binds_the_target() {
+        let message = run_v3_message(
+            &json!({"n": 7}),
+            &[BundleFile {
+                name: "script.elf".to_owned(),
+                bytes: vec![0x1f, 0x8b, 0x08, 0x00],
+            }],
+            Some("step-1"),
+            "base64+gzip",
+            "linux-arm64",
+        );
+        let value: Value = serde_json::from_slice(&message).expect("json line");
+        assert_eq!(value["target"], "linux-arm64");
+        assert_eq!(value["encoding"], "base64+gzip");
+        assert_eq!(value["files"]["script.elf"], "H4sIAA==");
+        assert_eq!(value["idempotencyKey"], "step-1");
     }
 }

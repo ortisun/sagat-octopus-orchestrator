@@ -33,6 +33,27 @@ jobs:
       # Every failing test is reported, not only the first binary's: a first run on a new platform is the time to see them all.
       - run: cargo test --workspace --locked --no-fail-fast
 
+  native-runners:
+    name: native Go and Java (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: build native images without emulation
+        run: |
+          docker build -f runners/go/Dockerfile.builder -t sagat/go-builder:1.25.3 .
+          docker build -f runners/go/Dockerfile.runtime -t sagat/go-runtime:1.25.3 .
+          docker build -f runners/java/Dockerfile.builder -t sagat/java-builder:17.0.16 .
+          docker build -f runners/java/Dockerfile.runtime -t sagat/java-runtime:17.0.16 .
+      - name: prove exact production isolation and native loading
+        run: cargo test -p sagat-infra-sandbox --lib --locked -- --ignored --nocapture --test-threads=1
+
   architecture:
     name: architecture rules
     runs-on: ubuntu-latest

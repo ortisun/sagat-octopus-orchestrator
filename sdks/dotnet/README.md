@@ -58,6 +58,11 @@ Also: `GetAsync`, `ListAsync` / `ListAllAsync` (`IAsyncEnumerable<Run>`, in the 
 (`RunAction.Pause`, `Resume`, `Cancel`, …), `CancelAsync`, `SignalAsync`, `PublishEventAsync`, `EventsAsync` (the
 journal) and `ResolveWorkflowAsync`. Every call takes a `CancellationToken`.
 
+For a large run input, call `UploadRunInputAsync(onePassStream, options, ct)`, then pass its verified
+`BlobDescriptor` to `StartWithBlobAsync`. The upload is streamed once and never retried; the descriptor is
+accepted only after source EOF and matching local size/SHA-256. Blob-backed start keeps the normal start
+idempotency, correlation, deadline and trace behavior.
+
 ## Register an activity
 
 As part of the application (`IHostedService`: it registers with the worker service when the host starts and stops
@@ -237,7 +242,8 @@ against a real platform (the conformance suite runs over loopback `http`).
   `Activity.Current`) whose `traceparent` is sent to the server; an explicit `Traceparent` option wins. A lease's `traceparent` is
   the parent of a `Consumer` span around the handler, so `Activity.Current` inside the handler is in the run's trace and the
   requests the handler makes carry it; with no listener on the SDK's source it is a plain `Activity` with the same parent (the trace
-  still reaches the handler), and with an empty or invalid `traceparent` the SDK sets none. Tags carry identifiers only.
+  still reaches the handler), and with an empty or invalid `traceparent` the SDK sets none. Worker attempts use the fixed
+  span name `sagat.worker.task`; tags carry identifiers only.
 - **Metrics**: a `Meter` named `SagatOctopusOrchestrator.Sdk`: `sagat.worker.tasks.taken`, `.completed`, `.failed`, `.stale`,
   `.dropped`, `sagat.worker.heartbeats`, `.polls`, `.reconnects` (counters) and `sagat.worker.activity.duration` (histogram, s),
   tagged with `sagat.worker`.
@@ -257,7 +263,7 @@ duration that is not a whole number of milliseconds (`TimeSpan.FromTicks(15_000)
 SemVer. Before 1.0 a minor version may change the .NET API; the **wire** contract does not move with it: REST is additive within
 `/v1` and the worker protocol is additive within `1.x` (the host negotiates; a newer SDK against an older server runs at the
 server's version, an older SDK ignores fields it does not know). After 1.0 a breaking change of the API is a major version.
-`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.2`) the newest worker protocol minor the SDK speaks.
+`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.4`) the newest worker protocol minor the SDK speaks.
 
 ## Runtime version matrix
 
@@ -284,7 +290,8 @@ Central package management with pinned versions, each published at least two wee
 `Grpc.Net.Client` 2.83.0 and `Grpc.Core.Api` 2.83.0 (2026-08-03), `Google.Protobuf` 3.36.1 (2026-08-31), `Grpc.Tools` 2.84.0
 (build time, 2026-09-14), `Microsoft.Extensions.{DependencyInjection.Abstractions, Hosting.Abstractions, Logging.Abstractions,
 Options}` 10.0.11 (2026-08-11) for `net10.0` and 8.0.x for `net8.0`. Tests: `Microsoft.NET.Test.Sdk` 18.10.0, `xunit` 2.9.3,
-`xunit.runner.visualstudio` 3.1.5, `Grpc.AspNetCore.Server` 2.83.0, `Microsoft.AspNetCore.TestHost` 10.0.11.
+`xunit.runner.visualstudio` 3.1.5, `Grpc.AspNetCore.Server` 2.83.0, `Microsoft.AspNetCore.TestHost` 10.0.11, and
+OpenTelemetry plus its in-memory exporter 1.19.0 for integration tests only.
 
 ## Development
 
@@ -310,5 +317,4 @@ plus plain HTTP for the control endpoint), `proto/worker.proto` (a copy). The ge
 
 ## License
 
-None granted: the repository declares no license (`LICENSE.txt` says `UNLICENSED`, like the TypeScript SDK). Decide it before
-publishing.
+MIT. `LICENSE.txt` is included in the NuGet package.

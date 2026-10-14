@@ -8,6 +8,7 @@ use std::str::FromStr;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::identity::PageRequest;
 use sagat_application::publishing::Promotion;
 use sagat_domain::definition::WorkflowId;
@@ -15,6 +16,7 @@ use sagat_domain::identity::NamespaceId;
 use sagat_domain::versioning::{RequestId, RequestState, Verdict};
 use serde::Deserialize;
 
+use crate::admission::admit;
 use crate::dto::PageBody;
 use crate::dto_exec::{PublishedBody, VersionSummary};
 use crate::dto_versioning::{
@@ -73,12 +75,16 @@ pub async fn get_policy<B: Exec>(
     State(state): State<B>,
     Path(namespace): Path<String>,
 ) -> Result<Json<PolicyBody>, ApiError> {
+    let namespace = parse_id::<NamespaceId>(&namespace)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
     let view = service(&state)?
-        .policy(
-            &caller.session.principal,
-            parse_id::<NamespaceId>(&namespace)?,
-            &caller.ctx,
-        )
+        .policy(&caller.session.principal, namespace, &caller.ctx)
         .await?;
     Ok(Json(PolicyBody::from(&view)))
 }
@@ -89,10 +95,18 @@ pub async fn set_policy<B: Exec>(
     Path(namespace): Path<String>,
     ApiJson(body): ApiJson<SetPolicyBody>,
 ) -> Result<Json<PolicyBody>, ApiError> {
+    let namespace = parse_id::<NamespaceId>(&namespace)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::PublicationManage,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
     let view = service(&state)?
         .set_policy(
             &caller.session.principal,
-            parse_id::<NamespaceId>(&namespace)?,
+            namespace,
             body.required_approvals,
             &body.reason,
             &caller.ctx,
@@ -107,10 +121,18 @@ pub async fn open_request<B: Exec>(
     Path(workflow): Path<String>,
     ApiJson(body): ApiJson<OpenRequestBody>,
 ) -> Result<(StatusCode, Json<RequestBody>), ApiError> {
+    let workflow = parse_id::<WorkflowId>(&workflow)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionPublish,
+        ApiTarget::Workflow(workflow),
+    )
+    .await?;
     let request = service(&state)?
         .open_request(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&workflow)?,
+            workflow,
             body.draft_revision,
             body.release_notes.as_deref(),
             &caller.ctx,
@@ -134,10 +156,18 @@ pub async fn list_requests<B: Exec>(
                 .ok_or_else(|| ApiError::validation("the state is not one of the request states"))
         })
         .transpose()?;
+    let workflow = parse_id::<WorkflowId>(&workflow)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Workflow(workflow),
+    )
+    .await?;
     let result = service(&state)?
         .requests(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&workflow)?,
+            workflow,
             wanted,
             &page_request(&query),
             &caller.ctx,
@@ -154,12 +184,16 @@ pub async fn get_request<B: Exec>(
     State(state): State<B>,
     Path(request): Path<String>,
 ) -> Result<Json<RequestBody>, ApiError> {
+    let request = parse_id::<RequestId>(&request)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::PublicationRequest(request),
+    )
+    .await?;
     let request = service(&state)?
-        .get_request(
-            &caller.session.principal,
-            parse_id::<RequestId>(&request)?,
-            &caller.ctx,
-        )
+        .get_request(&caller.session.principal, request, &caller.ctx)
         .await?;
     Ok(Json(RequestBody::from(&request)))
 }
@@ -171,10 +205,18 @@ async fn decide<B: Exec>(
     verdict: Verdict,
     body: DecisionBody,
 ) -> Result<Json<RequestBody>, ApiError> {
+    let request = parse_id::<RequestId>(&request)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::PublicationApprove,
+        ApiTarget::PublicationRequest(request),
+    )
+    .await?;
     let request = service(&state)?
         .decide(
             &caller.session.principal,
-            parse_id::<RequestId>(&request)?,
+            request,
             verdict,
             &body.reason,
             &caller.ctx,
@@ -211,12 +253,16 @@ pub async fn withdraw_request<B: Exec>(
     State(state): State<B>,
     Path(request): Path<String>,
 ) -> Result<Json<RequestBody>, ApiError> {
+    let request = parse_id::<RequestId>(&request)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionPublish,
+        ApiTarget::PublicationRequest(request),
+    )
+    .await?;
     let request = service(&state)?
-        .withdraw(
-            &caller.session.principal,
-            parse_id::<RequestId>(&request)?,
-            &caller.ctx,
-        )
+        .withdraw(&caller.session.principal, request, &caller.ctx)
         .await?;
     metrics::counter!("publication_events_total", "event" => "withdrawn").increment(1);
     Ok(Json(RequestBody::from(&request)))
@@ -228,13 +274,17 @@ pub async fn publish_request<B: Exec>(
     headers: HeaderMap,
     Path(request): Path<String>,
 ) -> Result<(StatusCode, Json<PublishedBody>), ApiError> {
+    let request = parse_id::<RequestId>(&request)?;
+    let key = idempotency_key(&headers)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionPublish,
+        ApiTarget::PublicationRequest(request),
+    )
+    .await?;
     let published = service(&state)?
-        .publish_request(
-            &caller.session.principal,
-            parse_id::<RequestId>(&request)?,
-            idempotency_key(&headers)?,
-            &caller.ctx,
-        )
+        .publish_request(&caller.session.principal, request, key, &caller.ctx)
         .await?;
     metrics::counter!("publication_events_total", "event" => "published").increment(1);
     Ok((
@@ -253,10 +303,18 @@ pub async fn list_activations<B: Exec>(
     Path(workflow): Path<String>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<PageBody<ActivationBody>>, ApiError> {
+    let workflow = parse_id::<WorkflowId>(&workflow)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::DefinitionRead,
+        ApiTarget::Workflow(workflow),
+    )
+    .await?;
     let result = service(&state)?
         .activations(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&workflow)?,
+            workflow,
             &page_request(&query),
             &caller.ctx,
         )
@@ -273,10 +331,18 @@ pub async fn activate_version<B: Exec>(
     Path(workflow): Path<String>,
     ApiJson(body): ApiJson<ActivateBody>,
 ) -> Result<Json<ActivationResultBody>, ApiError> {
+    let workflow = parse_id::<WorkflowId>(&workflow)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::VersionActivate,
+        ApiTarget::Workflow(workflow),
+    )
+    .await?;
     let activation = service(&state)?
         .activate(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&workflow)?,
+            workflow,
             body.version,
             &body.reason,
             body.expected_version,
@@ -301,15 +367,28 @@ pub async fn promote_version<B: Exec>(
     Path((workflow, number)): Path<(String, u32)>,
     ApiJson(body): ApiJson<PromoteBody>,
 ) -> Result<(StatusCode, Json<PromotionBody>), ApiError> {
+    let workflow = parse_id::<WorkflowId>(&workflow)?;
+    let destination = parse_id::<NamespaceId>(&body.namespace_id)?;
+    let key = idempotency_key(&headers)?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::Promotion,
+        ApiTarget::Promotion {
+            source: workflow,
+            destination,
+        },
+    )
+    .await?;
     let promotion = service(&state)?
         .promote(
             &caller.session.principal,
-            parse_id::<WorkflowId>(&workflow)?,
+            workflow,
             number,
-            parse_id::<NamespaceId>(&body.namespace_id)?,
+            destination,
             &body.reason,
             body.accept_breaking,
-            idempotency_key(&headers)?,
+            key,
             &caller.ctx,
         )
         .await?;

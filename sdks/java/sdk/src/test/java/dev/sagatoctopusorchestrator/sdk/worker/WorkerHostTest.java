@@ -148,7 +148,7 @@ class WorkerHostTest {
         assertEquals(List.of("a.undo", "b.second", "c.lookup"), request.getCapabilities().getActivitiesList());
         assertEquals(List.of("gpu"), request.getCapabilities().getPoolsList());
         assertEquals(7, request.getCapabilities().getMaxInflight());
-        assertEquals("1.2", request.getCapabilities().getProtocolVersion());
+        assertEquals("1.4", request.getCapabilities().getProtocolVersion());
         assertEquals("Bearer tok", register.header("authorization"));
         assertEquals("1.2", h.protocolVersion());
     }
@@ -766,6 +766,176 @@ class WorkerHostTest {
         fake.addLeases(lease());
         until(() -> fake.of("CompleteStep").size() == 1, "the task after it");
         assertTrue(events.stream().anyMatch(e -> e instanceof WorkerEvent.Reconnect));
+    }
+
+    @Test
+    void protocol14StreamsTwoFramesDispatchesBeforeEofAndCancelsTheIdleReceiveOnStop() {
+        fake.acceptedVersion = "1.4";
+        fake.streamFrameSize = 1;
+        fake.holdStreamOpen = true;
+        fake.addLeases(
+                lease(b -> b.setTaskId("run-1/charge/1").setRunId("run-1")),
+                lease(b -> b.setTaskId("run-2/charge/1").setRunId("run-2")));
+        WorkerHost h = host(b -> b.maxInflight(3));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 2, "both streamed tasks before EOF");
+        assertEquals(1, fake.of("StreamTasks").size());
+        assertEquals(3, ((Worker.PollTasksRequest) fake.of("StreamTasks").get(0).request()).getMaxTasks());
+        assertTrue(fake.of("PollTasks").isEmpty());
+        long began = System.nanoTime();
+        h.stop(Duration.ofSeconds(1));
+        assertTrue(Duration.ofNanos(System.nanoTime() - began).toMillis() < 2000, "stop cancels the idle receive promptly");
+        assertTrue(fake.streamCancelled);
+    }
+
+    @Test
+    void aStreamErrorAfterAFramePreservesTheHandlerAndReconnectsOnlyReceiving() {
+        fake.acceptedVersion = "1.4";
+        fake.streamFailureAfterFirst = FakeWorkerServer.Failure.of(Status.Code.UNAVAILABLE);
+        fake.holdStreamOpen = true;
+        fake.addLeases(lease());
+        WorkerHost h = host(b -> b.maxInflight(2));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the partial delivery");
+        until(() -> fake.of("StreamTasks").size() >= 2, "a receive reconnect");
+        assertTrue(fake.of("PollTasks").isEmpty());
+    }
+
+    @Test
+    void autoFallsBackOnlyWhenStreamingIsUnimplemented() {
+        fake.acceptedVersion = "1.4";
+        fake.failNext("StreamTasks", FakeWorkerServer.Failure.of(Status.Code.UNIMPLEMENTED));
+        fake.addLeases(lease());
+        WorkerHost h = host();
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the task through polling fallback");
+        assertEquals(1, fake.of("StreamTasks").size());
+        assertTrue(!fake.of("PollTasks").isEmpty());
+    }
+
+    @Test
+    void explicitStreamingReportsUnimplementedWithoutPolling() {
+        fake.acceptedVersion = "1.4";
+        for (int i = 0; i < 20; i++) {
+            fake.failNext("StreamTasks", FakeWorkerServer.Failure.of(Status.Code.UNIMPLEMENTED));
+        }
+        List<WorkerEvent> events = new CopyOnWriteArrayList<>();
+        WorkerHost h = host(b -> b.transport(WorkerTransport.STREAM).onEvent(events::add));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> events.stream().anyMatch(e -> e instanceof WorkerEvent.ReceiveFailed), "the unsupported diagnostic");
+        WorkerEvent.ReceiveFailed failed = (WorkerEvent.ReceiveFailed) events.stream()
+                .filter(e -> e instanceof WorkerEvent.ReceiveFailed).findFirst().orElseThrow();
+        assertEquals("UNSUPPORTED_PROTOCOL", failed.code());
+        assertTrue(fake.of("PollTasks").isEmpty());
+    }
+
+    @Test
+    void explicitStreamingRefusesAnOlderNegotiatedServerBeforeReceiving() {
+        fake.acceptedVersion = "1.3";
+        WorkerHost h = host(b -> b.transport(WorkerTransport.STREAM));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        SagatException error = assertThrows(SagatException.class, h::start);
+        assertEquals(ErrorCode.UNSUPPORTED_PROTOCOL, error.code());
+        assertTrue(fake.of("StreamTasks").isEmpty());
+        assertTrue(fake.of("PollTasks").isEmpty());
+    }
+
+    @Test
+    void explicitStreamingNeverPollsAfterReregistrationNegotiatesAnOlderProtocol() {
+        fake.acceptVersions("1.4", "1.3");
+        fake.failNext("StreamTasks", FakeWorkerServer.Failure.of(Status.Code.UNAUTHENTICATED));
+        List<WorkerEvent> events = new CopyOnWriteArrayList<>();
+        WorkerHost h = host(b -> b.transport(WorkerTransport.STREAM).onEvent(events::add));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> fake.of("RegisterWorker").size() >= 2, "the replacement registration");
+        until(
+                () -> events.stream().anyMatch(e -> e instanceof WorkerEvent.ReceiveFailed failed
+                        && failed.code().equals("UNSUPPORTED_PROTOCOL")),
+                "the downgrade diagnostic");
+        sleep(100);
+
+        assertTrue(fake.of("PollTasks").isEmpty());
+        assertEquals(1, fake.of("StreamTasks").size());
+    }
+
+    @Test
+    void aLargeStreamRetryHintIsCappedByTheConfiguredServerWait() {
+        fake.acceptedVersion = "1.4";
+        fake.pollRetryAfterMs = Integer.MAX_VALUE;
+        WorkerHost h = host(b -> b.maxServerWait(Duration.ofMillis(100)));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> fake.of("StreamTasks").size() == 1, "the empty receive window");
+        fake.addLeases(lease());
+        until(() -> fake.of("CompleteStep").size() == 1, "the task after the bounded wait");
+
+        assertTrue(fake.of("StreamTasks").size() >= 2);
+        assertTrue(fake.of("PollTasks").isEmpty());
+    }
+
+    @Test
+    void aStreamOverCapacityRunsOnlyTheCreditItWasGiven() {
+        fake.acceptedVersion = "1.4";
+        fake.ignoreMax = true;
+        fake.holdStreamOpen = true;
+        fake.addLeases(
+                lease(b -> b.setTaskId("run-1/charge/1").setRunId("run-1")),
+                lease(b -> b.setTaskId("run-2/charge/1").setRunId("run-2")));
+        WorkerHost h = host(b -> b.maxInflight(1));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "one bounded task");
+        sleep(100);
+        assertEquals(1, fake.of("CompleteStep").size());
+        assertEquals(1, ((Worker.PollTasksRequest) fake.of("StreamTasks").get(0).request()).getMaxTasks());
+    }
+
+    @Test
+    void aStreamRequestsAtMost64Credits() {
+        fake.acceptedVersion = "1.4";
+        fake.holdStreamOpen = true;
+        WorkerHost h = host(b -> b.maxInflight(100));
+        h.registerActivity("charge", (in, ctx) -> 1);
+
+        h.start();
+        until(() -> fake.of("StreamTasks").size() == 1, "the receive window");
+        assertEquals(64, ((Worker.PollTasksRequest) fake.of("StreamTasks").get(0).request()).getMaxTasks());
+    }
+
+    @Test
+    void aStreamCannotExceedTheAggregateEightMiBInputBudget() {
+        fake.acceptedVersion = "1.4";
+        fake.streamFrameSize = 1;
+        String document = "{\"input\":\"" + "x".repeat(4 * 1024 * 1024) + "\"}";
+        fake.addLeases(
+                lease(b -> b.setTaskId("run-1/charge/1").setRunId("run-1").setInputJson(document)),
+                lease(b -> b.setTaskId("run-2/charge/1").setRunId("run-2").setInputJson(document)));
+        AtomicInteger handled = new AtomicInteger();
+        WorkerHost h = host(b -> b.maxInflight(2));
+        h.registerActivity("charge", (in, ctx) -> {
+            handled.incrementAndGet();
+            return 1;
+        });
+
+        h.start();
+        until(() -> fake.of("CompleteStep").size() == 1, "the first frame within the aggregate budget");
+        sleep(150);
+        assertEquals(1, handled.get());
+        assertEquals(1, fake.of("CompleteStep").size());
+        assertTrue(fake.of("FailStep").isEmpty());
     }
 
     @Test

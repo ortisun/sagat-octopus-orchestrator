@@ -121,3 +121,74 @@ The later restyle, owner approval and real-sandbox CI journey complete T007-039.
 Owner acceptance, 2026-10-11: Marcelo reviewed the open local Studio and explicitly answered
 "Aprovo a proposta visual" for Runs, the light theme, workflow editor, Scripts and sign-in. This closes
 the owner-review portion of T007-043/044 and SC-007-005. The real-sandbox US02 journey also passed in the Studio CI job on commit `ace4060`, completing T007-044. No second visual approval is required for this proposal.
+
+## Remaining V1 schema editing
+
+- [x] T007-047 Provide schema-aware workflow input/output editors (FR-007-002), using bundled Monaco JSON validation/autocomplete with independent models and an accessible plain-text fallback. Preserve incomplete edits across blur and editor-mode changes. Evidence: 31 focused component tests, typecheck/lint/build, and all three real Chromium US01 journeys passed on 2026-10-12; the new journey checks completions, schema diagnostics and lossless fallback.
+
+## Visual defect regression (FR-007-008/009, SC-007-005)
+
+- [x] T007-051 Correct clipped graph text and duration controls using the owner's Temporal and
+  Windmill UX references. Give primary card text, badges and ports separate space; keep full
+  details reachable through selection; preserve stable layout/virtualization. Cover long IDs,
+  rich states, both directions, viewport widths, themes and fallback fonts with glyph/overlap
+  assertions and captures; record the real checks and relevant graph benchmarks. Evidence on
+  2026-10-12: 1 066 frontend tests, 27 Chromium/API/engine journeys and both three-round benchmarks
+  passed in the shared worktree; US02 explicitly excluded. Lint, app/E2E types, build and API
+  consistency passed. Ten captures and the regenerated benchmark report preserve the review;
+  initial entrypoint framing and selected-panel clipping were reproduced and then verified fixed.
+
+- [x] T007-050 Fix HTML/asset mismatch after rebuilding a running Studio and replace the router's
+  developer error screen with accessible recovery. Prove fresh root/deep-link HTML, safe missing
+  index handling and real-browser recovery from a missing CSS chunk; update serving/UI contracts
+  and the runbook. Preserve the configured security and resource boundaries. Evidence on 2026-10-12:
+  13 HTTP serving tests, 1 051 frontend tests and 24 real Chromium journeys passed (two opt-in
+  benchmarks skipped; US02 excluded). New regressions failed before the fix. Lint, app/E2E types,
+  frontend/control-plane builds, targeted Rust clippy and formatting passed. The live local server
+  was replaced and its current HTML/sign-in assets checked in Chromium without browser errors.
+
+- [x] T007-049 Correct unreadable initial graph zoom, intermediate-width editor layout, selected
+  forced-colour controls and the run header/canvas geometry. Add real-browser regressions in
+  `frontend/e2e/tests/visual-layout.spec.ts`, retain API and interaction coverage, and record actual
+  tests/captures in the design record and quickstart. No backend or wire-contract change. Evidence
+  on 2026-10-12: 1 049 Vitest tests in 67 files; lint, app/E2E types, production build and generated
+  API checks passed. Real Chromium/API/engine suite: 23 passed, zero failed, two opt-in benchmarks
+  skipped; US02 explicitly excluded in no-sandbox mode. Eight before/after captures are in
+  `design/review-2026-10-12/`. UX and frontend agent review completed; no new human acceptance claimed.
+
+## Remaining V1 payload inspection
+
+- [x] T007-048 [US03] [US04] Implement the authorized, audited `structure-only-v1` payload inspection in ADR-0028 (FR-007-005, FR-007-010, FR-008-006, FR-009-004): input or immutable journal-sequence selectors, new `run:payload:inspect` permission, tenant-scoped payload read plus committed bounded audit, server-side removal of every value and key with strict projection caps, verified external metadata and honest no-payload states. Evidence on 2026-10-12: the real PostgreSQL/API inspection suite passed 2/2; application projector and identity suites passed 6/6, 4/4 and 27/27; 70 focused Studio tests plus lint/typecheck/build passed; and one real Chromium journey against the real API/engine passed with key/value canaries absent. Tests cover role and tenant boundaries, audit failure/collapse, historical selection, forged descriptors, external metadata, size/depth/UTF-8 caps and stale session/query cancellation. Customer classification, retention decisions and raw-value disclosure remain pending under G42/G39.
+
+- [x] T007-052 Add a Namespaces navigation menu and page with authorized creation and context selection; test creation/selection,
+  invalid input, permission denial and API failure, then verify against the running API in Chromium.
+  Evidence: 10 focused tests, lint/typecheck/build and one real Chromium/API journey passed;
+  full-suite concurrent graph-layout failures are recorded separately in quickstart.md.
+  Owner's menu correction verified: dedicated `/namespaces` navigation/list/creation page;
+  1,066 frontend tests, lint/typechecks/build and real API/Chromium journey passed.
+
+- [x] T007-053 Implement Integrations menu, typed connector forms, safe credential storage and
+  create/edit/activate flows; prove permission, namespace, partial-save and redaction boundaries
+  with component tests and real browser/API persistence checks.
+
+  T007-053 evidence: 1,077 frontend tests (71 files), lint, app/E2E types, production build,
+  generated API consistency and the real Chromium/API integration journey passed. The journey
+  exercises configuration persistence with paused synthetic brokers, not real external connectivity.
+
+- [x] T007-055 [US03] [US04] Close G156 with configurable runtime trace links (FR-007-005): parse
+  and serve `SAGAT_STUDIO_TRACE_URL` through `/studio/config.json`, require one `{traceId}` in an
+  absolute HTTPS or loopback-HTTP URL without credentials, and show **Open trace** only for a
+  nonzero 32-hex run trace. Preserve copy-only behavior when absent or invalid; use a separate tab
+  with `noopener noreferrer` and make no automatic request. Evidence: 15 Studio-serving tests,
+  all 34 control-plane config tests, 76 focused run/config/link component tests, frontend lint,
+  application/E2E typechecks and production build passed. Both real Chromium scenarios passed
+  against the actual API/UI with runtime public-config interception: configured safe link and
+  missing-config copy fallback.
+
+- [x] T007-054 Complete namespace cursor loading for both the menu and selector, preserving the
+  existing Page interface; reject partial success on later-page failure/cancellation. Three focused
+  endpoint tests, scoped ESLint and TypeScript checks passed on 2026-10-12. Integrated gates follow.
+- [x] T007-056 Add Send signal with permission/terminal gating, explicit consequences, bounded
+  JSON-object validation, stable retry keys and context disposal (G167). Eight focused component
+  tests and the real Chromium/API/engine signal journey passed on 2026-10-12; an actual waitEvent
+  run reached SUCCEEDED and retained `wait.satisfied` in its journal. Integrated gates follow.

@@ -123,6 +123,7 @@ export const WorkflowSettings = forwardRef(function WorkflowSettings(
       <section aria-label="Data contract">
         <h3>Data contract</h3>
         <JsonField
+          model="workflowInputSchema"
           label="Input schema"
           hint="A JSON Schema object that the input of a run must satisfy. Empty: any input."
           value={doc.inputSchema}
@@ -130,6 +131,7 @@ export const WorkflowSettings = forwardRef(function WorkflowSettings(
           onCommit={(value) => change((d) => setSchema(d, 'inputSchema', value), 'inputSchema')}
         />
         <JsonField
+          model="workflowOutputSchema"
           label="Output schema"
           hint="A JSON Schema object that describes the output of a run."
           value={doc.outputSchema}

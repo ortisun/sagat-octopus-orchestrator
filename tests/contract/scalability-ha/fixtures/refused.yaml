@@ -131,3 +131,6 @@
 - name: connections the server would not hold
   changes: {database: {maxConnections: 20, serverMaxConnections: 100}}
   message: serverMaxConnections
+- name: insecure JWKS outside development
+  changes: {environment: prod, oidc: {allowInsecureJwksHttp: true}}
+  message: oidc.allowInsecureJwksHttp is accepted only when environment=dev

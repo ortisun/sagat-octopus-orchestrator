@@ -1,0 +1,94 @@
+fullnameOverride: sagat
+
+image:
+  controlPlane: sagat-octopus-orchestrator/control-plane
+  executionEngine: sagat-octopus-orchestrator/execution-engine
+  tag: g247-local
+  pullPolicy: Never
+
+environment: dev
+database:
+  existingSecret: sagat-runtime-db
+  maxConnections: 8
+  serverMaxConnections: 100
+  statementTimeoutMs: 5000
+
+oidc:
+  issuer: http://dev-idp:9100/
+  audience: sagat-g247
+  jwksUri: http://dev-idp:9100/.well-known/jwks.json
+  tenantClaim: tenant
+  allowInsecureJwksHttp: true
+
+controlPlane:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 384Mi}
+  podDisruptionBudget: {minAvailable: 0}
+  studio: false
+
+engine:
+  replicas: 1
+  schedulerConcurrency: 4
+  schedulerBatch: 200
+  resources:
+    requests: {cpu: 150m, memory: 192Mi}
+    limits: {memory: 512Mi}
+  podDisruptionBudget: {minAvailable: 0}
+
+workerPoolAutoscaling:
+  prometheusAddress: http://prometheus.sagat-g247.svc:9090
+metrics:
+  selector: namespace="sagat-g247"
+
+workerPools:
+  - name: g247
+    language: python
+    image: sagat/g247-worker:local
+    pullPolicy: Never
+    activities: [g247.work]
+    args: [/opt/sagat/worker.py]
+    env:
+      - {name: SAGAT_GRPC, value: "http://sagat-engine:9000"}
+      - {name: SAGAT_NAMESPACE, value: payments}
+      - name: SAGAT_TOKEN
+        valueFrom: {secretKeyRef: {name: g247-token, key: token}}
+      - {name: G247_WORK_SECONDS, value: "2.5"}
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 160Mi}
+    autoscaling:
+      enabled: true
+      minReplicaCount: 1
+      maxReplicaCount: 3
+      pollingInterval: 2
+      cooldownPeriod: 10
+      readyPerReplica: 2
+      lagThresholdSeconds: 1
+
+networkPolicy:
+  enabled: true
+  metricsFrom:
+    - podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+  apiFrom:
+    - podSelector: {matchLabels: {app.kubernetes.io/component: validator}}
+  workersFrom:
+    - podSelector: {matchLabels: {app.kubernetes.io/component: worker-g247}}
+  egress:
+    dnsTo:
+      - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+        podSelector: {matchLabels: {k8s-app: kube-dns}}
+    postgres:
+      port: 5432
+      to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgresql}}
+    oidc:
+      port: 9100
+      to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: identity-provider}}
+    nats: {port: 4222, to: []}
+    controlPlaneExtra: []
+    engineExtra: []
+
+topologySpread: {enabled: false}

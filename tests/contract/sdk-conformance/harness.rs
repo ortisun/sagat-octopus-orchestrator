@@ -12,11 +12,14 @@ mod normalize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use reqwest::Method;
+use sagat_application::blobs::BlobLimits;
 use sagat_application::worker::WorkerSettings;
 use sagat_domain::identity::Role;
+use sagat_infra_blobstore::BlobStoreConfig;
 use serde_json::{Map, Value, json};
 use tokio::process::Command;
 
@@ -105,6 +108,100 @@ async fn script(
     ))
 }
 
+fn process_tree_rss_kib(root: u32) -> u64 {
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,rss="])
+        .output()
+    else {
+        return 0;
+    };
+    let rows: Vec<(u32, u32, u64)> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+            ))
+        })
+        .collect();
+    let mut tree = std::collections::BTreeSet::from([root]);
+    loop {
+        let before = tree.len();
+        for (pid, parent, _) in &rows {
+            if tree.contains(parent) {
+                tree.insert(*pid);
+            }
+        }
+        if tree.len() == before {
+            break;
+        }
+    }
+    rows.iter()
+        .filter(|(pid, _, _)| tree.contains(pid))
+        .map(|(_, _, rss)| *rss)
+        .sum()
+}
+
+/// Runs one benchmark subject and samples the resident set of the runner process tree. The runner
+/// scripts `exec` their language runtime, while the descendant walk also covers runtime helpers.
+async fn measured_script(
+    dir: &Path,
+    name: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(String, String, u64), String> {
+    let path = dir.join(name);
+    if !path.exists() {
+        return Err(format!("{} does not exist", path.display()));
+    }
+    let child = Command::new("bash")
+        .arg(&path)
+        .args(args)
+        .current_dir(dir)
+        .env("TZ", "Asia/Kolkata")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("cannot run {}: {e}", path.display()))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| format!("{} has no process id", path.display()))?;
+    let sampling = Arc::new(AtomicBool::new(true));
+    let peak = Arc::new(AtomicU64::new(0));
+    let sampling_task = {
+        let sampling = Arc::clone(&sampling);
+        let peak = Arc::clone(&peak);
+        tokio::spawn(async move {
+            while sampling.load(Ordering::Relaxed) {
+                peak.fetch_max(process_tree_rss_kib(pid), Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    };
+    let waited = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    sampling.store(false, Ordering::Relaxed);
+    let _ = sampling_task.await;
+    let output = waited
+        .map_err(|_| format!("{} {args:?} took longer than {timeout:?}", path.display()))?
+        .map_err(|e| format!("{e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} {args:?} exited with {}:\n{}",
+            path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        peak.load(Ordering::Relaxed),
+    ))
+}
+
 fn sorted_for_golden(value: &Value) -> Value {
     serde_json::from_str(&canonical(value)).expect("json")
 }
@@ -141,6 +238,32 @@ struct Run {
     unbound_token: String,
     /// The control endpoint, which holds the platform until it is stopped.
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Both server processes use this directory, so it must outlive them.
+    _blob_dir: TempBlobDir,
+}
+
+struct TempBlobDir(PathBuf);
+
+impl TempBlobDir {
+    fn create() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "sagat-sdk-conformance-blobs-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).expect("create shared blob directory");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempBlobDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 impl Run {
@@ -169,11 +292,21 @@ fn token(platform: &Platform, subject: &str, tenant: &str) -> String {
 
 async fn boot(scenario: &Value) -> Run {
     let lease = scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30);
+    let blob_dir = TempBlobDir::create();
     let platform = platform_with(Options {
         worker: WorkerSettings {
             lease_ttl: Duration::from_secs(lease),
             ..WorkerSettings::default()
         },
+        blobs: Some(BlobLimits {
+            max_bytes: 4 * 1024 * 1024,
+            max_pending: 16,
+            upload_ttl: Duration::from_secs(24 * 3600),
+            abandoned_after: Duration::from_secs(3600),
+        }),
+        blob_store: Some(BlobStoreConfig::Fs {
+            root: blob_dir.path().to_owned(),
+        }),
         ..Options::default()
     })
     .await;
@@ -188,6 +321,7 @@ async fn boot(scenario: &Value) -> Run {
     // (also the events that release a wait) are its loops, as in production.
     let ring = format!("k1:{}", platform.api.key_k1);
     let lease_secs = lease.to_string();
+    let blob_root = blob_dir.path().to_string_lossy().into_owned();
     let engine = RunningEngine::start(engine_env(
         &platform.api.db,
         &platform.api.idp,
@@ -196,6 +330,8 @@ async fn boot(scenario: &Value) -> Run {
             ("SAGAT_LEASE_TTL_SECS", lease_secs.as_str()),
             ("SAGAT_EVENT_POLL_MS", "50"),
             ("SAGAT_DELIVERY_POLL_MS", "50"),
+            ("SAGAT_BLOB_PROVIDER", "fs"),
+            ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
         ],
     ))
     .await;
@@ -210,6 +346,7 @@ async fn boot(scenario: &Value) -> Run {
         platform,
         engine,
         tasks: vec![serving],
+        _blob_dir: blob_dir,
     }
 }
 
@@ -292,6 +429,143 @@ async fn server_state(run: &Run) -> Result<Value, String> {
         runs.push(json!({"runId": id, "status": item["status"], "paused": item["paused"], "nodes": nodes}));
     }
     Ok(Value::Array(runs))
+}
+
+/// Durable evidence for the blob scenario. This is read independently of the SDK result so blessing
+/// cannot turn a failed transfer, a wrong digest or an accidentally auto-promoted JSON object into
+/// the expected contract.
+async fn blob_evidence(run: &Run) -> Result<Value, String> {
+    let stored: Vec<(String, i64, String, String)> = sqlx::query_as(
+        "SELECT state, size_bytes, encode(sha256, 'hex'), content_type \
+         FROM blobs ORDER BY encode(sha256, 'hex')",
+    )
+    .fetch_all(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading blob evidence: {e}"))?;
+    let stored: Vec<Value> = stored
+        .into_iter()
+        .map(|(state, size, sha256, content_type)| {
+            json!({"state": state, "size": size, "sha256": sha256, "contentType": content_type})
+        })
+        .collect();
+    let inline: Vec<u8> = sqlx::query_scalar(
+        "SELECT p.content FROM steps s \
+         JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest \
+         WHERE s.node='inline'",
+    )
+    .fetch_one(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading inline blob-shaped output: {e}"))?;
+    let inline: Value = serde_json::from_slice(&inline)
+        .map_err(|e| format!("inline blob-shaped output is not JSON: {e}"))?;
+    Ok(json!({"stored": stored, "inlineOutput": inline}))
+}
+
+/// Independent durable evidence that the HTTP upload was claimed by the run and that the worker
+/// verified the whole lease-bound stream before completing the activity.
+async fn run_input_blob_evidence(run: &Run) -> Result<Value, String> {
+    let (state, size, sha256, content_type, claimed): (String, i64, String, String, bool) =
+        sqlx::query_as(
+            "SELECT state, size_bytes, encode(sha256, 'hex'), content_type, run_id IS NOT NULL \
+             FROM blobs WHERE purpose='RUN_INPUT'",
+        )
+        .fetch_one(&run.platform.api.db.pool)
+        .await
+        .map_err(|e| format!("reading run-input blob evidence: {e}"))?;
+    let output: Vec<u8> = sqlx::query_scalar(
+        "SELECT p.content FROM steps s \
+         JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest \
+         WHERE s.node='input'",
+    )
+    .fetch_one(&run.platform.api.db.pool)
+    .await
+    .map_err(|e| format!("reading run-input activity output: {e}"))?;
+    let output: Value = serde_json::from_slice(&output)
+        .map_err(|e| format!("run-input activity output is not JSON: {e}"))?;
+    Ok(json!({
+        "stored": {"state": state, "size": size, "sha256": sha256,
+                   "contentType": content_type, "claimed": claimed},
+        "verifiedOutput": output,
+    }))
+}
+
+fn validate_blob_result(doc: &Value) -> Result<(), String> {
+    for id in ["round-trip-done", "output-done", "inline-done"] {
+        let status = doc["observations"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["id"] == id))
+            .and_then(|item| item["result"]["status"].as_str());
+        if status != Some("SUCCEEDED") {
+            return Err(format!("{id} must finish SUCCEEDED, got {status:?}"));
+        }
+    }
+    let expected = [
+        (
+            "UPLOADED",
+            "29927e273accc68286005017f7fa6e4f27bddb4db3083ff8b8d4c3667905b7fa",
+        ),
+        (
+            "UPLOADED",
+            "29aa987eab9aee830fdd20595bcedef67e8674f4eeac6f017598e7ff8719da23",
+        ),
+        (
+            "COMMITTED",
+            "d9c30921ab850a0e81b8a21eabf78cb38e4ff43fdf46d2e023275a064ed1a7f9",
+        ),
+    ];
+    let rows = doc["blobEvidence"]["stored"]
+        .as_array()
+        .ok_or("blob evidence has no stored rows")?;
+    if rows.len() != expected.len() {
+        return Err(format!("expected three stored blobs, got {}", rows.len()));
+    }
+    for (row, (state, sha256)) in rows.iter().zip(expected) {
+        if row["state"] != state
+            || row["size"] != 300_000
+            || row["sha256"] != sha256
+            || row["contentType"] != "application/octet-stream"
+        {
+            return Err(format!("unexpected stored blob evidence: {row}"));
+        }
+    }
+    let inline = &doc["blobEvidence"]["inlineOutput"]["$blob"];
+    if !inline["id"].is_string()
+        || inline["size"] != 300_000
+        || inline["sha256"] != expected[1].1
+        || inline["contentType"] != "application/octet-stream"
+    {
+        return Err(format!(
+            "ordinary blob-shaped JSON was not preserved inline: {inline}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_run_input_blob_result(doc: &Value) -> Result<(), String> {
+    let status = doc["observations"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["id"] == "input-done"))
+        .and_then(|item| item["result"]["status"].as_str());
+    if status != Some("SUCCEEDED") {
+        return Err(format!("input-done must finish SUCCEEDED, got {status:?}"));
+    }
+    let expected_sha = "e327a74e9a14ae13e010f3614e258c50b6150b6845e691691f54768f8bb3b5ee";
+    let stored = &doc["runInputBlobEvidence"]["stored"];
+    if stored["state"] != "COMMITTED"
+        || stored["size"] != 300_000
+        || stored["sha256"] != expected_sha
+        || stored["contentType"] != "application/octet-stream"
+        || stored["claimed"] != true
+    {
+        return Err(format!("unexpected run-input blob evidence: {stored}"));
+    }
+    let output = &doc["runInputBlobEvidence"]["verifiedOutput"];
+    if output["inputBlobSize"] != 300_000 || output["inputBlobSha256"] != expected_sha {
+        return Err(format!(
+            "the worker did not verify the whole run input: {output}"
+        ));
+    }
+    Ok(())
 }
 
 /// The places in a runner's observations where an error repeats something it must not: a token of the run
@@ -638,8 +912,30 @@ async fn play(
                         Ok(state) => out["serverState"] = state,
                         Err(e) => failures.push(format!("{name}/{lang}: {e}")),
                     }
+                    if name == "blobs" {
+                        match blob_evidence(&run).await {
+                            Ok(evidence) => out["blobEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
+                    if name == "run-input-blobs" {
+                        match run_input_blob_evidence(&run).await {
+                            Ok(evidence) => out["runInputBlobEvidence"] = evidence,
+                            Err(e) => failures.push(format!("{name}/{lang}: {e}")),
+                        }
+                    }
                     let mut normalizer = Normalizer::new(&unique, given_traces(&scenario));
                     let doc = compared(&out, &mut normalizer);
+                    if name == "blobs"
+                        && let Err(e) = validate_blob_result(&doc)
+                    {
+                        failures.push(format!("{name}/{lang}: {e}"));
+                    }
+                    if name == "run-input-blobs"
+                        && let Err(e) = validate_run_input_blob_result(&doc)
+                    {
+                        failures.push(format!("{name}/{lang}: {e}"));
+                    }
                     std::fs::write(
                         dir.join(format!("{lang}.{pid}.normalized.json")),
                         serde_json::to_vec_pretty(&doc).expect("json"),
@@ -669,13 +965,17 @@ async fn play(
                 ));
             }
         }
-        if bless {
+        if bless && failures.is_empty() {
             std::fs::write(
                 &expected_path,
                 serde_json::to_vec_pretty(&first).expect("json"),
             )
             .expect("bless");
             println!("blessed {} from {first_lang}", expected_path.display());
+        } else if bless {
+            failures.push(format!(
+                "{name}: refusing to bless a scenario with failed contract assertions"
+            ));
         } else {
             match std::fs::read(&expected_path)
                 .ok()
@@ -983,6 +1283,18 @@ pub struct Measured {
     pub refused: std::collections::BTreeMap<String, u64>,
     /// The raw output of the runner.
     pub out: Value,
+    /// Server-side task claim attempts made while this runner was active.
+    pub stream_claim_attempts: f64,
+    /// Persisted ready-to-lease delay (not network delivery latency), milliseconds.
+    pub ready_to_lease_ms: Vec<f64>,
+    /// Peak concurrent durable leases from journal intervals in a successful workload.
+    pub peak_leases: i64,
+    /// Durable ready event to public handler entry, using the runner's wall-clock timestamp.
+    pub delivery_latency_ms: Vec<f64>,
+    /// Peak handlers concurrently executing inside the SDK host.
+    pub peak_local_inflight: u64,
+    /// Peak resident set sampled for the runner process and its descendants, in KiB.
+    pub peak_rss_kib: u64,
 }
 
 /// The `grpc_requests_total` counters of the engine, by (method, code).
@@ -1008,6 +1320,52 @@ async fn grpc_counters(run: &Run) -> std::collections::BTreeMap<(String, String)
         counters.insert((label("method"), label("code")), value as u64);
     }
     counters
+}
+
+fn prometheus_counter(text: &str, metric: &str) -> f64 {
+    text.lines()
+        .filter(|line| {
+            line.starts_with(&format!("{metric}{{")) || line.starts_with(&format!("{metric} "))
+        })
+        .filter_map(|line| line.split_whitespace().last()?.parse::<f64>().ok())
+        .sum()
+}
+
+fn prometheus_counter_delta(before: &str, after: &str, metric: &str) -> f64 {
+    prometheus_counter(after, metric) - prometheus_counter(before, metric)
+}
+
+#[test]
+fn a_measurement_subtracts_process_global_stream_claim_history() {
+    let previous_row_after = r#"
+worker_task_stream_claims_total{outcome="empty"} 100
+worker_task_stream_claims_total{outcome="ready"} 20
+"#;
+    let before = r#"
+worker_task_stream_claims_total{outcome="empty"} 102
+worker_task_stream_claims_total{outcome="ready"} 21
+worker_task_stream_claims_total_created{outcome="ready"} 900
+"#;
+    let after = r#"
+worker_task_stream_claims_total{outcome="empty"} 109
+worker_task_stream_claims_total{outcome="ready"} 26
+worker_task_stream_claims_total_created{outcome="ready"} 901
+"#;
+
+    assert_eq!(
+        prometheus_counter_delta(
+            previous_row_after,
+            before,
+            "worker_task_stream_claims_total"
+        ),
+        3.0,
+        "late cleanup before this row remains in the cumulative source"
+    );
+    assert_eq!(
+        prometheus_counter_delta(before, after, "worker_task_stream_claims_total"),
+        12.0,
+        "this row reports only increments after its own before snapshot"
+    );
 }
 
 /// Plays a scenario file (any path, not only the suite's) in one language on a platform of its own and
@@ -1054,8 +1412,11 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&out_path);
     let before = grpc_counters(&run).await;
+    // `ONE_AT_A_TIME` is held until the preceding platform has stopped. Its late cleanup is therefore
+    // already part of this process-global baseline, and cannot be charged to the new runner.
+    let metrics_before = run.engine.body("/metrics").await;
     let started = std::time::Instant::now();
-    let result = script(
+    let result = measured_script(
         &root,
         "run.sh",
         &[
@@ -1069,12 +1430,82 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
     .await;
     let wall = started.elapsed();
     let after = grpc_counters(&run).await;
+    // Deliberately close the window when the runner exits. Claims made only while stopping this row's
+    // platform are outside client-active measurement and become part of the next row's baseline.
+    let metrics = run.engine.body("/metrics").await;
+    let stream_claim_attempts =
+        prometheus_counter_delta(&metrics_before, &metrics, "worker_task_stream_claims_total");
+    let database_measurements = async {
+        let ready_to_lease_ms: Vec<f64> = sqlx::query_scalar(
+            "SELECT (extract(epoch FROM (l.occurred_at - r.occurred_at))*1000)::float8 \
+             FROM run_events l JOIN LATERAL (SELECT occurred_at FROM run_events \
+             WHERE run_id=l.run_id AND node=l.node AND seq<l.seq \
+             AND event_type IN ('step.released','step.retry_due') ORDER BY seq DESC LIMIT 1) r ON true \
+             WHERE l.event_type='step.leased' ORDER BY l.occurred_at",
+        )
+        .fetch_all(&run.platform.api.db.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let peak_leases: i64 = sqlx::query_scalar(
+            "SELECT coalesce(max(active),0)::bigint FROM ( \
+             SELECT sum(delta) OVER (ORDER BY at,delta) active FROM ( \
+             SELECT occurred_at at, 1 delta FROM run_events WHERE event_type='step.leased' UNION ALL \
+             SELECT c.occurred_at at, -1 delta FROM run_events c \
+             WHERE c.event_type IN ('step.completed','step.failed','step.lease_expired') \
+             AND EXISTS (SELECT 1 FROM run_events l WHERE l.run_id=c.run_id AND l.node=c.node \
+             AND l.seq<c.seq AND l.event_type='step.leased')) changes) counts",
+        )
+        .fetch_one(&run.platform.api.db.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let ready_by_step: std::collections::BTreeMap<(String, String), i64> =
+            sqlx::query_as::<_, (String, String, i64)>(
+            "SELECT l.run_id::text, l.node, floor(extract(epoch FROM r.occurred_at)*1000)::bigint \
+             FROM run_events l JOIN LATERAL (SELECT occurred_at FROM run_events \
+             WHERE run_id=l.run_id AND node=l.node AND seq<l.seq \
+             AND event_type IN ('step.released','step.retry_due') ORDER BY seq DESC LIMIT 1) r ON true \
+             WHERE l.event_type='step.leased'",
+            )
+            .fetch_all(&run.platform.api.db.pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(run_id, node, ready_at)| ((run_id, node), ready_at))
+            .collect();
+        Ok::<_, String>((ready_to_lease_ms, peak_leases, ready_by_step))
+    }
+    .await;
     run.stop().await;
-    result?;
+    let (_, _, peak_rss_kib) = result?;
+    let (ready_to_lease_ms, peak_leases, ready_by_step) = database_measurements?;
     let out: Value = std::fs::read(&out_path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .ok_or_else(|| format!("{language} wrote no readable {}", out_path.display()))?;
+    let mut delivery_latency_ms = Vec::new();
+    let mut peak_local_inflight = 0;
+    for measurement in out["workerMeasurements"]
+        .as_object()
+        .into_iter()
+        .flat_map(|workers| workers.values())
+    {
+        peak_local_inflight =
+            peak_local_inflight.max(measurement["peakInflight"].as_u64().unwrap_or_default());
+        for delivery in measurement["deliveries"].as_array().into_iter().flatten() {
+            let Some(run_id) = delivery["runId"].as_str() else {
+                continue;
+            };
+            let Some(node) = delivery["node"].as_str() else {
+                continue;
+            };
+            let Some(taken_at) = delivery["takenAtUnixMs"].as_i64() else {
+                continue;
+            };
+            if let Some(ready_at) = ready_by_step.get(&(run_id.to_owned(), node.to_owned())) {
+                delivery_latency_ms.push((taken_at - ready_at) as f64);
+            }
+        }
+    }
     let mut calls = std::collections::BTreeMap::new();
     let mut refused = std::collections::BTreeMap::new();
     for ((method, code), n) in &after {
@@ -1093,6 +1524,12 @@ pub async fn measure(path: &Path, language: &'static str) -> Result<Measured, St
         calls,
         refused,
         out,
+        stream_claim_attempts,
+        ready_to_lease_ms,
+        peak_leases,
+        delivery_latency_ms,
+        peak_local_inflight,
+        peak_rss_kib,
     })
 }
 

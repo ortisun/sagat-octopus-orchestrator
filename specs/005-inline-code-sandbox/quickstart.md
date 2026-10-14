@@ -11,6 +11,19 @@ Everything below runs against the real stack. Nothing is simulated except time, 
   docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
   docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
   ```
+- Build Go for the host's native Linux architecture (`arm64` or `amd64`) and the Java 17 images.
+  Do not use an emulated Go execution as native capability evidence:
+
+  ```sh
+  docker build --platform linux/$TARGETARCH --build-arg TARGETARCH=$TARGETARCH \
+    -f runners/go/Dockerfile.builder -t sagat/go-builder:1.25.3 .
+  docker build --platform linux/$TARGETARCH --build-arg TARGETARCH=$TARGETARCH \
+    -f runners/go/Dockerfile.runtime -t sagat/go-runtime:1.25.3 .
+  docker build --platform linux/$TARGETARCH --build-arg TARGETARCH=$TARGETARCH \
+    -f runners/java/Dockerfile.builder -t sagat/java-builder:17.0.16 .
+  docker build --platform linux/$TARGETARCH --build-arg TARGETARCH=$TARGETARCH \
+    -f runners/java/Dockerfile.runtime -t sagat/java-runtime:17.0.16 .
+  ```
 - `docker info` must work for the user running the tests and the runner.
 
 ## The automated evidence
@@ -42,11 +55,35 @@ SAGAT_PERF_REPORT=tests/performance/reports/inline-code-sandbox.md \
 SAGAT_CSHARP_PERF_REPORT=tests/performance/reports/inline-code-sandbox-csharp.md \
   cargo test -p sagat-tests --test perf_inline_code_sandbox --release \
   csharp::csharp_build_and_execution_benchmark -- --ignored --nocapture
+
+# Native Go/Java production-path capability, mediation, isolation, timeout and cleanup
+cargo test -p sagat-infra-sandbox production_path -- --ignored --nocapture
+cargo test -p sagat-infra-sandbox a_go_cpu_burn_is_stopped_by_the_production_quota \
+  -- --ignored --nocapture
+
+# Focused native Go/Java measurements (six isolated build+run samples per language)
+cargo test -p sagat-infra-sandbox go_and_java_native_container_measurements \
+  -- --ignored --nocapture --test-threads=1
 ```
 
 The checked-in results are the [feature baseline](../../tests/performance/reports/inline-code-sandbox.md)
 and the [focused C# measurements](../../tests/performance/reports/inline-code-sandbox-csharp.md).
-Both reports describe local measurements and their environment rather than production SLOs.
+The [focused native Go/Java measurements](../../tests/performance/reports/inline-code-sandbox-go-java.md)
+record ARM64 separately and leave AMD64 gated on its native CI proof. The reports describe local
+measurements and their environment rather than production SLOs.
+
+### What the Go/Java ARM64 completion run said (2026-10-12, this machine, Colima/Docker 29)
+
+| Suite | Result |
+|---|---|
+| `sagat-infra-sandbox` v3/schema/protocol units | 12 schema + 22 sandbox passed (5 intentional native-container/benchmark tests ignored by default) |
+| Native production-path tests | Go startup probe, Go and Java mediated host calls, redaction, direct-network denial, target mismatch and cleanup passed |
+| Native Go quota test | one-second CPU burn stopped as `Timeout`; cleanup passed |
+| Existing `integration_inline_code_sandbox_containers` | 30/30 TS/Python/C# compatibility and isolation cases passed serially |
+| Focused benchmark | 6/6 Go and 6/6 Java build/runs passed; zero owned containers remained |
+
+This is Linux ARM64 evidence only. Linux AMD64 is not enabled by it; the native AMD64 CI matrix must
+pass the same builder, v3 validator, startup probe and sealed-memory runtime before advertisement.
 
 ### What the C# completion run said (2026-10-11, this machine, Colima/Docker 29, PostgreSQL 16)
 
@@ -86,8 +123,14 @@ Two independent read-only reviews (security, correctness) of the whole feature p
    ```sh
    SAGAT_ENV=dev SAGAT_RUNNER_API_URL=http://127.0.0.1:18080/v1 SAGAT_RUNNER_GRPC_URL=http://127.0.0.1:19000 \
    SAGAT_RUNNER_TOKEN_FILE=./runner.token SAGAT_RUNNER_NAMESPACES=payments=$NS \
+   SAGAT_RUNNER_GO_TARGET=linux-arm64 SAGAT_RUNNER_GO_REQUIRED=true \
    cargo run -p sagat-sandbox-runner --bin sandbox-runner
    ```
+
+   Use `linux-amd64` only in a deployment whose native AMD64 CI proof passed. The runner compiles and
+   executes its bundled Go probe before advertising Go. If Go is optional, omit
+   `SAGAT_RUNNER_GO_REQUIRED`; probe failure then removes Go from that runner's capabilities. One
+   Go-enabled runner pool must use one target until worker claims carry a target.
 
 4. Write, try and publish (US01, US02):
 
@@ -120,7 +163,10 @@ Two independent read-only reviews (security, correctness) of the whole feature p
 
 ## Gates
 
-- TS, Python and C# go from the editor's API to execution, with the limits, the network and the secrets held. C# uses an isolated Roslyn build container, a separate runtime container and an offline exact NuGet catalog (`integration_inline_code_sandbox_containers::csharp`, US03).
+- TS, Python, C#, Go and Java go from their dedicated builders to isolated execution with the limits, network and secrets held. C# uses an isolated Roslyn build container, a separate runtime container and an offline exact NuGet catalog (`integration_inline_code_sandbox_containers::csharp`, US03). Go uses a signed native v3 artifact and a four-seal memfd loader; Java uses validated Java 17 class files and a parent-first trusted host (ADR-0024, US05/US06).
+- A production script has no direct network. When its signed policy permits namespace egress, the runner reloads the stored namespace policy before every mediated fetch and refuses the fetch if the policy read or durable category-only incident acknowledgement fails. `e2e_security_multitenancy::us03` and `fault_security_multitenancy::egress` cover allowed/denied calls, revocation during one run, duplicates, timeout, runner loss and tenant scope.
 - Reproducible, annotated errors: every failure has a stable `SCRIPT_*` code, the envelope's `traceId`, and a reason that never repeats the script's words or a secret.
 - No confirmed transition lost: a build and a test run are leased and fenced; a script step is the engine's own lease; a late report from a runner that lost its lease is refused.
 - `[x]` in `tasks.md` only for what a test above proves.
+
+Native AMD64 proof subsequently passed for commit `4aeb618`: [CI startup probe and six-sample Go/Java execution](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38200759888/job/114653433277). Configure the deployment target explicitly even when both architecture jobs pass; a single eligible pool still cannot mix targets.

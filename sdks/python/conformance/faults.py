@@ -79,7 +79,7 @@ class FaultPlan:
         return FaultyTransport(self, api_path, inner or httpx.AsyncHTTPTransport())
 
     def interceptors(self) -> list[grpc.aio.ClientInterceptor]:
-        return [FaultyChannel(self)] if self.has_grpc() else []
+        return [FaultyChannel(self), FaultyStreamChannel(self)] if self.has_grpc() else []
 
 
 class FaultyTransport(httpx.AsyncBaseTransport):
@@ -157,3 +157,57 @@ class FaultyChannel(grpc.aio.UnaryUnaryClientInterceptor):
         call = await continuation(client_call_details, request)
         await call
         raise self._error(grpc.StatusCode.UNAVAILABLE)
+
+
+class FaultyStreamChannel(grpc.aio.UnaryStreamClientInterceptor):
+    """Streaming counterpart kept separate because grpc.aio classifies one interceptor by one RPC shape."""
+
+    def __init__(self, plan: FaultPlan) -> None:
+        self._plan = plan
+
+    async def intercept_unary_stream(
+        self,
+        continuation: Callable[[grpc.aio.ClientCallDetails, Any], Awaitable[Any]],
+        client_call_details: grpc.aio.ClientCallDetails,
+        request: Any,
+    ) -> Any:
+        method = client_call_details.method
+        name = (method.decode() if isinstance(method, bytes) else method).rsplit("/", 1)[-1]
+        fault = self._plan.next("grpc", name)
+        if fault is None:
+            return await continuation(client_call_details, request)
+
+        if fault.action in ("failBefore", "status"):
+            code = grpc.StatusCode.UNAVAILABLE
+            if fault.action == "status":
+                code = next(
+                    (item for item in grpc.StatusCode if item.name == (fault.code or "UNAVAILABLE")),
+                    grpc.StatusCode.UNAVAILABLE,
+                )
+            error = FaultyChannel._error(code, fault.reason, fault.retry_after_ms)
+
+            async def rejected() -> Any:
+                raise error
+                yield  # pragma: no cover - makes this the response async iterator
+
+            return rejected()
+
+        call = await continuation(client_call_details, request)
+        if fault.action == "dropStreamAfterFirst":
+
+            async def drop_after_first() -> Any:
+                async for response in call:
+                    yield response
+                    if len(response.tasks) > 0:
+                        call.cancel()
+                        raise FaultyChannel._error(grpc.StatusCode.UNAVAILABLE)
+
+            return drop_after_first()
+
+        async def drop_response() -> Any:
+            async for _response in call:
+                pass
+            raise FaultyChannel._error(grpc.StatusCode.UNAVAILABLE)
+            yield  # pragma: no cover
+
+        return drop_response()

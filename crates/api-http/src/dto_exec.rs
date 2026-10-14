@@ -220,11 +220,26 @@ pub struct StartRunBody {
     pub workflow_id: String,
     #[serde(default)]
     pub version_id: Option<String>,
-    pub input: Value,
+    #[serde(default, deserialize_with = "present_json")]
+    pub input: Option<Value>,
+    #[serde(default, deserialize_with = "present_blob_ref")]
+    pub input_blob_ref: Option<String>,
     #[serde(default)]
     pub correlation_id: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub deadline: Option<OffsetDateTime>,
+}
+
+fn present_json<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
+fn present_blob_ref<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

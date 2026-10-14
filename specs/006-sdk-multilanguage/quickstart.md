@@ -100,3 +100,21 @@ toolchain younger than two weeks) and G136 (Java has no `tls.serverName`; unpinn
 Not run: Linux, Windows or another architecture; the SDKs against a TLS-terminating proxy or a real cloud; the
 Python conformance suite on 3.10–3.13 with the final code (unit tests only); `net8.0` and Java 17/21 execution
 beyond what each README states; publishing to any registry; streaming of tasks (not built).
+
+Licence decision after this historical run: the owner selected MIT on 2026-10-11 (G122 resolved as a decision).
+The root licence/package metadata and publication checks are current packaging work; registry publication remains
+unverified (G123).
+
+
+## Protocol 1.4 completion evidence — 2026-10-12
+
+The historical counts above describe their original revision. Finite-credit `StreamTasks` is now
+implemented under ADR-0029. All 19 common scenarios pass in all five languages (95 executions),
+as do six SDK E2E and nine fault tests. Final SDK suites pass: TypeScript 110, Python 242 (plus
+Ruff/mypy), .NET 419, Java 215, and the complete Go race suite. The named real `stream_telemetry`
+contract proves bounded labels, stream gauge cleanup, trace propagation, and no payload/identity/token
+canaries in captured metrics or TRACE logs. The companion held-cap contract proves heartbeat,
+completion and another tenant’s streamed work progress while further same-subject streams are refused.
+Two engine-runtime restart/reclaim tests pass; they are
+not OS-process crash evidence. The 30-row comparative report and final five-consumer package checks are recorded in
+T006-042; the report explicitly preserves clock and claim-attribution measurement limitations. Registry publication and genuine human acceptance remain external gates.

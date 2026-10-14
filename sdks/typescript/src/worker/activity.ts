@@ -2,6 +2,24 @@ import { SagatError } from '../errors.js';
 
 export type TaskKind = 'FORWARD' | 'COMPENSATION' | 'RECONCILIATION';
 
+export interface BlobDescriptor {
+  readonly id: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly contentType: string;
+}
+
+export interface WriteBlobOptions {
+  contentType?: string;
+  expectedSize?: number;
+  expectedSha256?: string;
+}
+
+/** Return this explicit wrapper from an activity to complete with a blob reference. */
+export class BlobOutput {
+  constructor(readonly descriptor: BlobDescriptor) {}
+}
+
 /**
  * How an activity fails on purpose. `code` is a stable machine code (`[A-Z0-9_]{1,64}`); `message` is
  * recorded with the step, so it must not carry a payload or a secret.
@@ -101,6 +119,10 @@ export interface ActivityContext {
   readonly log: ActivityLogger;
   /** The secrets the step declares; resolved once per attempt, on first use. Never log them. */
   secrets(): Promise<Secrets>;
+  /** Streams bytes once, hashes them locally, and returns only a server descriptor that matches. */
+  writeBlob(source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>, options?: WriteBlobOptions): Promise<BlobDescriptor>;
+  /** A stream is verified only if it reaches clean EOF; early cancellation makes no integrity claim. */
+  readBlob(descriptor: BlobDescriptor): AsyncIterable<Buffer>;
 }
 
 export type ActivityHandler<I, O> = (input: I, context: ActivityContext) => O | Promise<O>;

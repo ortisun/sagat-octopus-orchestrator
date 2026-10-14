@@ -1,0 +1,45 @@
+{
+  "name": "blobs",
+  "description": "FR-002-008/FR-006-006: every SDK uses protocol 1.3 one-pass streaming for a body larger than one chunk, verifies a streamed read through clean EOF, and completes a step through the explicit native BlobOutput wrapper.",
+  "workflows": {
+    "roundTrip": {
+      "name": "blob-round-trip",
+      "program": [
+        { "op": "step", "id": "round-trip", "activity": "blob.round-trip" }
+      ]
+    },
+    "output": {
+      "name": "blob-output",
+      "program": [
+        { "op": "step", "id": "output", "activity": "blob.output" }
+      ]
+    },
+    "inline": {
+      "name": "blob-inline-shape",
+      "program": [
+        { "op": "step", "id": "inline", "activity": "blob.inline" }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "blob-worker",
+      "maxInflight": 2,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "blob.round-trip": { "behavior": { "blobRoundTripBytes": 300000 } },
+        "blob.output": { "behavior": { "blobOutputBytes": 300000 } },
+        "blob.inline": { "behavior": { "blobInlineBytes": 300000 } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "round-trip", "op": "start", "workflow": "roundTrip", "input": { "case": "round-trip" } },
+    { "id": "round-trip-done", "op": "waitForCompletion", "run": "round-trip", "timeoutMs": 30000 },
+    { "id": "output", "op": "start", "workflow": "output", "input": { "case": "output" } },
+    { "id": "output-done", "op": "waitForCompletion", "run": "output", "timeoutMs": 30000 },
+    { "id": "events", "op": "events", "run": "output" },
+    { "id": "inline", "op": "start", "workflow": "inline", "input": { "case": "ordinary-json" } },
+    { "id": "inline-done", "op": "waitForCompletion", "run": "inline", "timeoutMs": 30000 }
+  ]
+}

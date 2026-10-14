@@ -12,12 +12,14 @@ import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.SagatSdk;
 import dev.sagatoctopusorchestrator.sdk.Text;
 import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
@@ -48,9 +50,11 @@ import java.util.regex.Pattern;
 public final class WorkerHost implements AutoCloseable {
     private static final int MAX_OUTPUT_BYTES = 256 * 1024;
     private static final int MAX_POLL = 64;
+    private static final int MAX_STREAM_INPUT_BYTES = 8 * 1024 * 1024;
     private static final int MAX_REPORT_ATTEMPTS = 5;
     private static final Pattern CODE = Pattern.compile("^[A-Z0-9_]{1,64}$");
     private static final Pattern VERSION = Pattern.compile("^1(?:\\.(\\d+))?$");
+    private static final Pattern BLOB_SHA256 = Pattern.compile("^[0-9a-f]{64}$");
 
     private enum Kind {
         ACTIVITY,
@@ -89,6 +93,8 @@ public final class WorkerHost implements AutoCloseable {
     private volatile String workerId = "";
     private volatile String session = "";
     private volatile String accepted = "";
+    private volatile boolean streamUnavailable;
+    private volatile WorkerRpc.TaskStream receive;
     private volatile Map<String, Registered> active = Map.of();
     private Thread loop;
     private ExecutorService tasks;
@@ -229,6 +235,10 @@ public final class WorkerHost implements AutoCloseable {
             channel = rpc;
         }
         wake();
+        WorkerRpc.TaskStream activeReceive = receive;
+        if (activeReceive != null) {
+            activeReceive.close();
+        }
         long end = System.nanoTime() + Math.max(0, timeout.toNanos());
         try {
             // The poll in progress ends and no other starts; what it leased is in flight from here on.
@@ -324,6 +334,10 @@ public final class WorkerHost implements AutoCloseable {
                 workerId = response.getWorkerId();
                 session = response.getSessionToken();
                 accepted = response.getAcceptedProtocolVersion();
+                streamUnavailable = false;
+                if (config.transport() == WorkerTransport.STREAM && minorOf(accepted) < 4) {
+                    throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "stream transport requires worker protocol 1.4");
+                }
                 Hooks.log(log, System.Logger.Level.INFO, "worker registered worker=" + config.workerName() + " protocol=" + accepted);
                 emit(new WorkerEvent.Registered(accepted));
                 return;
@@ -403,6 +417,7 @@ public final class WorkerHost implements AutoCloseable {
         // Polls in a row that were refused as UNAUTHENTICATED since the last one that was not (reset by a good poll).
         int refused = 0;
         while (!stopping) {
+            boolean meaningful = false;
             try {
                 int free = config.maxInflight() - inflight.size();
                 if (free <= 0) {
@@ -410,6 +425,60 @@ public final class WorkerHost implements AutoCloseable {
                     continue;
                 }
                 int asked = Math.min(free, MAX_POLL);
+                if (config.transport() == WorkerTransport.STREAM && minorOf(accepted) < 4) {
+                    throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "stream transport requires worker protocol 1.4");
+                }
+                if (minorOf(accepted) >= 4 && config.transport() != WorkerTransport.POLL && !streamUnavailable) {
+                    int delivered = 0;
+                    int inputBytes = 0;
+                    long hint = 0;
+                    try {
+                        try (WorkerRpc.TaskStream opened = rpc.streamTasks(Worker.PollTasksRequest.newBuilder()
+                                .setWorkerId(workerId).setSessionToken(session).setMaxTasks(asked).build())) {
+                            receive = opened;
+                            if (stopping) {
+                                return;
+                            }
+                            Iterator<Worker.PollTasksResponse> frames = opened.frames();
+                            while (frames.hasNext()) {
+                                Worker.PollTasksResponse frame = frames.next();
+                                if (frame.getTasksCount() == 0) { hint = frame.getRetryAfterMs(); continue; }
+                                int allowed = Math.min(asked - delivered, config.maxInflight() - inflight.size());
+                                boolean excess = frame.getTasksCount() > allowed;
+                                for (int i = 0; i < Math.min(frame.getTasksCount(), Math.max(0, allowed)); i++) {
+                                    Worker.TaskLease lease = frame.getTasks(i);
+                                    int size = lease.getInputJson().getBytes(StandardCharsets.UTF_8).length;
+                                    if (size > MAX_STREAM_INPUT_BYTES - inputBytes) {
+                                        throw SagatException.invalid("a task stream exceeded its input budget");
+                                    }
+                                    inputBytes += size;
+                                    dispatch(lease);
+                                    delivered++;
+                                    meaningful = true;
+                                }
+                                if (excess) {
+                                    throw SagatException.invalid("a task stream exceeded its receive credit");
+                                }
+                            }
+                        } finally {
+                            receive = null;
+                        }
+                    } catch (WorkerRpc.StreamTasksUnimplemented unsupported) {
+                        if (config.transport() == WorkerTransport.STREAM) {
+                            throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "StreamTasks is not implemented by the server");
+                        }
+                        streamUnavailable = true;
+                        backoff(100);
+                        continue;
+                    }
+                    failures = 0;
+                    refused = 0;
+                    if (delivered < asked) {
+                        long wait = Math.max(50, hint > 0 ? hint : 1000);
+                        idle(jitteredWait(wait, ThreadLocalRandom.current().nextDouble(), config.maxServerWait().toMillis()));
+                    }
+                    continue;
+                }
                 Worker.PollTasksResponse response = rpc.pollTasks(Worker.PollTasksRequest.newBuilder()
                         .setWorkerId(workerId)
                         .setSessionToken(session)
@@ -435,6 +504,10 @@ public final class WorkerHost implements AutoCloseable {
                 if (stopping) {
                     return;
                 }
+                if (meaningful) {
+                    failures = 0;
+                }
+                emit(new WorkerEvent.ReceiveFailed(error.code().name()));
                 // A token provider that failed is not a session that is gone: nothing reached the service. It is waited out
                 // like an outage (below), and the session is not registered again for it.
                 if (error.code() == ErrorCode.UNAUTHENTICATED && !error.isTokenProviderFailure()) {
@@ -485,7 +558,7 @@ public final class WorkerHost implements AutoCloseable {
             Hooks.log(log, System.Logger.Level.WARNING, "a task that is in flight was leased again, ignored task=" + lease.getTaskId());
             return;
         }
-        emit(new WorkerEvent.TaskTaken(lease.getTaskId(), lease.getActivityName(), lease.getAttempt()));
+        emit(new WorkerEvent.TaskTaken(lease.getTaskId(), lease.getActivityName(), lease.getAttempt(), lease.getTraceparent()));
         try {
             tasks.execute(() -> {
                 try {
@@ -621,12 +694,26 @@ public final class WorkerHost implements AutoCloseable {
             }
 
             String output;
+            BlobDescriptor blob = null;
             if (kind == TaskKind.RECONCILIATION && registered.kind() == Kind.RECONCILER) {
                 if (!(result instanceof Verdict verdict)) {
                     fail(channel, lease, state, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", false, started);
                     return;
                 }
                 output = Json.encode(verdict.toJson());
+            } else if (result instanceof BlobOutput blobOutput) {
+                if (minor < 3) {
+                    fail(channel, lease, state, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started);
+                    return;
+                }
+                try {
+                    validateBlob(blobOutput.descriptor());
+                } catch (SagatException invalid) {
+                    fail(channel, lease, state, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started);
+                    return;
+                }
+                blob = blobOutput.descriptor();
+                output = "";
             } else if (result == ActivityHandler.NO_RESULT) {
                 output = "";
             } else {
@@ -641,7 +728,7 @@ public final class WorkerHost implements AutoCloseable {
                 fail(channel, lease, state, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started);
                 return;
             }
-            complete(channel, lease, state, output, started);
+            complete(channel, lease, state, output, blob, started);
         } finally {
             beat.stop();
         }
@@ -772,6 +859,50 @@ public final class WorkerHost implements AutoCloseable {
             return secrets;
         }
 
+        @Override
+        public synchronized BlobDescriptor writeBlob(InputStream source, BlobWriteOptions options) {
+            if (dropped) {
+                throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the attempt is over");
+            }
+            if (minor < 3) {
+                throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "blob streaming requires worker protocol 1.3");
+            }
+            if (source == null || options == null || options.expectedSize() < 0 ||
+                    (!options.expectedSha256().isEmpty() && !BLOB_SHA256.matcher(options.expectedSha256()).matches())) {
+                throw SagatException.of(ErrorCode.VALIDATION_FAILED, "blob source or preconditions are malformed");
+            }
+            var header = Worker.WriteBlobHeader.newBuilder()
+                    .setTaskId(lease.getTaskId()).setRunId(lease.getRunId()).setStepId(lease.getStepId())
+                    .setAttempt(lease.getAttempt()).setGeneration(lease.getGeneration()).setLeaseToken(lease.getLeaseToken())
+                    .setContentType(options.contentType()).setExpectedSize(options.expectedSize())
+                    .setExpectedSha256(options.expectedSha256()).build();
+            var written = channel.writeBlob(header, source, lease.getTraceparent(), cancel);
+            var response = written.response();
+            var descriptor = new BlobDescriptor(response.getBlobId(), response.getSize(), response.getSha256(), response.getContentType());
+            validateBlob(descriptor);
+            if (descriptor.size() != written.size() || !descriptor.sha256().equals(written.sha256())) {
+                throw SagatException.of(ErrorCode.PROTOCOL, "the blob service descriptor does not match the uploaded bytes");
+            }
+            return descriptor;
+        }
+
+        @Override
+        public synchronized InputStream readBlob(BlobDescriptor descriptor) {
+            if (dropped) {
+                throw SagatException.of(ErrorCode.VALIDATION_FAILED, "the attempt is over");
+            }
+            if (minor < 3) {
+                throw SagatException.of(ErrorCode.UNSUPPORTED_PROTOCOL, "blob streaming requires worker protocol 1.3");
+            }
+            validateBlob(descriptor);
+            var request = Worker.ReadBlobRequest.newBuilder()
+                    .setTaskId(lease.getTaskId()).setRunId(lease.getRunId()).setStepId(lease.getStepId())
+                    .setAttempt(lease.getAttempt()).setGeneration(lease.getGeneration()).setLeaseToken(lease.getLeaseToken())
+                    .setBlobId(descriptor.id()).build();
+            var read = channel.readBlob(request, lease.getTraceparent());
+            return new BlobInputStream(read.parts(), descriptor, cancel, read::cancel);
+        }
+
         synchronized void dropSecrets() {
             dropped = true;
             if (secrets != null) {
@@ -800,6 +931,14 @@ public final class WorkerHost implements AutoCloseable {
             values.put(secret.getName(), secret.getValue().toByteArray());
         }
         return new Secrets(values);
+    }
+
+    private static void validateBlob(BlobDescriptor descriptor) {
+        if (descriptor == null || descriptor.id() == null || descriptor.id().isBlank() || descriptor.size() < 0 ||
+                descriptor.sha256() == null || !BLOB_SHA256.matcher(descriptor.sha256()).matches() ||
+                descriptor.contentType() == null || descriptor.contentType().isBlank()) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "the blob descriptor is malformed");
+        }
     }
 
     // ------------------------------------------------------------------------------------- heartbeat
@@ -926,7 +1065,7 @@ public final class WorkerHost implements AutoCloseable {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     }
 
-    private void complete(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, String output, long started) {
+    private void complete(WorkerRpc channel, Worker.TaskLease lease, LeaseState state, String output, BlobDescriptor blob, long started) {
         try {
             Worker.CompleteStepRequest request = Worker.CompleteStepRequest.newBuilder()
                     .setTaskId(lease.getTaskId())
@@ -937,6 +1076,8 @@ public final class WorkerHost implements AutoCloseable {
                     .setLeaseToken(lease.getLeaseToken())
                     .setIdempotencyKey("done-" + lease.getTaskId())
                     .setOutputJson(output)
+                    .setOutputBlobRef(blob == null ? "" : blob.id())
+                    .setOutputSha256(blob == null ? "" : blob.sha256())
                     .setTraceparent(lease.getTraceparent())
                     .build();
             Worker.StepCommandResponse answer = withRetries(channel, state, () -> channel.completeStep(request, lease.getTraceparent()));

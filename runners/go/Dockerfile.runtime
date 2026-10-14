@@ -1,0 +1,6 @@
+ARG TARGETARCH
+FROM --platform=linux/${TARGETARCH} python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+COPY runners/go/runtime.py /opt/sagat/runtime.py
+ENV PYTHONDONTWRITEBYTECODE=1
+USER 65534:65534
+ENTRYPOINT ["python", "-I", "-B", "/opt/sagat/runtime.py"]

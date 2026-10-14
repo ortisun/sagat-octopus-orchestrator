@@ -77,7 +77,7 @@ Run on macOS 26 (arm64), Docker Desktop, Node 26.8.1, Chromium 153, on the commi
 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `python3 scripts/check-architecture.py`, `cargo audit --deny warnings` | clean (19 crates, no cycle) |
 | `cargo test --workspace --locked --no-fail-fast` | 1 426 passed, 0 failed, 24 ignored (the ignored ones need five toolchains or a browser and run in their own jobs) |
 | of them, for this feature | `e2e_workflow_studio` 25, `fault_workflow_studio` 5, `contract_rest_workflow_studio` 1, `definition_service` 39, `infra-ir` diff 18, `api-http` studio 11, the server's faults of 001 37 (the guard against a client that stops reading), `control-plane` config 29, the chaos test of the domain with the invariant that every changed step is reported |
-| frontend: `npm run lint`, `typecheck` (app and journeys), `npm test`, `npm run build`, `npm run check:api`, `npm audit --audit-level=moderate` | clean; 849 tests in 62 files; two **low** advisories remain in production dependencies (DOMPurify inside Monaco, G152) |
+| frontend: `npm run lint`, `typecheck` (app and journeys), `npm test`, `npm run build`, `npm run check:api`, `npm audit --audit-level=moderate` | clean; the original run had 849 tests in 62 files. The two low DOMPurify advisories recorded then are now fixed by the 3.4.16 override (G152); the current Studio gate passes 1,105 tests and `npm audit --audit-level=low` reports zero vulnerabilities. |
 | the journeys, `cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys` | 16 passed, three consecutive runs (35.5, 34.8 and 35.3 s of Playwright); the 2 benchmark journeys are skipped unless `STUDIO_PERF=1` |
 | the benchmark (`tests/performance/reports/workflow-studio.md`) | six hypotheses, all held; one machine, one browser |
 | the reviews | two rounds of an independent security and an independent correctness review (read-only agents); round one found 3 major and 3 minor findings of security and 2 major and 5 minor of correctness, round two 2 major and 3 minor of security and 4 minor of correctness; each confirmed finding was reproduced by a test that failed first (or by a measurement: 6.8 s and 48 s of CPU for two hostile documents, 231 MB for an answer, 120 scans of a table for one quiet stream) and fixed; what was not fixed is a gap with a number (G151–G159) |
@@ -140,3 +140,276 @@ automated CI evidence for this branch is recorded separately.
 The [Studio job](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38156597169/job/114520746513) passed on commit `ace4060` (2026-10-11): **1 034 unit tests in 64 files**, lint, typecheck, generated API types and build; **19 browser journeys passed**, including US02 executing a script in the real sandbox. The two skipped cases are the opt-in benchmarks, which passed separately locally. This closes the sandbox validation gap of the partial local run and T007-044. Other jobs in that workflow were still running when this record was written.
 
 The feature-012 native onboarding harness also passed against this final feature-007 frontend via `SAGAT_STUDIO_DIST`, using the real CLI, TypeScript SDK, engine and development identity provider.
+
+### Workflow input/output schema editing
+
+Open Workflow settings → Data contract. Both schemas offer JSON Schema autocomplete and local
+validation through the bundled Monaco service. “Use a plain text box” keeps the current text,
+including an unfinished edit. Invalid JSON is not written to the workflow; the last valid schema
+remains until the text is corrected or cleared. Server-side validation remains authoritative.
+
+Validation on 2026-10-12: 31 focused component tests and all three Chromium US01 journeys passed,
+including schema completions, an invalid-type diagnostic and preservation when switching editor
+modes. Typecheck, lint and production build passed. This focused browser run used the explicit
+no-sandbox harness mode; it does not revalidate the separate US02 inline-script runner journey.
+
+### Authorized structural payload inspection
+
+An Admin or Operator can open a run, select the run input or a journal event, and choose **Inspect
+redacted payload**. The response follows `structure-only-v1`: it shows container types and counts,
+labels children only by ordinal position, and never returns object keys or scalar values. External
+payloads show verified catalog metadata without downloading content. Missing, unsupported and
+truncated payloads have explicit states. Changing run, node, tenant or session clears the result and
+aborts an in-flight request.
+
+The focused validation run on 2026-10-12 was:
+
+```text
+cargo test -p sagat-tests --test e2e_workflow_studio payload_inspection -- --nocapture
+cargo test -p sagat-application --test payloads
+cargo test -p sagat-infra-ir --test payload_projection
+cargo test -p sagat-domain --test identity
+cd frontend && npm test -- PayloadInspection RunDetailPage TimelineView NodePanel
+cd frontend && npm run lint && npm run typecheck && npm run build
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_GREP="operator inspects useful redacted input" \
+  cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+Results: 2/2 real PostgreSQL/API tests, 6/6 application tests, 4/4 projector tests, 27/27
+permission tests, 70/70 focused Studio tests, and one real Chromium journey passed. The browser
+journey exercised the real API and engine; no sandbox script was involved. The suites cover exact
+Admin/Operator permissions, all refused roles, foreign/missing opacity, audit failure and collapse,
+historical selection after retry, forged blob-shaped JSON, verified external metadata, invalid and
+oversized input, depth/node/child/response caps, UTF-8, and stale query/session cancellation. Canary
+keys, strings, numbers, booleans and schema annotations are asserted absent from HTTP responses and
+the DOM. Customer classification and raw-value disclosure remain pending under G42/G39.
+
+### Visual defect correction — 2026-10-12 (T007-049)
+
+Independent agent reviews used GPT-6 Astra for UX direction and GPT-5.6 Sol for frontend fixes,
+geometry tests and code review. The root agent integrated the fixes and ran the final checks.
+Graphs now open at 1:1 on a forward root/trigger, with Fit View as the explicit overview. Secondary
+run facts are in **Run details**; the canvas uses the actual remaining layout height. Editor fields,
+palettes, dialogs, forced-colour selection and populated mobile Scripts tables remain within
+their containers. The API contract and tenant/audit/OTel behaviour are unchanged.
+
+Final local results:
+
+- `npm test`: **1 049 passed in 67 files**.
+- `npm run lint`, app typecheck through `npm run build`, `npm run typecheck --workspace @sagat/e2e`,
+  `npm run check:api` and `git diff --check`: passed.
+- Production build: passed.
+- Real Chromium with real PostgreSQL, API and engine: **23 passed, zero failed, two skipped** in
+  49.8 seconds. Skips are the opt-in performance benchmarks. **US02 was excluded explicitly**;
+  this run does not revalidate sandbox script execution.
+
+Reproduce from the repository root after `cd frontend && npm run build`:
+
+```sh
+SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0 \
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
+cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+The `VISUAL` journeys assert readable initial zoom, visible graph controls, inspector bounds and
+non-overlapping run headings, at 320/768/1024/1280/1470px as applicable. They cover real populated
+Scripts tables, keyboard menus/disclosures and selected controls in forced colours. Existing
+journeys retain their security/runtime assertions and explicitly open Run details or Fit View when
+they need those presentations. Earlier iterations exposed a forward-vs-compensation root bug,
+attribution-link contrast and an absolutely positioned table label that escaped the scroller;
+all were corrected before the passing run. An intermediate run also missed the US04 fixture's
+manual-review state; both US04 journeys passed in the final clean platform run without backend changes.
+
+Eight [review captures](./design/README.md#visual-corrections-2026-10-12-t007-049) preserve before/after,
+editable/read-only, dark/light/forced colours and mobile evidence. These are agent-reviewed images;
+no new human acceptance, screen-reader study, non-Chromium result or performance benchmark is claimed.
+
+## Asset replacement recovery — 2026-10-12 (T007-050)
+
+The reported CSS preload failure was reproduced at `127.0.0.1:18080`: the server returned an HTML
+entry for `index.CmpvQGsS.js` while disk already held the newer build, and the old
+`workflows.CjFtM_i_.css` returned 404. `Site.index` retained startup HTML even though asset requests
+read current files. This was a server snapshot error, not an incorrectly cached HTML response
+(`Cache-Control` was already `no-store`). The earlier T007-049 browser harness started a fresh
+server and did not cover replacement while it remained running.
+
+The HTTP adapter now reads bounded, confined HTML on each request (root, deep link and explicit
+index). Missing/oversized/symlink HTML returns 503 with Retry-After, without a stale fallback.
+The eager route boundary replaces the developer error screen with a focused heading, explicit
+reload and an unsaved-edit/session warning. The [recovery capture](design/review-2026-10-12/route-load-recovery.png)
+shows the tested 320px layout. The UI follows the documented [React Router error boundary](https://reactrouter.com/how-to/error-boundary)
+mechanism; [Vite's load-error guidance](https://vite.dev/guide/build#load-error-handling) describes
+the missing-chunk case. No automatic reload or session persistence was added.
+
+Validation:
+
+- Before the fix, the new HTTP regression received startup HTML after replacing `index.html`;
+  two component regressions rendered the router's developer error screen. Both failures were observed.
+- `CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 cargo test -p sagat-api-http --test studio`:
+  **13 passed**, including index replacement/HEAD, missing/unsafe/oversized index, path confinement,
+  cache/CSP, transfer quotas and slow clients. Targeted `cargo clippy -p sagat-api-http --test studio
+  -- -D warnings` and Rust formatting passed.
+- Frontend: **1 051 tests in 68 files passed**; lint, app/E2E typechecks and production build passed.
+  The final focused route-error tests also passed after correcting their TypeScript route shape.
+- The real PostgreSQL/API/engine/Chromium command below passed **24 journeys, zero failures**;
+  **two optional performance benchmarks skipped and US02 excluded**. The new journey injects a
+  stylesheet 404, checks recovery focus/320px reflow/axe WCAG AA and no exception text, then restores
+  the asset, reloads, signs in again and opens Workflows without browser errors.
+- The control-plane binary built successfully. Its local replacement was first checked on separate
+  ports with the existing configuration, then started on 18080. A fresh Chromium visit to
+  `/studio/workflows` showed sign-in without failed asset responses or console/page errors.
+
+```sh
+SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0 \
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
+cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+This fixes the serving/UI contracts in the [runbook](../../docs/runbooks/studio.md); REST schemas,
+tenant checks, operation audit and OTel contracts are unchanged. Browser telemetry remains G159.
+No sandbox, performance, full-workspace Rust or non-Chromium validation is claimed for this fix.
+
+### Create a namespace in Studio (T007-052, 2026-10-12)
+
+Sign in with `namespace:create` (the local dev administrator has it). Open **Namespaces** in the sidebar menu, then click **New namespace**, choose a workspace, enter a unique slug and choose Development,
+Staging or Production. Submit **Create namespace**: the new namespace becomes selected. A duplicate
+name leaves the dialog open and asks for another name. If there are no workspaces, create one through
+`POST /v1/workspaces` first. Refresh an already open Studio tab to load the new action; sign in again
+if required (the token is held only in memory).
+
+Validation: the new shell regression failed before implementation; 10 focused Vitest tests passed,
+along with lint, TypeScript checking/production build and the real Chromium/API journey
+`frontend/e2e/tests/namespaces.spec.ts` (creation, selection, persistence after login, duplicate and
+375px dialog). Full-suite run: 1,059 passed and six failed in concurrent graph-layout work
+(`tokens`, `RunDetailPage`, `operations`); these are not reported as passing namespace validation.
+
+## Graph text and inspector correction — 2026-10-12 (T007-051)
+
+The owner's Temporal/Windmill direction is recorded in the [design mapping and captures](design/README.md#graph-reading-and-selection-2026-10-12-t007-051).
+Cards now separate identity, type, state, badges and ports; selection exposes complete details.
+Duration amounts and units have independent space, and the initial camera includes the top of the
+short trigger and taller entrypoint. Fixed variant dimensions preserve layout and live-update positions.
+
+Observed regressions before the fixes: 14 editor glyph/overlap failures, a 22px Timeout amount,
+clipped runtime selected-step identity, and a first-step title above the initial canvas boundary.
+The added browser checks failed on those actual geometries before passing on the final build.
+
+Validation of the shared working tree:
+
+- **1 066 Vitest tests in 70 files passed**; ESLint, application/E2E TypeScript, production build
+  and generated OpenAPI consistency passed. This includes the concurrent namespace increment.
+- Real PostgreSQL/API/engine/Chromium suite: **27 passed, zero failed**, two opt-in performance
+  tests skipped in the journey run. US02 was explicitly excluded with `SAGAT_STUDIO_NO_SANDBOX=1`.
+- `graph-text-layout.spec.ts` measures DOM Range glyph bounds and collisions for triggers,
+  Activity/Timer/Condition/Parallel, initial entrypoint framing, LR/TB, light/dark/forced colours,
+  and blocked Geist fonts. The 320px inspector accepts twelve visible duration digits without
+  colliding with the unit. A real compensated run exercises long identity/type/state, saga, failure,
+  undo and keyboard-selected details. Browser IDs are 64 characters (66 for derived compensation);
+  component tests additionally cover 80-character and arbitrary runtime values.
+- The run journey verifies attempts in the selected panel while preserving live-update, graph-read
+  count and journal assertions. Table assertions are scoped to the steps table, since selection
+  also displays an attempts table.
+- UX and frontend agents reviewed the code and actual captures. The remaining initial-camera
+  defect was fixed and rechecked at 1:1. Vertical overview captures are labelled as overviews.
+- The already-running server returned the current built HTML and all seven CSS assets with HTTP
+  200 after replacement; no control-plane restart was needed.
+- Both performance scenarios passed separately, three cold rounds each: median first-card time
+  **978ms for 1 000 editor nodes** and **1 425ms for 9 991 runtime nodes**; median pan/zoom frames
+  16.7ms, peak JavaScript heap 215MB. All six existing floors held; see the regenerated
+  [benchmark report](../../tests/performance/reports/workflow-studio.md).
+
+```sh
+STUDIO_PERF=1 STUDIO_PERF_OUT="$PWD/frontend/e2e/perf-results/perf.json" \
+SAGAT_STUDIO_GREP=PERF SAGAT_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres \
+SAGAT_STUDIO_NO_SANDBOX=1 SAGAT_STUDIO_REBUILD=0 \
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_DEV_DEBUG=0 \
+cargo test -p sagat-tests --test e2e_workflow_studio -- --ignored journeys --nocapture
+```
+
+Reproduce the integrated run using the T007-050 command above. The wire/API, transaction,
+tenant/RBAC, audit and OTel contracts are unchanged; browser telemetry remains G159.
+No sandbox execution, non-Chromium testing or new human acceptance is claimed here.
+
+Owner navigation correction: namespace management now has its own **Namespaces** menu and
+`/studio/namespaces` page. The page lists tenant namespaces and environments, marks the current
+one and offers **Use namespace** and authorized **New namespace**. The sidebar selector remains.
+Validation after this correction: all 1,066 Vitest tests passed (70 files), lint, app/E2E typechecks,
+production build and the real Chromium/API namespace journey passed. This newer full-suite run
+supersedes the six concurrent graph-layout failures recorded above.
+
+### Configure a broker through Integrations (T007-053)
+
+Open **Integrations** for the selected namespace. An administrator can expand **Network access**
+and explicitly allow the broker hosts/networks and ports, preserving any rules other integrations
+need. The policy applies namespace-wide. Private addresses require an explicit CIDR; platform
+network restrictions still apply. Users without `egress:manage` ask an administrator to configure it.
+
+Choose **New integration**, a name and Kafka, NATS JetStream or Amazon SQS. Enter servers and
+specific settings (Kafka topic/initial offset; NATS stream/durable consumer/optional subject filter;
+SQS queue URL/region). Choose no credentials, an existing namespace secret, or enter the supported
+credentials with `secret:manage`. Kafka supports SASL PLAIN/SCRAM-SHA-256/SCRAM-SHA-512;
+NATS supports a token, username/password or complete credentials-file text; SQS supports access
+keys and an optional session token. Enter TLS addresses for credentials. Custom TLS CA/client
+certificate configuration is not exposed by the existing adapters and is not implied by this form.
+
+Save initially **Paused**, then **Edit** and choose **Active** when ready to consume. Active is a
+configuration state, not a connectivity test. Review runtime errors/message receipt on the list.
+Bind a workflow message trigger to the integration name using feature 004's existing trigger contract.
+The current page manages inbound connectors; outbound event subscriptions remain their separate API.
+The internal Sagat NATS uses deployment `SAGAT_NATS_URL`/`SAGAT_NATS_CREDENTIALS_FILE` settings.
+
+Credentials are encrypted by the existing vault, write-only in Studio and referenced by name.
+After a partial save the form explains that credentials were saved and retries only the connector.
+No automatic deletion of unused secrets occurs. After replacing credentials, pause and resume an
+active connector to ensure that its reader reloads them, per the events runbook.
+
+Validation: 11 focused component tests passed (Kafka/NATS/SQS shapes, secret separation and failure
+redaction, partial-save retry, permissions, namespace changes, updates/activation and explicit network
+policy edits). A real Chromium/API journey passed: isolated namespace, explicit network policy,
+Kafka synthetic credential save/edit, NATS save, new login/persistence, no credential redisplay or
+browser persistence and a 375px dialog. Test connectors remain paused; no connectivity to a user's
+broker or production credential was claimed or exercised.
+
+Final T007-053 gates: 1,077 frontend tests in 71 files, lint, app/E2E typechecks, production build,
+generated OpenAPI consistency and the real Chromium/API journey passed against the rebuilt Studio.
+
+### Open a run trace in the deployment's tracing tool (T007-055)
+
+Set an absolute URL template when starting the control plane, for example:
+
+```sh
+SAGAT_STUDIO_TRACE_URL='https://traces.example.test/explore?trace={traceId}'
+```
+
+Exactly one literal `{traceId}` is required. HTTPS is required except for loopback development
+tools such as `http://localhost:16686/trace/{traceId}`. URL credentials, relative URLs, other
+schemes and remote plain HTTP fail process configuration. The value is public runtime config; do
+not put a token or password in it.
+
+Open a run, expand **Run details**, and choose **Open trace**. The Studio substitutes only a
+nonzero 32-hex trace id, opens a new separated tab and does not prefetch the tracing tool. Without
+the setting, the trace id and **Copy trace id** remain and no link is shown. Changing the setting
+requires a control-plane restart to reread its environment, but no frontend rebuild.
+
+Validation on 2026-10-12: all 15 static Studio serving tests and all 34 control-plane config tests
+passed with the shared target directory. Seventy-six focused run/config/link Vitest tests passed,
+as did focused ESLint, Studio and E2E TypeScript checks, and the production build. Both scenarios
+in `frontend/e2e/tests/trace-links.spec.ts` passed in real Chromium against the actual API/UI with
+runtime `/studio/config.json` interception: exact safe link attributes without an automatic
+external request, and the no-config copy fallback. Browser log:
+`target/usability/trace-browser.log`.
+
+## Completion follow-up — namespaces and signals (2026-10-12)
+
+T007-054: `src/api/endpoints.test.ts` passed 3/3 including 201 namespaces, a later-page failure
+and abort propagation. T007-056: `src/features/runs/SendSignal.test.tsx` passed 8/8 including
+permission/terminal state, explicit confirmation, UTF-8 byte bound, stable retry keys and stale
+responses. `frontend/e2e/tests/signals.spec.ts` passed 1/1 against the running real local API and
+engine: publish a waitEvent workflow, start WAITING, signal through Studio, observe SUCCEEDED
+and the persisted `wait.satisfied` journal event. The first browser assertion used an incorrect
+invented event name and failed; it was corrected against the domain's canonical event kind and
+rerun successfully. Logs: ignored `target/usability/signal-{tests,browser}.log`.
+
+Integrated completion check (2026-10-12): all 1,104 Studio unit tests, full ESLint, TypeScript checking and the production build pass. The signal form also discards its payload after same-subject reauthentication, covered by a failing-first regression.

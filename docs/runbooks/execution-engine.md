@@ -12,7 +12,7 @@ OIDC settings and the backup procedure are the same.
 |---|---|---|
 | Worker API | `execution-engine serve`, `SAGAT_GRPC_ADDR`, default `127.0.0.1:9000` | gRPC over HTTP/2. TLS (and mTLS) can be terminated by the engine itself with `SAGAT_GRPC_TLS_*`, or by the ingress or mesh in front (then say so with `SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS=true` if secrets are configured). Authenticated like the REST API: bearer JWT, member of a tenant, role `worker` (or `admin`), **and bound** to the namespace and activities it serves (`docs/runbooks/security-governance.md`) |
 | Scheduler loop | same process | Fires timers, wait deadlines and retries, reclaims lost leases, enforces run deadlines, renews lost wake-up hints, creates child runs, reports ended children to their parents, cancels children of stopped parents. **Each replica works only on the shards of the work it holds a lease on** (64 shards, divided between the replicas alive), shares each pass between the tenants by weight, and fences every action against its lease: [`scaling.md`](scaling.md) |
-| Shard keeper | same process, every `SAGAT_SHARD_LEASE_SECS / 3` (5 s) | Announces the replica, renews its leases, gives back the shards beyond its share and takes the free ones; gives them back on `SIGTERM`. Sets `scheduler_shards_owned`, `scheduler_replicas` |
+| Shard keeper | same process, every `SAGAT_SHARD_LEASE_SECS / 5` (3 s) | Announces the replica, renews its leases, gives back the shards beyond its share and takes the free ones; gives them back on `SIGTERM`. Sets `scheduler_shards_owned`, `scheduler_replicas` |
 | Housekeeping | same process, every `SAGAT_HOUSEKEEPING_INTERVAL_SECS` (300) | Purges idempotency records (7 d), expired worker sessions (1 h after expiry) and delivered outbox messages (24 h, 5000 per round) |
 | Outbox dispatcher | same process, only when `SAGAT_NATS_URL` is set | Publishes `task.ready` hints (`sagat.v1.task.ready.<tenant>.<activity>`) and `run.finished` events (`sagat.v1.run.finished.<tenant>`) to JetStream, at-least-once |
 | Telemetry projector | same process, one at a time (a lease row in `engine_leases`) | Turns what is new in the journal of each run into spans and measurements and hands the spans to the OTLP collector; settings `SAGAT_TELEMETRY_*`, see [`observability.md`](observability.md) |
@@ -32,8 +32,9 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 ## 2. Start, stop, scale, upgrade
 
 - **Start order:** `control-plane migrate` (owner role), then engines and API with the runtime role.
-- **Stop:** `SIGTERM` stops the gRPC server (in-flight calls drain), then the loops, then closes the
-  pool. Workers whose call is cut off retry with the same idempotency key.
+- **Stop:** `SIGTERM` broadcasts shutdown to the gRPC server and all loops, drains them for
+  at most 30 seconds, then closes the pool. A task that outlasts that grace is aborted and the
+  process exits nonzero. Workers whose call is cut off retry with the same idempotency key.
 - **Scale:** run up to 64 replicas (a replica beyond the 64 shards holds none). The scheduler's work is
   divided between them by shard, so a second replica adds capacity, until the database is the limit;
   claims are `FOR UPDATE SKIP LOCKED` and the outbox is divided by shard as well. How many, how long a
@@ -49,13 +50,14 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 
 | Probe | Meaning |
 |---|---|
-| `GET /livez` | The scheduler loop finished a tick within `max(10 x SAGAT_SCHEDULER_INTERVAL_MS, SAGAT_LIVENESS_GRACE_SECS)` (30 s). Failing means the loop is stuck: restart the process |
+| `GET /livez` | No critical task has failed, the shard keeper is alive, and the scheduler loop finished a tick within `max(10 x SAGAT_SCHEDULER_INTERVAL_MS, SAGAT_LIVENESS_GRACE_SECS)` (30 s). Failing means the loop is stuck: restart the process |
 | `GET /readyz` | `/livez` and the database answers and every table of the execution schema exists. Failing before the first `migrate` is expected; it becomes ready by itself once the migration ran |
 
 ### Symptom table
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
+| Exit code 1 with a named critical task | A critical loop or server exited, panicked or failed to drain | Follow [Critical task failure](#critical-task-failure); restart and inspect the structured task name |
 | Exit code 2 at start, message names a role | The database role can rewrite the audit trail | Use the runtime role `sagat_app` (the owner role is for `migrate`) |
 | Exit code 2: `SAGAT_ALLOW_INSECURE_JWKS_HTTP is only allowed when SAGAT_ENV=dev` | Plain-http key URL outside dev | Use an `https://` JWKS URL |
 | Workers get `UNAUTHENTICATED` | Token invalid/expired, tenant claim unknown, subject not a member of the tenant, or the worker session expired (idle `SAGAT_SESSION_TTL_SECS`) | Check the token; re-register after a session expiry (`PollTasks` answers `UNAUTHENTICATED`) |
@@ -67,7 +69,7 @@ runs it next to PostgreSQL and NATS, and `scripts/smoke-compose.sh` checks it.
 | Tasks sit `READY` and nobody claims them | No worker advertises that activity in that namespace, or workers are at `max_inflight` | `SELECT activity, count(*) FROM steps WHERE status = 'READY' GROUP BY 1`; check `grpc_requests_total{method="PollTasks"}` |
 | Runs stay `WAITING` past their timer | The scheduler is not running, is stuck, or the database clock is wrong | `/livez`; `scheduler_actions_total`; compare `steps.due_at` with `clock_timestamp()` |
 | `outbox_backlog` grows | NATS is down or unreachable, or `SAGAT_NATS_URL` is unset | Nothing is lost: the backlog drains after recovery. Check `outbox_publish_failed_total{code}` and the `last_error_code` column |
-| `QUOTA_EXCEEDED` (REST 429) on a signal, or a step failed with `RUN_DATA_LIMIT` | The run retains 4 MiB of outputs and signals (every lease carries them) | Return less from the activities (references, not documents); this is a limit of the run, retrying will not help |
+| `QUOTA_EXCEEDED` (REST 429) on a signal, or a step failed with `RUN_DATA_LIMIT` | The run would retain more than 4 MiB of outputs/signals, or its serialized worker context exceeds 8 MiB (compact numbers can expand during serialization; `worker_task_input_rejected_total`) | Return less from the activities (references, not documents); this is a limit of the run, retrying will not help |
 | A step failed with `CHILD_LIMIT_EXCEEDED` | The tree of child runs reached 1024 runs, usually a workflow that starts itself without a base case | Fix the recursion; the tree has already stopped growing |
 | `RegisterWorker` answers `RESOURCE_EXHAUSTED` | The identity already holds 32 sessions under other names, or its worker names change on every start | Use a stable worker name (a restart then replaces its own session), or one identity per fleet |
 | A worker's token stops working right after another worker registered | Two workers use the same identity and the same worker name, so the second replaced the first's session | Give every process its own `worker_name` |
@@ -89,10 +91,27 @@ SELECT seq, event_type, node, attempt, actor, occurred_at FROM run_events WHERE 
 SELECT count(*) FILTER (WHERE delivered_at IS NULL) AS pending, max(attempt_count) FROM event_outbox;
 ```
 
+### Critical task failure
+
+Every enabled scheduler, keeper, housekeeping, event, outbox, connector, delivery,
+telemetry and monitor loop, plus the admin and worker servers, is supervised. An
+unexpected return, error or panic marks both probes unhealthy and broadcasts shutdown.
+The engine exits **1**, allowing the container restart policy to recover it. A requested
+shutdown exits successfully only when all tasks drain successfully.
+
+Cleanup has a **30-second** deadline. Tasks still running afterwards are aborted;
+uncommitted database transactions roll back and held shard leases expire so another
+engine can take over. External effects remain at-least-once and need their stable keys.
+The structured failure log names only the fixed internal task and this runbook, never a
+payload, credential or panic value. `engine_critical_task_failures_total{task}` records
+observed failures with a bounded label set; a process can exit before Prometheus scrapes
+that increment, so use restart monitoring and logs as well.
+
 ## 4. Metrics (admin listener)
 
 | Metric | Labels | Meaning |
 |---|---|---|
+| `engine_critical_task_failures_total` | `task` | Unexpected critical task exits or failed shutdown cleanup; fixed internal task names only |
 | `grpc_requests_total` | `method`, `code` | Worker API calls by outcome (closed sets) |
 | `grpc_request_duration_seconds` | `method` | Latency of each call |
 | `grpc_in_flight` | | Calls running now, all connections (limit `SAGAT_GRPC_MAX_IN_FLIGHT`) |
@@ -147,12 +166,77 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
   and the database pool is shared by everything in a process. Quotas per queue (per activity) do not
   exist (G245).
 - Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).
-- A blob store for payloads over 256 KiB (G19), run results (G21), `foreach` and `humanApproval` nodes (G20).
+- Run-input and worker-output blob transport is described below; five-SDK conformance is tracked by T002-040. Run results (G21), `foreach` and `humanApproval` nodes (G20) retain their documented limits.
 - Partitioning and retention of `run_events` (G28) are not built: the journal grows with the runs
   (feature 010 measured the cost of a wait and of a transition, `tests/performance/reports/scalability-ha.md`,
   and left the partitioning for evidence, G241).
-- Sagas and compensation (feature 003), inbound events and webhooks (004): the engine only emits
-  `task.ready` and `run.finished`, and signals arrive through the REST API.
+- Outgoing broker producers (NATS/Kafka/SQS) remain pending. Sagas, compensation, inbound event dispatch and outbound HTTP webhook delivery are implemented; consult their feature runbooks for retry and recovery semantics.
 - OTLP span export is OTLP/HTTP with JSON only (G169); a backend that takes only protobuf needs a Collector in front. One projector and one monitor cap their own throughput (G177): sharding is feature 010. The audit trail has no retention (G182, G28).
 - Failover of PostgreSQL itself, backups of the NATS stream (it holds hints only) and capacity
   planning per tier (spec open question).
+
+## 8. Large inputs and worker outputs (protocol 1.3)
+
+Blob storage is opt-in: `SAGAT_BLOB_PROVIDER` accepts `s3`, `r2`, `fs`, `memory`, or `none`
+(the default). The control plane and every engine replica must use the same durable backend and
+prefix. The control plane refuses `memory`, which cannot share uploads across processes. Engine-only
+`memory` is development-only; `fs` requires a shared durable volume across the processes.
+S3 requires `SAGAT_BLOB_S3_BUCKET` and `SAGAT_BLOB_S3_REGION`; the optional endpoint must use TLS
+outside development. R2 requires `SAGAT_BLOB_R2_ACCOUNT_ID`, `SAGAT_BLOB_R2_BUCKET`, and its access
+key/secret configuration. Supply credentials through the deployment secret mechanism, never command
+history or logs. Local S3-compatible tests do not establish live S3/R2 deployment evidence.
+
+`WriteBlob` accepts a lease header followed by chunks of at most 256 KiB. `CompleteStep.output_blob_ref`
+claims the resulting descriptor in the same transaction as output, journal and next-task scheduling.
+`ReadBlob` requires a current lease and binding in the blob's tenant and namespace. Existing inline
+protocol clients keep their 256 KiB payload limit and continue to work.
+
+Defaults: 64 MiB per blob (`SAGAT_BLOB_MAX_BYTES`), 64 unused uploads per tenant
+(`SAGAT_BLOB_MAX_PENDING`), 32 simultaneous transfers per process (`SAGAT_BLOB_MAX_TRANSFERS`),
+and 600 seconds per transfer (`SAGAT_BLOB_TRANSFER_TIMEOUT_SECS`). Unfinished uploads expire after
+3600 seconds; unused completed uploads after 86400 seconds (`SAGAT_BLOB_ABANDONED_AFTER_SECS`,
+`SAGAT_BLOB_UPLOAD_TTL_SECS`). These are pending-upload limits, not retained-storage quotas.
+
+Cleanup claims `DELETING` durably before deleting external bytes. A provider failure or process crash
+retains the row and retries after five minutes. Confirmed deletion removes a finalized upload's row.
+Never-confirmed uploads retain a tombstone and continue deletion reconciliation: a delayed PUT can
+finish after an earlier delete. First deletion confirmation is audited and releases its active upload
+slot; repeated cleanup adds no duplicate audit. Tombstones need a future compaction policy. Retention
+of unused completed uploads starts when the upload finishes. Committed input or output blobs are never removed
+by this sweep. Watch `blob_delete_failures_total`,
+`blob_swept_total`, `blob_lost_total` and `blob_corrupt_total`. Corrupt downloads end with `DATA_LOSS`;
+discard all received bytes and investigate storage integrity.
+
+Until streaming secret-content scanning is implemented, blob uploads and completions from steps
+that declare secrets are refused before upload. Blob output is for forward activities; compensation
+and reconciliation responses retain their existing inline semantics. SDK conformance remains tracked
+by T002-040 until all five language clients pass the common scenarios.
+
+Blob downloads hold both global transfer and tenant concurrency slots until the producer ends.
+An independent deadline cancels the producer even when HTTP/2 receive flow control stops polling;
+a one-message channel bounds buffering. Unexpected producer termination is an error, never verified
+EOF. `blob_transfers_total{direction,outcome}` and `blob_transfer_duration_seconds{direction,outcome}`
+record completed/interrupted/timed-out read transfers separately from unary request acceptance.
+
+
+Run inputs use two requests: stream raw bytes to `POST /v1/run-input-blobs` with the bearer token,
+`X-Octopus-Namespace`, and optional `Content-Type`, `X-Octopus-Blob-Size` and
+`X-Octopus-Blob-Sha256`; then send `POST /v1/runs` with `workflowId` and `inputBlobRef` using the
+returned id and an `Idempotency-Key`. Omit `input` entirely. A different uploader or namespace cannot
+bind the staging object; workers cannot read it until the run-start transaction commits. The run's
+JSON input is a small `$blob` descriptor, and any workflow input schema must accept that descriptor.
+The server never loads the external bytes as JSON. Workers use lease-scoped `ReadBlob` and verify
+size/hash before treating EOF as success. An ordinary inline JSON object resembling the descriptor
+does not create catalog provenance.
+
+The upload endpoint retains the shared global/tenant request admission and body-idle protection,
+with its own maximum body and total transfer deadline (also bounded by bearer expiration). A stalled
+or interrupted upload leaves durable cleanup evidence; no caller should automatically retry a
+consumed upload stream. Retry the run-start request with the same key after an uncertain response;
+its exact result remains replayable after the staged blob was committed or the active version changed.
+
+Reproduce the happy and failure cases with
+`cargo test -p sagat-tests --test contract_grpc_durable_execution input_blobs` against Docker:
+large REST upload to worker read, unused-object privacy, cross-scope refusal, schema rejection,
+concurrent duplicate start, audit rollback, deadline/version-independent replay, rerun/child reuse,
+inline body limits and expired staging cleanup.

@@ -260,7 +260,9 @@ fn a_yaml_document_that_expands_without_end_is_stopped_not_followed() {
     // The YAML reader has a limit of its own on how often an alias may be repeated and stops it first;
     // the tool's bound on what a document expands to is the second line.
     assert!(
-        problems.contains("repetition limit exceeded") || problems.contains("expands to more than"),
+        problems.contains("repetition limit exceeded")
+            || problems.contains("budget breached")
+            || problems.contains("expands to more than"),
         "{problems}"
     );
 
@@ -278,6 +280,31 @@ fn a_yaml_document_that_expands_without_end_is_stopped_not_followed() {
 }
 
 #[test]
+fn yaml_keeps_the_cli_scalar_mapping_and_anchor_semantics() {
+    assert!(
+        manifest::yaml_to_value("")
+            .expect("an empty YAML document")
+            .is_null()
+    );
+    let value = manifest::yaml_to_value(
+        "on: on\noff: off\nyes: yes\nno: no\ntruth: true\nnothing: null\nnumber: 42\nbinary: !!binary SGVsbG8=\nfirst: one\nfirst: two\nbase: &base {retries: 3}\ncopy: *base\nmerged:\n  <<: *base\n",
+    )
+    .expect("valid YAML");
+
+    assert_eq!(value["on"], "on");
+    assert_eq!(value["off"], "off");
+    assert_eq!(value["yes"], "yes");
+    assert_eq!(value["no"], "no");
+    assert_eq!(value["truth"], true);
+    assert!(value["nothing"].is_null());
+    assert_eq!(value["number"], 42);
+    assert_eq!(value["binary"], "SGVsbG8=");
+    assert_eq!(value["first"], "two");
+    assert_eq!(value["copy"]["retries"], 3);
+    assert_eq!(value["merged"]["<<"]["retries"], 3);
+}
+
+#[test]
 fn a_file_that_is_not_a_manifest_is_not_quoted_back() {
     // A file that holds one line of something that must stay secret, read as YAML: a string.
     let secret = "ghp_0123456789abcdefSECRETSECRETSECRET";
@@ -290,5 +317,10 @@ fn a_file_that_is_not_a_manifest_is_not_quoted_back() {
         assert!(!problem.message.contains("SECRET"), "{problem}");
     }
     let problem = Manifest::parse(&format!("\"{secret}\""), false).expect_err("not a manifest");
+    assert!(!problem.message.contains("SECRET"), "{problem}");
+
+    // Syntax diagnostics also omit source snippets rather than leaking the malformed line.
+    let malformed = format!("apiVersion: [\n  {secret}\n");
+    let problem = Manifest::parse(&malformed, true).expect_err("malformed YAML");
     assert!(!problem.message.contains("SECRET"), "{problem}");
 }

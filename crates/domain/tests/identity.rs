@@ -173,9 +173,10 @@ const ALL_ROLES: [Role; 6] = [
 fn expected(role: Role) -> Vec<Permission> {
     use Permission::{
         DefinitionPublish, DefinitionRead, DefinitionWrite, EventManage, EventPublish, EventRead,
-        NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunRead, RunSignal,
-        RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead, ScriptWrite, SecretRead,
-        SecretUse, VersionActivate, WorkerExecute, WorkerManage, WorkspaceRead,
+        NamespaceRead, OpsRead, PublicationApprove, QuotaRead, RunOperate, RunPayloadInspect,
+        RunRead, RunSignal, RunStart, ScriptBuild, ScriptExecute, ScriptPublish, ScriptRead,
+        ScriptWrite, SecretRead, SecretUse, VersionActivate, WorkerExecute, WorkerManage,
+        WorkspaceRead,
     };
     match role {
         Role::Admin => Permission::ALL.to_vec(),
@@ -207,6 +208,7 @@ fn expected(role: Role) -> Vec<Permission> {
             DefinitionRead,
             RunStart,
             RunRead,
+            RunPayloadInspect,
             RunOperate,
             RunSignal,
             QuotaRead,
@@ -297,8 +299,12 @@ fn a_worker_can_execute_tasks_and_do_nothing_else() {
 }
 
 #[test]
-fn only_operators_and_admins_can_operate_or_signal_runs() {
-    for permission in [Permission::RunOperate, Permission::RunSignal] {
+fn only_operators_and_admins_can_operate_signal_or_inspect_run_payloads() {
+    for permission in [
+        Permission::RunOperate,
+        Permission::RunSignal,
+        Permission::RunPayloadInspect,
+    ] {
         for role in ALL_ROLES {
             assert_eq!(
                 role.grants(permission),

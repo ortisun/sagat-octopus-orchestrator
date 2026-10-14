@@ -75,6 +75,8 @@ pub async fn lab_on<S: Sandbox + 'static>(
         ceiling,
         trusted_keys: vec![p.api.script_key.clone()],
         images: Images::default(),
+        go_target: None,
+        go_required: false,
         admin_addr: None,
         sweep_after: Duration::from_secs(3600),
     };

@@ -8,7 +8,10 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Harness, T0, activity, build, condition, end, flaky, id, parallel, timer, wait};
+use common::{
+    Harness, T0, activity, build, condition, effect, end, flaky, id, parallel, saga, sid, timer,
+    wait,
+};
 use sagat_domain::execution::{
     self, CorrelationKey, ExecutionError, Expiry, FailureCode, Fence, Resolution, RunEvent, RunId,
     RunState, RunStatus, StepStatus, StopReason, WaitingOn,
@@ -616,6 +619,125 @@ fn a_branch_can_handle_its_own_failure_and_still_join() {
     let r = run.lease("r");
     run.complete("r", r).expect("r");
     assert_eq!(run.status("after"), StepStatus::Ready);
+}
+
+#[test]
+fn storage_quota_failure_stops_before_on_error_can_release_more_work() {
+    let mut run = Harness::start(build(
+        "write",
+        vec![
+            activity("write").with_on_error(id("would-allocate-more")),
+            activity("would-allocate-more"),
+        ],
+    ));
+    let fence = run.lease("write");
+    let progress = execution::fail_step_for_storage_quota(
+        &run.def,
+        &mut run.state,
+        &id("write"),
+        fence,
+        run.now,
+    )
+    .expect("quota fallback");
+    assert!(progress.pending.is_none());
+    run.journal.extend(progress.events);
+
+    assert_eq!(run.status("write"), StepStatus::Failed);
+    assert!(!run.has_step("would-allocate-more"));
+    assert_eq!(run.state.stop_reason(), Some(StopReason::Failed));
+    assert_eq!(run.state.status(), RunStatus::Failed);
+    assert_eq!(
+        run.journal.iter().find_map(|event| match event {
+            RunEvent::RunStopRequested { code, .. } => code.as_ref(),
+            _ => None,
+        }),
+        Some(&FailureCode::storage_quota_exceeded())
+    );
+    run.assert_replays();
+}
+
+#[test]
+fn storage_quota_failure_preserves_an_existing_stop_and_owed_compensation() {
+    let mut stopping = Harness::start(build("write", vec![activity("write")]));
+    let fence = stopping.lease("write");
+    stopping.stop(StopReason::Cancelled).expect("cancel");
+    let progress = execution::fail_step_for_storage_quota(
+        &stopping.def,
+        &mut stopping.state,
+        &id("write"),
+        fence,
+        stopping.now,
+    )
+    .expect("quota fallback during cancellation");
+    stopping.journal.extend(progress.events);
+    assert_eq!(stopping.state.stop_reason(), Some(StopReason::Cancelled));
+    assert_eq!(stopping.state.stop_code(), None);
+    assert_eq!(stopping.state.status(), RunStatus::Cancelled);
+    assert_eq!(
+        stopping
+            .journal
+            .iter()
+            .filter(|event| matches!(event, RunEvent::RunStopRequested { .. }))
+            .count(),
+        1
+    );
+
+    let mut saga_run = Harness::start(build(
+        "saga",
+        vec![saga("saga", "charge"), effect("charge", false)],
+    ));
+    let fence = saga_run.lease("charge");
+    let progress = execution::fail_step_for_storage_quota(
+        &saga_run.def,
+        &mut saga_run.state,
+        &id("charge"),
+        fence,
+        saga_run.now,
+    )
+    .expect("quota fallback plans undo");
+    saga_run.journal.extend(progress.events);
+    assert_eq!(saga_run.status("charge"), StepStatus::Failed);
+    assert_eq!(
+        saga_run
+            .state
+            .step(&sid("charge~c"))
+            .map(|step| step.status()),
+        Some(StepStatus::Ready),
+        "the reported external success may have happened and must be undone"
+    );
+    saga_run.assert_replays();
+
+    let mut cancelling_saga = Harness::start(build(
+        "saga",
+        vec![saga("saga", "charge"), effect("charge", false)],
+    ));
+    let fence = cancelling_saga.lease("charge");
+    cancelling_saga
+        .stop(StopReason::Cancelled)
+        .expect("cancel saga with active effect");
+    let progress = execution::fail_step_for_storage_quota(
+        &cancelling_saga.def,
+        &mut cancelling_saga.state,
+        &id("charge"),
+        fence,
+        cancelling_saga.now,
+    )
+    .expect("quota fallback preserves successful effect during cancellation");
+    cancelling_saga.journal.extend(progress.events);
+    assert_eq!(cancelling_saga.status("charge"), StepStatus::Cancelled);
+    assert_eq!(
+        cancelling_saga
+            .state
+            .step(&sid("charge~c"))
+            .map(|step| step.status()),
+        Some(StepStatus::Ready),
+        "cancellation must still undo the successful effect whose report did not fit"
+    );
+    assert_eq!(
+        cancelling_saga.state.stop_reason(),
+        Some(StopReason::Cancelled)
+    );
+    cancelling_saga.assert_replays();
 }
 
 #[test]

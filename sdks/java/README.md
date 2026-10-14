@@ -23,7 +23,8 @@ Coordinates: `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.1.0`
 The artifact is **not published to a repository yet** (no signing or release pipeline exists). Build and install
 it into your local repository with `./mvnw install` from this directory. The library depends on Jackson
 (`jackson-databind`), gRPC (`grpc-api`, `grpc-stub`, `grpc-protobuf`, `grpc-netty-shaded` at run time) and
-`protobuf-java`; it logs through `System.Logger` and has no OpenTelemetry or logging-framework dependency.
+`protobuf-java`; it logs through `System.Logger`. The opt-in `OpenTelemetryBridge` uses the optional
+`opentelemetry-api` dependency; the application owns the provider and exporter. There is no logging-framework dependency.
 
 ## Start a run
 
@@ -49,6 +50,10 @@ try (SagatClient client = SagatClient.create(config)) {
 interrupts a call that is waiting; the executor is the client's own, or yours through
 `ClientConfig.Builder.asyncExecutor`). `listAll` is a lazy `Stream` that reads a page when the previous one is
 consumed, in the order the server gave (newest first).
+
+For a large run input, call `uploadRunInput(onePassInputStream, options)`, then pass its verified
+`BlobDescriptor` to `startWithBlob`. The upload is streamed once and never retried; its descriptor is accepted
+only after source EOF and matching local size/SHA-256. Both operations also have asynchronous forms.
 
 The SDK propagates the W3C `traceparent` (the one you pass, else the ambient context you expose through
 `ClientConfig.Builder.traceContext(...)`, for example from OpenTelemetry), the correlation id and the deadline, and
@@ -165,7 +170,8 @@ The snippets above are compiled by the build (`sdk/src/test/java/.../ReadmeExamp
   one warning when the client or the host is created (it names only the host); `https://` logs none.
 * Logs go to `System.Logger` (`dev.sagatoctopusorchestrator.sdk`, `...sdk.worker`) and never contain a payload, a
   token, a lease token or a secret. `WorkerConfig.Builder.onEvent(...)` receives `WorkerEvent`s (tasks taken,
-  completed with their duration, failed, stale, heartbeats, polls, reconnects) for metrics.
+  completed with their duration, failed, stale, heartbeats, polls, reconnects) for metrics. `OpenTelemetryBridge`
+  adapts this callback and `ClientConfig.Builder.traceContext(...)` without installing a provider or exporter.
 
 ## TLS and mTLS
 
@@ -269,10 +275,10 @@ properties). A build from an empty local repository (511 files) was run with the
 
 **SemVer.** `0.x` is pre-release: a minor may change the public API and says so in the changelog. From `1.0` the
 public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has its own
-version, negotiated at registration: this SDK offers `1.2`; a server that speaks an older minor serves it at that
+version, negotiated at registration: this SDK offers `1.4`; a server that speaks an older minor serves it at that
 minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL` (ADR-0015). Package metadata: group
-`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.1.0`, licence `UNLICENSED` (the
-repository has not declared one; an owner decision recorded in `specs/006-sdk-multilanguage/research.md`),
+`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.1.0`, license `MIT` (the
+JAR includes the license text under `META-INF/LICENSE`),
 repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automatic module name
 `dev.sagatoctopusorchestrator.sdk`.
 
@@ -280,8 +286,8 @@ repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automat
 
 | Runtime | Status |
 |---|---|
-| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (202 unit tests) and the conformance suite (15 scenarios) |
-| JDK 26.0.2.1 (Homebrew OpenJDK, macOS arm64) | **tested**: the 202 unit tests only (not the conformance suite). The JVM prints warnings from `protobuf-java` 3.25 (`sun.misc.Unsafe`) and Netty (`System::loadLibrary`) on 24+ |
+| JDK 23.0.2 (Oracle OpenJDK, macOS arm64) | **tested**: `./mvnw verify` (204 unit tests) and the conformance suite (15 scenarios) |
+| JDK 26.0.2.1 (Homebrew OpenJDK, macOS arm64) | **tested**: the 204 unit tests only (not the conformance suite). The JVM prints warnings from `protobuf-java` 3.25 (`sun.misc.Unsafe`) and Netty (`System::loadLibrary`) on 24+ |
 | Java 17 and 21 | **declared (`--release 17`), not run here**. The library is compiled with `--release 17`, so it uses only Java 17 APIs, and every dependency's class files are Java 8 level (checked on the class files of the run-time classpath); no JDK 17 or 21 runtime was available |
 | Linux, Windows | not run. The `protoc` artifact is chosen by `os-maven-plugin` for the build machine |
 | Android, GraalVM native image | not supported / not tried |
@@ -296,7 +302,7 @@ version `grpc-protobuf` 1.83.1 depends on), Jackson 2.22.3, JUnit Jupiter 5.14.4
 ## Develop
 
 ```text
-./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 202 unit tests
+./mvnw -q verify                      # compiles (the stubs are generated from sdk/src/main/proto/worker.proto), then runs the 204 unit tests
 scripts/sync-shared.sh                # copies worker.proto and error-catalog.json from the repository; SharedContractsTest fails when behind
 conformance/prepare.sh                # builds the runner (target/classpath.txt); conformance/run.sh build|run ... is what the harness calls
 cargo test -p sagat-tests --test sdk_conformance -- --ignored   # the conformance suite (needs Docker), from the repository root

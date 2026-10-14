@@ -116,3 +116,13 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-008-###` and criteria `SC-008-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Studio operations completion — T008-036 (2026-10-12)
+
+The owner's request to finish remaining product work includes the existing operations API in
+Studio. A dedicated Operations menu must show the selected namespace's paginated firing/resolved
+alerts, safe runbook references, worker sessions and persistent identity drains. `ops:read` gates
+reads; `worker:manage` additionally gates drain/resume. Confirmation must explain that a drain
+applies to every session of that identity in this namespace and prevents new claims without
+cancelling current attempts. Require the existing audited justification. Namespace/session changes
+must discard forms and stale results; failures must remain actionable without fabricated health.

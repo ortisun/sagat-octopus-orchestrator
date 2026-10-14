@@ -22,6 +22,7 @@ use time::OffsetDateTime;
 
 use sagat_domain::audit::AuditRecord;
 
+use crate::blobs::BlobCommit;
 use crate::definitions::{Idempotency, IrCodec, IrError};
 use crate::error::StoreError;
 use crate::secrets::{SecretInputs, StoredSecret};
@@ -141,6 +142,8 @@ impl BreakerPolicy {
 pub struct RunData {
     pub run_id: Option<RunId>,
     pub input: Vec<u8>,
+    /// Catalog-backed run input only; a caller-provided JSON lookalike never sets this identity.
+    pub input_blob: Option<sagat_domain::blobs::BlobId>,
     /// Outputs of the steps that succeeded, by node id.
     pub outputs: BTreeMap<NodeId, Vec<u8>>,
 }
@@ -328,6 +331,8 @@ pub struct Effects {
     pub rehint: Vec<NodeId>,
     /// Child runs reserved in this transaction; the engine fills it while resolving `child` steps.
     pub children: Vec<ChildSpawn>,
+    /// Blobs the outputs above are descriptors of: committed with them, or the transaction fails.
+    pub blobs: Vec<BlobCommit>,
 }
 
 impl Effects {
@@ -343,6 +348,7 @@ impl Effects {
             idempotency: None,
             rehint: Vec::new(),
             children: Vec::new(),
+            blobs: Vec::new(),
         }
     }
 }
@@ -386,6 +392,13 @@ pub trait RunTx: Send {
     /// The immutable definition and the mutable state, borrowed together.
     fn parts(&mut self) -> (&WorkflowDefinition, &mut RunState);
 
+    /// The oldest worker protocol that can safely receive work from this run. This is decided
+    /// from durable catalog provenance while the run is locked, never by inspecting JSON that may
+    /// happen to resemble a protocol-specific descriptor.
+    fn required_worker_protocol_minor(
+        &mut self,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
     /// When the lease held on `node` expires (the renewal capped by the attempt deadline), or
     /// `None` when no lease is held.
     fn lease_expiry(
@@ -419,6 +432,17 @@ pub trait RunTx: Send {
         &mut self,
         subject: &str,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Locks and revalidates the worker session that is about to receive a lease, then returns the
+    /// exact number of leases it can still hold. The lock is retained to commit, so claims on
+    /// different runs and replicas cannot race the session's `max_inflight` limit. Call this after
+    /// the run/drain fences and before activity admission to keep one global lock order.
+    fn worker_session_room(
+        &mut self,
+        session_id: uuid::Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
 
     /// The activity patterns `subject` is bound to in this run's namespace. Read on the
     /// transaction's own connection: a caller that holds one connection and waits for a second
@@ -460,6 +484,27 @@ pub trait RunTx: Send {
     /// effect: the caller that is told yes is the probe, and must lease.
     fn compensation_admitted(
         &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Reserves room under the exact concurrency quota of `activity` for this transaction.
+    /// `false` leaves the step ready. A `true` caller must lease before committing; dropping the
+    /// transaction releases the reservation lock without consuming a place.
+    fn activity_admitted(
+        &mut self,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Freezes the retention of every script execution this new lease can create. For a forward
+    /// attempt this includes its immutable compensation and reconciliation activities; for either
+    /// derived obligation it inherits the pin recorded by the originating forward attempt.
+    ///
+    /// `false` leaves a new forward step ready when the current retention policy is zero. The
+    /// adapter keeps the selected pins in this transaction and adds them to the immutable
+    /// `step.leased` journal detail when the lease is persisted.
+    fn script_execution_admitted(
+        &mut self,
+        node: &NodeId,
         activity: &ActivityName,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 

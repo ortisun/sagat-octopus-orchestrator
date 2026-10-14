@@ -7,12 +7,14 @@
 //! ```
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use flate2::bufread::GzDecoder;
 use sagat_application::scripts::{BundleChecker, Expected};
 use sagat_domain::scripts::Language;
 use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fmt;
+use std::io::{Cursor, Read as _};
 
 /// Files a bundle may hold.
 pub const MAX_FILES: usize = 32;
@@ -21,6 +23,8 @@ pub const MAX_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
 /// A v2 bundle is bounded before and after base64 decoding. The control plane separately applies
 /// its 2 MiB artifact limit; this bound leaves room for JSON framing and the base64 expansion.
 pub const MAX_DECODED_BYTES: usize = 1400 * 1024;
+/// Largest executable produced by expanding a compressed Go artifact.
+pub const MAX_EXPANDED_BYTES: usize = 8 * 1024 * 1024;
 
 /// One file after the bundle's wire encoding has been checked and removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +48,181 @@ fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
 
 fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+fn u64_at(bytes: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
+}
+
+fn be_u16_at(bytes: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn checked_table(bytes: &[u8], offset: u64, count: u16, width: u16) -> Option<usize> {
+    let offset = usize::try_from(offset).ok()?;
+    let size = usize::from(count).checked_mul(usize::from(width))?;
+    offset.checked_add(size).filter(|end| *end <= bytes.len())?;
+    Some(offset)
+}
+
+/// Bounded validation of the native image before it is signed. The kernel remains the final ELF
+/// loader; this excludes interpreters, another architecture, malformed header tables, executable
+/// stacks and writable executable segments without trying to duplicate that loader.
+fn static_elf(bytes: &[u8], target: &str) -> bool {
+    let machine = match target {
+        "linux-amd64" => 62,
+        "linux-arm64" => 183,
+        _ => return false,
+    };
+    if bytes.len() < 64
+        || bytes.len() > MAX_EXPANDED_BYTES
+        || bytes.get(..16) != Some(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0")
+        || u16_at(bytes, 16) != Some(2)
+        || u16_at(bytes, 18) != Some(machine)
+        || u32_at(bytes, 20) != Some(1)
+        || u16_at(bytes, 52) != Some(64)
+        || u16_at(bytes, 54) != Some(56)
+    {
+        return false;
+    }
+    let Some(phnum) = u16_at(bytes, 56).filter(|count| (1..=128).contains(count)) else {
+        return false;
+    };
+    let Some(programs) =
+        u64_at(bytes, 32).and_then(|offset| checked_table(bytes, offset, phnum, 56))
+    else {
+        return false;
+    };
+    let section_count = u16_at(bytes, 60).unwrap_or_default();
+    if section_count != 0
+        && (u16_at(bytes, 58) != Some(64)
+            || u64_at(bytes, 40)
+                .and_then(|offset| checked_table(bytes, offset, section_count, 64))
+                .is_none())
+    {
+        return false;
+    }
+    let entry = u64_at(bytes, 24).unwrap_or_default();
+    let mut executable_entry = false;
+    let mut safe_stack = false;
+    for index in 0..usize::from(phnum) {
+        let at = programs + index * 56;
+        let kind = u32_at(bytes, at).unwrap_or_default();
+        let flags = u32_at(bytes, at + 4).unwrap_or_default();
+        if kind == 3 {
+            return false;
+        }
+        if kind == 0x6474_e551 {
+            safe_stack = flags & 1 == 0;
+        }
+        if kind != 1 {
+            continue;
+        }
+        let Some(offset) = u64_at(bytes, at + 8) else {
+            return false;
+        };
+        let Some(vaddr) = u64_at(bytes, at + 16) else {
+            return false;
+        };
+        let Some(file_size) = u64_at(bytes, at + 32) else {
+            return false;
+        };
+        let Some(memory_size) = u64_at(bytes, at + 40) else {
+            return false;
+        };
+        if memory_size < file_size
+            || offset
+                .checked_add(file_size)
+                .and_then(|end| usize::try_from(end).ok())
+                .is_none_or(|end| end > bytes.len())
+            || flags & 3 == 3
+        {
+            return false;
+        }
+        executable_entry |=
+            flags & 1 == 1 && entry >= vaddr && entry < vaddr.saturating_add(memory_size);
+    }
+    executable_entry && safe_stack
+}
+
+fn canonical_gzip(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 18
+        || bytes.len() > MAX_DECODED_BYTES
+        || bytes.get(..10) != Some(b"\x1f\x8b\x08\0\0\0\0\0\x02\x03")
+    {
+        return None;
+    }
+    let mut decoder = GzDecoder::new(Cursor::new(bytes));
+    let mut expanded = Vec::new();
+    decoder
+        .by_ref()
+        .take((MAX_EXPANDED_BYTES + 1) as u64)
+        .read_to_end(&mut expanded)
+        .ok()?;
+    let consumed = usize::try_from(decoder.into_inner().position()).ok()?;
+    (expanded.len() <= MAX_EXPANDED_BYTES && consumed == bytes.len()).then_some(expanded)
+}
+
+fn java_class_name(bytes: &[u8]) -> Option<String> {
+    if bytes.len() < 14
+        || bytes.get(..4) != Some(b"\xca\xfe\xba\xbe")
+        || be_u16_at(bytes, 4) != Some(0)
+        || be_u16_at(bytes, 6) != Some(61)
+    {
+        return None;
+    }
+    let count = usize::from(be_u16_at(bytes, 8)?);
+    if count < 2 {
+        return None;
+    }
+    let mut utf8 = vec![None; count];
+    let mut classes = vec![None; count];
+    let mut at = 10usize;
+    let mut index = 1usize;
+    while index < count {
+        let tag = *bytes.get(at)?;
+        at += 1;
+        match tag {
+            1 => {
+                let len = usize::from(be_u16_at(bytes, at)?);
+                at += 2;
+                let end = at.checked_add(len)?;
+                utf8[index] = Some(std::str::from_utf8(bytes.get(at..end)?).ok()?.to_owned());
+                at = end;
+            }
+            3 | 4 => at = at.checked_add(4)?.min(bytes.len()),
+            5 | 6 => {
+                at = at.checked_add(8)?.min(bytes.len());
+                index += 1;
+                if index >= count {
+                    return None;
+                }
+            }
+            7 => {
+                classes[index] = Some(usize::from(be_u16_at(bytes, at)?));
+                at += 2;
+            }
+            8 | 16 | 19 | 20 => at = at.checked_add(2)?.min(bytes.len()),
+            9 | 10 | 11 | 12 | 17 | 18 => at = at.checked_add(4)?.min(bytes.len()),
+            15 => at = at.checked_add(3)?.min(bytes.len()),
+            _ => return None,
+        }
+        if at > bytes.len() {
+            return None;
+        }
+        index += 1;
+    }
+    let this_class = usize::from(be_u16_at(bytes, at + 2)?);
+    let name = classes.get(this_class)?.as_ref().copied()?;
+    utf8.get(name)?.clone()
+}
+
+fn java_class(bytes: &[u8], file_name: &str) -> bool {
+    let Some(expected) = file_name.strip_suffix(".class") else {
+        return false;
+    };
+    (expected == "Script" || expected.starts_with("Script$") && expected.len() > 7)
+        && java_class_name(bytes).as_deref() == Some(expected)
 }
 
 fn rva_offset(bytes: &[u8], sections: usize, count: usize, rva: u32, size: u32) -> Option<usize> {
@@ -289,6 +468,75 @@ pub fn decoded_files(bytes: &[u8], language: Language) -> Option<Vec<BundleFile>
                 })
                 .collect()
         }
+        3 if matches!(language, Language::Go | Language::Java) => {
+            const KEYS: [&str; 10] = [
+                "v",
+                "language",
+                "target",
+                "abi",
+                "policy",
+                "inputSchema",
+                "outputSchema",
+                "entry",
+                "encoding",
+                "files",
+            ];
+            let object = value.as_object()?;
+            if object.len() != KEYS.len()
+                || KEYS.iter().any(|key| !object.contains_key(*key))
+                || value.get("abi")?.as_str()? != "sagat-inline-v1"
+            {
+                return None;
+            }
+            let carried_target = value.get("target")?.as_str()?;
+            let (entry, encoding) = match language {
+                Language::Go if matches!(carried_target, "linux-amd64" | "linux-arm64") => {
+                    ("script.elf", "base64+gzip")
+                }
+                Language::Java => ("Script.class", "base64"),
+                _ => return None,
+            };
+            if language == Language::Java && carried_target != "jvm-17"
+                || value.get("entry")?.as_str()? != entry
+                || value.get("encoding")?.as_str()? != encoding
+                || language == Language::Go && files.len() != 1
+            {
+                return None;
+            }
+            let mut seen = HashSet::new();
+            let mut total = 0usize;
+            files
+                .iter()
+                .map(|(name, content)| {
+                    let lower = name.to_ascii_lowercase();
+                    if !plain_name(name) || !seen.insert(lower) {
+                        return None;
+                    }
+                    let encoded = content.as_str()?;
+                    let decoded = STANDARD.decode(encoded).ok()?;
+                    if STANDARD.encode(&decoded) != encoded {
+                        return None;
+                    }
+                    total = total.checked_add(decoded.len())?;
+                    if decoded.is_empty() || total > MAX_DECODED_BYTES {
+                        return None;
+                    }
+                    let valid = match language {
+                        Language::Go => {
+                            name == "script.elf"
+                                && canonical_gzip(&decoded)
+                                    .is_some_and(|elf| static_elf(&elf, carried_target))
+                        }
+                        Language::Java => java_class(&decoded, name),
+                        _ => false,
+                    };
+                    valid.then(|| BundleFile {
+                        name: name.clone(),
+                        bytes: decoded,
+                    })
+                })
+                .collect()
+        }
         _ => None,
     }?;
     let entry = value.get("entry")?.as_str()?;
@@ -296,6 +544,15 @@ pub fn decoded_files(bytes: &[u8], language: Language) -> Option<Vec<BundleFile>
         .iter()
         .any(|file| file.name == entry)
         .then_some(decoded)
+}
+
+/// The signed execution target carried by a v3 bundle.
+#[must_use]
+pub fn target(bytes: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    (value.get("v")?.as_u64()? == 3)
+        .then(|| value.get("target")?.as_str().map(str::to_owned))
+        .flatten()
 }
 
 /// Checks that a bundle says what the version it was built from says.
@@ -340,8 +597,10 @@ impl BundleChecker for Bundles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, GzBuilder};
     use sagat_domain::scripts::Policy;
     use serde_json::json;
+    use std::io::Write as _;
 
     fn bundle(policy: &Policy, extra: Value) -> Vec<u8> {
         let mut value = json!({
@@ -423,6 +682,250 @@ mod tests {
             policy,
             input_schema: None,
             output_schema: None,
+        }
+    }
+
+    fn fake_amd64_elf() -> Vec<u8> {
+        let mut bytes = vec![0u8; 256];
+        bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");
+        bytes[16..18].copy_from_slice(&2u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&62u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        bytes[24..32].copy_from_slice(&0x400080u64.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
+        bytes[52..54].copy_from_slice(&64u16.to_le_bytes());
+        bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
+        bytes[56..58].copy_from_slice(&2u16.to_le_bytes());
+        // Executable, read-only PT_LOAD containing the entry point.
+        bytes[64..68].copy_from_slice(&1u32.to_le_bytes());
+        bytes[68..72].copy_from_slice(&5u32.to_le_bytes());
+        bytes[72..80].copy_from_slice(&0u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x400000u64.to_le_bytes());
+        let file_len = bytes.len() as u64;
+        bytes[96..104].copy_from_slice(&file_len.to_le_bytes());
+        bytes[104..112].copy_from_slice(&file_len.to_le_bytes());
+        bytes[112..120].copy_from_slice(&0x1000u64.to_le_bytes());
+        // A present, non-executable GNU stack.
+        bytes[120..124].copy_from_slice(&0x6474_e551u32.to_le_bytes());
+        bytes[124..128].copy_from_slice(&6u32.to_le_bytes());
+        bytes
+    }
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut writer = GzBuilder::new()
+            .mtime(0)
+            .operating_system(3)
+            .write(Vec::new(), Compression::best());
+        writer.write_all(bytes).expect("gzip bytes");
+        writer.finish().expect("finish gzip")
+    }
+
+    fn go_bundle_for(policy: &Policy, target: &str, compressed: &[u8]) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "v": 3, "language": "go", "target": target, "abi": "sagat-inline-v1",
+            "policy": policy.canonical(), "inputSchema": null, "outputSchema": null,
+            "entry": "script.elf", "encoding": "base64+gzip",
+            "files": {"script.elf": STANDARD.encode(compressed)}
+        }))
+        .expect("go bundle")
+    }
+
+    fn go_bundle(policy: &Policy, compressed: &[u8]) -> Vec<u8> {
+        go_bundle_for(policy, "linux-amd64", compressed)
+    }
+
+    fn go_expected(policy: &Policy) -> Expected<'_> {
+        Expected {
+            language: Language::Go,
+            policy,
+            input_schema: None,
+            output_schema: None,
+        }
+    }
+
+    fn fake_class_named(name: &str) -> Vec<u8> {
+        // Constant pool: Utf8 class name, Class #1; this_class = #2.
+        let mut bytes = b"\xca\xfe\xba\xbe\0\0\0=\0\x03\x01".to_vec();
+        bytes.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(b"\x07\0\x01");
+        bytes.extend_from_slice(&0x0021u16.to_be_bytes());
+        bytes.extend_from_slice(&2u16.to_be_bytes());
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+        bytes
+    }
+
+    fn fake_script_class() -> Vec<u8> {
+        fake_class_named("Script")
+    }
+
+    fn java_bundle(policy: &Policy, class: &[u8]) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "v": 3, "language": "java", "target": "jvm-17", "abi": "sagat-inline-v1",
+            "policy": policy.canonical(), "inputSchema": null, "outputSchema": null,
+            "entry": "Script.class", "encoding": "base64",
+            "files": {"Script.class": STANDARD.encode(class)}
+        }))
+        .expect("java bundle")
+    }
+
+    fn java_expected(policy: &Policy) -> Expected<'_> {
+        Expected {
+            language: Language::Java,
+            policy,
+            input_schema: None,
+            output_schema: None,
+        }
+    }
+
+    #[test]
+    fn v3_go_and_java_bundles_are_additive_to_v1_and_v2() {
+        let policy = Policy::default();
+        let elf = fake_amd64_elf();
+        let go = go_bundle(&policy, &gzip(&elf));
+        assert_eq!(Bundles.check(&go, &go_expected(&policy)), Ok(()));
+        assert_eq!(
+            canonical_gzip(&decoded_files(&go, Language::Go).expect("go")[0].bytes),
+            Some(elf)
+        );
+        let mut arm64 = fake_amd64_elf();
+        arm64[18..20].copy_from_slice(&183u16.to_le_bytes());
+        let arm64 = go_bundle_for(&policy, "linux-arm64", &gzip(&arm64));
+        assert!(decoded_files(&arm64, Language::Go).is_some());
+        assert_eq!(target(&arm64).as_deref(), Some("linux-arm64"));
+
+        let class = fake_script_class();
+        let java = java_bundle(&policy, &class);
+        assert_eq!(Bundles.check(&java, &java_expected(&policy)), Ok(()));
+        assert_eq!(
+            decoded_files(&java, Language::Java).expect("java")[0].bytes,
+            class
+        );
+    }
+
+    #[test]
+    fn malformed_ambiguous_or_unsafe_go_bundles_are_refused() {
+        let policy = Policy::default();
+        let compressed = gzip(&fake_amd64_elf());
+        let mut cases = Vec::new();
+
+        let mut trailing = compressed.clone();
+        trailing.push(0);
+        cases.push(("trailing gzip data", go_bundle(&policy, &trailing)));
+        let mut second_member = compressed.clone();
+        second_member.extend(gzip(&fake_amd64_elf()));
+        cases.push(("a second gzip member", go_bundle(&policy, &second_member)));
+        let mut bad_crc = compressed.clone();
+        let last = bad_crc.len() - 8;
+        bad_crc[last] ^= 1;
+        cases.push(("a bad gzip CRC", go_bundle(&policy, &bad_crc)));
+        cases.push((
+            "a truncated gzip stream",
+            go_bundle(&policy, &compressed[..compressed.len() - 1]),
+        ));
+        let mut noncanonical = compressed.clone();
+        noncanonical[4] = 1;
+        cases.push((
+            "a noncanonical gzip header",
+            go_bundle(&policy, &noncanonical),
+        ));
+        cases.push((
+            "a gzip expansion bomb",
+            go_bundle(&policy, &gzip(&vec![0; MAX_EXPANDED_BYTES + 1])),
+        ));
+        let mut arm64 = fake_amd64_elf();
+        arm64[18..20].copy_from_slice(&183u16.to_le_bytes());
+        cases.push((
+            "an ELF that does not match its signed target",
+            go_bundle(&policy, &gzip(&arm64)),
+        ));
+        cases.push((
+            "an unproven target",
+            go_bundle_for(&policy, "linux-riscv64", &compressed),
+        ));
+
+        for (what, mutate) in [
+            (
+                "another machine",
+                Box::new(|bytes: &mut Vec<u8>| bytes[18] = 3) as Box<dyn Fn(&mut Vec<u8>)>,
+            ),
+            (
+                "an interpreter",
+                Box::new(|bytes: &mut Vec<u8>| bytes[64] = 3),
+            ),
+            (
+                "an executable stack",
+                Box::new(|bytes: &mut Vec<u8>| bytes[124] = 7),
+            ),
+            (
+                "a writable executable load",
+                Box::new(|bytes: &mut Vec<u8>| bytes[68] = 7),
+            ),
+        ] {
+            let mut elf = fake_amd64_elf();
+            mutate(&mut elf);
+            cases.push((what, go_bundle(&policy, &gzip(&elf))));
+        }
+
+        let mut unknown: Value =
+            serde_json::from_slice(&go_bundle(&policy, &compressed)).expect("json");
+        unknown["surprise"] = json!(true);
+        cases.push((
+            "an unknown envelope member",
+            serde_json::to_vec(&unknown).expect("json"),
+        ));
+        let duplicate = String::from_utf8(go_bundle(&policy, &compressed))
+            .expect("utf8")
+            .replacen("{\"abi\"", "{\"v\":3,\"abi\"", 1)
+            .into_bytes();
+        cases.push(("a duplicate envelope member", duplicate));
+
+        for (what, bytes) in cases {
+            assert!(
+                Bundles.check(&bytes, &go_expected(&policy)).is_err(),
+                "accepted {what}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_mismatched_java_classes_are_refused() {
+        let policy = Policy::default();
+        let valid = fake_script_class();
+        let mut cases = Vec::new();
+        let mut preview = valid.clone();
+        preview[4..6].copy_from_slice(&u16::MAX.to_be_bytes());
+        cases.push(("a preview class", java_bundle(&policy, &preview)));
+        let mut newer = valid.clone();
+        newer[6..8].copy_from_slice(&62u16.to_be_bytes());
+        cases.push(("another class major", java_bundle(&policy, &newer)));
+        cases.push((
+            "a mismatched internal class name",
+            java_bundle(&policy, &fake_class_named("Other")),
+        ));
+        let mut jar: Value = serde_json::from_slice(&java_bundle(&policy, &valid)).expect("json");
+        jar["files"] = json!({"script.jar": STANDARD.encode(&valid)});
+        cases.push(("a jar", serde_json::to_vec(&jar).expect("json")));
+        let mut arbitrary: Value =
+            serde_json::from_slice(&java_bundle(&policy, &valid)).expect("json");
+        arbitrary["files"] = json!({"Other.class": STANDARD.encode(fake_class_named("Other"))});
+        cases.push((
+            "an arbitrary class",
+            serde_json::to_vec(&arbitrary).expect("json"),
+        ));
+        let mut unknown: Value =
+            serde_json::from_slice(&java_bundle(&policy, &valid)).expect("json");
+        unknown["surprise"] = json!(true);
+        cases.push((
+            "an unknown envelope member",
+            serde_json::to_vec(&unknown).expect("json"),
+        ));
+
+        for (what, bytes) in cases {
+            assert!(
+                Bundles.check(&bytes, &java_expected(&policy)).is_err(),
+                "accepted {what}"
+            );
         }
     }
 

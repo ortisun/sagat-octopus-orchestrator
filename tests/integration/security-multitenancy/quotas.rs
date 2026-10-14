@@ -8,6 +8,7 @@ use sagat_application::quotas::{QuotaLookup, StoredLimit};
 use sagat_application::runs::RunOperation;
 use sagat_domain::identity::{NamespaceId, Principal, Role};
 use sagat_domain::quota::{MAX_LIMIT, QuotaResource, QuotaScope, QuotaSource};
+use sagat_domain::workflow::ActivityName;
 use serde_json::json;
 
 use crate::support::engine::{World, activity, child_node, ctx, document, subject_of, world};
@@ -28,6 +29,83 @@ async fn set_in_namespace(w: &World, resource: QuotaResource, value: u64) {
 
 fn waiting_flow(name: &str) -> serde_json::Value {
     document(name, "a", vec![activity("a")])
+}
+
+#[tokio::test]
+async fn activity_limits_are_authorized_ceiling_checked_tenant_bound_and_audited() {
+    let w = world().await;
+    let activity = ActivityName::parse("payment.capture").expect("activity");
+    assert!(matches!(
+        w.quotas
+            .set_activity_limit(&w.worker, w.namespace.id(), activity.clone(), 2, &ctx())
+            .await,
+        Err(AppError::Forbidden { .. })
+    ));
+    assert!(matches!(
+        w.quotas
+            .set_activity_limit(
+                &w.admin,
+                w.namespace.id(),
+                activity.clone(),
+                MAX_LIMIT + 1,
+                &ctx()
+            )
+            .await,
+        Err(AppError::NotAllowed(_))
+    ));
+    assert_eq!(
+        w.quotas
+            .set_activity_limit(
+                &w.admin,
+                w.other_namespace.id(),
+                activity.clone(),
+                2,
+                &ctx()
+            )
+            .await,
+        Err(AppError::NotFound)
+    );
+    let view = w
+        .quotas
+        .set_activity_limit(&w.admin, w.namespace.id(), activity.clone(), 2, &ctx())
+        .await
+        .expect("set activity quota");
+    assert_eq!((view.limit, view.used, view.overridden), (2, 0, true));
+    let listed = w
+        .quotas
+        .list_activity_limits(&w.admin, w.namespace.id(), &ctx())
+        .await
+        .expect("list activity quotas");
+    assert_eq!(listed, [view]);
+    w.quotas
+        .grant_ceiling(
+            w.admin.tenant_id(),
+            QuotaResource::ActivityConcurrency,
+            Some(1),
+        )
+        .await
+        .expect("lower ceiling");
+    let limited = w
+        .quotas
+        .list_activity_limits(&w.admin, w.namespace.id(), &ctx())
+        .await
+        .expect("list lowered activity quota");
+    assert_eq!((limited[0].limit, limited[0].ceiling), (1, 1));
+    let audit: (String, String) = sqlx::query_as(
+        "SELECT action, reason FROM audit_records WHERE tenant_id = $1 \
+         AND action = 'quota.changed' AND reason LIKE 'activity payment.capture%'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        audit,
+        (
+            "quota.changed".into(),
+            "activity payment.capture concurrency = 2".into()
+        )
+    );
 }
 
 // ------------------------------------------------------------- runs
@@ -324,6 +402,47 @@ async fn a_tenant_holds_a_bounded_number_of_worker_sessions_and_a_reconnect_is_n
         .expect("a reconnect at the limit replaces its own session");
 }
 
+#[tokio::test]
+async fn worker_registration_reconnect_and_session_renewal_survive_a_full_content_quota() {
+    let w = world().await;
+    set(&w, QuotaResource::TenantContentBytes, 0).await;
+    sqlx::query("UPDATE quota_accounting_control SET content_enforcement_enabled = true")
+        .execute(&w.db.pool)
+        .await
+        .expect("enable content enforcement");
+    let caps = sagat_application::worker::Capabilities {
+        activities: vec!["act.a".into()],
+        languages: vec!["rust".into()],
+        pools: vec!["primary".into()],
+        max_inflight: 4,
+        protocol_version: "1".into(),
+    };
+    let first = w
+        .workers
+        .register(&w.worker, "payments", "quota-safe", &caps)
+        .await
+        .expect("register at zero content allowance");
+    let again = w
+        .workers
+        .register(&w.worker, "payments", "quota-safe", &caps)
+        .await
+        .expect("reconnect at zero content allowance");
+    assert_eq!(again.worker_id, first.worker_id);
+    assert!(
+        w.workers
+            .poll(
+                &w.worker,
+                again.worker_id,
+                again.session_token.expose(),
+                1,
+                Some("quota-safe-session-renewal"),
+            )
+            .await
+            .expect("renew session at zero content allowance")
+            .is_empty()
+    );
+}
+
 // ------------------------------------------------------------- administration
 
 async fn workflows_limit(
@@ -392,12 +511,20 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::TenantActiveRuns, true),
             (QuotaResource::Workflows, false),
             (QuotaResource::WorkerSessions, true),
+            (QuotaResource::ActivityConcurrency, false),
             (QuotaResource::Secrets, false),
             (QuotaResource::EventEndpoints, false),
             (QuotaResource::WebhookSubscriptions, false),
+            (QuotaResource::BrokerSubscriptions, false),
             (QuotaResource::Connectors, false),
             (QuotaResource::Scripts, false),
             (QuotaResource::ScriptJobs, false),
+            (QuotaResource::TenantContentBytes, true),
+            (QuotaResource::TenantLogBytes, true),
+            (QuotaResource::ApiRequestsPerSecond, false),
+            (QuotaResource::EventsPerSecond, false),
+            (QuotaResource::EventRetentionSeconds, false),
+            (QuotaResource::ScriptRetentionDays, false),
         ]
     );
     let used = tenant_view
@@ -421,12 +548,18 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
         vec![
             (QuotaResource::ActiveRuns, Some(1)),
             (QuotaResource::Workflows, Some(1)),
+            (QuotaResource::ActivityConcurrency, Some(0)),
             (QuotaResource::Secrets, Some(0)),
             (QuotaResource::EventEndpoints, Some(0)),
             (QuotaResource::WebhookSubscriptions, Some(0)),
+            (QuotaResource::BrokerSubscriptions, Some(0)),
             (QuotaResource::Connectors, Some(0)),
             (QuotaResource::Scripts, Some(0)),
             (QuotaResource::ScriptJobs, Some(0)),
+            (QuotaResource::ApiRequestsPerSecond, None),
+            (QuotaResource::EventsPerSecond, None),
+            (QuotaResource::EventRetentionSeconds, None),
+            (QuotaResource::ScriptRetentionDays, None),
         ]
     );
 }
@@ -607,23 +740,25 @@ async fn a_tenant_administrator_cannot_raise_any_limit_above_the_ceiling_the_pla
         let level = level_of(&w, resource);
         let ceiling = resource.default_limit();
 
-        let refused = w
-            .quotas
-            .set(&w.admin, level, resource, ceiling + 1, &ctx())
-            .await;
-        assert!(
-            matches!(refused, Err(AppError::NotAllowed(reason)) if reason.contains("ceiling")),
-            "{resource}: {refused:?}"
-        );
-        // Not even the largest value a limit can take: that is the attack the ceiling exists for.
-        let refused = w
-            .quotas
-            .set(&w.admin, level, resource, MAX_LIMIT, &ctx())
-            .await;
-        assert!(
-            matches!(refused, Err(AppError::NotAllowed(_))),
-            "{resource}: {refused:?}"
-        );
+        if ceiling < resource.maximum() {
+            let refused = w
+                .quotas
+                .set(&w.admin, level, resource, ceiling + 1, &ctx())
+                .await;
+            assert!(
+                matches!(refused, Err(AppError::NotAllowed(reason)) if reason.contains("ceiling")),
+                "{resource}: {refused:?}"
+            );
+            // The resource-specific maximum still cannot bypass a lower platform ceiling.
+            let refused = w
+                .quotas
+                .set(&w.admin, level, resource, resource.maximum(), &ctx())
+                .await;
+            assert!(
+                matches!(refused, Err(AppError::NotAllowed(_))),
+                "{resource}: {refused:?}"
+            );
+        }
 
         // The ceiling itself is allowed, and the view says where the room ends.
         let view = w

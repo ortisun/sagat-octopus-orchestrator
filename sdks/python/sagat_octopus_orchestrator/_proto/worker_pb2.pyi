@@ -206,6 +206,86 @@ class ResolveSecretsResponse(_message.Message):
     secrets: _containers.RepeatedCompositeFieldContainer[ResolvedSecret]
     def __init__(self, secrets: _Optional[_Iterable[_Union[ResolvedSecret, _Mapping]]] = ...) -> None: ...
 
+class WriteBlobRequest(_message.Message):
+    __slots__ = ("header", "chunk")
+    HEADER_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_FIELD_NUMBER: _ClassVar[int]
+    header: WriteBlobHeader
+    chunk: bytes
+    def __init__(self, header: _Optional[_Union[WriteBlobHeader, _Mapping]] = ..., chunk: _Optional[bytes] = ...) -> None: ...
+
+class WriteBlobHeader(_message.Message):
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "content_type", "expected_size", "expected_sha256")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_TYPE_FIELD_NUMBER: _ClassVar[int]
+    EXPECTED_SIZE_FIELD_NUMBER: _ClassVar[int]
+    EXPECTED_SHA256_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    run_id: str
+    step_id: str
+    attempt: int
+    generation: int
+    lease_token: str
+    content_type: str
+    expected_size: int
+    expected_sha256: str
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., content_type: _Optional[str] = ..., expected_size: _Optional[int] = ..., expected_sha256: _Optional[str] = ...) -> None: ...
+
+class WriteBlobResponse(_message.Message):
+    __slots__ = ("blob_id", "size", "sha256", "content_type")
+    BLOB_ID_FIELD_NUMBER: _ClassVar[int]
+    SIZE_FIELD_NUMBER: _ClassVar[int]
+    SHA256_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_TYPE_FIELD_NUMBER: _ClassVar[int]
+    blob_id: str
+    size: int
+    sha256: str
+    content_type: str
+    def __init__(self, blob_id: _Optional[str] = ..., size: _Optional[int] = ..., sha256: _Optional[str] = ..., content_type: _Optional[str] = ...) -> None: ...
+
+class ReadBlobRequest(_message.Message):
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "blob_id")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    BLOB_ID_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    run_id: str
+    step_id: str
+    attempt: int
+    generation: int
+    lease_token: str
+    blob_id: str
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., blob_id: _Optional[str] = ...) -> None: ...
+
+class ReadBlobResponse(_message.Message):
+    __slots__ = ("header", "chunk")
+    HEADER_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_FIELD_NUMBER: _ClassVar[int]
+    header: ReadBlobHeader
+    chunk: bytes
+    def __init__(self, header: _Optional[_Union[ReadBlobHeader, _Mapping]] = ..., chunk: _Optional[bytes] = ...) -> None: ...
+
+class ReadBlobHeader(_message.Message):
+    __slots__ = ("blob_id", "size", "sha256", "content_type")
+    BLOB_ID_FIELD_NUMBER: _ClassVar[int]
+    SIZE_FIELD_NUMBER: _ClassVar[int]
+    SHA256_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_TYPE_FIELD_NUMBER: _ClassVar[int]
+    blob_id: str
+    size: int
+    sha256: str
+    content_type: str
+    def __init__(self, blob_id: _Optional[str] = ..., size: _Optional[int] = ..., sha256: _Optional[str] = ..., content_type: _Optional[str] = ...) -> None: ...
+
 class StepCommandResponse(_message.Message):
     __slots__ = ("command_id", "already_applied", "step_status", "run_status")
     COMMAND_ID_FIELD_NUMBER: _ClassVar[int]

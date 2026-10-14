@@ -189,6 +189,40 @@ async fn workers_of_another_tenant_never_receive_tasks_and_cannot_use_foreign_se
 }
 
 #[tokio::test]
+async fn an_activity_quota_never_crosses_the_tenant_boundary() {
+    let w = world().await;
+    sqlx::query(
+        "INSERT INTO activity_quota_limits \
+         (tenant_id, namespace_id, activity, max_inflight, updated_by) VALUES ($1, $2, 'act.a', 0, 'test')",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("activity quota");
+    let (mine, _) = w
+        .publish(document("capped-mine", "a", vec![activity("a")]))
+        .await;
+    w.start(mine, &json!({})).await;
+    let theirs = w
+        .publish_as_other_tenant(document("uncapped-theirs", "a", vec![activity("a")]))
+        .await;
+    w.start_as_other_tenant(theirs, &json!({}))
+        .await
+        .expect("other run");
+
+    let mine = w.session(&["act.a"]).await;
+    assert!(w.poll(&mine, 1).await.is_empty());
+    let outsider = Principal::new(
+        w.other_admin.tenant_id(),
+        subject("their-worker"),
+        Role::Worker,
+    );
+    let theirs = w.session_as(&outsider, &["act.a"], 1).await;
+    assert_eq!(w.poll(&theirs, 1).await.len(), 1);
+}
+
+#[tokio::test]
 async fn a_worker_of_another_tenant_cannot_report_on_my_attempt_even_with_its_token() {
     let w = world().await;
     let (wf, _) = w.publish(chain("stolen-lease")).await;

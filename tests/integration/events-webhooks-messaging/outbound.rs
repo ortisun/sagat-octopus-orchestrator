@@ -10,8 +10,8 @@ use sagat_application::outbound::{
 };
 use sagat_domain::identity::Role;
 use sagat_domain::outbound::{
-    AttemptOutcome, DeliveryLimits, DeliveryStatus, OutboundKind, SubscriptionId,
-    SubscriptionStatus, TargetUrl,
+    AttemptOutcome, DeliveryLimits, DeliveryStatus, OutboundDestination, OutboundKind,
+    SubscriptionId, SubscriptionStatus, TargetUrl,
 };
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::secrets::SecretName;
@@ -57,8 +57,10 @@ async fn subscribe_with(
         tenant_id: w.admin.tenant_id(),
         namespace_id: w.namespace.id(),
         name: slug(name),
-        url: settings.url,
-        secret_name: settings.secret_name,
+        destination: OutboundDestination::Webhook {
+            url: settings.url,
+            signing_secret: settings.secret_name,
+        },
         kinds: settings.kinds,
         limits: settings.limits,
         status: settings.status,
@@ -699,8 +701,10 @@ async fn subscriptions_belong_to_their_tenant_and_the_run_of_another_is_not_thei
         tenant_id: w.other_admin.tenant_id(),
         namespace_id: w.other_namespace.id(),
         name: slug("theirs"),
-        url: TargetUrl::parse(&receiver.url).expect("url"),
-        secret_name: SecretName::parse(SECRET_NAME).expect("secret"),
+        destination: OutboundDestination::Webhook {
+            url: TargetUrl::parse(&receiver.url).expect("url"),
+            signing_secret: SecretName::parse(SECRET_NAME).expect("secret"),
+        },
         kinds: vec![OutboundKind::RunFinished],
         limits: DeliveryLimits::default(),
         status: SubscriptionStatus::Active,

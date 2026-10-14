@@ -55,7 +55,7 @@ fn tool(text: &str) -> Result<(), String> {
 }
 
 fn as_json(text: &str) -> Value {
-    serde_yaml_ng::from_str(text).expect("a YAML document")
+    serde_saphyr::from_str(text).expect("a YAML document")
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn the_limits_are_the_same_on_both_sides() {
     };
     let entry = |i: usize| json!({"name": format!("flow-{i}"), "file": format!("f{i}.json")});
     let both = |instance: &Value| {
-        let text = serde_yaml_ng::to_string(instance).expect("yaml");
+        let text = serde_saphyr::to_string(instance).expect("yaml");
         (schema.is_valid(instance), tool(&text).is_ok())
     };
 

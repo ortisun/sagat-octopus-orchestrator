@@ -6,3 +6,5 @@
 mod support;
 
 mod conformance;
+
+mod idempotency;

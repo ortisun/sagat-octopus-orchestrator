@@ -531,3 +531,10 @@ async def test_a_configuration_that_cannot_work_is_refused_at_construction() -> 
         with pytest.raises(SagatError) as caught:
             SagatClient(config)
         assert caught.value.code == "VALIDATION_FAILED"
+
+
+@pytest.mark.parametrize("value", [True, 1.5])
+async def test_run_input_expected_size_is_a_runtime_integer(value: object, make_client: MakeClient) -> None:
+    with pytest.raises(SagatError) as caught:
+        await make_client().upload_run_input([b"body"], expected_size=value)  # type: ignore[arg-type]
+    assert caught.value.code == "VALIDATION_FAILED"

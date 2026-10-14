@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Link } from 'react-router';
 import type { RuntimeEdge, RuntimeNode } from '../../api/types';
 import type { RunModel } from '../../model/runGraph';
+import { kindOf } from '../../model/registry';
 import { nodeStatus } from '../../model/status';
 import { Banner } from '../../ui/Banner';
 import { ErrorState } from '../../ui/ErrorState';
@@ -18,6 +19,15 @@ import { OperationList } from './Operations';
 import type { Operation } from './ops';
 import { childPath, sagaWords } from './RunNodeCard';
 import { clip, formatDuration } from './time';
+import { PayloadInspector } from './PayloadInspection';
+
+function detailedKind(node: RuntimeNode): string {
+  const summary = kindView(node);
+  if (summary.variant === 'forward') return kindOf(node.type)?.label ?? node.type;
+  const suffix = summary.variant === 'undo' ? /~c$/ : /~r$/;
+  const forward = node.forward ?? node.id.replace(suffix, '');
+  return summary.variant === 'undo' ? `Undo of ${forward}` : `Lookup for ${forward}`;
+}
 
 function AttemptsTable({ history, running }: { history: StepHistory; running: boolean }) {
   const now = useNow();
@@ -118,7 +128,7 @@ function Links({ edges, model, id, onSelect }: { edges: readonly RuntimeEdge[]; 
           {items.map((item, i) => (
             <li key={`${item.id}-${i}`}>
               <button type="button" className="link" onClick={() => onSelect(item.id)}>
-                {clip(item.id, 60)}
+                {item.id}
               </button>{' '}
               <span className="hint">
                 {item.kind}, {stateWords(item.state)}
@@ -144,6 +154,7 @@ function Links({ edges, model, id, onSelect }: { edges: readonly RuntimeEdge[]; 
  */
 export function NodePanel({
   node,
+  runId,
   selectedId,
   model,
   journal,
@@ -155,6 +166,7 @@ export function NodePanel({
   onShowInTimeline,
 }: {
   node: RuntimeNode | undefined;
+  runId: string;
   selectedId: string;
   model: RunModel;
   journal: JournalStore;
@@ -176,14 +188,15 @@ export function NodePanel({
     void journal.loadAll();
   }, [journal]);
   const history = useMemo(() => stepHistory(snapshot.entries, selectedId), [snapshot.entries, selectedId]);
+  const retainedPayloads = snapshot.entries.filter((entry) => entry.stepId === selectedId && entry.payloadRef !== null);
   const traces = [...new Set(snapshot.entries.filter((e) => e.stepId === selectedId && e.detail === 'journal' && e.traceId).map((e) => e.traceId as string))];
   const knowsTraces = snapshot.entries.some((e) => e.stepId === selectedId && e.detail === 'journal');
-  const kind = node === undefined ? undefined : kindView(node);
+  const kind = node === undefined ? undefined : detailedKind(node);
   const waiting = node === undefined ? undefined : waitingWords(node);
   return (
-    <aside ref={panel} className="rn-panel" aria-label={`Details of ${clip(selectedId, 60)}`} data-testid="node-panel">
+    <aside ref={panel} className="rn-panel" aria-label={`Details of ${selectedId}`} data-testid="node-panel">
       <div className="rn-panel-head">
-        <h2 title={selectedId}>{clip(selectedId, 60)}</h2>
+        <h2>{selectedId}</h2>
         <button type="button" className="btn" onClick={onClose}>
           Close details
         </button>
@@ -195,13 +208,13 @@ export function NodePanel({
           <div className="rn-selected-step" role="group" aria-label="Selected step">
             <div className="rn-selected-step-name">
               <span className="rn-micro-label">Selected step</span>
-              <strong title={selectedId}>{clip(selectedId, 60)}</strong>
+              <strong>{selectedId}</strong>
               <StatusBadge view={nodeStatus(node.status)} />
             </div>
             <dl>
               <div>
                 <dt>Kind</dt>
-                <dd>{kind.label}</dd>
+                <dd>{kind}</dd>
               </div>
               <div>
                 <dt>Attempts</dt>
@@ -210,7 +223,7 @@ export function NodePanel({
               {node.failureCode ? (
                 <div>
                   <dt>Failure code</dt>
-                  <dd>{clip(node.failureCode, 64)}</dd>
+                  <dd>{node.failureCode}</dd>
                 </div>
               ) : null}
               {waiting ? (
@@ -224,7 +237,7 @@ export function NodePanel({
           <Facts node={node} />
 
           <h3>Actions</h3>
-          <OperationList operations={operations} label={`Actions for ${clip(selectedId, 60)}`} onChoose={onChoose} />
+          <OperationList operations={operations} label={`Actions for ${selectedId}`} onChoose={onChoose} />
 
           <h3>Attempts</h3>
           {snapshot.error !== undefined ? <ErrorState error={snapshot.error} what="Reading the journal" onRetry={() => void journal.loadMore()} /> : null}
@@ -267,6 +280,20 @@ export function NodePanel({
             <p className="hint">Trace ids come with the journal events, which are not read yet.</p>
           )}
           <p className="hint">The journal keeps no input or output of a step, only a digest: the payload is redacted.</p>
+          {retainedPayloads.length > 0 ? (
+            <div className="rn-payload-events">
+              <h3>Retained payloads</h3>
+              {retainedPayloads.map((entry) => (
+                <PayloadInspector
+                  key={entry.seq}
+                  runId={runId}
+                  selector={{ source: 'journal', sequence: entry.seq }}
+                  label={`Inspect redacted payload from event ${entry.seq}`}
+                  compact
+                />
+              ))}
+            </div>
+          ) : null}
 
           <h3>Structure</h3>
           <Links edges={model.edges} model={model} id={selectedId} onSelect={onSelect} />
@@ -274,7 +301,7 @@ export function NodePanel({
             <p>
               About step{' '}
               <button type="button" className="link" onClick={() => onSelect(node.forward as string)}>
-                {clip(node.forward, 60)}
+                {node.forward}
               </button>
               .
             </p>
@@ -284,7 +311,7 @@ export function NodePanel({
               Cannot be undone:{' '}
               {node.saga.irreversible.slice(0, 20).map((id) => (
                 <button key={id} type="button" className="link" onClick={() => onSelect(id)}>
-                  {clip(id, 40)}
+                  {id}
                 </button>
               ))}
             </p>

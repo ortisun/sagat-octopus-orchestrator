@@ -16,7 +16,9 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::{RequestBodyTimeoutLayer, TimeoutLayer};
 
+mod admission;
 pub mod auth;
+pub mod blobs;
 mod concurrency;
 mod context;
 mod core;
@@ -38,6 +40,7 @@ pub mod streams;
 pub mod studio;
 
 pub use auth::{AuthConfig, HttpJwksFetcher, TokenVerifier};
+pub use blobs::HttpBlobTransfer;
 pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
 pub use core::Core;
 pub use exec::{Exec, ExecState};
@@ -46,7 +49,7 @@ pub use governance::{GovState, Governance};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
 };
-pub use server::{ServerConfig, serve};
+pub use server::{HttpTlsConfig, ServerConfig, serve, serve_tls};
 
 /// Shared handler state. Cloning is cheap (a few `Arc`s).
 pub struct AppState<S, C> {
@@ -210,10 +213,6 @@ where
             axum::routing::post(identity::create_namespace::<S, C>),
         )
         .route("/namespaces", get(identity::list_namespaces::<S, C>))
-        .route(
-            "/namespaces/{namespace_id}",
-            get(identity::get_namespace::<S, C>),
-        )
         .route_layer(axum::middleware::from_fn_with_state(
             slots,
             limits::shed_excess,
@@ -255,6 +254,7 @@ where
     S: IdentityStore + 'static,
     C: Clock + 'static,
     G: sagat_application::quotas::QuotaStore
+        + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::egress::EgressStore
@@ -284,6 +284,7 @@ where
     S: IdentityStore + 'static,
     C: Clock + 'static,
     G: sagat_application::quotas::QuotaStore
+        + sagat_application::api_admission::ApiAdmissionStore
         + sagat_application::bindings::BindingStore
         + sagat_application::secrets::SecretStore
         + sagat_application::egress::EgressStore
@@ -321,6 +322,15 @@ where
             "/namespaces/{namespace_id}/quotas/{resource}",
             axum::routing::put(gov::set_namespace_quota::<B<S, C, G>>)
                 .delete(gov::clear_namespace_quota::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/activity-quotas",
+            get(gov::list_activity_quotas::<B<S, C, G>>),
+        )
+        .route(
+            "/namespaces/{namespace_id}/activity-quotas/{activity}",
+            axum::routing::put(gov::set_activity_quota::<B<S, C, G>>)
+                .delete(gov::clear_activity_quota::<B<S, C, G>>),
         )
         .route(
             "/namespaces/{namespace_id}/worker-bindings",
@@ -377,7 +387,7 @@ where
             );
     }
     let mut router = router.layer(RequestBodyLimitLayer::new(limits.max_body_bytes));
-    // Without a key ring a webhook cannot be verified: the event routes do not exist.
+    // The event service is deployment-gated with the key ring required by its HMAC profiles.
     if serves_events {
         use routes::events as ev;
         router = router.merge(
@@ -437,6 +447,33 @@ where
                 .route(
                     "/namespaces/{namespace_id}/webhook-subscriptions/{subscription_id}/redrive",
                     axum::routing::post(ob::redrive_dead::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions",
+                    get(ob::list_broker_subscriptions::<B<S, C, G>>)
+                        .post(ob::create_broker_subscription::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}",
+                    get(ob::get_broker_subscription::<B<S, C, G>>)
+                        .put(ob::update_broker_subscription::<B<S, C, G>>)
+                        .delete(ob::delete_broker_subscription::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/deliveries",
+                    get(ob::list_broker_deliveries::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/deliveries/{delivery_id}",
+                    get(ob::get_broker_delivery::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/deliveries/{delivery_id}/redrive",
+                    axum::routing::post(ob::redrive_broker_delivery::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/broker-subscriptions/{subscription_id}/redrive",
+                    axum::routing::post(ob::redrive_broker_dead::<B<S, C, G>>),
                 )
                 .layer(RequestBodyLimitLayer::new(limits.max_body_bytes)),
         );
@@ -610,6 +647,44 @@ where
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_in_flight.max(1)));
     let shed = || axum::middleware::from_fn_with_state(Arc::clone(&slots), limits::shed_excess);
 
+    // Large streaming uploads have their own size/time budget. Ordinary JSON routes retain
+    // their existing protection; no caller can smuggle a larger run request through this path.
+    let uploads = if let Some(blobs) = state.runs().input_blobs() {
+        let upload_limits = HttpLimits {
+            max_body_bytes: usize::try_from(blobs.limits().max_bytes).unwrap_or(usize::MAX),
+            request_timeout: state.blob_transfers().limits.timeout,
+            ..limits
+        };
+        protect(
+            Router::new()
+                .route(
+                    "/v1/run-input-blobs",
+                    axum::routing::post(blobs::upload::<B<S, C, P, X, E>>),
+                )
+                .route_layer(shed())
+                .route_layer(from_fn(context::record_route))
+                .with_state(state.clone()),
+            upload_limits,
+        )
+    } else {
+        Router::new()
+    };
+
+    let payload_inspections = if state.payload_inspections().is_some() {
+        Router::new()
+            .route(
+                "/runs/{run_id}/payload-inspections",
+                axum::routing::post(
+                    routes::payload_inspection::inspect_payload::<B<S, C, P, X, E>>,
+                ),
+            )
+            .layer(RequestBodyLimitLayer::new(1024))
+            .route_layer(shed())
+            .with_state(state.clone())
+    } else {
+        Router::new()
+    };
+
     let identity_routes = Router::new()
         .route("/auth/context", get(identity::auth_context))
         .route("/version", get(identity::platform_version))
@@ -626,10 +701,6 @@ where
             axum::routing::post(identity::create_namespace::<S, C>),
         )
         .route("/namespaces", get(identity::list_namespaces::<S, C>))
-        .route(
-            "/namespaces/{namespace_id}",
-            get(identity::get_namespace::<S, C>),
-        )
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))
         .route_layer(shed())
         .with_state(core.clone());
@@ -686,6 +757,10 @@ where
 
     let exec_routes = Router::new()
         .merge(versioning_routes)
+        .route(
+            "/namespaces/{namespace_id}",
+            get(get_namespace_admitted::<S, C, P, X, E>),
+        )
         .route(
             "/workflows",
             get(ex::list_workflows::<B<S, C, P, X, E>>)
@@ -765,6 +840,7 @@ where
         .route("/health", get(health::health))
         .route("/ready", get(health::ready::<S, C>))
         .merge(identity_routes)
+        .merge(payload_inspections)
         .merge(exec_routes)
         .merge(extra_routes)
         .route_layer(from_fn(context::record_route))
@@ -778,7 +854,46 @@ where
             .max(routes::runner::RUNNER_MAX_BODY_BYTES),
         ..limits
     };
-    protect(Router::new().nest("/v1", v1), outer)
+    // Keep the protected fallback explicit: merging the upload router's default fallback must
+    // not replace the error envelope, correlation headers and telemetry of unmatched routes.
+    protect(
+        Router::new()
+            .nest("/v1", v1)
+            .fallback(|| async { axum::http::StatusCode::NOT_FOUND }),
+        outer,
+    )
+    .merge(uploads)
+}
+
+async fn get_namespace_admitted<S, C, P, X, E>(
+    caller: extract::Caller,
+    axum::extract::State(state): axum::extract::State<ExecState<S, C, P, X, E>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<axum::Json<dto::NamespaceBody>, error::ApiError>
+where
+    S: IdentityStore + 'static,
+    C: Clock + 'static,
+    ExecState<S, C, P, X, E>: Exec,
+{
+    use sagat_application::api_admission::{ApiOperation, ApiTarget};
+    use sagat_domain::identity::NamespaceId;
+
+    let id = id
+        .parse::<NamespaceId>()
+        .map_err(|_| error::ApiError::not_found())?;
+    admission::admit(
+        &state,
+        &caller,
+        ApiOperation::NamespaceRead,
+        ApiTarget::Namespace(id),
+    )
+    .await?;
+    let namespace = state
+        .core
+        .identity
+        .get_namespace(&caller.session.principal, id, &caller.ctx)
+        .await?;
+    Ok(axum::Json(dto::NamespaceBody::from(&namespace)))
 }
 
 /// Wraps a router with the protections every endpoint must have: panic containment, a request

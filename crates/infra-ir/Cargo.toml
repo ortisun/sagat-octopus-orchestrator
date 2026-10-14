@@ -2,6 +2,7 @@
 name = "sagat-infra-ir"
 description = "Adapter that turns the workflow IR (JSON) into the validated domain model, a canonical form and a digest."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

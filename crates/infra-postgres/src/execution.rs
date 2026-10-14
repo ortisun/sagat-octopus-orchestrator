@@ -30,7 +30,7 @@ use sagat_domain::execution::{
     StepState, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
-use sagat_domain::saga::SagaOutcome;
+use sagat_domain::saga::{NodeOrigin, SagaOutcome};
 use sagat_domain::secrets::SecretName;
 use sagat_domain::workflow::{ActivityName, Digest, Node, NodeId, NodeKind, WorkflowDefinition};
 use sha2::{Digest as _, Sha256};
@@ -186,6 +186,23 @@ impl PgRunStore {
 impl RunStore for PgRunStore {
     type Tx = PgRunTx;
 
+    async fn replay_start(
+        &self,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<String>, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let result = replay(
+            &mut tx,
+            tenant,
+            idempotency,
+            &hash(&idempotency.fingerprint),
+        )
+        .await?;
+        tx.rollback().await.map_err(store_error)?;
+        Ok(result)
+    }
+
     async fn create(&self, new: NewRun) -> Result<Applied<PgRunTx>, StoreError> {
         let tenant = new.info.tenant_id;
         let hash = hash(&new.idempotency.fingerprint);
@@ -210,6 +227,27 @@ impl RunStore for PgRunStore {
                 .await
                 .map_err(store_error)?;
             let info = &new.info;
+            let input_blob =
+                match &new.input_blob {
+                    Some(sagat_application::blobs::RunInputBinding::Uploaded(descriptor)) => {
+                        Some(descriptor.id())
+                    }
+                    Some(sagat_application::blobs::RunInputBinding::Inherit(source)) => {
+                        if info.rerun_of != Some(*source)
+                            && info.parent.as_ref().map(|p| p.run) != Some(*source)
+                        {
+                            return Err(StoreError::MissingReference);
+                        }
+                        sqlx::query_scalar::<_, Option<Uuid>>(
+                        "SELECT input_blob_id FROM runs WHERE tenant_id = $1 AND namespace_id = $2 \
+                         AND id = $3 AND input_digest = $4",
+                    )
+                    .bind(tenant.as_uuid()).bind(info.namespace_id.as_uuid()).bind(source.as_uuid())
+                    .bind(&input_digest).fetch_optional(&mut *tx).await.map_err(store_error)?
+                    .flatten().map(sagat_domain::blobs::BlobId::new)
+                    }
+                    None => None,
+                };
             // On a refusal the transaction is rolled back at once: its locks (the parent's row, the
             // tree's, the quota scopes') must not wait for the connection to be reused.
             if let Some(parent) = &info.parent
@@ -235,9 +273,9 @@ impl RunStore for PgRunStore {
                 "INSERT INTO runs (id, tenant_id, namespace_id, workflow_id, workflow_version_id, \
                  status, run_version, paused, input_digest, correlation_id, started_by, trace_id, \
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
-                 depth, root_run_id, trace_parent_span, rerun_of) \
+                 depth, root_run_id, trace_parent_span, rerun_of, input_blob_id) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17, $18)",
+                         $12, $13, $14, $15, $16, $17, $18, $19)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -257,9 +295,22 @@ impl RunStore for PgRunStore {
             .bind(info.root.as_uuid())
             .bind(info.parent_span.as_deref())
             .bind(info.rerun_of.map(|r| r.as_uuid()))
+            .bind(input_blob.map(sagat_domain::blobs::BlobId::as_uuid))
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+            if let Some(sagat_application::blobs::RunInputBinding::Uploaded(descriptor)) =
+                &new.input_blob
+                && let Err(error) = crate::blobs::commit_input(&mut tx, info, descriptor).await
+            {
+                tx.rollback().await.map_err(store_error)?;
+                if matches!(error, StoreError::MissingReference)
+                    && let Some(existing) = self.replay_start(tenant, &new.idempotency).await?
+                {
+                    return Ok(Applied::Replayed(existing));
+                }
+                return Err(error);
+            }
             insert_audit(&mut tx, &new.audit).await?;
             if remember(
                 &mut tx,
@@ -282,11 +333,13 @@ impl RunStore for PgRunStore {
                     data: Some(RunData {
                         run_id: Some(new.info.run_id),
                         input: new.input.clone(),
+                        input_blob,
                         outputs: BTreeMap::new(),
                     }),
                     input_digest,
                     stored: BTreeSet::new(),
                     breaker: self.breaker,
+                    script_retention: BTreeMap::new(),
                     signals: Vec::new(),
                 }));
             }
@@ -375,6 +428,7 @@ impl RunStore for PgRunStore {
             input_digest,
             stored,
             breaker: self.breaker,
+            script_retention: BTreeMap::new(),
             signals: Vec::new(),
         }))
     }
@@ -939,8 +993,24 @@ pub struct PgRunTx {
     /// proposed row before it takes the update path).
     stored: BTreeSet<NodeId>,
     breaker: BreakerPolicy,
+    /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
+    /// them to the matching immutable `step.leased` detail in this transaction.
+    script_retention: BTreeMap<NodeId, ScriptRetentionPins>,
     /// Counted when (and only when) the transaction commits.
     signals: Vec<Signal>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ScriptRetentionPins {
+    script: Option<u16>,
+    compensation: Option<u16>,
+    reconciliation: Option<u16>,
+}
+
+enum ScriptRetentionDecision {
+    NotScript,
+    Refused,
+    Pinned(u16),
 }
 
 impl std::fmt::Debug for PgRunTx {
@@ -968,13 +1038,37 @@ impl RunTx for PgRunTx {
         (&self.def, &mut self.state)
     }
 
+    async fn required_worker_protocol_minor(&mut self) -> Result<u32, StoreError> {
+        let needs_blob_protocol: bool = sqlx::query_scalar(
+            "SELECT r.input_blob_id IS NOT NULL OR EXISTS ( \
+                 SELECT 1 FROM blobs b \
+                 WHERE b.tenant_id = r.tenant_id AND b.namespace_id = r.namespace_id \
+                   AND b.run_id = r.id AND b.purpose = 'STEP_OUTPUT' \
+                   AND b.state = 'COMMITTED') \
+             FROM runs r WHERE r.tenant_id = $1 AND r.id = $2",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(if needs_blob_protocol {
+            sagat_application::worker::BLOB_PROTOCOL_MINOR
+        } else {
+            0
+        })
+    }
+
     async fn data(&mut self) -> Result<&RunData, StoreError> {
         if self.data.is_none() {
             let tenant = self.info.tenant_id.as_uuid();
-            let input: Vec<u8> = sqlx::query_scalar(
-                "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
+            let input_row = sqlx::query(
+                "SELECT p.content, r.input_blob_id FROM runs r JOIN payloads p \
+                 ON p.tenant_id = r.tenant_id AND p.digest = r.input_digest \
+                 WHERE r.tenant_id = $1 AND r.id = $2 AND p.digest = $3",
             )
             .bind(tenant)
+            .bind(self.info.run_id.as_uuid())
             .bind(&self.input_digest)
             .fetch_one(&mut *self.tx)
             .await
@@ -999,7 +1093,9 @@ impl RunTx for PgRunTx {
             }
             self.data = Some(RunData {
                 run_id: Some(self.info.run_id),
-                input,
+                input: col(&input_row, "content")?,
+                input_blob: col::<Option<Uuid>>(&input_row, "input_blob_id")?
+                    .map(sagat_domain::blobs::BlobId::new),
                 outputs,
             });
         }
@@ -1125,6 +1221,45 @@ impl RunTx for PgRunTx {
         .map_err(store_error)
     }
 
+    async fn worker_session_room(
+        &mut self,
+        session_id: Uuid,
+        token_hash: &[u8],
+        subject: &str,
+    ) -> Result<u32, StoreError> {
+        // This row lock serialises claims for the session across runs and replicas. Replacement
+        // and binding revocation update or lock this same row, so stale authority cannot lease
+        // after either operation commits. It is taken after the drain fence and before activity
+        // policy locks to preserve a single lock order.
+        let max_inflight: Option<i32> = sqlx::query_scalar(
+            "SELECT max_inflight FROM worker_sessions \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND id = $3 AND token_hash = $4 \
+               AND subject = $5 AND expires_at > clock_timestamp() FOR UPDATE",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(session_id)
+        .bind(token_hash)
+        .bind(subject)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let Some(max_inflight) = max_inflight else {
+            return Ok(0);
+        };
+        let active: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM steps WHERE tenant_id = $1 \
+             AND status IN ('LEASED', 'RUNNING') AND leased_by = $2",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(session_id.to_string())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let limit = u32::try_from(max_inflight).map_err(|_| corrupt("max inflight"))?;
+        Ok(limit.saturating_sub(u32::try_from(active).unwrap_or(u32::MAX)))
+    }
+
     async fn bound_patterns(&mut self, subject: &str) -> Result<Vec<String>, StoreError> {
         sqlx::query_scalar(
             "SELECT pattern FROM worker_bindings \
@@ -1166,6 +1301,94 @@ impl RunTx for PgRunTx {
             activity.as_str(),
         )
         .await
+    }
+
+    async fn activity_admitted(&mut self, activity: &ActivityName) -> Result<bool, StoreError> {
+        crate::quotas::activity_admitted(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            activity,
+        )
+        .await
+    }
+
+    async fn script_execution_admitted(
+        &mut self,
+        node: &NodeId,
+        activity: &ActivityName,
+    ) -> Result<bool, StoreError> {
+        let origin = self
+            .def
+            .node(node)
+            .map(Node::origin)
+            .cloned()
+            .ok_or_else(|| corrupt("leased node"))?;
+        match origin {
+            NodeOrigin::Compensation(forward) | NodeOrigin::Reconciliation(forward) => {
+                if sagat_domain::scripts::digest_of_activity(activity.as_str()).is_none() {
+                    return Ok(true);
+                }
+                let field = if node.is_compensation() {
+                    "compensationScriptRetentionDays"
+                } else {
+                    "reconciliationScriptRetentionDays"
+                };
+                let days = self
+                    .inherited_script_retention(&forward, field, activity)
+                    .await?;
+                self.script_retention.insert(
+                    node.clone(),
+                    ScriptRetentionPins {
+                        script: Some(days),
+                        ..ScriptRetentionPins::default()
+                    },
+                );
+                Ok(true)
+            }
+            NodeOrigin::Declared => {
+                let compensation = self
+                    .def
+                    .node(&node.compensation())
+                    .and_then(|node| match node.kind() {
+                        NodeKind::Activity { activity, .. } => Some(activity.clone()),
+                        _ => None,
+                    });
+                let reconciliation =
+                    self.def
+                        .node(&node.reconciliation())
+                        .and_then(|node| match node.kind() {
+                            NodeKind::Activity { activity, .. } => Some(activity.clone()),
+                            _ => None,
+                        });
+                let mut pins = ScriptRetentionPins::default();
+                for (role, candidate) in [
+                    (0_u8, Some(activity.clone())),
+                    (1_u8, compensation),
+                    (2_u8, reconciliation),
+                ] {
+                    let Some(candidate) = candidate else {
+                        continue;
+                    };
+                    match self.current_script_retention(&candidate).await? {
+                        ScriptRetentionDecision::NotScript => {}
+                        ScriptRetentionDecision::Refused => return Ok(false),
+                        ScriptRetentionDecision::Pinned(days) => match role {
+                            0 => pins.script = Some(days),
+                            1 => pins.compensation = Some(days),
+                            _ => pins.reconciliation = Some(days),
+                        },
+                    }
+                }
+                if pins.script.is_some()
+                    || pins.compensation.is_some()
+                    || pins.reconciliation.is_some()
+                {
+                    self.script_retention.insert(node.clone(), pins);
+                }
+                Ok(true)
+            }
+        }
     }
 
     async fn lease_matches(
@@ -1227,6 +1450,12 @@ impl RunTx for PgRunTx {
             }
         }
 
+        // 1b. The blobs those outputs are descriptors of, used for good in this very transaction: a
+        // blob that was swept, already used or altered makes the whole report fail, never half of it.
+        for blob in &effects.blobs {
+            crate::blobs::commit(&mut self.tx, tenant, blob).await?;
+        }
+
         // 2. The journal, and the nodes the events touched.
         let mut touched: BTreeSet<NodeId> = BTreeSet::new();
         // Sagas whose state changed, to be written after the steps.
@@ -1238,7 +1467,28 @@ impl RunTx for PgRunTx {
         for (offset, event) in events.iter().enumerate() {
             let seq = i64::try_from(self.persisted + 1 + offset as u64)
                 .map_err(|_| corrupt("sequence"))?;
-            let encoded = encode(event);
+            let mut encoded = encode(event);
+            if let RunEvent::StepLeased { node, .. } = event
+                && let Some(pins) = self.script_retention.get(node)
+            {
+                let detail =
+                    encoded
+                        .detail
+                        .as_object_mut()
+                        .ok_or_else(|| StoreError::Internal {
+                            detail: "a lease event did not encode as an object".into(),
+                        })?;
+                detail.insert("scriptRetentionPolicyVersion".into(), serde_json::json!(1));
+                for (name, value) in [
+                    ("scriptRetentionDays", pins.script),
+                    ("compensationScriptRetentionDays", pins.compensation),
+                    ("reconciliationScriptRetentionDays", pins.reconciliation),
+                ] {
+                    if let Some(days) = value {
+                        detail.insert(name.into(), serde_json::json!(days));
+                    }
+                }
+            }
             let payload = event
                 .node()
                 .filter(|_| {
@@ -1461,6 +1711,109 @@ impl RunTx for PgRunTx {
 }
 
 impl PgRunTx {
+    async fn ready_script_retention(
+        &mut self,
+        activity: &ActivityName,
+    ) -> Result<Option<u16>, StoreError> {
+        let Some(digest) = sagat_domain::scripts::digest_of_activity(activity.as_str()) else {
+            return Ok(None);
+        };
+        let days: Option<i16> = sqlx::query_scalar(
+            "SELECT max(retention_days) FROM script_versions \
+             WHERE tenant_id = $1 AND artifact_digest = $2 AND status = 'READY'",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(digest.as_str())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let days = days.ok_or_else(|| StoreError::Internal {
+            detail: "a workflow script has no READY version".into(),
+        })?;
+        u16::try_from(days)
+            .ok()
+            .filter(|days| (1..=365).contains(days))
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a READY script has invalid retention".into(),
+            })
+            .map(Some)
+    }
+
+    async fn current_script_retention(
+        &mut self,
+        activity: &ActivityName,
+    ) -> Result<ScriptRetentionDecision, StoreError> {
+        if sagat_domain::scripts::digest_of_activity(activity.as_str()).is_none() {
+            return Ok(ScriptRetentionDecision::NotScript);
+        }
+        // Fence the effective policy before selecting the current READY-version maximum. A policy
+        // edit that completed first governs this lease; one that starts later waits for commit.
+        let cap = match crate::content_usage::script_execution_retention(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.namespace_id,
+            365,
+        )
+        .await
+        {
+            Ok(days) => days,
+            Err(StoreError::QuotaExceeded { what })
+                if what == sagat_domain::quota::QuotaResource::ScriptRetentionDays.limit_name() =>
+            {
+                return Ok(ScriptRetentionDecision::Refused);
+            }
+            Err(error) => return Err(error),
+        };
+        let requested = self
+            .ready_script_retention(activity)
+            .await?
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a script activity lost its digest".into(),
+            })?;
+        Ok(ScriptRetentionDecision::Pinned(requested.min(cap)))
+    }
+
+    async fn inherited_script_retention(
+        &mut self,
+        forward: &NodeId,
+        field: &'static str,
+        activity: &ActivityName,
+    ) -> Result<u16, StoreError> {
+        let attempt = self
+            .state
+            .step(forward)
+            .map(sagat_domain::execution::StepState::attempt)
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a derived script has no originating forward step".into(),
+            })?;
+        let detail: serde_json::Value = sqlx::query_scalar(
+            "SELECT detail FROM run_events \
+             WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND event_type = 'step.leased' AND attempt = $4 \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(forward.as_str())
+        .bind(i32::try_from(attempt).map_err(|_| corrupt("attempt"))?)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| StoreError::Internal {
+            detail: "a derived script has no originating lease".into(),
+        })?;
+        match versioned_script_retention(&detail, field)? {
+            None => {
+                self.ready_script_retention(activity)
+                    .await?
+                    .ok_or_else(|| StoreError::Internal {
+                        detail: "a legacy script obligation has no READY version".into(),
+                    })
+            }
+            Some(days) => Ok(days),
+        }
+    }
+
     /// An attempt of the compensation `node` ended: tells the breaker of its activity.
     async fn breaker_outcome(&mut self, node: &NodeId, succeeded: bool) -> Result<(), StoreError> {
         let Some(NodeKind::Activity { activity, .. }) = self.def.node(node).map(Node::kind) else {
@@ -1884,6 +2237,27 @@ impl PgRunTx {
     }
 }
 
+fn versioned_script_retention(
+    detail: &serde_json::Value,
+    field: &'static str,
+) -> Result<Option<u16>, StoreError> {
+    match detail.get("scriptRetentionPolicyVersion") {
+        None => Ok(None),
+        Some(marker) if marker.as_u64() == Some(1) => detail
+            .get(field)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|days| u16::try_from(days).ok())
+            .filter(|days| (1..=365).contains(days))
+            .map(Some)
+            .ok_or_else(|| StoreError::Internal {
+                detail: "a versioned script lease is missing its retention pin".into(),
+            }),
+        _ => Err(StoreError::Internal {
+            detail: "a script lease has an unknown retention policy version".into(),
+        }),
+    }
+}
+
 /// The run store also serves definitions, so one value can back every service that needs both.
 impl DefinitionStore for PgRunStore {
     async fn find_namespace_by_slug(
@@ -2043,5 +2417,43 @@ impl DefinitionStore for PgRunStore {
 
     async fn record_denial(&self, audit: &AuditRecord) -> Result<(), StoreError> {
         DefinitionStore::record_denial(&self.definitions, audit).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_application::error::StoreError;
+    use serde_json::json;
+
+    use super::versioned_script_retention;
+
+    #[test]
+    fn script_retention_pin_parser_grandfathers_only_unversioned_leases() {
+        assert_eq!(
+            versioned_script_retention(&json!({"attempt": 1}), "scriptRetentionDays")
+                .expect("legacy lease"),
+            None
+        );
+        assert_eq!(
+            versioned_script_retention(
+                &json!({
+                    "scriptRetentionPolicyVersion": 1,
+                    "scriptRetentionDays": 7
+                }),
+                "scriptRetentionDays",
+            )
+            .expect("versioned pin"),
+            Some(7)
+        );
+        for corrupt in [
+            json!({"scriptRetentionPolicyVersion": 1}),
+            json!({"scriptRetentionPolicyVersion": 1, "scriptRetentionDays": 0}),
+            json!({"scriptRetentionPolicyVersion": 2, "scriptRetentionDays": 7}),
+        ] {
+            assert!(matches!(
+                versioned_script_retention(&corrupt, "scriptRetentionDays"),
+                Err(StoreError::Internal { .. })
+            ));
+        }
     }
 }

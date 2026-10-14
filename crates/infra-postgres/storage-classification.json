@@ -1,0 +1,4576 @@
+{
+  "version": 1,
+  "purpose": "ADR-0027 logical retained-byte accounting and exhaustive variable-column review",
+  "excluded_catalog_columns": [
+    {
+      "table": "_sqlx_migrations",
+      "reason": "sqlx-owned migration metadata, not tenant-owned"
+    }
+  ],
+  "classes": [
+    "content",
+    "log",
+    "protected_system"
+  ],
+  "columns": [
+    {
+      "table": "activity_quota_limits",
+      "column": "activity",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/activity identifier bounded to 128 characters by the domain value object or database CHECK. Writer/source: `crates/infra-postgres/src/quotas.rs`. Database CHECK `activity_quota_limits_name` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "activity_quota_limits",
+      "column": "updated_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/quotas.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "audit_records",
+      "column": "action",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/identity.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "audit_records",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/identity.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "audit_records",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free audit/control reason built from fixed templates plus bounded identifiers; free-form operator reasons have their own 2,000-character database CHECK and are classified as content. Writer/source: `crates/infra-postgres/src/identity.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "audit_records",
+      "column": "resource_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Audit/deduplication resource locator composed only from UUIDs and bounded names. Writer/source: `crates/infra-postgres/src/identity.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "audit_records",
+      "column": "resource_type",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/identity.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "audit_records",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters when present. Writer/source: `crates/infra-postgres/src/identity.rs`. Database CHECK `audit_records_trace_id_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "blobs",
+      "column": "content_type",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated media type bounded to 3..127 characters. Writer/source: `crates/infra-postgres/src/blobs.rs`. Database CHECK `blobs_content_type_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/blobs.rs"
+      ]
+    },
+    {
+      "table": "blobs",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/blobs.rs`. Database CHECK `blobs_created_by_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/blobs.rs"
+      ]
+    },
+    {
+      "table": "blobs",
+      "column": "purpose",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/blobs.rs`. Database CHECK `blobs_owner_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/blobs.rs"
+      ]
+    },
+    {
+      "table": "blobs",
+      "column": "sha256",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/blobs.rs`. Database CHECK `blobs_measured_when_usable`, `blobs_measurement_consistent`, `blobs_sha256_length`, `blobs_uploading_unmeasured` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/blobs.rs"
+      ]
+    },
+    {
+      "table": "blobs",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/blobs.rs`. Database CHECK `blobs_committed_has_a_time`, `blobs_deletion_confirmation_valid`, `blobs_deletion_evidence`, `blobs_measured_when_usable`, `blobs_owner_valid`, `blobs_state_valid`, `blobs_uploading_unmeasured` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/blobs.rs"
+      ]
+    },
+    {
+      "table": "command_dedupe",
+      "column": "idempotency_key",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Request idempotency identifier bounded to 8..160 characters by database CHECK. Writer/source: `crates/infra-postgres/src/definitions.rs`. Database CHECK `command_dedupe_key_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "command_dedupe",
+      "column": "request_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/definitions.rs`. Database CHECK `command_dedupe_hash_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "command_dedupe",
+      "column": "resource_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Audit/deduplication resource locator composed only from UUIDs and bounded names. Writer/source: `crates/infra-postgres/src/definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "command_dedupe",
+      "column": "scope",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed command-deduplication operation scope emitted by the definition service. Writer/source: `crates/infra-postgres/src/definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "compensation_breakers",
+      "column": "activity",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/activity identifier bounded to 128 characters by the domain value object or database CHECK. Writer/source: `crates/infra-postgres/src/breaker.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/breaker.rs"
+      ]
+    },
+    {
+      "table": "connector_dead_letters",
+      "column": "body",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(body, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/connectors.rs"
+      ]
+    },
+    {
+      "table": "connector_dead_letters",
+      "column": "headers",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": "octet_length(coalesce(headers::text, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/connectors.rs"
+      ]
+    },
+    {
+      "table": "connector_dead_letters",
+      "column": "position",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(position, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/connectors.rs"
+      ]
+    },
+    {
+      "table": "connector_dead_letters",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free audit/control reason built from fixed templates plus bounded identifiers; free-form operator reasons have their own 2,000-character database CHECK and are classified as content. Writer/source: `crates/infra-postgres/src/connectors.rs`. Database CHECK `connector_dead_letters_reason_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/connectors.rs"
+      ]
+    },
+    {
+      "table": "connector_leases",
+      "column": "holder",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "join",
+        "expression": "event_connectors.tenant_id via connector_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated lease/shard/process name or connector stream identifier with a fixed application-level grammar; it carries no retained business payload. Writer/source: `crates/infra-postgres/src/connectors.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/connectors.rs"
+      ]
+    },
+    {
+      "table": "connector_leases",
+      "column": "stream",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "join",
+        "expression": "event_connectors.tenant_id via connector_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated lease/shard/process name or connector stream identifier with a fixed application-level grammar; it carries no retained business payload. Writer/source: `crates/infra-postgres/src/connectors.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/connectors.rs"
+      ]
+    },
+    {
+      "table": "connector_offsets",
+      "column": "stream",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(stream, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/connectors.rs"
+      ]
+    },
+    {
+      "table": "egress_policies",
+      "column": "ports",
+      "sql_type": "_int4",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_array_utf8",
+        "expression": "octet_length(coalesce(to_jsonb(ports)::text, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/egress.rs"
+      ]
+    },
+    {
+      "table": "egress_policies",
+      "column": "rules",
+      "sql_type": "_text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_array_utf8",
+        "expression": "octet_length(coalesce(to_jsonb(rules)::text, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/egress.rs"
+      ]
+    },
+    {
+      "table": "egress_policies",
+      "column": "updated_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/egress.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/egress.rs"
+      ]
+    },
+    {
+      "table": "engine_leases",
+      "column": "holder",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated lease/shard/process name or connector stream identifier with a fixed application-level grammar; it carries no retained business payload. Writer/source: `crates/infra-postgres/src/telemetry.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/telemetry.rs"
+      ]
+    },
+    {
+      "table": "engine_leases",
+      "column": "name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated lease/shard/process name or connector stream identifier with a fixed application-level grammar; it carries no retained business payload. Writer/source: `crates/infra-postgres/src/telemetry.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/telemetry.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/events.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "default_event_type",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(default_event_type, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `event_connectors_kind_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "last_error",
+      "sql_type": "text",
+      "class": "log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(last_error, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "secret_name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(secret_name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "settings",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": "octet_length(coalesce(settings::text, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "slug",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(slug, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_connectors",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `event_connectors_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_deliveries",
+      "column": "consumer",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery evidence composed from bounded event, consumer, source and workflow-node identifiers. Writer/source: `crates/infra-postgres/src/events.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_deliveries",
+      "column": "event_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery evidence composed from bounded event, consumer, source and workflow-node identifiers. Writer/source: `crates/infra-postgres/src/events.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_deliveries",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery evidence composed from bounded event, consumer, source and workflow-node identifiers. Writer/source: `crates/infra-postgres/src/events.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_deliveries",
+      "column": "source",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery evidence composed from bounded event, consumer, source and workflow-node identifiers. Writer/source: `crates/infra-postgres/src/events.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/events.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "default_event_type",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(default_event_type, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "mtls_certificate_sha256",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(mtls_certificate_sha256, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "oidc_profile",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(oidc_profile, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "oidc_subject",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(oidc_subject, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "profile",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `event_endpoints_authentication_consistent`, `event_endpoints_profile_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "secret_name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(secret_name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "slug",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(slug, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_endpoints",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `event_endpoints_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "event_outbox",
+      "column": "event_type",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed lifecycle event code or validated activity routing key; the routing key is bounded by the 128-character activity value object. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "event_outbox",
+      "column": "last_error_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "event_outbox",
+      "column": "payload",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed control-plane hint object of tenant/namespace/run/node/activity/status/trace identifiers; builders `outbox_task_ready` and `outbox_run_finished` never include workflow input or output. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "event_outbox",
+      "column": "routing_key",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed lifecycle event code or validated activity routing key; the routing key is bounded by the 128-character activity value object. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "correlation_key",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(correlation_key, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "event_id",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(event_id, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "event_type",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(event_type, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "last_error",
+      "sql_type": "text",
+      "class": "log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(last_error, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "payload",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(payload, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "payload_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `inbox_events_digest_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "source",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(source, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `inbox_events_dispatched_consistent`, `inbox_events_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(subject, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters when present. Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `inbox_events_trace_id_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "inbox_events",
+      "column": "trace_parent_span",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C parent span identifier parsed by the tracing boundary. Writer/source: `crates/infra-postgres/src/events.rs`. Database CHECK `inbox_events_trace_parent_span_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/events.rs"
+      ]
+    },
+    {
+      "table": "memberships",
+      "column": "role",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/identity.rs`. Database CHECK `memberships_role_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "memberships",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(subject, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "namespaces",
+      "column": "environment",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/identity.rs`. Database CHECK `namespaces_environment_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "namespaces",
+      "column": "slug",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(slug, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "operational_alerts",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/operations.rs`. Database CHECK `operational_alerts_kind_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/operations.rs"
+      ]
+    },
+    {
+      "table": "operational_alerts",
+      "column": "severity",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free control field whose complete writer set is the cited adapter; values are composed from bounded domain identifiers or closed codes. Writer/source: `crates/infra-postgres/src/operations.rs`. Database CHECK `operational_alerts_severity_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/operations.rs"
+      ]
+    },
+    {
+      "table": "operational_alerts",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/operations.rs`. Database CHECK `operational_alerts_resolved_consistent`, `operational_alerts_state_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/operations.rs"
+      ]
+    },
+    {
+      "table": "operational_alerts",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity or operational subject bounded to 255 characters (120 for operational alerts). Writer/source: `crates/infra-postgres/src/operations.rs`. Database CHECK `operational_alerts_subject_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/operations.rs"
+      ]
+    },
+    {
+      "table": "payloads",
+      "column": "content",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(content, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "payloads",
+      "column": "digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `payloads_digest_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "publication_decisions",
+      "column": "approver",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/versioning.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_decisions",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(reason, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_decisions",
+      "column": "verdict",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/versioning.rs`. Database CHECK `publication_decisions_verdict_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_policies",
+      "column": "set_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/versioning.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_requests",
+      "column": "digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/versioning.rs`. Database CHECK `publication_requests_digest_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_requests",
+      "column": "draft_edited_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/versioning.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_requests",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/versioning.rs`. Database CHECK `publication_requests_kind_valid`, `publication_requests_promoted_consistent` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_requests",
+      "column": "published_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/versioning.rs`. Database CHECK `publication_requests_published_consistent` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_requests",
+      "column": "release_notes",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(release_notes, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_requests",
+      "column": "requested_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/versioning.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "publication_requests",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/versioning.rs`. Database CHECK `publication_requests_published_consistent`, `publication_requests_state_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/versioning.rs"
+      ]
+    },
+    {
+      "table": "quota_ceilings",
+      "column": "granted_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/quotas.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "quota_ceilings",
+      "column": "resource",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/quotas.rs`. Database CHECK `quota_ceilings_resource_valid`, `quota_ceilings_value_range` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "quota_limits",
+      "column": "resource",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/quotas.rs`. Database CHECK `quota_limits_resource_valid`, `quota_limits_tenant_scoped`, `quota_limits_value_range` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "quota_limits",
+      "column": "updated_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/quotas.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "quota_rate_buckets",
+      "column": "resource",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/quotas.rs`. Database CHECK `quota_rate_buckets_resource_valid`, `quota_rate_buckets_source_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "quota_rate_buckets",
+      "column": "source_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/quotas.rs`. Database CHECK `quota_rate_buckets_source_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/quotas.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "detail",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed `RunEvent` codec fields needed to rebuild state; business input/output is stored separately in `payloads` and referenced by `payload_digest`. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "event_type",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed lifecycle event code or validated activity routing key; the routing key is bounded by the 128-character activity value object. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/activity identifier bounded to 128 characters by the domain value object or database CHECK. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "payload_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_events",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters when present. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `run_events_trace_id_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_saga_entries",
+      "column": "after",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_saga_entries",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_saga_entries",
+      "column": "saga_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_sagas",
+      "column": "cause_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free control field whose complete writer set is the cited adapter; values are composed from bounded domain identifiers or closed codes. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_sagas",
+      "column": "irreversible",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Array of validated workflow node identifiers or closed denied-capability codes; cardinality is bounded by the validated workflow/script policy. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_sagas",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/activity identifier bounded to 128 characters by the domain value object or database CHECK. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_sagas",
+      "column": "outcome",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `run_sagas_outcome_only_when_done`, `run_sagas_outcome_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "run_sagas",
+      "column": "phase",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `run_sagas_outcome_only_when_done`, `run_sagas_phase_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "cancel_policy",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `runs_cancel_policy_valid`, `runs_parent_consistent` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "correlation_id",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(correlation_id, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "input_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "parent_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/activity identifier bounded to 128 characters by the domain value object or database CHECK. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `runs_parent_consistent` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "started_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `runs_finished_consistent`, `runs_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "stop_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "stop_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `runs_stop_reason_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters when present. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `runs_trace_id_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "trace_parent_span",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C parent span identifier parsed by the tracing boundary. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `runs_trace_parent_span_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plan_entries",
+      "column": "after",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plan_entries",
+      "column": "compensation_activity",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plan_entries",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plan_entries",
+      "column": "saga_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plans",
+      "column": "cancel_policy",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plans",
+      "column": "irreversible",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plans",
+      "column": "on_compensation_failure",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "saga_plans",
+      "column": "saga_node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "scheduler_members",
+      "column": "owner",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated lease/shard/process name or connector stream identifier with a fixed application-level grammar; it carries no retained business payload. Writer/source: `crates/infra-postgres/src/partitioning.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/partitioning.rs"
+      ]
+    },
+    {
+      "table": "scheduler_shards",
+      "column": "owner",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated lease/shard/process name or connector stream identifier with a fixed application-level grammar; it carries no retained business payload. Writer/source: `crates/infra-postgres/src/partitioning.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/partitioning.rs"
+      ]
+    },
+    {
+      "table": "script_artifacts",
+      "column": "content",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(content, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_artifacts",
+      "column": "digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_artifacts_digest_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_artifacts",
+      "column": "key_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Trusted configured signing/encryption key identifier, selected from the bounded key ring rather than request payload. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_artifacts",
+      "column": "language",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_artifacts",
+      "column": "sbom",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(sbom, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_artifacts",
+      "column": "signature",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed Ed25519 signature, exactly 64 bytes. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_artifacts_signature_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_artifacts",
+      "column": "toolchain",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Runner-reported compiler/runtime identity bounded to 512 UTF-8 bytes by the HTTP runner completion parser before persistence. Writer/source: `crates/api-http/src/routes/runner.rs`, `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/api-http/src/routes/runner.rs",
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_build_jobs",
+      "column": "build_key",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Deterministic fixed-field build fingerprint assembled from content/toolchain/policy digests. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_build_jobs_key_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_build_jobs",
+      "column": "language",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_build_jobs",
+      "column": "lease_token_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_build_jobs",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_build_jobs_finished_consistent`, `script_build_jobs_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "denied",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Bounded runner diagnostic array: `tidy_denied` retains at most 32 strings and truncates each to at most 200 UTF-8 bytes before persistence. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "failure",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed `Failure::code` outcome vocabulary; variable sandbox diagnostics remain in the separately measured `log` column. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "log",
+      "sql_type": "text",
+      "class": "log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(log, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/activity identifier bounded to 128 characters by the domain value object or database CHECK. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_executions_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_executions",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters and nonzero when present. The application validates it before persistence, and database CHECK `script_executions_trace_id_valid` enforces the same bound for every writer. Writer/source: `crates/application/src/scripts.rs`, `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/application/src/scripts.rs",
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "denied",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Bounded runner diagnostic array: `tidy_denied` retains at most 32 strings and truncates each to at most 200 UTF-8 bytes before persistence. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "failure",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed `Failure::code` outcome vocabulary; variable sandbox diagnostics remain in the separately measured `log` column. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "inferred_input_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(inferred_input_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "inferred_output_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(inferred_output_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "input",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(input, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "input_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(input_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "language",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "lease_token_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "lockfile",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(lockfile, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "log",
+      "sql_type": "text",
+      "class": "log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(log, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "output_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(output_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "policy",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(policy, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "result",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(result, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "source",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(source, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_test_runs",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_test_runs_finished_consistent`, `script_test_runs_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "artifact_digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_versions_digests_format`, `script_versions_ready_has_artifact` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "build_key",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Deterministic fixed-field build fingerprint assembled from content/toolchain/policy digests. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_versions_digests_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "build_log",
+      "sql_type": "text",
+      "class": "log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(build_log, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "content_digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_versions_digests_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "failure",
+      "sql_type": "text",
+      "class": "log",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(failure, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "failure_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed ASCII outcome code with a maximum length of 26 bytes, enforced by database CHECK `script_versions_failure_code_valid`. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "input_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(input_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "key_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Trusted configured signing/encryption key identifier, selected from the bounded key ring rather than request payload. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "language",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "lockfile",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(lockfile, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "output_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(output_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "policy",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(policy, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "source",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(source, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `script_versions_failed_has_reason`, `script_versions_ready_has_artifact`, `script_versions_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "script_versions",
+      "column": "toolchain",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Runner-reported compiler/runtime identity bounded to 512 UTF-8 bytes by the HTTP runner completion parser before persistence. Writer/source: `crates/api-http/src/routes/runner.rs`, `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/api-http/src/routes/runner.rs",
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/scripts.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "input_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(input_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "language",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/scripts.rs`. Database CHECK `scripts_language_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "lockfile",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(lockfile, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "output_schema",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(output_schema, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "policy",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(policy, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "scripts",
+      "column": "source",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(source, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/scripts.rs"
+      ]
+    },
+    {
+      "table": "secret_access",
+      "column": "granted_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/secrets.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secret_access",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(subject, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secret_versions",
+      "column": "ciphertext",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(ciphertext, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secret_versions",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/secrets.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secret_versions",
+      "column": "key_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Trusted configured signing/encryption key identifier, selected from the bounded key ring rather than request payload. Writer/source: `crates/infra-postgres/src/secrets.rs`. Database CHECK `secret_versions_key_id` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secret_versions",
+      "column": "nonce",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed AEAD nonce, exactly 12 bytes. Writer/source: `crates/infra-postgres/src/secrets.rs`. Database CHECK `secret_versions_nonce_len` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secrets",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/secrets.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "secrets",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/secrets.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "activity",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "child_input",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(child_input, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "correlation_key",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(correlation_key, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "event_type",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "failure_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `steps_operator_has_a_reason` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `steps_kind_matches_node`, `steps_kind_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "lease_token_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `steps_lease_consistent` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "leased_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated workflow/saga control identifier or dependency list, bounded by the validated workflow graph and containing no run input/output payload. Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "output_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/execution.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `steps_lease_consistent`, `steps_status_valid`, `steps_waiting_consistent` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "steps",
+      "column": "waiting_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `steps_child_consistent`, `steps_operator_has_a_reason`, `steps_waiting_consistent`, `steps_waiting_kind_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "tenants",
+      "column": "slug",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated slug bounded to 63 characters by the database CHECK and domain value object. Writer/source: `crates/infra-postgres/src/identity.rs`. Database CHECK `tenants_slug_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    },
+    {
+      "table": "webhook_attempts",
+      "column": "error",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery control evidence built from closed attempt outcomes/failure classes or the fixed automatic-disable reason; receiver bodies are never stored here. Writer/source: `crates/infra-postgres/src/outbound.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_attempts",
+      "column": "outcome",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/outbound.rs`. Database CHECK `webhook_attempts_outcome_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_deliveries",
+      "column": "event_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery control evidence built from closed attempt outcomes/failure classes or the fixed automatic-disable reason; receiver bodies are never stored here. Writer/source: `crates/infra-postgres/src/outbound.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_deliveries",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/outbound.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_deliveries",
+      "column": "last_error",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery control evidence built from closed attempt outcomes/failure classes or the fixed automatic-disable reason; receiver bodies are never stored here. Writer/source: `crates/infra-postgres/src/outbound.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_deliveries",
+      "column": "last_outcome",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/outbound.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_deliveries",
+      "column": "payload",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Bounded 65,536-byte lifecycle-event envelope containing identifiers and status only; `outbox_run_finished` explicitly excludes run data. Writer/source: `crates/infra-postgres/src/outbound.rs`. Database CHECK `webhook_deliveries_payload_limit` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_deliveries",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/outbound.rs`. Database CHECK `webhook_deliveries_delivered_consistent`, `webhook_deliveries_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/outbound.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "destination_kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/outbound.rs`. Database CHECK `webhook_subscriptions_destination_kind_valid`, `webhook_subscriptions_destination_shape` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "destination_settings",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": "octet_length(coalesce(destination_settings::text, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "disabled_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free delivery control evidence built from closed attempt outcomes/failure classes or the fixed automatic-disable reason; receiver bodies are never stored here. Writer/source: `crates/infra-postgres/src/outbound.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "kinds",
+      "sql_type": "_text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_array_utf8",
+        "expression": "octet_length(coalesce(to_jsonb(kinds)::text, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "secret_name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(secret_name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "status",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/outbound.rs`. Database CHECK `webhook_subscriptions_status_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "webhook_subscriptions",
+      "column": "url",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(url, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/outbound.rs"
+      ]
+    },
+    {
+      "table": "worker_bindings",
+      "column": "pattern",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(pattern, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_bindings",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(subject, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_bindings",
+      "column": "updated_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/workers.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_drains",
+      "column": "drained_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/workers.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_drains",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(reason, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_drains",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(subject, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_sessions",
+      "column": "activities",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Finite operational capability list validated by `WorkerService::register`: 1 to 256 ActivityName values, each bounded to 128 UTF-8 bytes by the domain value object. Writer/source: `crates/application/src/worker.rs`, `crates/domain/src/workflow.rs`, `crates/infra-postgres/src/workers.rs`."
+      },
+      "owner_paths": [
+        "crates/application/src/worker.rs",
+        "crates/domain/src/workflow.rs",
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_sessions",
+      "column": "languages",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Finite operational capability list validated by `WorkerService::register`: at most 16 ASCII labels, each 1 to 64 bytes from a closed character set. Writer/source: `crates/application/src/worker.rs`, `crates/infra-postgres/src/workers.rs`."
+      },
+      "owner_paths": [
+        "crates/application/src/worker.rs",
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_sessions",
+      "column": "pools",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Finite operational capability list validated by `WorkerService::register`: at most 16 ASCII labels, each 1 to 64 bytes from a closed character set. Writer/source: `crates/application/src/worker.rs`, `crates/infra-postgres/src/workers.rs`."
+      },
+      "owner_paths": [
+        "crates/application/src/worker.rs",
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_sessions",
+      "column": "subject",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Authenticated identity Subject bounded to 255 non-control characters before session creation. Writer/source: `crates/application/src/worker.rs`, `crates/infra-postgres/src/workers.rs`."
+      },
+      "owner_paths": [
+        "crates/application/src/worker.rs",
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_sessions",
+      "column": "token_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/workers.rs`. Database CHECK `worker_sessions_token_length` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "worker_sessions",
+      "column": "worker_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Operational worker identity validated by `WorkerService::register` to 1 through 120 bytes with no control characters. Writer/source: `crates/application/src/worker.rs`, `crates/infra-postgres/src/workers.rs`."
+      },
+      "owner_paths": [
+        "crates/application/src/worker.rs",
+        "crates/infra-postgres/src/workers.rs"
+      ]
+    },
+    {
+      "table": "workflow_activations",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_activations",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/definitions.rs`. Database CHECK `workflow_activations_kind_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_activations",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Payload-free activation audit reason built by trusted fixed templates; publication release notes are accounted separately. Writer/source: `crates/infra-postgres/src/definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_triggers",
+      "column": "cron",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(cron, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_triggers",
+      "column": "filter",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(filter, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_triggers",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/definitions.rs`. Database CHECK `workflow_triggers_cron_has_schedule`, `workflow_triggers_kind_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_triggers",
+      "column": "match_source",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(match_source, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_triggers",
+      "column": "match_type",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(match_type, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_triggers",
+      "column": "timezone",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(timezone, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_version_scripts",
+      "column": "digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_versions",
+      "column": "digest",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed cryptographic digest/token representation (normally 32 bytes, or a bounded hexadecimal rendering). Writer/source: `crates/infra-postgres/src/definitions.rs`. Database CHECK `workflow_versions_digest_format` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_versions",
+      "column": "document",
+      "sql_type": "bytea",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_bytea",
+        "expression": "octet_length(coalesce(document, ''::bytea))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_versions",
+      "column": "published_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflow_versions",
+      "column": "release_notes",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(release_notes, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflows",
+      "column": "draft",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": "octet_length(coalesce(draft::text, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflows",
+      "column": "draft_edited_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Validated identity subject, bounded to 255 non-control characters by the identity value object or its database constraint. Writer/source: `crates/infra-postgres/src/definitions.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workflows",
+      "column": "name",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(name, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/definitions.rs"
+      ]
+    },
+    {
+      "table": "workspaces",
+      "column": "slug",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(slug, ''))",
+        "evidence": "logical PostgreSQL value, independent of TOAST/compression"
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/identity.rs"
+      ]
+    }
+  ]
+}

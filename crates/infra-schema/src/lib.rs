@@ -12,6 +12,42 @@ use serde_json::{Map, Value, json};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Schemas;
 
+impl sagat_application::blobs::RunInputChecker for Schemas {
+    fn check(&self, workflow: &[u8], input: &[u8]) -> Result<(), &'static str> {
+        let workflow: Value = serde_json::from_slice(workflow)
+            .map_err(|_| "the stored workflow is not valid JSON")?;
+        let input: Value =
+            serde_json::from_slice(input).map_err(|_| "the run input is not valid JSON")?;
+        let Some(schema) = workflow.get("inputSchema") else {
+            return Ok(());
+        };
+        let validator = compile(schema).map_err(|()| "the workflow input schema is not valid")?;
+        if validator.is_valid(&input) {
+            Ok(())
+        } else {
+            Err("the blob descriptor does not satisfy the workflow input schema")
+        }
+    }
+}
+
+#[cfg(test)]
+mod run_input_tests {
+    use super::*;
+    use sagat_application::blobs::RunInputChecker;
+
+    #[test]
+    fn claim_check_schema_validation_refuses_external_refs_without_exposing_payloads() {
+        let input = br#"{"$blob":{"id":"private-reference"}}"#;
+        for reference in ["https://example.invalid/schema.json", "file:///etc/passwd"] {
+            let workflow = json!({"inputSchema":{"$ref":reference}}).to_string();
+            let error = RunInputChecker::check(&Schemas, workflow.as_bytes(), input)
+                .expect_err("external ref");
+            assert_eq!(error, "the workflow input schema is not valid");
+            assert!(!error.contains("private-reference"));
+        }
+    }
+}
+
 impl SchemaChecker for Schemas {
     fn check(&self, schema: &[u8]) -> Result<(), SchemaProblem> {
         if schema.len() > MAX_SCHEMA_BYTES {

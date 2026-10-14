@@ -6,6 +6,7 @@ internal sealed class TaskRuntime
     private string? reason;
     private long deadlineEpochMs;
     private int lost;
+    private int finished;
 
     internal TaskRuntime(long expiresAtEpochMs)
     {
@@ -30,6 +31,10 @@ internal sealed class TaskRuntime
     internal long DeadlineEpochMs => Interlocked.Read(ref deadlineEpochMs);
 
     internal bool Lost => Volatile.Read(ref lost) == 1;
+
+    internal bool Finished => Volatile.Read(ref finished) == 1;
+
+    internal void MarkFinished() => Volatile.Write(ref finished, 1);
 
     internal void MarkLost() => Volatile.Write(ref lost, 1);
 

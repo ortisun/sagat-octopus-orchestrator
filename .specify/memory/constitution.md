@@ -1,30 +1,3 @@
-<!--
-SYNC IMPACT REPORT (temporary scratch for human review — remove before committing)
-
-Version change: (template, unfilled) → 1.0.0
-Bump rationale: first real constitution; the file held only the Spec Kit template.
-
-Modified principles: none (nothing existed to modify).
-Added principles: I–VIII. The order and subjects are the ones the Constitution Check of every
-  specs/*/plan.md already uses, so those references stay valid without edits:
-  I state/retry semantics · II modularity/ports and adapters · III saga and reversibility ·
-  IV compatibility and version pinning · V code/tenant boundary and secrets ·
-  VI OTel and auditable journal · VII redeliverable events and inbox/outbox ·
-  VIII fault injection and contract plan.
-Added sections: Delivery Constraints; Development Workflow and Quality Gates; Governance.
-Removed sections: none.
-
-Provenance: nothing here is new policy. Every rule is lifted from AGENTS.md (rules 1–12 and the
-  Definition of Done), docs/adr/ADR-0001..0010 and docs/architecture/*. Where a rule is enforced by
-  a tool, the tool is named; where it is not, the text says so.
-
-Deferred items:
-  - TODO(RATIFICATION_DATE): ratification is an act of the maintainers, not of the tooling. The
-    principles have been in use since the ADRs and plans dated 2026-10-07; confirm that date or set
-    the one the maintainers choose.
-  - Closing gap G1 in specs/001-platform-foundation/research.md and SC-001-003 in
-    docs/traceability.md is a separate edit (this command writes only this file).
--->
 # Sagat Octopus Orchestrator Constitution
 
 ## Core Principles
@@ -196,4 +169,4 @@ design, and every pull request is reviewed against it. A check marks the *design
 it is not approval of the implementation. A violation that cannot be avoided MUST be justified in
 the plan's Complexity Tracking table with the simpler alternative that was rejected.
 
-**Version**: 1.0.0 | **Ratified**: TODO(RATIFICATION_DATE) | **Last Amended**: 2026-10-09
+**Version**: 1.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-09

@@ -29,6 +29,8 @@ use crate::nats::Stopped;
 /// every quotation mark is six characters. A batch of messages far smaller than this is what the
 /// webhook client's limit would have refused, so SQS reads with a limit of its own.
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+/// `SendMessage` returns identifiers and checksums, never a message body or a batch.
+const MAX_SEND_MESSAGE_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// Messages asked for per request (the most SQS gives).
 const BATCH: u32 = 10;
@@ -198,13 +200,163 @@ pub fn parse_receive(xml: &str) -> Result<Vec<Received>, Unreadable> {
     Ok(messages)
 }
 
-/// A signed Query request to the queue; the answer's body.
-async fn call(
+/// Accepts only the successful SQS Query response shape used to acknowledge a sent message.
+fn parse_send_message(xml: &str) -> Result<(), Unreadable> {
+    let mut reader = Reader::from_str(xml);
+    let mut path: Vec<String> = Vec::new();
+    let mut message_id = None;
+    let mut text = String::new();
+    let mut saw_response = false;
+    let mut saw_result = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) => {
+                let raw = start.name().as_ref().to_owned();
+                let name = raw.rsplit(':').next().ok_or(Unreadable)?.to_owned();
+                if path.is_empty() {
+                    if name != "SendMessageResponse" || saw_response {
+                        return Err(Unreadable);
+                    }
+                    saw_response = true;
+                }
+                if path.last().map(String::as_str) == Some("MessageId") {
+                    return Err(Unreadable);
+                }
+                if name == "Error" || name == "ErrorResponse" {
+                    return Err(Unreadable);
+                }
+                if name == "SendMessageResult" {
+                    if path.as_slice() != ["SendMessageResponse"] || saw_result {
+                        return Err(Unreadable);
+                    }
+                    saw_result = true;
+                }
+                if name == "MessageId"
+                    && (path.as_slice() != ["SendMessageResponse", "SendMessageResult"]
+                        || message_id.is_some())
+                {
+                    return Err(Unreadable);
+                }
+                text.clear();
+                path.push(name);
+            }
+            Ok(Event::Text(piece)) => {
+                if path.is_empty() {
+                    if !piece.xml10_content().trim().is_empty() {
+                        return Err(Unreadable);
+                    }
+                } else if path.as_slice()
+                    == ["SendMessageResponse", "SendMessageResult", "MessageId"]
+                {
+                    text.push_str(&piece.xml10_content());
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if path.is_empty() {
+                    return Err(Unreadable);
+                }
+                if path.as_slice() == ["SendMessageResponse", "SendMessageResult", "MessageId"] {
+                    if let Some(c) = reference.resolve_char_ref().map_err(|_| Unreadable)? {
+                        text.push(c);
+                    } else {
+                        text.push_str(match &*reference {
+                            "amp" => "&",
+                            "lt" => "<",
+                            "gt" => ">",
+                            "quot" => "\"",
+                            "apos" => "'",
+                            _ => return Err(Unreadable),
+                        });
+                    }
+                }
+            }
+            Ok(Event::End(end)) => {
+                let raw = end.name().as_ref().to_owned();
+                let name = raw.rsplit(':').next().ok_or(Unreadable)?;
+                if path.last().map(String::as_str) != Some(name) {
+                    return Err(Unreadable);
+                }
+                if path.as_slice() == ["SendMessageResponse", "SendMessageResult", "MessageId"] {
+                    let id = text.trim();
+                    if id.is_empty() || message_id.replace(id.to_owned()).is_some() {
+                        return Err(Unreadable);
+                    }
+                }
+                text.clear();
+                path.pop();
+            }
+            Ok(Event::Empty(empty)) => {
+                let raw = empty.name().as_ref().to_owned();
+                let name = raw.rsplit(':').next().ok_or(Unreadable)?;
+                if path.is_empty()
+                    || path.last().map(String::as_str) == Some("MessageId")
+                    || name == "Error"
+                    || name == "ErrorResponse"
+                    || name == "SendMessageResult"
+                    || name == "MessageId"
+                {
+                    return Err(Unreadable);
+                }
+            }
+            Ok(Event::DocType(_) | Event::CData(_)) => return Err(Unreadable),
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(_) => return Err(Unreadable),
+        }
+    }
+    if path.is_empty() && saw_response && saw_result && message_id.is_some() {
+        Ok(())
+    } else {
+        Err(Unreadable)
+    }
+}
+
+/// Sends one message and accepts it only when SQS returns its bounded success envelope.
+pub(crate) async fn send_message(
     client: &EgressClient,
     queue_url: &str,
     region: &str,
     credentials: &Credentials,
     parameters: &[(String, String)],
+) -> Result<(), &'static str> {
+    let response = call_with_limit(
+        client,
+        queue_url,
+        region,
+        credentials,
+        parameters,
+        MAX_SEND_MESSAGE_RESPONSE_BYTES,
+    )
+    .await?;
+    parse_send_message(&response).map_err(|_| "SQS answered without a SendMessage result")
+}
+
+/// A signed Query request to the queue; the answer's body.
+pub(crate) async fn call(
+    client: &EgressClient,
+    queue_url: &str,
+    region: &str,
+    credentials: &Credentials,
+    parameters: &[(String, String)],
+) -> Result<String, &'static str> {
+    call_with_limit(
+        client,
+        queue_url,
+        region,
+        credentials,
+        parameters,
+        MAX_RESPONSE_BYTES,
+    )
+    .await
+}
+
+async fn call_with_limit(
+    client: &EgressClient,
+    queue_url: &str,
+    region: &str,
+    credentials: &Credentials,
+    parameters: &[(String, String)],
+    response_limit: usize,
 ) -> Result<String, &'static str> {
     let body = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(parameters.iter().map(|(k, v)| (k.as_str(), v.as_str())))
@@ -257,13 +409,11 @@ async fn call(
                 headers,
                 body,
             },
-            ResponseBody::Keep(MAX_RESPONSE_BYTES),
+            ResponseBody::Keep(response_limit),
         )
         .await
         .map_err(|error| match error {
-            sagat_infra_egress::EgressError::ResponseTooLarge => {
-                "SQS answered with more than a batch can be"
-            }
+            sagat_infra_egress::EgressError::ResponseTooLarge => "SQS answered with too much data",
             _ => "could not reach the SQS endpoint",
         })?;
     if !response.status.is_success() {
@@ -413,6 +563,39 @@ mod tests {
         assert_eq!(waits, [5, 10, 20, 30, 30]);
         hold.clear();
         assert_eq!(hold.grow(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_send_is_acknowledged_only_by_a_nonempty_message_id_in_the_success_envelope() {
+        assert_eq!(
+            parse_send_message(
+                r#"<SendMessageResponse xmlns="https://queue.amazonaws.com/doc/2012-11-05/">
+                     <SendMessageResult><MD5OfMessageBody>abc</MD5OfMessageBody><MessageId>m-1</MessageId></SendMessageResult>
+                     <ResponseMetadata><RequestId>r-1</RequestId></ResponseMetadata>
+                   </SendMessageResponse>"#,
+            ),
+            Ok(())
+        );
+        for malformed in [
+            "",
+            "<html>accepted-ish</html>",
+            "<SendMessageResponse><SendMessageResult/></SendMessageResponse>",
+            "<SendMessageResponse><SendMessageResult><MessageId/></SendMessageResult></SendMessageResponse>",
+            "<SendMessageResponse><SendMessageResult><MessageId> </MessageId></SendMessageResult></SendMessageResponse>",
+            "<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
+            "<SendMessageResponse><SendMessageResult><MessageId>m-1</MessageId></SendMessageResult></SendMessageResponse><extra/>",
+            "not-xml-prefix<SendMessageResponse><SendMessageResult><MessageId>m-1</MessageId></SendMessageResult></SendMessageResponse>",
+            "<SendMessageResponse><SendMessageResult><MessageId><x/>m-1</MessageId></SendMessageResult></SendMessageResponse>",
+            "<SendMessageResponse><SendMessageResult><MessageId>m-1</MessageId></SendMessageResult><SendMessageResult><MessageId>m-2</MessageId></SendMessageResult></SendMessageResponse>",
+            "<SendMessageResponse><SendMessageResult><MessageId>m-1</MessageId><MessageId>m-2</MessageId></SendMessageResult></SendMessageResponse>",
+            "<!DOCTYPE SendMessageResponse><SendMessageResponse><SendMessageResult><MessageId>m-1</MessageId></SendMessageResult></SendMessageResponse>",
+        ] {
+            assert_eq!(
+                parse_send_message(malformed),
+                Err(Unreadable),
+                "{malformed}"
+            );
+        }
     }
 
     #[test]

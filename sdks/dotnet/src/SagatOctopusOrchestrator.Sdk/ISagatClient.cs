@@ -6,6 +6,9 @@ namespace SagatOctopusOrchestrator.Sdk;
 /// </summary>
 public interface ISagatClient
 {
+    /// <summary>Streams a staged run input exactly once and verifies the returned descriptor.</summary>
+    Task<Workers.BlobDescriptor> UploadRunInputAsync(Stream source, RunInputBlobOptions? options = null, CancellationToken cancellationToken = default);
+
     /// <summary>The id of a workflow given by id or by name (the active version of the workflow of that name).</summary>
     Task<string> ResolveWorkflowAsync(string workflow, CancellationToken cancellationToken = default);
 
@@ -14,6 +17,9 @@ public interface ISagatClient
     /// generated for this call and reused by every retry of it), so that it is repeated only when that cannot start a second run.
     /// </summary>
     Task<Run> StartAsync<TInput>(string workflow, TInput input, StartOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Atomically starts a run with a staged input descriptor.</summary>
+    Task<Run> StartWithBlobAsync(string workflow, Workers.BlobDescriptor descriptor, StartOptions? options = null, CancellationToken cancellationToken = default);
 
     /// <summary>Reads a run.</summary>
     Task<Run> GetAsync(string runId, CancellationToken cancellationToken = default);

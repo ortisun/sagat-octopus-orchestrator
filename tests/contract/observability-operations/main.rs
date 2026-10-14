@@ -153,7 +153,7 @@ fn dashboard_exprs() -> Vec<(String, String)> {
 
 fn rules() -> Vec<Value> {
     let doc: Value =
-        serde_yaml_ng::from_str(&read("infra/observability/alerts.yaml")).expect("rules are YAML");
+        serde_saphyr::from_str(&read("infra/observability/alerts.yaml")).expect("rules are YAML");
     doc["groups"]
         .as_array()
         .expect("groups")
@@ -265,7 +265,7 @@ fn the_files_the_overlay_mounts_and_the_dashboards_it_provisions_exist() {
             );
         }
     }
-    let provisioned: Value = serde_yaml_ng::from_str(&read(
+    let provisioned: Value = serde_saphyr::from_str(&read(
         "infra/observability/grafana/provisioning/dashboards/sagat.yaml",
     ))
     .expect("yaml");

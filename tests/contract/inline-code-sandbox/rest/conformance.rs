@@ -4,8 +4,13 @@ use std::collections::BTreeSet;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use sagat_api_grpc::pb::worker_service_client::WorkerServiceClient;
+use sagat_api_grpc::pb::{PollTasksRequest, RegisterWorkerRequest, WorkerCapabilities};
 use sagat_domain::identity::{Membership, Role};
+use sagat_domain::scripts::{Digest, activity_of};
 use serde_json::{Value, json};
+use tonic::Request;
+use tonic::metadata::MetadataValue;
 
 use crate::support::api::{TestApi, start};
 use crate::support::contract::{As, OpenApi, Scenario, check, check_body, scenario};
@@ -19,6 +24,16 @@ async fn grant(api: &TestApi, tenant: sagat_domain::identity::TenantId, sub: &st
         .insert_membership(&Membership::restore(tenant, subject(sub), role, now()))
         .await
         .expect("grant");
+}
+
+fn grpc_request<T>(api: &TestApi, subject: &str, body: T) -> Request<T> {
+    let token = api.idp.token(subject, "acme").build();
+    let mut request = Request::new(body);
+    request.metadata_mut().insert(
+        "authorization",
+        MetadataValue::try_from(format!("Bearer {token}")).expect("authorization metadata"),
+    );
+    request
 }
 
 struct Run<'a> {
@@ -88,7 +103,7 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
         create(&bob, plain.clone(), 404),
         create(&alice, json!({"name": "Bad_Name", "language": "typescript", "source": SOURCE}), 422),
         create(&alice, json!({"name": "echo", "language": "typescript", "source": SOURCE, "extra": 1}), 422),
-        create(&alice, json!({"name": "echo", "language": "go", "source": SOURCE}), 422),
+        create(&alice, json!({"name": "go-echo", "language": "go", "source": "package main"}), 201),
         create(&alice, json!({"name": "echo", "language": "cobol", "source": SOURCE}), 422),
         create(&alice, json!({"name": "echo", "language": "typescript", "source": ""}), 422),
         create(&alice, json!({"name": "echo", "language": "typescript", "source": SOURCE, "inputSchema": {"type": 12}}), 422),
@@ -737,6 +752,143 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
     assert_eq!(done["denied"], json!(["fetch http://169.254.169.254"]));
 
     // ------------------------------------------------------------------------------ executions
+    // Production execution records are accepted only for an immutable script lease. Create a
+    // workflow pinned to the READY artifact, start it and claim its exact activity over gRPC.
+    let script_activity = activity_of(&Digest::parse(&digest).expect("READY artifact digest"));
+    let leased_workflow = run
+        .one(
+            scenario(
+                "POST",
+                "/workflows",
+                "/workflows",
+                alice.clone(),
+                Some(json!({
+                    "name": "script-execution-provenance",
+                    "ir": {
+                        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+                        "kind": "Workflow",
+                        "metadata": {"name": "script-execution-provenance"},
+                        "entrypoint": "s",
+                        "nodes": [{
+                            "id": "s", "type": "script", "language": "typescript",
+                            "artifactDigest": digest
+                        }]
+                    }
+                })),
+                201,
+            )
+            .with_header("x-octopus-namespace", "payments")
+            .with_header("idempotency-key", "script-execution-workflow"),
+        )
+        .await;
+    let leased_workflow_id = leased_workflow["id"].as_str().expect("workflow id");
+    run.all(vec![
+        scenario(
+            "POST",
+            "/workflows/{workflowId}/publish",
+            &format!("/workflows/{leased_workflow_id}/publish"),
+            alice.clone(),
+            Some(json!({"draftRevision": 1})),
+            201,
+        )
+        .with_header("x-octopus-namespace", "payments")
+        .with_header("idempotency-key", "script-execution-publish"),
+    ])
+    .await;
+    let leased_run = run
+        .one(
+            scenario(
+                "POST",
+                "/runs",
+                "/runs",
+                alice.clone(),
+                Some(json!({"workflowId": leased_workflow_id, "input": {}})),
+                202,
+            )
+            .with_header("x-octopus-namespace", "payments")
+            .with_header("idempotency-key", "script-execution-run"),
+        )
+        .await;
+    let leased_run_id = leased_run["runId"].as_str().expect("run id");
+
+    grant(&api, acme, "wilma", Role::Worker).await;
+    sqlx::query(
+        "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by) \
+         VALUES ($1, $2, 'wilma', '*', 'contract-test')",
+    )
+    .bind(acme.as_uuid())
+    .bind(ns.parse::<uuid::Uuid>().expect("namespace id"))
+    .execute(&api.db.pool)
+    .await
+    .expect("worker binding");
+    let mut worker = WorkerServiceClient::connect(api.grpc_url.clone())
+        .await
+        .expect("worker connection");
+    let registered = worker
+        .register_worker(grpc_request(
+            &api,
+            "wilma",
+            RegisterWorkerRequest {
+                worker_name: "contract-script-worker".into(),
+                namespace: "payments".into(),
+                capabilities: Some(WorkerCapabilities {
+                    languages: vec!["typescript".into()],
+                    activities: vec![script_activity.clone()],
+                    pools: vec![],
+                    max_inflight: 1,
+                    protocol_version: "1.3".into(),
+                }),
+            },
+        ))
+        .await
+        .expect("worker registration")
+        .into_inner();
+    let mut tasks = worker
+        .poll_tasks(grpc_request(
+            &api,
+            "wilma",
+            PollTasksRequest {
+                worker_id: registered.worker_id,
+                session_token: registered.session_token,
+                max_tasks: 1,
+            },
+        ))
+        .await
+        .expect("script poll")
+        .into_inner()
+        .tasks;
+    assert_eq!(tasks.len(), 1, "the script step is leaseable");
+    let lease = tasks.remove(0);
+    assert_eq!(lease.run_id, leased_run_id);
+    assert_eq!(lease.activity_name, script_activity);
+    let leased_node: String = sqlx::query_scalar(
+        "SELECT node FROM steps WHERE tenant_id=$1 AND run_id=$2 AND step_id=$3",
+    )
+    .bind(acme.as_uuid())
+    .bind(lease.run_id.parse::<uuid::Uuid>().expect("leased run id"))
+    .bind(lease.step_id.parse::<uuid::Uuid>().expect("leased step id"))
+    .fetch_one(&api.db.pool)
+    .await
+    .expect("leased workflow node");
+    let provenance: Option<String> = sqlx::query_scalar(
+        "SELECT s.activity FROM steps s JOIN runs r \
+           ON r.tenant_id=s.tenant_id AND r.id=s.run_id \
+         JOIN run_events e \
+           ON e.tenant_id=s.tenant_id AND e.run_id=s.run_id AND e.node=s.node \
+         WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 AND r.namespace_id=$4 \
+           AND e.event_type='step.leased' AND e.attempt=$5 \
+         ORDER BY e.seq DESC LIMIT 1",
+    )
+    .bind(acme.as_uuid())
+    .bind(lease.run_id.parse::<uuid::Uuid>().expect("leased run id"))
+    .bind(&leased_node)
+    .bind(ns.parse::<uuid::Uuid>().expect("namespace id"))
+    .bind(i64::from(lease.attempt))
+    .fetch_optional(&api.db.pool)
+    .await
+    .expect("lease provenance query");
+    assert_eq!(provenance.as_deref(), Some(script_activity.as_str()));
+
     let record_t = "/script-runner/executions";
     let executions_t = "/namespaces/{namespaceId}/script-executions";
     let execution = |who: &As, body: Value, expect: u16| {
@@ -750,7 +902,8 @@ async fn every_script_operation_conforms_to_the_contract_on_its_normal_and_error
         )
     };
     let report = json!({
-        "namespaceId": ns, "digest": digest, "runId": MISSING, "node": "s", "attempt": 1,
+        "namespaceId": ns, "digest": digest, "runId": lease.run_id,
+        "node": leased_node, "attempt": lease.attempt,
         "status": "FAILED", "failure": "SCRIPT_TIMEOUT", "log": "…", "denied": ["secret payments-key"],
         "wallMs": 3000, "startMs": 90
     });

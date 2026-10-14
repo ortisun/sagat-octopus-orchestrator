@@ -6,12 +6,13 @@ import asyncio
 import contextlib
 import contextvars
 import functools
+import hashlib
 import inspect
 import logging
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -38,6 +39,8 @@ from .activity import (
     ActivityContext,
     ActivityFailure,
     ActivityHandler,
+    BlobDescriptor,
+    BlobOutput,
     CancellationToken,
     CancelReason,
     Secrets,
@@ -48,9 +51,11 @@ from .activity import (
 
 T = TypeVar("T")
 Kind = Literal["activity", "compensation", "reconciler"]
+WorkerTransport = Literal["auto", "poll", "stream"]
 
 MAX_OUTPUT_BYTES = 256 * 1024
 MAX_POLL = 64
+MAX_RECEIVE_INPUT_BYTES = 8 * 1024 * 1024
 REPORT_ATTEMPTS = 5
 _CODE = re.compile(r"[A-Z0-9_]{1,64}")
 _SURROGATES = re.compile(r"[\ud800-\udfff]")
@@ -60,6 +65,8 @@ reported before it closes the connection; it never interrupts a handler."""
 _VERSION = re.compile(r"1(?:\.([0-9]+))?")
 _REPEATABLE = frozenset({"TRANSPORT", "UNAVAILABLE", "RATE_LIMITED"})
 _TASK_KINDS: dict[str, TaskKind] = {"COMPENSATION": "COMPENSATION", "RECONCILIATION": "RECONCILIATION"}
+_BLOB_SHA256 = re.compile(r"[0-9a-f]{64}")
+MAX_BLOB_CHUNK = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -76,6 +83,7 @@ class WorkerEvent:
         "task.stale",
         "task.dropped",
         "heartbeat",
+        "receive.failed",
         "reconnect",
     ]
     task_id: str | None = None
@@ -87,6 +95,7 @@ class WorkerEvent:
     reason: str | None = None
     protocol_version: str | None = None
     tasks: int | None = None
+    traceparent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +119,8 @@ class WorkerConfig:
     retry: RetryPolicy = field(default_factory=lambda: DEFAULT_RETRY)
     protocol_version: str | None = None
     """Overrides the newest protocol minor the host offers (tests play an older or a newer SDK with it)."""
+    transport: WorkerTransport = "auto"
+    """Task receive transport. ``auto`` streams at protocol 1.4+ and polls older servers."""
     heartbeat_interval: float | None = None
     """Overrides the heartbeat interval (otherwise a third of the lease, 0.5 to 10 s)."""
     logger: logging.Logger = LOG
@@ -183,6 +194,8 @@ class WorkerHost:
     def __init__(self, config: WorkerConfig) -> None:
         if not isinstance(config.max_inflight, int) or not 1 <= config.max_inflight <= 1000:
             raise SagatError("VALIDATION_FAILED", "max_inflight is between 1 and 1000")
+        if config.transport not in ("auto", "poll", "stream"):
+            raise SagatError("VALIDATION_FAILED", "transport is auto, poll or stream")
         self._config = config
         self._log = config.logger
         self._handlers: dict[str, _Registered] = {}
@@ -191,6 +204,7 @@ class WorkerHost:
         self._worker_id = ""
         self._session = Secret("")
         self._accepted = ""
+        self._stream_unavailable = False
         self._running = False
         self._stopping = False
         self._loop_task: asyncio.Task[None] | None = None
@@ -293,6 +307,8 @@ class WorkerHost:
         )
         try:
             await self._register()
+            if self._config.transport == "stream" and _minor_of(self._accepted) < 4:
+                raise SagatError("UNSUPPORTED_PROTOCOL", "task streaming requires worker protocol 1.4")
         except BaseException:
             rpc, self._rpc = self._rpc, None
             await rpc.close()
@@ -324,11 +340,9 @@ class WorkerHost:
         self._wake.set()
         clock = asyncio.get_running_loop().time
         grace_ends = clock() + timeout
-        # The poll in progress ends and no other starts; what it leased is in flight from here on.
-        await asyncio.wait({self._loop_task}, timeout=timeout)
-        if not self._loop_task.done():
-            self._loop_task.cancel()
-            await asyncio.gather(self._loop_task, return_exceptions=True)
+        # The receive owns no handler: cancel it promptly while delivered handlers keep their lifecycle.
+        self._loop_task.cancel()
+        await asyncio.gather(self._loop_task, return_exceptions=True)
         pending = {task.runner for task in self._inflight if task.runner is not None}
         if pending:
             _, late = await asyncio.wait(pending, timeout=max(0.0, grace_ends - clock()))
@@ -398,6 +412,7 @@ class WorkerHost:
             self._worker_id = response.worker_id
             self._session = Secret(response.session_token)
             self._accepted = response.accepted_protocol_version
+            self._stream_unavailable = False
             log(self._log, logging.INFO, "worker registered", worker=self._config.worker_name, protocol=self._accepted)
             self._emit(WorkerEvent("registered", protocol_version=self._accepted))
             return
@@ -420,18 +435,83 @@ class WorkerHost:
         refusals = 0  # polls refused as UNAUTHENTICATED in a row
         max_inflight = self._config.max_inflight
         while not self._stopping:
+            streaming = False
+            meaningful = False
             try:
                 free = max_inflight - len(self._inflight)
                 if free <= 0:
                     await self._idle(0.05)
                     continue
                 asked = min(free, MAX_POLL)
+                streaming = self._config.transport == "stream" or (
+                    self._config.transport == "auto"
+                    and _minor_of(self._accepted) >= 4
+                    and not self._stream_unavailable
+                )
+                if streaming and self._config.transport == "stream" and _minor_of(self._accepted) < 4:
+                    raise SagatError("UNSUPPORTED_PROTOCOL", "task streaming requires worker protocol 1.4")
+                if streaming:
+                    request = pb.PollTasksRequest(
+                        worker_id=self._worker_id, session_token=self._session.reveal(), max_tasks=asked
+                    )
+                    received = 0
+                    input_bytes = 0
+                    wait_ms: int | None = None
+                    malformed = False
+                    task_ids: set[str] = set()
+                    stream = self._rpc.stream_tasks(request)
+                    try:
+                        async for response in stream:
+                            if self._stopping:
+                                return
+                            leases = list(response.tasks)
+                            if not leases:
+                                wait_ms = response.retry_after_ms if response.retry_after_ms > 0 else 1000
+                                malformed = response.retry_after_ms <= 0
+                                break
+                            if response.retry_after_ms != 0:
+                                malformed = True
+                            accepted = 0
+                            for lease in leases:
+                                size = len(lease.input_json.encode("utf-8"))
+                                if (
+                                    received >= asked
+                                    or len(self._inflight) >= max_inflight
+                                    or input_bytes + size > MAX_RECEIVE_INPUT_BYTES
+                                    or lease.task_id in task_ids
+                                ):
+                                    malformed = True
+                                    break
+                                task_ids.add(lease.task_id)
+                                received += 1
+                                accepted += 1
+                                input_bytes += size
+                                meaningful = True
+                                self._dispatch(lease)
+                            self._emit(WorkerEvent("poll", tasks=accepted))
+                            if malformed:
+                                break
+                    finally:
+                        await stream.aclose()
+                    if meaningful:
+                        failures = 0
+                    refusals = 0
+                    if malformed:
+                        log(self._log, logging.WARNING, "the task stream exceeded its bounded receive contract")
+                        await self._idle(min(MAX_SERVER_WAIT, max(0.05, (wait_ms or 1000) / 1000)))
+                    elif received < asked:
+                        # An underfilled EOF without the terminal hint is interrupted, never a busy reopen.
+                        pause_ms = max(50, wait_ms or 1000)
+                        await self._idle(min(MAX_SERVER_WAIT, pause_ms / 1000 * (0.8 + random.random() * 0.4)))
+                    continue
                 response = await self._rpc.poll_tasks(
                     pb.PollTasksRequest(
                         worker_id=self._worker_id, session_token=self._session.reveal(), max_tasks=asked
                     )
                 )
-                failures = refusals = 0
+                if len(response.tasks) > 0:
+                    failures = 0
+                refusals = 0
                 leases = list(response.tasks)
                 if len(leases) > asked:
                     # The host runs as many tasks as it asked for; the rest are left to lapse (SPEC section 6.2).
@@ -453,6 +533,14 @@ class WorkerHost:
             except SagatError as error:
                 if self._stopping:
                     return
+                if meaningful:
+                    failures = 0
+                self._emit(WorkerEvent("receive.failed", code=error.code))
+                if streaming and self._config.transport == "auto" and error.status == "UNIMPLEMENTED":
+                    self._stream_unavailable = True
+                    await self._idle(max(0.1, backoff_delay(self._config.retry, failures)))
+                    failures += 1
+                    continue
                 if isinstance(error, ProviderFailure):
                     # The token provider failed before the poll was sent: the session is not in question.
                     log(self._log, logging.WARNING, "the token provider failed: polling again after a pause")
@@ -486,7 +574,7 @@ class WorkerHost:
             except Exception as error:  # a bug of ours must not stop the host
                 if self._stopping:
                     return
-                log(self._log, logging.ERROR, "the poll loop failed", error=type(error).__name__)
+                log(self._log, logging.ERROR, "the receive loop failed", error=type(error).__name__)
                 await self._idle(1.0)
 
     # ---------------------------------------------------------------------------------------------------- tasks
@@ -499,7 +587,13 @@ class WorkerHost:
         task.runner = runner
         runner.add_done_callback(functools.partial(self._finished, task))
         self._emit(
-            WorkerEvent("task.taken", task_id=lease.task_id, activity=lease.activity_name, attempt=lease.attempt)
+            WorkerEvent(
+                "task.taken",
+                task_id=lease.task_id,
+                activity=lease.activity_name,
+                attempt=lease.attempt,
+                traceparent=lease.traceparent,
+            )
         )
 
     def _finished(self, task: _Task, done: asyncio.Future[None]) -> None:
@@ -578,6 +672,10 @@ class WorkerHost:
             ),
             deadline_ms=lambda: task.deadline_ms,
             secrets=lambda: self._secrets_of(task, minor),
+            write_blob=lambda source, content_type, expected_size, expected_sha256: self._write_blob(
+                task, minor, source, content_type, expected_size, expected_sha256
+            ),
+            read_blob=lambda descriptor: self._read_blob(task, minor, descriptor),
         )
 
         # The heartbeat starts before the handler and runs until the report is made.
@@ -618,6 +716,7 @@ class WorkerHost:
     ) -> None:
         """Turns what the handler did into the one report of the attempt (``sdks/SPEC.md`` section 6.5)."""
         lease = task.lease
+        minor = _minor_of(self._accepted)
         error: BaseException | None = None
         cancelled = handler_task.cancelled()
         if not cancelled:
@@ -664,15 +763,138 @@ class WorkerHost:
             return
         if isinstance(result, Verdict):
             result = result.to_json_value()
-        try:
-            output = encode_json(result)
-        except SagatError as invalid:
-            await self._fail(task, "OUTPUT_INVALID", invalid.message, False, started)
-            return
+        blob: BlobDescriptor | None = None
+        if isinstance(result, BlobOutput):
+            if minor < 3:
+                await self._fail(
+                    task, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", False, started
+                )
+                return
+            try:
+                self._validate_blob_descriptor(result.descriptor)
+            except SagatError:
+                await self._fail(task, "OUTPUT_INVALID", "the blob output descriptor is malformed", False, started)
+                return
+            blob = result.descriptor
+            output = ""
+        else:
+            try:
+                output = encode_json(result)
+            except SagatError as invalid:
+                await self._fail(task, "OUTPUT_INVALID", invalid.message, False, started)
+                return
         if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
             await self._fail(task, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", False, started)
             return
-        await self._complete(task, output, started)
+        await self._complete(task, output, started, blob)
+
+    @staticmethod
+    def _validate_blob_descriptor(descriptor: BlobDescriptor) -> None:
+        if (
+            not isinstance(descriptor, BlobDescriptor)
+            or not isinstance(descriptor.id, str)
+            or not descriptor.id.strip()
+            or not isinstance(descriptor.size, int)
+            or isinstance(descriptor.size, bool)
+            or descriptor.size < 0
+            or not isinstance(descriptor.sha256, str)
+            or not _BLOB_SHA256.fullmatch(descriptor.sha256)
+            or not isinstance(descriptor.content_type, str)
+            or not descriptor.content_type.strip()
+        ):
+            raise SagatError("PROTOCOL", "the blob descriptor is malformed")
+
+    async def _write_blob(
+        self,
+        task: _Task,
+        minor: int,
+        source: AsyncIterable[bytes] | Iterable[bytes],
+        content_type: str,
+        expected_size: int,
+        expected_sha256: str,
+    ) -> BlobDescriptor:
+        if task.finished:
+            raise SagatError("VALIDATION_FAILED", "the attempt is over")
+        if minor < 3:
+            raise SagatError("UNSUPPORTED_PROTOCOL", "blob streaming requires worker protocol 1.3")
+        if expected_size < 0 or (expected_sha256 and not _BLOB_SHA256.fullmatch(expected_sha256)):
+            raise SagatError("VALIDATION_FAILED", "blob preconditions are malformed")
+        rpc = task.rpc
+        assert rpc is not None
+        lease = task.lease
+        digest = hashlib.sha256()
+        size = 0
+
+        async def pieces() -> AsyncIterator[pb.WriteBlobRequest]:
+            nonlocal size
+            yield pb.WriteBlobRequest(header=pb.WriteBlobHeader(
+                task_id=lease.task_id, run_id=lease.run_id, step_id=lease.step_id,
+                attempt=lease.attempt, generation=lease.generation, lease_token=task.lease_token.reveal(),
+                content_type=content_type, expected_size=expected_size, expected_sha256=expected_sha256,
+            ))
+            if hasattr(source, "__aiter__"):
+                iterator: Any = source.__aiter__()
+                async for value in iterator:
+                    for chunk in self._blob_chunks(value):
+                        size += len(chunk)
+                        digest.update(chunk)
+                        yield pb.WriteBlobRequest(chunk=chunk)
+            else:
+                for value in source:
+                    for chunk in self._blob_chunks(value):
+                        size += len(chunk)
+                        digest.update(chunk)
+                        yield pb.WriteBlobRequest(chunk=chunk)
+
+        response = await rpc.write_blob(pieces(), lease.traceparent or None)
+        descriptor = BlobDescriptor(response.blob_id, response.size, response.sha256, response.content_type)
+        self._validate_blob_descriptor(descriptor)
+        if descriptor.size != size or descriptor.sha256 != digest.hexdigest():
+            raise SagatError("PROTOCOL", "the blob service descriptor does not match the uploaded bytes")
+        return descriptor
+
+    @staticmethod
+    def _blob_chunks(value: bytes) -> Iterable[bytes]:
+        if not isinstance(value, bytes):
+            raise SagatError("VALIDATION_FAILED", "a blob source yields bytes")
+        for offset in range(0, len(value), MAX_BLOB_CHUNK):
+            yield value[offset : offset + MAX_BLOB_CHUNK]
+
+    async def _read_blob(self, task: _Task, minor: int, descriptor: BlobDescriptor) -> AsyncIterator[bytes]:
+        if task.finished:
+            raise SagatError("VALIDATION_FAILED", "the attempt is over")
+        if minor < 3:
+            raise SagatError("UNSUPPORTED_PROTOCOL", "blob streaming requires worker protocol 1.3")
+        self._validate_blob_descriptor(descriptor)
+        rpc = task.rpc
+        assert rpc is not None
+        lease = task.lease
+        request = pb.ReadBlobRequest(
+            task_id=lease.task_id, run_id=lease.run_id, step_id=lease.step_id, attempt=lease.attempt,
+            generation=lease.generation, lease_token=task.lease_token.reveal(), blob_id=descriptor.id,
+        )
+        digest = hashlib.sha256()
+        size = 0
+        header_seen = False
+        async for part in rpc.read_blob(request, lease.traceparent or None):
+            kind = part.WhichOneof("part")
+            if kind == "header":
+                header = part.header
+                if header_seen or size or (header.blob_id, header.size, header.sha256, header.content_type) != (
+                    descriptor.id, descriptor.size, descriptor.sha256, descriptor.content_type
+                ):
+                    raise SagatError("PROTOCOL", "the blob stream header does not match its descriptor")
+                header_seen = True
+                continue
+            if kind != "chunk" or not header_seen or len(part.chunk) > MAX_BLOB_CHUNK:
+                raise SagatError("PROTOCOL", "the blob stream has an invalid part order or chunk size")
+            size += len(part.chunk)
+            if size > descriptor.size:
+                raise SagatError("PROTOCOL", "the blob stream is larger than its descriptor")
+            digest.update(part.chunk)
+            yield part.chunk
+        if not header_seen or size != descriptor.size or digest.hexdigest() != descriptor.sha256:
+            raise SagatError("PROTOCOL", "the blob stream ended with mismatched integrity metadata")
 
     # --------------------------------------------------------------------------------------------- heartbeat
 
@@ -746,7 +968,7 @@ class WorkerHost:
                     continue
                 raise
 
-    async def _complete(self, task: _Task, output: str, started: float) -> None:
+    async def _complete(self, task: _Task, output: str, started: float, blob: BlobDescriptor | None = None) -> None:
         lease = task.lease
         rpc = task.rpc
         assert rpc is not None
@@ -760,6 +982,8 @@ class WorkerHost:
             idempotency_key=f"done-{lease.task_id}",
             output_json=output,
             traceparent=lease.traceparent,
+            output_blob_ref=blob.id if blob else "",
+            output_sha256=blob.sha256 if blob else "",
         )
         try:
             answer = await self._with_retries(lambda: rpc.complete_step(request, lease.traceparent or None))

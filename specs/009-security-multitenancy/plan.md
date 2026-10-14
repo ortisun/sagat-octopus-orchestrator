@@ -59,7 +59,7 @@ tests/contract/scalability-ha/                                   exact Helm role
 Published dependency implementations are reused rather than duplicated: Feature 005 supplies the
 production Docker sandbox used by the egress E2E/fault tests, and Feature 010 supplies the deployment
 chart extended by the Feature 009 NetworkPolicies. The chart proof applies policies, service accounts
-and controlled canaries; a full product/KEDA installation remains Feature 010's deployment gap.
+and controlled canaries; Feature 010 subsequently verified the full product/KEDA installation in a single-node kind/Cilium cluster (T010-038; `tests/performance/reports/kubernetes-validation.md`). Multi-node drain and zone failure remain unproven.
 
 ## Implementation phases
 
@@ -94,3 +94,12 @@ and controlled canaries; a full product/KEDA installation remains Feature 010's 
 ## Delivery Gate
 
 Battery of cross-tenant, SSRF, sandbox escape, secret leak, webhook replay and quota racing; fail the release if any critical finding exists.
+
+## Durable quota completion
+
+Follow [ADR-0027](../../docs/adr/ADR-0027-durable-content-rate-and-retention-quotas.md) and
+T009-037..T009-040. Implement the classified byte ledger and shared policy fences first, then
+authoritative event rate/retention admission, every content/log persistence and purge path, and
+canonical namespace API admission. Each slice retains pending status until its real multi-replica,
+rollback, tenant-boundary and terminal-state tests pass. A partial inbox/script counter cannot be
+advertised as complete retained-content accounting.

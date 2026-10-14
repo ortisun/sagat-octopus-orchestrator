@@ -16,6 +16,7 @@
 //! ```
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
+mod durable_quotas;
 #[path = "../../support/mod.rs"]
 mod support;
 

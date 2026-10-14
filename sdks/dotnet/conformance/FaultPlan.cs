@@ -126,6 +126,39 @@ internal sealed class FaultHandler(FaultPlan plan, string apiPath, HttpMessageHa
 /// <summary>The gRPC transport of the runner.</summary>
 internal sealed class FaultInterceptor(FaultPlan plan) : Interceptor
 {
+    public override AsyncServerStreamingCall<TResponse> AsyncServerStreamingCall<TRequest, TResponse>(
+        TRequest request,
+        ClientInterceptorContext<TRequest, TResponse> context,
+        AsyncServerStreamingCallContinuation<TRequest, TResponse> continuation)
+    {
+        var fault = plan.Next("grpc", context.Method.Name);
+        if (fault is null)
+        {
+            return continuation(request, context);
+        }
+
+        if (fault.Action == "dropStreamAfterFirst")
+        {
+            var real = continuation(request, context);
+            return new AsyncServerStreamingCall<TResponse>(
+                new DropAfterFirstReader<TResponse>(real.ResponseStream, real.Dispose),
+                real.ResponseHeadersAsync,
+                real.GetStatus,
+                real.GetTrailers,
+                real.Dispose);
+        }
+
+        var code = fault.Action == "failBefore" ? StatusCode.Unavailable : CodeOf(fault.Code);
+        var trailers = TrailersOf(fault);
+        var status = new Status(code, "injected");
+        return new AsyncServerStreamingCall<TResponse>(
+            new FailingReader<TResponse>(status, trailers),
+            Task.FromResult(new Metadata()),
+            () => status,
+            () => trailers,
+            () => { });
+    }
+
     public override AsyncUnaryCall<TResponse> AsyncUnaryCall<TRequest, TResponse>(
         TRequest request,
         ClientInterceptorContext<TRequest, TResponse> context,
@@ -145,16 +178,7 @@ internal sealed class FaultInterceptor(FaultPlan plan) : Interceptor
         }
 
         var code = fault.Action == "failBefore" ? StatusCode.Unavailable : CodeOf(fault.Code);
-        var trailers = new Metadata();
-        if (fault.Reason is not null)
-        {
-            trailers.Add("x-sagat-error", fault.Reason);
-        }
-
-        if (fault.RetryAfterMs is { } ms)
-        {
-            trailers.Add("retry-after-ms", ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
+        var trailers = TrailersOf(fault);
 
         var status = new Status(code, "injected");
 
@@ -165,6 +189,20 @@ internal sealed class FaultInterceptor(FaultPlan plan) : Interceptor
             () => status,
             () => trailers,
             () => { });
+    }
+
+    private static Metadata TrailersOf(Fault fault)
+    {
+        var trailers = new Metadata();
+        if (fault.Reason is not null)
+        {
+            trailers.Add("x-sagat-error", fault.Reason);
+        }
+        if (fault.RetryAfterMs is { } ms)
+        {
+            trailers.Add("retry-after-ms", ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        return trailers;
     }
 
     private static async Task<TResponse> Drop<TResponse>(AsyncUnaryCall<TResponse> real)
@@ -183,4 +221,61 @@ internal sealed class FaultInterceptor(FaultPlan plan) : Interceptor
 
     private static StatusCode CodeOf(string? name) =>
         Enum.TryParse<StatusCode>((name ?? "UNAVAILABLE").Replace("_", string.Empty, StringComparison.Ordinal), ignoreCase: true, out var code) ? code : StatusCode.Unavailable;
+
+    private sealed class FailingReader<T>(Status status, Metadata trailers) : IAsyncStreamReader<T>
+    {
+        public T Current => default!;
+
+        public Task<bool> MoveNext(CancellationToken cancellationToken) =>
+            Task.FromException<bool>(new RpcException(status, trailers));
+    }
+
+    private sealed class DropAfterFirstReader<T>(IAsyncStreamReader<T> inner, Action cancel) : IAsyncStreamReader<T>
+    {
+        private bool forwarded;
+        private bool failed;
+
+        public T Current => inner.Current;
+
+        public async Task<bool> MoveNext(CancellationToken cancellationToken)
+        {
+            if (forwarded && !failed)
+            {
+                failed = true;
+                cancel();
+                throw new RpcException(new Status(StatusCode.Unavailable, "injected"));
+            }
+
+            var more = await inner.MoveNext(cancellationToken).ConfigureAwait(false);
+            if (more && IsNonemptyTaskFrame(inner.Current))
+            {
+                forwarded = true;
+            }
+            return more;
+        }
+
+        private static bool IsNonemptyTaskFrame(T frame)
+        {
+            if (frame is null || frame.GetType().Name != "PollTasksResponse")
+            {
+                return false;
+            }
+
+            var tasks = frame.GetType().GetProperty("Tasks")?.GetValue(frame);
+            if (tasks is not System.Collections.IEnumerable enumerable)
+            {
+                return false;
+            }
+
+            var iterator = enumerable.GetEnumerator();
+            try
+            {
+                return iterator.MoveNext();
+            }
+            finally
+            {
+                (iterator as IDisposable)?.Dispose();
+            }
+        }
+    }
 }

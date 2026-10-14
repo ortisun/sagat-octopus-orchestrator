@@ -15,6 +15,7 @@
  },
  "workers": {
   "w1": {
+   "transport": "poll",
    "workerName": "perf-w1",
    "maxInflight": 32,
    "autostart": true,

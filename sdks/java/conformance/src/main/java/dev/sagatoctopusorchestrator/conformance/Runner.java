@@ -22,6 +22,7 @@ import dev.sagatoctopusorchestrator.sdk.OperationResult;
 import dev.sagatoctopusorchestrator.sdk.RetryPolicy;
 import dev.sagatoctopusorchestrator.sdk.Run;
 import dev.sagatoctopusorchestrator.sdk.RunStatus;
+import dev.sagatoctopusorchestrator.sdk.RunInputBlobOptions;
 import dev.sagatoctopusorchestrator.sdk.SagatClient;
 import dev.sagatoctopusorchestrator.sdk.SagatException;
 import dev.sagatoctopusorchestrator.sdk.SagatSdk;
@@ -39,6 +40,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.Trigger;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
 import java.io.File;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -46,11 +48,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -368,6 +372,7 @@ public final class Runner {
     private static final class WorkerEntry {
         final JsonNode def;
         final List<ObjectNode> log = Collections.synchronizedList(new ArrayList<>());
+        final Behaviors.Measurements measurements = new Behaviors.Measurements();
         WorkerHost host;
 
         WorkerEntry(JsonNode def) {
@@ -375,7 +380,8 @@ public final class Runner {
         }
     }
 
-    private static WorkerHost hostOf(JsonNode def, JsonNode config, FaultPlan plan, List<ObjectNode> log) {
+    private static WorkerHost hostOf(
+            JsonNode def, JsonNode config, FaultPlan plan, List<ObjectNode> log, Behaviors.Measurements measurements) {
         WorkerConfig.Builder builder = WorkerConfig.builder()
                 .grpcUrl(config.get("grpcUrl").asText())
                 .namespace(config.get("namespace").asText())
@@ -386,6 +392,9 @@ public final class Runner {
         if (def.has("protocolVersion")) {
             builder.protocolVersion(def.get("protocolVersion").asText());
         }
+        if (def.has("transport")) {
+            builder.transport(dev.sagatoctopusorchestrator.sdk.worker.WorkerTransport.valueOf(def.get("transport").asText().toUpperCase(java.util.Locale.ROOT)));
+        }
         if (def.has("heartbeatIntervalMs")) {
             builder.heartbeatInterval(Duration.ofMillis(def.get("heartbeatIntervalMs").asLong()));
         }
@@ -394,7 +403,7 @@ public final class Runner {
         def.path("activities").properties().forEach(e -> {
             String name = e.getKey();
             String kind = e.getValue().path("as").asText("activity");
-            var handler = Behaviors.handler(name, kind, e.getValue().path("behavior"), log);
+            var handler = Behaviors.handler(name, kind, e.getValue().path("behavior"), log, measurements);
             switch (kind) {
                 case "compensation" -> host.registerCompensation(name, handler);
                 case "reconciler" -> host.registerReconciler(name, (input, ctx) -> (dev.sagatoctopusorchestrator.sdk.worker.Verdict) handler.handle(input, ctx));
@@ -471,11 +480,13 @@ public final class Runner {
         }
 
         ObjectNode workerLog = F.objectNode();
+        ObjectNode workerMeasurements = F.objectNode();
         for (Map.Entry<String, WorkerEntry> entry : hosts.entrySet()) {
             ArrayNode log = workerLog.putArray(entry.getKey());
             synchronized (entry.getValue().log) {
                 entry.getValue().log.forEach(log::add);
             }
+            workerMeasurements.set(entry.getKey(), entry.getValue().measurements.snapshot());
         }
         ObjectNode out = F.objectNode();
         out.put("scenario", scenario.get("name").asText());
@@ -483,6 +494,7 @@ public final class Runner {
         out.put("sdkVersion", SagatSdk.VERSION);
         out.set("observations", observations);
         out.set("workerLog", workerLog);
+        out.set("workerMeasurements", workerMeasurements);
         ArrayNode applied = out.putArray("faultsApplied");
         for (long count : plan.applied()) {
             applied.add(count);
@@ -491,7 +503,7 @@ public final class Runner {
     }
 
     private static ObjectNode startWorker(WorkerEntry entry, JsonNode config, FaultPlan plan) {
-        entry.host = hostOf(entry.def, config, plan, entry.log);
+        entry.host = hostOf(entry.def, config, plan, entry.log, entry.measurements);
         entry.host.start();
         ObjectNode result = F.objectNode();
         result.put("protocolVersion", entry.host.protocolVersion());
@@ -538,6 +550,20 @@ public final class Runner {
                     options.deadlineIn(Duration.ofMillis(step.get("deadlineInMs").asLong()));
                 }
                 return runJson(client.start(workflow.get("workflowId").asText(), step.has("input") ? step.get("input") : F.objectNode(), options));
+            }
+            case "startWithBlob": {
+                JsonNode workflow = config.path("workflows").path(step.get("workflow").asText());
+                byte[] body = new byte[step.get("inputBlobBytes").asInt()];
+                java.util.Arrays.fill(body, (byte) 'i');
+                String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body));
+                var descriptor = client.uploadRunInput(new ByteArrayInputStream(body),
+                        new RunInputBlobOptions("application/octet-stream", (long) body.length, sha256));
+                StartOptions options = StartOptions.create();
+                if (step.has("idempotencyKey")) options.idempotencyKey(step.get("idempotencyKey").asText());
+                if (step.has("correlationId")) options.correlationId(step.get("correlationId").asText());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                if (step.has("deadlineInMs")) options.deadlineIn(Duration.ofMillis(step.get("deadlineInMs").asLong()));
+                return runJson(client.startWithBlob(workflow.get("workflowId").asText(), descriptor, options));
             }
             case "workflowByName": {
                 String name = config.path("workflows").path(step.get("workflow").asText()).get("name").asText();

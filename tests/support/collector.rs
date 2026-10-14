@@ -4,7 +4,7 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::Duration;
 
 use axum::Router;
@@ -15,6 +15,26 @@ use sagat_telemetry::{OtlpClient, OtlpConfig, OtlpLayer, SpanSink};
 use serde_json::Value;
 use tracing::subscriber::DefaultGuard;
 use tracing_subscriber::layer::SubscriberExt;
+
+// `tracing` keeps one process-wide callsite interest cache even though scoped subscribers are
+// thread-local. A concurrent test with no subscriber can register a new callsite through its empty
+// default while a collector-backed test is serving requests. Keep a process baseline installed and
+// isolate the scoped collector dispatchers for their full lifetime.
+static COLLECTOR_SUBSCRIBER: Mutex<()> = Mutex::new(());
+static TEST_TRACING: Once = Once::new();
+
+pub struct CollectorGuard {
+    subscriber: Option<DefaultGuard>,
+    _exclusive: MutexGuard<'static, ()>,
+}
+
+impl Drop for CollectorGuard {
+    fn drop(&mut self) {
+        // Remove the thread-local dispatcher while this test still owns the exclusive fixture.
+        drop(self.subscriber.take());
+        tracing::callsite::rebuild_interest_cache();
+    }
+}
 
 /// One span as the collector received it.
 #[derive(Debug, Clone)]
@@ -195,7 +215,11 @@ impl Collector {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("fewer than {count} spans arrived: {:#?}", self.spans());
+        panic!(
+            "fewer than {count} spans arrived after {} collector requests: {:#?}",
+            self.requests(),
+            self.spans()
+        );
     }
 
     /// The client of this collector, for a test that exports by itself.
@@ -208,15 +232,32 @@ impl Collector {
     /// Exports the live spans of the current thread to this collector: the platform of a test is
     /// served on the test's own runtime, so everything it does is seen by this subscriber until the
     /// guard drops. Flush with [`SpanSink::shutdown`].
-    pub fn install(&self, ratio: f64) -> (DefaultGuard, SpanSink) {
+    pub fn install(&self, ratio: f64) -> (CollectorGuard, SpanSink) {
+        // `tracing-core` optimizes its first dispatcher through the default of whichever thread
+        // registers a new callsite. A concurrent test with no subscriber can otherwise cache that
+        // callsite as disabled after this scoped dispatcher was installed. The empty global
+        // registry keeps callsites enabled; this test's scoped layer still owns all export.
+        TEST_TRACING.call_once(|| {
+            tracing::subscriber::set_global_default(tracing_subscriber::registry())
+                .expect("install the test tracing registry");
+        });
+        let exclusive = COLLECTOR_SUBSCRIBER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut config = OtlpConfig::new(&self.url, "sagat-test");
         config.timeout = Duration::from_secs(2);
         config.flush_interval = Duration::from_millis(100);
         config.sample_ratio = ratio;
         let sink = sagat_telemetry::start(OtlpClient::new(config).expect("client"));
         let subscriber = tracing_subscriber::registry().with(OtlpLayer::new(sink.clone(), ratio));
-        let guard = tracing::subscriber::set_default(subscriber);
+        let subscriber = tracing::subscriber::set_default(subscriber);
         tracing::callsite::rebuild_interest_cache();
-        (guard, sink)
+        (
+            CollectorGuard {
+                subscriber: Some(subscriber),
+                _exclusive: exclusive,
+            },
+            sink,
+        )
     }
 }

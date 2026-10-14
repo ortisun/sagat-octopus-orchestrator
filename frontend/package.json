@@ -19,5 +19,8 @@
     "api": "npm run api --workspace @sagat/studio",
     "check:api": "npm run check:api --workspace @sagat/studio",
     "e2e": "npm run test --workspace @sagat/e2e"
+  },
+  "overrides": {
+    "dompurify": "3.4.16"
   }
 }

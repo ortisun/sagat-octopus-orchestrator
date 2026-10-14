@@ -2,6 +2,7 @@ package dev.sagatoctopusorchestrator.sdk.worker;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Instant;
+import java.io.InputStream;
 import java.util.Map;
 
 /** What an activity knows about the attempt it is running (SPEC section 6.3). */
@@ -53,4 +54,14 @@ public interface ActivityContext {
      * raises {@code UNSUPPORTED_PROTOCOL}). The values are dropped when the handler returns.
      */
     Secrets secrets();
+
+    /** Streams a one-pass source and verifies the returned descriptor against the bytes sent. */
+    BlobDescriptor writeBlob(InputStream source, BlobWriteOptions options);
+
+    default BlobDescriptor writeBlob(InputStream source) {
+        return writeBlob(source, BlobWriteOptions.defaults());
+    }
+
+    /** A verified stream. A clean EOF means the size and SHA-256 matched the supplied descriptor. */
+    InputStream readBlob(BlobDescriptor descriptor);
 }

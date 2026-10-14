@@ -60,7 +60,13 @@ const SESSION_AGE: Duration = Duration::from_secs(1800);
 /// Artifacts kept verified in memory.
 const MAX_CACHED_ARTIFACTS: usize = 128;
 /// The languages this runner knows how to build, in the order they are looked at.
-const LANGUAGES: [Language; 3] = [Language::TypeScript, Language::Python, Language::CSharp];
+const LANGUAGES: [Language; 5] = [
+    Language::TypeScript,
+    Language::Python,
+    Language::CSharp,
+    Language::Go,
+    Language::Java,
+];
 
 /// Why the secrets of a step were not taken.
 enum SecretsFailure {
@@ -152,12 +158,24 @@ impl<S: Sandbox + 'static> Runner<S> {
         )?;
         let mut toolchains = BTreeMap::new();
         for language in LANGUAGES {
-            match sandbox.toolchain(language).await {
+            if language == Language::Go && config.go_target.is_none() {
+                continue;
+            }
+            let capability = match sandbox.probe_language(language).await {
+                Ok(()) => sandbox.toolchain(language).await,
+                Err(error) => Err(error),
+            };
+            match capability {
                 Ok(toolchain) => {
                     toolchains.insert(language, toolchain);
                 }
                 Err(_) => {
-                    tracing::warn!(%language, "no toolchain here: this language is not served")
+                    if language == Language::Go && config.go_required {
+                        return Err(RunnerError::Sandbox(
+                            "required Go native capability probe or toolchain failed".to_owned(),
+                        ));
+                    }
+                    tracing::warn!(%language, "capability unavailable: this language is not served")
                 }
             }
         }
@@ -1306,6 +1324,7 @@ fn trace_id(traceparent: &str) -> Option<String> {
 /// the data it was handed. The detail is in the execution record, which has a retention.
 fn failure_message(failure: Failure) -> &'static str {
     match failure {
+        Failure::StorageQuotaExceeded => "the tenant retained-content quota was exhausted",
         Failure::Error => "the script raised an error; see its execution record",
         Failure::Timeout => "the script ran out of time",
         Failure::OutOfMemory => "the script used more memory than it was given",
@@ -1350,6 +1369,50 @@ fn test_result(outcome: &RunOutcome) -> TestResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct UnprovenGo;
+    impl Sandbox for UnprovenGo {
+        async fn toolchain(&self, _: Language) -> Result<String, BuildFailure> {
+            Ok("fixture".to_owned())
+        }
+        async fn build(
+            &self,
+            _: BuildRequest,
+        ) -> Result<sagat_application::sandbox::Built, BuildFailure> {
+            Err(BuildFailure::Unavailable)
+        }
+        async fn run<H: sagat_application::sandbox::HostCalls>(
+            &self,
+            _: RunRequest,
+            _: &H,
+        ) -> RunOutcome {
+            panic!("startup must not run a user script")
+        }
+    }
+
+    #[tokio::test]
+    async fn unproven_go_is_omitted_or_refuses_required_startup() {
+        let config = |required| {
+            RunnerConfig::from_lookup(&|key| match key {
+                "SAGAT_RUNNER_API_URL" => Some("https://cp.example/v1".to_owned()),
+                "SAGAT_RUNNER_GRPC_URL" => Some("https://engine.example:8443".to_owned()),
+                "SAGAT_RUNNER_TOKEN" => Some("fixture".to_owned()),
+                "SAGAT_RUNNER_GO_TARGET" => Some("linux-arm64".to_owned()),
+                "SAGAT_RUNNER_GO_REQUIRED" => Some(format!("{required}")),
+                _ => None,
+            })
+            .expect("config")
+        };
+        let optional = Runner::start(config(false), UnprovenGo)
+            .await
+            .expect("other languages");
+        assert!(!optional.languages().contains(&Language::Go));
+        assert!(optional.languages().contains(&Language::Java));
+        assert!(matches!(
+            Runner::start(config(true), UnprovenGo).await,
+            Err(RunnerError::Sandbox(_))
+        ));
+    }
 
     #[test]
     fn what_the_runner_or_the_network_did_is_told_apart_from_what_the_step_did() {

@@ -83,49 +83,52 @@ function ScriptList({ api, namespace }: { api: ScriptsApi; namespace: string }) 
         </p>
       ) : null}
       {items.length > 0 ? (
-        <table className="data scripts-table">
-          <caption className="visually-hidden">Scripts in the namespace, by name</caption>
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Language</th>
-              <th scope="col">Latest version</th>
-              <th scope="col">Source</th>
-              <th scope="col">Updated</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((script) => (
-              <tr key={script.id}>
-                <th scope="row">
-                  <Link to={`/scripts/${encodeURIComponent(script.id)}`}>{clipLabel(script.name)}</Link>
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users must be able to scroll the table (WCAG 2.1.1)
+        <div className="scripts-table-scroll" role="region" aria-label="Scripts table" tabIndex={0}>
+          <table className="data scripts-table">
+            <caption className="visually-hidden">Scripts in the namespace, by name</caption>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Language</th>
+                <th scope="col">Latest version</th>
+                <th scope="col">Source</th>
+                <th scope="col">Updated</th>
+                <th scope="col">
+                  <span className="visually-hidden">Actions</span>
                 </th>
-                <td>{languageInfo(script.language).label}</td>
-                <td>{script.latestVersion === undefined ? <span className="hint">not published</span> : `Version ${script.latestVersion}`}</td>
-                <td>{formatBytes(script.sourceBytes)}</td>
-                <td>
-                  <time dateTime={script.updatedAt}>{formatTime(script.updatedAt)}</time>
-                </td>
-                <td>
-                  {canWrite ? (
-                    script.latestVersion === undefined ? (
-                      <Button variant="danger" onClick={() => setDeleting(script)} aria-label={`Delete ${clipLabel(script.name)}`}>
-                        Delete
-                      </Button>
-                    ) : (
-                      <Button disabled aria-label={`Delete ${clipLabel(script.name)}: it has versions, which a workflow may pin`} title="A script with a published version is kept: a workflow may pin its artifact.">
-                        Delete
-                      </Button>
-                    )
-                  ) : null}
-                </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {items.map((script) => (
+                <tr key={script.id}>
+                  <th scope="row">
+                    <Link to={`/scripts/${encodeURIComponent(script.id)}`}>{clipLabel(script.name)}</Link>
+                  </th>
+                  <td>{languageInfo(script.language).label}</td>
+                  <td>{script.latestVersion === undefined ? <span className="hint">not published</span> : `Version ${script.latestVersion}`}</td>
+                  <td>{formatBytes(script.sourceBytes)}</td>
+                  <td>
+                    <time dateTime={script.updatedAt}>{formatTime(script.updatedAt)}</time>
+                  </td>
+                  <td>
+                    {canWrite ? (
+                      script.latestVersion === undefined ? (
+                        <Button variant="danger" onClick={() => setDeleting(script)} aria-label={`Delete ${clipLabel(script.name)}`}>
+                          Delete
+                        </Button>
+                      ) : (
+                        <Button disabled aria-label={`Delete ${clipLabel(script.name)}: it has versions, which a workflow may pin`} title="A script with a published version is kept: a workflow may pin its artifact.">
+                          Delete
+                        </Button>
+                      )
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : null}
       {list.hasNextPage ? (
         <div className="toolbar">

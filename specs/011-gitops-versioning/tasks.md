@@ -58,6 +58,7 @@
 - [x] T011-033 Run the benchmark defined in `specs/011-gitops-versioning/plan.md` and publish the report in `tests/performance/reports/gitops-versioning.md`. — **evidence:** `tests/performance/reports/gitops-versioning.md`
 - [x] T011-034 Review security, redaction, RBAC, README and runbook; record evidence in `specs/011-gitops-versioning/quickstart.md`. — **evidence:** two independent reviews (security and correctness) with every finding's verdict and test, and a code and test review, in `quickstart.md`; the 011 suites; workspace run (1626 passed, the 63 failures are container suites); dependency audit, regenerated API types; committed-request recovery regression reproduced before the fix and passing afterwards.
 - [x] T011-035 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — **evidence:** feature 011 evidence table and recovery regression; SC-011-003 remains partial because Docker-backed validation is unavailable locally.
+- [x] T011-036 Replace the archived `unsafe-libyaml` manifest parser with maintained safe Rust parsing while preserving YAML 1.2 scalars, duplicate and merge-key behavior, anchors, the 32 MiB expansion bound, single-document input and redacted diagnostics. — **evidence:** `apps/cli/src/manifest.rs`; CLI 57/57 and manifest contracts 3/3; `cargo audit --deny warnings` passed with no `RUSTSEC-2024-0449` dependency.
 
 ## Dependencies & independent delivery
 

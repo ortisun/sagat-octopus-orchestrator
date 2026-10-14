@@ -12,6 +12,7 @@ import { Moment } from './Now';
 import { ScrollRegion } from './ScrollRegion';
 import { clip } from './time';
 import { useWindowedRows } from './useWindow';
+import { PayloadInspector } from './PayloadInspection';
 
 const ROW_ESTIMATE = 48;
 const COLUMNS = 9;
@@ -134,7 +135,7 @@ export function TimelineView({ runId, journal, filter, onFilter, onSelect, selec
               ) : null}
               {items.map((item) => {
                 const entry = shown[item.index];
-                return entry === undefined ? null : <EntryRow key={entry.seq} entry={entry} index={item.index} measure={measure} selected={entry.stepId !== null && entry.stepId === selectedId} onSelect={onSelect} />;
+                return entry === undefined ? null : <EntryRow key={entry.seq} runId={runId} entry={entry} index={item.index} measure={measure} selected={entry.stepId !== null && entry.stepId === selectedId} onSelect={onSelect} />;
               })}
               {padBottom > 0 ? (
                 <tr aria-hidden="true" className="rn-pad">
@@ -157,7 +158,7 @@ export function TimelineView({ runId, journal, filter, onFilter, onSelect, selec
   );
 }
 
-function EntryRow({ entry, index, measure, selected, onSelect }: { entry: Entry; index: number; measure: (element: Element | null) => void; selected: boolean; onSelect: (id: string) => void }) {
+function EntryRow({ runId, entry, index, measure, selected, onSelect }: { runId: string; entry: Entry; index: number; measure: (element: Element | null) => void; selected: boolean; onSelect: (id: string) => void }) {
   const tone = TONES[eventTone(entry.eventType)];
   const digest = digestView(entry.payloadRef);
   const live = entry.detail === 'live';
@@ -228,6 +229,7 @@ function EntryRow({ entry, index, measure, selected, onSelect }: { entry: Entry;
         ) : digest ? (
           <>
             <span>payload (redacted) {digest.short}</span> <CopyButton text={digest.full} what="payload digest" />
+            <PayloadInspector runId={runId} selector={{ source: 'journal', sequence: entry.seq }} compact />
           </>
         ) : (
           <span className="hint">no payload</span>

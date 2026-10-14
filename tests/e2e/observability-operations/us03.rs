@@ -327,7 +327,7 @@ async fn us03_only_those_who_may_see_operations_see_alerts_and_only_in_their_own
 
 /// The AsyncAPI document the platform promises its subscribers.
 fn asyncapi() -> Value {
-    serde_yaml_ng::from_str(include_str!(
+    serde_saphyr::from_str(include_str!(
         "../../../specs/001-platform-foundation/contracts/events.asyncapi.yaml"
     ))
     .expect("the AsyncAPI document")

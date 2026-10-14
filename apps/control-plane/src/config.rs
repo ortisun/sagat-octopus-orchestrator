@@ -354,6 +354,10 @@ pub fn read_auth(get: Lookup<'_>) -> Result<AuthConfig, ConfigError> {
 /// Extra settings for `serve`.
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
+    /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
+    pub tls: Option<sagat_api_http::HttpTlsConfig>,
+    pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
+    pub webhook_oidc_development: bool,
     pub bind_addr: SocketAddr,
     pub auth: AuthConfig,
     pub limits: HttpLimits,
@@ -386,6 +390,8 @@ pub struct ServeConfig {
     /// How late a run's spans may be before its telemetry is called behind
     /// (`SAGAT_TELEMETRY_LAG_BUDGET_SECS`, default 30).
     pub telemetry_lag_budget: Duration,
+    pub blobs: Option<sagat_infra_blobstore::BlobSettings>,
+    pub blob_transfer: sagat_api_http::HttpBlobTransfer,
 }
 
 impl ServeConfig {
@@ -398,7 +404,10 @@ impl ServeConfig {
         // engine's operator does for the worker API.
         let secrets = read_secrets(get)?;
         let environment: Environment = optional(get, "SAGAT_ENV", Environment::Prod)?;
+        let tls = read_http_tls(get)?;
+        let webhook_oidc = read_webhook_oidc(get, environment == Environment::Dev)?;
         if secrets.is_some()
+            && tls.is_none()
             && environment != Environment::Dev
             && !flag(get, "SAGAT_API_ALLOW_PLAINTEXT_SECRETS")?
         {
@@ -494,21 +503,51 @@ impl ServeConfig {
             "SAGAT_WRITE_STALL_TIMEOUT_SECS",
             server_defaults.write_stall_timeout.as_secs(),
         )?;
-        for (name, value) in [
-            ("SAGAT_HEADER_READ_TIMEOUT_SECS", header_secs),
-            ("SAGAT_SHUTDOWN_GRACE_SECS", grace_secs),
-            ("SAGAT_WRITE_STALL_TIMEOUT_SECS", stall_secs),
-            ("SAGAT_MAX_CONNECTIONS", max_connections as u64),
+        for (name, value, ceiling) in [
+            ("SAGAT_HEADER_READ_TIMEOUT_SECS", header_secs, 86400),
+            ("SAGAT_SHUTDOWN_GRACE_SECS", grace_secs, 86400),
+            ("SAGAT_WRITE_STALL_TIMEOUT_SECS", stall_secs, 86400),
+            (
+                "SAGAT_MAX_CONNECTIONS",
+                max_connections as u64,
+                tokio::sync::Semaphore::MAX_PERMITS.min(u32::MAX as usize) as u64,
+            ),
         ] {
-            if value == 0 {
+            if value == 0 || value > ceiling {
                 return Err(ConfigError::Invalid {
                     name,
-                    reason: "must be greater than zero".to_owned(),
+                    reason: format!("must be between 1 and {ceiling}"),
                 });
             }
         }
         let streams = read_streams(get, max_connections)?;
+        let blobs = read_blobs(get, environment)?;
+        let blob_defaults = sagat_api_http::HttpBlobTransfer::default();
+        let blob_max: usize = optional(
+            get,
+            "SAGAT_BLOB_MAX_TRANSFERS",
+            blob_defaults.max_concurrent,
+        )?;
+        let blob_timeout: u64 = optional(
+            get,
+            "SAGAT_BLOB_TRANSFER_TIMEOUT_SECS",
+            blob_defaults.timeout.as_secs(),
+        )?;
+        for (name, value, ceiling) in [
+            ("SAGAT_BLOB_MAX_TRANSFERS", blob_max as u64, 4096),
+            ("SAGAT_BLOB_TRANSFER_TIMEOUT_SECS", blob_timeout, 86400),
+        ] {
+            if value == 0 || value > ceiling {
+                return Err(ConfigError::Invalid {
+                    name,
+                    reason: format!("must be between 1 and {ceiling}"),
+                });
+            }
+        }
         Ok(Self {
+            tls,
+            webhook_oidc,
+            webhook_oidc_development: environment == Environment::Dev,
             bind_addr: optional(
                 get,
                 "SAGAT_BIND_ADDR",
@@ -536,6 +575,11 @@ impl ServeConfig {
             scripts: read_scripts(get)?,
             studio: read_studio(get)?,
             streams,
+            blobs,
+            blob_transfer: sagat_api_http::HttpBlobTransfer {
+                max_concurrent: blob_max,
+                timeout: Duration::from_secs(blob_timeout),
+            },
             telemetry_lag_budget: Duration::from_secs(
                 optional(get, "SAGAT_TELEMETRY_LAG_BUDGET_SECS", 30u64)?.max(1),
             ),
@@ -587,10 +631,9 @@ fn read_streams(
     })
 }
 
-/// The Studio, from `SAGAT_STUDIO_DIR` and, for the browser sign-in, `SAGAT_STUDIO_OIDC_ISSUER`,
-/// `SAGAT_STUDIO_OIDC_CLIENT_ID` and `SAGAT_STUDIO_OIDC_SCOPE`. The issuer must be an `https` URL
-/// (an `http` one only on a loopback address) with no credentials in it: the page is told to call
-/// it with a token. Nothing here is secret: a public client has an id and no secret.
+/// The Studio, from `SAGAT_STUDIO_DIR`; its public sign-in settings; and the optional
+/// `SAGAT_STUDIO_TRACE_URL` template. Browser-facing URLs require HTTPS (HTTP is accepted only on
+/// loopback) and no credentials. Nothing here is secret: a public client has an id and no secret.
 fn read_studio(
     get: Lookup<'_>,
 ) -> Result<Option<sagat_api_http::studio::StudioConfig>, ConfigError> {
@@ -602,6 +645,15 @@ fn read_studio(
     };
     let issuer = value("SAGAT_STUDIO_OIDC_ISSUER");
     let client_id = value("SAGAT_STUDIO_OIDC_CLIENT_ID");
+    let trace_url = value("SAGAT_STUDIO_TRACE_URL");
+    if let Some(template) = &trace_url {
+        sagat_api_http::studio::validate_trace_url_template(template).map_err(|_| {
+            ConfigError::Invalid {
+                name: "SAGAT_STUDIO_TRACE_URL",
+                reason: "must be an absolute https URL (http only on a loopback address), contain exactly one {traceId} placeholder and have no credentials".to_owned(),
+            }
+        })?;
+    }
     let oidc = match (issuer, client_id) {
         (None, None) => None,
         (Some(_), None) => {
@@ -662,6 +714,7 @@ fn read_studio(
     Ok(value("SAGAT_STUDIO_DIR").map(|dir| StudioConfig {
         dir: dir.into(),
         oidc,
+        trace_url,
         limits: sagat_api_http::studio::StudioLimits::default(),
     }))
 }
@@ -841,4 +894,114 @@ impl ProvisionConfig {
             admin_subject: required(get, "SAGAT_PROVISION_ADMIN")?,
         })
     }
+}
+
+fn bounded_config_file(path: &str, name: &'static str) -> Result<Vec<u8>, ConfigError> {
+    use std::io::Read as _;
+    let invalid = || ConfigError::Invalid {
+        name,
+        reason: "must name a readable file of at most 256 KiB".to_owned(),
+    };
+    let file = std::fs::File::open(path).map_err(|_| invalid())?;
+    let mut bytes = Vec::new();
+    file.take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid())?;
+    if bytes.len() > 256 * 1024 {
+        return Err(invalid());
+    }
+    Ok(bytes)
+}
+
+fn read_http_tls(get: Lookup<'_>) -> Result<Option<sagat_api_http::HttpTlsConfig>, ConfigError> {
+    let names = [
+        "SAGAT_HTTP_TLS_CERT",
+        "SAGAT_HTTP_TLS_KEY",
+        "SAGAT_HTTP_TLS_CLIENT_CA",
+    ];
+    if names.iter().all(|name| get(name).is_none()) {
+        return Ok(None);
+    }
+    let mut values = Vec::new();
+    for name in names {
+        values.push(bounded_config_file(&required(get, name)?, name)?);
+    }
+    sagat_api_http::HttpTlsConfig::from_pem(&values[0], &values[1], &values[2])
+        .map(Some)
+        .map_err(|reason| ConfigError::Invalid {
+            name: "SAGAT_HTTP_TLS_CERT",
+            reason: reason.to_owned(),
+        })
+}
+
+fn read_webhook_oidc(
+    get: Lookup<'_>,
+    development: bool,
+) -> Result<Vec<sagat_api_http::auth::WebhookOidcConfig>, ConfigError> {
+    const NAME: &str = "SAGAT_WEBHOOK_OIDC_PROFILES_FILE";
+    let Some(path) = get(NAME) else {
+        return Ok(Vec::new());
+    };
+    let bytes = bounded_config_file(&path, NAME)?;
+    let profiles = serde_json::from_slice::<Vec<sagat_api_http::auth::WebhookOidcConfig>>(&bytes)
+        .map_err(|_| ConfigError::Invalid {
+        name: NAME,
+        reason: "must contain a JSON array of webhook OIDC profiles".to_owned(),
+    })?;
+    sagat_api_http::auth::WebhookOidcVerifiers::new(&profiles, development).map_err(|reason| {
+        ConfigError::Invalid {
+            name: NAME,
+            reason: reason.to_owned(),
+        }
+    })?;
+    Ok(profiles)
+}
+
+/// The blob store settings, with the rules that depend on where the process runs.
+fn read_blobs(
+    get: Lookup<'_>,
+    environment: Environment,
+) -> Result<Option<sagat_infra_blobstore::BlobSettings>, ConfigError> {
+    use sagat_infra_blobstore::{BlobSettings, BlobStoreConfig, ConfigError as BlobConfigError};
+    let settings = BlobSettings::from_lookup(|name| get(name)).map_err(|error| match error {
+        BlobConfigError::Missing(name) => ConfigError::Missing(name),
+        BlobConfigError::Invalid { name, reason } => ConfigError::Invalid {
+            name,
+            reason: reason.to_owned(),
+        },
+        BlobConfigError::Incomplete(reason) => ConfigError::Invalid {
+            name: "SAGAT_BLOB_S3_ACCESS_KEY_ID",
+            reason: reason.to_owned(),
+        },
+        BlobConfigError::InsecureEndpoint => ConfigError::Invalid {
+            name: "SAGAT_BLOB_S3_ENDPOINT",
+            reason: "plain http needs SAGAT_BLOB_S3_ALLOW_HTTP=true".to_owned(),
+        },
+        BlobConfigError::Build => ConfigError::Invalid {
+            name: "SAGAT_BLOB_PROVIDER",
+            reason: "the object store could not be set up".to_owned(),
+        },
+    })?;
+    if let Some(settings) = &settings {
+        // Memory is private to one process, and the control plane and every engine replica are
+        // different processes: a blob written by one could not be read by another, and a restart
+        // would lose them all. It exists for tests and for a single-process development setup.
+        if matches!(settings.store, BlobStoreConfig::Memory) {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_BLOB_PROVIDER",
+                reason: "memory cannot share run inputs with engine processes; use fs or an object store".to_owned(),
+            });
+        }
+        if let BlobStoreConfig::S3(s3) = &settings.store
+            && s3.allow_http
+            && environment != Environment::Dev
+        {
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_BLOB_S3_ALLOW_HTTP",
+                reason: "plain http to the object store is only allowed when SAGAT_ENV=dev"
+                    .to_owned(),
+            });
+        }
+    }
+    Ok(settings)
 }

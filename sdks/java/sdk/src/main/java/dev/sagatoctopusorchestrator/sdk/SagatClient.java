@@ -3,6 +3,12 @@ package dev.sagatoctopusorchestrator.sdk;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.sagatoctopusorchestrator.sdk.worker.BlobDescriptor;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
@@ -215,6 +221,96 @@ public final class SagatClient implements AutoCloseable {
 
     public CompletableFuture<Run> startAsync(String workflow, Object input, StartOptions options) {
         return async(() -> start(workflow, input, options));
+    }
+
+    /** Streams a staged run input once and verifies the server descriptor against the bytes read. */
+    public BlobDescriptor uploadRunInput(InputStream source, RunInputBlobOptions options) {
+        if (source == null) throw SagatException.invalid("a run-input source is required");
+        RunInputBlobOptions opts = options == null ? RunInputBlobOptions.defaults() : options;
+        if ((opts.expectedSize() != null && opts.expectedSize() < 0)
+                || (opts.expectedSha256() != null && !opts.expectedSha256().matches("[0-9a-f]{64}"))) {
+            throw SagatException.invalid("blob preconditions are malformed");
+        }
+        MeasuringInputStream measured = new MeasuringInputStream(source);
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Content-Type", opts.contentType());
+        if (opts.expectedSize() != null) headers.put("X-Octopus-Blob-Size", opts.expectedSize().toString());
+        if (opts.expectedSha256() != null) headers.put("X-Octopus-Blob-Sha256", opts.expectedSha256());
+        RestClient.Response response = http.request(new RestClient.Request(
+                "POST", "/run-input-blobs", null, null, null, trace(null), false, measured, headers));
+        JsonNode raw = object(response.body(), "a blob descriptor");
+        JsonNode size = raw.get("size");
+        if (size == null || !size.isIntegralNumber() || !size.canConvertToLong()) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "size is missing from the blob descriptor");
+        }
+        BlobDescriptor descriptor = new BlobDescriptor(str(raw, "id"), size.longValue(),
+                str(raw, "sha256"), str(raw, "contentType"));
+        if (!measured.eof || !UUID_TEXT.matcher(descriptor.id()).matches() || descriptor.size() != measured.size
+                || !descriptor.sha256().equals(measured.sha256()) || descriptor.contentType().isBlank()) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "the run-input descriptor does not match the uploaded bytes");
+        }
+        return descriptor;
+    }
+
+    public BlobDescriptor uploadRunInput(InputStream source) {
+        return uploadRunInput(source, null);
+    }
+
+    public CompletableFuture<BlobDescriptor> uploadRunInputAsync(InputStream source, RunInputBlobOptions options) {
+        return async(() -> uploadRunInput(source, options));
+    }
+
+    /** Atomically starts a run with a descriptor returned by {@link #uploadRunInput}. */
+    public Run startWithBlob(String workflow, BlobDescriptor descriptor, StartOptions options) {
+        if (descriptor == null || descriptor.id() == null || descriptor.sha256() == null
+                || descriptor.contentType() == null || !UUID_TEXT.matcher(descriptor.id()).matches()
+                || descriptor.size() < 0 || !descriptor.sha256().matches("[0-9a-f]{64}")
+                || descriptor.contentType().isBlank()) {
+            throw SagatException.invalid("a run-input blob descriptor is malformed");
+        }
+        StartOptions opts = options == null ? StartOptions.create() : options;
+        String idempotencyKey = key(opts.idempotencyKey());
+        String traceparent = trace(opts.traceparent());
+        String workflowId = resolveWorkflow(workflow);
+        Instant deadline = opts.deadlineIn() == null ? opts.deadline() : Instant.now().plus(opts.deadlineIn());
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("workflowId", workflowId); body.put("inputBlobRef", descriptor.id());
+        if (opts.versionId() != null && !opts.versionId().isEmpty()) body.put("versionId", opts.versionId());
+        if (opts.correlationId() != null) body.put("correlationId", opts.correlationId());
+        if (deadline != null) body.put("deadline", Json.instant(deadline));
+        return toRun(http.request(new RestClient.Request("POST", "/runs", null, body, idempotencyKey, traceparent, true)).body());
+    }
+
+    public CompletableFuture<Run> startWithBlobAsync(String workflow, BlobDescriptor descriptor, StartOptions options) {
+        return async(() -> startWithBlob(workflow, descriptor, options));
+    }
+
+    private static final class MeasuringInputStream extends FilterInputStream {
+        private final MessageDigest digest;
+        private long size;
+        private boolean eof;
+
+        MeasuringInputStream(InputStream source) {
+            super(source);
+            try { digest = MessageDigest.getInstance("SHA-256"); }
+            catch (NoSuchAlgorithmException error) { throw new ExceptionInInitializerError(error); }
+        }
+
+        @Override public int read() throws IOException {
+            int value = super.read();
+            if (value >= 0) { digest.update((byte) value); size++; }
+            else { eof = true; }
+            return value;
+        }
+
+        @Override public int read(byte[] target, int offset, int length) throws IOException {
+            int read = super.read(target, offset, length);
+            if (read > 0) { digest.update(target, offset, read); size += read; }
+            else if (read < 0) { eof = true; }
+            return read;
+        }
+
+        String sha256() { return java.util.HexFormat.of().formatHex(digest.digest()); }
     }
 
     /** Reads a run. */

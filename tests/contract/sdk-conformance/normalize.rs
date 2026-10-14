@@ -142,7 +142,14 @@ fn deadline_after_creation(run: &Map<String, Value>) -> Option<i64> {
 /// The part of a runner's output that is compared.
 pub fn compared(out: &Value, normalizer: &mut Normalizer) -> Value {
     let mut doc = Map::new();
-    for key in ["observations", "workerLog", "faultsApplied", "serverState"] {
+    for key in [
+        "observations",
+        "workerLog",
+        "faultsApplied",
+        "serverState",
+        "blobEvidence",
+        "runInputBlobEvidence",
+    ] {
         if let Some(value) = out.get(key) {
             doc.insert(key.to_owned(), normalizer.value(value));
         }

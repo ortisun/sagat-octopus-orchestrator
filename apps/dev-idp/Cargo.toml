@@ -2,6 +2,7 @@
 name = "sagat-dev-idp"
 description = "A development identity provider: signs the tokens the local stack accepts. For SAGAT_ENV=dev only; it is not part of any production image."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

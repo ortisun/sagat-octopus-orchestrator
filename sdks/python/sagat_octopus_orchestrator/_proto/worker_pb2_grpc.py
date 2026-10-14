@@ -63,6 +63,11 @@ class WorkerServiceStub:
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
                 response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
                 _registered_method=True)
+        self.StreamTasks = channel.unary_stream(
+                '/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
+                _registered_method=True)
         self.Heartbeat = channel.unary_unary(
                 '/sagat_octopus_orchestrator.v1.WorkerService/Heartbeat',
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.HeartbeatRequest.SerializeToString,
@@ -82,6 +87,16 @@ class WorkerServiceStub:
                 '/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets',
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.SerializeToString,
                 response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsResponse.FromString,
+                _registered_method=True)
+        self.WriteBlob = channel.stream_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.WriteBlobRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.WriteBlobResponse.FromString,
+                _registered_method=True)
+        self.ReadBlob = channel.unary_stream(
+                '/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobResponse.FromString,
                 _registered_method=True)
 
 
@@ -119,6 +134,17 @@ class WorkerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def StreamTasks(self, request, context):
+        """Added in 1.4 (additive, ADR-0029). `max_tasks` is finite receive credit for this call, not a
+        per-frame batch size: each delivered lease spends one credit. The server may emit several
+        nonempty frames, then closes after spending the credit, the aggregate 8 MiB task-input budget,
+        or the bounded receive window. An underfilled normal window ends with one empty response whose
+        `retry_after_ms` is positive. Protocol 1.0-1.3 workers continue to use PollTasks.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Heartbeat(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -147,6 +173,34 @@ class WorkerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def WriteBlob(self, request_iterator, context):
+        """Added in 1.3 (additive, FR-002-008): payloads too large to travel in a message. The engine never
+        carries them; a step's input holds a small descriptor `{"$blob": {"id", "size", "sha256",
+        "contentType"}}` and the bytes are fetched here. Both calls need the lease of an attempt that is
+        running (the lease is the capability, as for ResolveSecrets) and only reach blobs of the lease's
+        own tenant and namespace; a blob outside that boundary looks exactly like a missing blob.
+
+        WriteBlob: the first message is the header, every later one a chunk of at most 256 KiB. Reply: the
+        blob id. Report it in CompleteStep.output_blob_ref (and leave output_json empty) to make it the
+        step's output. A blob that is not used within the upload TTL is deleted.
+        ReadBlob: the first message is the header, the rest are chunks of at most 256 KiB. The server
+        checks size and digest as it reads: a stored object that is not what was recorded ends the stream
+        with DATA_LOSS instead of ending it cleanly, so a cleanly ended stream is a verified one.
+        Errors: RESOURCE_EXHAUSTED (x-sagat-error QUOTA_EXCEEDED) too many unused blobs, or
+        (RATE_LIMITED, retry-after-ms) too many transfers at once; INVALID_ARGUMENT a blob over the
+        maximum size, a wrong stated size or digest, a malformed stream, or blobs not configured on
+        this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReadBlob(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_WorkerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -157,6 +211,11 @@ def add_WorkerServiceServicer_to_server(servicer, server):
             ),
             'PollTasks': grpc.unary_unary_rpc_method_handler(
                     servicer.PollTasks,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.SerializeToString,
+            ),
+            'StreamTasks': grpc.unary_stream_rpc_method_handler(
+                    servicer.StreamTasks,
                     request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.FromString,
                     response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.SerializeToString,
             ),
@@ -179,6 +238,16 @@ def add_WorkerServiceServicer_to_server(servicer, server):
                     servicer.ResolveSecrets,
                     request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.FromString,
                     response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsResponse.SerializeToString,
+            ),
+            'WriteBlob': grpc.stream_unary_rpc_method_handler(
+                    servicer.WriteBlob,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.WriteBlobRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.WriteBlobResponse.SerializeToString,
+            ),
+            'ReadBlob': grpc.unary_stream_rpc_method_handler(
+                    servicer.ReadBlob,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -252,6 +321,33 @@ class WorkerService:
             request,
             target,
             '/sagat_octopus_orchestrator.v1.WorkerService/PollTasks',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StreamTasks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/StreamTasks',
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksRequest.SerializeToString,
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.PollTasksResponse.FromString,
             options,
@@ -362,6 +458,60 @@ class WorkerService:
             '/sagat_octopus_orchestrator.v1.WorkerService/ResolveSecrets',
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsRequest.SerializeToString,
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ResolveSecretsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WriteBlob(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_unary(
+            request_iterator,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/WriteBlob',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.WriteBlobRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.WriteBlobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReadBlob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/ReadBlob',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.ReadBlobResponse.FromString,
             options,
             channel_credentials,
             insecure,

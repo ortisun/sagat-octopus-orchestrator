@@ -19,6 +19,24 @@ way, kind first (`e2e_sdk_multilanguage`, `contract_rest_security_multitenancy`)
 `tests/performance/reports/<feature>.md`. A number says nothing a name does not, and it makes a path hard to type and to read; the
 number of a feature is kept where it is an identifier (`specs/NNN-slug/`, `FR-NNN-xxx`, `T0NN-xxx`).
 
+## Local integration resource profile
+
+When Docker runs in a small VM, bound the number of independent test fixtures while preserving
+all concurrency inside each test:
+
+```sh
+RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast
+```
+
+The completion validation uses a four-CPU, 6 GiB Colima VM, an explicit `DOCKER_HOST`,
+`CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_DEV_DEBUG=0`. Leave
+`SAGAT_TEST_DATABASE_URL` unset to give each test process its own Testcontainers server.
+Unrestricted host-level test parallelism reproduced transient PostgreSQL pool timeouts and HTTP
+503s in the developer-experience fixtures. With two test threads, all 32 runnable DX tests and
+all 11 event E2E tests passed against fresh containers. This is a test-runner resource profile,
+not a change to production pool sizes, admission limits or the races exercised within tests.
+Keep performance benchmarks separate and report their own concurrency and hardware.
+
 ## Critical matrix
 
 | Scenario | Expected invariant |

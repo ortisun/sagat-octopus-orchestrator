@@ -163,6 +163,7 @@ async fn us01_compose_cli_sdk_and_studio_are_one_real_first_day_path() {
         studio: Some(StudioConfig {
             dir: dist,
             oidc: None,
+            trace_url: None,
             limits: StudioLimits::default(),
         }),
         ..Options::default()

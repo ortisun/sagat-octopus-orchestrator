@@ -9,6 +9,7 @@ mod support;
 
 mod builds;
 mod executions;
+mod log_quotas;
 mod migration;
 mod scripts;
 mod trials;

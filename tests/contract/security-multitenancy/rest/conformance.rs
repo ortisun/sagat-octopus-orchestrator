@@ -50,6 +50,10 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
     let ns_one_t = "/namespaces/{namespaceId}/quotas/{resource}";
     let ns_path = format!("/namespaces/{ns}/quotas");
     let ns_one = |r: &str| format!("/namespaces/{ns}/quotas/{r}");
+    let activity_t = "/namespaces/{namespaceId}/activity-quotas";
+    let activity_one_t = "/namespaces/{namespaceId}/activity-quotas/{activity}";
+    let activity_path = format!("/namespaces/{ns}/activity-quotas");
+    let activity_one = |activity: &str| format!("/namespaces/{ns}/activity-quotas/{activity}");
     let bind_t = "/namespaces/{namespaceId}/worker-bindings";
     let bind_one_t = "/namespaces/{namespaceId}/worker-bindings/{subject}";
     let bind_path = format!("/namespaces/{ns}/worker-bindings");
@@ -287,6 +291,59 @@ async fn every_governance_operation_conforms_to_the_contract_on_its_normal_and_e
             dave.clone(),
             None,
             403,
+        ),
+        // ---- activity-specific concurrency
+        scenario("GET", activity_t, &activity_path, alice.clone(), None, 200),
+        scenario("GET", activity_t, &activity_path, dave.clone(), None, 200),
+        scenario("GET", activity_t, &activity_path, bob.clone(), None, 404),
+        scenario("GET", activity_t, &activity_path, As::Anonymous, None, 401),
+        scenario(
+            "PUT",
+            activity_one_t,
+            &activity_one("payment.capture"),
+            alice.clone(),
+            Some(json!({"limit": 2})),
+            200,
+        ),
+        scenario(
+            "PUT",
+            activity_one_t,
+            &activity_one("payment.capture"),
+            vera.clone(),
+            Some(json!({"limit": 2})),
+            403,
+        ),
+        scenario(
+            "PUT",
+            activity_one_t,
+            &activity_one("bad%20activity"),
+            alice.clone(),
+            Some(json!({"limit": 2})),
+            404,
+        ),
+        scenario(
+            "PUT",
+            activity_one_t,
+            &activity_one("payment.capture"),
+            alice.clone(),
+            Some(json!({"limit": 1_000_000_001_u64})),
+            422,
+        ),
+        scenario(
+            "DELETE",
+            activity_one_t,
+            &activity_one("payment.capture"),
+            dave.clone(),
+            None,
+            403,
+        ),
+        scenario(
+            "DELETE",
+            activity_one_t,
+            &activity_one("payment.capture"),
+            alice.clone(),
+            None,
+            200,
         ),
         // ---- worker bindings
         scenario("GET", bind_t, &bind_path, alice.clone(), None, 200),
@@ -783,6 +840,53 @@ async fn the_quota_endpoints_show_what_the_engine_enforces() {
         (workflows["limit"].as_u64(), workflows["used"].as_u64()),
         (Some(1), Some(1))
     );
+
+    // An activity override is a separate resource. Clearing it returns the generic
+    // activity_concurrency value that the same namespace inherits.
+    assert_eq!(
+        put(format!("/namespaces/{ns}/quotas/activity_concurrency"), 5,)
+            .await
+            .status(),
+        200
+    );
+    let override_response = put(
+        format!("/namespaces/{ns}/activity-quotas/payment.capture"),
+        2,
+    )
+    .await;
+    assert_eq!(override_response.status(), 200);
+    let override_body: serde_json::Value = override_response.json().await.expect("json");
+    assert_eq!(override_body["activity"], "payment.capture");
+    assert_eq!(override_body["limit"], 2);
+    assert_eq!(override_body["used"], 0);
+    assert_eq!(override_body["overridden"], true);
+
+    let activity_list: serde_json::Value = api
+        .get_as(
+            &format!("/namespaces/{ns}/activity-quotas"),
+            "alice",
+            "acme",
+        )
+        .await
+        .json()
+        .await
+        .expect("activity quotas");
+    assert_eq!(activity_list["items"], json!([override_body]));
+
+    let cleared = api
+        .as_user(
+            reqwest::Method::DELETE,
+            &format!("/namespaces/{ns}/activity-quotas/payment.capture"),
+            "alice",
+            "acme",
+        )
+        .send()
+        .await
+        .expect("clear activity quota");
+    assert_eq!(cleared.status(), 200);
+    let cleared: serde_json::Value = cleared.json().await.expect("json");
+    assert_eq!(cleared["limit"], 5);
+    assert_eq!(cleared["overridden"], false);
 }
 
 #[tokio::test]

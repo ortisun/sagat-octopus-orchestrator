@@ -16,57 +16,57 @@ The floors were fixed before the three measured rounds, after one exploratory ru
 ## Environment
 
 - CPU: Apple M3 Max (16 cores), 48 GB
-- OS: Darwin 25.3.0 arm64; Node v26.8.1
+- OS: Darwin 25.3.0 arm64; Node v26.11.1
 - Browser: Chromium 153.0.8010.12 (headless, the one Playwright installs)
 - Studio: the production build (vite build, minified), served by the platform
-- Load average when the run began: 5.4 5.76 7.67
-- Commit: ae811ad (with uncommitted changes at the time of the run)
+- Load average when the run began: 5.16 7.06 7.42
+- Commit: 9747762 (with uncommitted changes at the time of the run)
 - Rounds per scenario: 3; each round is a new browser context (a cold page); every cell is the median round, with the lowest and highest in brackets
-- The platform, the engine and the browser on the same machine, over loopback; PostgreSQL 18.6 on loopback via SAGAT_TEST_DATABASE_URL (no container)
+- The platform, the engine and the browser on the same machine, over loopback; real PostgreSQL (a local server via SAGAT_TEST_DATABASE_URL or the harness container)
 
 ## The editor with a workflow of 1 000 nodes (a chain of 333 diamonds: a condition, two steps, the next condition)
 
 | Measure | Result |
 |---|---|
-| Time until the first card is drawn | 687 ms (683–704) |
+| Time until the first card is drawn | 978 ms (958–1021) |
 | Cards in the page (the editor draws all of them up to 1 000) | 1000 (1000–1000) |
-| Time for the platform's check of the draft to answer | 37 ms (37–42) |
-| Time from Enter on a card to its fields in the inspector | 142 ms (141–156) |
-| JavaScript heap | 78 MB (65–87) |
+| Time for the platform's check of the draft to answer | 51 ms (51–52) |
+| Time from Enter on a card to its fields in the inspector | 153 ms (152–155) |
+| JavaScript heap | 98 MB (78–111) |
 
 | Interaction (about 4 s each) | Frames per second | Median frame | 95th percentile | Slowest frame | Frames over 50 ms |
 |---|---|---|---|---|---|
-| Pan (drag the background) | 59.3 (59.1–59.8) | 16.7 ms (16.7–16.7) | 16.8 ms (16.8–16.8) | 33.3 ms (33.3–33.4) | 0 (0–0) |
-| Zoom (Ctrl and wheel) | 60.0 (60.0–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.8) | 16.8 ms (16.8–16.8) | 0 (0–0) |
+| Pan (drag the background) | 59.5 (59.3–60.0) | 16.7 ms (16.7–16.7) | 16.8 ms (16.7–16.8) | 33.3 ms (16.8–33.4) | 0 (0–0) |
+| Zoom (Ctrl and wheel) | 60.0 (60.0–60.0) | 16.7 ms (16.7–16.7) | 16.8 ms (16.7–16.8) | 16.8 ms (16.8–16.8) | 0 (0–0) |
 
 ## A run of 9991 nodes (a chain of 3 330 diamonds), none of them started
 
 | Measure | Result |
 |---|---|
-| Time until the first card of the graph is drawn | 1470 ms (1461–1673) |
-| Cards in the page of 9991 (simplified cards, only those in view) | 245 (245–245) |
-| Time from the click on the Table tab to its first row | 57 ms (56–57) |
+| Time until the first card of the graph is drawn | 1425 ms (1418–1433) |
+| Cards in the page of 9991 (simplified cards, only those in view) | 4 (4–4) |
+| Time from the click on the Table tab to its first row | 37 ms (36–44) |
 | Most rows in the page at any point of a scroll through all of them | 29 (29–29) |
 | Index of the last row reached | 9990, 9990, 9990 |
-| Time to find one step by typing its id | 9 ms (8–9) |
-| JavaScript heap with the graph open | 290 MB (290–307) |
-| JavaScript heap after the table was scrolled through | 290 MB (290–307) |
+| Time to find one step by typing its id | 10 ms (10–11) |
+| JavaScript heap with the graph open | 215 MB (215–215) |
+| JavaScript heap after the table was scrolled through | 215 MB (215–215) |
 
 | Interaction | Frames per second | Median frame | 95th percentile | Slowest frame | Frames over 50 ms |
 |---|---|---|---|---|---|
-| Pan the graph (about 4 s) | 60.0 (59.8–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.8) | 16.8 ms (16.8–33.4) | 0 (0–0) |
+| Pan the graph (about 4 s) | 60.0 (60.0–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.8) | 16.8 ms (16.8–16.8) | 0 (0–0) |
 | Scroll the table from the first row to the last (one screenful per frame) | 60.0 (60.0–60.0) | 16.7 ms (16.7–16.7) | 16.7 ms (16.7–16.8) | 16.8 ms (16.8–16.8) | 0 (0–0) |
 
 ## Results against the hypotheses
 
 | | Hypothesis | Result |
 |---|---|---|
-| H1 | the editor opens 1 000 nodes in ≤ 3 s | held (slowest round 704 ms) |
+| H1 | the editor opens 1 000 nodes in ≤ 3 s | held (slowest round 1021 ms) |
 | H2 | pan and zoom of 1 000 nodes: median ≤ 33.4 ms, p95 ≤ 50 ms | held |
-| H3 | a run of 9991 nodes: first card ≤ 10 s, ≤ 10 % of the cards drawn, smooth pan | held (slowest round 1673 ms; most cards drawn 245) |
-| H4 | the table: opens in ≤ 3 s, ≤ 100 rows in the page, last row reached, smooth scroll | held (slowest 57 ms; most rows 29) |
-| H5 | the filter finds one step in ≤ 2 s | held (slowest 9 ms) |
-| H6 | heap ≤ 512 MB | held (highest 307 MB) |
+| H3 | a run of 9991 nodes: first card ≤ 10 s, ≤ 10 % of the cards drawn, smooth pan | held (slowest round 1433 ms; most cards drawn 4) |
+| H4 | the table: opens in ≤ 3 s, ≤ 100 rows in the page, last row reached, smooth scroll | held (slowest 44 ms; most rows 29) |
+| H5 | the filter finds one step in ≤ 2 s | held (slowest 11 ms) |
+| H6 | heap ≤ 512 MB | held (highest 215 MB) |
 
 ## What this report does not say
 

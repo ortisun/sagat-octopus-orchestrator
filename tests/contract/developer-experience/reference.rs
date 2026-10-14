@@ -30,7 +30,7 @@ fn check(page: &str, generated: &str) {
 fn the_api_reference_is_what_the_openapi_document_gives() {
     let source = "specs/001-platform-foundation/contracts/openapi.yaml";
     let text = std::fs::read_to_string(repo().join(source)).expect("openapi");
-    let openapi: serde_json::Value = serde_yaml_ng::from_str(&text).expect("yaml");
+    let openapi: serde_json::Value = serde_saphyr::from_str(&text).expect("yaml");
     let page = api_reference(&openapi, source);
     // The page is the map of the contract: every operation in it, none made up.
     let operations: usize = openapi["paths"]

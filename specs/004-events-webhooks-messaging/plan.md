@@ -66,6 +66,11 @@ apps/execution-engine/src/{lib,loops,settings}.rs   the three loops (dispatcher,
 tests/{integration,e2e,fault,contract,performance}/004-events-webhooks-messaging/
 ```
 
+Outbound broker producers extend the same subscription and delivery aggregate as webhooks (ADR-0025).
+The physical `webhook_*` table names remain for migration compatibility, while a destination kind and
+typed settings select webhook, NATS, Kafka or SQS. The delivery transaction, lease/fence, rate limit,
+retry, dead-letter and redrive paths are shared; protocol clients remain in `infra-connectors`.
+
 ## Implementation phases
 
 1. Domain contracts and types, invariant validation + tests.
@@ -99,3 +104,7 @@ tests/{integration,e2e,fault,contract,performance}/004-events-webhooks-messaging
 ## Delivery Gate
 
 Signed webhooks, duplicates, retries, out-of-order and event/timeout race in integration tests.
+
+## Webhook identity profile completion
+
+ADR-0026 adds deployment-approved OIDC verifiers and native mutual TLS client identity. Endpoint profiles are persisted and audited, and use the existing admission path. No endpoint-controlled discovery or forwarded certificate trust is introduced.

@@ -4,6 +4,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod activity_locking;
 mod children;
 mod concurrency;
 mod definitions;
@@ -14,5 +15,8 @@ mod isolation;
 mod nats;
 mod outbox;
 mod routing;
+mod runtime_quotas;
 mod scheduler;
 mod starting;
+
+mod blobs;

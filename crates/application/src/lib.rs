@@ -3,6 +3,7 @@
 //! The crate depends on the domain only. Infrastructure (PostgreSQL, HTTP, ...) implements the
 //! ports declared here, so the dependency always points inward (see `docs/architecture/overview.md`).
 
+pub mod api_admission;
 pub mod authz;
 pub mod bindings;
 pub mod clock;
@@ -19,6 +20,7 @@ pub mod identity;
 pub mod maintenance;
 pub mod operations;
 pub mod outbound;
+pub mod payloads;
 pub mod publishing;
 pub mod quotas;
 pub mod runs;
@@ -30,3 +32,5 @@ pub mod shards;
 pub mod signing;
 pub mod telemetry;
 pub mod worker;
+
+pub mod blobs;

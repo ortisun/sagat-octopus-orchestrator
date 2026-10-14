@@ -88,6 +88,7 @@ test('US01 an author builds a workflow without programming: the platform checks 
   await page.getByRole('group', { name: /^Start:/ }).focus();
   await page.keyboard.press('Enter');
   await expect(inspector(page).getByRole('heading', { name: 'Workflow settings' })).toBeVisible();
+  await inspector(page).getByRole('group', { name: 'Input schema', exact: true }).getByRole('button', { name: 'Use a plain text box' }).click();
   await inspector(page).getByRole('textbox', { name: 'Input schema' }).fill(JSON.stringify({ type: 'object', required: ['invoiceId'], properties: { invoiceId: { type: 'string' } } }));
   await inspector(page).getByRole('textbox', { name: 'Input schema' }).blur();
   await saved(page);
@@ -153,4 +154,37 @@ test('US01 two people editing the same draft: the second to save is shown the di
   const after = (await api.call<{ ir: { nodes: Array<{ activity: string }> } }>('GET', `/workflows/${id}`, undefined, 200)).body;
   expect(after.ir.nodes[0]?.activity).toBe('shared.theirs');
   await other.close();
+});
+
+test('US01 workflow schemas have local autocomplete, validation and a lossless plain-text fallback', async ({ page }) => {
+  const problems = failOnBrowserErrors(page);
+  await signIn(page, env.tokens.developer);
+  await newWorkflow(page, 'schema-editor');
+  await page.getByRole('button', { name: 'Canvas' }).click();
+  await page.getByRole('group', { name: /^Start:/ }).focus();
+  await page.keyboard.press('Enter');
+  const input = inspector(page).getByRole('group', { name: 'Input schema', exact: true });
+  await expect(input.locator('.monaco-editor')).toBeVisible();
+  const box = input.getByRole('textbox', { name: 'Input schema' });
+  await box.focus();
+  await page.keyboard.insertText('{"ty');
+  await page.keyboard.press('Control+Space');
+  await expect(input.locator('.suggest-widget.visible')).toBeVisible();
+  await expect(input.locator('.suggest-widget.visible')).toContainText('type');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.insertText('{"type":"not-a-json-schema-type"}');
+  await expect(input.locator('.squiggly-error').first()).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.insertText('{"type":');
+  await expect(input.locator('.view-lines')).not.toContainText('not-a-json-schema-type');
+  const unfinished = (await input.locator('.view-lines').innerText()).replaceAll('\u00a0', ' ').trim();
+  expect(unfinished).toContain('{"type":');
+  await input.getByRole('button', { name: 'Use a plain text box' }).click();
+  await expect(input.getByRole('textbox', { name: 'Input schema' })).toHaveValue(unfinished);
+  await expect(input.getByRole('alert')).toContainText('not valid JSON');
+  await input.getByRole('textbox', { name: 'Input schema' }).fill('{"type":"object"}');
+  await expect(input.getByRole('alert')).toHaveCount(0);
+  await saved(page);
+  expect(problems).toEqual([]);
 });

@@ -1,0 +1,285 @@
+apiVersion: v1
+kind: Secret
+metadata: {name: postgres-credentials}
+type: Opaque
+stringData:
+  owner-password: g247-owner-only
+  runtime-password: g247-runtime-only
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: sagat-runtime-db}
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://sagat_app:g247-runtime-only@postgres:5432/sagat
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: sagat-owner-db}
+type: Opaque
+stringData:
+  DATABASE_URL: postgres://sagat:g247-owner-only@postgres:5432/sagat
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: postgres-init}
+data:
+  01-runtime-role.sh: |
+    #!/bin/sh
+    set -eu
+    psql --set=ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+      --set=app_password="$SAGAT_APP_PASSWORD" <<'SQL'
+    SELECT format('CREATE ROLE sagat_app LOGIN PASSWORD %L', :'app_password')
+    WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'sagat_app')\gexec
+    ALTER ROLE sagat_app NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    SQL
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: {app.kubernetes.io/name: postgresql}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: postgresql}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: postgresql}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: postgres
+          image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: POSTGRES_USER, value: sagat}
+            - {name: POSTGRES_DB, value: sagat}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: owner-password}}
+            - name: SAGAT_APP_PASSWORD
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: runtime-password}}
+          ports: [{name: postgres, containerPort: 5432}]
+          readinessProbe:
+            exec: {command: [pg_isready, -U, sagat, -d, sagat]}
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+            - {name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+      volumes:
+        - {name: data, emptyDir: {sizeLimit: 2Gi}}
+        - name: init
+          configMap: {name: postgres-init, defaultMode: 0555}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, labels: {app.kubernetes.io/name: postgresql}}
+spec:
+  selector: {app.kubernetes.io/name: postgresql}
+  ports: [{name: postgres, port: 5432, targetPort: postgres}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-idp
+  labels: {app.kubernetes.io/name: identity-provider}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: identity-provider}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: identity-provider}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: dev-idp
+          image: sagat-octopus-orchestrator/dev-idp:g247-local
+          imagePullPolicy: Never
+          args: [serve]
+          env:
+            - {name: SAGAT_ENV, value: dev}
+            - {name: SAGAT_DEV_IDP_ADDR, value: "0.0.0.0:9100"}
+            - {name: SAGAT_DEV_IDP_EXPOSED, value: "true"}
+            - {name: SAGAT_DEV_IDP_ISSUER, value: "http://dev-idp:9100/"}
+            - {name: SAGAT_DEV_IDP_AUDIENCE, value: sagat-g247}
+            - {name: SAGAT_DEV_IDP_HOSTS, value: "dev-idp:9100"}
+            # The image persists a key by default. This disposable provider uses an in-memory key;
+            # an empty value is explicitly treated as unset by its typed configuration.
+            - {name: SAGAT_DEV_IDP_KEY_FILE, value: ""}
+          ports: [{name: http, containerPort: 9100}]
+          readinessProbe:
+            httpGet: {path: /livez, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dev-idp, labels: {app.kubernetes.io/name: identity-provider}}
+spec:
+  selector: {app.kubernetes.io/name: identity-provider}
+  ports: [{name: http, port: 9100, targetPort: http}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: prometheus-config}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 2s
+      evaluation_interval: 2s
+    scrape_configs:
+      - job_name: sagat-engine
+        static_configs:
+          - targets: [sagat-engine-admin:9091]
+        relabel_configs:
+          - target_label: namespace
+            replacement: sagat-g247
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels: {app.kubernetes.io/name: prometheus}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: prometheus}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: prometheus}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: prometheus
+          image: quay.io/prometheus/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=1h
+          ports: [{name: http, containerPort: 9090}]
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 384Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+        - {name: data, emptyDir: {sizeLimit: 1Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: prometheus, labels: {app.kubernetes.io/name: prometheus}}
+spec:
+  selector: {app.kubernetes.io/name: prometheus}
+  ports: [{name: http, port: 9090, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: dependency-ingress}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [postgresql, identity-provider, prometheus]
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{port: 5432, protocol: TCP}]
+      from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [control-plane, execution-engine, migration, seed]
+    - ports: [{port: 9100, protocol: TCP}]
+      from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [control-plane, execution-engine, validator]
+    - ports: [{port: 9090, protocol: TCP}]
+      from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: keda}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: validator}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: setup-egress}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [migration, seed]
+  policyTypes: [Egress]
+  egress:
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+      to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+    - ports: [{port: 5432, protocol: TCP}]
+      to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: postgresql}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: validator-egress}
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/component: validator}}
+  policyTypes: [Egress]
+  egress:
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+      to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+    - ports: [{port: 8080, protocol: TCP}]
+      to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: control-plane}}
+    - ports: [{port: 9100, protocol: TCP}]
+      to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: identity-provider}}
+    - ports: [{port: 9090, protocol: TCP}]
+      to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: prometheus}}

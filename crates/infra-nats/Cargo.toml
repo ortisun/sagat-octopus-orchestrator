@@ -2,6 +2,7 @@
 name = "sagat-infra-nats"
 description = "NATS JetStream adapter: publishes the outbox's task hints and run events."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

@@ -1,4 +1,5 @@
 {{- $cp := .Values.controlPlane }}
+{{- $nativeTls := ne $cp.nativeTls.tlsSecret "" }}
 {{- $ctx := dict "root" . "component" "control-plane" }}
 apiVersion: apps/v1
 kind: Deployment
@@ -30,7 +31,7 @@ spec:
       serviceAccountName: {{ include "sagat.fullname" . }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 40
-      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      securityContext: {runAsNonRoot: true, fsGroup: 10001, fsGroupChangePolicy: OnRootMismatch, seccompProfile: {type: RuntimeDefault}}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -48,6 +49,18 @@ spec:
             # /v1/ready asks the database (docs/runbooks/control-plane.md). /livez and /readyz are the engine's.
             - {name: SAGAT_ADMIN_ADDR, value: "0.0.0.0:9090"}
             - {name: SAGAT_SHUTDOWN_GRACE_SECS, value: "30"}
+            {{- if $nativeTls }}
+            - {name: SAGAT_HTTP_TLS_CERT, value: /etc/sagat/http-tls/tls.crt}
+            - {name: SAGAT_HTTP_TLS_KEY, value: /etc/sagat/http-tls/tls.key}
+            - {name: SAGAT_HTTP_TLS_CLIENT_CA, value: /etc/sagat/http-client-ca/ca.crt}
+            - {name: SAGAT_HEALTHCHECK_TLS_SERVER_NAME, value: {{ $cp.nativeTls.healthcheckServerName | quote }}}
+            {{- if $cp.nativeTls.healthcheckCaSecret }}
+            - {name: SAGAT_HEALTHCHECK_TLS_CA_FILE, value: /etc/sagat/healthcheck-ca/ca.crt}
+            {{- end }}
+            {{- end }}
+            {{- if $cp.webhookOidcProfilesSecret }}
+            - {name: SAGAT_WEBHOOK_OIDC_PROFILES_FILE, value: /etc/sagat/webhook-oidc/profiles.json}
+            {{- end }}
             {{- if $cp.allowPlaintextSecrets }}
             - {name: SAGAT_API_ALLOW_PLAINTEXT_SECRETS, value: "true"}
             {{- end }}
@@ -60,15 +73,15 @@ spec:
             - {name: http, containerPort: 8080}
             - {name: admin, containerPort: 9090}
           startupProbe:
-            httpGet: {path: /v1/health, port: http}
+            httpGet: {path: /v1/health, port: http{{ if $nativeTls }}, scheme: HTTPS{{ end }}}
             periodSeconds: 2
             failureThreshold: 30
           livenessProbe:
-            httpGet: {path: /v1/health, port: http}
+            httpGet: {path: /v1/health, port: http{{ if $nativeTls }}, scheme: HTTPS{{ end }}}
             periodSeconds: 10
             failureThreshold: 3
           readinessProbe:
-            httpGet: {path: /v1/ready, port: http}
+            httpGet: {path: /v1/ready, port: http{{ if $nativeTls }}, scheme: HTTPS{{ end }}}
             periodSeconds: 5
             failureThreshold: 2
           resources:
@@ -76,8 +89,44 @@ spec:
           {{- include "sagat.containerSecurity" . | nindent 10 }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- if $nativeTls }}
+            - {name: http-tls, mountPath: /etc/sagat/http-tls, readOnly: true}
+            - {name: http-client-ca, mountPath: /etc/sagat/http-client-ca, readOnly: true}
+            {{- if $cp.nativeTls.healthcheckCaSecret }}
+            - {name: healthcheck-ca, mountPath: /etc/sagat/healthcheck-ca, readOnly: true}
+            {{- end }}
+            {{- end }}
+            {{- if $cp.webhookOidcProfilesSecret }}
+            - {name: webhook-oidc, mountPath: /etc/sagat/webhook-oidc, readOnly: true}
+            {{- end }}
       volumes:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        {{- if $nativeTls }}
+        - name: http-tls
+          secret:
+            secretName: {{ $cp.nativeTls.tlsSecret | quote }}
+            defaultMode: 288 # 0440
+            items: [{key: tls.crt, path: tls.crt}, {key: tls.key, path: tls.key}]
+        - name: http-client-ca
+          secret:
+            secretName: {{ $cp.nativeTls.clientCaSecret | quote }}
+            defaultMode: 288 # 0440
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- if $cp.nativeTls.healthcheckCaSecret }}
+        - name: healthcheck-ca
+          secret:
+            secretName: {{ $cp.nativeTls.healthcheckCaSecret | quote }}
+            defaultMode: 288 # 0440
+            items: [{key: ca.crt, path: ca.crt}]
+        {{- end }}
+        {{- end }}
+        {{- if $cp.webhookOidcProfilesSecret }}
+        - name: webhook-oidc
+          secret:
+            secretName: {{ $cp.webhookOidcProfilesSecret | quote }}
+            defaultMode: 288 # 0440
+            items: [{key: profiles.json, path: profiles.json}]
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -100,7 +149,7 @@ spec:
   selector:
     {{- include "sagat.selector" $ctx | nindent 4 }}
   ports:
-    - {name: http, port: {{ $cp.service.port }}, targetPort: http}
+    - {name: http, port: {{ $cp.service.port }}, targetPort: http, appProtocol: {{ if $nativeTls }}https{{ else }}http{{ end }}}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

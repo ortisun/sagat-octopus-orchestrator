@@ -192,6 +192,77 @@
         "type": "Int32"
       }
     },
+    "sagat_octopus_orchestrator.v1.ReadBlobHeader": {
+      "1": {
+        "name": "blob_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "size",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "3": {
+        "name": "sha256",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "content_type",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ReadBlobRequest": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "step_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "5": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "6": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "blob_id",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.ReadBlobResponse": {
+      "1": {
+        "name": "header",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ReadBlobHeader"
+      },
+      "2": {
+        "name": "chunk",
+        "repeated": false,
+        "type": "Bytes"
+      }
+    },
     "sagat_octopus_orchestrator.v1.RegisterWorkerRequest": {
       "1": {
         "name": "worker_name",
@@ -417,6 +488,87 @@
         "repeated": false,
         "type": "String"
       }
+    },
+    "sagat_octopus_orchestrator.v1.WriteBlobHeader": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "step_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "5": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "6": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "content_type",
+        "repeated": false,
+        "type": "String"
+      },
+      "8": {
+        "name": "expected_size",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "9": {
+        "name": "expected_sha256",
+        "repeated": false,
+        "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.WriteBlobRequest": {
+      "1": {
+        "name": "header",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.WriteBlobHeader"
+      },
+      "2": {
+        "name": "chunk",
+        "repeated": false,
+        "type": "Bytes"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.WriteBlobResponse": {
+      "1": {
+        "name": "blob_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "size",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "3": {
+        "name": "sha256",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "content_type",
+        "repeated": false,
+        "type": "String"
+      }
     }
   },
   "services": {
@@ -445,6 +597,12 @@
         "output": ".sagat_octopus_orchestrator.v1.PollTasksResponse",
         "serverStreaming": false
       },
+      "ReadBlob": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.ReadBlobRequest",
+        "output": ".sagat_octopus_orchestrator.v1.ReadBlobResponse",
+        "serverStreaming": true
+      },
       "RegisterWorker": {
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.RegisterWorkerRequest",
@@ -455,6 +613,18 @@
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.ResolveSecretsRequest",
         "output": ".sagat_octopus_orchestrator.v1.ResolveSecretsResponse",
+        "serverStreaming": false
+      },
+      "StreamTasks": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.PollTasksRequest",
+        "output": ".sagat_octopus_orchestrator.v1.PollTasksResponse",
+        "serverStreaming": true
+      },
+      "WriteBlob": {
+        "clientStreaming": true,
+        "input": ".sagat_octopus_orchestrator.v1.WriteBlobRequest",
+        "output": ".sagat_octopus_orchestrator.v1.WriteBlobResponse",
         "serverStreaming": false
       }
     }

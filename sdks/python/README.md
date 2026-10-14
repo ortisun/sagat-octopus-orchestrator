@@ -54,6 +54,11 @@ asyncio.run(main())
 retry of that call, so a lost answer never starts a second run. Amounts of money are strings (`"19.99"`): the
 SDK never converts a string to a number, and `600000` is never sent as `600000.0`.
 
+For a large run input, use `await client.upload_run_input(one_pass_iterable, ...)`, then pass the returned
+`BlobDescriptor` to `await client.start_with_blob(...)`. The upload is streamed once and never retried; its
+descriptor is accepted only after source EOF and matching local size/SHA-256. The synchronous client exposes
+the same two operations.
+
 No event loop? `SyncSagatClient` has the same methods, blocking:
 
 ```python
@@ -95,6 +100,7 @@ async def main() -> None:
             namespace="payments",
             token="eyJ...",
             worker_name="payments-1",
+            transport="auto",  # default: stream at protocol 1.4+, poll an older server
         )
     )
     host.register_activity("payments.charge", charge)
@@ -109,6 +115,9 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+`transport` accepts `"auto"`, `"poll"`, or `"stream"`. Auto is the default and uses finite-credit streaming
+when registration accepts protocol 1.4 or newer; it keeps polling compatibility with older negotiated servers.
 
 How an activity ends: a returned value is the step's output (JSON; `None` is `null`; over 256 KiB is a
 `PAYLOAD_TOO_LARGE` failure). `ActivityFailure.retryable(code, message)`, `.permanent(code, message)` and
@@ -232,14 +241,15 @@ SemVer. Before 1.0 a minor version may change the Python API; the **wire** contr
 REST API is additive within `/v1` and the worker protocol additive within `1.x`. A newer SDK against an older
 server runs the worker at the server's protocol version (negotiated at registration); an older SDK against a newer
 server ignores the fields it does not know.
+This SDK offers worker protocol `1.4`; the package version remains independent.
 
 ## Runtime matrix: declared and tested
 
 `requires-python = ">=3.10"`. What was actually run, all on macOS 26 arm64 (Darwin 25.3):
 
-| Runtime | Unit tests (226) | `mypy --strict` and `ruff` | Conformance suite (15 scenarios) |
+| Runtime | Unit tests | `mypy --strict` and `ruff` | Conformance suite |
 |---|---|---|---|
-| CPython 3.14.7 (Homebrew) | passed | passed | passed, three runs in a row |
+| CPython 3.14.8 (Homebrew) | 240 passed | passed | not run for this transport change |
 | CPython 3.10.21 (uv build) | 226 passed | not run (type-checked against the 3.10 language level from 3.14) | passed, one run, on an earlier revision of the SDK and of the suite |
 | CPython 3.11.15, 3.12.12, 3.13.9 (uv builds) | 226 passed each | not run | not run |
 | Linux, Windows, other architectures | not run | not run | not run |
@@ -254,9 +264,9 @@ older runtime, `protobuf>=7.35.1` because the generated messages do) were not tr
 
 * TLS and mTLS are tested against in-process fakes with throw-away `openssl` certificates (trust roots, client
   certificate, an untrusted server), not against the platform's own TLS endpoints.
-* Tracing: the SDK propagates `traceparent` and takes the ambient one from the `trace_context` hook; it has no
-  OpenTelemetry dependency and the hook was not tried with the real OpenTelemetry API. Metrics are the
-  `on_event` callback of `WorkerConfig`; no exporter is shipped.
+* Tracing and metrics use the opt-in `opentelemetry` extra and `OpenTelemetryBridge`, which adapts the existing
+  `trace_context` and `on_event` hooks. Real in-memory OpenTelemetry exporters cover propagation, task spans and
+  metrics. The application still owns providers and exporters; none is configured by this package.
 * No benchmark or soak test: nothing here claims a throughput.
 
 ## Development
@@ -275,3 +285,7 @@ The locks are made from `requirements.in` and `requirements-dev.in` with
 the committed protobuf code; the unit tests fail when any of them is behind. The conformance suite
 (`tests/contract/sdk-conformance/`) runs from the repository root:
 `SAGAT_SDK_LANGS=python cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture`.
+
+## License
+
+MIT. The wheel and source distribution include the license text in `LICENSE`.

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	pb "github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/workerpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -181,4 +182,58 @@ func (p *plan) unary() grpc.UnaryClientInterceptor {
 			return status.Error(codes.Unavailable, "injected")
 		}
 	}
+}
+
+// stream injects receive faults into the actual server-stream transport, preserving prior frames.
+func (p *plan) stream() grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		name := method[strings.LastIndex(method, "/")+1:]
+		f := p.next("grpc", name)
+		if f == nil {
+			return streamer(ctx, desc, cc, method, opts...)
+		}
+		if f.Action == "status" || f.Action == "failBefore" {
+			code := codes.Unavailable
+			if f.Action == "status" {
+				if mapped, ok := grpcCodes[f.Code]; ok {
+					code = mapped
+				}
+			}
+			return nil, status.Error(code, "injected")
+		}
+		call, cancel := context.WithCancel(ctx)
+		stream, err := streamer(call, desc, cc, method, opts...)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		return &faultStream{ClientStream: stream, cancel: cancel, action: f.Action}, nil
+	}
+}
+
+type faultStream struct {
+	grpc.ClientStream
+	cancel  context.CancelFunc
+	action  string
+	dropped bool
+}
+
+func (s *faultStream) RecvMsg(message any) error {
+	if s.dropped {
+		return status.Error(codes.Unavailable, "injected")
+	}
+	err := s.ClientStream.RecvMsg(message)
+	if err != nil {
+		s.cancel()
+		return err
+	}
+	if frame, ok := message.(interface{ GetTasks() []*pb.TaskLease }); ok && len(frame.GetTasks()) == 0 {
+		return nil
+	}
+	s.dropped = true
+	s.cancel()
+	if s.action == "dropStreamAfterFirst" {
+		return nil
+	}
+	return status.Error(codes.Unavailable, "injected")
 }

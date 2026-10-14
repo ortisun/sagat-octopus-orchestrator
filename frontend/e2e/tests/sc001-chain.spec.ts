@@ -85,6 +85,7 @@ test('SC-007-001 create, validate, publish, trigger, fail, compensate and inspec
     expect(at('compensation.planned')).toBeLessThan(at('saga.compensated'));
     expect(at('saga.compensated')).toBeLessThan(types.lastIndexOf('run.finished'));
     // The trace that ties it to the platform's telemetry is on the page, to be copied.
+    await page.getByText('Run details', { exact: true }).click();
     await expect(page.getByText('Trace id')).toBeVisible();
     const traceId = (await caller.call<{ traceId?: string }>('GET', `/runs/${run}`, undefined, 200)).body.traceId;
     expect(traceId).toMatch(/^[0-9a-f]{32}$/);

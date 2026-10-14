@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -17,7 +17,10 @@ from ..errors import ErrorCode, SagatError
 from ..retry import capped_ms, parse_ms
 from ..traceparent import is_traceparent
 
-METHODS = ("RegisterWorker", "PollTasks", "Heartbeat", "CompleteStep", "FailStep", "ResolveSecrets")
+METHODS = (
+    "RegisterWorker", "PollTasks", "StreamTasks", "Heartbeat", "CompleteStep", "FailStep", "ResolveSecrets",
+    "WriteBlob", "ReadBlob"
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,12 @@ def error_of_status(method: str, error: grpc.aio.AioRpcError) -> SagatError:
         return safe("TRANSPORT", "no answer from the worker service")
     if status == grpc.StatusCode.CANCELLED:
         return SagatError("CANCELLED", "the call was cancelled", status=name)
+    if status == grpc.StatusCode.UNIMPLEMENTED:
+        if method == "StreamTasks":
+            return safe("UNSUPPORTED_PROTOCOL", "the worker service does not implement task streaming")
+        return safe("INTERNAL", "the worker service failed")
+    if status == grpc.StatusCode.DATA_LOSS:
+        return safe("PROTOCOL", "the blob stream failed its integrity check")
     return safe("INTERNAL", "the worker service failed")
 
 
@@ -142,6 +151,15 @@ class WorkerRpc:
         except grpc.aio.BaseError:
             raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
 
+    async def _metadata(self, traceparent: str | None) -> list[tuple[str, str]]:
+        if self._closed:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed")
+        token = await resolve_token(self._config.token)
+        metadata = [("authorization", f"Bearer {token}")]
+        if traceparent and is_traceparent(traceparent):
+            metadata.append(("traceparent", traceparent))
+        return metadata
+
     async def register_worker(self, request: pb.RegisterWorkerRequest) -> pb.RegisterWorkerResponse:
         response: pb.RegisterWorkerResponse = await self._call("RegisterWorker", request)
         return response
@@ -149,6 +167,21 @@ class WorkerRpc:
     async def poll_tasks(self, request: pb.PollTasksRequest) -> pb.PollTasksResponse:
         response: pb.PollTasksResponse = await self._call("PollTasks", request)
         return response
+
+    async def stream_tasks(self, request: pb.PollTasksRequest) -> AsyncGenerator[pb.PollTasksResponse, None]:
+        call = self._stub.StreamTasks(
+            # The server window is five seconds; one extra second bounds trailer delivery.
+            request, metadata=await self._metadata(None), timeout=min(self._config.timeout, 6.0)
+        )
+        try:
+            async for response in call:
+                yield response
+        except grpc.aio.AioRpcError as error:
+            raise error_of_status("StreamTasks", error) from None
+        except grpc.aio.BaseError:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
+        finally:
+            call.cancel()
 
     async def heartbeat(self, request: pb.HeartbeatRequest, traceparent: str | None = None) -> pb.HeartbeatResponse:
         response: pb.HeartbeatResponse = await self._call("Heartbeat", request, traceparent)
@@ -169,3 +202,32 @@ class WorkerRpc:
     ) -> pb.ResolveSecretsResponse:
         response: pb.ResolveSecretsResponse = await self._call("ResolveSecrets", request, traceparent)
         return response
+
+    async def write_blob(
+        self, requests: AsyncIterable[pb.WriteBlobRequest], traceparent: str | None = None
+    ) -> pb.WriteBlobResponse:
+        try:
+            response: pb.WriteBlobResponse = await self._stub.WriteBlob(
+                requests, metadata=await self._metadata(traceparent), timeout=self._config.timeout
+            )
+            return response
+        except grpc.aio.AioRpcError as error:
+            raise error_of_status("WriteBlob", error) from None
+        except grpc.aio.BaseError:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
+
+    async def read_blob(
+        self, request: pb.ReadBlobRequest, traceparent: str | None = None
+    ) -> AsyncIterator[pb.ReadBlobResponse]:
+        call = self._stub.ReadBlob(
+            request, metadata=await self._metadata(traceparent), timeout=self._config.timeout
+        )
+        try:
+            async for response in call:
+                yield response
+        except grpc.aio.AioRpcError as error:
+            raise error_of_status("ReadBlob", error) from None
+        except grpc.aio.BaseError:
+            raise SagatError("CANCELLED", "the connection to the worker service is closed") from None
+        finally:
+            call.cancel()

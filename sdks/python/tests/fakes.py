@@ -147,6 +147,10 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         self.secrets: list[pb.ResolvedSecret] = []
         self.poll_delay = 0.0
         self.poll_retry_after_ms = 50
+        self.stream_batches: list[list[pb.TaskLease]] | None = None
+        self.stream_failure_after_first: grpc.StatusCode | None = None
+        self.hold_stream = False
+        self.stream_cancelled = 0
         self.port = 0
         self._server: grpc.aio.Server | None = None
 
@@ -195,6 +199,33 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         take = len(self.leases) if self.ignore_max_tasks else request.max_tasks
         tasks, self.leases = self.leases[:take], self.leases[take:]
         return pb.PollTasksResponse(tasks=tasks, retry_after_ms=self.poll_retry_after_ms)
+
+    async def StreamTasks(self, request: Any, context: Any) -> Any:
+        await self._enter("StreamTasks", request, context)
+        batches = self.stream_batches
+        if batches is None:
+            take = len(self.leases) if self.ignore_max_tasks else request.max_tasks
+            tasks, self.leases = self.leases[:take], self.leases[take:]
+            batches = [tasks]
+        self.stream_batches = None
+        sent = 0
+        try:
+            for tasks in batches:
+                if not tasks:
+                    continue
+                sent += len(tasks)
+                yield pb.PollTasksResponse(tasks=tasks)
+                if self.stream_failure_after_first is not None:
+                    code, self.stream_failure_after_first = self.stream_failure_after_first, None
+                    await asyncio.sleep(0.02)
+                    await context.abort(code, "scripted")
+            if self.hold_stream:
+                await asyncio.Event().wait()
+            if sent < request.max_tasks:
+                yield pb.PollTasksResponse(retry_after_ms=self.poll_retry_after_ms)
+        finally:
+            if self.hold_stream or context.cancelled():
+                self.stream_cancelled += 1
 
     async def Heartbeat(self, request: Any, context: Any) -> Any:
         await self._enter("Heartbeat", request, context)

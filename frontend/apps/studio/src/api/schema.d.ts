@@ -324,6 +324,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/run-input-blobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stage a streaming run input owned by the authenticated uploader
+         * @description Requires run:start and a configured shared blob provider. The raw bytes remain opaque; starting a run validates the canonical $blob descriptor against its inputSchema. Staging is not automatically retried: an uncertain response may leave an unused upload for durable cleanup. The ordinary JSON body limit is unchanged.
+         */
+        post: operations["uploadRunInput"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs": {
         parameters: {
             query?: never;
@@ -353,6 +373,34 @@ export interface paths {
         get: operations["getRun"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{runId}/payload-inspections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect retained payload structure with every key and value hidden
+         * @description Requires both `run:read` and `run:payload:inspect` (Admin or Operator). Selects the
+         *     run input or the immutable payload referenced by one journal sequence. The server
+         *     commits a bounded audit before returning data. `structure-only-v1` hides all object
+         *     keys and scalar values, including values annotated as public in a schema. No raw
+         *     download or external-object read is performed. External metadata is returned only
+         *     from a committed tenant-bound catalog entry. Missing retained content is explicit.
+         *     The request is limited to 1 KiB; the projection to depth 16, 256 nodes, 32 children
+         *     per container and a 64 KiB response. Responses have `Cache-Control: private, no-store`.
+         *     Canonical namespace API admission is charged once after authorization.
+         */
+        post: operations["inspectRunPayload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -610,6 +658,50 @@ export interface paths {
          * @description The tenant-wide setting (or the default) applies again. Needs `quota:manage`. Audited.
          */
         delete: operations["clearNamespaceQuota"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/activity-quotas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List activity-specific concurrency overrides in a namespace
+         * @description Needs `quota:read`. Only explicit activity overrides are listed. Activities without an override use the namespace-wide or tenant-wide `activity_concurrency` quota. A namespace of another tenant is a 404, like one that does not exist.
+         */
+        get: operations["listActivityQuotas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/activity-quotas/{activity}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the concurrency quota for one activity in a namespace
+         * @description Needs `quota:manage`. The value is the maximum number of tasks of this activity that may hold an unexpired lease in the namespace. It cannot exceed the tenant's `activity_concurrency` ceiling. Audited.
+         */
+        put: operations["setActivityQuota"];
+        post?: never;
+        /**
+         * Remove the concurrency override for one activity
+         * @description The namespace-wide or tenant-wide `activity_concurrency` quota applies again. Needs `quota:manage`. Audited.
+         */
+        delete: operations["clearActivityQuota"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1113,8 +1205,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Receive a signed webhook
-         * @description The public URL of an event endpoint; there is no bearer token, the signature is the credential. The signature is `v1=` and the hex HMAC-SHA256, under the endpoint's secret, of `"octopus-event-in-v1\n{timestamp}\n{eventId}\n{eventType}\n{subject}\n{correlationKey}\n"` followed by the body, where the type, the subject and the correlation key are the values of the headers of the same names *as sent* (an absent one is the empty string; the endpoint's default type is not signed). They are covered because the type chooses the workflows that start and the key the waits that wake. A secret of fewer than 16 bytes verifies nothing. The timestamp is in seconds and must be within the endpoint's allowed skew of the platform's clock (300 s unless set); a copy of a signed request replayed within the window is answered `DUPLICATE`, because the event id is remembered for at least twice the skew. Up to four comma-separated signatures (512 bytes at most) are accepted, so a secret can be rotated; the three newest versions of the secret are tried. A header that is too long, or a timestamp outside the window, is refused before any secret is read. **Every request that does not verify gets the same 401**: an unknown endpoint, a missing header, a stale timestamp, a wrong signature. The body must be a JSON object of at most the endpoint's limit (240 KiB at most). A paused endpoint answers 503, an endpoint over its rate 429, and a full backlog 429; both with `Retry-After`.
+         * Receive an authenticated webhook
+         * @description The public URL of an event endpoint. Authentication is selected by its persisted profile; profiles never fall back to one another. HMAC requires X-Octopus-Signature. OIDC requires an Authorization bearer token from the deployment-approved verifier and the exact configured subject. MTLS requires a native TLS client certificate with the configured verified leaf fingerprint; forwarded headers are ignored. OIDC and MTLS authenticate the sender over TLS, not a detached body signature. All profiles require the timestamp and event ID. An unavailable OIDC key provider returns 503. For HMAC, the signature is `v1=` and the hex HMAC-SHA256, under the endpoint's secret, of `"octopus-event-in-v1\n{timestamp}\n{eventId}\n{eventType}\n{subject}\n{correlationKey}\n"` followed by the body, where the type, the subject and the correlation key are the values of the headers of the same names *as sent* (an absent one is the empty string; the endpoint's default type is not signed). They are covered because the type chooses the workflows that start and the key the waits that wake. A secret of fewer than 16 bytes verifies nothing. The timestamp is in seconds and must be within the endpoint's allowed skew of the platform's clock (300 s unless set); a copy of a signed request replayed within the window is answered `DUPLICATE`, because the event id is remembered for at least twice the skew. Up to four comma-separated signatures (512 bytes at most) are accepted, so a secret can be rotated; the three newest versions of the secret are tried. A header that is too long, or a timestamp outside the window, is refused before any secret is read. **Every request that does not verify gets the same 401**: an unknown endpoint, a missing header, a stale timestamp, a wrong signature. The body must be a JSON object of at most the endpoint's limit (240 KiB at most). A paused endpoint answers 503, an endpoint over its rate 429, and a full backlog 429; both with `Retry-After`.
          */
         post: operations["receiveSignedWebhook"];
         delete?: never;
@@ -1321,6 +1413,138 @@ export interface paths {
          * @description Needs `event:manage`. Audited. Up to `limit` (100 unless given, at most 1000), oldest first.
          */
         post: operations["redriveWebhookDeliveries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/broker-subscriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the outbound broker subscriptions of a namespace
+         * @description Needs `event:read`.
+         */
+        get: operations["listBrokerSubscriptions"];
+        put?: never;
+        /**
+         * Subscribe a broker destination to platform events
+         * @description Needs `event:manage`. The destination is NATS JetStream, Kafka or SQS and must be allowed by the namespace egress policy at creation and every attempt. The stable `delivery-id` is sent as `Nats-Msg-Id`, the Kafka record key, or the SQS FIFO deduplication id. Success requires the broker acknowledgement. Delivery is at-least-once: an acknowledgement lost after the broker accepted a message can cause a repeat. Failures retry with backoff for twelve attempts, then become `DEAD` and can be redriven. A subscription with 10000 pending deliveries is disabled.
+         */
+        post: operations["createBrokerSubscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a subscription, with its health
+         * @description Needs `event:read`.
+         */
+        get: operations["getBrokerSubscription"];
+        /**
+         * Replace the settings of a subscription
+         * @description Needs `event:manage`. Setting `status` to `ACTIVE` on a subscription the platform switched off (`DISABLED`, after 20 deliveries in a row were set aside) turns it back on, forgets its failures and puts its dead deliveries back in the queue.
+         */
+        put: operations["updateBrokerSubscription"];
+        post?: never;
+        /**
+         * Delete a subscription and what was queued for it
+         * @description Needs `event:manage`. Audited.
+         */
+        delete: operations["deleteBrokerSubscription"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the deliveries of a subscription, newest first
+         * @description Needs `event:read`.
+         */
+        get: operations["listBrokerDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a delivery with every attempt made
+         * @description Needs `event:read`. What the receiver answered is never kept, only its status and a class of failure.
+         */
+        get: operations["getBrokerDelivery"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}/redrive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Put a dead delivery back in the queue
+         * @description Needs `event:manage`. Audited. The delivery gets a full set of attempts again; the attempts made are kept.
+         */
+        post: operations["redriveBrokerDelivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/redrive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Put the dead deliveries of a subscription back in the queue
+         * @description Needs `event:manage`. Audited. Up to `limit` (100 unless given, at most 1000), oldest first.
+         */
+        post: operations["redriveBrokerDeliveries"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1576,7 +1800,7 @@ export interface paths {
         };
         /**
          * Read a test run
-         * @description Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED` or `SCRIPT_SANDBOX_UNAVAILABLE`.
+         * @description Needs `script:write`. When it has finished: the `result`, the `log` (filtered: what looks like a credential and every secret value the run was handed are replaced by `[REDACTED]`, and it is cut at the policy's output limit), what the script was refused (`denied`), the numbers of the run (`wallMs`, `startMs` from asking for a container to the script's first instruction, `memoryPeakBytes`) and the JSON Schemas inferred from the input and the result. A failure has a stable `failure` code: `SCRIPT_ERROR`, `SCRIPT_TIMEOUT`, `SCRIPT_OUT_OF_MEMORY`, `SCRIPT_OUTPUT_LIMIT`, `SCRIPT_DENIED`, `SCRIPT_SCHEMA_VIOLATION` (named by rule and path, never by value), `SCRIPT_NO_RESULT`, `SCRIPT_BUILD_REJECTED`, `SCRIPT_SANDBOX_UNAVAILABLE` or non-retryable `STORAGE_QUOTA_EXCEEDED`. Retained content exhaustion commits the fenced terminal failure without the rejected result or inferred schemas; retained log exhaustion clips at a UTF-8 boundary and sets truncation evidence.
          */
         get: operations["getScriptTestRun"];
         put?: never;
@@ -1895,6 +2119,56 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        PayloadInspectionSelector: {
+            /** @constant */
+            source: "input";
+        } | {
+            /** @constant */
+            source: "journal";
+            sequence: number;
+        };
+        PayloadStructure: {
+            /** @enum {string} */
+            type: "object" | "array";
+            childCount: number;
+            children: components["schemas"]["PayloadStructure"][];
+            omittedChildren: number;
+        } | {
+            /** @enum {string} */
+            type: "string" | "number" | "boolean" | "null";
+            /** @constant */
+            redacted: true;
+        };
+        PayloadInspection: {
+            /** Format: uuid */
+            runId: string;
+            runVersion: number;
+            selection: components["schemas"]["PayloadInspectionSelector"];
+            nodeId?: string;
+            attempt?: number;
+            /** @constant */
+            policy: "structure-only-v1";
+        } & ({
+            /** @constant */
+            kind: "inline-json";
+            sizeBytes: number;
+            truncated: boolean;
+            tree: components["schemas"]["PayloadStructure"];
+        } | {
+            /** @constant */
+            kind: "external";
+            sizeBytes: number;
+            /** @enum {string} */
+            contentKind: "json" | "text" | "binary" | "other";
+            /** @constant */
+            reason: "EXTERNAL_CONTENT_NOT_INSPECTED";
+        } | {
+            /** @constant */
+            kind: "unavailable";
+            /** @enum {string} */
+            reason: "NO_RETAINED_PAYLOAD" | "UNSUPPORTED_FORMAT";
+            sizeBytes?: number;
+        });
         JsonObject: {
             [key: string]: unknown;
         };
@@ -1908,6 +2182,8 @@ export interface components {
             message: string;
             retryable: boolean;
             traceId: string;
+            /** @description Server-generated request correlation id; equals X-Request-Id. Absent on older servers. */
+            requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
             /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. */
@@ -2040,13 +2316,26 @@ export interface components {
              * @description Optional explicit pin; the active version otherwise.
              */
             versionId?: string;
-            input: components["schemas"]["JsonObject"];
+            input?: components["schemas"]["JsonObject"];
+            /**
+             * Format: uuid
+             * @description An unused run-input blob uploaded by this subject in this namespace. The run input is its canonical $blob descriptor.
+             */
+            inputBlobRef?: string;
             correlationId?: string;
             /**
              * Format: date-time
              * @description Must be in the future and within a year; the run times out at this instant.
              */
             deadline?: string;
+        } & (unknown | unknown);
+        BlobDescriptor: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            size: number;
+            sha256: string;
+            contentType: string;
         };
         Run: {
             /** Format: uuid */
@@ -2449,9 +2738,17 @@ export interface components {
             /** @default false */
             allowHttp: boolean;
         };
+        /**
+         * @description Limits use resource-specific units: existing count resources are items (maximum 1,000,000,000);
+         *     tenant_content_bytes and tenant_log_bytes are logical retained bytes (maximum 2^50);
+         *     api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
+         *     fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
+         *     script_retention_days is 0..365 days. Zero disables new admission for that resource.
+         *     Lowering a limit does not erase retained content or rewrite existing expiry.
+         */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
             /** Format: int64 */
             limit: number;
             /**
@@ -2466,16 +2763,41 @@ export interface components {
             ceiling: number;
             /**
              * Format: int64
-             * @description Exact count now. Absent for a per-namespace resource in the tenant-wide view.
+             * @description Exact charged items or bytes, including outstanding content reservations. Absent for rate/retention policies and for a per-namespace resource in the tenant-wide view.
              */
             used?: number;
         };
         QuotaList: {
             items: components["schemas"]["Quota"][];
         };
+        /**
+         * @description The selected path resource determines the unit and valid range documented by Quota.
+         *     Values outside that range or above the operator ceiling return 422. The general schema
+         *     maximum accommodates byte quotas; it does not raise the maximum of count resources.
+         */
         SetQuotaRequest: {
             /** Format: int64 */
             limit: number;
+        };
+        ActivityQuota: {
+            activity: string;
+            /** Format: int64 */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Tasks of this activity holding an unexpired lease now.
+             */
+            used: number;
+            /**
+             * Format: int64
+             * @description The most the tenant may set for activity concurrency.
+             */
+            ceiling: number;
+            /** @description True for an explicit activity override; false after clearing it, when the generic limit applies. */
+            overridden: boolean;
+        };
+        ActivityQuotaList: {
+            items: components["schemas"]["ActivityQuota"][];
         };
         SignalResult: {
             /** @description The waitEvent nodes the signal woke. */
@@ -2493,7 +2815,7 @@ export interface components {
             /** @description What a waiting step correlates on. */
             correlationKey?: string;
             data: components["schemas"]["JsonObject"];
-            /** @description How long the event id is remembered (24 hours by default). */
+            /** @description How long the event id is remembered (24 hours by default), bounded by the current namespace event_retention_seconds policy. A remembered duplicate preserves its original expiry. */
             dedupeTtlSeconds?: number;
         };
         EventAccepted: {
@@ -2503,6 +2825,21 @@ export interface components {
             /** @enum {string} */
             status: "ACCEPTED" | "DUPLICATE";
         };
+        /** @description Omitted on writes means HMAC and requires secretName. OIDC and MTLS prohibit secretName; OIDC names a deployment-approved verifier, never a URL. All profiles require timestamp and event ID. */
+        WebhookAuthentication: {
+            /** @constant */
+            kind: "HMAC";
+        } | {
+            /** @constant */
+            kind: "OIDC";
+            profile: string;
+            /** @description At most 255 UTF-8 bytes; control characters are prohibited. */
+            subject: string;
+        } | {
+            /** @constant */
+            kind: "MTLS";
+            certificateSha256: string;
+        };
         EventEndpoint: {
             /** Format: uuid */
             id: string;
@@ -2510,7 +2847,8 @@ export interface components {
             namespaceId: string;
             /** @description What a webhook trigger names, and the source of the events it admits. */
             slug: string;
-            secretName: string;
+            secretName?: string;
+            authentication: components["schemas"]["WebhookAuthentication"];
             defaultEventType?: string;
             dedupeTtlSeconds: number;
             skewSeconds: number;
@@ -2525,16 +2863,17 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
-        };
+        } & unknown;
         EventEndpointList: {
             items: components["schemas"]["EventEndpoint"][];
         };
         CreateEventEndpointRequest: {
             slug: string;
-            secretName: string;
+            secretName?: string;
+            authentication?: components["schemas"]["WebhookAuthentication"];
             defaultEventType?: string;
             /**
-             * @description At least twice skewSeconds and 60 seconds more, or a replay of a signed request could be admitted as a new event.
+             * @description At least twice skewSeconds and 60 seconds more, bounded by event_retention_seconds. Incompatible windows are rejected, never silently shortened.
              * @default 86400
              */
             dedupeTtlSeconds: number;
@@ -2549,9 +2888,10 @@ export interface components {
              * @enum {string}
              */
             status: "ACTIVE" | "PAUSED";
-        };
+        } & unknown;
         UpdateEventEndpointRequest: {
-            secretName: string;
+            secretName?: string;
+            authentication?: components["schemas"]["WebhookAuthentication"];
             defaultEventType?: string;
             /** @default 86400 */
             dedupeTtlSeconds: number;
@@ -2566,7 +2906,7 @@ export interface components {
              * @enum {string}
              */
             status: "ACTIVE" | "PAUSED";
-        };
+        } & unknown;
         EventDelivery: {
             /** @description `wait:{run}/{node}` for a waiting step, `trigger:{id}` for a trigger. */
             consumer: string;
@@ -2602,6 +2942,89 @@ export interface components {
             dispatchedAt?: string;
             data: components["schemas"]["JsonObject"];
             deliveries: components["schemas"]["EventDelivery"][];
+        };
+        BrokerSubscription: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            namespaceId: string;
+            name: string;
+            /** @enum {string} */
+            kind: "NATS" | "KAFKA" | "SQS";
+            settings: components["schemas"]["OutboundBrokerSettings"];
+            /** @description Optional namespace secret containing the broker credentials JSON. */
+            secretName?: string;
+            events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
+            ratePerSecond: number;
+            timeoutMs: number;
+            /** @enum {string} */
+            status: "ACTIVE" | "PAUSED" | "DISABLED";
+            health: components["schemas"]["OutboundSubscriptionHealth"];
+            createdBy: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        BrokerSubscriptionList: {
+            items: components["schemas"]["BrokerSubscription"][];
+        };
+        CreateBrokerSubscriptionRequest: {
+            name: string;
+            /** @enum {string} */
+            kind: "NATS" | "KAFKA" | "SQS";
+            settings: components["schemas"]["OutboundBrokerSettings"];
+            secretName?: string;
+            events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
+            /** @default 10 */
+            ratePerSecond: number;
+            /** @default 10000 */
+            timeoutMs: number;
+            /**
+             * @default ACTIVE
+             * @enum {string}
+             */
+            status: "ACTIVE" | "PAUSED";
+        };
+        UpdateBrokerSubscriptionRequest: {
+            /**
+             * @description Must remain the subscription kind set at creation.
+             * @enum {string}
+             */
+            kind: "NATS" | "KAFKA" | "SQS";
+            settings: components["schemas"]["OutboundBrokerSettings"];
+            secretName?: string;
+            events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
+            /** @default 10 */
+            ratePerSecond: number;
+            /** @default 10000 */
+            timeoutMs: number;
+            /**
+             * @default ACTIVE
+             * @enum {string}
+             */
+            status: "ACTIVE" | "PAUSED";
+        };
+        OutboundBrokerSettings: components["schemas"]["OutboundNatsSettings"] | components["schemas"]["OutboundKafkaSettings"] | components["schemas"]["OutboundSqsSettings"];
+        OutboundNatsSettings: {
+            servers: string[];
+            subject: string;
+        };
+        OutboundKafkaSettings: {
+            servers: string[];
+            topic: string;
+        };
+        OutboundSqsSettings: {
+            queueUrl: string;
+            region: string;
+        };
+        OutboundSubscriptionHealth: {
+            consecutiveDead: number;
+            /** Format: date-time */
+            lastSuccessAt?: string;
+            /** Format: date-time */
+            lastFailureAt?: string;
+            disabledReason?: string;
         };
         WebhookSubscription: {
             /** Format: uuid */
@@ -2672,7 +3095,7 @@ export interface components {
             startedAt: string;
             durationMs: number;
             /** @enum {string} */
-            outcome: "DELIVERED" | "REJECTED" | "SERVER_ERROR" | "THROTTLED" | "TIMEOUT" | "NETWORK" | "DENIED" | "UNSIGNED";
+            outcome: "DELIVERED" | "REJECTED" | "SERVER_ERROR" | "THROTTLED" | "TIMEOUT" | "NETWORK" | "DENIED" | "UNSIGNED" | "CREDENTIAL_UNAVAILABLE";
             httpStatus?: number;
             /** @description A class of failure written by the platform; never the receiver's words. */
             error?: string;
@@ -2694,7 +3117,7 @@ export interface components {
             /** Format: date-time */
             nextAttemptAt: string;
             /** @enum {string} */
-            lastOutcome?: "DELIVERED" | "REJECTED" | "SERVER_ERROR" | "THROTTLED" | "TIMEOUT" | "NETWORK" | "DENIED" | "UNSIGNED";
+            lastOutcome?: "DELIVERED" | "REJECTED" | "SERVER_ERROR" | "THROTTLED" | "TIMEOUT" | "NETWORK" | "DENIED" | "UNSIGNED" | "CREDENTIAL_UNAVAILABLE";
             lastHttpStatus?: number;
             lastError?: string;
             /** Format: date-time */
@@ -2949,7 +3372,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             source: string;
             lockfile?: string;
             inputSchema?: Record<string, never>;
@@ -2972,7 +3395,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             policy: components["schemas"]["ScriptPolicyView"];
             retentionDays: number;
             revision: number;
@@ -2997,7 +3420,10 @@ export interface components {
             inputSchema?: Record<string, never>;
             outputSchema?: Record<string, never>;
             policy?: components["schemas"]["ScriptPolicy"];
-            /** @default 14 */
+            /**
+             * @description New choices, publications and test admissions must fit the current namespace script_retention_days policy. Lowering policy preserves existing records and exact publication replay.
+             * @default 14
+             */
             retentionDays: number;
         };
         UpdateScriptRequest: {
@@ -3016,7 +3442,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             source: string;
@@ -3036,7 +3462,11 @@ export interface components {
             keyId?: string;
             toolchain?: string;
             buildLog?: string;
-            /** @description Why the build made nothing: `rejected:`, `lockfile:`, `limit:`, `unsupported:` or `unavailable:` and the first message of the toolchain. */
+            /** @description True when the retained build diagnostic or log was truncated, including an empty log at zero allowance. */
+            buildLogTruncated?: boolean;
+            /** @enum {string} */
+            failureCode?: "SCRIPT_BUILD_REJECTED" | "SCRIPT_SANDBOX_UNAVAILABLE" | "STORAGE_QUOTA_EXCEEDED";
+            /** @description Retained build diagnostic, possibly empty when the log allowance is exhausted. failureCode preserves the terminal category independently; buildLogTruncated records omitted diagnostics. */
             failure?: string;
             createdBy: string;
             /** Format: date-time */
@@ -3052,7 +3482,7 @@ export interface components {
             scriptId: string;
             number: number;
             /** @enum {string} */
-            language: "typescript" | "python" | "csharp";
+            language: "typescript" | "python" | "csharp" | "go" | "java";
             /** @enum {string} */
             status: "BUILDING" | "READY" | "FAILED";
             policy: components["schemas"]["ScriptPolicyView"];
@@ -3064,6 +3494,8 @@ export interface components {
             keyId?: string;
             toolchain?: string;
             failure?: string;
+            /** @enum {string} */
+            failureCode?: "SCRIPT_BUILD_REJECTED" | "SCRIPT_SANDBOX_UNAVAILABLE" | "STORAGE_QUOTA_EXCEEDED";
             createdBy: string;
             /** Format: date-time */
             createdAt: string;
@@ -3581,6 +4013,8 @@ export interface components {
         };
     };
     parameters: {
+        /** @description Optional retry key for identity creation. Same tenant, operation and key with the same body returns the original 201 response without another audit record. A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped to the workspace. Without a key, a repeated slug returns 409 as before. Replay records follow the platform command retention window (7 days by default). */
+        OptionalIdempotencyKey: string;
         /** @description Namespace; authorization derives tenant from token, not header. */
         Namespace: string;
         IdempotencyKey: string;
@@ -3597,7 +4031,8 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "event_connectors" | "scripts" | "script_jobs";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days";
+        ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
         RequestId: string;
@@ -3615,6 +4050,8 @@ export interface components {
     };
     requestBodies: never;
     headers: {
+        /** @description Server-generated id unique to this HTTP request; independent of the caller's traceparent or X-Request-Id. */
+        HttpRequestId: string;
         /** @description W3C trace id (32 lowercase hex characters) of the request, for log and trace correlation. */
         TraceId: string;
     };
@@ -3635,12 +4072,14 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
             default: components["responses"]["InternalError"];
         };
@@ -3658,12 +4097,14 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
                 };
             };
+            429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
         };
@@ -3681,6 +4122,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3706,6 +4148,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3736,6 +4179,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3753,7 +4197,10 @@ export interface operations {
     createWorkspace: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional retry key for identity creation. Same tenant, operation and key with the same body returns the original 201 response without another audit record. A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped to the workspace. Without a key, a repeated slug returns 409 as before. Replay records follow the platform command retention window (7 days by default). */
+                "Idempotency-Key"?: components["parameters"]["OptionalIdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -3767,12 +4214,14 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["Workspace"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
@@ -3797,6 +4246,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3814,7 +4264,10 @@ export interface operations {
     createNamespace: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional retry key for identity creation. Same tenant, operation and key with the same body returns the original 201 response without another audit record. A different body returns 409 IDEMPOTENCY_KEY_REUSED. Namespace keys are scoped to the workspace. Without a key, a repeated slug returns 409 as before. Replay records follow the platform command retention window (7 days by default). */
+                "Idempotency-Key"?: components["parameters"]["OptionalIdempotencyKey"];
+            };
             path: {
                 workspaceId: string;
             };
@@ -3830,12 +4283,14 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["NamespaceResource"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -3864,6 +4319,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3893,6 +4349,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3928,6 +4385,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3965,6 +4423,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -3997,6 +4456,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4030,6 +4490,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4068,6 +4529,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4104,6 +4566,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4140,6 +4603,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4175,6 +4639,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4205,6 +4670,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4235,6 +4701,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4244,6 +4711,59 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    uploadRunInput: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Namespace; authorization derives tenant from token, not header. */
+                "X-Octopus-Namespace": components["parameters"]["Namespace"];
+                "X-Octopus-Blob-Size"?: number;
+                "X-Octopus-Blob-Sha256"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Fully measured staged input; only its uploader may bind it to one new run */
+            201: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BlobDescriptor"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The transfer deadline expired */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The configured blob size limit was exceeded */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -4272,6 +4792,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4309,6 +4830,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4341,6 +4863,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4350,6 +4873,44 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    inspectRunPayload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PayloadInspectionSelector"];
+            };
+        };
+        responses: {
+            /** @description Audited structural projection or an explicit unavailable/external state */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    "Cache-Control"?: "private, no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadInspection"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -4375,6 +4936,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4404,6 +4966,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4433,6 +4996,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4462,6 +5026,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4493,6 +5058,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4526,6 +5092,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4562,6 +5129,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4601,6 +5169,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4631,6 +5200,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4664,6 +5234,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4695,6 +5266,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4724,6 +5296,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4758,6 +5331,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4790,10 +5364,109 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["Quota"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listActivityQuotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The activity overrides */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityQuotaList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    setActivityQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                activity: components["parameters"]["ActivityName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetQuotaRequest"];
+            };
+        };
+        responses: {
+            /** @description The activity quota now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityQuota"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    clearActivityQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                activity: components["parameters"]["ActivityName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The inherited activity quota now in force */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityQuota"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -4819,6 +5492,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4854,6 +5528,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4887,6 +5562,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4916,6 +5592,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4950,6 +5627,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4982,6 +5660,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5010,6 +5689,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5042,6 +5722,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5072,6 +5753,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5099,6 +5781,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5132,6 +5815,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5163,6 +5847,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -5197,6 +5882,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5228,6 +5914,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5263,6 +5950,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5300,6 +5988,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5342,6 +6031,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5372,6 +6062,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5405,6 +6096,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5442,6 +6134,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5476,6 +6169,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5508,6 +6202,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5541,6 +6236,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5577,6 +6273,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5609,6 +6306,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5641,6 +6339,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5678,6 +6377,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5712,6 +6412,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5751,6 +6452,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5761,6 +6463,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5771,6 +6474,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5808,6 +6512,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5829,7 +6534,8 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Octopus-Signature": string;
+                /** @description Required for the HMAC profile */
+                "X-Octopus-Signature"?: string;
                 "X-Octopus-Timestamp": string;
                 "X-Octopus-Event-Id": string;
                 /** @description Required unless the endpoint has a default event type. */
@@ -5848,10 +6554,11 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Signature verified, event durably admitted (or already admitted before) */
+            /** @description Endpoint identity verified, event durably admitted (or already admitted before) */
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5881,6 +6588,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5914,6 +6622,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5947,6 +6656,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5981,6 +6691,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6013,6 +6724,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6042,6 +6754,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6071,6 +6784,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6104,6 +6818,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6137,6 +6852,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6171,6 +6887,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6203,6 +6920,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6237,6 +6955,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6269,6 +6988,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6300,6 +7020,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6335,6 +7056,311 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Redriven"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listBrokerSubscriptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The subscriptions */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrokerSubscriptionList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    createBrokerSubscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBrokerSubscriptionRequest"];
+            };
+        };
+        responses: {
+            /** @description The subscription */
+            201: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrokerSubscription"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getBrokerSubscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                subscriptionId: components["parameters"]["SubscriptionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The subscription */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrokerSubscription"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateBrokerSubscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                subscriptionId: components["parameters"]["SubscriptionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateBrokerSubscriptionRequest"];
+            };
+        };
+        responses: {
+            /** @description The subscription now */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrokerSubscription"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteBrokerSubscription: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                subscriptionId: components["parameters"]["SubscriptionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The subscription is removed */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listBrokerDeliveries: {
+        parameters: {
+            query?: {
+                status?: "PENDING" | "DELIVERED" | "DEAD";
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                subscriptionId: components["parameters"]["SubscriptionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of deliveries */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDeliveryPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getBrokerDelivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                subscriptionId: components["parameters"]["SubscriptionId"];
+                deliveryId: components["parameters"]["DeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The delivery */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDelivery"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    redriveBrokerDelivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                subscriptionId: components["parameters"]["SubscriptionId"];
+                deliveryId: components["parameters"]["DeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The delivery is queued again */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Redriven"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    redriveBrokerDeliveries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                subscriptionId: components["parameters"]["SubscriptionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedriveRequest"];
+            };
+        };
+        responses: {
+            /** @description How many were queued again */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6366,6 +7392,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6399,6 +7426,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6432,6 +7460,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6466,6 +7495,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6498,6 +7528,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6531,6 +7562,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6563,6 +7595,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6594,6 +7627,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6623,6 +7657,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6657,6 +7692,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6690,6 +7726,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6723,6 +7760,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6753,6 +7791,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -6786,6 +7825,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6822,6 +7862,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6852,6 +7893,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6862,6 +7904,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6894,6 +7937,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6926,6 +7970,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6960,6 +8005,7 @@ export interface operations {
             202: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -6994,6 +8040,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7027,6 +8074,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7059,6 +8107,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7088,6 +8137,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7119,6 +8169,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7129,6 +8180,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7161,6 +8213,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7197,6 +8250,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7230,6 +8284,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7240,6 +8295,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7272,6 +8328,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7308,6 +8365,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -7339,6 +8397,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7366,6 +8425,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7394,6 +8454,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7423,6 +8484,7 @@ export interface operations {
             200: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7454,6 +8516,7 @@ export interface operations {
             201: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -7488,6 +8551,7 @@ export interface operations {
             204: {
                 headers: {
                     "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
                     [name: string]: unknown;
                 };
                 content?: never;

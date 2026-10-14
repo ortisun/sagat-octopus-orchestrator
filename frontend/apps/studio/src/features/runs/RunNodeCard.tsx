@@ -1,13 +1,12 @@
 import { Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
-import { Link } from 'react-router';
 import type { RuntimeNode } from '../../api/types';
 import { path } from '../../api/client';
 import { nodeStatus } from '../../model/status';
 import { StatusBadge } from '../../ui/StatusBadge';
 import type { CardNode } from './canvas';
-import { attemptWords, kindView, waitingWords } from './display';
-import { Relative } from './Now';
+import { kindView } from './display';
+import type { KindView } from './display';
 import { clip } from './time';
 
 const PHASES: Record<string, string> = { FORWARD: 'going forward', ABORTING: 'aborting', COMPENSATING: 'compensating', DONE: 'done' };
@@ -36,6 +35,32 @@ function Handles() {
   );
 }
 
+const CARD_ID_LIMIT = 80;
+const FAILURE_CODE_LIMIT = 32;
+
+function cardIdentity(id: string): { text: string; full?: string } {
+  if (id.length <= CARD_ID_LIMIT) return { text: id };
+  return { text: 'Long step ID — select for details', full: id };
+}
+
+function cardKind(node: RuntimeNode, kind: KindView): { text: string; full?: string } {
+  if (kind.variant === 'forward') {
+    return node.type.length > 40 && kind.label.endsWith('…') ? { text: 'Type details available', full: node.type } : { text: kind.label };
+  }
+  const suffix = kind.variant === 'undo' ? /~c$/ : /~r$/;
+  const forward = node.forward ?? node.id.replace(suffix, '');
+  if (forward.length <= CARD_ID_LIMIT) return { text: kind.label };
+  return kind.variant === 'undo'
+    ? { text: 'Undo step — select for details', full: `Undo of ${forward}` }
+    : { text: 'Lookup step — select for details', full: `Lookup for ${forward}` };
+}
+
+function attentionSummary(node: RuntimeNode): string | undefined {
+  if (node.waitingOn === 'operator') return 'Needs a person';
+  if (node.failureCode === undefined || node.failureCode === null || node.failureCode === '') return undefined;
+  return node.failureCode.length <= FAILURE_CODE_LIMIT ? `Failure: ${node.failureCode}` : 'Failure details available';
+}
+
 /**
  * A step of the run on the canvas: what it is, how it stands, and what a person has to look at.
  * Undo steps and lookups are dashed and say what they are about. Highlighting a step an update
@@ -44,41 +69,30 @@ function Handles() {
 export function RunCard({ data }: NodeProps<CardNode>) {
   const { node, flash } = data;
   const kind = kindView(node);
-  const attempt = attemptWords(node);
-  const waiting = waitingWords(node);
-  const saga = sagaWords(node);
+  const identity = cardIdentity(node.id);
+  const kindLabel = cardKind(node, kind);
+  const attention = attentionSummary(node);
   return (
     <div className="rn-card" data-status={node.status} data-variant={kind.variant}>
       {flash > 0 ? <span key={flash} className="rn-flash" aria-hidden="true" /> : null}
       <Handles />
-      <strong className="rn-id" title={node.id}>
-        {node.id}
-      </strong>
-      <span className="rn-row">
-        <span className="rn-kind">{kind.label}</span>
+      <div className="rn-card-identity">
+        <span className="rn-card-label">Step ID</span>
+        <strong className="rn-id" aria-label={identity.full}>
+          {identity.text}
+        </strong>
+      </div>
+      <div className="rn-card-kind">
+        <span className="rn-card-label">Type</span>
+        <span className="rn-kind" aria-label={kindLabel.full}>
+          {kindLabel.text}
+        </span>
+      </div>
+      <div className="rn-card-status">
+        <span className="rn-card-label">State</span>
         <StatusBadge view={nodeStatus(node.status)} />
-      </span>
-      <span className="rn-notes">
-        {attempt ? <span className="rn-chip">{attempt}</span> : null}
-        {node.failureCode ? <span className="rn-chip bad">failure {clip(node.failureCode, 32)}</span> : null}
-        {waiting ? <span className={node.waitingOn === 'operator' ? 'rn-chip bad' : 'rn-chip'}>{waiting}</span> : null}
-        {node.nextAttemptAt ? (
-          <span className="rn-chip">
-            retry <Relative at={node.nextAttemptAt} />
-          </span>
-        ) : null}
-        {node.dueAt ? (
-          <span className="rn-chip">
-            due <Relative at={node.dueAt} />
-          </span>
-        ) : null}
-        {saga ? <span className="rn-chip">{saga}</span> : null}
-        {node.childRunId ? (
-          <Link className="rn-chip nopan" to={childPath(node.childRunId)} aria-label={`Open the child run of ${clip(node.id, 40)}`}>
-            child run
-          </Link>
-        ) : null}
-      </span>
+      </div>
+      {attention ? <div className="rn-attention">{attention}</div> : null}
     </div>
   );
 }
@@ -87,15 +101,18 @@ export function RunCard({ data }: NodeProps<CardNode>) {
 export function RunChip({ data }: NodeProps<CardNode>) {
   const { node, flash } = data;
   const view = nodeStatus(node.status);
+  const identity = cardIdentity(node.id);
   return (
     <div className="rn-chipnode" data-status={node.status} data-variant={kindView(node).variant}>
       {flash > 0 ? <span key={flash} className="rn-flash" aria-hidden="true" /> : null}
       <Handles />
-      <span aria-hidden="true">{view.symbol}</span>
-      <strong className="rn-id" title={node.id}>
-        {node.id}
+      <strong className="rn-id" aria-label={identity.full}>
+        {identity.text}
       </strong>
-      <span className="rn-word">{view.label}</span>
+      <span className="rn-card-status">
+        <span aria-hidden="true">{view.symbol}</span>
+        <span className="rn-word">{view.label}</span>
+      </span>
     </div>
   );
 }

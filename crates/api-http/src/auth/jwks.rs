@@ -7,7 +7,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::jwk::{
-    AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, PublicKeyUse,
+    AlgorithmParameters, EllipticCurve, Jwk, JwkSet, KeyAlgorithm, KeyOperations, PublicKeyUse,
 };
 use jsonwebtoken::{Algorithm, DecodingKey};
 use tokio::sync::Mutex;
@@ -134,6 +134,17 @@ fn usable_key(jwk: &Jwk) -> Option<(String, Arc<VerificationKey>)> {
     {
         return None;
     }
+    // `key_ops` is optional, but when the provider supplies it the key must explicitly permit
+    // verification. This prevents a decrypt-only key published in the same set from crossing into
+    // the token-verification role.
+    if jwk
+        .common
+        .key_operations
+        .as_ref()
+        .is_some_and(|operations| !operations.contains(&KeyOperations::Verify))
+    {
+        return None;
+    }
     let (algorithm, declared) = match &jwk.algorithm {
         AlgorithmParameters::RSA(_) => (Algorithm::RS256, KeyAlgorithm::RS256),
         AlgorithmParameters::EllipticCurve(ec) if ec.curve == EllipticCurve::P256 => {
@@ -165,6 +176,9 @@ struct State {
     cached: Option<Cached>,
     /// When the last provider round trip *finished* (successfully or not).
     last_attempt: Option<Instant>,
+    /// An unknown `kid` is retryable after a failed refresh: the last good set cannot prove that a
+    /// newly rotated key does not exist. Known cached keys remain usable under the stale policy.
+    last_attempt_failed: bool,
 }
 
 /// What the cache can say about a `kid` right now, without any network.
@@ -224,12 +238,19 @@ impl Inner {
         state.last_attempt.is_none_or(|t| t.elapsed() >= interval)
     }
 
+    fn last_attempt_failed(&self) -> bool {
+        self.state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last_attempt_failed
+    }
+
     /// One provider round trip. Runs with no lock held.
-    async fn refresh(&self) {
+    async fn refresh(&self) -> bool {
         let outcome = self.fetcher.fetch().await;
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         state.last_attempt = Some(Instant::now());
-        match outcome {
+        let failed = match outcome {
             Ok(set) => {
                 let keys = usable_keys(&set);
                 metrics::counter!("jwks_refresh_total", "outcome" => if keys.is_empty() { "no_usable_keys" } else { "ok" }).increment(1);
@@ -239,18 +260,23 @@ impl Inner {
                     tracing::warn!(
                         "key provider returned no usable signing keys; keeping the previous keys"
                     );
+                    true
                 } else {
                     state.cached = Some(Cached {
                         keys,
                         fetched_at: Instant::now(),
                     });
+                    false
                 }
             }
             Err(error) => {
                 metrics::counter!("jwks_refresh_total", "outcome" => "error").increment(1);
                 tracing::warn!(%error, "JWKS refresh failed");
+                true
             }
-        }
+        };
+        state.last_attempt_failed = failed;
+        failed
     }
 }
 
@@ -297,9 +323,12 @@ impl JwksCache {
 
         // Only a refresh can answer; share one bounded fetch with every other caller in this
         // position, and fall back to whatever the cache can say if refreshing is not allowed.
-        self.refresh_and_wait().await;
+        let refresh_failed = self.refresh_and_wait().await;
         match self.inner.lookup(kid) {
             Lookup::Fresh(key) | Lookup::Stale(key) => Ok(key),
+            Lookup::Unknown if refresh_failed => Err(JwksError::Unavailable(
+                "signing-key refresh failed".to_owned(),
+            )),
             Lookup::Unknown => Err(JwksError::UnknownKey),
             Lookup::Missing => Err(JwksError::Unavailable(
                 "no signing keys available".to_owned(),
@@ -312,21 +341,21 @@ impl JwksCache {
 
     /// Refreshes if allowed, waiting for the result. Waiters queue on the gate only, never on the
     /// state, so callers whose key is cached are unaffected.
-    async fn refresh_and_wait(&self) {
+    async fn refresh_and_wait(&self) -> bool {
         if !self.inner.may_refresh() {
-            return;
+            return self.inner.last_attempt_failed();
         }
         let guard = Arc::clone(&self.inner.refresh_gate).lock_owned().await;
         if !self.inner.may_refresh() {
-            return; // the caller ahead of us just refreshed (or tried to)
+            return self.inner.last_attempt_failed(); // the caller ahead just refreshed (or tried)
         }
         let inner = Arc::clone(&self.inner);
         // Detached: if this request is dropped, the fetch still finishes and still releases the gate.
         let task = tokio::spawn(async move {
             let _guard = guard;
-            inner.refresh().await;
+            inner.refresh().await
         });
-        let _ = task.await;
+        task.await.unwrap_or(true)
     }
 
     /// Starts a refresh without making anyone wait for it, if one is allowed and none is running.
@@ -341,7 +370,7 @@ impl JwksCache {
         tokio::spawn(async move {
             let _guard = guard;
             if inner.may_refresh() {
-                inner.refresh().await;
+                let _ = inner.refresh().await;
             }
         });
     }
