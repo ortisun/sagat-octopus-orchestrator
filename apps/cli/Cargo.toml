@@ -20,7 +20,7 @@ name = "sagat"
 path = "src/main.rs"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 reqwest.workspace = true
 rustls.workspace = true
 sagat-api-grpc.workspace = true
