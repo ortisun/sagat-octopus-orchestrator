@@ -38,6 +38,6 @@ tower-http.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }

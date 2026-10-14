@@ -28,7 +28,7 @@ jsonwebtoken.workspace = true
 metrics.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 h2 = "0.4"
-rcgen = "0.13"
+rcgen = "0.14"
 regex = "1"
 reqwest = { workspace = true, features = ["json", "form"] }
 sagat-api-grpc.workspace = true
