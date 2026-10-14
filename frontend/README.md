@@ -59,7 +59,9 @@ The [recorded design](../specs/007-workflow-studio/design/README.md) supplies th
 Studio follows the system's light/dark preference and supports forced colours. Geist and Geist Mono `5.3.0` are bundled on the
 same origin with their SIL OFL licence in `apps/studio/public/licenses/geist-OFL.txt`; system fonts remain the fallback.
 
-The shell puts the namespace and the three real destinations in the sidebar. On wide screens, `/runs/:runId` keeps a filtered,
+The sidebar follows the hierarchy: **Namespaces** (the tenant's own page), the namespace selector and, under it and only while a
+namespace is chosen, Workflows, Runs, Operations, Scripts and Integrations. Nothing is chosen for you; a page of a namespace opened without
+one says *Choose a namespace*. On wide screens, `/runs/:runId` keeps a filtered,
 virtualized Runs list beside the selected run; choosing another run retains the list's state. Narrow screens keep the separate
 list and detail routes. The Runs filters are query parameters (`status`, `workflow`) and the Workflows search is `q`, so links carry
 them. Facts come from the API: missing terminal duration is unknown, and queue, worker, trigger-kind and

@@ -318,3 +318,31 @@ Not done, and why (each is a feature, not a defect, and needs its own spec delta
 - **A sticky runs list** beside a long run: the list scrolls away with the detail on wide screens.
 - **Keeping the session across a reload** needs an ADR (D144 keeps the token in memory on purpose).
 - Not measured: screen readers, touch devices, slow networks, runs of more than the 12 in the demo namespace.
+
+## Menu hierarchy 2026-10-14 (T007-058)
+
+The owner's reading: the namespace is the tenant of the product, so the menus that depend on it belong under it and must appear only once it
+is chosen. The finding is UXR-10: the sidebar listed all six destinations at one level beside a selector, and the shell chose the first namespace by
+itself, so the dependent menus were always there and the hierarchy was never visible.
+
+| | Finding | Status |
+|---|---|---|
+| UXR-10 | Six peers in the menu, five of which depend on the namespace; the first namespace was chosen for the person. | Fixed (T007-058): *Namespaces*, then the selector, then Workflows, Runs, Operations, Scripts and Integrations under it, only while a namespace is chosen. No automatic choice. |
+
+Decisions taken here (the owner may reverse any of them):
+
+- **No automatic choice, not even for a single namespace.** With one, the person's click is one extra step on a first visit; the gain is that
+  the menu says the same thing every time and that nothing is shown as chosen that the person did not choose. A remembered choice (it is a slug,
+  not a secret: `studio.namespace`) is still kept across reloads while the tenant lists it.
+- **A remembered choice the tenant no longer lists is forgotten**, not replaced by the first namespace as before.
+- **There is no way back to "no namespace"** once one is chosen, other than choosing another. Nothing needs it today; add it if a tenant-level
+  page other than *Namespaces* appears.
+- **A page of a namespace without one says so in place** (*Choose a namespace*) instead of redirecting, so an address keeps its meaning and opens by
+  itself when a namespace is chosen in the menu. The pages' own "Select a namespace…" lines (Operations, Integrations) stay as their own
+  defence; the router reaches them only in the moment before a dropped remembered choice is cleared.
+- **Selecting does not navigate.** On *Namespaces*, *Use namespace* opens the menu and stays; moving to a list is the person's next click.
+- Changing the namespace while a *detail* page (`/runs/:id`, `/workflows/:id`) is open is unchanged: the page asks about its own id in the new
+  namespace and says it was not found. It could return to the list instead; not built.
+
+Not proved: the Playwright journeys (see T007-058), including their axe checks of the new nested list (a named list inside the navigation landmark),
+and any assistive technology on it.

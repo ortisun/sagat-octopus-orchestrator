@@ -50,6 +50,12 @@ memory until restart). A browser-cache purge cannot correct that old server beha
 
 ## 3. Using it (short)
 
+The menu follows the hierarchy: **Namespaces** (the tenant's page) and the namespace selector come first, and Workflows, Runs, Operations,
+Scripts and Integrations appear under the selector only once a namespace is chosen. On a first visit nothing is chosen (the Studio opens the
+namespace list): choose one in the selector or with **Use namespace**. The choice is remembered in the browser as a slug (`studio.namespace`) and
+dropped if the tenant does not list it.
+
+
 - **Sign in**: paste a token, or use your organisation's single sign-on. The header shows who you are and your role; what you cannot do is not hidden but explained.
 - **Build a workflow**: add steps from the palette (or the *Add node* menu with the keyboard), connect them (drag, or choose in the inspector), set their fields. The checks of the
   platform run as you work and are listed with the node each is about; advice the platform does not give is listed apart. The draft is saved by itself; if someone else saved first you are

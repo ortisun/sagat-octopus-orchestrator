@@ -339,6 +339,13 @@ Validation after this correction: all 1,066 Vitest tests passed (70 files), lint
 production build and the real Chromium/API namespace journey passed. This newer full-suite run
 supersedes the six concurrent graph-layout failures recorded above.
 
+Owner navigation correction (T007-058): the sidebar is a hierarchy. On a first visit it offers only **Namespaces** and the selector
+(*Choose a namespace*); choosing a namespace, in the selector or with **Use namespace**, opens Workflows, Runs, Operations, Scripts
+and Integrations under it. Nothing is chosen for you, even with a single namespace; a page of a namespace opened without one says
+*Choose a namespace*. 1,145 Vitest tests passed (78 files), lint, typecheck, build and `check:api` too, and the built Studio was driven in Chromium
+at 1470, 390 and 320 px. The Playwright journeys were not run (they need the Rust platform); `signIn` in `frontend/e2e/support/studio.ts`
+now chooses the first namespace, and `smoke.spec.ts` carries the hierarchy journey.
+
 ### Configure a broker through Integrations (T007-053)
 
 Open **Integrations** for the selected namespace. An administrator can expand **Network access**
