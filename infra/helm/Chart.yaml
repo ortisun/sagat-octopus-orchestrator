@@ -6,9 +6,9 @@ description: >-
   scale on the length of their queue. PostgreSQL, NATS and the identity provider are not part of the
   chart: they are the operator's.
 type: application
-# Release 0.4.0 requires explicit network peers (see docs/runbooks/scaling.md).
-version: 0.4.0
-appVersion: "0.4.0"
+# Release 0.1.0 requires explicit network peers (see docs/runbooks/scaling.md).
+version: 0.1.0
+appVersion: "0.1.0"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/tentativafc/sagat-octopus-orchestrator
 sources:

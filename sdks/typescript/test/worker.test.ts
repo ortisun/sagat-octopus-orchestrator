@@ -186,12 +186,24 @@ function host(extra: Partial<WorkerConfig> = {}): WorkerHost {
 }
 
 async function until(condition: () => boolean, what: string, ms = 5000): Promise<void> {
-  const end = Date.now() + ms;
+  // A descheduled event loop must let later activity timers run before this waiter expires.
+  const attempts = Math.ceil(ms / 10);
+  let attempt = 0;
   while (!condition()) {
-    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+    if (attempt++ >= attempts) assert.fail(`timed out waiting for ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+test('the asynchronous waiter does not spend its budget while the event loop cannot run', async () => {
+  let ready = false;
+  setTimeout(() => {
+    const end = Date.now() + 100;
+    while (Date.now() < end) { /* simulate a descheduled runner */ }
+  }, 5);
+  setTimeout(() => { ready = true; }, 20);
+  await until(() => ready, 'the later timer', 50);
+});
 
 test('a worker registers its activities and the newest protocol it speaks, with the token as metadata', async () => {
   const h = host({ languages: ['typescript'], maxInflight: 7 });

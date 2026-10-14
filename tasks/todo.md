@@ -109,3 +109,13 @@ in PR #22; the initial failing runs remain visible rather than being relabeled s
 
 Remaining unchecked delivery items are public registry publication and genuine human acceptance.
 The accepted architecture/performance limitations in traceability remain explicit.
+
+## Release 0.1.0 integration
+
+The owner selected product version 0.1.0 and authorized replacing the old v0.4.0 tag.
+T001-041 records aligned metadata and local package/API/Helm checks. Release PR #25
+contains the dependency conflict resolutions from #3/#4 and awaits final CI before tagging.
+A TypeScript fixture timeout in the prior CI was reproduced with a controlled event-loop
+pause: the wall-clock waiter expired before a later activity timer could complete. The
+test-only waiter now counts runnable polling attempts; the regression and full TypeScript
+suite pass 111/111 on Node 22. Runtime SDK behavior and protocol 1.4 are unchanged.
