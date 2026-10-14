@@ -42,9 +42,9 @@ export function Relative({ at, past = false }: { at: string | null | undefined; 
   );
 }
 
-/** A moment in the reader's own zone, with the UTC time in the tooltip. */
-export function Moment({ at }: { at: string | null | undefined }) {
-  if (parseTime(at) === undefined) return <span>unknown time</span>;
+/** A moment in the reader's own zone, with the UTC time in the tooltip. `empty` is what a missing or unreadable one says. */
+export function Moment({ at, empty = 'unknown time' }: { at: string | null | undefined; empty?: string }) {
+  if (parseTime(at) === undefined) return <span>{empty}</span>;
   return (
     <time dateTime={at ?? undefined} title={formatAbsolute(at)}>
       {formatLocal(at)}

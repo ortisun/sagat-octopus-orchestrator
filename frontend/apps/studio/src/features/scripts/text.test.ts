@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { clipLabel, clipText, formatBytes, formatDuration, isUuid, revealInvisible, sanitizeLog, shortDigest, stripAnsi, utf8Length } from './text';
+import { formatLocal } from '../runs/time';
+import { clipLabel, clipText, formatBytes, formatDuration, formatTime, isUuid, revealInvisible, sanitizeLog, shortDigest, stripAnsi, utf8Length } from './text';
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
@@ -133,5 +134,16 @@ describe('formatting', () => {
     expect(isUuid('../../etc/passwd')).toBe(false);
     expect(isUuid('22222222-2222-4222-8222-22222222222')).toBe(false);
     expect(isUuid(undefined)).toBe(false);
+  });
+});
+
+describe('formatTime', () => {
+  it('tells a time in the one format the whole Studio uses, so the same instant reads the same on every page', () => {
+    expect(formatTime('2026-10-12T14:14:55Z')).toBe(formatLocal('2026-10-12T14:14:55Z'));
+  });
+
+  it('says a missing or unreadable time is unknown instead of failing', () => {
+    expect(formatTime(undefined)).toBe('—');
+    expect(formatTime('yesterday')).toBe('—');
   });
 });

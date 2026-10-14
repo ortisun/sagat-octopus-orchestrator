@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Button } from '../../ui/Button';
 import { ErrorState } from '../../ui/ErrorState';
 import type { OperationsApi } from './api';
-import { groupWorkerIdentities, when } from './model';
+import { Moment } from '../runs/Now';
+import { groupWorkerIdentities } from './model';
 import { WorkerActionDialog } from './WorkerActionDialog';
 
 type Decision = { action: 'drain' | 'resume'; subject: string };
@@ -56,7 +57,7 @@ export function WorkersPanel({ api, canManage, namespace, namespaceId, sessionKe
                 <dl className="operations-facts">
                   <dt>Drain reason</dt><dd>{identity.drain.reason}</dd>
                   <dt>Drained by</dt><dd><code>{identity.drain.drainedBy}</code></dd>
-                  <dt>Drained at</dt><dd>{when(identity.drain.drainedAt)}</dd>
+                  <dt>Drained at</dt><dd><Moment at={identity.drain.drainedAt} empty="Not recorded" /></dd>
                 </dl>
               ) : null}
               {identity.sessions.length === 0 ? <p className="empty">No sessions are currently listed for this identity.</p> : (
@@ -71,7 +72,7 @@ export function WorkersPanel({ api, canManage, namespace, namespaceId, sessionKe
                           <th scope="row">{session.name}</th>
                           <td>{[...session.activities, ...session.languages, ...session.pools].join(', ') || 'None listed'}</td>
                           <td>{session.inFlight} / {session.maxInflight}</td>
-                          <td>{when(session.expiresAt)}</td>
+                          <td><Moment at={session.expiresAt} empty="Not recorded" /></td>
                         </tr>
                       ))}
                     </tbody>
