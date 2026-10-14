@@ -39,4 +39,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "
 tracing.workspace = true
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14"
