@@ -49,6 +49,10 @@ Receive and send events with dedupe, persistence and delivery controls, waking d
 
 - **Given** an authenticated adapter; **When** messages are redelivered and out of order; **Then** inbox dedupe, DLQ and offset checkpoints work.
 
+**Acceptance scenario US03-AC02**
+
+- **Given** an active outbound NATS, Kafka or SQS subscription; **When** a run finishes; **Then** a durable delivery is committed with the run event, published with a stable delivery id, retried after an ambiguous acknowledgement and exposed for redrive if every attempt fails.
+
 ### User Story 4 — Deliver an outbound webhook (P1)
 
 **As** a user of this feature, **I want** to deliver an outbound webhook, **so that** I can receive and send events with dedupe, persistence and delivery controls, waking durable workflows correctly.
@@ -67,7 +71,7 @@ Receive and send events with dedupe, persistence and delivery controls, waking d
 - **FR-004-002**: The system MUST create a single inbox per tenant/source/event_id with configurable deduplication TTL.
 - **FR-004-003**: The system MUST create event_type+correlation subscriptions with timeout and atomic competition between event and timer.
 - **FR-004-004**: The system MUST validate HMAC/timestamp/nonce on webhooks and support OIDC/mTLS according to the connector profile.
-- **FR-004-005**: The system MUST implement inbound/outbound adapters for NATS, Kafka and SQS with ack/offset after persistence.
+- **FR-004-005**: The system MUST implement inbound/outbound adapters for NATS, Kafka and SQS with inbound ack/offset after inbox persistence and outbound acknowledgement only after a durable delivery was committed. Outbound delivery is at-least-once with a stable delivery id, bounded retry, dead-letter visibility and redrive.
 - **FR-004-006**: The system MUST offer outbound HTTP webhook with signing, retry jitter, TLS, rate limit, DLQ, redrive, endpoint status.
 - **FR-004-007**: The system MUST define versioned AsyncAPI for messages and a schema evolution policy.
 - **FR-004-008**: The system MUST impose backpressure, size limits, retention, safe filters and quotas per tenant/connector.
@@ -119,3 +123,7 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-004-###` and criteria `SC-004-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Webhook identity profile acceptance
+
+An OIDC endpoint pins a deployment-approved verifier and subject; an mTLS endpoint pins the verified leaf certificate fingerprint. Unknown profiles and missing/mismatching credentials fail closed. Timestamp, event-ID dedupe, body bounds, tenant ownership and audit remain mandatory for all profiles. See ADR-0026 and T004-037.

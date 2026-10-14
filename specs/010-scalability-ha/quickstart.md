@@ -56,7 +56,7 @@ the fairness search was reworked and the last fixes of the first were in; what e
 | Security: a pool's gauges can be inflated by a tenant with no workers (medium) | Recorded, not built (G265): the ceiling `maxReplicaCount` bounds the cost; the runbook says so |
 | Security: the autoscaler follows a signal a tenant can raise; no check of connections against the server (low) | Partly fixed: `database.serverMaxConnections` makes the chart refuse a ceiling the server does not hold (G267) |
 | Security: the HA example sets plaintext secrets for the worker API (low) | Fixed: the example has the engine terminate TLS |
-| Security: the NetworkPolicy is ingress only (low) | Recorded (G266), the runbook asks for an egress policy |
+| Security: the NetworkPolicy is ingress only (low) | Resolved after the original review: chart 0.4.0 adds required role-specific dependency egress and worker-pool isolation, rejects unsafe peers/ports, and is covered by render tests plus the kind/Cilium verifier (G266) |
 | Security: a lease can be set to `infinity` (low) | Fixed: a `CHECK`, and the keeper no longer panics on a time it cannot take (`a_lease_cannot_be_made_to_last_for_ever`) |
 | Security: `SAGAT_SCHEDULER_BATCH` and `SAGAT_OUTBOX_BATCH` unbounded (low) | Fixed: at most 5000 (`a_batch_a_database_should_not_be_asked_for_is_refused_by_name`) |
 | Security: the chart's control-plane probes ask for the engine's paths, so the pods would not start (found as low) | Fixed (D254): `every_probe_of_the_chart_asks_for_a_path_its_process_serves` |
@@ -65,7 +65,7 @@ the fairness search was reworked and the last fixes of the first were in; what e
 | Correctness: the renewal waits for a row an orphan holds, which fails the renewal of every shard (medium-low) | Fixed: `SKIP LOCKED`, and a skipped shard adopted in the same round is not counted as lost (`a_renewal_does_not_wait_for_a_shard_an_orphan_holds_and_renews_the_others`, `a_shard_skipped_by_the_renewal_for_a_moment_is_adopted_in_the_same_round_and_not_lost`) |
 | Correctness: the remainder of a weighted share starves a light tenant among many heavy ones (low-medium) | Fixed (D258): `a_light_tenant_among_many_heavy_ones_is_given_its_fraction_before_they_are_given_theirs` |
 | Correctness: a tick longer than the snapshot's validity makes every later action `fenced` (low) | Fixed: a view per pass. No test of its own: a tick that long is not made on purpose; the e2e and chaos suites run through it |
-| Correctness: an infinite expiry panics the keeper, which nothing notices (low) | Fixed: the clamp, the `CHECK`, and `/livez` includes the keeper's rounds (`the_keeper_is_alive_until_it_stops_rounding_whatever_its_rounds_found`); the other loops are not supervised (G269) |
+| Correctness: an infinite expiry panics the keeper, which nothing notices (low) | Fixed: the clamp and `CHECK` prevent the known infinite-expiry panic, and `supervision.rs` now treats any critical task's return, error, panic or cancellation as a process failure, makes probes unhealthy, stops sibling tasks and returns exit 1. Intentional shutdown has a bounded 30-second drain (G269 resolved). Focused agent-run evidence: all 32 `sagat-execution-engine` tests and package Clippy passed; the historical CI run below predates this change. |
 | Correctness: a failed sample leaves the autoscalers' gauges at their last value (low) | Fixed: zeroed (`a_sample_that_fails_zeroes_the_gauges_the_autoscalers_read_and_the_backlog_is_the_monitors` fails without it) |
 | Correctness: every replica counts the whole outbox at every round (low) | Fixed: the monitor sets `outbox_backlog`, once (the same test reads it from the page) |
 | Correctness: the chart accepts what the binaries refuse at start (low) | Fixed for secrets without a protected hop, pool names and limits, batch and concurrency, whole numbers; 11 new refusals in `refused.yaml` |
@@ -82,10 +82,22 @@ was served once and then starved until the rest was over. The floor is a tenth o
 proportional to what the search costs, and the scenario's timers are given an explicit order so that the three policies
 are given the same work.
 
-What the reviews could not look at: the chart in a cluster (it was rendered and read back, never installed: G247), the
-behaviour of the database under a real network partition, and PostgreSQL 16 (CI's version) locally.
+The original reviews did not install the chart in a cluster. Release CI run
+[38189200062](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38189200062) at
+`20793c2` (PR #20) subsequently passed the whole workspace on PostgreSQL 16, the container suites,
+compose smoke, SDKs, Studio, Helm lint, a small load harness and the DR drill. Four earlier runs found
+and fixed a non-writable benchmark socket directory, fixed-port and fail-fast defects in the drill,
+and three machine-speed-dependent tests.
 
-## What CI proved (PR #20, 2026-10-11)
+Later feature-009 completion ran the NetworkPolicy and restricted-admission subset in kind/Cilium,
+and T010-038 superseded the original chart-installation gap: a disposable single-node kind/Cilium
+deployment ran the actual product, 60 durable runs, KEDA 1→3→1, engine replacement and policy checks.
+See [`kubernetes-validation.md`](../../tests/performance/reports/kubernetes-validation.md). This does
+not prove multi-node drain, zone failure, real dependency protocols, database behavior under a real
+network partition or a production throughput objective (G247).
 
-[Run 38189200062](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38189200062) at `20793c2`: the whole workspace on PostgreSQL 16 with the container suites (NATS, Kafka, SQS, the sandbox) that cannot run on the author's machine, the compose smoke test, the SDKs, the Studio and the `scale and recovery` job (the chart linted, the load harness at a small size against a PostgreSQL it starts, the drill with a point-in-time restore and a synchronous failover). Four runs before it failed, and what they found is part of the delivery: a PostgreSQL started by the benchmark with a socket directory the runner's user may not write (Debian's packaging); fixed ports of the drill, one of which was taken, and a drill that went on for half an hour after a cluster did not start because bash does not stop at a failed command inside a command substitution; a US02 test that counted connections before the pools had warmed; a takeover test that dropped a transaction and took its shard before the rollback ran; and, outside this feature, a CLI test whose token lived exactly as long as the tool's warning threshold, and a timing-sensitive Studio unit test that passed on its rerun.
-
+Current integrated CI evidence: [run 38192086606](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/38192086606)
+on `65841f33cd5b1af462ba4b6a41e92b918939c63d` passed the full Rust workspace, formatting, Clippy,
+architecture, contracts, observability, dependency audit, Helm lint, the small load harness and the
+small DR drill. CI syntax-checks the live policy verifier; the separate kind/Cilium run above is its
+execution evidence.

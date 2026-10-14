@@ -29,6 +29,7 @@ use sqlx::postgres::PgRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::content_usage::{check_script_retention, take_log_prefix};
 use crate::execution::PgRunStore;
 use crate::identity::{col, corrupt, insert_audit, store_error};
 
@@ -58,7 +59,7 @@ macro_rules! select_versions {
         concat!(
             "SELECT id, tenant_id, namespace_id, script_id, number, language, status, source, ",
             "lockfile, input_schema, output_schema, policy, retention_days, content_digest, ",
-            "build_key, artifact_digest, key_id, toolchain, build_log, failure, created_by, ",
+            "build_key, artifact_digest, key_id, toolchain, build_log, build_log_truncated, failure_code, failure, created_by, ",
             "created_at, built_at FROM script_versions ",
             $tail
         )
@@ -164,6 +165,10 @@ fn version_of(row: &PgRow) -> Result<VersionRecord, StoreError> {
         key_id: col(row, "key_id")?,
         toolchain: col(row, "toolchain")?,
         build_log: col(row, "build_log")?,
+        build_log_truncated: col(row, "build_log_truncated")?,
+        failure_code: col::<Option<String>>(row, "failure_code")?
+            .map(|code| Failure::from_code(&code).ok_or_else(|| corrupt("build failure code")))
+            .transpose()?,
         failure: col(row, "failure")?,
         created_by: col(row, "created_by")?,
         created_at: col(row, "created_at")?,
@@ -239,6 +244,9 @@ fn version_summary_of(row: &PgRow) -> Result<VersionSummary, StoreError> {
         key_id: col(row, "key_id")?,
         toolchain: col(row, "toolchain")?,
         failure: col(row, "failure")?,
+        failure_code: col::<Option<String>>(row, "failure_code")?
+            .map(|code| Failure::from_code(&code).ok_or_else(|| corrupt("build failure code")))
+            .transpose()?,
         created_by: col(row, "created_by")?,
         created_at: col(row, "created_at")?,
         built_at: col(row, "built_at")?,
@@ -432,12 +440,18 @@ async fn held_build_in(
     let status: String = col(&row, "job_status")?;
     let expires: Option<OffsetDateTime> = col(&row, "lease_expires_at")?;
     let build_key: Option<String> = col(&row, "build_key")?;
-    let version = sqlx::query(select_versions!("WHERE tenant_id = $1 AND id = $2"))
-        .bind(tenant.as_uuid())
-        .bind(version_id)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(store_error)?;
+    let version = if lock {
+        sqlx::query(select_versions!(
+            "WHERE tenant_id = $1 AND id = $2 FOR UPDATE"
+        ))
+    } else {
+        sqlx::query(select_versions!("WHERE tenant_id = $1 AND id = $2"))
+    }
+    .bind(tenant.as_uuid())
+    .bind(version_id)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
     Ok(Some((
         ClaimedBuild {
             job: BuildJobRecord {
@@ -509,6 +523,13 @@ impl ScriptStore for PgRunStore {
         lock_scripts(&mut tx, script.tenant_id, script.namespace_id).await?;
         ensure_room_for_script(&mut tx, script.tenant_id, script.namespace_id, limit).await?;
         let draft = &script.draft;
+        check_script_retention(
+            &mut tx,
+            script.tenant_id,
+            script.namespace_id,
+            draft.retention.get(),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO scripts \
              (id, tenant_id, namespace_id, name, language, source, lockfile, input_schema, \
@@ -597,6 +618,24 @@ impl ScriptStore for PgRunStore {
             now,
         } = update;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let prior: Option<(i64, i16)> = sqlx::query_as(
+            "SELECT revision, retention_days FROM scripts WHERE tenant_id=$1 AND namespace_id=$2 AND id=$3 FOR UPDATE",
+        )
+        .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(id.as_uuid())
+        .fetch_optional(&mut *tx).await.map_err(store_error)?;
+        let Some((revision, retention)) = prior else {
+            return Ok(None);
+        };
+        if u64::try_from(revision).ok() != Some(expected_revision) {
+            return Err(StoreError::RevisionConflict {
+                current: u64::try_from(revision).unwrap_or(0),
+            });
+        }
+        // A policy decrease does not forbid editing source while keeping its stored choice.
+        // New publications/tests recheck that choice at their own admission boundary.
+        if i32::from(retention) != i32::from(draft.retention.get()) {
+            check_script_retention(&mut tx, tenant, namespace, draft.retention.get()).await?;
+        }
         let updated = sqlx::query(
             "UPDATE scripts SET source = $5, lockfile = $6, input_schema = $7, output_schema = $8, \
                  policy = $9, retention_days = $10, revision = revision + 1, updated_at = $11 \
@@ -741,6 +780,13 @@ impl ScriptStore for PgRunStore {
             .await?;
         let number = latest.unwrap_or(0) + 1;
         let draft = &version.draft;
+        check_script_retention(
+            &mut tx,
+            version.tenant_id,
+            version.namespace_id,
+            draft.retention.get(),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO script_versions \
              (id, tenant_id, namespace_id, script_id, number, language, status, source, lockfile, \
@@ -810,7 +856,7 @@ impl ScriptStore for PgRunStore {
         sqlx::query(
             "SELECT id, tenant_id, namespace_id, script_id, number, language, status, policy, \
                     retention_days, content_digest, build_key, artifact_digest, key_id, toolchain, \
-                    failure, created_by, created_at, built_at \
+                    failure, failure_code, created_by, created_at, built_at \
              FROM script_versions \
              WHERE tenant_id = $1 AND namespace_id = $2 AND script_id = $3 \
                AND ($4::int IS NULL OR number < $4) ORDER BY number DESC LIMIT $5",
@@ -873,7 +919,7 @@ impl ScriptStore for PgRunStore {
         // Test runs nobody took in time are failed now, so they do not hold a place in the quota.
         sqlx::query(
             "UPDATE script_test_runs SET status = 'FAILED', failure = 'SCRIPT_SANDBOX_UNAVAILABLE', \
-                 log = 'no runner took the test run in time', finished_at = $3 \
+                 log = '', log_truncated = true, finished_at = $3 \
              WHERE tenant_id = $1 AND namespace_id = $2 AND status = 'QUEUED' AND deadline_at < $3",
         )
         .bind(run.tenant_id.as_uuid())
@@ -884,6 +930,13 @@ impl ScriptStore for PgRunStore {
         .map_err(store_error)?;
         ensure_room_for_script_job(&mut tx, run.tenant_id, run.namespace_id, jobs_limit).await?;
         let draft = &run.draft;
+        check_script_retention(
+            &mut tx,
+            run.tenant_id,
+            run.namespace_id,
+            draft.retention.get(),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO script_test_runs \
              (id, tenant_id, namespace_id, script_id, language, status, source, lockfile, \
@@ -1102,19 +1155,32 @@ impl RunnerStore for PgRunStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(store_error)?;
+        sqlx::query("SELECT id FROM script_versions WHERE tenant_id=$1 AND id=ANY($2) ORDER BY id FOR UPDATE")
+            .bind(tenant.as_uuid()).bind(&lost).fetch_all(&mut *tx).await.map_err(store_error)?;
         for version in lost {
+            let reason = take_log_prefix(
+                &mut tx,
+                tenant,
+                0,
+                "unavailable: the build was lost by its runner too many times",
+            )
+            .await?;
             sqlx::query(
                 "UPDATE script_versions SET status = 'FAILED', built_at = $3, \
-                     failure = 'unavailable: the build was lost by its runner too many times' \
+                     failure = $4, build_log_truncated=$5, failure_code='SCRIPT_SANDBOX_UNAVAILABLE' \
                  WHERE tenant_id = $1 AND id = $2 AND status = 'BUILDING'",
             )
             .bind(tenant.as_uuid())
             .bind(version)
             .bind(now)
+            .bind(&reason.text)
+            .bind(reason.truncated)
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
         }
+        tx.commit().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let Some(row) = sqlx::query(
             "SELECT id, version_id FROM script_build_jobs \
              WHERE tenant_id = $1 AND language = ANY($2) \
@@ -1248,10 +1314,28 @@ impl RunnerStore for PgRunStore {
         if status.is_final() {
             return Ok(Finished::AlreadyDone);
         }
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM script_artifacts WHERE tenant_id=$1 AND digest=$2)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(artifact.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if !exists {
+            return Ok(Finished::Stale);
+        }
+        let log = take_log_prefix(
+            &mut tx,
+            tenant,
+            0,
+            "reused the artifact of an identical build",
+        )
+        .await?;
         let done = sqlx::query(
             "UPDATE script_versions v SET status = 'READY', build_key = $3, artifact_digest = $4, \
                  key_id = a.key_id, toolchain = a.toolchain, built_at = $5, \
-                 build_log = 'reused the artifact of an identical build' \
+                 build_log = $6, build_log_truncated = $7 \
              FROM script_artifacts a \
              WHERE v.tenant_id = $1 AND v.id = $2 AND v.status = 'BUILDING' \
                AND a.tenant_id = v.tenant_id AND a.digest = $4",
@@ -1261,6 +1345,8 @@ impl RunnerStore for PgRunStore {
         .bind(key.as_str())
         .bind(artifact.as_str())
         .bind(now)
+        .bind(&log.text)
+        .bind(log.truncated)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?
@@ -1324,9 +1410,10 @@ impl RunnerStore for PgRunStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
+        let log = take_log_prefix(&mut tx, tenant, 0, &built.log).await?;
         sqlx::query(
             "UPDATE script_versions v SET status = 'READY', build_key = $3, artifact_digest = $4, \
-                 key_id = a.key_id, toolchain = $5, built_at = $6, build_log = $7 \
+                 key_id = a.key_id, toolchain = $5, built_at = $6, build_log = $7, build_log_truncated = $8 \
              FROM script_artifacts a \
              WHERE v.tenant_id = $1 AND v.id = $2 AND v.status = 'BUILDING' \
                AND a.tenant_id = v.tenant_id AND a.digest = $4",
@@ -1337,7 +1424,8 @@ impl RunnerStore for PgRunStore {
         .bind(artifact.digest.as_str())
         .bind(&artifact.toolchain)
         .bind(now)
-        .bind(&built.log)
+        .bind(&log.text)
+        .bind(log.truncated || built.log_truncated)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -1361,6 +1449,7 @@ impl RunnerStore for PgRunStore {
         hold: Hold<'_>,
         reason: &str,
         log: &str,
+        log_truncated: bool,
         retry: bool,
         audit: &AuditRecord,
     ) -> Result<Finished, StoreError> {
@@ -1397,15 +1486,29 @@ impl RunnerStore for PgRunStore {
             tx.commit().await.map_err(store_error)?;
             return Ok(Finished::Done);
         }
+        let combined = format!("{reason}{log}");
+        let allocated = take_log_prefix(&mut tx, tenant, 0, &combined).await?;
+        let split = reason.len().min(allocated.text.len());
+        let (reason_kept, log_kept) = allocated.text.split_at(split);
+        let code = if reason == Failure::StorageQuotaExceeded.code() {
+            Failure::StorageQuotaExceeded
+        } else if reason.starts_with("unavailable:") {
+            Failure::Unavailable
+        } else {
+            Failure::BuildRejected
+        };
         sqlx::query(
-            "UPDATE script_versions SET status = 'FAILED', failure = $3, build_log = $4, built_at = $5 \
+            "UPDATE script_versions SET status = 'FAILED', failure = $3, build_log = $4, built_at = $5, \
+                 build_log_truncated=$6, failure_code=$7 \
              WHERE tenant_id = $1 AND id = $2 AND status = 'BUILDING'",
         )
         .bind(tenant.as_uuid())
         .bind(claimed.version.id.as_uuid())
-        .bind(reason)
-        .bind(log)
+        .bind(reason_kept)
+        .bind(log_kept)
         .bind(now)
+        .bind(allocated.truncated || log_truncated)
+        .bind(code.code())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
@@ -1437,7 +1540,7 @@ impl RunnerStore for PgRunStore {
         // Runs nobody took in time, and runs whose runner vanished too many times, are over.
         sqlx::query(
             "UPDATE script_test_runs SET status = 'FAILED', failure = 'SCRIPT_SANDBOX_UNAVAILABLE', \
-                 log = 'the sandbox could not run the test', finished_at = $3, lease_token_hash = NULL \
+                 log = '', log_truncated = true, finished_at = $3, lease_token_hash = NULL \
              WHERE tenant_id = $1 AND finished_at IS NULL \
                AND ((status = 'QUEUED' AND deadline_at < $3) \
                  OR (status = 'RUNNING' AND lease_expires_at < $3 AND attempts >= $2))",
@@ -1555,6 +1658,14 @@ impl RunnerStore for PgRunStore {
         if status != "RUNNING" {
             return Ok(Finished::AlreadyDone);
         }
+        let attempt: i32 = col(&held, "attempts")?;
+        let durable_egress = if let Some(actor) = audits.first().map(AuditRecord::actor) {
+            incident::test_was_recorded(&mut tx, tenant, actor.as_str(), run.as_uuid(), attempt)
+                .await?
+        } else {
+            false
+        };
+        let log = take_log_prefix(&mut tx, tenant, 0, &report.log).await?;
         let (result, failure) = match &report.result {
             Ok(bytes) => (Some(bytes.as_slice()), None),
             Err(failure) => (None, Some(failure.code())),
@@ -1571,8 +1682,8 @@ impl RunnerStore for PgRunStore {
         .bind(if report.result.is_ok() { "SUCCEEDED" } else { "FAILED" })
         .bind(result)
         .bind(failure)
-        .bind(&report.log)
-        .bind(report.log_truncated)
+        .bind(&log.text)
+        .bind(report.log_truncated || log.truncated)
         .bind(&report.denied)
         .bind(report.exit_code)
         .bind(i64::try_from(report.wall_ms).unwrap_or(i64::MAX))
@@ -1584,13 +1695,6 @@ impl RunnerStore for PgRunStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        let attempt: i32 = col(&held, "attempts")?;
-        let durable_egress = if let Some(actor) = audits.first().map(AuditRecord::actor) {
-            incident::test_was_recorded(&mut tx, tenant, actor.as_str(), run.as_uuid(), attempt)
-                .await?
-        } else {
-            false
-        };
         for audit in audits {
             if durable_egress
                 && audit
@@ -1675,6 +1779,80 @@ impl RunnerStore for PgRunStore {
     ) -> Result<bool, StoreError> {
         let e = &record.execution;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let expires_at = match (e.run_id, e.node.as_deref(), e.attempt) {
+            (Some(run), Some(node), Some(attempt)) => {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                    .bind(format!(
+                        "script-execution:{}:{run}:{node}:{attempt}",
+                        record.tenant_id
+                    ))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(store_error)?;
+                let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM script_executions WHERE tenant_id=$1 AND run_id=$2 AND node=$3 AND attempt=$4)")
+                    .bind(record.tenant_id.as_uuid()).bind(run).bind(node).bind(i64::from(attempt))
+                    .fetch_one(&mut *tx).await.map_err(store_error)?;
+                if exists {
+                    return Ok(false);
+                }
+                let leased: Option<(String, serde_json::Value)> = sqlx::query_as(
+                    "SELECT s.activity,e.detail FROM steps s JOIN runs r ON r.tenant_id=s.tenant_id AND r.id=s.run_id \
+                     JOIN run_events e ON e.tenant_id=s.tenant_id AND e.run_id=s.run_id AND e.node=s.node \
+                     WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 AND r.namespace_id=$4 \
+                       AND e.event_type='step.leased' AND e.attempt=$5 ORDER BY e.seq DESC LIMIT 1")
+                    .bind(record.tenant_id.as_uuid()).bind(run).bind(node).bind(e.namespace_id.as_uuid()).bind(i64::from(attempt))
+                    .fetch_optional(&mut *tx).await.map_err(store_error)?;
+                let Some((activity, detail)) = leased else {
+                    return Err(StoreError::MissingReference);
+                };
+                if sagat_domain::scripts::digest_of_activity(&activity).as_ref() != Some(&e.digest)
+                {
+                    return Err(StoreError::MissingReference);
+                }
+                match detail.get("scriptRetentionPolicyVersion") {
+                    None => record.expires_at, // Existing immutable leases retain their original semantics.
+                    Some(marker) if marker.as_u64() == Some(1) => {
+                        let days = detail
+                            .get("scriptRetentionDays")
+                            .and_then(serde_json::Value::as_u64)
+                            .filter(|days| (1..=365).contains(days))
+                            .ok_or_else(|| corrupt("script retention pin"))?;
+                        record.created_at
+                            + time::Duration::days(
+                                i64::try_from(days).map_err(|_| corrupt("script retention pin"))?,
+                            )
+                    }
+                    _ => return Err(corrupt("script retention policy version")),
+                }
+            }
+            (None, None, None) => {
+                let requested = (record.expires_at - record.created_at).whole_days();
+                let days = crate::content_usage::script_execution_retention(
+                    &mut tx,
+                    record.tenant_id,
+                    e.namespace_id,
+                    u16::try_from(requested).map_err(|_| corrupt("script retention"))?,
+                )
+                .await?;
+                record.created_at + time::Duration::days(i64::from(days))
+            }
+            _ => return Err(StoreError::MissingReference),
+        };
+        let durable_egress = match (audits.first().map(AuditRecord::actor), e.run_id, e.attempt) {
+            (Some(actor), Some(run), Some(attempt)) => {
+                incident::production_was_recorded(
+                    &mut tx,
+                    record.tenant_id,
+                    actor.as_str(),
+                    run,
+                    e.node.as_deref().unwrap_or(""),
+                    attempt,
+                )
+                .await?
+            }
+            _ => false,
+        };
+        let log = take_log_prefix(&mut tx, record.tenant_id, 0, &e.log).await?;
         let inserted = sqlx::query(
             "INSERT INTO script_executions \
              (id, tenant_id, namespace_id, digest, run_id, node, attempt, status, failure, \
@@ -1694,36 +1872,21 @@ impl RunnerStore for PgRunStore {
         .bind(e.status.as_str())
         .bind(e.failure.map(Failure::code))
         .bind(e.exit_code)
-        .bind(&e.log)
-        .bind(e.log_truncated)
+        .bind(&log.text)
+        .bind(e.log_truncated || log.truncated)
         .bind(&e.denied)
         .bind(i64::try_from(e.wall_ms).unwrap_or(i64::MAX))
         .bind(i64::try_from(e.start_ms).unwrap_or(i64::MAX))
         .bind(bound(e.memory_peak_bytes))
         .bind(e.trace_id.as_deref())
         .bind(record.created_at)
-        .bind(record.expires_at)
+        .bind(expires_at)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?
         .rows_affected()
             > 0;
         if inserted {
-            let durable_egress = match (audits.first().map(AuditRecord::actor), e.run_id, e.attempt)
-            {
-                (Some(actor), Some(run), Some(attempt)) => {
-                    incident::production_was_recorded(
-                        &mut tx,
-                        record.tenant_id,
-                        actor.as_str(),
-                        run,
-                        e.node.as_deref().unwrap_or(""),
-                        attempt,
-                    )
-                    .await?
-                }
-                _ => false,
-            };
             for audit in audits {
                 if durable_egress
                     && audit

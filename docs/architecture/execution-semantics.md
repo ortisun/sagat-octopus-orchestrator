@@ -100,3 +100,20 @@ Run statuses are `RUNNING`, `WAITING`, `PAUSED`, `CANCELLING`, `COMPENSATING`, `
 - **Timeouts racing signals.** A `waitEvent` inside a saga whose deadline and signal arrive together is decided by the first commit; if the timeout wins and nothing handles it, the saga compensates; if the signal wins it goes on (12 rounds in `races::a_signal_and_a_timeout_arriving_together...`).
 - **Not promised.** Exactly-once effects (ADR-0004): the platform asks at least once, with stable keys. A compensation that fails for good is a person's decision, not an automatic one.
 
+
+
+## Worker-session claim admission
+
+Unary polling and protocol 1.4 task streams use the same durable claim transaction. Its lock order
+is the run row, the shared worker-drain fence, the worker-session row, then the sorted activity
+policy/quota locks. The session row is held through commit while the transaction rechecks its
+current token hash, tenant, namespace, subject, expiry and `max_inflight`, counts durable active
+leases and checks the current activity bindings. Earlier claims in the same transaction consume
+capacity too. A prior standalone in-flight count is only an optimization.
+
+Registration replacement and binding revocation coordinate with that same session row. A claim
+that read an old session before waiting on a fence cannot lease using that stale snapshot after
+replacement commits. The test `session_replacement_revalidates_the_token_and_lowered_limit_at_the_claim_fence`
+exercises that ordering; mixed unary/stream and concurrent service-instance tests exercise the cap.
+No transaction or ordinary request permit spans an idle receive wait. Response-body cancellation
+never immediately requeues a committed lease: expiry/reaping and fencing remain authoritative.

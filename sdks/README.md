@@ -17,7 +17,7 @@ every timer and every retry decision.
 "Run" is what was actually executed, on macOS arm64; the other versions are declared, not tested, and each README
 says which. Every package is `0.1.0`: before `1.0` a minor version may change an API and says so; the wire contracts
 (REST under `/v1`, the worker protocol `1.x`) are additive and do not move with it. **Publishing to the registries is
-not automated** and no package has a licence yet (`UNLICENSED`): see `docs/runbooks/sdks.md` §7 and
+not automated**. All five packages use the MIT license: see `docs/runbooks/sdk-packaging.md` and
 `specs/006-sdk-multilanguage/research.md` (G122, G123).
 
 ## What they have in common

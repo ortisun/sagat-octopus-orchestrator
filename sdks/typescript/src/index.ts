@@ -11,11 +11,11 @@ export { canonicalJson } from './json.js';
 export { DEFAULT_RETRY, backoffDelayMs } from './retry.js';
 export type { RetryPolicy } from './retry.js';
 export { checkTraceparent, isTraceparent, newTraceparent, traceIdOf } from './traceparent.js';
-export { ActivityFailure, reconcile } from './worker/activity.js';
+export { ActivityFailure, BlobOutput, reconcile } from './worker/activity.js';
 export type {
-  ActivityContext, ActivityHandler, ActivityLogger, RegisterOptions, Secrets, TaskKind, Verdict,
+  ActivityContext, ActivityHandler, ActivityLogger, BlobDescriptor, RegisterOptions, Secrets, TaskKind, Verdict, WriteBlobOptions,
 } from './worker/activity.js';
 export { WorkerHost } from './worker/host.js';
-export type { WorkerConfig, WorkerEvent } from './worker/host.js';
+export type { WorkerConfig, WorkerEvent, WorkerTransport } from './worker/host.js';
 export { Flow, WorkflowBuilder, flow, workflow } from './workflow.js';
 export type { ChildOptions, RetryOptions, SagaOptions, StepOptions, Trigger, WaitOptions as WaitForEventOptions } from './workflow.js';

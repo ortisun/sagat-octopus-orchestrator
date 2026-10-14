@@ -88,7 +88,7 @@ export function studioThemeData(base: 'vs' | 'vs-dark', mutedText: string): Stud
 }
 
 /** The kind of model, which decides its language service and where it lives. */
-export type ModelRole = 'source' | 'inputSchema' | 'outputSchema' | 'testInput' | 'version' | 'versionInputSchema' | 'versionOutputSchema';
+export type ModelRole = 'source' | 'inputSchema' | 'outputSchema' | 'testInput' | 'version' | 'versionInputSchema' | 'versionOutputSchema' | 'workflowInputSchema' | 'workflowOutputSchema';
 
 const EXTENSION: Record<string, string> = { typescript: 'ts', python: 'py', json: 'json', csharp: 'cs', go: 'go', java: 'java' };
 

@@ -38,6 +38,11 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
     auth.allow_insecure_jwks_http = true;
     ServeConfig {
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
+        tls: None,
+        webhook_oidc: Vec::new(),
+        webhook_oidc_development: true,
+        blobs: None,
+        blob_transfer: sagat_api_http::HttpBlobTransfer::default(),
         auth,
         limits: HttpLimits::default(),
         server: sagat_api_http::ServerConfig::default(),

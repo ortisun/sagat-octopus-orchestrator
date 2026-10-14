@@ -26,6 +26,8 @@ const (
 	methodCompleteStep   = "CompleteStep"
 	methodFailStep       = "FailStep"
 	methodResolveSecrets = "ResolveSecrets"
+	methodWriteBlob      = "WriteBlob"
+	methodReadBlob       = "ReadBlob"
 )
 
 var statusNames = map[codes.Code]string{
@@ -35,6 +37,19 @@ var statusNames = map[codes.Code]string{
 	codes.FailedPrecondition: "FAILED_PRECONDITION", codes.Aborted: "ABORTED", codes.OutOfRange: "OUT_OF_RANGE",
 	codes.Unimplemented: "UNIMPLEMENTED", codes.Internal: "INTERNAL", codes.Unavailable: "UNAVAILABLE",
 	codes.DataLoss: "DATA_LOSS", codes.Unauthenticated: "UNAUTHENTICATED",
+}
+
+func (r *rpc) streamContext(ctx context.Context, traceparent string) (context.Context, context.CancelFunc, error) {
+	token, err := sagat.BearerToken(ctx, r.token)
+	if err != nil {
+		return nil, nil, err
+	}
+	md := metadata.Pairs("authorization", "Bearer "+token)
+	if traceparent != "" && sagat.ValidTraceparent(traceparent) {
+		md.Set("traceparent", traceparent)
+	}
+	callCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, md), r.timeout)
+	return callCtx, cancel, nil
 }
 
 func statusName(code codes.Code) string {
@@ -160,6 +175,13 @@ func errorOfStatus(caller context.Context, method string, err error, header, tra
 		e := sagat.NewError(sagat.CodeCancelled, "the call was cancelled")
 		e.GRPCStatus = statusName(code)
 		return e.WithCause(err)
+	case codes.Unimplemented:
+		if method == "StreamTasks" {
+			return fail(sagat.CodeUnsupportedProtocol, "the worker service does not support task streaming")
+		}
+		return fail(sagat.CodeInternal, "the worker service failed")
+	case codes.DataLoss:
+		return fail(sagat.CodeProtocol, "the blob stream failed its integrity check")
 	default:
 		return fail(sagat.CodeInternal, "the worker service failed")
 	}

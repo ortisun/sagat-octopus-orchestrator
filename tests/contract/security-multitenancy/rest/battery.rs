@@ -20,7 +20,7 @@ use sagat_domain::identity::{Membership, Role};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::support::api::{TestApi, start};
+use crate::support::api::{Options, TestApi, start_with};
 use crate::support::contract::OpenApi;
 use crate::support::{now, subject};
 
@@ -37,8 +37,9 @@ fn body_of(operation: &str) -> Option<Value> {
         "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
+        "inspectRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
-        "setTenantQuota" | "setNamespaceQuota" => json!({"limit": 1}),
+        "setTenantQuota" | "setNamespaceQuota" | "setActivityQuota" => json!({"limit": 1}),
         "bindWorker" => json!({"activities": ["*"]}),
         "putSecret" => json!({"value": "attacker-supplied-value-0001"}),
         "setEgressPolicy" => json!({"rules": ["attacker.example.net"]}),
@@ -54,7 +55,16 @@ fn body_of(operation: &str) -> Option<Value> {
             "url": "https://attacker.example.net/in", "secretName": "stripe-key",
             "events": ["run.finished"]
         }),
-        "redriveWebhookDeliveries" => json!({}),
+        "redriveWebhookDeliveries" | "redriveBrokerDeliveries" => json!({}),
+        "createBrokerSubscription" => json!({
+            "name": "attacker-broker", "kind": "NATS",
+            "settings": {"servers": ["tls://attacker.example.net:4222"], "subject": "events"},
+            "events": ["run.finished"]
+        }),
+        "updateBrokerSubscription" => json!({
+            "kind": "NATS", "settings": {"servers": ["tls://attacker.example.net:4222"], "subject": "events"},
+            "events": ["run.finished"]
+        }),
         "createConnector" => json!({
             "slug": "attacker-connector", "kind": "KAFKA",
             "settings": {"servers": ["attacker.example.net:9092"], "topic": "orders", "startFrom": "earliest"}
@@ -210,6 +220,7 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
         format!("/runs/{run}/events"),
         "/quotas".to_owned(),
         format!("/namespaces/{ns}/quotas"),
+        format!("/namespaces/{ns}/activity-quotas"),
         format!("/namespaces/{ns}/worker-bindings"),
         format!("/namespaces/{ns}/secrets"),
         format!("/namespaces/{ns}/secrets/stripe-key/access"),
@@ -234,7 +245,11 @@ async fn snapshot(api: &TestApi, victim: &Victim) -> Value {
 #[tokio::test]
 async fn every_implemented_operation_resists_an_administrator_of_another_tenant() {
     let spec = OpenApi::load();
-    let api = start().await;
+    let api = start_with(Options {
+        blobs: Some(sagat_application::blobs::BlobLimits::default()),
+        ..Options::default()
+    })
+    .await;
     let acme = api.tenant("acme", "alice").await;
     let globex = api.tenant("globex", "bob").await;
     api.owner_store
@@ -335,6 +350,11 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         ),
         (
             "PUT",
+            format!("/namespaces/{ns}/activity-quotas/payment.capture"),
+            Some(json!({"limit": 3})),
+        ),
+        (
+            "PUT",
             "/quotas/workflows".to_owned(),
             Some(json!({"limit": 88})),
         ),
@@ -392,6 +412,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             ("versionNumber", "1".to_owned()),
             ("signalName", "payment.confirmed".to_owned()),
             ("resource", "workflows".to_owned()),
+            ("activity", "payment.capture".to_owned()),
             ("subject", "worker-7".to_owned()),
             ("secretName", "stripe-key".to_owned()),
         ]),
@@ -545,7 +566,11 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
 #[tokio::test]
 async fn without_a_valid_token_no_operation_answers_anything_but_401() {
     let spec = OpenApi::load();
-    let api = start().await;
+    let api = start_with(Options {
+        blobs: Some(sagat_application::blobs::BlobLimits::default()),
+        ..Options::default()
+    })
+    .await;
     for (method, template, operation, implemented) in spec.all_operations() {
         if !implemented || matches!(operation.as_str(), "getHealth" | "getReadiness") {
             continue;

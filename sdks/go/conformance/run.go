@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,13 +183,15 @@ func run(scenario, config object) (object, error) {
 	}
 
 	logs := object{}
+	measurements := object{}
 	for key, entry := range hosts {
 		stopWorker(entry, 2*time.Second)
 		logs[key] = entry.log.snapshot()
+		measurements[key] = entry.log.measurements()
 	}
 	return object{
 		"scenario": scenario["name"], "language": "go", "sdkVersion": sagat.Version,
-		"observations": observations, "workerLog": logs, "faultsApplied": p.applied(),
+		"observations": observations, "workerLog": logs, "workerMeasurements": measurements, "faultsApplied": p.applied(),
 	}, nil
 }
 
@@ -232,6 +236,32 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			opts = append(opts, client.WithDeadlineIn(asMillis(v)))
 		}
 		run, err := c.Start(ctx, workflowID, startInput(step), opts...)
+		if err != nil {
+			return nil, err
+		}
+		return runJSON(run), nil
+	case "startWithBlob":
+		_, workflowID := workflowOf(asString(step["workflow"]))
+		opts := callOpts
+		if v := asString(step["correlationId"]); v != "" {
+			opts = append(opts, client.WithCorrelationID(v))
+		}
+		if v := asString(step["traceparent"]); v != "" {
+			opts = append(opts, client.WithTraceparent(v))
+		}
+		if v, ok := step["deadlineInMs"]; ok {
+			opts = append(opts, client.WithDeadlineIn(asMillis(v)))
+		}
+		body := bytes.Repeat([]byte("i"), asInt(step["inputBlobBytes"]))
+		digest := sha256.Sum256(body)
+		size := int64(len(body))
+		descriptor, err := c.UploadRunInput(ctx, bytes.NewReader(body), client.UploadRunInputOptions{
+			ExpectedSize: &size, ExpectedSHA256: hex.EncodeToString(digest[:]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		run, err := c.StartWithBlob(ctx, workflowID, descriptor, opts...)
 		if err != nil {
 			return nil, err
 		}

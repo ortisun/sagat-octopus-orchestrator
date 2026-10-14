@@ -2,6 +2,7 @@
 name = "sagat-tests"
 description = "Cross-crate integration, fault, contract and end-to-end test suites (paths follow specs/*/plan.md)."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
@@ -12,6 +13,9 @@ autotests = false
 workspace = true
 
 [dev-dependencies]
+tokio-stream.workspace = true
+bytes.workspace = true
+sagat-infra-blobstore.workspace = true
 async-nats.workspace = true
 axum.workspace = true
 base64 = "0.22"
@@ -21,6 +25,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 hmac = "0.13"
 jsonwebtoken.workspace = true
+metrics.workspace = true
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 h2 = "0.4"
 rcgen = "0.13"
@@ -47,8 +52,7 @@ sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
-# Keep the existing import name while using the maintained YAML implementation.
-serde_yaml_ng = { package = "yaml_serde", version = "=0.10.7" }
+serde-saphyr = "1.3"
 sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true

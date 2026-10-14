@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "tests"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "tests"]
 
 [workspace.package]
+license = "MIT"
 version = "0.4.0"
 edition = "2024"
 rust-version = "1.98"
@@ -14,6 +15,7 @@ publish = false
 [workspace.dependencies]
 sagat-domain = { path = "crates/domain" }
 sagat-application = { path = "crates/application" }
+sagat-infra-blobstore = { path = "crates/infra-blobstore" }
 sagat-infra-postgres = { path = "crates/infra-postgres" }
 sagat-telemetry = { path = "crates/telemetry" }
 sagat-api-http = { path = "crates/api-http" }
@@ -62,6 +64,13 @@ prost = "0.14"
 protox = "0.10"
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
 uuid = { version = "1", default-features = false, features = ["std", "v4", "v7"] }
+
+bytes = "1"
+futures-core = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring", "fs"] }
+s3s = "0.17"
+s3s-fs = "0.17"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

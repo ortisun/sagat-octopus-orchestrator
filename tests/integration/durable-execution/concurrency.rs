@@ -6,10 +6,27 @@ use std::time::{Duration, Instant};
 
 use sagat_application::error::AppError;
 use sagat_application::runs::{Lock, RunStore};
+use sagat_application::worker::Capabilities;
 use sagat_domain::execution::{RunStatus, StepStatus};
+use sagat_domain::quota::QuotaResource;
 use serde_json::json;
 
 use crate::support::engine::{activity, chain, document, task_ref, with, world};
+
+async fn activity_limit(w: &crate::support::engine::World, activity: &str, limit: i64) {
+    sqlx::query(
+        "INSERT INTO activity_quota_limits \
+         (tenant_id, namespace_id, activity, max_inflight, updated_by) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .bind(activity)
+    .bind(limit)
+    .bind(w.admin.subject().as_str())
+    .execute(&w.db.pool)
+    .await
+    .expect("activity quota");
+}
 
 #[tokio::test]
 async fn sixteen_workers_racing_for_one_task_produce_exactly_one_lease() {
@@ -88,6 +105,255 @@ async fn many_workers_and_many_tasks_never_assign_a_step_twice() {
     for run in runs {
         w.assert_consistent(run).await;
     }
+}
+
+#[tokio::test]
+async fn concurrent_pollers_never_overshoot_an_activity_quota() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 3).await;
+    let (wf, _) = w
+        .publish(document("quota-race", "a", vec![activity("a")]))
+        .await;
+    for i in 0..24 {
+        w.start(wf, &json!({"i": i})).await;
+    }
+    let mut sessions = Vec::new();
+    for _ in 0..12 {
+        sessions.push(w.session(&["act.a"]).await);
+    }
+    let polls = futures_util::future::join_all(sessions.iter().map(|s| w.poll(s, 8))).await;
+    assert_eq!(polls.iter().map(Vec::len).sum::<usize>(), 3);
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id = $1 AND namespace_id = $2 \
+           AND activity = 'act.a' AND status IN ('LEASED', 'RUNNING') \
+           AND lease_expires_at > clock_timestamp()",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("held leases");
+    assert_eq!(held, 3, "the exact quota is never exceeded under a race");
+}
+
+#[tokio::test]
+async fn concurrent_claims_on_one_session_are_exact_across_service_instances() {
+    let w = world().await;
+    let (wf, _) = w
+        .publish(document("session-cap-race", "a", vec![activity("a")]))
+        .await;
+    for i in 0..24 {
+        w.start(wf, &json!({"i": i})).await;
+    }
+    let session = w.session_as(&w.worker, &["act.a"], 2).await;
+    let first = w.workers.clone();
+    let second = w.workers.clone();
+    let polls = futures_util::future::join_all((0..16).map(|index| {
+        let workers = if index % 2 == 0 {
+            first.clone()
+        } else {
+            second.clone()
+        };
+        let principal = session.principal.clone();
+        let token = session.token.clone();
+        async move {
+            workers
+                .poll(&principal, session.worker_id, &token, 8, None)
+                .await
+                .expect("concurrent claim")
+        }
+    }))
+    .await;
+    assert_eq!(
+        polls.iter().map(Vec::len).sum::<usize>(),
+        2,
+        "the durable session fence must admit exactly max_inflight leases"
+    );
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps WHERE tenant_id = $1 \
+         AND status IN ('LEASED', 'RUNNING') AND leased_by = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(session.worker_id.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("active session leases");
+    assert_eq!(active, 2);
+}
+
+#[tokio::test]
+async fn session_replacement_revalidates_the_token_and_lowered_limit_at_the_claim_fence() {
+    let w = world().await;
+    let (wf, _) = w
+        .publish(document("session-replacement", "a", vec![activity("a")]))
+        .await;
+    for i in 0..8 {
+        w.start(wf, &json!({"i": i})).await;
+    }
+    w.bind_everything(&w.worker).await;
+    let capabilities = |max_inflight| Capabilities {
+        activities: vec!["act.a".into()],
+        languages: vec!["rust".into()],
+        pools: Vec::new(),
+        max_inflight,
+        protocol_version: "1.4".into(),
+    };
+    let original = w
+        .workers
+        .register(&w.worker, "payments", "replacement-fence", &capabilities(8))
+        .await
+        .expect("original session");
+
+    // Hold the drain fence after the old poll has selected and locked its run, but before it can
+    // lock and revalidate the worker session. This makes the stale-snapshot race deterministic.
+    let drain_key = format!(
+        "drain:{}:{}:{}",
+        w.admin.tenant_id(),
+        w.namespace.id(),
+        w.worker.subject()
+    );
+    let mut fence = w.db.pool.begin().await.expect("begin drain fence");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&drain_key)
+        .execute(&mut *fence)
+        .await
+        .expect("hold drain fence");
+    let fence_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *fence)
+        .await
+        .expect("fence backend");
+    let workers = w.workers.clone();
+    let principal = w.worker.clone();
+    let old_worker_id = original.worker_id;
+    let old_token = original.session_token.expose().to_owned();
+    let old_claim = tokio::spawn(async move {
+        workers
+            .poll(&principal, old_worker_id, &old_token, 8, None)
+            .await
+    });
+    let waiting = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity waiter \
+                 WHERE waiter.datname = current_database() \
+                   AND $1 = ANY(pg_blocking_pids(waiter.pid)))",
+            )
+            .bind(fence_pid)
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("observe blocked claim");
+            if blocked {
+                break;
+            }
+            assert!(
+                !old_claim.is_finished(),
+                "old claim did not reach the fence"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(waiting.is_ok(), "old claim reached the drain fence");
+
+    let replacement = w
+        .workers
+        .register(&w.worker, "payments", "replacement-fence", &capabilities(1))
+        .await
+        .expect("replacement session");
+    assert_eq!(original.worker_id, replacement.worker_id);
+    fence.commit().await.expect("release drain fence");
+    let stale = old_claim
+        .await
+        .expect("old claim task")
+        .expect("the prevalidated request completes without a lease");
+    assert!(
+        stale.is_empty(),
+        "the transactional recheck rejects authority replaced after the initial validation"
+    );
+    let claimed = w
+        .workers
+        .poll(
+            &w.worker,
+            replacement.worker_id,
+            replacement.session_token.expose(),
+            8,
+            None,
+        )
+        .await
+        .expect("replacement claim");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "the stored lowered limit is authoritative"
+    );
+}
+
+#[tokio::test]
+async fn a_lowered_platform_ceiling_applies_to_an_existing_activity_override() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 3).await;
+    w.quotas
+        .grant_ceiling(
+            w.admin.tenant_id(),
+            QuotaResource::ActivityConcurrency,
+            Some(1),
+        )
+        .await
+        .expect("lower activity ceiling");
+    let (wf, _) = w
+        .publish(document("quota-ceiling", "a", vec![activity("a")]))
+        .await;
+    for i in 0..3 {
+        w.start(wf, &json!({"i": i})).await;
+    }
+    let session = w.session(&["act.a"]).await;
+    assert_eq!(
+        w.poll(&session, 8).await.len(),
+        1,
+        "lowering the operator ceiling applies to an override stored earlier"
+    );
+}
+
+#[tokio::test]
+async fn a_full_activity_is_skipped_and_an_expired_lease_returns_its_place() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 1).await;
+    let (a, _) = w
+        .publish(document("quota-a", "a", vec![activity("a")]))
+        .await;
+    let (b, _) = w
+        .publish(document("quota-b", "b", vec![activity("b")]))
+        .await;
+    for i in 0..3 {
+        w.start(a, &json!({"i": i})).await;
+    }
+    w.start(b, &json!({})).await;
+    let session = w.session_as(&w.worker, &["act.a", "act.b"], 8).await;
+    let tasks = w.poll(&session, 8).await;
+    assert_eq!(
+        tasks.len(),
+        2,
+        "one capped activity and the uncapped activity are served"
+    );
+    assert!(tasks.iter().any(|task| task.activity.as_str() == "act.a"));
+    assert!(tasks.iter().any(|task| task.activity.as_str() == "act.b"));
+
+    sqlx::query(
+        "UPDATE steps SET lease_expires_at = clock_timestamp() - interval '1 second' \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND activity = 'act.a' AND status = 'LEASED'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("expire lease");
+    let next = w.poll(&session, 8).await;
+    assert_eq!(
+        next.iter()
+            .filter(|task| task.activity.as_str() == "act.a")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -256,4 +522,29 @@ async fn heartbeats_from_a_worker_that_lost_its_lease_do_not_resurrect_it() {
         "a late heartbeat changed nothing"
     );
     w.assert_consistent(run).await;
+}
+
+#[tokio::test]
+async fn a_capped_backlog_cannot_hide_another_activity_past_the_candidate_limit() {
+    let w = world().await;
+    activity_limit(&w, "act.a", 0).await;
+    let (blocked, _) = w
+        .publish(document("capped-backlog", "a", vec![activity("a")]))
+        .await;
+    for i in 0..65 {
+        w.start(blocked, &json!({"i":i})).await;
+    }
+    let (available, _) = w
+        .publish(document("available", "b", vec![activity("b")]))
+        .await;
+    let run = w.start(available, &json!({})).await;
+    let session = w.session_as(&w.worker, &["act.a", "act.b"], 8).await;
+    let tasks = w.poll(&session, 1).await;
+    assert_eq!(
+        tasks.len(),
+        1,
+        "a capped oldest backlog cannot monopolize candidate selection"
+    );
+    assert_eq!(tasks[0].run_id, run);
+    assert_eq!(tasks[0].activity.as_str(), "act.b");
 }

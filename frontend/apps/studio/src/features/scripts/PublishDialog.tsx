@@ -193,8 +193,9 @@ function PublishBody({ api, scriptId, saver, tested, language, onClose }: { api:
           {phase === 'failed' && version ? (
             <>
               <Banner tone="error" title="The build failed.">
-                {version.failure ? <code>{clipLabel(version.failure, 300)}</code> : 'The platform gave no reason.'} {buildFailureHelp(version.failure)} Nothing can use this version. Fix the draft and publish again.
+                {(version.failureCode || version.failure) ? <code>{clipLabel(version.failureCode || version.failure || '', 300)}</code> : 'The platform gave no reason.'} {buildFailureHelp(version.failureCode ?? version.failure)} Nothing can use this version. {version.failureCode === 'STORAGE_QUOTA_EXCEEDED' ? 'Publish again after capacity is available.' : 'Fix the draft and publish again.'}
               </Banner>
+              {version.buildLogTruncated ? <p role="status">Build diagnostics were truncated by the retained-log limit.</p> : null}
               {version.buildLog ? <LogView text={version.buildLog} label="Build log" empty="(empty)" /> : null}
             </>
           ) : null}

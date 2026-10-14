@@ -43,6 +43,8 @@ type failure struct {
 // fakeService is an in-memory worker service the tests script: queued leases, queued failures, a
 // record of every call. It speaks real gRPC on a loopback port.
 type fakeService struct {
+	stream func(*pb.PollTasksRequest, grpc.ServerStreamingServer[pb.PollTasksResponse]) error
+
 	pb.UnimplementedWorkerServiceServer
 	t      *testing.T
 	server *grpc.Server
@@ -293,4 +295,14 @@ func must(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (f *fakeService) StreamTasks(r *pb.PollTasksRequest, stream grpc.ServerStreamingServer[pb.PollTasksResponse]) error {
+	if err := f.enter(stream.Context(), "StreamTasks", r); err != nil {
+		return err
+	}
+	if f.stream == nil {
+		return status.Error(codes.Unimplemented, "not supported")
+	}
+	return f.stream(r, stream)
 }

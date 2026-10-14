@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 using SagatOctopusOrchestrator.Sdk.Tests.Support;
 using SagatOctopusOrchestrator.Sdk.Workers;
 using Xunit;
@@ -26,7 +28,11 @@ public sealed class TelemetryTests
         await using var server = await FakeRestServer.StartAsync();
         server.Handler = _ => new FakeAnswer(200, Run);
         var space = Space();
-        using var spans = new SpanCapture(span => Of(span, space), SdkInfo.ActivitySourceName);
+        var exported = new List<Activity>();
+        using var provider = global::OpenTelemetry.Sdk.CreateTracerProviderBuilder()
+            .AddSource(SdkInfo.ActivitySourceName, "Tests.Caller")
+            .AddInMemoryExporter(exported)
+            .Build();
         using var source = new ActivitySource("Tests.Caller");
         using var callers = new SpanCapture(_ => true, "Tests.Caller");
         using var client = ClientOf(server, space);
@@ -37,7 +43,7 @@ public sealed class TelemetryTests
         var sent = server.Requests[0].Header("traceparent");
         Assert.True(Traceparent.IsValid(sent));
         Assert.Equal(caller.TraceId.ToString(), Traceparent.TraceIdOf(sent));
-        var span = Assert.Single(spans.Spans);
+        var span = Assert.Single(exported, span => Of(span, space));
         Assert.Equal(span.Id, sent);
         Assert.Equal(caller.SpanId, span.ParentSpanId);
         Assert.NotEqual(caller.SpanId.ToString(), sent.Split('-')[2]);
@@ -88,6 +94,11 @@ public sealed class TelemetryTests
         rest.Handler = _ => new FakeAnswer(200, Run);
         var space = Space();
         var worker = "telemetry-" + Guid.NewGuid().ToString("N");
+        var exportedMetrics = new List<Metric>();
+        using var meterProvider = global::OpenTelemetry.Sdk.CreateMeterProviderBuilder()
+            .AddMeter(SdkInfo.MeterName)
+            .AddInMemoryExporter(exportedMetrics)
+            .Build();
         using var spans = new SpanCapture(span => (string?)span.GetTagItem("sagat.worker") == worker, SdkInfo.ActivitySourceName);
         using var client = ClientOf(rest, space);
         var options = new SagatOptions { GrpcUrl = fake.Url, Namespace = "payments", Token = Token };
@@ -104,6 +115,8 @@ public sealed class TelemetryTests
         fake.State.Lease(Leases.Lease());
         await host.StartAsync();
         await Eventually.UntilAsync(() => fake.State.Of("CompleteStep").Count == 1, "the completion");
+        // Receiving the RPC precedes the response, outcome metrics and span disposal.
+        await Eventually.UntilAsync(() => spans.Spans.Any(s => s.OperationName == "sagat.worker.task"), "the completed task span");
 
         Assert.NotNull(inside);
         Assert.Equal(SdkInfo.ActivitySourceName, inside.Source.Name);
@@ -112,12 +125,16 @@ public sealed class TelemetryTests
         Assert.Equal(ActivityKind.Consumer, inside.Kind);
         Assert.Equal("0af7651916cd43dd8448eb211c80319c", Traceparent.TraceIdOf(rest.Requests[0].Header("traceparent")));
 
-        var task = spans.Spans.Single(s => s.OperationName == "sagat activity charge");
+        var task = spans.Spans.Single(s => s.OperationName == "sagat.worker.task");
         Assert.Equal("run-1/charge/1", task.GetTagItem("sagat.task.id"));
         Assert.Equal("run-1", task.GetTagItem("sagat.run.id"));
         Assert.Equal("completed", task.GetTagItem("sagat.outcome"));
         Assert.DoesNotContain("lt-secret-lease-token", string.Concat(task.TagObjects.Select(t => t.Value)), StringComparison.Ordinal);
         Assert.DoesNotContain(Token, string.Concat(task.TagObjects.Select(t => t.Value)), StringComparison.Ordinal);
+        Assert.True(meterProvider.ForceFlush());
+        Assert.Contains(exportedMetrics, metric => metric.Name == "sagat.worker.tasks.taken");
+        Assert.Contains(exportedMetrics, metric => metric.Name == "sagat.worker.tasks.completed");
+        Assert.Contains(exportedMetrics, metric => metric.Name == "sagat.worker.activity.duration");
 
         // What the host reports back is the trace context of the run, as the lease gave it.
         Assert.Equal(Leases.Traceparent, fake.State.Of("CompleteStep")[0].Headers.GetValue("traceparent"));
@@ -136,8 +153,8 @@ public sealed class TelemetryTests
         fake.State.Lease(Leases.Lease(l => l.Traceparent = string.Empty));
         await host.StartAsync();
         await Eventually.UntilAsync(() => fake.State.Of("FailStep").Count == 1, "the failure");
-        await Eventually.UntilAsync(() => spans.Spans.Any(s => s.OperationName == "sagat activity charge"), "the span");
-        var task = spans.Spans.Single(s => s.OperationName == "sagat activity charge");
+        await Eventually.UntilAsync(() => spans.Spans.Any(s => s.OperationName == "sagat.worker.task"), "the span");
+        var task = spans.Spans.Single(s => s.OperationName == "sagat.worker.task");
         Assert.Equal(default, task.ParentSpanId);
         Assert.Equal(ActivityStatusCode.Error, task.Status);
         Assert.Equal("NO_FUNDS", task.GetTagItem("error.type"));

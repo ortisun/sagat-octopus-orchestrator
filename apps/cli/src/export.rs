@@ -84,7 +84,7 @@ pub(crate) async fn run(
     for (file, text) in &documents {
         write_new(&dir.join(file), &format!("{text}\n"))?;
     }
-    let text = serde_yaml_ng::to_string(&manifest).map_err(|e| e.to_string())?;
+    let text = serde_saphyr::to_string(&manifest).map_err(|e| e.to_string())?;
     write_new(&dir.join(MANIFEST), &text)?;
     io.say(format!(
         "exported {} workflows of {namespace} to {}",

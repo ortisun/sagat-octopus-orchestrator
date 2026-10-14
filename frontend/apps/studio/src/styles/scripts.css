@@ -80,72 +80,6 @@
   height: var(--space-page-y);
 }
 
-/* ------------------------------------------------------------- the editor */
-.code-editor {
-  margin-bottom: var(--gap);
-}
-
-.code-editor-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-  align-items: center;
-  justify-content: flex-end;
-  margin-bottom: var(--space-3);
-}
-
-.code-editor-bar .btn {
-  min-height: 1.75rem;
-  padding: var(--space-1) var(--space-5);
-  font-size: var(--font-size-mono);
-}
-
-.code-editor-frame {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  overflow: hidden;
-  min-height: 6rem;
-}
-
-.code-editor-frame:focus-within {
-  outline: 3px solid var(--focus);
-  outline-offset: 1px;
-}
-
-.code-editor-loading {
-  display: grid;
-  place-items: center;
-  color: var(--fg-muted);
-  background: var(--bg-subtle);
-}
-
-.monaco-host {
-  width: 100%;
-  height: 100%;
-}
-
-.code-textarea {
-  display: block;
-  width: 100%;
-  min-height: 6rem;
-  padding: var(--space-4) var(--space-5);
-  font-family: var(--mono);
-  font-size: var(--font-size-brand);
-  line-height: var(--line-height-body);
-  tab-size: 2;
-  white-space: pre;
-  overflow: auto;
-  resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--bg);
-  color: var(--fg);
-}
-
-.code-textarea[readonly] {
-  background: var(--bg-subtle);
-}
-
 /* ------------------------------------------------------------- status and panels */
 .save-status p {
   margin: 0 0 var(--space-3);
@@ -270,13 +204,27 @@ pre.diff {
   font-family: var(--mono);
 }
 
+.scripts-table-scroll {
+  /* Contain absolutely positioned accessible captions/labels within the table's own scroller. */
+  position: relative;
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+}
+
+.scripts-table {
+  min-width: 48rem;
+}
+
+.scripts-table tr:last-child > * {
+  border-bottom: 0;
+}
+
 @media (forced-colors: active) {
   .diff-added,
   .diff-removed {
     border-left-color: CanvasText;
-  }
-  .code-editor-frame:focus-within {
-    outline-color: Highlight;
   }
 }
 

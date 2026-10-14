@@ -26,8 +26,10 @@ async fn connections_killed_under_load_lose_no_accepted_event_and_admit_none_twi
             w.namespace.id(),
             slug("billing"),
             sagat_application::events::EndpointSettings {
-                secret_name: sagat_domain::secrets::SecretName::parse("provider-signing")
-                    .expect("secret"),
+                secret_name: Some(
+                    sagat_domain::secrets::SecretName::parse("provider-signing").expect("secret"),
+                ),
+                authentication: sagat_domain::events::WebhookAuthentication::Hmac,
                 default_event_type: None,
                 limits: sagat_domain::events::EndpointLimits::new(
                     sagat_domain::events::DEFAULT_DEDUPE_TTL,
@@ -86,6 +88,8 @@ async fn connections_killed_under_load_lose_no_accepted_event_and_admit_none_twi
                         let request = WebhookRequest {
                             trace: None,
                             signature: Some(&signature),
+                            bearer: None,
+                            certificate_sha256: None,
                             timestamp: Some(&ts),
                             event_id: Some(&id),
                             event_type: Some("invoice.paid"),

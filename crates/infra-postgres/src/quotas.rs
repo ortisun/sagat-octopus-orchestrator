@@ -8,18 +8,21 @@
 //! the first's row once that commits. The lock is released with the transaction, so a crash cannot
 //! leave a scope locked.
 //!
-//! The scopes lock in a fixed order (namespace before tenant), and nothing that holds one waits for
-//! anything but the next in that order, so the locks cannot deadlock with each other.
+//! Resource creation scopes lock namespace before tenant. Activity admission has a separate policy
+//! hierarchy (shared tenant, shared namespace, exact activity), with activities visited in name
+//! order and administrative edits exclusively fencing their changed level.
 
 use crate::pool::BeginSafely;
 use sagat_application::authz::NamespaceDirectory;
 use sagat_application::error::StoreError;
-use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredLimit};
+use sagat_application::quotas::{QuotaLookup, QuotaStore, StoredActivityLimit, StoredLimit};
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::identity::{NamespaceId, TenantId};
-use sagat_domain::quota::{self, QuotaResource};
+use sagat_domain::quota::{self, QuotaKind, QuotaResource};
+use sagat_domain::workflow::ActivityName;
 use sqlx::{PgConnection, PgPool};
 
+use crate::content_usage;
 use crate::execution::PgRunStore;
 use crate::identity::{insert_audit, store_error};
 
@@ -51,6 +54,114 @@ fn judge(resource: QuotaResource, count: i64, limit: u64) -> Result<(), StoreErr
     } else {
         Ok(())
     }
+}
+
+/// Activity policy hierarchy: tenant, namespace, then exact activity. Claims share the policy
+/// fences; changing a default/ceiling exclusively fences only its affected level. These keys are
+/// separate from other resources' admission locks and no policy editor takes a run-row lock.
+async fn activity_policy_lock(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: Option<NamespaceId>,
+    exclusive: bool,
+) -> Result<(), StoreError> {
+    let key = match namespace {
+        Some(namespace) => format!("activity-policy:{tenant}:{namespace}"),
+        None => format!("activity-policy:{tenant}"),
+    };
+    let sql = if exclusive {
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))"
+    };
+    sqlx::query(sql)
+        .bind(key)
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
+async fn activity_policy_change(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: Option<NamespaceId>,
+) -> Result<(), StoreError> {
+    if namespace.is_some() {
+        activity_policy_lock(conn, tenant, None, false).await?;
+    }
+    activity_policy_lock(conn, tenant, namespace, true).await
+}
+
+/// Takes shared policy fences followed by the activity lock for the rest of the transaction.
+/// Callers acquiring several activities must visit them in activity-name order.
+async fn lock_activity(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    activity: &ActivityName,
+) -> Result<(), StoreError> {
+    activity_policy_lock(conn, tenant, None, false).await?;
+    activity_policy_lock(conn, tenant, Some(namespace), false).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!(
+            "activity-quota:{tenant}:{namespace}:{}",
+            activity.as_str()
+        ))
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
+/// Reserves one concurrency place for an activity until `conn` commits or rolls back.
+///
+/// The lock key includes every tenant-owned dimension. Counting only unexpired held leases keeps a
+/// crashed worker from consuming quota beyond its lease, while the run lock still fences reclamation.
+pub(crate) async fn activity_admitted(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    activity: &ActivityName,
+) -> Result<bool, StoreError> {
+    lock_activity(conn, tenant, namespace, activity).await?;
+    let limit: i64 = sqlx::query_scalar(
+        "SELECT least( \
+             coalesce( \
+                 (SELECT max_inflight FROM activity_quota_limits \
+                   WHERE tenant_id = $1 AND namespace_id = $2 AND activity = $3), \
+                 (SELECT max_value FROM quota_limits \
+                   WHERE tenant_id = $1 AND namespace_id = $2 AND resource = 'activity_concurrency'), \
+                 (SELECT max_value FROM quota_limits \
+                   WHERE tenant_id = $1 AND namespace_id IS NULL AND resource = 'activity_concurrency'), \
+                 (SELECT max_value FROM quota_ceilings \
+                   WHERE tenant_id = $1 AND resource = 'activity_concurrency'), $4), \
+             coalesce( \
+                 (SELECT max_value FROM quota_ceilings \
+                   WHERE tenant_id = $1 AND resource = 'activity_concurrency'), $4))::bigint",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(activity.as_str())
+    .bind(i64::try_from(QuotaResource::ActivityConcurrency.default_limit()).unwrap_or(i64::MAX))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    if limit <= 0 {
+        return Ok(false);
+    }
+    let used: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM steps \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND activity = $3 \
+           AND status IN ('LEASED', 'RUNNING') AND lease_expires_at > clock_timestamp()",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(activity.as_str())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    Ok(used < limit)
 }
 
 /// A new run fits in its namespace and in its tenant.
@@ -181,14 +292,9 @@ pub(crate) async fn lock_subscriptions(
     conn: &mut PgConnection,
     tenant: TenantId,
     namespace: NamespaceId,
+    resource: QuotaResource,
 ) -> Result<(), StoreError> {
-    lock(
-        conn,
-        QuotaResource::WebhookSubscriptions,
-        tenant,
-        Some(namespace),
-    )
-    .await
+    lock(conn, resource, tenant, Some(namespace)).await
 }
 
 /// A new subscription fits in its namespace. The caller holds [`lock_subscriptions`].
@@ -196,17 +302,21 @@ pub(crate) async fn ensure_room_for_subscription(
     conn: &mut PgConnection,
     tenant: TenantId,
     namespace: NamespaceId,
+    resource: QuotaResource,
     limit: u64,
 ) -> Result<(), StoreError> {
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM webhook_subscriptions WHERE tenant_id = $1 AND namespace_id = $2",
+        "SELECT count(*) FROM webhook_subscriptions WHERE tenant_id = $1 AND namespace_id = $2 \
+           AND (($3 = 'webhook_subscriptions' AND destination_kind = 'WEBHOOK') \
+             OR ($3 = 'broker_subscriptions' AND destination_kind <> 'WEBHOOK'))",
     )
     .bind(tenant.as_uuid())
     .bind(namespace.as_uuid())
+    .bind(resource.as_str())
     .fetch_one(&mut *conn)
     .await
     .map_err(store_error)?;
-    judge(QuotaResource::WebhookSubscriptions, count, limit)
+    judge(resource, count, limit)
 }
 
 /// Takes the lock of the connectors of one namespace for the rest of the transaction.
@@ -411,6 +521,111 @@ impl NamespaceDirectory for PgRunStore {
 }
 
 impl QuotaStore for PgRunStore {
+    async fn activity_settings(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> Result<Vec<StoredActivityLimit>, StoreError> {
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT q.activity, q.max_inflight, \
+                    (SELECT count(*) FROM steps s \
+                      WHERE s.tenant_id = q.tenant_id AND s.namespace_id = q.namespace_id \
+                        AND s.activity = q.activity AND s.status IN ('LEASED', 'RUNNING') \
+                        AND s.lease_expires_at > clock_timestamp())::bigint AS used \
+             FROM activity_quota_limits q \
+             WHERE q.tenant_id = $1 AND q.namespace_id = $2 ORDER BY q.activity",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.into_iter()
+            .map(|(activity, value, used)| {
+                Ok(StoredActivityLimit {
+                    activity: ActivityName::parse(&activity).map_err(|_| StoreError::Internal {
+                        detail: "a stored activity quota has an invalid name".into(),
+                    })?,
+                    value: u64::try_from(value).map_err(|_| StoreError::Internal {
+                        detail: "a stored activity quota is negative".into(),
+                    })?,
+                    used: u64::try_from(used).map_err(|_| StoreError::Internal {
+                        detail: "stored activity quota usage is negative".into(),
+                    })?,
+                })
+            })
+            .collect()
+    }
+
+    async fn put_activity_setting(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+        value: Option<u64>,
+        changed_by: &str,
+        audit: &AuditRecord,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        // A completed change governs every claim that begins its quota decision afterwards. A
+        // claim already holding this lock may finish before a lower limit takes effect.
+        lock_activity(&mut tx, tenant, namespace, activity).await?;
+        match value {
+            Some(value) => {
+                sqlx::query(
+                    "INSERT INTO activity_quota_limits \
+                     (tenant_id, namespace_id, activity, max_inflight, updated_by) \
+                     VALUES ($1, $2, $3, $4, $5) \
+                     ON CONFLICT (tenant_id, namespace_id, activity) DO UPDATE SET \
+                       max_inflight = excluded.max_inflight, updated_by = excluded.updated_by, \
+                       updated_at = clock_timestamp()",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace.as_uuid())
+                .bind(activity.as_str())
+                .bind(i64::try_from(value).unwrap_or(i64::MAX))
+                .bind(changed_by)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
+            None => {
+                sqlx::query(
+                    "DELETE FROM activity_quota_limits \
+                     WHERE tenant_id = $1 AND namespace_id = $2 AND activity = $3",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace.as_uuid())
+                .bind(activity.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?;
+            }
+        }
+        insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
+
+    async fn activity_usage(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+    ) -> Result<u64, StoreError> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM steps WHERE tenant_id = $1 AND namespace_id = $2 \
+             AND activity = $3 AND status IN ('LEASED', 'RUNNING') \
+             AND lease_expires_at > clock_timestamp()",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(activity.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
+    }
+
     async fn ceilings(&self, tenant: TenantId) -> Result<Vec<StoredLimit>, StoreError> {
         let rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT resource, max_value FROM quota_ceilings WHERE tenant_id = $1 ORDER BY resource",
@@ -466,6 +681,11 @@ impl QuotaStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        if resource == QuotaResource::ActivityConcurrency {
+            activity_policy_change(&mut tx, tenant, None).await?;
+        } else if resource.kind() != QuotaKind::Count {
+            content_usage::policy_change(&mut tx, tenant, None, resource).await?;
+        }
         match value {
             Some(value) => {
                 let value = i64::try_from(value).map_err(|_| StoreError::Internal {
@@ -526,6 +746,11 @@ impl QuotaStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        if resource == QuotaResource::ActivityConcurrency {
+            activity_policy_change(&mut tx, tenant, namespace).await?;
+        } else if resource.kind() != QuotaKind::Count {
+            content_usage::policy_change(&mut tx, tenant, namespace, resource).await?;
+        }
         match value {
             Some(value) => {
                 let value = i64::try_from(value).map_err(|_| StoreError::Internal {
@@ -615,6 +840,22 @@ impl QuotaStore for PgRunStore {
                 .fetch_one(&self.pool)
                 .await
             }
+            QuotaResource::ActivityConcurrency => {
+                // The generic limit applies separately to every activity; its scalar usage is the
+                // busiest activity, while activity-specific views expose their own exact count.
+                sqlx::query_scalar(
+                    "SELECT coalesce(max(held), 0)::bigint FROM ( \
+                         SELECT count(*) AS held FROM steps \
+                          WHERE tenant_id = $1 AND namespace_id = $2 \
+                            AND status IN ('LEASED', 'RUNNING') \
+                            AND lease_expires_at > clock_timestamp() GROUP BY activity \
+                     ) activity_usage",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace)
+                .fetch_one(&self.pool)
+                .await
+            }
             QuotaResource::Secrets => {
                 sqlx::query_scalar(
                     "SELECT count(*) FROM secrets WHERE tenant_id = $1 AND namespace_id = $2",
@@ -634,7 +875,17 @@ impl QuotaStore for PgRunStore {
             QuotaResource::WebhookSubscriptions => {
                 sqlx::query_scalar(
                     "SELECT count(*) FROM webhook_subscriptions \
-                 WHERE tenant_id = $1 AND namespace_id = $2",
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND destination_kind = 'WEBHOOK'",
+                )
+                .bind(tenant.as_uuid())
+                .bind(namespace)
+                .fetch_one(&self.pool)
+                .await
+            }
+            QuotaResource::BrokerSubscriptions => {
+                sqlx::query_scalar(
+                    "SELECT count(*) FROM webhook_subscriptions \
+                     WHERE tenant_id = $1 AND namespace_id = $2 AND destination_kind <> 'WEBHOOK'",
                 )
                 .bind(tenant.as_uuid())
                 .bind(namespace)
@@ -679,6 +930,30 @@ impl QuotaStore for PgRunStore {
                 .bind(tenant.as_uuid())
                 .fetch_one(&self.pool)
                 .await
+            }
+            QuotaResource::TenantContentBytes => sqlx::query_scalar(
+                "SELECT coalesce(content_bytes + content_reserved_bytes, 0)::bigint \
+                     FROM tenant_retained_usage WHERE tenant_id = $1",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map(|value| value.unwrap_or(0)),
+            QuotaResource::TenantLogBytes => sqlx::query_scalar(
+                "SELECT coalesce(log_bytes, 0)::bigint FROM tenant_retained_usage \
+                     WHERE tenant_id = $1",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map(|value| value.unwrap_or(0)),
+            QuotaResource::ApiRequestsPerSecond
+            | QuotaResource::EventsPerSecond
+            | QuotaResource::EventRetentionSeconds
+            | QuotaResource::ScriptRetentionDays => {
+                return Err(StoreError::Internal {
+                    detail: "an admission policy has no scalar usage".into(),
+                });
             }
         }
         .map_err(store_error)?;

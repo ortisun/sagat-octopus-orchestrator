@@ -60,6 +60,15 @@
 - [x] T004-035 Review security, redaction, RBAC, README and runbook; record evidence in `specs/004-events-webhooks-messaging/quickstart.md`. — two independent reviews (D94), `docs/runbooks/events.md`, `README.md`; evidence in `quickstart.md`.
 - [x] T004-036 Update FR/SC traceability and mark proven criteria in `docs/traceability.md`. — `docs/traceability.md`.
 
+## Follow-up: G77 outbound broker producers
+
+- [x] T004-038 [US03] Record the shared durable delivery decision and protocol idempotency boundaries in `docs/adr/ADR-0025-outbound-brokers-share-the-durable-delivery-pipeline.md` and the Feature 004 spec/model.
+- [x] T004-039 [US03] Add the reversible `20261021000000_outbound_brokers` migration and generalize the outbound domain/application/PostgreSQL pipeline without changing webhook behavior.
+- [x] T004-040 [US03] Add managed NATS, Kafka and SQS outbound subscription REST and AsyncAPI contracts with RBAC, tenant scope, quotas and transactional audit.
+- [x] T004-041 [US03] Implement guarded NATS JetStream, Kafka and SQS publishers in `crates/infra-connectors` and route them through the fenced delivery worker.
+- [x] T004-042 [US03] Prove real broker publish, stable idempotency metadata, ambiguous acknowledgement recovery, retry/DLQ/redrive, restart and tenant/policy boundaries with Testcontainers. — `outbound_brokers::*`: five passing PostgreSQL/broker tests, including real JetStream/Kafka/ElasticMQ and deterministic worker fault injection.
+- [x] T004-043 [US03] Update fixed-label telemetry, runbooks, compatibility evidence and the Feature 004 verification report. — `outbound_*` fixed-label metrics, `docs/runbooks/events.md`, ADR-0025 and the G77 section of `tests/performance/reports/events-webhooks-messaging.md`.
+
 ## Dependencies & independent delivery
 
 - This feature requires: 001, 002.
@@ -70,3 +79,8 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## Webhook identity profiles
+
+- [x] T004-037 Implement ADR-0026 HMAC/OIDC/mTLS endpoint profiles with native verified transport identity, bounded OIDC verification, unchanged inbox/replay semantics, contract and real TLS/failure/tenant tests (FR-004-004). — Implemented and independently reviewed; the discovered endpoint-change race is fixed by transactional configuration revalidation. Deterministic race tests pass 3/3, full PostgreSQL ingress 29/29, migration 5/5, public HTTP contract 2/2, real TLS/OIDC 8/8, platform authentication 27/27, configuration 32/32 and scoped Clippy pass.
+- [x] T004-044 Make native TLS deployable through Helm with paired server/client-CA Secrets, optional webhook OIDC profiles, HTTPS probes and a verified, bounded local TLS healthcheck; refuse partial or contradictory chart values (FR-004-004). — Chart rendering and real CA/SNI/failure/deadline tests cover the operator contract.

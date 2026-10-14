@@ -27,13 +27,31 @@ use crate::quotas::ensure_room_for_session;
 /// the rows: when the breaker is open the planner does not enter that branch at all. An outage can
 /// leave very many compensations READY behind an open breaker, and neither the claim of forward
 /// work nor the claim of the compensations of a healthy provider walks them.
+// The activity quota is only a candidate-selection hint: it prevents a capped oldest backlog
+// from hiding other activities behind the global LIMIT. The transaction rechecks the exact quota
+// under its admission locks. With no configured override/ceiling, leave the default to that gate.
+// OFFSET/LIMIT stops after the configured number of active leases; it never aggregates READY rows.
 pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activity) \
+     CROSS JOIN LATERAL ( \
+       SELECT least( \
+         coalesce( \
+           (SELECT max_inflight FROM activity_quota_limits WHERE tenant_id = $1 AND namespace_id = $2 AND activity = a.activity), \
+           (SELECT max_value FROM quota_limits WHERE tenant_id = $1 AND namespace_id = $2 AND resource = 'activity_concurrency'), \
+           (SELECT max_value FROM quota_limits WHERE tenant_id = $1 AND namespace_id IS NULL AND resource = 'activity_concurrency'), \
+           (SELECT max_value FROM quota_ceilings WHERE tenant_id = $1 AND resource = 'activity_concurrency')), \
+         (SELECT max_value FROM quota_ceilings WHERE tenant_id = $1 AND resource = 'activity_concurrency')) AS max_inflight \
+     ) quota \
      CROSS JOIN LATERAL ( \
          (SELECT st.run_id, st.ready_at FROM steps st \
           JOIN runs r ON r.tenant_id = st.tenant_id AND r.id = st.run_id \
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
             AND st.status = 'READY' AND st.kind <> 'COMPENSATION' AND NOT r.paused \
             AND (r.stop_reason IS NULL OR st.kind <> 'FORWARD') \
+            AND ($5 >= 3 OR (r.input_blob_id IS NULL AND NOT EXISTS ( \
+                SELECT 1 FROM blobs blob \
+                WHERE blob.tenant_id = r.tenant_id AND blob.namespace_id = r.namespace_id \
+                  AND blob.run_id = r.id AND blob.purpose = 'STEP_OUTPUT' \
+                  AND blob.state = 'COMMITTED'))) \
           ORDER BY st.ready_at LIMIT $4) \
          UNION ALL \
          (SELECT st.run_id, st.ready_at FROM steps st \
@@ -41,11 +59,22 @@ pub const CLAIMABLE: &str = "SELECT s.run_id FROM unnest($3::text[]) AS a(activi
           WHERE st.tenant_id = $1 AND st.namespace_id = $2 AND st.activity = a.activity \
             AND st.status = 'READY' AND st.kind = 'COMPENSATION' \
             AND NOT r.paused \
+            AND ($5 >= 3 OR (r.input_blob_id IS NULL AND NOT EXISTS ( \
+                SELECT 1 FROM blobs blob \
+                WHERE blob.tenant_id = r.tenant_id AND blob.namespace_id = r.namespace_id \
+                  AND blob.run_id = r.id AND blob.purpose = 'STEP_OUTPUT' \
+                  AND blob.state = 'COMMITTED'))) \
             AND NOT EXISTS (SELECT 1 FROM compensation_breakers b \
                 WHERE b.tenant_id = $1 AND b.namespace_id = $2 AND b.activity = a.activity \
                   AND b.opened_until > clock_timestamp()) \
           ORDER BY st.ready_at LIMIT $4) \
      ) s \
+     WHERE quota.max_inflight IS NULL OR (quota.max_inflight > 0 AND NOT EXISTS ( \
+         SELECT 1 FROM steps active \
+         WHERE active.tenant_id = $1 AND active.namespace_id = $2 AND active.activity = a.activity \
+           AND active.status IN ('LEASED', 'RUNNING') AND active.lease_expires_at > clock_timestamp() \
+         OFFSET greatest(quota.max_inflight - 1, 0) LIMIT 1 \
+     )) \
      ORDER BY s.ready_at, s.run_id LIMIT $4";
 
 fn micros(duration: Duration) -> i64 {
@@ -130,17 +159,18 @@ impl WorkerStore for PgRunStore {
         let stored: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO worker_sessions \
              (id, tenant_id, namespace_id, subject, worker_name, token_hash, activities, languages, \
-              pools, max_inflight, expires_at) \
+              pools, max_inflight, accepted_protocol_minor, expires_at) \
              SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
-                    clock_timestamp() + $11 * interval '1 microsecond' \
+                    $11, clock_timestamp() + $12 * interval '1 microsecond' \
              WHERE EXISTS (SELECT 1 FROM worker_sessions \
                            WHERE tenant_id = $2 AND subject = $4 AND worker_name = $5) \
                 OR (SELECT count(*) FROM worker_sessions \
-                    WHERE tenant_id = $2 AND subject = $4 AND expires_at > clock_timestamp()) < $12 \
+                    WHERE tenant_id = $2 AND subject = $4 AND expires_at > clock_timestamp()) < $13 \
              ON CONFLICT (tenant_id, subject, worker_name) DO UPDATE SET \
                     namespace_id = EXCLUDED.namespace_id, token_hash = EXCLUDED.token_hash, \
                     activities = EXCLUDED.activities, languages = EXCLUDED.languages, \
                     pools = EXCLUDED.pools, max_inflight = EXCLUDED.max_inflight, \
+                    accepted_protocol_minor = EXCLUDED.accepted_protocol_minor, \
                     expires_at = EXCLUDED.expires_at \
              RETURNING id",
         )
@@ -154,6 +184,10 @@ impl WorkerStore for PgRunStore {
         .bind(&session.languages)
         .bind(&session.pools)
         .bind(i32::try_from(session.max_inflight).map_err(|_| corrupt("max inflight"))?)
+        .bind(
+            i32::try_from(session.accepted_protocol_minor)
+                .map_err(|_| corrupt("accepted protocol minor"))?,
+        )
         .bind(micros(session.ttl))
         .bind(i64::from(sagat_application::worker::MAX_SESSIONS_PER_IDENTITY))
         .fetch_optional(&mut *tx)
@@ -176,7 +210,8 @@ impl WorkerStore for PgRunStore {
         let row = sqlx::query(
             "UPDATE worker_sessions SET expires_at = clock_timestamp() + $4 * interval '1 microsecond' \
              WHERE tenant_id = $1 AND id = $2 AND token_hash = $3 AND expires_at > clock_timestamp() \
-             RETURNING id, tenant_id, namespace_id, subject, worker_name, activities, max_inflight, expires_at, \
+             RETURNING id, tenant_id, namespace_id, subject, worker_name, activities, max_inflight, \
+                       accepted_protocol_minor, expires_at, \
                        EXISTS (SELECT 1 FROM worker_drains d \
                                WHERE d.tenant_id = worker_sessions.tenant_id \
                                  AND d.namespace_id = worker_sessions.namespace_id \
@@ -191,6 +226,7 @@ impl WorkerStore for PgRunStore {
         .map_err(store_error)?;
         row.map(|row| {
             let inflight: i32 = col(&row, "max_inflight")?;
+            let protocol_minor: i32 = col(&row, "accepted_protocol_minor")?;
             Ok(SessionRecord {
                 id: col(&row, "id")?,
                 tenant_id: TenantId::new(col::<Uuid>(&row, "tenant_id")?),
@@ -199,6 +235,8 @@ impl WorkerStore for PgRunStore {
                 worker_name: col(&row, "worker_name")?,
                 activities: col(&row, "activities")?,
                 max_inflight: u32::try_from(inflight).map_err(|_| corrupt("max inflight"))?,
+                accepted_protocol_minor: u32::try_from(protocol_minor)
+                    .map_err(|_| corrupt("accepted protocol minor"))?,
                 expires_at: col(&row, "expires_at")?,
                 draining: col(&row, "draining")?,
             })
@@ -212,12 +250,17 @@ impl WorkerStore for PgRunStore {
         namespace: NamespaceId,
         activities: &[String],
         limit: u32,
+        accepted_protocol_minor: u32,
     ) -> Result<Vec<RunId>, StoreError> {
         let rows: Vec<Uuid> = sqlx::query_scalar(CLAIMABLE)
             .bind(tenant.as_uuid())
             .bind(namespace.as_uuid())
             .bind(activities)
             .bind(i64::from(limit))
+            .bind(
+                i32::try_from(accepted_protocol_minor)
+                    .map_err(|_| corrupt("accepted protocol minor"))?,
+            )
             .fetch_all(self.pool())
             .await
             .map_err(store_error)?;
@@ -228,18 +271,5 @@ impl WorkerStore for PgRunStore {
             .filter(|run| seen.insert(*run))
             .map(RunId::new)
             .collect())
-    }
-
-    async fn inflight(&self, tenant: TenantId, id: Uuid) -> Result<u32, StoreError> {
-        let n: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM steps WHERE tenant_id = $1 AND status IN ('LEASED', 'RUNNING') \
-             AND leased_by = $2",
-        )
-        .bind(tenant.as_uuid())
-        .bind(id.to_string())
-        .fetch_one(self.pool())
-        .await
-        .map_err(store_error)?;
-        Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 }

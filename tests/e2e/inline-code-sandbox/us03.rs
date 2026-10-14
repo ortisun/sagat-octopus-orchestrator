@@ -79,7 +79,7 @@ async fn csharp_with_an_allowlisted_nuget_package_is_tested_published_and_run_by
 }
 
 #[tokio::test]
-async fn languages_without_a_runner_are_refused_with_a_stable_reason() {
+async fn dedicated_go_and_java_builders_are_accepted_by_the_registry() {
     let lab = lab().await;
     for language in ["go", "java"] {
         let (status, body) = lab
@@ -89,10 +89,6 @@ async fn languages_without_a_runner_are_refused_with_a_stable_reason() {
                 Some(&json!({"name": format!("later-{language}"), "language": language, "source": "x"})),
             )
             .await;
-        assert_eq!(status, 422, "{language}: {body}");
-        assert_eq!(
-            body["details"]["reason"], "LANGUAGE_NOT_BUILT",
-            "{language}: {body}"
-        );
+        assert_eq!(status, 201, "{language}: {body}");
     }
 }

@@ -70,3 +70,47 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## Completion of remaining requirements
+
+- [x] T006-037 Apply owner-selected MIT licensing, build reproducible distributable artifacts for five SDKs, install each into a clean consumer and publish CI artifacts (FR-006-008). Registry release requires namespace/credentials. Evidence: `scripts/package-sdks.sh` produced 11 distributables plus SHA256SUMS, including Maven source/Javadoc JARs and release notes; five clean consumers passed in both runs; paired same-input artifact hashes matched. All three Maven JARs contain the MIT license, classifier installation byte-matches the candidates, and Java verification passes 205 tests.
+- [x] T006-038 Verify opt-in integrations with each ecosystem's real OpenTelemetry API, in-memory export, safe attributes, propagation and exporter failure isolation (NFR-006-OBS; G126).
+- [x] T006-039 Add protocol 1.3 blob upload/download and explicit descriptor completion to all five SDKs, with common conformance tests and older-server refusal (FR-002-008, FR-006-001).
+
+T006-039 completion evidence: five-language real blob and run-input conformance, EOF/integrity/older-server refusal checks, TypeScript 99 tests, Python 231 plus Ruff/mypy, .NET 410, all Go tests/vet and Maven verify. Five distributable SDK artifacts pass clean-consumer smoke checks; public registry publication remains a separate credential/namespace gate.
+
+## Task streaming completion — ADR-0029
+
+- [x] T006-040 Implement canonical protocol 1.4 finite-credit StreamTasks and exact transactional
+  session admission shared with PollTasks; prove compatibility, token/tenant/binding boundaries,
+  concurrent claim limits, byte budgets, resource cleanup and durable disconnect recovery.
+- [x] T006-041 Implement TypeScript/Python/Go/C#/Java public WorkerHost streaming with common
+  auto/poll/stream behavior, immediate frame dispatch, bounded capacity, partial-delivery survival,
+  shutdown and older-server fallback; regenerate each canonical protocol copy.
+- [x] T006-042 Extend and execute shared five-language conformance and faults for streaming,
+  measure poll/stream idle RPCs, claim attempts, latency, throughput and backpressure; update
+  contracts, runbooks, version matrix and packages. Close G125 only with integrated evidence.
+
+
+T006-040 evidence (2026-10-12): real durable gRPC contract 61/61, durable concurrency 14/14,
+binding revoke/narrow 16/16, drain overlap 1/1, security gRPC/TLS 10/10, API gRPC 15 unit plus
+2 compatibility tests, and streamed-lease engine-runtime restart/reclaim 2/2 pass. Includes actual
+zero-window HTTP/2 reader, body-held caps and watchdog disarming, exact mixed poll/stream session
+limits, stale-snapshot session replacement, blocked-claim cancellation, cumulative byte bounds,
+fresh authority and bearer expiry. Targeted Clippy passes with warnings denied. Independent
+server review is closed. The additional named `stream_telemetry` contract passes (1/1), proving
+metric cleanup, bounded labels, trace preservation and secret-canary absence. A second named
+contract holds both subject stream permits, verifies further admissions are refused, and proves
+heartbeat/completion plus another tenant’s streamed work progress before the held bodies drop (1/1). Integrated five-SDK
+evidence is below; benchmark/package gates remain T006-042.
+
+T006-041 integrated evidence (2026-10-12): 19 common scenarios × five SDKs (95 executions), six end-to-end tests and nine injected-fault tests all pass against the real platform. Protocol probes explicitly cover 1.0–1.4 and a newer offered minor; the new stream scenario preserves partial deliveries through injected receive failure. All five protocol copies are byte-identical to the canonical schema. Final performance/package evidence remains T006-042.
+
+T006-042 measurement evidence (2026-10-12): all 30 release comparison rows passed in 292.59s;
+see `tests/performance/reports/sdk-streaming.md` and its raw capture. Stream claim counts
+are reconstructed snapshot deltas with the documented shutdown-attribution caveat; the harness
+now records explicit before/after snapshots. Signed ready→handler samples retain unknown cross-clock
+offset; RSS covers the sampled runner process tree. No universal speedup or production throughput
+is claimed. Final packages from SDK source commit `517c657` passed all five clean-consumer checks
+(`target/sdk-packages-517c657`, 11 distributables plus checksums). G125 is closed within the
+report’s stated measurement limitations; public registry publication remains separate.

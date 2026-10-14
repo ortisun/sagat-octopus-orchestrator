@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata: {name: sagat-migrate}
+spec:
+  backoffLimit: 2
+  template:
+    metadata: {labels: {app.kubernetes.io/component: migration}}
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: migrate
+          image: sagat-octopus-orchestrator/control-plane:g247-local
+          imagePullPolicy: Never
+          args: [migrate]
+          env:
+            - {name: SAGAT_ENV, value: dev}
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: sagat-owner-db, key: DATABASE_URL}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: {drop: [ALL]}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]

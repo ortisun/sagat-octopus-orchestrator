@@ -2,6 +2,7 @@
 name = "sagat-sandbox-runner"
 description = "Sandbox runner process: takes builds, test runs and script steps from the control plane and runs them in containers. Holds the container engine and no database."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

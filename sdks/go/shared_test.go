@@ -255,7 +255,7 @@ func TestRetryPolicyKeepsDefaultsForZeroFields(t *testing.T) {
 }
 
 func TestVersionConstants(t *testing.T) {
-	if Version != "0.1.0" || ProtocolVersion != "1.2" || Language != "go" {
+	if Version != "0.1.0" || ProtocolVersion != "1.4" || Language != "go" {
 		t.Errorf("%s %s %s", Version, ProtocolVersion, Language)
 	}
 	var file struct {

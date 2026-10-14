@@ -9,7 +9,7 @@ The commands below were run against this repository; what is **not** built is at
 ## 1. What the SDKs are, and are not
 
 A **client** (start, get, list, cancel, operate, signal, publish an event, read the journal, wait for a run),
-a **worker host** (register activities, compensations and reconcilers; poll, heartbeat, cancel, report) and
+a **worker host** (register activities, compensations and reconcilers; receive tasks, heartbeat, cancel, report) and
 **builders** of the workflow document. They keep no journal and make no retry decision of their own about
 your workflow: the platform owns every state and every timer. They retry a *call* only when repeating it is
 safe (§4). External effects stay at-least-once: the SDK hands the activity an idempotency key and a
@@ -22,7 +22,7 @@ Within protocol **1**, either side can go first.
 | You upgrade | What happens | Check |
 |---|---|---|
 | The server, SDKs older | A worker offers the minor it speaks (`1`, `1.1`); the server answers the same and serves it at that minor. The forms of every accepted minor keep working. | The worker's `protocolVersion` (every SDK exposes it after `start`) equals what it offered. |
-| The SDK, server older | The SDK offers its newest (`1.2`); an older server answers its own minor, and the SDK uses only what that minor has (against `1` no step identity in the heartbeat and no `ResolveSecrets`). | `protocolVersion` is the server's minor, not the SDK's. |
+| The SDK, server older | The SDK offers its newest (`1.4`); an older server answers its own minor, and the SDK uses only what that minor has (against `1` no step identity in the heartbeat and no `ResolveSecrets`). | `protocolVersion` is the server's minor, not the SDK's. |
 | Either, to another **major** | The server refuses with `UNSUPPORTED_PROTOCOL` (gRPC `INVALID_ARGUMENT`, trailer `x-sagat-error`); the SDK raises the canonical error and does not retry. | Upgrade or downgrade the SDK to the server's major. |
 
 Order for a fleet: no order is required inside a major. Roll workers one at a time; a worker that stops
@@ -71,7 +71,7 @@ holds a payload, a token or a secret.
 ```sh
 # What the platform counted of the worker protocol (engine admin listener), by method and code:
 curl -s http://<engine-admin>/metrics | grep '^grpc_requests_total'
-# an idle worker makes about two PollTasks a second (the server asks for 500 ms); a few `aborted` heartbeats
+# explicit polling makes about two PollTasks a second (the server asks for 500 ms); a few `aborted` heartbeats
 # are workers whose lease lapsed or whose heartbeat crossed their own completion
 ```
 
@@ -102,14 +102,48 @@ changed (`SAGAT_SDK_BLESS=1`) only after reading what it now says against what t
 2. Its README's runtime matrix says which runtimes were run and which were only declared.
 3. Bump the version (SemVer; `0.x` says so), update its changelog, check that the copies of `worker.proto` and
    `error-catalog.json` it embeds are current (its tests fail when they are not).
-4. Publishing to the language's registry (npm, Go proxy, PyPI, NuGet, Maven Central) is **not automated**: see
-   below.
+4. Follow [SDK packaging and publication](sdk-packaging.md). The packaging and distribution workflow validates clean consumers; public publication requires the confirmed registry identities, credentials and any registry-required signing.
 
-## What is not built
+## Task transport and backpressure
 
-- Publishing pipelines and signing for the five registries, and a changelog per SDK.
-- A licence for the packages: the repository declares none, so the packages say so (`UNLICENSED`).
-- Conformance of a **server restart** (a worker that outlives the engine it registered with): the scenarios
-  fail the transport and the session (`worker-transport-faults`) but do not stop the engine; the unit tests of
-  each SDK cover a session that is gone.
-- Streaming of tasks (the protocol polls); the benchmark measures polling and backpressure only.
+Protocol 1.4 adds `StreamTasks`. All five worker hosts accept `auto` (default), `poll` and `stream`.
+Auto uses streaming when negotiated protocol is at least 1.4 and polling for older servers. Only a
+raw gRPC `UNIMPLEMENTED` permits automatic fallback during the current registration; authorization
+or transport errors do not silently downgrade. Explicit streaming on an older minor is refused.
+Consult each SDK README for its language's option syntax.
+
+Each receive spends finite credit: available local slots, at most 64 tasks, with at most 8 MiB of
+serialized inputs across its frames. Completing a handler does not refill that receive's credit.
+Frames are dispatched immediately. A receive error leaves earlier delivered handlers, heartbeats
+and result reporting alive. Stop cancels receiving promptly and retains the existing handler drain.
+The server window is five seconds; clients cap it at six seconds or a shorter configured request
+timeout. An underfilled normal window gives a positive idle retry hint.
+
+Stream admission is bounded per process (32), tenant (8) and subject within tenant (2). These are
+process-local bounds, not a distributed subscription quota. Short database claims share discovery
+admission with polling and preserve the heartbeat/result reserve. The implementation still scans
+PostgreSQL for work while a stream waits; fewer receive RPCs do not imply fewer database queries.
+
+Monitor `worker_task_streams_open`, `worker_task_streams_refused_total{scope}`,
+`worker_task_streams_closed_total{reason}`, `worker_task_stream_duration_seconds`,
+`worker_task_stream_tasks_total` and `worker_task_stream_claims_total{outcome}` alongside
+`grpc_requests_total{method="StreamTasks",code}`. Initial success only opens a response; body failure
+is counted separately. A stalled response that cannot finish within its receive deadline closes
+its HTTP/2 connection through an independent watchdog. Other RPCs sharing that connection may
+need to reconnect; heartbeat and result retries retain their normal lease and idempotency rules. Do not add tenant, worker or task identifiers as metric labels.
+
+A repeated refusal requires checking the stream caps, ordinary admission budget, current membership,
+worker binding, drain state and session limit. Do not raise limits to mask a leaked or idle client.
+Use the comparative benchmark's recorded hardware and measurements before choosing transport for a
+fleet; no universal throughput gain is promised.
+
+## Distribution and validation boundaries
+
+The repository and SDK packages use MIT, selected by the owner on 2026-10-11. Reproducible packaging,
+clean-consumer smoke checks, release notes and the distribution workflow exist. Public registry
+publication still depends on registry ownership, credentials and required signing configuration.
+
+The common scenarios inject transport/session failures. `e2e_durable_execution::stream_recovery`
+also stops and restarts the real engine runtime against the same PostgreSQL database: a valid
+streamed lease still completes once; an abandoned lease expires and its old result is fenced after
+reclaim. This is an engine-runtime restart test, not an operating-system process crash test.

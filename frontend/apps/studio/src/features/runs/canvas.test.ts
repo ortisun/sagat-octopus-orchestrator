@@ -42,7 +42,7 @@ describe('flowNodes', () => {
   ];
 
   it('draws one card per node with the size the layout reserved, named for assistive technology', () => {
-    expect(CARD_SIZE).toEqual({ width: 184, height: 62 });
+    expect(CARD_SIZE).toEqual({ width: 320, height: 176 });
     const { model, order, positions } = setup(nodes, edges);
     const out = flowNodes({ nodes: model.nodes, order, positions, detail: 'full', selectedId: undefined, flash: NO_FLASH });
     expect(out.map((n) => n.id)).toEqual(['a', 'b', 'c']);
@@ -54,6 +54,7 @@ describe('flowNodes', () => {
   });
 
   it('draws chips in the simplified mode', () => {
+    expect(CHIP_SIZE).toEqual({ width: 248, height: 88 });
     const { model, order } = setup(nodes, edges);
     const positions = layoutGraph(layoutNodes(order, 'simple'), edges, 'LR');
     const out = flowNodes({ nodes: model.nodes, order, positions, detail: 'simple', selectedId: undefined, flash: NO_FLASH });
@@ -80,6 +81,7 @@ describe('flowNodes', () => {
     expect(after[2]?.data.node.status).toBe('RUNNING');
     expect(after[2]?.data.flash).toBe(1);
     expect(before[2]?.data.flash).toBe(0);
+    expect(after.map((value) => value.position)).toEqual(before.map((value) => value.position));
   });
 
   it('marks the selected card, and only that one is replaced when the selection moves', () => {

@@ -9,6 +9,7 @@ import dev.sagatoctopusorchestrator.sdk.TlsOptions;
 import dev.sagatoctopusorchestrator.sdk.TokenProvider;
 import dev.sagatoctopusorchestrator.sdk.Traceparents;
 import io.grpc.Channel;
+import io.grpc.Context;
 import io.grpc.ChannelCredentials;
 import io.grpc.Grpc;
 import io.grpc.InsecureChannelCredentials;
@@ -17,7 +18,16 @@ import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.MetadataUtils;
+import io.grpc.stub.StreamObserver;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Iterator;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
@@ -29,6 +39,7 @@ final class WorkerRpc implements AutoCloseable {
     private final WorkerConfig config;
     private final ManagedChannel channel;
     private final WorkerServiceGrpc.WorkerServiceBlockingStub stub;
+    private final WorkerServiceGrpc.WorkerServiceStub asyncStub;
 
     WorkerRpc(WorkerConfig config) {
         this.config = config;
@@ -64,6 +75,7 @@ final class WorkerRpc implements AutoCloseable {
         }
         this.channel = builder.build();
         this.stub = WorkerServiceGrpc.newBlockingStub(channel);
+        this.asyncStub = WorkerServiceGrpc.newStub(channel);
     }
 
     private volatile boolean closed;
@@ -115,6 +127,46 @@ final class WorkerRpc implements AutoCloseable {
         return call("PollTasks", null, s -> s.pollTasks(request));
     }
 
+    record TaskStream(Iterator<Worker.PollTasksResponse> frames, Context.CancellableContext context) implements AutoCloseable {
+        @Override public void close() { context.cancel(null); }
+    }
+
+    TaskStream streamTasks(Worker.PollTasksRequest request) {
+        Metadata metadata = new Metadata();
+        metadata.put(AUTHORIZATION, "Bearer " + TokenProvider.resolve(config.tokenProvider()));
+        long timeout = Math.min(config.timeout().toMillis(), 6_000L);
+        Context.CancellableContext context = Context.current().withCancellation();
+        try {
+            Iterator<Worker.PollTasksResponse> source = context.call(() ->
+                    stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
+                            .withDeadlineAfter(timeout, TimeUnit.MILLISECONDS)
+                            .streamTasks(request));
+            Iterator<Worker.PollTasksResponse> frames = new Iterator<>() {
+                @Override public boolean hasNext() {
+                    try { return source.hasNext(); } catch (StatusRuntimeException e) { throw streamError(e); }
+                }
+                @Override public Worker.PollTasksResponse next() {
+                    try { return source.next(); } catch (StatusRuntimeException e) { throw streamError(e); }
+                }
+            };
+            return new TaskStream(frames, context);
+        } catch (StatusRuntimeException e) {
+            context.cancel(e);
+            if (e.getStatus().getCode() == io.grpc.Status.Code.UNIMPLEMENTED) throw new StreamTasksUnimplemented();
+            throw GrpcErrors.of("StreamTasks", e);
+        } catch (Exception e) {
+            context.cancel(e);
+            throw SagatException.of(ErrorCode.INTERNAL, "the task stream could not be opened");
+        }
+    }
+
+    private static RuntimeException streamError(StatusRuntimeException error) {
+        if (error.getStatus().getCode() == io.grpc.Status.Code.UNIMPLEMENTED) return new StreamTasksUnimplemented();
+        return GrpcErrors.of("StreamTasks", error);
+    }
+
+    static final class StreamTasksUnimplemented extends RuntimeException {}
+
     Worker.HeartbeatResponse heartbeat(Worker.HeartbeatRequest request, String traceparent) {
         return call("Heartbeat", traceparent, s -> s.heartbeat(request));
     }
@@ -129,5 +181,99 @@ final class WorkerRpc implements AutoCloseable {
 
     Worker.ResolveSecretsResponse resolveSecrets(Worker.ResolveSecretsRequest request, String traceparent) {
         return call("ResolveSecrets", traceparent, s -> s.resolveSecrets(request));
+    }
+
+    record WrittenBlob(Worker.WriteBlobResponse response, long size, String sha256) {}
+
+    WrittenBlob writeBlob(Worker.WriteBlobHeader header, InputStream source, String traceparent, CancellationSignal cancellation) {
+        Metadata metadata = metadata(traceparent);
+        var prepared = asyncStub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
+                .withDeadlineAfter(config.timeout().toMillis(), TimeUnit.MILLISECONDS);
+        AtomicReference<Worker.WriteBlobResponse> response = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch done = new CountDownLatch(1);
+        StreamObserver<Worker.WriteBlobRequest> requests = prepared.writeBlob(new StreamObserver<>() {
+            @Override public void onNext(Worker.WriteBlobResponse value) { response.set(value); }
+            @Override public void onError(Throwable error) { failure.set(error); done.countDown(); }
+            @Override public void onCompleted() { done.countDown(); }
+        });
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+        long size = 0;
+        try {
+            requests.onNext(Worker.WriteBlobRequest.newBuilder().setHeader(header).build());
+            byte[] buffer = new byte[256 * 1024];
+            while (true) {
+                if (cancellation.isCancelled()) {
+                    throw SagatException.of(ErrorCode.CANCELLED, "the blob upload was cancelled");
+                }
+                int read = source.read(buffer);
+                if (read < 0) {
+                    break;
+                }
+                if (read == 0) {
+                    throw SagatException.of(ErrorCode.PROTOCOL, "the blob source made no progress");
+                }
+                size += read;
+                digest.update(buffer, 0, read);
+                requests.onNext(Worker.WriteBlobRequest.newBuilder()
+                        .setChunk(com.google.protobuf.ByteString.copyFrom(buffer, 0, read)).build());
+            }
+            requests.onCompleted();
+            if (!done.await(config.timeout().toMillis() + 1000, TimeUnit.MILLISECONDS)) {
+                throw SagatException.of(ErrorCode.TRANSPORT, "no answer from the worker service");
+            }
+        } catch (IOException e) {
+            requests.onError(e);
+            throw SagatException.of(ErrorCode.PROTOCOL, "the blob source failed before EOF");
+        } catch (InterruptedException e) {
+            requests.onError(e);
+            Thread.currentThread().interrupt();
+            throw SagatException.of(ErrorCode.CANCELLED, "the blob upload was cancelled");
+        } catch (RuntimeException e) {
+            requests.onError(e);
+            throw e;
+        }
+        if (failure.get() != null) {
+            throw GrpcErrors.of("WriteBlob", io.grpc.Status.fromThrowable(failure.get()).asRuntimeException());
+        }
+        if (response.get() == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "the blob service returned no descriptor");
+        }
+        return new WrittenBlob(response.get(), size, HexFormat.of().formatHex(digest.digest()));
+    }
+
+    record ReadBlob(Iterator<Worker.ReadBlobResponse> parts, Context.CancellableContext context) {
+        void cancel() { context.cancel(null); }
+    }
+
+    ReadBlob readBlob(Worker.ReadBlobRequest request, String traceparent) {
+        Context.CancellableContext context = Context.current().withCancellation();
+        try {
+            Iterator<Worker.ReadBlobResponse> parts = context.call(() ->
+                    stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata(traceparent)))
+                            .withDeadlineAfter(config.timeout().toMillis(), TimeUnit.MILLISECONDS)
+                            .readBlob(request));
+            return new ReadBlob(parts, context);
+        } catch (StatusRuntimeException e) {
+            context.cancel(e);
+            throw GrpcErrors.of("ReadBlob", e);
+        } catch (Exception e) {
+            context.cancel(e);
+            throw SagatException.of(ErrorCode.INTERNAL, "the blob stream could not be opened");
+        }
+    }
+
+    private Metadata metadata(String traceparent) {
+        Metadata metadata = new Metadata();
+        metadata.put(AUTHORIZATION, "Bearer " + TokenProvider.resolve(config.tokenProvider()));
+        if (traceparent != null && !traceparent.isEmpty()) {
+            metadata.put(TRACEPARENT, Traceparents.check(traceparent));
+        }
+        return metadata;
     }
 }

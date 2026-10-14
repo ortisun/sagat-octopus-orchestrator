@@ -95,6 +95,8 @@ class SyncSagatClient:
 
     resolve_workflow = _blocking(SagatClient.resolve_workflow)
     start = _blocking(SagatClient.start)
+    upload_run_input = _blocking(SagatClient.upload_run_input)
+    start_with_blob = _blocking(SagatClient.start_with_blob)
     get = _blocking(SagatClient.get)
     list = _blocking(SagatClient.list)
     operate = _blocking(SagatClient.operate)

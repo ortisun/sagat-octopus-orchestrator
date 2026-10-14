@@ -90,11 +90,12 @@ export function VersionView({ api, scriptId, number, onBack }: { api: ScriptsApi
               </>
             ) : null}
           </dl>
-          {version.failure ? (
+          {(version.failureCode || version.failure) ? (
             <Banner tone="error" title="The build failed.">
-              <code>{clipLabel(version.failure, 300)}</code> {buildFailureHelp(version.failure)}
+              <code>{clipLabel(version.failureCode || version.failure || '', 300)}</code> {buildFailureHelp(version.failureCode ?? version.failure)}
             </Banner>
           ) : null}
+          {version.buildLogTruncated ? <p role="status">Build diagnostics were truncated by the retained-log limit.</p> : null}
           {version.buildLog ? (
             <>
               <h3>Build log</h3>

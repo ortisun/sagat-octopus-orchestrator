@@ -79,8 +79,8 @@
   --topbar-height: 3.5rem;
   --control-height: 2.25rem;
   --runs-master-width: 24.5rem;
-  --graph-node-width: 11.5rem;
-  --graph-node-height: 3.875rem;
+  --graph-node-width: 20rem;
+  --graph-node-height: 11rem;
   --graph-grid-size: 1.125rem;
   --graph-dot-size: 1px;
   --graph-edge-width: 1.5px;
@@ -225,6 +225,13 @@ textarea {
   color: inherit;
 }
 
+input,
+select,
+textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+
 button {
   cursor: pointer;
 }
@@ -337,6 +344,7 @@ kbd {
 .field {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: var(--space-2);
   margin-bottom: var(--gap);
 }
@@ -360,6 +368,7 @@ kbd {
 .field input,
 .field select,
 .field textarea {
+  width: 100%;
   min-height: var(--control-height);
   padding: var(--space-3) var(--space-5);
   border-radius: var(--radius-control);
@@ -447,7 +456,9 @@ dialog {
   color: var(--fg);
   padding: var(--space-10);
   max-width: min(40rem, 94vw);
+  max-height: calc(100dvh - (var(--space-8) * 2));
   width: 100%;
+  overflow: auto;
 }
 
 dialog::backdrop {
@@ -456,6 +467,7 @@ dialog::backdrop {
 
 .dialog-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-4);
   justify-content: flex-end;
   margin-top: var(--gap);
@@ -700,7 +712,8 @@ dialog::backdrop {
   text-align: center;
 }
 
-.signin {
+.signin,
+.route-error {
   position: relative;
   max-width: 35rem;
   margin: 10vh auto;
@@ -716,4 +729,15 @@ dialog::backdrop {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: var(--accent);
+}
+
+@media (forced-colors: active) {
+  .shell-mark,
+  .btn[aria-pressed='true'],
+  [role='tab'][aria-selected='true'] {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+    color: HighlightText;
+  }
 }

@@ -717,6 +717,7 @@ where
             Admission::Reused => Err(AppError::Conflict(
                 crate::error::ConflictKind::EventIdReused,
             )),
+            Admission::RateLimited { retry_after_secs } => Err(AppError::Busy { retry_after_secs }),
             Admission::Backlogged => Err(AppError::Busy {
                 retry_after_secs: crate::events::BACKLOG_RETRY_AFTER_SECS,
             }),

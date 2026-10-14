@@ -8,7 +8,7 @@ fn contract() -> Value {
         env!("CARGO_MANIFEST_DIR"),
         "/../specs/001-platform-foundation/contracts/openapi.yaml"
     );
-    serde_yaml_ng::from_str(&std::fs::read_to_string(path).expect("OpenAPI")).expect("valid YAML")
+    serde_saphyr::from_str(&std::fs::read_to_string(path).expect("OpenAPI")).expect("valid YAML")
 }
 
 fn request_schema(document: &Value) -> Value {

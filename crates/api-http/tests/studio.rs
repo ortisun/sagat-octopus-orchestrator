@@ -66,6 +66,7 @@ async fn serve_studio_with(root: &Path, oidc: Option<StudioOidc>, limits: Studio
     let app = studio_router(StudioConfig {
         dir: root.to_path_buf(),
         oidc,
+        trace_url: None,
         limits,
     })
     .expect("a directory with an index.html");
@@ -230,6 +231,85 @@ async fn a_route_of_the_app_gets_the_page_and_a_missing_file_gets_a_404_not_the_
 }
 
 #[tokio::test]
+async fn a_rebuild_replaces_the_page_without_restarting_the_server() {
+    let (_dir, root) = site();
+    let base = serve_studio(&root, None).await;
+    let rebuilt =
+        "<!doctype html><title>Rebuilt</title><script src=/studio/assets/app.new.js></script>";
+    std::fs::write(root.join("index.html"), rebuilt).expect("replace index");
+
+    for route in ["", "runs/abc", "index.html"] {
+        let url = format!("{base}/studio/{route}");
+        let response = client().get(&url).send().await.expect("get rebuilt page");
+        assert_eq!(response.status(), 200, "{route}");
+        assert_eq!(header(&response, "cache-control"), "no-store", "{route}");
+        assert_eq!(
+            header(&response, "content-length"),
+            rebuilt.len().to_string(),
+            "{route}"
+        );
+        assert_eq!(response.text().await.expect("body"), rebuilt, "{route}");
+
+        let head = client().head(&url).send().await.expect("head rebuilt page");
+        assert_eq!(head.status(), 200, "HEAD {route}");
+        assert_eq!(
+            header(&head, "content-length"),
+            rebuilt.len().to_string(),
+            "HEAD {route}"
+        );
+        assert_eq!(
+            head.bytes().await.expect("no body").len(),
+            0,
+            "HEAD {route}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_index_that_becomes_missing_oversized_or_unsafe_is_unavailable_without_a_stale_page() {
+    let (dir, root) = site();
+    let base = serve_studio(&root, None).await;
+    let index = root.join("index.html");
+
+    std::fs::remove_file(&index).expect("remove index");
+    for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+        let response = client()
+            .request(method.clone(), format!("{base}/studio/"))
+            .send()
+            .await
+            .expect("missing index");
+        assert_eq!(response.status(), 503, "{method}");
+        assert_eq!(header(&response, "retry-after"), "1", "{method}");
+        assert_eq!(header(&response, "cache-control"), "no-store", "{method}");
+        assert!(!response.text().await.expect("body").contains("Studio"));
+    }
+
+    std::fs::write(&index, vec![b'x'; 64 * 1024 + 1]).expect("oversized index");
+    let oversized = client()
+        .get(format!("{base}/studio/runs/abc"))
+        .send()
+        .await
+        .expect("oversized index");
+    assert_eq!(oversized.status(), 503);
+    assert_eq!(header(&oversized, "retry-after"), "1");
+
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&index).expect("remove oversized index");
+        std::os::unix::fs::symlink(dir.path().join("secret.txt"), &index)
+            .expect("unsafe index symlink");
+        let unsafe_index = client()
+            .get(format!("{base}/studio/index.html"))
+            .send()
+            .await
+            .expect("unsafe index");
+        assert_eq!(unsafe_index.status(), 503);
+        assert_eq!(header(&unsafe_index, "retry-after"), "1");
+        assert!(!unsafe_index.text().await.expect("body").contains("outside"));
+    }
+}
+
+#[tokio::test]
 async fn nothing_outside_the_directory_nor_any_hidden_file_can_be_read() {
     let (_dir, root) = site();
     let base = serve_studio(&root, None).await;
@@ -350,17 +430,87 @@ async fn the_config_says_where_to_sign_in_and_allows_only_that_origin_to_be_call
 }
 
 #[tokio::test]
+async fn the_config_publishes_an_optional_safe_trace_url_template() {
+    let (_dir, root) = site();
+    let template = "https://traces.example.test/explore?trace={traceId}";
+    let app = studio_router(StudioConfig {
+        dir: root,
+        oidc: None,
+        trace_url: Some(template.into()),
+        limits: StudioLimits::default(),
+    })
+    .expect("safe trace URL");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(serve(
+        listener,
+        app,
+        ServerConfig::default(),
+        std::future::pending(),
+    ));
+
+    let response = client()
+        .get(format!("http://{addr}/studio/config.json"))
+        .send()
+        .await
+        .expect("get");
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.bytes().await.expect("body")).expect("json");
+    assert_eq!(
+        body,
+        serde_json::json!({"oidc": null, "traceUrl": template})
+    );
+}
+
+#[test]
+fn unsafe_trace_url_templates_are_refused_before_the_studio_is_served() {
+    let (_dir, root) = site();
+    for template in [
+        "http://traces.example.test/{traceId}",
+        "https://user:password@traces.example.test/{traceId}",
+        "/traces/{traceId}",
+        "javascript:alert({traceId})",
+        "https://traces.example.test/no-placeholder",
+        "https://traces.example.test/{traceId}/{traceId}",
+    ] {
+        let result = studio_router(StudioConfig {
+            dir: root.clone(),
+            oidc: None,
+            trace_url: Some(template.into()),
+            limits: StudioLimits::default(),
+        });
+        assert!(result.is_err(), "accepted {template}");
+    }
+
+    for template in [
+        "http://localhost:16686/trace/{traceId}",
+        "http://127.1.2.3:16686/trace/{traceId}",
+        "http://[::1]:16686/trace/{traceId}",
+    ] {
+        let result = studio_router(StudioConfig {
+            dir: root.clone(),
+            oidc: None,
+            trace_url: Some(template.into()),
+            limits: StudioLimits::default(),
+        });
+        assert!(result.is_ok(), "refused {template}");
+    }
+}
+
+#[tokio::test]
 async fn a_directory_without_an_index_is_refused_at_start_up() {
     let dir = tempdir::Dir::new();
     let refused = studio_router(StudioConfig {
         dir: dir.path().to_path_buf(),
         oidc: None,
+        trace_url: None,
         limits: StudioLimits::default(),
     });
     assert!(refused.is_err());
     let missing = studio_router(StudioConfig {
         dir: dir.path().join("nope"),
         oidc: None,
+        trace_url: None,
         limits: StudioLimits::default(),
     });
     assert!(missing.is_err());
@@ -476,7 +626,7 @@ async fn clients_that_read_nothing_cannot_hold_more_than_the_transfers_the_serve
     assert_eq!(refused.status(), 503);
     assert_eq!(header(&refused, "retry-after"), "1");
     assert_eq!(header(&refused, "cache-control"), "no-store");
-    // The page and the config are small and held in memory: they are not turned away.
+    // The bounded page read is independent of asset transfers: it is not turned away.
     let page = client()
         .get(format!("{base}/studio/"))
         .send()

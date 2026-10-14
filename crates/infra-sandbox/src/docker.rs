@@ -29,7 +29,7 @@ use sagat_application::sandbox::{
     BuildFailure, BuildRequest, Built, HostCalls, HttpRequest, MAX_RESULT_BYTES, Refusal,
     RunOutcome, RunRequest, Sandbox,
 };
-use sagat_domain::scripts::{Failure, Language, Limits, Policy, redact};
+use sagat_domain::scripts::{Failure, Language, Limits, Policy, Source, redact};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
@@ -46,6 +46,10 @@ pub struct Images {
     pub python: String,
     pub csharp_build: String,
     pub csharp_runtime: String,
+    pub go_build: String,
+    pub go_runtime: String,
+    pub java_build: String,
+    pub java_runtime: String,
 }
 
 impl Default for Images {
@@ -55,6 +59,46 @@ impl Default for Images {
             python: "python:3.13-alpine".to_owned(),
             csharp_build: "sagat/dotnet-builder:10.0.401".to_owned(),
             csharp_runtime: "sagat/dotnet-runtime:10.0.12".to_owned(),
+            go_build: "sagat/go-builder:1.25.3".to_owned(),
+            go_runtime: "sagat/go-runtime:1.25.3".to_owned(),
+            java_build: "sagat/java-builder:17.0.16".to_owned(),
+            java_runtime: "sagat/java-runtime:17.0.16".to_owned(),
+        }
+    }
+}
+
+/// Native Go target of one homogeneous runner deployment. The worker claim protocol currently
+/// names only a language, so two targets must not advertise Go in the same eligible pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoTarget {
+    LinuxAmd64,
+    LinuxArm64,
+}
+
+impl GoTarget {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LinuxAmd64 => "linux-amd64",
+            Self::LinuxArm64 => "linux-arm64",
+        }
+    }
+}
+
+impl std::fmt::Display for GoTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for GoTarget {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "linux-amd64" => Ok(Self::LinuxAmd64),
+            "linux-arm64" => Ok(Self::LinuxArm64),
+            _ => Err("must be linux-amd64 or linux-arm64"),
         }
     }
 }
@@ -122,6 +166,7 @@ pub struct DockerSandbox {
     images: Images,
     pulled: Mutex<HashSet<String>>,
     owner: String,
+    go_target: Option<GoTarget>,
 }
 
 impl std::fmt::Debug for DockerSandbox {
@@ -201,7 +246,74 @@ impl DockerSandbox {
             images,
             pulled: Mutex::new(HashSet::new()),
             owner: uuid::Uuid::now_v7().to_string(),
+            go_target: None,
         })
+    }
+
+    /// Connects a runner configured for exactly one native Go target. Callers must advertise Go
+    /// only after [`Self::probe_go`] succeeds through the same build/runtime path.
+    pub fn connect_with_go_target(
+        images: Images,
+        target: GoTarget,
+    ) -> Result<Self, bollard::errors::Error> {
+        let mut sandbox = Self::connect(images)?;
+        sandbox.go_target = Some(target);
+        Ok(sandbox)
+    }
+
+    /// Compiles and executes a bundled trusted source through the configured production images,
+    /// protocol, limits and loader. A runner must not advertise Go if this capability probe fails.
+    pub async fn probe_go(&self) -> Result<(), BuildFailure> {
+        if self.go_target.is_none() {
+            return Err(BuildFailure::Unsupported);
+        }
+        let policy = Policy::default();
+        let built = <Self as Sandbox>::build(
+            self,
+            BuildRequest {
+                language: Language::Go,
+                source: Source::parse(
+                    r#"package main
+import "sagat.invalid/inline/octopus"
+func Run(input any, client *octopus.Client) (any, error) {
+    return map[string]any{"ok": true, "idempotencyKey": client.IdempotencyKey}, nil
+}"#,
+                )
+                .map_err(|_| BuildFailure::Unavailable)?,
+                lockfile: None,
+                policy,
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await?;
+        let outcome = <Self as Sandbox>::run(
+            self,
+            RunRequest {
+                language: Language::Go,
+                artifact: built.artifact,
+                input: br#"{"probe":true}"#.to_vec(),
+                input_schema: None,
+                output_schema: None,
+                policy,
+                secrets_to_hide: Vec::new(),
+                idempotency_key: Some("sagat-go-capability-probe".to_owned()),
+            },
+            &NoHost,
+        )
+        .await;
+        match outcome.result {
+            Ok(bytes)
+                if serde_json::from_slice::<Value>(&bytes).is_ok_and(|value| {
+                    value.get("ok") == Some(&Value::Bool(true))
+                        && value.get("idempotencyKey").and_then(Value::as_str)
+                            == Some("sagat-go-capability-probe")
+                }) =>
+            {
+                Ok(())
+            }
+            _ => Err(BuildFailure::Unavailable),
+        }
     }
 
     fn build_image_of(&self, language: Language) -> Option<&str> {
@@ -209,6 +321,8 @@ impl DockerSandbox {
             Language::TypeScript => Some(&self.images.typescript),
             Language::Python => Some(&self.images.python),
             Language::CSharp => Some(&self.images.csharp_build),
+            Language::Go if self.go_target.is_some() => Some(&self.images.go_build),
+            Language::Java => Some(&self.images.java_build),
             _ => None,
         }
     }
@@ -218,6 +332,8 @@ impl DockerSandbox {
             Language::TypeScript => Some(&self.images.typescript),
             Language::Python => Some(&self.images.python),
             Language::CSharp => Some(&self.images.csharp_runtime),
+            Language::Go if self.go_target.is_some() => Some(&self.images.go_runtime),
+            Language::Java => Some(&self.images.java_runtime),
             _ => None,
         }
     }
@@ -837,6 +953,7 @@ const BUILD_PY: &str = include_str!("../shims/build.py");
 /// runs under: two builds of the same code under other limits are two artifacts.
 fn artifact_json(
     language: Language,
+    target: Option<&str>,
     policy: &Policy,
     contract: (Option<&[u8]>, Option<&[u8]>),
     entry: &str,
@@ -847,7 +964,25 @@ fn artifact_json(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let value = if language == Language::CSharp {
+    let value = if matches!(language, Language::Go | Language::Java) {
+        let (target, entry, encoding) = match language {
+            Language::Go => (target.unwrap_or_default(), "script.elf", "base64+gzip"),
+            Language::Java => ("jvm-17", "Script.class", "base64"),
+            _ => unreachable!(),
+        };
+        json!({
+            "v": 3,
+            "language": language.as_str(),
+            "target": target,
+            "abi": "sagat-inline-v1",
+            "policy": policy.canonical(),
+            "inputSchema": schema(contract.0),
+            "outputSchema": schema(contract.1),
+            "entry": entry,
+            "encoding": encoding,
+            "files": files,
+        })
+    } else if language == Language::CSharp {
         json!({
             "v": 2,
             "language": language.as_str(),
@@ -902,6 +1037,14 @@ fn parse_artifact(
 }
 
 impl Sandbox for DockerSandbox {
+    async fn probe_language(&self, language: Language) -> Result<(), BuildFailure> {
+        if language == Language::Go {
+            self.probe_go().await
+        } else {
+            Ok(())
+        }
+    }
+
     async fn toolchain(&self, language: Language) -> Result<String, BuildFailure> {
         let build_image = self
             .build_image_of(language)
@@ -910,7 +1053,7 @@ impl Sandbox for DockerSandbox {
             .ensure_image(build_image)
             .await
             .map_err(|()| BuildFailure::Unavailable)?;
-        if language == Language::CSharp {
+        if matches!(language, Language::CSharp | Language::Go | Language::Java) {
             let runtime_image = self
                 .runtime_image_of(language)
                 .ok_or(BuildFailure::Unsupported)?;
@@ -918,8 +1061,18 @@ impl Sandbox for DockerSandbox {
                 .ensure_image(runtime_image)
                 .await
                 .map_err(|()| BuildFailure::Unavailable)?;
+            let protocol = if language == Language::CSharp {
+                "artifact-v2".to_owned()
+            } else if language == Language::Java {
+                "artifact-v3;target=jvm-17;abi=sagat-inline-v1;compiler=javac-17.0.16+8;json=jackson-2.17.2".to_owned()
+            } else {
+                format!(
+                    "artifact-v3;target={};abi=sagat-inline-v1;compiler=go1.25.3;compression=gzip-canonical-v1",
+                    self.go_target.ok_or(BuildFailure::Unsupported)?.as_str()
+                )
+            };
             Ok(format!(
-                "build={build};runtime={runtime};protocol=artifact-v2"
+                "build={build};runtime={runtime};protocol={protocol}"
             ))
         } else {
             Ok(format!("{build};shim={}", shim_version()))
@@ -945,7 +1098,14 @@ impl Sandbox for DockerSandbox {
             ],
             Language::Python => vec!["python", "-I", "-B", "-c", BUILD_PY],
             Language::CSharp => vec!["dotnet", "/opt/sagat/build/Sagat.DotnetBuild.dll"],
-            _ => return Err(BuildFailure::Unsupported),
+            Language::Go => vec!["/opt/sagat/buildhost"],
+            Language::Java => vec![
+                "java",
+                "-XX:+DisableAttachMechanism",
+                "-cp",
+                "/opt/sagat/host:/opt/sagat/lib/*",
+                "sagat.host.BuildHost",
+            ],
         };
         let job = Job {
             image,
@@ -958,7 +1118,7 @@ impl Sandbox for DockerSandbox {
             // Reading a script takes a fraction of what running it may: a build gets at most the
             // default limits, whatever the policy of the script allows it later.
             limits: request.policy.within(&Policy::default()).limits,
-            max_line: if language == Language::CSharp {
+            max_line: if matches!(language, Language::CSharp | Language::Go | Language::Java) {
                 MAX_BUILD_LINE
             } else {
                 MAX_LINE
@@ -979,6 +1139,7 @@ impl Sandbox for DockerSandbox {
             Some(Message::Built { entry, files }) => {
                 let artifact = artifact_json(
                     language,
+                    self.go_target.map(GoTarget::as_str),
                     &request.policy,
                     (
                         request.input_schema.as_deref(),
@@ -1006,9 +1167,28 @@ impl Sandbox for DockerSandbox {
                         ]
                     })
                     .collect();
-                let mut components = vec![json!({
+                let properties: Vec<Value> = match language {
+                    Language::Go => vec![
+                        json!({"name":"sagat:artifact", "value":"v3"}),
+                        json!({"name":"sagat:abi", "value":"sagat-inline-v1"}),
+                        json!({"name":"sagat:target", "value":self.go_target.map_or("", GoTarget::as_str)}),
+                        json!({"name":"sagat:encoding", "value":"base64+gzip"}),
+                    ],
+                    Language::Java => vec![
+                        json!({"name":"sagat:artifact", "value":"v3"}),
+                        json!({"name":"sagat:abi", "value":"sagat-inline-v1"}),
+                        json!({"name":"sagat:target", "value":"jvm-17"}),
+                        json!({"name":"sagat:encoding", "value":"base64"}),
+                    ],
+                    _ => Vec::new(),
+                };
+                let mut platform = json!({
                     "type": "platform", "name": language.as_str(), "version": toolchain,
-                })];
+                });
+                if !properties.is_empty() {
+                    platform["properties"] = Value::Array(properties);
+                }
+                let mut components = vec![platform];
                 components.extend(package_components);
                 let sbom = serde_json::to_vec(&json!({
                     "bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
@@ -1062,6 +1242,15 @@ impl Sandbox for DockerSandbox {
                 "the artifact is not one this runner can load".to_owned(),
             );
         };
+        if language == Language::Go
+            && schema::bundle::target(&request.artifact).as_deref()
+                != self.go_target.map(GoTarget::as_str)
+        {
+            return failed(
+                Failure::Unavailable,
+                "the signed Go target does not match this native runner".to_owned(),
+            );
+        }
         let Ok(input) = serde_json::from_slice::<Value>(&request.input) else {
             return failed(Failure::SchemaViolation, "the input is not JSON".to_owned());
         };
@@ -1084,12 +1273,15 @@ impl Sandbox for DockerSandbox {
             ],
             Language::Python => vec!["python", "-I", "-B", "-c", RUNTIME_PY],
             Language::CSharp => vec!["dotnet", "/opt/sagat/runtime/Sagat.DotnetRuntime.dll"],
-            _ => {
-                return failed(
-                    Failure::Unavailable,
-                    "no runner for this language".to_owned(),
-                );
-            }
+            Language::Go => vec!["python", "-I", "-B", "/opt/sagat/runtime.py"],
+            Language::Java => vec![
+                "java",
+                "-XX:+DisableAttachMechanism",
+                "-XX:MaxRAMPercentage=75",
+                "-cp",
+                "/opt/sagat/host:/opt/sagat/api/sagat-inline-api.jar:/opt/sagat/lib/*",
+                "sagat.host.RuntimeHost",
+            ],
         };
         if self.ensure_image(&image).await.is_err() {
             return failed(
@@ -1100,8 +1292,32 @@ impl Sandbox for DockerSandbox {
         let job = Job {
             image,
             command: command.into_iter().map(str::to_owned).collect(),
-            first_message: if language == Language::CSharp {
-                protocol::run_binary_message(&input, &files, request.idempotency_key.as_deref())
+            first_message: if matches!(language, Language::CSharp | Language::Java) {
+                if language == Language::Java {
+                    protocol::run_v3_message(
+                        &input,
+                        &files,
+                        request.idempotency_key.as_deref(),
+                        "base64",
+                        "jvm-17",
+                    )
+                } else {
+                    protocol::run_binary_message(&input, &files, request.idempotency_key.as_deref())
+                }
+            } else if language == Language::Go {
+                let Some(target) = self.go_target.map(GoTarget::as_str) else {
+                    return failed(
+                        Failure::Unavailable,
+                        "the Go runner has no native target".to_owned(),
+                    );
+                };
+                protocol::run_v3_message(
+                    &input,
+                    &files,
+                    request.idempotency_key.as_deref(),
+                    "base64+gzip",
+                    target,
+                )
             } else {
                 let text: Option<Vec<(String, String)>> = files
                     .into_iter()
@@ -1292,6 +1508,29 @@ mod tests {
 
     const REDACTED_STR: &str = sagat_domain::scripts::REDACTED;
 
+    struct ProofHost;
+
+    impl HostCalls for ProofHost {
+        async fn fetch(
+            &self,
+            request: HttpRequest,
+        ) -> Result<sagat_application::sandbox::HttpReply, Refusal> {
+            assert_eq!(request.url, "https://proof.invalid/resource");
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.body, b"request");
+            Ok(sagat_application::sandbox::HttpReply {
+                status: 201,
+                headers: vec![("x-proof".to_owned(), "yes".to_owned())],
+                body: b"response".to_vec(),
+            })
+        }
+
+        async fn secret(&self, name: &str) -> Result<String, Refusal> {
+            assert_eq!(name, "proof-secret");
+            Ok("leased-secret-value".to_owned())
+        }
+    }
+
     #[test]
     fn only_the_host_of_a_refused_request_is_recorded() {
         assert_eq!(
@@ -1304,6 +1543,15 @@ mod tests {
         );
         assert_eq!(destination("https://host"), "https://host");
         assert_eq!(destination("not a url"), "not a url");
+    }
+
+    #[test]
+    fn go_targets_are_explicit_and_round_trip() {
+        for target in [GoTarget::LinuxAmd64, GoTarget::LinuxArm64] {
+            assert_eq!(target.as_str().parse(), Ok(target));
+            assert_eq!(target.to_string(), target.as_str());
+        }
+        assert!("amd64".parse::<GoTarget>().is_err());
     }
 
     #[test]
@@ -1375,6 +1623,7 @@ mod tests {
     fn an_artifact_names_only_plain_files_and_only_its_own_language() {
         let ok = artifact_json(
             Language::TypeScript,
+            None,
             &Policy::default(),
             (None, None),
             "main.mjs",
@@ -1396,6 +1645,7 @@ mod tests {
         };
         let other = artifact_json(
             Language::TypeScript,
+            None,
             &tighter,
             (Some(br#"{"type":"object"}"#), Some(br#"{"type":"string"}"#)),
             "main.mjs",
@@ -1439,6 +1689,46 @@ mod tests {
                 String::from_utf8_lossy(bad)
             );
         }
+    }
+
+    #[test]
+    fn a_v3_artifact_has_only_the_signed_target_abi_and_encoding_envelope() {
+        let artifact = artifact_json(
+            Language::Go,
+            Some("linux-arm64"),
+            &Policy::default(),
+            (Some(br#"{"type":"object"}"#), None),
+            "ignored-by-the-fixed-v3-contract",
+            &[("script.elf".to_owned(), "H4sI".to_owned())],
+        );
+        let value: Value = serde_json::from_slice(&artifact).expect("v3 artifact JSON");
+        let mut keys: Vec<_> = value
+            .as_object()
+            .expect("envelope")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "abi",
+                "encoding",
+                "entry",
+                "files",
+                "inputSchema",
+                "language",
+                "outputSchema",
+                "policy",
+                "target",
+                "v",
+            ]
+        );
+        assert_eq!(value["v"], 3);
+        assert_eq!(value["target"], "linux-arm64");
+        assert_eq!(value["abi"], "sagat-inline-v1");
+        assert_eq!(value["entry"], "script.elf");
+        assert_eq!(value["encoding"], "base64+gzip");
     }
 
     #[test]
@@ -1493,5 +1783,350 @@ mod tests {
         }))
         .expect("oversize result frame");
         assert_eq!(parse_channel_line(&over_cap, &job), Err(()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires native Go images and a local container engine"]
+    async fn native_go_production_path_probe() {
+        let target = match std::env::consts::ARCH {
+            "aarch64" => GoTarget::LinuxArm64,
+            "x86_64" => GoTarget::LinuxAmd64,
+            architecture => panic!("unsupported native Go proof architecture: {architecture}"),
+        };
+        let sandbox = DockerSandbox::connect_with_go_target(Images::default(), target)
+            .expect("container engine");
+        sandbox.probe_go().await.expect("native Go probe");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires native Java images and a local container engine"]
+    async fn java_production_path_build_run_and_host_calls() {
+        let sandbox = DockerSandbox::connect(Images::default()).expect("container engine");
+        let policy = Policy::default();
+        let built = <DockerSandbox as Sandbox>::build(
+            &sandbox,
+            BuildRequest {
+                language: Language::Java,
+                source: Source::parse(
+                    r#"import java.util.Map;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import sagat.inline.InlineScript;
+import sagat.inline.Octopus;
+public final class Script implements InlineScript {
+  public Object run(Object input, Octopus octopus) throws Exception {
+    var response = octopus.fetch("https://proof.invalid/resource", "POST", Map.of(), "request");
+    var secret = octopus.secret("proof-secret");
+    octopus.log("java-host-proof", secret);
+    var directNetworkDenied = false;
+    try (var socket = new Socket()) {
+      socket.connect(new InetSocketAddress("169.254.169.254", 80), 100);
+    }
+    catch (Exception expected) { directNetworkDenied = true; }
+    return Map.of("status", response.status(), "body", response.body(),
+      "secretReceived", secret.equals("leased-secret-value"),
+      "secret", secret, "directNetworkDenied", directNetworkDenied,
+      "idempotencyKey", octopus.idempotencyKey(), "input", input);
+  }
+}"#,
+                )
+                .expect("Java source"),
+                lockfile: None,
+                policy,
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await
+        .expect("Java build");
+        let outcome = <DockerSandbox as Sandbox>::run(
+            &sandbox,
+            RunRequest {
+                language: Language::Java,
+                artifact: built.artifact,
+                input: br#"{"n":7,"items":["a",true]}"#.to_vec(),
+                input_schema: None,
+                output_schema: None,
+                policy,
+                secrets_to_hide: vec!["leased-secret-value".to_owned()],
+                idempotency_key: Some("java-proof-key".to_owned()),
+            },
+            &ProofHost,
+        )
+        .await;
+        let result: Value =
+            serde_json::from_slice(&outcome.result.expect("Java result")).expect("JSON result");
+        assert_eq!(result["status"], 201);
+        assert_eq!(result["body"], "response");
+        assert_eq!(result["secretReceived"], true);
+        assert_eq!(result["secret"], REDACTED_STR);
+        assert_eq!(result["directNetworkDenied"], true);
+        assert_eq!(result["idempotencyKey"], "java-proof-key");
+        assert_eq!(result["input"]["items"], json!(["a", true]));
+        assert!(outcome.log.contains("java-host-proof"));
+        assert!(!outcome.log.contains("leased-secret-value"));
+        assert_eq!(sandbox.leftovers().await, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires native Go images and a local container engine"]
+    async fn go_production_path_host_calls_network_target_timeout_and_cleanup() {
+        let target = match std::env::consts::ARCH {
+            "aarch64" => GoTarget::LinuxArm64,
+            "x86_64" => GoTarget::LinuxAmd64,
+            architecture => panic!("unsupported native Go proof architecture: {architecture}"),
+        };
+        let sandbox = DockerSandbox::connect_with_go_target(Images::default(), target)
+            .expect("container engine");
+        let policy = Policy::default();
+        let built = <DockerSandbox as Sandbox>::build(
+            &sandbox,
+            BuildRequest {
+                language: Language::Go,
+                source: Source::parse(
+                    r#"package main
+import (
+    "net"
+    "time"
+    "sagat.invalid/inline/octopus"
+)
+func Run(input any, client *octopus.Client) (any, error) {
+    response, err := client.Fetch("https://proof.invalid/resource", "POST", nil, "request")
+    if err != nil { return nil, err }
+    secret, err := client.Secret("proof-secret")
+    if err != nil { return nil, err }
+    client.Log("go-host-proof", secret)
+    connection, networkError := net.DialTimeout("tcp", "169.254.169.254:80", 100*time.Millisecond)
+    if connection != nil { connection.Close() }
+    return map[string]any{
+        "status": response.Status, "body": response.Body,
+        "secretReceived": secret == "leased-secret-value", "secret": secret,
+        "directNetworkDenied": networkError != nil,
+        "idempotencyKey": client.IdempotencyKey, "input": input,
+    }, nil
+}"#,
+                )
+                .expect("Go source"),
+                lockfile: None,
+                policy,
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await
+        .expect("Go build");
+        let artifact = built.artifact.clone();
+        let outcome = <DockerSandbox as Sandbox>::run(
+            &sandbox,
+            RunRequest {
+                language: Language::Go,
+                artifact: built.artifact,
+                input: br#"{"n":7,"items":["a",true]}"#.to_vec(),
+                input_schema: None,
+                output_schema: None,
+                policy,
+                secrets_to_hide: vec!["leased-secret-value".to_owned()],
+                idempotency_key: Some("go-proof-key".to_owned()),
+            },
+            &ProofHost,
+        )
+        .await;
+        let result: Value =
+            serde_json::from_slice(&outcome.result.expect("Go result")).expect("JSON result");
+        assert_eq!(result["status"], 201);
+        assert_eq!(result["body"], "response");
+        assert_eq!(result["secretReceived"], true);
+        assert_eq!(result["secret"], REDACTED_STR);
+        assert_eq!(result["directNetworkDenied"], true);
+        assert_eq!(result["idempotencyKey"], "go-proof-key");
+        assert_eq!(result["input"]["items"], json!(["a", true]));
+        assert!(outcome.log.contains("go-host-proof"));
+        assert!(!outcome.log.contains("leased-secret-value"));
+
+        let wrong_target = match target {
+            GoTarget::LinuxAmd64 => GoTarget::LinuxArm64,
+            GoTarget::LinuxArm64 => GoTarget::LinuxAmd64,
+        };
+        let wrong = DockerSandbox::connect_with_go_target(Images::default(), wrong_target)
+            .expect("container engine");
+        let mismatch = <DockerSandbox as Sandbox>::run(
+            &wrong,
+            RunRequest {
+                language: Language::Go,
+                artifact,
+                input: b"null".to_vec(),
+                input_schema: None,
+                output_schema: None,
+                policy,
+                secrets_to_hide: Vec::new(),
+                idempotency_key: None,
+            },
+            &ProofHost,
+        )
+        .await;
+        assert_eq!(mismatch.result, Err(Failure::Unavailable));
+        assert!(mismatch.log.contains("signed Go target"));
+        assert_eq!(sandbox.leftovers().await, 0);
+        assert_eq!(wrong.leftovers().await, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires native Go images and a local container engine"]
+    async fn a_go_cpu_burn_is_stopped_by_the_production_quota() {
+        let target = match std::env::consts::ARCH {
+            "aarch64" => GoTarget::LinuxArm64,
+            "x86_64" => GoTarget::LinuxAmd64,
+            architecture => panic!("unsupported native Go proof architecture: {architecture}"),
+        };
+        let sandbox = DockerSandbox::connect_with_go_target(Images::default(), target)
+            .expect("container engine");
+        let policy = Policy {
+            limits: Limits::new(
+                256 * 1024 * 1024,
+                1000,
+                Duration::from_secs(1),
+                64,
+                64 * 1024,
+                32 * 1024 * 1024,
+            )
+            .expect("limits"),
+            ..Policy::default()
+        };
+        let built = <DockerSandbox as Sandbox>::build(
+            &sandbox,
+            BuildRequest {
+                language: Language::Go,
+                source: Source::parse(
+                    r#"package main
+import "sagat.invalid/inline/octopus"
+func Run(input any, client *octopus.Client) (any, error) {
+    for { }
+}"#,
+                )
+                .expect("Go source"),
+                lockfile: None,
+                policy,
+                input_schema: None,
+                output_schema: None,
+            },
+        )
+        .await
+        .expect("Go build");
+        let outcome = <DockerSandbox as Sandbox>::run(
+            &sandbox,
+            RunRequest {
+                language: Language::Go,
+                artifact: built.artifact,
+                input: b"null".to_vec(),
+                input_schema: None,
+                output_schema: None,
+                policy,
+                secrets_to_hide: Vec::new(),
+                idempotency_key: None,
+            },
+            &NoHost,
+        )
+        .await;
+        assert_eq!(outcome.result, Err(Failure::Timeout));
+        assert!(outcome.wall >= Duration::from_millis(900));
+        assert_eq!(sandbox.leftovers().await, 0);
+    }
+
+    async fn measure_language(
+        sandbox: &DockerSandbox,
+        language: Language,
+        source: &str,
+    ) -> (Vec<u128>, Vec<u128>, Vec<u128>) {
+        let policy = Policy::default();
+        let mut builds = Vec::new();
+        let mut starts = Vec::new();
+        let mut walls = Vec::new();
+        for _ in 0..6 {
+            let began = Instant::now();
+            let built = <DockerSandbox as Sandbox>::build(
+                sandbox,
+                BuildRequest {
+                    language,
+                    source: Source::parse(source).expect("benchmark source"),
+                    lockfile: None,
+                    policy,
+                    input_schema: None,
+                    output_schema: None,
+                },
+            )
+            .await
+            .expect("benchmark build");
+            builds.push(began.elapsed().as_millis());
+            let outcome = <DockerSandbox as Sandbox>::run(
+                sandbox,
+                RunRequest {
+                    language,
+                    artifact: built.artifact,
+                    input: br#"{"n":21}"#.to_vec(),
+                    input_schema: None,
+                    output_schema: None,
+                    policy,
+                    secrets_to_hide: Vec::new(),
+                    idempotency_key: Some("benchmark-key".to_owned()),
+                },
+                &NoHost,
+            )
+            .await;
+            assert!(outcome.result.is_ok(), "{outcome:?}");
+            starts.push(outcome.start.as_millis());
+            walls.push(outcome.wall.as_millis());
+        }
+        assert_eq!(sandbox.leftovers().await, 0);
+        (builds, starts, walls)
+    }
+
+    #[tokio::test]
+    #[ignore = "intentional native container benchmark"]
+    async fn go_and_java_native_container_measurements() {
+        let target = match std::env::consts::ARCH {
+            "aarch64" => GoTarget::LinuxArm64,
+            "x86_64" => GoTarget::LinuxAmd64,
+            architecture => panic!("unsupported native benchmark architecture: {architecture}"),
+        };
+        let go = DockerSandbox::connect_with_go_target(Images::default(), target)
+            .expect("container engine");
+        let go_toolchain = go.toolchain(Language::Go).await.expect("Go toolchain");
+        let go_values = measure_language(
+            &go,
+            Language::Go,
+            r#"package main
+import "sagat.invalid/inline/octopus"
+func Run(input any, client *octopus.Client) (any, error) {
+    return map[string]any{"input": input, "idempotencyKey": client.IdempotencyKey}, nil
+}"#,
+        )
+        .await;
+
+        let java = DockerSandbox::connect(Images::default()).expect("container engine");
+        let java_toolchain = java
+            .toolchain(Language::Java)
+            .await
+            .expect("Java toolchain");
+        let java_values = measure_language(
+            &java,
+            Language::Java,
+            r#"import java.util.Map;
+import sagat.inline.InlineScript;
+import sagat.inline.Octopus;
+public final class Script implements InlineScript {
+  public Object run(Object input, Octopus octopus) {
+    return Map.of("input", input, "idempotencyKey", octopus.idempotencyKey());
+  }
+}"#,
+        )
+        .await;
+        println!("GO_TOOLCHAIN={go_toolchain}");
+        println!("GO_BUILD_MS={:?}", go_values.0);
+        println!("GO_START_MS={:?}", go_values.1);
+        println!("GO_WALL_MS={:?}", go_values.2);
+        println!("JAVA_TOOLCHAIN={java_toolchain}");
+        println!("JAVA_BUILD_MS={:?}", java_values.0);
+        println!("JAVA_START_MS={:?}", java_values.1);
+        println!("JAVA_WALL_MS={:?}", java_values.2);
     }
 }

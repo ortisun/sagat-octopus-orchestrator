@@ -655,6 +655,128 @@ async fn every_event_operation_conforms_to_the_contract_on_its_normal_and_error_
     ])
     .await;
 
+    // ------------------------------------------------------------------ outbound broker subscriptions
+    let broker_subs_t = "/namespaces/{namespaceId}/broker-subscriptions";
+    let broker_sub_t = "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}";
+    let broker_deliveries_t =
+        "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries";
+    let broker_delivery_t =
+        "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}";
+    let broker_redrive_one_t = "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/deliveries/{deliveryId}/redrive";
+    let broker_redrive_t =
+        "/namespaces/{namespaceId}/broker-subscriptions/{subscriptionId}/redrive";
+    let broker_subs = format!("/namespaces/{ns}/broker-subscriptions");
+    let broker_good = json!({
+        "name": "broker-notify",
+        "kind": "KAFKA",
+        "settings": {"servers": ["tls://kafka.example.com:9092"], "topic": "run-finished"},
+        "events": ["run.finished"]
+    });
+    run.all(vec![
+        scenario("POST", broker_subs_t, &broker_subs, As::Anonymous, Some(broker_good.clone()), 401),
+        scenario("POST", broker_subs_t, &broker_subs, vera.clone(), Some(broker_good.clone()), 403),
+        scenario("POST", broker_subs_t, &broker_subs, bob.clone(), Some(broker_good.clone()), 404),
+        scenario("POST", broker_subs_t, &broker_subs, alice.clone(), Some(json!({"name": "bad-broker", "kind": "AMQP", "settings": {}, "events": ["run.finished"]})), 422),
+    ])
+    .await;
+    let broker_created = run
+        .one(scenario(
+            "POST",
+            broker_subs_t,
+            &broker_subs,
+            alice.clone(),
+            Some(broker_good.clone()),
+            201,
+        ))
+        .await;
+    let broker_id = broker_created["id"].as_str().expect("id").to_owned();
+    let broker_sub = |id: &str| format!("/namespaces/{ns}/broker-subscriptions/{id}");
+    let broker_update = json!({
+        "kind": "KAFKA",
+        "settings": {"servers": ["tls://kafka.example.com:9092"], "topic": "run-finished"},
+        "events": ["run.finished"],
+        "ratePerSecond": 5
+    });
+    let broker_delivery_id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO webhook_deliveries (id, tenant_id, namespace_id, subscription_id, event_id, kind, \
+         payload, status, attempts, next_attempt_at, last_outcome, last_error) \
+         SELECT $1, tenant_id, namespace_id, id, 'broker-event-9', 'run.finished', \
+                '{\"id\":\"broker-event-9\"}', 'DEAD', 1, clock_timestamp(), 'REJECTED', \
+                'the broker refused the event' \
+         FROM webhook_subscriptions WHERE id = $2::uuid AND destination_kind <> 'WEBHOOK'",
+    )
+    .bind(broker_delivery_id)
+    .bind(&broker_id)
+    .execute(&api.db.pool)
+    .await
+    .expect("a dead broker delivery");
+    let broker_deliveries = format!("/namespaces/{ns}/broker-subscriptions/{broker_id}/deliveries");
+    let broker_one_delivery = |id: &str| format!("{broker_deliveries}/{id}");
+    run.all(vec![
+        scenario("GET", broker_subs_t, &broker_subs, vera.clone(), None, 200),
+        scenario(
+            "GET",
+            broker_sub_t,
+            &broker_sub(&broker_id),
+            vera.clone(),
+            None,
+            200,
+        ),
+        scenario(
+            "PUT",
+            broker_sub_t,
+            &broker_sub(&broker_id),
+            alice.clone(),
+            Some(broker_update),
+            200,
+        ),
+        scenario(
+            "GET",
+            broker_deliveries_t,
+            &broker_deliveries,
+            vera.clone(),
+            None,
+            200,
+        ),
+        scenario(
+            "GET",
+            broker_delivery_t,
+            &broker_one_delivery(&broker_delivery_id.to_string()),
+            vera.clone(),
+            None,
+            200,
+        ),
+        scenario(
+            "POST",
+            broker_redrive_one_t,
+            &format!(
+                "{}/redrive",
+                broker_one_delivery(&broker_delivery_id.to_string())
+            ),
+            alice.clone(),
+            None,
+            200,
+        ),
+        scenario(
+            "POST",
+            broker_redrive_t,
+            &format!("/namespaces/{ns}/broker-subscriptions/{broker_id}/redrive"),
+            alice.clone(),
+            Some(json!({"limit": 5})),
+            200,
+        ),
+        scenario(
+            "DELETE",
+            broker_sub_t,
+            &broker_sub(&broker_id),
+            alice.clone(),
+            None,
+            204,
+        ),
+    ])
+    .await;
+
     // ------------------------------------------------------------------ connectors
     let conns_t = "/namespaces/{namespaceId}/connectors";
     let conn_t = "/namespaces/{namespaceId}/connectors/{connectorId}";

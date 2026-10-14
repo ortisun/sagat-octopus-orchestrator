@@ -1,0 +1,54 @@
+{
+  "canonical": {
+    "inline": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"inline\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"blob-inline-shape\"},\"nodes\":[{\"activity\":\"blob.inline\",\"id\":\"inline\",\"type\":\"activity\"}]}",
+    "output": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"output\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"blob-output\"},\"nodes\":[{\"activity\":\"blob.output\",\"id\":\"output\",\"type\":\"activity\"}]}",
+    "roundTrip": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"round-trip\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"blob-round-trip\"},\"nodes\":[{\"activity\":\"blob.round-trip\",\"id\":\"round-trip\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "inline": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "inline",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "blob-inline-shape"
+      },
+      "nodes": [
+        {
+          "activity": "blob.inline",
+          "id": "inline",
+          "type": "activity"
+        }
+      ]
+    },
+    "output": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "output",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "blob-output"
+      },
+      "nodes": [
+        {
+          "activity": "blob.output",
+          "id": "output",
+          "type": "activity"
+        }
+      ]
+    },
+    "roundTrip": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "round-trip",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "blob-round-trip"
+      },
+      "nodes": [
+        {
+          "activity": "blob.round-trip",
+          "id": "round-trip",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

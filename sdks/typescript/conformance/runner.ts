@@ -2,8 +2,9 @@
 // only the public API of the SDK: the builders in `build` mode, the client and the worker host in
 // `run` mode.
 import { readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
-  ActivityFailure, SDK_VERSION, SagatClient, SagatError, WorkerHost, flow, reconcile, workflow,
+  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, flow, reconcile, workflow,
   type ActivityContext, type Flow, type Run, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
@@ -132,8 +133,17 @@ function abortable(ms: number, signal: AbortSignal): Promise<boolean> {
   });
 }
 
-function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]): (input: any, ctx: ActivityContext) => Promise<any> {
+function behaviorHandler(
+  name: string,
+  kind: string,
+  behavior: Obj,
+  log: Obj[],
+  measurement: { active: number; peakInflight: number; deliveries: Obj[] },
+): (input: any, ctx: ActivityContext) => Promise<any> {
   return async (input, ctx) => {
+    measurement.active += 1;
+    measurement.peakInflight = Math.max(measurement.peakInflight, measurement.active);
+    measurement.deliveries.push({ runId: ctx.runId, node: ctx.node, takenAtUnixMs: Date.now() });
     let outcome = 'returned';
     try {
       if (behavior['failsUntilAttempt'] !== undefined && ctx.attempt < behavior['failsUntilAttempt']) {
@@ -185,6 +195,38 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
         }
         return { ...(behavior['returns'] ?? {}), secretLength: secrets.get(behavior['readsSecret']).length };
       }
+      if (behavior['blobRoundTripBytes'] !== undefined) {
+        const body = Buffer.alloc(behavior['blobRoundTripBytes'], 'x');
+        const descriptor = await ctx.writeBlob([body], {
+          contentType: 'application/octet-stream', expectedSize: body.length,
+          expectedSha256: createHash('sha256').update(body).digest('hex'),
+        });
+        const chunks: Buffer[] = [];
+        for await (const chunk of ctx.readBlob(descriptor)) chunks.push(chunk);
+        if (!Buffer.concat(chunks).equals(body)) throw new Error('blob round trip failed');
+        return { blobSize: descriptor.size, blobSha256: descriptor.sha256, roundTrip: true };
+      }
+      if (behavior['blobInputBytes'] !== undefined) {
+        const raw = (input as Obj)['$blob'] as Obj;
+        const descriptor = { id: raw['id'] as string, size: raw['size'] as number, sha256: raw['sha256'] as string, contentType: raw['contentType'] as string };
+        const chunks: Buffer[] = [];
+        for await (const chunk of ctx.readBlob(descriptor)) chunks.push(chunk);
+        const expected = Buffer.alloc(behavior['blobInputBytes'], 'i');
+        if (!Buffer.concat(chunks).equals(expected)) throw new Error('run-input blob did not match');
+        return { inputBlobSize: descriptor.size, inputBlobSha256: descriptor.sha256 };
+      }
+      if (behavior['blobOutputBytes'] !== undefined) {
+        const descriptor = await ctx.writeBlob([Buffer.alloc(behavior['blobOutputBytes'], 'y')], {
+          contentType: 'application/octet-stream',
+        });
+        return new BlobOutput(descriptor);
+      }
+      if (behavior['blobInlineBytes'] !== undefined) {
+        const descriptor = await ctx.writeBlob([Buffer.alloc(behavior['blobInlineBytes'], 'z')], {
+          contentType: 'application/octet-stream',
+        });
+        return { $blob: descriptor };
+      }
       if (behavior['verdict'] !== undefined) {
         const output = behavior['output'];
         return behavior['verdict'] === 'applied' ? reconcile.applied(output) : behavior['verdict'] === 'not_applied' ? reconcile.notApplied() : reconcile.unknown();
@@ -194,6 +236,7 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
       if (behavior['returnsText'] !== undefined) return 'x'.repeat(behavior['returnsText']);
       return behavior['returns'] ?? null;
     } finally {
+      measurement.active -= 1;
       log.push({
         activity: name,
         kind,
@@ -215,15 +258,22 @@ function behaviorHandler(name: string, kind: string, behavior: Obj, log: Obj[]):
   };
 }
 
-function hostOf(def: WorkerDef, config: Obj, plan: FaultPlan, log: Obj[]): WorkerHost {
+function hostOf(
+  def: WorkerDef,
+  config: Obj,
+  plan: FaultPlan,
+  log: Obj[],
+  measurement: { active: number; peakInflight: number; deliveries: Obj[] },
+): WorkerHost {
   const host = new WorkerHost({
     grpcUrl: config['grpcUrl'], namespace: config['namespace'], token: def['token'] === 'unbound' ? config['unboundWorkerToken'] : config['workerToken'], workerName: def.workerName,
     maxInflight: def['maxInflight'] ?? 4, protocolVersion: def['protocolVersion'], heartbeatIntervalMs: def['heartbeatIntervalMs'],
+    transport: def['transport'],
     interceptors: plan.interceptors(), retry: { initialDelayMs: 20, maxDelayMs: 200 },
   });
   for (const [name, activity] of Object.entries(def.activities)) {
     const kind = activity.as ?? 'activity';
-    const handler = behaviorHandler(name, kind, activity.behavior ?? {}, log);
+    const handler = behaviorHandler(name, kind, activity.behavior ?? {}, log, measurement);
     if (kind === 'compensation') host.registerCompensation(name, handler);
     else if (kind === 'reconciler') host.registerReconciler(name, handler);
     else host.registerActivity(name, handler);
@@ -248,15 +298,17 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
     other: clientFor(config['otherTenantToken']),
   };
   const logs: Record<string, Obj[]> = {};
+  const measurements: Record<string, { active: number; peakInflight: number; deliveries: Obj[] }> = {};
   const hosts: Record<string, { def: WorkerDef; host: WorkerHost | undefined }> = {};
   for (const [key, def] of Object.entries<WorkerDef>(scenario['workers'] ?? {})) {
     logs[key] = [];
+    measurements[key] = { active: 0, peakInflight: 0, deliveries: [] };
     hosts[key] = { def, host: undefined };
   }
   const startWorker = async (key: string): Promise<Obj> => {
     const entry = hosts[key];
     if (!entry) throw new Error(`no worker ${key}`);
-    entry.host = hostOf(entry.def, config, plan, logs[key]!);
+    entry.host = hostOf(entry.def, config, plan, logs[key]!, measurements[key]!);
     await entry.host.start();
     return { protocolVersion: entry.host.protocolVersion };
   };
@@ -284,6 +336,17 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
         case 'start': {
           const workflowId = config['workflows'][step['workflow']].workflowId as string;
           result = runJson(await client.start(workflowId, step['input'] ?? {}, {
+            idempotencyKey: step['idempotencyKey'], correlationId: step['correlationId'],
+            traceparent: step['traceparent'], deadlineInMs: step['deadlineInMs'],
+          }));
+          break;
+        }
+        case 'startWithBlob': {
+          const workflowId = config['workflows'][step['workflow']].workflowId as string;
+          const body = Buffer.alloc(step['inputBlobBytes'], 'i');
+          const sha256 = createHash('sha256').update(body).digest('hex');
+          const descriptor = await client.uploadRunInput([body], { expectedSize: body.length, expectedSha256: sha256 });
+          result = runJson(await client.startWithBlob(workflowId, descriptor, {
             idempotencyKey: step['idempotencyKey'], correlationId: step['correlationId'],
             traceparent: step['traceparent'], deadlineInMs: step['deadlineInMs'],
           }));
@@ -390,7 +453,11 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
   }
 
   for (const entry of Object.values(hosts)) await entry.host?.stop(2000).catch(() => undefined);
-  return { scenario: scenario['name'], language: 'typescript', sdkVersion: SDK_VERSION, observations, workerLog: logs, faultsApplied: plan.applied() };
+  const workerMeasurements = Object.fromEntries(Object.entries(measurements).map(([key, value]) => [
+    key,
+    { peakInflight: value.peakInflight, deliveries: value.deliveries },
+  ]));
+  return { scenario: scenario['name'], language: 'typescript', sdkVersion: SDK_VERSION, observations, workerLog: logs, workerMeasurements, faultsApplied: plan.applied() };
 }
 
 // ----------------------------------------------------------------------------------------------- main

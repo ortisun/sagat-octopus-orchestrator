@@ -2,7 +2,10 @@ import { Controls, MiniMap, ReactFlow } from '@xyflow/react';
 import type { NodeChange } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useMemo, useRef } from 'react';
+import type { RuntimeNode } from '../../api/types';
+import { readableInitialViewport } from '../../model/initialViewport';
 import { layoutGraph } from '../../model/layout';
+import type { Point } from '../../model/layout';
 import type { RunModel } from '../../model/runGraph';
 import { flowEdges, flowNodes, layoutNodes } from './canvas';
 import type { CardNode, ViewPolicy } from './canvas';
@@ -16,6 +19,24 @@ const ARIA = {
   'minimap.ariaLabel': 'Overview of the graph',
 };
 
+export function initialRunViewport(
+  order: readonly string[],
+  positions: ReadonlyMap<string, Point>,
+  edges: readonly { from: string; to: string }[],
+  nodes: ReadonlyMap<string, Pick<RuntimeNode, 'kind'>>,
+) {
+  const targets = new Set(edges.map((edge) => edge.to));
+  const roots = order.filter((id) => positions.has(id) && !targets.has(id));
+  const first =
+    roots.find((id) => {
+      const kind = nodes.get(id)?.kind;
+      return kind === undefined || kind === 'FORWARD';
+    }) ??
+    roots[0] ??
+    order.find((id) => positions.has(id));
+  return readableInitialViewport(first === undefined ? undefined : positions.get(first));
+}
+
 /** The colour of a step in the overview: only a hint, the cards say it in words. */
 function overviewColor(node: { data?: unknown }): string {
   const status = (node.data as { node?: { status?: string } } | undefined)?.node?.status;
@@ -27,9 +48,9 @@ function overviewColor(node: { data?: unknown }): string {
 
 /**
  * The definition's graph with the state of the run on it (read-only). The layout depends only on
- * the shape of the graph, so an update never moves anything, and the viewport is only fitted when
- * the canvas opens. Every step can be reached and chosen with the keyboard; the table lists the
- * same steps with the same actions for anyone who prefers a list.
+ * the shape of the graph, so an update never moves anything, and the viewport is positioned only
+ * when the canvas opens. Every step can be reached and chosen with the keyboard; the table lists
+ * the same steps with the same actions for anyone who prefers a list.
  */
 export function GraphView({
   model,
@@ -50,6 +71,7 @@ export function GraphView({
 }) {
   const after = useRef<HTMLDivElement>(null);
   const positions = useMemo(() => layoutGraph(layoutNodes(order, policy.detail), model.edges, 'LR'), [order, model.edges, policy.detail]);
+  const initialViewport = useMemo(() => initialRunViewport(order, positions, model.edges, model.nodes), [order, positions, model.edges, model.nodes]);
   const nodes = useMemo<CardNode[]>(
     () => flowNodes({ nodes: model.nodes, order, positions, detail: policy.detail, selectedId, flash }),
     [model.nodes, order, positions, policy.detail, selectedId, flash],
@@ -100,8 +122,7 @@ export function GraphView({
           edgesFocusable={false}
           elementsSelectable
           deleteKeyCode={null}
-          fitView
-          fitViewOptions={{ padding: 0.1 }}
+          defaultViewport={initialViewport}
           minZoom={0.02}
           maxZoom={1.5}
           onlyRenderVisibleElements

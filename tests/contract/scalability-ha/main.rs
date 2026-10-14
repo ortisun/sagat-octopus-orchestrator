@@ -12,6 +12,8 @@ use std::process::Command;
 use regex::Regex;
 use serde_json::Value;
 
+mod tls_chart;
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
@@ -25,14 +27,14 @@ fn fixture(name: &str) -> String {
 
 /// The values the tests install the chart with: `fixtures/base.yaml`.
 fn base() -> Value {
-    serde_yaml_ng::from_str(&fixture("base.yaml")).expect("base.yaml is YAML")
+    serde_saphyr::from_str(&fixture("base.yaml")).expect("base.yaml is YAML")
 }
 
 fn ha_example() -> Value {
     let path = repo().join("infra/helm/examples/ha.yaml");
     let yaml = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    serde_yaml_ng::from_str(&yaml).expect("HA example is YAML")
+    serde_saphyr::from_str(&yaml).expect("HA example is YAML")
 }
 
 /// `base()` with `changes` laid over it (objects are merged, anything else replaced).
@@ -69,7 +71,7 @@ fn helm(values: &Value) -> Result<Vec<Value>, String> {
     }
     let text = String::from_utf8(out.stdout).expect("utf8");
     text.split("\n---\n")
-        .map(|doc| serde_yaml_ng::from_str::<Value>(doc).map_err(|e| format!("yaml: {e}")))
+        .map(|doc| serde_saphyr::from_str::<Value>(doc).map_err(|e| format!("yaml: {e}")))
         .filter(|doc| !matches!(doc, Ok(Value::Null)))
         .collect()
 }
@@ -706,7 +708,7 @@ fn the_autoscalers_scale_on_metrics_the_platform_emits_and_on_nothing_else() {
 #[test]
 fn the_chart_refuses_what_the_platform_would_refuse() {
     let cases: Vec<Value> =
-        serde_yaml_ng::from_str(&fixture("refused.yaml")).expect("refused.yaml is YAML");
+        serde_saphyr::from_str(&fixture("refused.yaml")).expect("refused.yaml is YAML");
     assert!(
         cases.len() >= 14,
         "the list of refusals shrank to {}",
@@ -776,7 +778,7 @@ fn no_candidate_query_bounds_an_index_range_with_a_volatile_clock() {
 fn the_example_an_operator_starts_from_renders_and_the_engine_accepts_it() {
     let text =
         std::fs::read_to_string(repo().join("infra/helm/examples/ha.yaml")).expect("example");
-    let example: Value = serde_yaml_ng::from_str(&text).expect("the example is YAML");
+    let example: Value = serde_saphyr::from_str(&text).expect("the example is YAML");
     let docs = render(&example);
     let engine = named(&docs, "Deployment", "sagat-octopus-orchestrator-engine");
     let env = env_of(engine);
@@ -896,5 +898,28 @@ fn every_probe_of_the_chart_asks_for_a_path_its_process_serves() {
                 "{deployment}'s {probe} names the port {port}, which the container does not declare"
             );
         }
+    }
+}
+
+#[test]
+fn development_jwks_http_is_explicit_and_reaches_both_services() {
+    let docs = render(&with(&serde_json::json!({
+        "environment": "dev", "oidc": {"allowInsecureJwksHttp": true}
+    })));
+    let mut checked = 0;
+    for deployment in of_kind(&docs, "Deployment") {
+        let env = env_of(deployment);
+        if env.contains_key("SAGAT_OIDC_JWKS_URI") {
+            assert_eq!(
+                env.get("SAGAT_ALLOW_INSECURE_JWKS_HTTP")
+                    .map(String::as_str),
+                Some("true")
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 2);
+    for deployment in of_kind(&render(&base()), "Deployment") {
+        assert!(!env_of(deployment).contains_key("SAGAT_ALLOW_INSECURE_JWKS_HTTP"));
     }
 }

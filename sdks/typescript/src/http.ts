@@ -16,6 +16,10 @@ export interface HttpRequest {
   path: string;
   query?: Record<string, string | number | undefined>;
   body?: unknown;
+  /** A one-pass body. It is never retried or JSON encoded. */
+  rawBody?: unknown;
+  contentType?: string;
+  headers?: Record<string, string>;
   /** Present on a POST that may be repeated: the call is retried because the server deduplicates it. */
   idempotencyKey?: string;
   traceparent?: string;
@@ -87,10 +91,14 @@ export class HttpTransport {
     };
     if (req.traceparent) headers['traceparent'] = req.traceparent;
     if (req.idempotencyKey) headers['idempotency-key'] = req.idempotencyKey;
-    let body: string | undefined;
+    Object.assign(headers, req.headers ?? {});
+    let body: unknown;
     if (req.body !== undefined) {
       body = encodeJson(req.body);
       headers['content-type'] = 'application/json';
+    } else if (req.rawBody !== undefined) {
+      body = req.rawBody;
+      headers['content-type'] = req.contentType ?? 'application/octet-stream';
     }
 
     let response: Response;
@@ -99,10 +107,11 @@ export class HttpTransport {
         method: req.method,
         headers,
         body,
+        ...(req.rawBody !== undefined ? { duplex: 'half' } : {}),
         // A redirect would carry the credential to a place the caller did not name: it is never followed.
         redirect: 'manual',
         signal: AbortSignal.timeout(this.timeoutMs),
-      });
+      } as unknown as RequestInit);
     } catch (error) {
       if (error instanceof SagatError) throw error;
       const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');

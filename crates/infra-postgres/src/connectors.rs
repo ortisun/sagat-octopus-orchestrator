@@ -391,7 +391,15 @@ impl ConnectorStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<Admission, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let admission = admit_within(&mut tx, event, backlog_limit).await?;
+        let admission = admit_within(
+            &mut tx,
+            event,
+            backlog_limit,
+            Some(crate::content_usage::EventRateSource::Connector(
+                connector.id,
+            )),
+        )
+        .await?;
         if matches!(admission, Admission::Accepted | Admission::Duplicate) {
             sqlx::query("DELETE FROM connector_dead_letters WHERE connector_id = $1 AND id = $2")
                 .bind(connector.id.as_uuid())
@@ -475,7 +483,15 @@ impl ConnectorRuntime for PgRunStore {
         checkpoint: Option<(&Checkpoint, i64)>,
     ) -> Result<Admission, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        let admission = admit_within(&mut tx, event, backlog_limit).await?;
+        let admission = admit_within(
+            &mut tx,
+            event,
+            backlog_limit,
+            Some(crate::content_usage::EventRateSource::Connector(
+                connector.id,
+            )),
+        )
+        .await?;
         // The position moves with the event, and only when the event is in (or was in before).
         if matches!(admission, Admission::Accepted | Admission::Duplicate) {
             if let Some((checkpoint, expected)) = checkpoint {
@@ -598,12 +614,33 @@ impl ConnectorRuntime for PgRunStore {
             None => (false, None),
             Some(value) => (true, value.as_deref()),
         };
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let prior: Option<(Uuid, i64)> = sqlx::query_as(
+            "SELECT tenant_id,coalesce(octet_length(last_error),0)::bigint FROM event_connectors WHERE id=$1 FOR UPDATE")
+            .bind(connector.as_uuid()).fetch_optional(&mut *tx).await.map_err(store_error)?;
+        let Some((tenant, prior)) = prior else {
+            return Ok(());
+        };
+        let allocated = if let Some(error) = error {
+            Some(
+                crate::content_usage::take_log_prefix(
+                    &mut tx,
+                    TenantId::new(tenant),
+                    u64::try_from(prior).map_err(|_| corrupt("connector error bytes"))?,
+                    error,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         sqlx::query(
             "UPDATE event_connectors SET \
                  consumed_total = consumed_total + $2, \
                  dead_lettered_total = dead_lettered_total + $3, \
                  last_message_at = COALESCE($4, last_message_at), \
-                 last_error = CASE WHEN $5 THEN $6 ELSE last_error END \
+                 last_error = CASE WHEN $5 THEN $6 ELSE last_error END, \
+                 last_error_truncated = CASE WHEN $5 THEN $7 ELSE last_error_truncated END \
              WHERE id = $1",
         )
         .bind(connector.as_uuid())
@@ -611,10 +648,11 @@ impl ConnectorRuntime for PgRunStore {
         .bind(i64::try_from(progress.dead_lettered).unwrap_or(i64::MAX))
         .bind(progress.last_message_at)
         .bind(set_error)
-        .bind(error)
-        .execute(&self.pool)
+        .bind(allocated.as_ref().map(|log| log.text.as_str()))
+        .bind(allocated.as_ref().is_some_and(|log| log.truncated))
+        .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        Ok(())
+        tx.commit().await.map_err(store_error)
     }
 }

@@ -159,6 +159,16 @@ describe('Publishing a version', () => {
     expect(dialog).not.toHaveTextContent('Artifact digest');
   });
 
+  it('keeps the storage failure visible when the retained diagnostic is entirely omitted', async () => {
+    const { server, user, dialog } = await openDialog();
+    publishing(server, [aVersion(1, 'FAILED', { failure: '', failureCode: 'STORAGE_QUOTA_EXCEEDED', buildLog: '', buildLogTruncated: true })]);
+    await user.click(within(dialog).getByRole('button', { name: 'Publish version' }));
+    expect(await eventually(() => within(dialog).getByText('STORAGE_QUOTA_EXCEEDED'))).toBeInTheDocument();
+    expect(alerts()).toContain('Free capacity before publishing again');
+    expect(within(dialog).getByText('Build diagnostics were truncated by the retained-log limit.')).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent('The platform gave no reason');
+  });
+
   it('says when the draft is the same as the latest version, so no new one was made', async () => {
     const { server, user, dialog } = await openDialog(DEVELOPER, { versions: [aVersionSummary(2)] });
     publishing(server, [ready(2)], false);

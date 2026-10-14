@@ -68,7 +68,7 @@ Provide a foundation of tenants, namespaces, HTTP/gRPC contracts and a reproduci
 - **FR-001-003**: The system MUST define versioned gRPC/protobuf for the worker protocol and message compatibility.
 - **FR-001-004**: The system MUST create idempotent PostgreSQL migrations and seed exclusively for development.
 - **FR-001-005**: The system MUST create a development Docker Compose with PostgreSQL, NATS and an S3-compatible object store (optional in the initial phase).
-- **FR-001-006**: The system MUST emit canonical errors with code, message, retryable, trace_id, request_id without sensitive data.
+- **FR-001-006**: The system MUST emit canonical errors with code, message, retryable, trace_id, request_id without sensitive data. REST uses camelCase `traceId` and `requestId`; the server generates a new request id for every request, including errors, independently of inbound trace or request headers. `X-Request-Id` matches the error body and the request log span.
 - **FR-001-007**: The system MUST implement OIDC/JWT authentication and base RBAC on all routes, with an audit trail.
 
 ## Edge Cases

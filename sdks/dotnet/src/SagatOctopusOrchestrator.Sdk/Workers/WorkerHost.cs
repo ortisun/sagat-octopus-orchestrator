@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -16,6 +17,7 @@ public sealed partial class WorkerHost : IWorkerHost
 {
     private const int MaxOutputBytes = 256 * 1024;
     private const int MaxPoll = 64;
+    private const int MaxStreamInputBytes = 8 * 1024 * 1024;
     private const int ReportAttempts = 5;
     private const int MaxMessage = 512;
 
@@ -37,6 +39,7 @@ public sealed partial class WorkerHost : IWorkerHost
     private string sessionToken = string.Empty;
     private string accepted = string.Empty;
     private int minor;
+    private bool streamUnavailable;
     private volatile bool running;
     private volatile bool stopping;
     private Task loop = Task.CompletedTask;
@@ -189,6 +192,7 @@ public sealed partial class WorkerHost : IWorkerHost
 
             stopping = true;
             WakeForStop();
+            loopCancel?.Cancel();
 
             // The poll in progress ends and no other starts; what it leased is in flight from here on. Cancelling
             // the token ends the wait for that poll at once (the host is going away).
@@ -315,6 +319,8 @@ public sealed partial class WorkerHost : IWorkerHost
                 accepted = response.AcceptedProtocolVersion;
                 var match = VersionPattern().Match(accepted);
                 minor = match.Success ? (match.Groups[1].Success ? int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 0) : 0;
+                streamUnavailable = false;
+                RequireStreamingProtocol();
                 Log.WorkerRegistered(logger, options.Worker.Name!, accepted);
                 return;
             }
@@ -419,6 +425,14 @@ public sealed partial class WorkerHost : IWorkerHost
     private static TimeSpan Jitter(TimeSpan wait) =>
         TimeSpan.FromMilliseconds(Math.Round(wait.TotalMilliseconds * (0.8 + (Random.Shared.NextDouble() * 0.4))));
 
+    private void RequireStreamingProtocol()
+    {
+        if (options.Worker.Transport == WorkerTransport.Stream && minor < 4)
+        {
+            throw new SagatException(SagatErrorCode.UnsupportedProtocol, "stream transport requires worker protocol 1.4");
+        }
+    }
+
     private async Task RunLoopAsync(Session session, CancellationToken cancellationToken)
     {
         var failures = 0;
@@ -426,6 +440,7 @@ public sealed partial class WorkerHost : IWorkerHost
         var channel = session.Rpc;
         while (!stopping)
         {
+            var meaningful = false;
             try
             {
                 var free = maxInflight - inflight.Count;
@@ -436,6 +451,64 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
 
                 var asked = Math.Min(free, MaxPoll);
+                RequireStreamingProtocol();
+                if (minor >= 4 && options.Worker.Transport != WorkerTransport.Poll && !streamUnavailable)
+                {
+                    try
+                    {
+                        var delivered = 0;
+                        var inputBytes = 0;
+                        var hintedWait = 0L;
+                        await foreach (var frame in channel.StreamTasksAsync(
+                            new PollTasksRequest { WorkerId = workerId, SessionToken = sessionToken, MaxTasks = asked },
+                            cancellationToken).ConfigureAwait(false))
+                        {
+                            if (frame.Tasks.Count == 0)
+                            {
+                                hintedWait = frame.RetryAfterMs;
+                                continue;
+                            }
+                            var allowed = Math.Min(asked - delivered, maxInflight - inflight.Count);
+                            var excess = frame.Tasks.Count > allowed;
+                            for (var i = 0; i < Math.Min(frame.Tasks.Count, Math.Max(0, allowed)); i++)
+                            {
+                                var lease = frame.Tasks[i];
+                                var bytes = Encoding.UTF8.GetByteCount(lease.InputJson);
+                                if (bytes > MaxStreamInputBytes - inputBytes)
+                                {
+                                    throw SagatException.Invalid("a task stream exceeded its input budget");
+                                }
+
+                                inputBytes += bytes;
+                                Dispatch(lease, session);
+                                delivered++;
+                                meaningful = true;
+                            }
+                            if (excess)
+                            {
+                                throw SagatException.Invalid("a task stream exceeded its receive credit");
+                            }
+                        }
+                        failures = 0;
+                        refused = 0;
+                        if (delivered < asked)
+                        {
+                            var wait = Math.Max(50, hintedWait > 0 ? hintedWait : 1000);
+                            await IdleAsync(Limits.Capped(Jitter(TimeSpan.FromMilliseconds(wait)))).ConfigureAwait(false);
+                        }
+                        continue;
+                    }
+                    catch (StreamTasksUnimplementedException)
+                    {
+                        if (options.Worker.Transport == WorkerTransport.Stream)
+                        {
+                            throw new SagatException(SagatErrorCode.UnsupportedProtocol, "StreamTasks is not implemented by the server");
+                        }
+                        streamUnavailable = true;
+                        await IdleAsync(TimeSpan.FromMilliseconds(100), endsWithTask: false).ConfigureAwait(false);
+                        continue;
+                    }
+                }
                 var response = await channel.PollAsync(
                     new PollTasksRequest { WorkerId = workerId, SessionToken = sessionToken, MaxTasks = asked },
                     cancellationToken).ConfigureAwait(false);
@@ -458,7 +531,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 if (got == 0)
                 {
                     var wait = Math.Max(50, response.RetryAfterMs > 0 ? response.RetryAfterMs : 1000);
-                    await IdleAsync(Jitter(TimeSpan.FromMilliseconds(wait))).ConfigureAwait(false);
+                    await IdleAsync(Limits.Capped(Jitter(TimeSpan.FromMilliseconds(wait)))).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -470,6 +543,11 @@ public sealed partial class WorkerHost : IWorkerHost
                 if (stopping)
                 {
                     return;
+                }
+
+                if (meaningful)
+                {
+                    failures = 0;
                 }
 
                 if (error.Code == SagatErrorCode.Unauthenticated)
@@ -707,7 +785,9 @@ public sealed partial class WorkerHost : IWorkerHost
                 minor >= 2 ? lease.TargetIdempotencyKey : string.Empty,
                 steps,
                 ContextLogger(lease.ActivityName),
-                secretsLoader.GetAsync);
+                secretsLoader.GetAsync,
+                (source, blobOptions, cancellationToken) => WriteBlobAsync(session, lease, runtime, source, blobOptions, cancellationToken),
+                (descriptor, cancellationToken) => ReadBlobAsync(session, lease, runtime, descriptor, cancellationToken));
 
             await RunAndReportAsync(session, lease, runtime, registered, typed, context, secretsLoader, started, span).ConfigureAwait(false);
         }
@@ -767,6 +847,8 @@ public sealed partial class WorkerHost : IWorkerHost
                 failure = ActivityFailure.Retryable("ACTIVITY_ERROR", TypeNameOf(error));
             }
 
+            runtime.MarkFinished();
+
             // The secrets are credentials: gone when the handler is, before the result is reported.
             secretsLoader.Close();
 
@@ -790,15 +872,39 @@ public sealed partial class WorkerHost : IWorkerHost
                 return;
             }
 
+            var blob = result!.Blob;
             string output;
-            try
+            if (blob is not null)
             {
-                output = result!.ToJson(json) ?? string.Empty;
+                if (minor < 3)
+                {
+                    await FailAsync(session, lease, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", retryable: false, started, span).ConfigureAwait(false);
+                    return;
+                }
+
+                try
+                {
+                    Blobs.Validate(blob);
+                }
+                catch (SagatException)
+                {
+                    await FailAsync(session, lease, "OUTPUT_INVALID", "the blob output descriptor is malformed", retryable: false, started, span).ConfigureAwait(false);
+                    return;
+                }
+
+                output = string.Empty;
             }
-            catch (SagatException error)
+            else
             {
-                await FailAsync(session, lease, "OUTPUT_INVALID", error.Message, retryable: false, started, span).ConfigureAwait(false);
-                return;
+                try
+                {
+                    output = result.ToJson(json) ?? string.Empty;
+                }
+                catch (SagatException error)
+                {
+                    await FailAsync(session, lease, "OUTPUT_INVALID", error.Message, retryable: false, started, span).ConfigureAwait(false);
+                    return;
+                }
             }
 
             if (Encoding.UTF8.GetByteCount(output) > MaxOutputBytes)
@@ -807,7 +913,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 return;
             }
 
-            await CompleteAsync(session, lease, output, started, span).ConfigureAwait(false);
+            await CompleteAsync(session, lease, output, blob, started, span).ConfigureAwait(false);
         }
         finally
         {
@@ -826,6 +932,52 @@ public sealed partial class WorkerHost : IWorkerHost
     private static bool IsCancellation(Exception error) =>
         error is OperationCanceledException || (error is SagatException { Code: SagatErrorCode.Cancelled });
 
+    private async Task<BlobDescriptor> WriteBlobAsync(
+        Session session,
+        TaskLease lease,
+        TaskRuntime runtime,
+        Stream source,
+        BlobWriteOptions blobOptions,
+        CancellationToken cancellationToken)
+    {
+        if (runtime.Finished)
+        {
+            throw SagatException.Invalid("the attempt is over");
+        }
+
+        if (minor < 3)
+        {
+            throw new SagatException(SagatErrorCode.UnsupportedProtocol, "blob streaming requires worker protocol 1.3");
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtime.Abort.Token, cancellationToken);
+        return await Blobs.WriteAsync(session.Rpc, lease, source, blobOptions, linked.Token).ConfigureAwait(false);
+    }
+
+    private async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadBlobAsync(
+        Session session,
+        TaskLease lease,
+        TaskRuntime runtime,
+        BlobDescriptor descriptor,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (runtime.Finished)
+        {
+            throw SagatException.Invalid("the attempt is over");
+        }
+
+        if (minor < 3)
+        {
+            throw new SagatException(SagatErrorCode.UnsupportedProtocol, "blob streaming requires worker protocol 1.3");
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtime.Abort.Token, cancellationToken);
+        await foreach (var chunk in Blobs.ReadAsync(session.Rpc, lease, descriptor, linked.Token).ConfigureAwait(false))
+        {
+            yield return chunk;
+        }
+    }
+
     private static string TypeNameOf(Exception error)
     {
         if (error is AggregateException { InnerExceptions.Count: 1 } aggregate)
@@ -838,7 +990,7 @@ public sealed partial class WorkerHost : IWorkerHost
 
     private Activity? StartSpan(TaskLease lease, TaskKind kind)
     {
-        var name = "sagat activity " + lease.ActivityName;
+        const string name = "sagat.worker.task";
         var parented = lease.Traceparent.Length > 0 && System.Diagnostics.ActivityContext.TryParse(lease.Traceparent, null, out var parent);
         var span = parented
             ? Safe.Start(name, ActivityKind.Consumer, parent)
@@ -973,7 +1125,7 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task CompleteAsync(Session session, TaskLease lease, string output, long started, Activity? span)
+    private async Task CompleteAsync(Session session, TaskLease lease, string output, BlobDescriptor? blob, long started, Activity? span)
     {
         var channel = session.Rpc;
         try
@@ -989,8 +1141,8 @@ public sealed partial class WorkerHost : IWorkerHost
                     LeaseToken = lease.LeaseToken,
                     IdempotencyKey = "done-" + lease.TaskId,
                     OutputJson = output,
-                    OutputBlobRef = string.Empty,
-                    OutputSha256 = string.Empty,
+                    OutputBlobRef = blob?.Id ?? string.Empty,
+                    OutputSha256 = blob?.Sha256 ?? string.Empty,
                     Traceparent = lease.Traceparent,
                 },
                 lease.Traceparent.Length > 0 ? lease.Traceparent : null,

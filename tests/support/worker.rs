@@ -3,6 +3,10 @@
 //! one identity provider, exactly as the deployed processes do.
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
+use sagat_api_grpc::pb::{
+    ReadBlobRequest, WriteBlobHeader, WriteBlobRequest, WriteBlobResponse, read_blob_response,
+    write_blob_request,
+};
 use std::time::Duration;
 
 use reqwest::Method;
@@ -349,14 +353,29 @@ impl Worker<'_> {
 
     /// Registers and remembers the session.
     pub async fn register(&mut self, activities: &[&str]) {
-        let request = self.req(Self::register_message(activities, 100));
+        self.register_version(activities, "1").await;
+    }
+
+    /// Registers at an explicit protocol version and remembers the negotiated session.
+    pub async fn register_version(&mut self, activities: &[&str], protocol_version: &str) {
+        let mut message = Self::register_message(activities, 100);
+        message
+            .capabilities
+            .as_mut()
+            .expect("capabilities")
+            .protocol_version = protocol_version.to_owned();
+        let request = self.req(message);
         let response = self
             .client
             .register_worker(request)
             .await
             .expect("register")
             .into_inner();
-        assert_eq!(response.accepted_protocol_version, "1");
+        assert_eq!(
+            response.accepted_protocol_version,
+            sagat_application::worker::negotiate_protocol(protocol_version)
+                .expect("a supported protocol version")
+        );
         self.worker_id = response.worker_id;
         self.session = response.session_token;
     }
@@ -407,6 +426,107 @@ impl Worker<'_> {
             .resolve_secrets(request)
             .await
             .map(|r| r.into_inner().secrets)
+    }
+
+    /// Uploads `data` as a blob, in chunks of `chunk` bytes, for the attempt `lease` names.
+    pub async fn write_blob(
+        &mut self,
+        lease: &TaskLease,
+        header: WriteBlobHeader,
+        data: &[u8],
+        chunk: usize,
+    ) -> Result<WriteBlobResponse, Status> {
+        let header = WriteBlobHeader {
+            task_id: lease.task_id.clone(),
+            run_id: lease.run_id.clone(),
+            step_id: lease.step_id.clone(),
+            attempt: lease.attempt,
+            generation: lease.generation,
+            lease_token: lease.lease_token.clone(),
+            ..header
+        };
+        let mut messages = vec![WriteBlobRequest {
+            part: Some(write_blob_request::Part::Header(header)),
+        }];
+        messages.extend(data.chunks(chunk.max(1)).map(|c| WriteBlobRequest {
+            part: Some(write_blob_request::Part::Chunk(
+                bytes::Bytes::copy_from_slice(c),
+            )),
+        }));
+        self.write_blob_messages(messages).await
+    }
+
+    /// Uploads exactly these messages, for the tests about a malformed stream.
+    pub async fn write_blob_messages(
+        &mut self,
+        messages: Vec<WriteBlobRequest>,
+    ) -> Result<WriteBlobResponse, Status> {
+        let request = self.req(tokio_stream::iter(messages));
+        self.client
+            .write_blob(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    pub fn read_blob_message(lease: &TaskLease, blob_id: &str) -> ReadBlobRequest {
+        ReadBlobRequest {
+            task_id: lease.task_id.clone(),
+            run_id: lease.run_id.clone(),
+            step_id: lease.step_id.clone(),
+            attempt: lease.attempt,
+            generation: lease.generation,
+            lease_token: lease.lease_token.clone(),
+            blob_id: blob_id.to_owned(),
+        }
+    }
+
+    /// Downloads a blob whole: its header and its content. A stream that ends with an error (for
+    /// content that failed verification) is that error.
+    pub async fn read_blob(
+        &mut self,
+        lease: &TaskLease,
+        blob_id: &str,
+    ) -> Result<(sagat_api_grpc::pb::ReadBlobHeader, Vec<u8>), Status> {
+        let request = self.req(Self::read_blob_message(lease, blob_id));
+        let mut stream = self.client.read_blob(request).await?.into_inner();
+        let mut header = None;
+        let mut content = Vec::new();
+        while let Some(message) = stream.message().await? {
+            match message.part {
+                Some(read_blob_response::Part::Header(h)) => {
+                    assert!(header.is_none(), "one header, first");
+                    header = Some(h);
+                }
+                Some(read_blob_response::Part::Chunk(c)) => {
+                    assert!(header.is_some(), "the header comes first");
+                    assert!(
+                        c.len() <= sagat_api_grpc::BLOB_CHUNK_BYTES,
+                        "chunks are bounded"
+                    );
+                    content.extend_from_slice(&c);
+                }
+                None => panic!("an empty message"),
+            }
+        }
+        Ok((header.expect("a header"), content))
+    }
+
+    /// Completes the step with a blob as its output.
+    pub async fn complete_with_blob(
+        &mut self,
+        lease: &TaskLease,
+        blob_id: &str,
+    ) -> Result<sagat_api_grpc::pb::StepCommandResponse, Status> {
+        let message = CompleteStepRequest {
+            output_json: String::new(),
+            output_blob_ref: blob_id.to_owned(),
+            ..Self::complete_message(lease, "")
+        };
+        let request = self.req(message);
+        self.client
+            .complete_step(request)
+            .await
+            .map(tonic::Response::into_inner)
     }
 
     pub fn heartbeat_message(&self, lease: &TaskLease) -> HeartbeatRequest {
@@ -631,4 +751,14 @@ impl Drop for RunningEngine {
             let _ = stop.send(());
         }
     }
+}
+
+/// What the server tells the caller to do next (SC-002-004), from the trailing metadata.
+pub fn remediation_of(status: &Status) -> String {
+    status
+        .metadata()
+        .get("x-sagat-remediation")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
 }

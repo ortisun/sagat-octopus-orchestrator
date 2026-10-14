@@ -64,9 +64,9 @@ function VersionRow({ version, onOpen }: { version: ScriptVersionSummary; onOpen
       <th scope="row">{version.number}</th>
       <td>
         <StatusBadge view={versionStatus(version.status)} />
-        {version.status === 'FAILED' && version.failure ? (
-          <div className="hint" title={buildFailureHelp(version.failure)}>
-            {clipLabel(version.failure, 120)}
+        {version.status === 'FAILED' && (version.failureCode || version.failure) ? (
+          <div className="hint" title={buildFailureHelp(version.failureCode ?? version.failure)}>
+            {clipLabel(version.failureCode || version.failure || '', 120)}
           </div>
         ) : null}
       </td>

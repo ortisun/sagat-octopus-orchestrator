@@ -34,6 +34,8 @@ public sealed class ActivityExecutionContext
 {
     private readonly TaskRuntime runtime;
     private readonly Func<CancellationToken, Task<ActivitySecrets>> secrets;
+    private readonly Func<Stream, BlobWriteOptions, CancellationToken, Task<BlobDescriptor>> writeBlob;
+    private readonly Func<BlobDescriptor, CancellationToken, IAsyncEnumerable<ReadOnlyMemory<byte>>> readBlob;
 
     internal ActivityExecutionContext(
         TaskRuntime runtime,
@@ -51,10 +53,14 @@ public sealed class ActivityExecutionContext
         string targetIdempotencyKey,
         IReadOnlyDictionary<string, JsonElement> steps,
         ILogger logger,
-        Func<CancellationToken, Task<ActivitySecrets>> secrets)
+        Func<CancellationToken, Task<ActivitySecrets>> secrets,
+        Func<Stream, BlobWriteOptions, CancellationToken, Task<BlobDescriptor>> writeBlob,
+        Func<BlobDescriptor, CancellationToken, IAsyncEnumerable<ReadOnlyMemory<byte>>> readBlob)
     {
         this.runtime = runtime;
         this.secrets = secrets;
+        this.writeBlob = writeBlob;
+        this.readBlob = readBlob;
         ActivityName = activityName;
         TaskId = taskId;
         RunId = runId;
@@ -131,4 +137,12 @@ public sealed class ActivityExecutionContext
     /// <see cref="SagatErrorCode.UnsupportedProtocol"/> instead of calling the server.
     /// </summary>
     public Task<ActivitySecrets> GetSecretsAsync(CancellationToken cancellationToken = default) => secrets(cancellationToken);
+
+    /// <summary>Streams a one-pass source and verifies the returned descriptor against the bytes sent.</summary>
+    public Task<BlobDescriptor> WriteBlobAsync(Stream source, BlobWriteOptions? options = null, CancellationToken cancellationToken = default) =>
+        writeBlob(source ?? throw new ArgumentNullException(nameof(source)), options ?? new(), cancellationToken);
+
+    /// <summary>Streams bytes; successful exhaustion means size and SHA-256 matched the descriptor.</summary>
+    public IAsyncEnumerable<ReadOnlyMemory<byte>> ReadBlobAsync(BlobDescriptor descriptor, CancellationToken cancellationToken = default) =>
+        readBlob(descriptor ?? throw new ArgumentNullException(nameof(descriptor)), cancellationToken);
 }

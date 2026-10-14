@@ -8,3 +8,9 @@ mod support;
 
 mod limits;
 mod protocol;
+mod stream_security;
+mod stream_telemetry;
+
+mod blobs;
+mod input_blobs;
+mod protocol_compatibility;

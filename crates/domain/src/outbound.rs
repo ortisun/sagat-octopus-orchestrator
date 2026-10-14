@@ -10,7 +10,9 @@
 use std::fmt;
 use std::time::Duration;
 
+use crate::connectors::{ConnectorError, ConnectorKind, Server, name, parse_servers};
 use crate::egress::Destination;
+use crate::secrets::SecretName;
 
 uuid_id!(
     /// Identifier of a subscription to outbound events.
@@ -49,6 +51,112 @@ pub enum OutboundError {
     InvalidRate,
     #[error("the timeout is between 1 and 30 seconds")]
     InvalidTimeout,
+}
+
+/// A broker destination for an outbound subscription. Credentials are named separately and never
+/// live in these settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrokerDestination {
+    Nats {
+        servers: Vec<Server>,
+        subject: String,
+    },
+    Kafka {
+        servers: Vec<Server>,
+        topic: String,
+    },
+    Sqs {
+        queue_url: TargetUrl,
+        region: String,
+    },
+}
+
+impl BrokerDestination {
+    pub fn nats(servers: &[String], subject: &str) -> Result<Self, ConnectorError> {
+        Ok(Self::Nats {
+            servers: parse_servers(servers)?,
+            subject: name(subject)?,
+        })
+    }
+
+    pub fn kafka(servers: &[String], topic: &str) -> Result<Self, ConnectorError> {
+        Ok(Self::Kafka {
+            servers: parse_servers(servers)?,
+            topic: name(topic)?,
+        })
+    }
+
+    pub fn sqs(queue_url: &str, region: &str) -> Result<Self, ConnectorError> {
+        let crate::connectors::ConnectorSettings::Sqs { queue_url, region } =
+            crate::connectors::ConnectorSettings::sqs(queue_url, region)?
+        else {
+            return Err(ConnectorError::WrongKind);
+        };
+        Ok(Self::Sqs {
+            queue_url: TargetUrl::parse(&queue_url).map_err(|_| ConnectorError::InvalidQueueUrl)?,
+            region,
+        })
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> ConnectorKind {
+        match self {
+            Self::Nats { .. } => ConnectorKind::Nats,
+            Self::Kafka { .. } => ConnectorKind::Kafka,
+            Self::Sqs { .. } => ConnectorKind::Sqs,
+        }
+    }
+
+    #[must_use]
+    pub fn servers(&self) -> Vec<Server> {
+        match self {
+            Self::Nats { servers, .. } | Self::Kafka { servers, .. } => servers.clone(),
+            Self::Sqs { queue_url, .. } => {
+                let d = queue_url.destination();
+                Server::parse(&format!(
+                    "{}://{}:{}",
+                    if d.scheme == "https" { "tls" } else { "nats" },
+                    d.host,
+                    d.port
+                ))
+                .into_iter()
+                .collect()
+            }
+        }
+    }
+}
+
+/// Where an outbound subscription sends an event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboundDestination {
+    Webhook {
+        url: TargetUrl,
+        signing_secret: SecretName,
+    },
+    Broker {
+        settings: BrokerDestination,
+        credentials_secret: Option<SecretName>,
+    },
+}
+
+impl OutboundDestination {
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Webhook { .. } => "WEBHOOK",
+            Self::Broker { settings, .. } => settings.kind().as_str(),
+        }
+    }
+
+    #[must_use]
+    pub const fn secret_name(&self) -> Option<&SecretName> {
+        match self {
+            Self::Webhook { signing_secret, .. } => Some(signing_secret),
+            Self::Broker {
+                credentials_secret, ..
+            } => credentials_secret.as_ref(),
+        }
+    }
 }
 
 /// A kind of event the platform delivers.
@@ -181,6 +289,8 @@ pub enum AttemptOutcome {
     Denied,
     /// There was nothing to sign with: the secret was deleted, or no key of the ring opens it.
     Unsigned,
+    /// Broker credentials were configured but could not be read or opened.
+    CredentialUnavailable,
 }
 
 impl AttemptOutcome {
@@ -195,6 +305,7 @@ impl AttemptOutcome {
             Self::Network => "NETWORK",
             Self::Denied => "DENIED",
             Self::Unsigned => "UNSIGNED",
+            Self::CredentialUnavailable => "CREDENTIAL_UNAVAILABLE",
         }
     }
 }
@@ -212,6 +323,7 @@ impl std::str::FromStr for AttemptOutcome {
             Self::Network,
             Self::Denied,
             Self::Unsigned,
+            Self::CredentialUnavailable,
         ]
         .into_iter()
         .find(|o| o.as_str() == value)

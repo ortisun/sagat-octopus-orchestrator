@@ -20,6 +20,8 @@ pub enum ConflictKind {
     EventIdReused,
     /// A subscription to outbound events with that name already exists in the namespace.
     WebhookSubscriptionName,
+    /// An outbound broker subscription with that name already exists in the namespace.
+    BrokerSubscriptionName,
     /// A connector with that name already exists in the namespace.
     ConnectorSlug,
     /// A script with that name already exists in the namespace.

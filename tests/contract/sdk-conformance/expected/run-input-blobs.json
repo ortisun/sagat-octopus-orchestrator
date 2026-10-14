@@ -1,0 +1,110 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "input",
+      "ok": true,
+      "op": "startWithBlob",
+      "result": {
+        "correlationId": "blob-input-{{unique}}",
+        "createdAt": "<time>",
+        "deadline": "<createdAt+60s>",
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<given-trace>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "input-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": "blob-input-{{unique}}",
+        "createdAt": "<time>",
+        "deadline": "<createdAt+60s>",
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<given-trace>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    }
+  ],
+  "runInputBlobEvidence": {
+    "stored": {
+      "claimed": true,
+      "contentType": "application/octet-stream",
+      "sha256": "e327a74e9a14ae13e010f3614e258c50b6150b6845e691691f54768f8bb3b5ee",
+      "size": 300000,
+      "state": "COMMITTED"
+    },
+    "verifiedOutput": {
+      "inputBlobSha256": "e327a74e9a14ae13e010f3614e258c50b6150b6845e691691f54768f8bb3b5ee",
+      "inputBlobSize": 300000
+    }
+  },
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "input",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "workerLog": {
+    "w1": [
+      {
+        "abortedReason": null,
+        "activity": "blob.input",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:1>:input",
+        "input": {
+          "$blob": {
+            "contentType": "application/octet-stream",
+            "id": "<uuid:4>",
+            "sha256": "e327a74e9a14ae13e010f3614e258c50b6150b6845e691691f54768f8bb3b5ee",
+            "size": 300000
+          }
+        },
+        "kind": "activity",
+        "node": "input",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<given-trace>",
+        "traceparentPresent": true
+      }
+    ]
+  }
+}

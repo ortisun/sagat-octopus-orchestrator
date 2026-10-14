@@ -68,8 +68,11 @@ async fn run(command: Command) -> Result<(), String> {
 
 async fn serve(_telemetry: &sagat_telemetry::Telemetry) -> Result<(), String> {
     let config = RunnerConfig::from_lookup(&env_lookup).map_err(|e| e.to_string())?;
-    let sandbox = DockerSandbox::connect(config.images.clone())
-        .map_err(|_| "the container engine could not be reached".to_owned())?;
+    let sandbox = match config.go_target {
+        Some(target) => DockerSandbox::connect_with_go_target(config.images.clone(), target),
+        None => DockerSandbox::connect(config.images.clone()),
+    }
+    .map_err(|_| "the container engine could not be reached".to_owned())?;
     let admin_addr = config.admin_addr;
     let sweep_after = config.sweep_after;
     // Install the metrics recorder before anything runs so the first samples are kept; idle series

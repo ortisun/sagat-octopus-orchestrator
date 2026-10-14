@@ -119,3 +119,17 @@ Check `docs/architecture/overview.md`, `docs/architecture/execution-semantics.md
 ## Traceability
 
 Requirements `FR-010-###` and criteria `SC-010-###` must be mapped to tasks and tests in `tasks.md` before the start of each implementation.
+
+## Completion hardening
+
+NFR-010-DUR and NFR-010-OBS require critical background tasks to be supervised: an
+unexpected exit or panic must make probes unhealthy, stop sibling tasks and produce a
+nonzero process exit. Requested shutdown has a bounded drain and preserves transactional
+rollback and lease-expiry recovery (T010-037). Full application/KEDA cluster validation
+remains a separate acceptance step (T010-038).
+
+Activity admission acquires policy fences in tenant, namespace, activity order. Claims share the
+tenant and namespace fences; edits exclusively fence the level they change. A run claiming several
+activities visits them in activity-name order (then node id), independent of workflow node order.
+A completed limit change governs subsequent admissions; transactions already admitted may finish
+before the change commits. Existing leases are not revoked by a lower limit (T010-040).

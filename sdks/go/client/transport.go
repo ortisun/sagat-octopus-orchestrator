@@ -32,6 +32,9 @@ type request struct {
 	// body is encoded once, before the first attempt, so every attempt sends the same bytes.
 	body           any
 	hasBody        bool
+	rawBody        io.Reader
+	contentType    string
+	headers        http.Header
 	idempotencyKey string
 	traceparent    string
 	// repeatable is true for a call whose repetition cannot do harm: a GET, or a POST that carries a
@@ -91,6 +94,8 @@ func (c *Client) once(ctx context.Context, req request, payload []byte) (*respon
 	var reader io.Reader
 	if req.hasBody {
 		reader = bytes.NewReader(payload)
+	} else if req.rawBody != nil {
+		reader = req.rawBody
 	}
 	httpReq, err := http.NewRequestWithContext(attemptCtx, req.method, target, reader)
 	if err != nil {
@@ -108,6 +113,13 @@ func (c *Client) once(ctx context.Context, req request, payload []byte) (*respon
 	}
 	if req.hasBody {
 		httpReq.Header.Set("Content-Type", "application/json")
+	} else if req.rawBody != nil {
+		httpReq.Header.Set("Content-Type", req.contentType)
+	}
+	for name, values := range req.headers {
+		for _, value := range values {
+			httpReq.Header.Add(name, value)
+		}
 	}
 
 	resp, err := c.http.Do(httpReq)

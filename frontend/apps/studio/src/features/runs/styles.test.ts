@@ -82,11 +82,5 @@ describe('runs.css', () => {
     expect(block(css, '@media (max-width: 48rem)')).toMatch(/\.rn-selected-step\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/);
   });
 
-  it('compacts the run summary on wide review screens without changing the narrow layout', () => {
-    const review = block(css, '@media (min-width: 88rem)');
-    expect(review).toMatch(/\.rn-title\s*{[^}]*display:\s*grid/);
-    expect(review).toMatch(/\.rn-title\s*>\s*\.toolbar\s*{[^}]*grid-row:\s*1\s*\/\s*3/);
-    expect(review).toMatch(/\.rn-facts\.rn-grid\s*{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
-    expect(css.indexOf('@media (min-width: 88rem)')).toBeGreaterThan(css.indexOf('.rn-facts.rn-grid {'));
-  });
+  // Run summary/canvas layout is measured in the real browser by visual-layout.spec.ts.
 });

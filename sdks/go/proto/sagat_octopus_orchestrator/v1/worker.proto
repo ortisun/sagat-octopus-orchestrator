@@ -26,6 +26,12 @@ option java_package = "dev.sagatoctopusorchestrator.protocol.v1";
 service WorkerService {
   rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
   rpc PollTasks(PollTasksRequest) returns (PollTasksResponse);
+  // Added in 1.4 (additive, ADR-0029). `max_tasks` is finite receive credit for this call, not a
+  // per-frame batch size: each delivered lease spends one credit. The server may emit several
+  // nonempty frames, then closes after spending the credit, the aggregate 8 MiB task-input budget,
+  // or the bounded receive window. An underfilled normal window ends with one empty response whose
+  // `retry_after_ms` is positive. Protocol 1.0-1.3 workers continue to use PollTasks.
+  rpc StreamTasks(PollTasksRequest) returns (stream PollTasksResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc CompleteStep(CompleteStepRequest) returns (StepCommandResponse);
   rpc FailStep(FailStepRequest) returns (StepCommandResponse);
@@ -34,6 +40,24 @@ service WorkerService {
   // The values are credentials: use this call only over TLS, never log or persist them, and drop them
   // when the attempt ends. Every call is audited (names and versions, never values).
   rpc ResolveSecrets(ResolveSecretsRequest) returns (ResolveSecretsResponse);
+  // Added in 1.3 (additive, FR-002-008): payloads too large to travel in a message. The engine never
+  // carries them; a step's input holds a small descriptor `{"$blob": {"id", "size", "sha256",
+  // "contentType"}}` and the bytes are fetched here. Both calls need the lease of an attempt that is
+  // running (the lease is the capability, as for ResolveSecrets) and only reach blobs of the lease's
+  // own tenant and namespace; a blob outside that boundary looks exactly like a missing blob.
+  //
+  // WriteBlob: the first message is the header, every later one a chunk of at most 256 KiB. Reply: the
+  // blob id. Report it in CompleteStep.output_blob_ref (and leave output_json empty) to make it the
+  // step's output. A blob that is not used within the upload TTL is deleted.
+  // ReadBlob: the first message is the header, the rest are chunks of at most 256 KiB. The server
+  // checks size and digest as it reads: a stored object that is not what was recorded ends the stream
+  // with DATA_LOSS instead of ending it cleanly, so a cleanly ended stream is a verified one.
+  //   Errors: RESOURCE_EXHAUSTED (x-sagat-error QUOTA_EXCEEDED) too many unused blobs, or
+  //   (RATE_LIMITED, retry-after-ms) too many transfers at once; INVALID_ARGUMENT a blob over the
+  //   maximum size, a wrong stated size or digest, a malformed stream, or blobs not configured on
+  //   this instance; NOT_FOUND no such blob; DATA_LOSS the stored content is not what was recorded.
+  rpc WriteBlob(stream WriteBlobRequest) returns (WriteBlobResponse);
+  rpc ReadBlob(ReadBlobRequest) returns (stream ReadBlobResponse);
 }
 
 message WorkerCapabilities {
@@ -56,6 +80,9 @@ message TaskLease {
   int64 expires_at_epoch_ms = 7;
   string activity_name = 8;
   string input_json = 9;
+  // Catalog-backed run input, if started through REST inputBlobRef. Its descriptor also appears
+  // inside input_json; read the bytes through ReadBlob under this lease. Ordinary JSON that
+  // resembles a descriptor does not populate this field. Added semantics in protocol 1.3.
   string input_blob_ref = 10;
   string traceparent = 11;
   string tenant_alias = 12;
@@ -79,6 +106,9 @@ message HeartbeatRequest {
   string run_id = 5; string step_id = 6; int32 attempt = 7;
 }
 message HeartbeatResponse { int64 lease_expires_at_epoch_ms = 1; bool cancel_requested = 2; }
+// Exactly one of `output_json` (at most 256 KiB) and `output_blob_ref` (the id WriteBlob returned,
+// for a larger output; `output_sha256`, if sent, must then be the blob's digest). The step's output
+// the run keeps is the blob's small descriptor.
 message CompleteStepRequest {
   string task_id = 1; string run_id = 2; string step_id = 3;
   int32 attempt = 4; int64 generation = 5; string lease_token = 6;
@@ -98,4 +128,35 @@ message ResolveSecretsRequest {
 }
 message ResolvedSecret { string name = 1; bytes value = 2; uint32 version = 3; }
 message ResolveSecretsResponse { repeated ResolvedSecret secrets = 1; }
+// WriteBlob: `header` exactly once, first; then `chunk`s.
+message WriteBlobRequest {
+  oneof part {
+    WriteBlobHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+message WriteBlobHeader {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  // A media type such as application/json; parameters are dropped. Default application/octet-stream.
+  string content_type = 7;
+  // Optional (0 and empty mean "not stated"): the upload is refused unless the content has exactly
+  // this many bytes and this SHA-256 (lower-case hex).
+  int64 expected_size = 8;
+  string expected_sha256 = 9;
+}
+message WriteBlobResponse { string blob_id = 1; int64 size = 2; string sha256 = 3; string content_type = 4; }
+message ReadBlobRequest {
+  string task_id = 1; string run_id = 2; string step_id = 3;
+  int32 attempt = 4; int64 generation = 5; string lease_token = 6;
+  string blob_id = 7;
+}
+// ReadBlob: `header` first, then `chunk`s.
+message ReadBlobResponse {
+  oneof part {
+    ReadBlobHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+message ReadBlobHeader { string blob_id = 1; int64 size = 2; string sha256 = 3; string content_type = 4; }
 message StepCommandResponse { string command_id = 1; bool already_applied = 2; string step_status = 3; string run_status = 4; }

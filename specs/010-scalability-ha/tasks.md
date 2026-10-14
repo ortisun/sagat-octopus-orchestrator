@@ -70,3 +70,18 @@
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## Integrated requirement completion
+
+- [x] T010-037 Close G269 by supervising critical engine loops; test unexpected exit/panic and requested shutdown (NFR-010-DUR, NFR-010-OBS).
+- [x] T010-038 Close G247 with a full product Helm deployment and real KEDA scaling/recovery in a disposable cluster (FR-010-004). — `tests/e2e/scalability-ha/kubernetes/run.sh`; live report: `tests/performance/reports/kubernetes-validation.md`.
+
+T010-037 evidence: `apps/execution-engine/src/supervision.rs` tests unexpected return,
+panic, graceful stop and forced bounded cleanup. Focused engine tests passed 32/32
+and focused Clippy passed (implementation-agent execution). Integrated gates follow.
+
+## Activity admission completion
+
+- [x] T010-040 Order multi-activity claim locks and fence activity policy edits (FR-010-002). Both original failures reproduced before the fix; five real PostgreSQL `activity_locking` tests pass: deterministic ABBA prevention, ceiling/default commit fencing, queued-editor reentrancy, independent activity concurrency and effective-limit response after a concurrent ceiling change. Integration-target clippy passes with `-D warnings`.
+
+- [x] T010-039 Enforce tenant/namespace/activity concurrency with transactional admission and audited namespace overrides (FR-010-002). Real PostgreSQL tests prove the 12-poller race, busy-activity skip, expired lease recovery, tenant isolation and reduced platform ceiling; management REST contract suite passes 7/7. Migration rollback/forward covers 31 tables; scoped clippy passes with `-D warnings`.

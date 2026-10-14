@@ -83,3 +83,32 @@ tests/e2e/durable-execution/
 ## Delivery Gate
 
 Deterministic crash test at each point of claim→effect→commit→publish, with an intact journal and no double transition.
+
+## Integrated blob completion
+
+The claim-check extension (ADR-0023) adds a provider-neutral application port and
+PostgreSQL catalog, then bounded mediated worker transfers and run-input admission.
+Descriptor visibility commits with the durable transition; external bytes are staged
+first and garbage collection retains retry evidence until external deletion succeeds.
+Current worker bindings, tenant/namespace ownership and lease fencing remain authoritative.
+Feature 006 supplies common SDK conformance, 009 authorization/quotas, and 010 recovery;
+these integrated implementations are approved dependencies for T002-037..039.
+
+## Serialized poll budget hardening
+
+Render and measure a task context before leasing it. Admit at most 8 MiB of serialized inputs per poll; update the response count only after each run transaction commits. A context larger than a fresh response records its preflight attempt and non-retryable `RUN_DATA_LIMIT` together through the existing saga-aware failure transition, with no published token. Prove numeric normalization expansion, sibling tasks split across polls, and cross-run batching against PostgreSQL (`T002-039`).
+
+## Run-input blob slice
+
+Extend the existing catalog with tagged ownership and nullable pre-start run identity; reuse streaming storage, limits, audit and tombstone cleanup. Add authorized raw REST upload, stable pre-catalog start replay, transactional run-input binding, bounded descriptor schema validation and durable lease input reference. Configure the same storage provider in control plane and engine. Verify the REST-to-worker path with PostgreSQL and the in-process storage test backend, then exercise production configuration and compatibility. ADR-0023 specifies the input semantics; The server path is covered by real REST/PostgreSQL/gRPC tests in `grpc/input_blobs.rs`; T002-040 is verified by all-five SDK conformance over shared filesystem storage, with terminal-state, descriptor/digest and early-response integrity assertions.
+
+
+## Approved feature-006 streaming dependency (2026-10-12)
+
+ADR-0029 reuses the canonical claim path and adds exact per-session admission across polling and
+streaming. PostgreSQL lock order is run row → shared drain fence → session row → sorted activity
+policy/quota locks. Session replacement and binding revocation serialize on the session row;
+current token/ownership/expiry, binding and available durable capacity are rechecked before leasing.
+The fence is held only for the claim transaction, never for an idle receive window. See
+[execution semantics](../../docs/architecture/execution-semantics.md#worker-session-claim-admission)
+and the feature-006 completion contract and named concurrency/recovery evidence.

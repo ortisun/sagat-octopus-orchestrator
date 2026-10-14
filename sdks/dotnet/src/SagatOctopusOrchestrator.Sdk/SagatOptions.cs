@@ -167,6 +167,9 @@ public sealed class WorkerOptions
     /// <summary>Tasks in flight at once, 1 to 1000. 10 by default.</summary>
     public int MaxInflight { get; set; } = 10;
 
+    /// <summary>How tasks are received: automatic streaming when protocol 1.4 is accepted, unary polling, or required streaming.</summary>
+    public WorkerTransport Transport { get; set; } = WorkerTransport.Auto;
+
     /// <summary>The <c>languages</c> capability. <c>csharp</c> by default.</summary>
     public IList<string> Languages { get; } = [SdkInfo.Language];
 
@@ -190,6 +193,7 @@ public sealed class WorkerOptions
     {
         Name = other.Name;
         MaxInflight = other.MaxInflight;
+        Transport = other.Transport;
         ReplaceAll(Languages, other.Languages);
         ReplaceAll(Pools, other.Pools);
         ShutdownTimeout = other.ShutdownTimeout;
@@ -206,6 +210,17 @@ public sealed class WorkerOptions
             target.Add(item);
         }
     }
+}
+
+/// <summary>The task receive transport of a worker host.</summary>
+public enum WorkerTransport
+{
+    /// <summary>Stream with protocol 1.4 and fall back to polling only when StreamTasks is unimplemented.</summary>
+    Auto,
+    /// <summary>Always use unary PollTasks.</summary>
+    Poll,
+    /// <summary>Require protocol 1.4 StreamTasks.</summary>
+    Stream,
 }
 
 /// <summary>TLS settings of the REST client and of the worker channel.</summary>

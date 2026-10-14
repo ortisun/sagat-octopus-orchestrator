@@ -107,7 +107,10 @@ impl Language {
     /// Whether the platform has a builder and a runner for it.
     #[must_use]
     pub const fn is_built(self) -> bool {
-        matches!(self, Self::TypeScript | Self::Python | Self::CSharp)
+        matches!(
+            self,
+            Self::TypeScript | Self::Python | Self::CSharp | Self::Go | Self::Java
+        )
     }
 
     /// The extension of the file the source is written to.
@@ -669,6 +672,8 @@ impl std::str::FromStr for JobStatus {
 /// Why a run of a script did not give a result. The code is what a step is failed with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
+    /// Retained content could not be committed within the tenant storage quota.
+    StorageQuotaExceeded,
     /// The script raised an error or exited with a status other than zero.
     Error,
     /// It was still running when its time ran out.
@@ -697,6 +702,7 @@ impl Failure {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
+            Self::StorageQuotaExceeded => "STORAGE_QUOTA_EXCEEDED",
             Self::Error => "SCRIPT_ERROR",
             Self::Timeout => "SCRIPT_TIMEOUT",
             Self::OutOfMemory => "SCRIPT_OUT_OF_MEMORY",
@@ -714,6 +720,7 @@ impl Failure {
     #[must_use]
     pub fn from_code(code: &str) -> Option<Self> {
         [
+            Self::StorageQuotaExceeded,
             Self::Error,
             Self::Timeout,
             Self::OutOfMemory,
@@ -940,7 +947,7 @@ mod tests {
                 && Language::Python.is_built()
                 && Language::CSharp.is_built()
         );
-        assert!(!Language::Go.is_built() && !Language::Java.is_built());
+        assert!(Language::Go.is_built() && Language::Java.is_built());
     }
 
     #[test]

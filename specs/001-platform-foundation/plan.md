@@ -83,3 +83,18 @@ tests/e2e/platform-foundation/
 ## Delivery Gate
 
 Contract/API + tenant isolation suite and reproducible local environment with migrations executed twice.
+
+## Integrated completion
+
+T001-036 adds server-generated per-request correlation in the outer HTTP middleware,
+OpenAPI and all live contract checks. The additive optional schema field allows older
+servers to remain representable; the current server always emits it on errors.
+T001-037 reuses tenant-scoped command deduplication for optional identity creation keys,
+committing the resource, audit and replay record atomically.
+
+## HTTP listener shutdown completion
+
+The listener owns connection tasks, including native TLS handshakes, until they finish.
+After shutdown grace expires it cancels and drains remaining tasks before returning;
+a detached handler must not retain a socket, body or admission permit. The fault suite
+uses a handler that never completes and verifies the client socket actually closes.

@@ -16,7 +16,7 @@ transition: the server owns every state and every retry decision. The behaviour 
 conformance suite ([`tests/contract/sdk-conformance`](../../tests/contract/sdk-conformance/README.md)).
 
 Package metadata: module `github.com/ortisun/sagat-octopus-orchestrator/sdks/go`, version `0.1.0`,
-license `UNLICENSED` (as the repository and the TypeScript package: there is no license file yet),
+license `MIT` (the module source artifact includes `LICENSE`),
 repository `https://github.com/ortisun/sagat-octopus-orchestrator`, directory `sdks/go`.
 
 ## Install
@@ -65,6 +65,11 @@ done, err := c.WaitForCompletion(ctx, run.RunID, client.WaitTimeout(30*time.Seco
 `Start` takes a workflow id or the name of a workflow of the namespace. With no key the SDK generates a
 random `Idempotency-Key` per call and reuses it for every retry of that call, so a lost answer never
 starts two runs. `List` returns a page; `ListAll` is a Go iterator (`for run, err := range c.ListAll(...)`).
+
+For a large run input, call `UploadRunInput(ctx, onePassReader, options)`, then pass its verified
+`client.BlobDescriptor` to `StartWithBlob`. The upload is streamed once and never retried; the descriptor
+is accepted only after source EOF and matching local size/SHA-256. `StartWithBlob` uses the same call options
+and idempotency behavior as `Start`.
 
 A token is a `sagat.TokenSource`: `sagat.StaticToken(s)`, or `sagat.TokenFunc(func(ctx) (string, error))`,
 asked before every request so a rotated token is used at once. The tenant is never configured: it is the
@@ -178,7 +183,7 @@ said, and `errors.Is` reaches what it returned. That it was the source is someth
 | `max_inflight` (10), pools, languages | `worker.WithMaxInflight`, `WithPools`, `WithLanguages` |
 | heartbeat interval | `worker.WithHeartbeatInterval` (default: a third of the lease, 500 ms to 10 s) |
 | logs | `WithLogger(*slog.Logger)`; silent by default |
-| trace context | `client.WithTraceContext(func(ctx) string)` returns a W3C `traceparent` (an OpenTelemetry bridge is four lines, see its doc), or pass `client.WithTraceparent` per call. No OpenTelemetry dependency |
+| trace context | `otelbridge.New(...).TraceContext` returns the ambient W3C `traceparent`, or pass `client.WithTraceparent` per call; the same bridge's `OnEvent` emits worker spans and metrics |
 | interceptors, proxies, fault injection | `worker.WithDialOptions(grpc.WithChainUnaryInterceptor(...))`, `client.WithHTTPClient` |
 
 Plain `http://` outside loopback is accepted and logs one warning at start. A redirect is never followed (the request carries a bearer token, the namespace and an idempotency key): a `3xx` is a `PROTOCOL` error, "the server redirected the call", whatever its target; a client you pass to `WithHTTPClient` is copied and its `CheckRedirect` replaced, and its `Transport` must not follow redirects either.
@@ -225,14 +230,14 @@ What was **actually run** for this release, and what was not:
 |---|---|---|
 | Go | **1.25.14** (`go test -race ./...`, `go vet`, `gofmt`, `govulncheck`, the conformance suite) | Every other Go: `go.mod` says `go 1.25.0` because gRPC v1.83 requires it, so **1.24 and older cannot build the module** (the first release of this SDK was run on 1.24.2, before that change); 1.26 was not run as the SDK's toolchain |
 | OS / arch | **macOS, Darwin 25.3.0, arm64** | Linux, Windows, amd64 |
-| Server | The platform at this commit (REST `/v1`, worker protocol 1.2), through the conformance suite, which plays 15 scenarios; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
+| Server | The platform at this commit (REST `/v1`, worker protocol 1.4), through the 19-scenario conformance suite; protocol 1.0 is also covered by the unit tests of the host, 1.1 only by the registration probe of `protocol-negotiation` | Any other server version |
 | TLS | Tested with throw-away certificates (ECDSA, generated in the tests) against an in-process TLS server, on both channels, on loopback: an untrusted server certificate is refused as `TRANSPORT` and never reaches the handler; a configured CA makes the same server work (a task goes through end to end on the worker channel); a certificate for another name is refused; with mTLS the server sees the client certificate, and refuses a client with none or with one of another authority; no warning is logged for `https://`. See "TLS" below for what is **not** covered | A trusted server certificate from the *system* roots (only the untrusted case is tested), revocation, TLS versions and cipher suites, certificate rotation on a running host |
 | Race detector | `-race` passes on the unit tests | -- |
 | Vulnerability scan | `govulncheck` v1.7.0 on `./...` with Go 1.25.14 and the vulnerability database of 2026-10-08: 9 reachable findings, all from 2026-10-08, and 4 in packages that are imported but not called | See "Known findings" below |
 
 Dependencies, all at least two weeks older than this release (checked against the proxy): `google.golang.org/grpc`
 v1.83.2 (2026-08-25), `google.golang.org/protobuf` v1.36.11, `golang.org/x/net` v0.58.0 (2026-08-12), `golang.org/x/sys`
-v0.47.0, `golang.org/x/text` v0.41.0, and what `go.sum` pins.
+v0.47.0, `golang.org/x/text` v0.41.0, OpenTelemetry Go v1.46.0 for the opt-in `otelbridge` package and its real SDK tests, and what `go.sum` pins. No provider or exporter is configured by the SDK.
 
 ### Known findings (`govulncheck ./...`, database of 2026-10-08, re-run on 2026-10-10 with the same result)
 
@@ -271,3 +276,18 @@ conformance/prepare.sh      # builds bin/runner (git-ignored)
   `vendor/` directory: it would put all of gRPC in the repository for one script.
 * The conformance suite is run from the repository root:
   `SAGAT_SDK_LANGS=go cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture`.
+
+## Task transport
+
+`worker.WithTransport(worker.TransportAuto)` is the default. It uses finite-credit task streams
+on negotiated protocol 1.4 and unary polling on older servers. `TransportPoll` selects polling
+for comparisons; `TransportStream` requires 1.4. Only an UNIMPLEMENTED stream triggers automatic
+poll fallback for that registration. Other failures keep their canonical classification.
+
+Each receive asks for available handler slots, at most 64, with an aggregate 8 MiB input bound.
+Frames dispatch immediately; completed handlers do not replenish that receive's credit.
+Tasks already received continue heartbeating/reporting after a receive failure. Stop cancels
+only the pending receive promptly, then follows the existing handler drain. A lost response
+can leave a committed lease until expiry; critical effects still need idempotency.
+
+Streaming receive failures emit `worker.EventReceiveFailed` (`receive.failed`) with the canonical `Code` and `Retryable` fields, without remote error text or payloads. Explicit streaming remains refused if re-registration negotiates an older minor; it never silently switches to polling.

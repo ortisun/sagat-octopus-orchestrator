@@ -1,19 +1,121 @@
 //! US01 and the ingress promises: an event is admitted once, only if it verifies, and what is
 //! refused leaves nothing behind but a collapsed audit record (FR-004-002..004, FR-004-008).
 
+use sagat_application::clock::SystemClock;
 use sagat_application::error::{AppError, ConflictKind};
 use sagat_application::events::{
-    Admission, BACKLOG_LIMIT, EventStore, NewEvent, PublishRequest, WebhookRequest,
+    Admission, BACKLOG_LIMIT, EndpointSettings, EventService, EventStore, NewEvent, PublishRequest,
+    WebhookIdentityVerifier, WebhookRequest,
 };
 use sagat_domain::events::{
     EndpointLimits, EndpointStatus, EventEnvelope, EventId, EventKey, InboxStatus,
+    WebhookAuthentication,
 };
-use sagat_domain::identity::Role;
+use sagat_domain::identity::{Role, Slug};
 use sagat_domain::workflow::EventType;
+use sagat_infra_ir::JsonEvaluator;
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::Barrier;
 
 use crate::support::engine::ctx;
 use crate::support::{self, slug};
 use crate::{SECRET, SECRET_NAME, Signed, now_seconds, settings, with_endpoint};
+
+struct FakeWebhookIdentities;
+
+impl WebhookIdentityVerifier for FakeWebhookIdentities {
+    fn supports(&self, profile: &Slug) -> bool {
+        profile.as_str() == "provider"
+    }
+
+    fn verify<'a>(
+        &'a self,
+        _profile: &'a Slug,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AppError>> + Send + 'a>> {
+        Box::pin(async move {
+            match token {
+                "good-token" => Ok("service/account".to_owned()),
+                "other-subject" => Ok("another/account".to_owned()),
+                "jwks-outage" => Err(AppError::Unavailable),
+                _ => Err(AppError::Unauthenticated),
+            }
+        })
+    }
+}
+
+struct GatedWebhookIdentity {
+    entered: Arc<Barrier>,
+    release: Arc<Barrier>,
+}
+
+impl WebhookIdentityVerifier for GatedWebhookIdentity {
+    fn supports(&self, profile: &Slug) -> bool {
+        profile.as_str() == "provider"
+    }
+
+    fn verify<'a>(
+        &'a self,
+        _profile: &'a Slug,
+        _token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AppError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.entered.wait().await;
+            self.release.wait().await;
+            Ok("service/account".to_owned())
+        })
+    }
+}
+
+fn identity_events(
+    w: &support::engine::World,
+) -> EventService<sagat_infra_postgres::PgRunStore, SystemClock> {
+    EventService::new(
+        w.store.clone(),
+        SystemClock,
+        w.keys.cipher(),
+        Arc::new(JsonEvaluator),
+    )
+    .with_identities(Arc::new(FakeWebhookIdentities))
+}
+
+fn gated_identity_events(
+    w: &support::engine::World,
+    entered: Arc<Barrier>,
+    release: Arc<Barrier>,
+) -> EventService<sagat_infra_postgres::PgRunStore, SystemClock> {
+    EventService::new(
+        w.store.clone(),
+        SystemClock,
+        w.keys.cipher(),
+        Arc::new(JsonEvaluator),
+    )
+    .with_identities(Arc::new(GatedWebhookIdentity { entered, release }))
+}
+
+fn identity_request<'a>(
+    timestamp: &'a str,
+    event_id: &'a str,
+    body: &'a [u8],
+    bearer: Option<&'a str>,
+    certificate_sha256: Option<&'a str>,
+) -> WebhookRequest<'a> {
+    WebhookRequest {
+        signature: None,
+        bearer,
+        certificate_sha256,
+        timestamp: Some(timestamp),
+        event_id: Some(event_id),
+        event_type: Some("invoice.paid"),
+        subject: None,
+        correlation_key: None,
+        body,
+        trace: None,
+    }
+}
 
 async fn inbox_count(w: &support::engine::World) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM inbox_events")
@@ -115,6 +217,8 @@ async fn everything_that_does_not_verify_is_refused_alike_and_leaves_no_event() 
         let request = WebhookRequest {
             trace: None,
             signature,
+            bearer: None,
+            certificate_sha256: None,
             timestamp,
             event_id,
             event_type: Some("invoice.paid"),
@@ -213,6 +317,440 @@ async fn refusals_are_audited_once_per_endpoint_and_reason() {
         }),
         "the trail never carries a signature or a secret"
     );
+}
+
+#[tokio::test]
+async fn an_oidc_profile_is_persisted_and_matches_only_its_exact_verified_subject() {
+    let w = support::engine::world().await;
+    let events = identity_events(&w);
+    let profile = slug("provider");
+    assert!(matches!(
+        events
+            .create_endpoint(
+                &w.admin,
+                w.namespace.id(),
+                slug("unknown-hook"),
+                EndpointSettings {
+                    secret_name: None,
+                    authentication: WebhookAuthentication::Oidc {
+                        profile: slug("unknown"),
+                        subject: "service/account".to_owned(),
+                    },
+                    default_event_type: None,
+                    limits: EndpointLimits::default(),
+                    status: EndpointStatus::Active,
+                },
+                &ctx(),
+            )
+            .await,
+        Err(AppError::NotAllowed(_))
+    ));
+    let settings = EndpointSettings {
+        secret_name: None,
+        authentication: WebhookAuthentication::Oidc {
+            profile: profile.clone(),
+            subject: "service/account".to_owned(),
+        },
+        default_event_type: None,
+        limits: EndpointLimits::default(),
+        status: EndpointStatus::Active,
+    };
+    let endpoint = events
+        .create_endpoint(
+            &w.admin,
+            w.namespace.id(),
+            slug("oidc-hook"),
+            settings.clone(),
+            &ctx(),
+        )
+        .await
+        .expect("OIDC endpoint");
+
+    assert_eq!(
+        events
+            .get_endpoint(&w.admin, endpoint.id)
+            .await
+            .expect("persisted endpoint")
+            .authentication,
+        settings.authentication
+    );
+    let persisted: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT profile, secret_name, oidc_profile, oidc_subject FROM event_endpoints WHERE id = $1",
+    )
+    .bind(endpoint.id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("profile row");
+    assert_eq!(
+        persisted,
+        (
+            "OIDC".to_owned(),
+            None,
+            Some("provider".to_owned()),
+            Some("service/account".to_owned())
+        )
+    );
+
+    let timestamp = now_seconds().to_string();
+    let first = events
+        .receive(
+            endpoint.id,
+            &identity_request(
+                &timestamp,
+                "oidc-event",
+                br#"{"amount":10}"#,
+                Some("good-token"),
+                None,
+            ),
+        )
+        .await
+        .expect("matching subject");
+    assert!(!first.duplicate);
+    assert!(
+        events
+            .receive(
+                endpoint.id,
+                &identity_request(
+                    &timestamp,
+                    "oidc-event",
+                    br#"{"amount":10}"#,
+                    Some("good-token"),
+                    None,
+                ),
+            )
+            .await
+            .expect("retry")
+            .duplicate
+    );
+    assert_eq!(
+        events
+            .receive(
+                endpoint.id,
+                &identity_request(
+                    &timestamp,
+                    "oidc-event",
+                    br#"{"amount":11}"#,
+                    Some("good-token"),
+                    None,
+                ),
+            )
+            .await,
+        Err(AppError::Conflict(ConflictKind::EventIdReused)),
+        "OIDC does not weaken the existing event-id/content replay check"
+    );
+    for (credential, expected) in [
+        (Some("other-subject"), AppError::Unauthenticated),
+        (Some("invalid-token"), AppError::Unauthenticated),
+        (None, AppError::Unauthenticated),
+        (Some("jwks-outage"), AppError::Unavailable),
+    ] {
+        assert_eq!(
+            events
+                .receive(
+                    endpoint.id,
+                    &identity_request(
+                        &timestamp,
+                        "another-event",
+                        br#"{"amount":12}"#,
+                        credential,
+                        None,
+                    ),
+                )
+                .await,
+            Err(expected)
+        );
+    }
+    assert_eq!(
+        inbox_count(&w).await,
+        1,
+        "only the verified identity was admitted"
+    );
+    let mut refusal_audits: i64 = 0;
+    for _ in 0..50 {
+        refusal_audits = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_records \
+             WHERE action = 'event.rejected' AND resource_id = $1",
+        )
+        .bind(format!("{}/bad_signature", endpoint.id))
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("refusal audit");
+        if refusal_audits > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        refusal_audits, 1,
+        "credential failures collapse into one profile-neutral refusal audit"
+    );
+
+    assert_eq!(
+        events.get_endpoint(&w.other_admin, endpoint.id).await,
+        Err(AppError::NotFound),
+        "another tenant cannot discover the endpoint"
+    );
+    assert_eq!(
+        events
+            .update_endpoint(&w.other_admin, endpoint.id, settings, &ctx())
+            .await,
+        Err(AppError::NotFound),
+        "another tenant cannot alter its profile"
+    );
+    let audit_text: String = sqlx::query_scalar(
+        "SELECT coalesce(string_agg(resource_id || ' ' || coalesce(reason, ''), ' '), '') \
+         FROM audit_records",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audit text");
+    assert!(
+        !audit_text.contains("good-token")
+            && !audit_text.contains("other-subject")
+            && !audit_text.contains("jwks-outage"),
+        "tokens and verified subjects never enter the audit trail"
+    );
+}
+
+#[derive(Clone, Copy)]
+enum ConcurrentEndpointChange {
+    Pause,
+    ReplaceIdentity,
+    Delete,
+}
+
+async fn endpoint_change_during_identity_verification(change: ConcurrentEndpointChange) {
+    let w = support::engine::world().await;
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let events = Arc::new(gated_identity_events(
+        &w,
+        Arc::clone(&entered),
+        Arc::clone(&release),
+    ));
+    let original = EndpointSettings {
+        secret_name: None,
+        authentication: WebhookAuthentication::Oidc {
+            profile: slug("provider"),
+            subject: "service/account".to_owned(),
+        },
+        default_event_type: None,
+        limits: EndpointLimits::default(),
+        status: EndpointStatus::Active,
+    };
+    let endpoint = events
+        .create_endpoint(
+            &w.admin,
+            w.namespace.id(),
+            slug("racing-hook"),
+            original.clone(),
+            &ctx(),
+        )
+        .await
+        .expect("OIDC endpoint");
+
+    let receiving = Arc::clone(&events);
+    let endpoint_id = endpoint.id;
+    let request = tokio::spawn(async move {
+        let timestamp = now_seconds().to_string();
+        receiving
+            .receive(
+                endpoint_id,
+                &identity_request(
+                    &timestamp,
+                    "racing-event",
+                    br#"{"amount":10}"#,
+                    Some("old-valid-token"),
+                    None,
+                ),
+            )
+            .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.wait())
+        .await
+        .expect("verification reached its deterministic gate");
+    let (expected, audit_reason) = match change {
+        ConcurrentEndpointChange::Pause => {
+            let mut paused = original;
+            paused.status = EndpointStatus::Paused;
+            events
+                .update_endpoint(&w.admin, endpoint.id, paused, &ctx())
+                .await
+                .expect("pause endpoint while verification waits");
+            (AppError::Unavailable, "endpoint_paused")
+        }
+        ConcurrentEndpointChange::ReplaceIdentity => {
+            let mut replaced = original;
+            replaced.authentication = WebhookAuthentication::Oidc {
+                profile: slug("provider"),
+                subject: "replacement/account".to_owned(),
+            };
+            events
+                .update_endpoint(&w.admin, endpoint.id, replaced, &ctx())
+                .await
+                .expect("replace endpoint identity while verification waits");
+            (AppError::Unauthenticated, "endpoint_changed")
+        }
+        ConcurrentEndpointChange::Delete => {
+            events
+                .delete_endpoint(&w.admin, endpoint.id, &ctx())
+                .await
+                .expect("delete endpoint while verification waits");
+            (AppError::Unauthenticated, "endpoint_missing")
+        }
+    };
+    release.wait().await;
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+        .await
+        .expect("receive completes after verification is released")
+        .expect("receive task did not panic");
+    assert_eq!(result, Err(expected));
+    assert_eq!(inbox_count(&w).await, 0, "stale identity admitted no event");
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records \
+         WHERE action = 'event.rejected' AND resource_id = $1",
+    )
+    .bind(format!("{}/{}", endpoint.id, audit_reason))
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("race refusal audit");
+    assert_eq!(audits, 1, "the transactional refusal is audited");
+}
+
+#[tokio::test]
+async fn pausing_an_endpoint_while_its_identity_verifies_prevents_admission() {
+    endpoint_change_during_identity_verification(ConcurrentEndpointChange::Pause).await;
+}
+
+#[tokio::test]
+async fn replacing_an_endpoint_identity_while_the_old_one_verifies_prevents_admission() {
+    endpoint_change_during_identity_verification(ConcurrentEndpointChange::ReplaceIdentity).await;
+}
+
+#[tokio::test]
+async fn deleting_an_endpoint_while_its_identity_verifies_prevents_admission() {
+    endpoint_change_during_identity_verification(ConcurrentEndpointChange::Delete).await;
+}
+
+#[tokio::test]
+async fn an_mtls_profile_requires_the_exact_verified_leaf_fingerprint() {
+    let w = support::engine::world().await;
+    let events = identity_events(&w);
+    let fingerprint = "ab".repeat(32);
+    let endpoint = events
+        .create_endpoint(
+            &w.admin,
+            w.namespace.id(),
+            slug("mtls-hook"),
+            EndpointSettings {
+                secret_name: None,
+                authentication: WebhookAuthentication::Mtls {
+                    certificate_sha256: fingerprint.clone(),
+                },
+                default_event_type: None,
+                limits: EndpointLimits::default(),
+                status: EndpointStatus::Active,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("mTLS endpoint");
+    let row: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT profile, secret_name, mtls_certificate_sha256 FROM event_endpoints WHERE id = $1",
+    )
+    .bind(endpoint.id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("profile row");
+    assert_eq!(row, ("MTLS".to_owned(), None, Some(fingerprint.clone())));
+
+    let timestamp = now_seconds().to_string();
+    for certificate in [
+        None,
+        Some("cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"),
+    ] {
+        assert_eq!(
+            events
+                .receive(
+                    endpoint.id,
+                    &identity_request(
+                        &timestamp,
+                        "refused-event",
+                        br#"{"amount":10}"#,
+                        None,
+                        certificate,
+                    ),
+                )
+                .await,
+            Err(AppError::Unauthenticated)
+        );
+    }
+    assert!(
+        events
+            .receive(
+                endpoint.id,
+                &identity_request(
+                    &timestamp,
+                    "mtls-event",
+                    br#"{"amount":10}"#,
+                    None,
+                    Some(&fingerprint),
+                ),
+            )
+            .await
+            .is_ok()
+    );
+
+    let invalid_mix =
+        sqlx::query("UPDATE event_endpoints SET secret_name = 'must-not-coexist' WHERE id = $1")
+            .bind(endpoint.id.as_uuid())
+            .execute(&w.db.pool)
+            .await;
+    assert!(
+        invalid_mix.is_err(),
+        "the database rejects ambiguous authentication profiles"
+    );
+}
+
+#[tokio::test]
+async fn rollback_refuses_to_erase_a_non_hmac_profile() {
+    let w = support::engine::world().await;
+    let events = identity_events(&w);
+    let endpoint = events
+        .create_endpoint(
+            &w.admin,
+            w.namespace.id(),
+            slug("oidc-hook"),
+            EndpointSettings {
+                secret_name: None,
+                authentication: WebhookAuthentication::Oidc {
+                    profile: slug("provider"),
+                    subject: "service/account".to_owned(),
+                },
+                default_event_type: None,
+                limits: EndpointLimits::default(),
+                status: EndpointStatus::Active,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("OIDC endpoint");
+    let down = include_str!(
+        "../../../crates/infra-postgres/migrations/20261022000000_webhook_auth_profiles.down.sql"
+    );
+    let refused = sqlx::raw_sql(down).execute(&w.db.pool).await;
+    assert!(
+        refused.is_err(),
+        "rollback must not discard a non-HMAC profile"
+    );
+    let profile: String = sqlx::query_scalar("SELECT profile FROM event_endpoints WHERE id = $1")
+        .bind(endpoint.id.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the refused rollback changed nothing");
+    assert_eq!(profile, "OIDC");
 }
 
 #[tokio::test]
@@ -874,6 +1412,8 @@ async fn what_the_sender_says_the_event_is_is_covered_by_the_signature() {
                    correlation_key: Option<&'static str>| WebhookRequest {
         trace: None,
         signature: Some(&signature),
+        bearer: None,
+        certificate_sha256: None,
         timestamp: Some(&timestamp),
         event_id: Some("evt-1"),
         event_type,
@@ -1022,6 +1562,8 @@ async fn a_secret_too_short_to_mean_anything_verifies_nothing() {
     let request = WebhookRequest {
         trace: None,
         signature: Some(&forged),
+        bearer: None,
+        certificate_sha256: None,
         timestamp: Some(&timestamp),
         event_id: Some("evt-1"),
         event_type: Some("a.b"),
@@ -1046,6 +1588,8 @@ async fn receive_with_header(
     let request = WebhookRequest {
         trace: None,
         signature: Some(&header),
+        bearer: None,
+        certificate_sha256: None,
         timestamp: Some(&timestamp),
         event_id: Some("evt-1"),
         event_type: Some("a.b"),

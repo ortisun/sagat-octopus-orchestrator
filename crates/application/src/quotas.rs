@@ -11,6 +11,7 @@ use std::future::Future;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::quota::{self, QuotaError, QuotaResource, QuotaScope, QuotaSource};
+use sagat_domain::workflow::ActivityName;
 
 use crate::authz::{NamespaceDirectory, require_namespace};
 use crate::clock::Clock;
@@ -27,6 +28,30 @@ pub trait QuotaLookup: Send + Sync {
         namespace: Option<NamespaceId>,
         resource: QuotaResource,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+}
+
+/// Exact retained logical bytes charged to a tenant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetainedUsage {
+    pub content_bytes: u64,
+    pub content_reserved_bytes: u64,
+    pub log_bytes: u64,
+}
+
+/// Result of consuming one durable namespace-rate token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateDecision {
+    Admitted,
+    Refused { retry_after_secs: u32 },
+}
+
+/// Authoritative admission for one authenticated, already-authorized namespace API request.
+pub trait NamespaceApiAdmission: Send + Sync {
+    fn admit_namespace_request(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<RateDecision, StoreError>> + Send;
 }
 
 /// The limits a run is created under, resolved just before the creation and judged by the store, in
@@ -73,8 +98,38 @@ pub struct StoredLimit {
     pub value: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredActivityLimit {
+    pub activity: ActivityName,
+    pub value: u64,
+    pub used: u64,
+}
+
 /// Storage port of the quota administration. Implemented by `sagat-infra-postgres`.
 pub trait QuotaStore: QuotaLookup + NamespaceDirectory {
+    fn activity_settings(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+    ) -> impl Future<Output = Result<Vec<StoredActivityLimit>, StoreError>> + Send;
+
+    fn put_activity_setting(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+        value: Option<u64>,
+        changed_by: &str,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    fn activity_usage(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
     /// What was set at one level: `namespace == None` is the tenant-wide level.
     fn settings(
         &self,
@@ -142,6 +197,15 @@ pub struct QuotaView {
     pub used: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityQuotaView {
+    pub activity: ActivityName,
+    pub limit: u64,
+    pub used: u64,
+    pub ceiling: u64,
+    pub overridden: bool,
+}
+
 /// Reads and changes quotas.
 pub struct QuotaService<S, C> {
     store: S,
@@ -153,6 +217,136 @@ where
     S: QuotaStore,
     C: Clock,
 {
+    /// Activity-specific concurrency overrides stored for a namespace.
+    pub async fn list_activity_limits(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<ActivityQuotaView>, AppError> {
+        principal.authorize(Permission::QuotaRead)?;
+        self.check_namespace(principal, Some(namespace), ctx)
+            .await?;
+        let tenant = principal.tenant_id();
+        let ceiling = self.activity_ceiling(tenant).await?;
+        let mut views = Vec::new();
+        for stored in self.store.activity_settings(tenant, namespace).await? {
+            views.push(ActivityQuotaView {
+                activity: stored.activity,
+                limit: stored.value.min(ceiling),
+                used: stored.used,
+                ceiling,
+                overridden: true,
+            });
+        }
+        Ok(views)
+    }
+
+    pub async fn set_activity_limit(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        activity: ActivityName,
+        value: u64,
+        ctx: &RequestContext,
+    ) -> Result<ActivityQuotaView, AppError> {
+        principal.authorize(Permission::QuotaManage)?;
+        self.check_namespace(principal, Some(namespace), ctx)
+            .await?;
+        let ceiling = self.activity_ceiling(principal.tenant_id()).await?;
+        let value = quota::validate(QuotaResource::ActivityConcurrency, true, value, ceiling)
+            .map_err(invalid)?;
+        self.write_activity(principal, namespace, &activity, Some(value), ctx)
+            .await?;
+        // A platform ceiling may have changed while this write waited for its policy fence.
+        // The stored override remains subject to that ceiling, just like every admission.
+        let ceiling = self.activity_ceiling(principal.tenant_id()).await?;
+        Ok(ActivityQuotaView {
+            used: self
+                .store
+                .activity_usage(principal.tenant_id(), namespace, &activity)
+                .await?,
+            activity,
+            limit: value.min(ceiling),
+            ceiling,
+            overridden: true,
+        })
+    }
+
+    pub async fn clear_activity_limit(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        activity: ActivityName,
+        ctx: &RequestContext,
+    ) -> Result<ActivityQuotaView, AppError> {
+        principal.authorize(Permission::QuotaManage)?;
+        self.check_namespace(principal, Some(namespace), ctx)
+            .await?;
+        self.write_activity(principal, namespace, &activity, None, ctx)
+            .await?;
+        let tenant = principal.tenant_id();
+        Ok(ActivityQuotaView {
+            limit: self
+                .store
+                .effective_limit(tenant, Some(namespace), QuotaResource::ActivityConcurrency)
+                .await?,
+            used: self
+                .store
+                .activity_usage(tenant, namespace, &activity)
+                .await?,
+            ceiling: self.activity_ceiling(tenant).await?,
+            activity,
+            overridden: false,
+        })
+    }
+
+    async fn activity_ceiling(&self, tenant: TenantId) -> Result<u64, AppError> {
+        Ok(quota::ceiling(
+            QuotaResource::ActivityConcurrency,
+            self.store
+                .ceilings(tenant)
+                .await?
+                .into_iter()
+                .find(|c| c.resource == QuotaResource::ActivityConcurrency)
+                .map(|c| c.value),
+        ))
+    }
+
+    async fn write_activity(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        activity: &ActivityName,
+        value: Option<u64>,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        let reason = value.map_or_else(
+            || format!("activity {} concurrency reset", activity.as_str()),
+            |v| format!("activity {} concurrency = {v}", activity.as_str()),
+        );
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::QuotaChanged,
+            ResourceType::Quota,
+            format!("{namespace}/{}", activity.as_str()),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(reason);
+        self.store
+            .put_activity_setting(
+                principal.tenant_id(),
+                namespace,
+                activity,
+                value,
+                principal.subject().as_str(),
+                &audit,
+            )
+            .await?;
+        Ok(())
+    }
+
     #[must_use]
     pub const fn new(store: S, clock: C) -> Self {
         Self { store, clock }
@@ -197,11 +391,12 @@ where
                 setting(&tenant_level, resource),
                 ceiling,
             );
-            let used = match (resource.scope(), namespace) {
-                (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
+            let used = match (resource.has_usage(), resource.scope(), namespace) {
+                (false, _, _) => None,
+                (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
                     Some(self.store.usage(tenant, namespace, resource).await?)
                 }
-                (QuotaScope::Namespace, None) => None,
+                (true, QuotaScope::Namespace, None) => None,
             };
             views.push(QuotaView {
                 resource,
@@ -333,11 +528,12 @@ where
                 .map(|r| r.value),
             ceiling,
         );
-        let used = match (resource.scope(), namespace) {
-            (QuotaScope::Tenant, _) | (QuotaScope::Namespace, Some(_)) => {
+        let used = match (resource.has_usage(), resource.scope(), namespace) {
+            (false, _, _) => None,
+            (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
                 Some(self.store.usage(tenant, namespace, resource).await?)
             }
-            (QuotaScope::Namespace, None) => None,
+            (true, QuotaScope::Namespace, None) => None,
         };
         Ok(QuotaView {
             resource,
@@ -362,7 +558,7 @@ where
         value: Option<u64>,
     ) -> Result<(), AppError> {
         let value = value
-            .map(quota::validate_ceiling)
+            .map(|value| quota::validate_ceiling(resource, value))
             .transpose()
             .map_err(invalid)?;
         let reason = match value {
@@ -439,7 +635,8 @@ where
 
 fn invalid(error: QuotaError) -> AppError {
     AppError::NotAllowed(match error {
-        QuotaError::TooLarge => "a quota limit is at most 1000000000",
+        QuotaError::TooLarge => "the quota limit is above the maximum for this resource",
+        QuotaError::OutsideRange => "the quota limit is outside the valid range for this resource",
         QuotaError::NotPerNamespace => "this quota is counted for the whole tenant",
         QuotaError::AboveCeiling => {
             "the value is above the ceiling the platform grants this tenant (see `ceiling`)"

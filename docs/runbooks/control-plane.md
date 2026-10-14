@@ -73,6 +73,15 @@ When `/v1/ready` is `503` the response never says why; the cause is a `WARN` lin
 (`readiness probe failed`, preceded by `storage unavailable` with the detail, for example "the
 database schema has not been migrated" or a pool/connection error).
 
+With native TLS, the container healthcheck uses HTTPS whenever `SAGAT_HTTP_TLS_CERT` is set. Set
+`SAGAT_HEALTHCHECK_TLS_SERVER_NAME` to the DNS name on the server certificate (default
+`localhost`) and, for a private CA, mount its server trust roots at
+`SAGAT_HEALTHCHECK_TLS_CA_FILE`. This trust bundle is deliberately separate from
+`SAGAT_HTTP_TLS_CLIENT_CA`: a CA trusted to identify webhook clients must not automatically become
+a CA trusted to identify this server. The probe resolves that name only to
+`SAGAT_HEALTHCHECK_ADDR`, verifies the certificate and hostname, ignores proxy settings and
+redirects, and fails within three seconds. The CA file is limited to 256 KiB.
+
 Every response carries `X-Trace-Id`, and every error body repeats it as `traceId`. Search the JSON
 logs for that value to follow one request.
 
@@ -88,7 +97,7 @@ logs for that value to follow one request.
 | `503` `UNAVAILABLE` on API routes, `/v1/ready` fine | Load shedding: more than `SAGAT_MAX_IN_FLIGHT` requests at once (the response carries `Retry-After`) | `http_load_shed_total`, `db_pool_connections{state="in_use"}`; scale out or raise the pool |
 | `429` right after authenticating, with `http_tenant_concurrency_rejected_total` rising | One tenant already has `SAGAT_MAX_IN_FLIGHT_PER_TENANT` requests in flight (default a quarter of `SAGAT_MAX_IN_FLIGHT`, at least 1): slow or stalled uploads, or slow handlers. The other tenants are unaffected by design | Find the tenant's clients holding requests open; the stalled ones end by themselves after `SAGAT_BODY_IDLE_TIMEOUT_SECS`. Raise the cap only if the tenant's real concurrency needs it |
 | `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS`, or its body stopped arriving for `SAGAT_BODY_IDLE_TIMEOUT_SECS` (default 5 s between pieces of the body) | Slow database or client; check `http_request_duration_seconds`. A client that trickles one byte at a time is bounded only by the request timeout |
-| Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password |
+| Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password. For the standalone healthcheck, TLS settings require `SAGAT_HTTP_TLS_CERT`, a DNS-only server name and an exact IP socket in `SAGAT_HEALTHCHECK_ADDR` |
 | Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate` and `provision-tenant` only. Do not grant the runtime role more to make this go away |
 | Process exits with code 2 and `the audit trail does not exist yet ... run control-plane migrate` | `serve` started before the migrations (outside dev the privileges cannot be verified without the table) | Run `migrate` with the owner role first; start the API afterwards (let the orchestrator restart it) |
 

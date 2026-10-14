@@ -463,3 +463,85 @@ mod tests {
         );
     }
 }
+
+/// The one credential mechanism accepted by an inbound webhook endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum WebhookAuthentication {
+    #[default]
+    Hmac,
+    Oidc {
+        profile: Slug,
+        subject: String,
+    },
+    Mtls {
+        certificate_sha256: String,
+    },
+}
+
+impl WebhookAuthentication {
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Hmac => "HMAC",
+            Self::Oidc { .. } => "OIDC",
+            Self::Mtls { .. } => "MTLS",
+        }
+    }
+
+    /// Validate the non-secret identity bound to the endpoint.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::Hmac => true,
+            Self::Oidc { subject, .. } => {
+                !subject.is_empty()
+                    && subject.len() <= 255
+                    && !subject.chars().any(char::is_control)
+            }
+            Self::Mtls { certificate_sha256 } => {
+                certificate_sha256.len() == 64
+                    && certificate_sha256
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+    #[test]
+    fn identity_profiles_are_exact_and_bounded() {
+        let profile = Slug::parse("provider").expect("slug");
+        for subject in ["".to_owned(), "x".repeat(256), "a\nb".to_owned()] {
+            assert!(
+                !WebhookAuthentication::Oidc {
+                    profile: profile.clone(),
+                    subject
+                }
+                .is_valid()
+            );
+        }
+        assert!(
+            WebhookAuthentication::Oidc {
+                profile,
+                subject: "service/account".to_owned()
+            }
+            .is_valid()
+        );
+        assert!(
+            WebhookAuthentication::Mtls {
+                certificate_sha256: "ab".repeat(32)
+            }
+            .is_valid()
+        );
+        assert!(
+            !WebhookAuthentication::Mtls {
+                certificate_sha256: "AB".repeat(32)
+            }
+            .is_valid()
+        );
+        assert_eq!(WebhookAuthentication::default().kind(), "HMAC");
+    }
+}

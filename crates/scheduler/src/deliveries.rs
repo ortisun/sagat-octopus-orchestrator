@@ -15,14 +15,15 @@ use futures_util::future::join_all;
 use sagat_application::clock::{Clock, SystemClock};
 use sagat_application::entropy::Entropy;
 use sagat_application::outbound::{
-    AttemptRecord, DeliveryStore, DueDelivery, Next, OutboundRequest, SendFailure, WebhookSender,
+    AttemptRecord, BrokerFailure, BrokerPublisher, BrokerRequest, DeliveryStore, DueDelivery, Next,
+    NoBrokerPublisher, OutboundRequest, SendFailure, WebhookSender,
 };
 use sagat_application::signing;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::outbound::{
-    AttemptOutcome, Verdict, delivery_backoff, judge_response, out_of_attempts,
+    AttemptOutcome, OutboundDestination, Verdict, delivery_backoff, judge_response, out_of_attempts,
 };
-use sagat_domain::secrets::{SecretCipher, associated_data};
+use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue, associated_data};
 use sagat_telemetry::{SpanId, TraceId};
 use tracing::Instrument;
 
@@ -78,22 +79,23 @@ impl DeliveryRound {
 }
 
 /// The delivery worker over a store, a sender, a source of jitter and the key ring.
-pub struct DeliveryWorker<S, T, R> {
+pub struct DeliveryWorker<S, T, R, P = NoBrokerPublisher> {
     store: S,
     sender: T,
+    broker: P,
     entropy: R,
     cipher: Arc<dyn SecretCipher>,
     clock: SystemClock,
     settings: DeliverySettings,
 }
 
-impl<S, T, R> std::fmt::Debug for DeliveryWorker<S, T, R> {
+impl<S, T, R, P> std::fmt::Debug for DeliveryWorker<S, T, R, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeliveryWorker").finish_non_exhaustive()
     }
 }
 
-impl<S, T, R> DeliveryWorker<S, T, R>
+impl<S, T, R> DeliveryWorker<S, T, R, NoBrokerPublisher>
 where
     S: DeliveryStore,
     T: WebhookSender,
@@ -109,6 +111,34 @@ where
         Self {
             store,
             sender,
+            broker: NoBrokerPublisher,
+            entropy,
+            cipher,
+            clock: SystemClock,
+            settings,
+        }
+    }
+}
+
+impl<S, T, R, P> DeliveryWorker<S, T, R, P>
+where
+    S: DeliveryStore,
+    T: WebhookSender,
+    R: Entropy,
+    P: BrokerPublisher,
+{
+    pub fn with_broker(
+        store: S,
+        sender: T,
+        broker: P,
+        entropy: R,
+        cipher: Arc<dyn SecretCipher>,
+        settings: DeliverySettings,
+    ) -> Self {
+        Self {
+            store,
+            sender,
+            broker,
             entropy,
             cipher,
             clock: SystemClock,
@@ -144,6 +174,8 @@ where
         }
         if let Ok(pending) = self.store.pending_deliveries().await {
             #[allow(clippy::cast_precision_loss)] // a gauge
+            metrics::gauge!("outbound_pending_deliveries").set(pending as f64);
+            #[allow(clippy::cast_precision_loss)] // compatibility gauge
             metrics::gauge!("webhook_pending_deliveries").set(pending as f64);
         }
         round
@@ -203,26 +235,107 @@ where
         let started_at = self.clock.now();
         let started = Instant::now();
 
-        let result = match self.sign(due).await {
-            Some(signature) => {
-                let request = OutboundRequest {
+        let result = match &due.destination {
+            OutboundDestination::Webhook { url, .. } => match self.sign(due).await {
+                Some(signature) => {
+                    let request = OutboundRequest {
+                        tenant_id: delivery.tenant_id,
+                        namespace_id: delivery.namespace_id,
+                        url: url.clone(),
+                        headers: vec![
+                            ("content-type".into(), "application/json".into()),
+                            ("user-agent".into(), "sagat-octopus-orchestrator/1".into()),
+                            ("x-octopus-signature".into(), signature.header),
+                            (
+                                "x-octopus-timestamp".into(),
+                                signature.timestamp.to_string(),
+                            ),
+                            ("x-octopus-event-id".into(), delivery.event_id.clone()),
+                            ("x-octopus-event-type".into(), delivery.kind.to_string()),
+                            // The same on every attempt: the receiver's idempotency key.
+                            ("x-octopus-delivery-id".into(), delivery.id.to_string()),
+                            ("x-octopus-attempt".into(), number.to_string()),
+                            ("x-octopus-schema-version".into(), SCHEMA_VERSION.into()),
+                        ]
+                        .into_iter()
+                        .chain(traceparent.map(|value| ("traceparent".to_owned(), value)))
+                        .collect(),
+                        body: delivery.payload.clone(),
+                        timeout: due.limits.timeout(),
+                    };
+                    match self.sender.send(&request).await {
+                        Ok(response) => {
+                            let (outcome, verdict) =
+                                judge_response(response.status, response.retry_after);
+                            (outcome, Some(response.status), verdict)
+                        }
+                        Err(SendFailure::Timeout) => (
+                            AttemptOutcome::Timeout,
+                            None,
+                            Verdict::Retry { after: None },
+                        ),
+                        Err(SendFailure::Network) => (
+                            AttemptOutcome::Network,
+                            None,
+                            Verdict::Retry { after: None },
+                        ),
+                        // The administrator may widen the policy: worth trying again later.
+                        Err(SendFailure::Denied) => {
+                            (AttemptOutcome::Denied, None, Verdict::Retry { after: None })
+                        }
+                        // A URL that cannot be a destination will not become one.
+                        Err(SendFailure::Invalid) => {
+                            (AttemptOutcome::Rejected, None, Verdict::Dead)
+                        }
+                    }
+                }
+                // Nothing to sign with (the secret was deleted, or no key opens it): the
+                // administrator can fix that, so the delivery waits like a receiver that is down.
+                None => (
+                    AttemptOutcome::Unsigned,
+                    None,
+                    Verdict::Retry { after: None },
+                ),
+            },
+            OutboundDestination::Broker {
+                settings,
+                credentials_secret,
+            } => {
+                let credentials = match credentials_secret {
+                    Some(name) => match self.credentials(due, name).await {
+                        Some(value) => Some(value),
+                        None => {
+                            return self
+                                .settle(
+                                    due,
+                                    started_at,
+                                    started,
+                                    number,
+                                    AttemptResult {
+                                        outcome: AttemptOutcome::CredentialUnavailable,
+                                        http_status: None,
+                                        verdict: Verdict::Retry { after: None },
+                                    },
+                                )
+                                .await;
+                        }
+                    },
+                    None => None,
+                };
+                let request = BrokerRequest {
                     tenant_id: delivery.tenant_id,
                     namespace_id: delivery.namespace_id,
-                    url: due.url.clone(),
+                    subscription_id: delivery.subscription_id,
+                    destination: settings.clone(),
+                    credentials,
                     headers: vec![
                         ("content-type".into(), "application/json".into()),
-                        ("user-agent".into(), "sagat-octopus-orchestrator/1".into()),
-                        ("x-octopus-signature".into(), signature.header),
-                        (
-                            "x-octopus-timestamp".into(),
-                            signature.timestamp.to_string(),
-                        ),
-                        ("x-octopus-event-id".into(), delivery.event_id.clone()),
-                        ("x-octopus-event-type".into(), delivery.kind.to_string()),
-                        // The same on every attempt: the receiver's idempotency key.
-                        ("x-octopus-delivery-id".into(), delivery.id.to_string()),
-                        ("x-octopus-attempt".into(), number.to_string()),
-                        ("x-octopus-schema-version".into(), SCHEMA_VERSION.into()),
+                        ("event-id".into(), delivery.event_id.clone()),
+                        ("event-type".into(), delivery.kind.to_string()),
+                        // Stable across attempts: adapters use it as their idempotency metadata.
+                        ("delivery-id".into(), delivery.id.to_string()),
+                        ("attempt".into(), number.to_string()),
+                        ("schema-version".into(), SCHEMA_VERSION.into()),
                     ]
                     .into_iter()
                     .chain(traceparent.map(|value| ("traceparent".to_owned(), value)))
@@ -230,39 +343,61 @@ where
                     body: delivery.payload.clone(),
                     timeout: due.limits.timeout(),
                 };
-                match self.sender.send(&request).await {
-                    Ok(response) => {
-                        let (outcome, verdict) =
-                            judge_response(response.status, response.retry_after);
-                        (outcome, Some(response.status), verdict)
-                    }
-                    Err(SendFailure::Timeout) => (
+                match self.broker.publish(&request).await {
+                    Ok(()) => (AttemptOutcome::Delivered, None, Verdict::Done),
+                    Err(BrokerFailure::Timeout) => (
                         AttemptOutcome::Timeout,
                         None,
                         Verdict::Retry { after: None },
                     ),
-                    Err(SendFailure::Network) => (
+                    Err(BrokerFailure::Network) => (
                         AttemptOutcome::Network,
                         None,
                         Verdict::Retry { after: None },
                     ),
-                    // The administrator may widen the policy: worth trying again later.
-                    Err(SendFailure::Denied) => {
+                    Err(BrokerFailure::Denied) => {
                         (AttemptOutcome::Denied, None, Verdict::Retry { after: None })
                     }
-                    // A URL that cannot be a destination will not become one.
-                    Err(SendFailure::Invalid) => (AttemptOutcome::Rejected, None, Verdict::Dead),
+                    // Invalid settings are rejected at management time. A broker rejection can be
+                    // repaired out of band, so preserve the durable retry/DLQ path.
+                    Err(BrokerFailure::Rejected) => (
+                        AttemptOutcome::Rejected,
+                        None,
+                        Verdict::Retry { after: None },
+                    ),
                 }
             }
-            // Nothing to sign with (the secret was deleted, or no key opens it): the administrator
-            // can fix that, so the delivery waits for it like it waits for a receiver that is down.
-            None => (
-                AttemptOutcome::Unsigned,
-                None,
-                Verdict::Retry { after: None },
-            ),
         };
         let (outcome, http_status, verdict) = result;
+
+        self.settle(
+            due,
+            started_at,
+            started,
+            number,
+            AttemptResult {
+                outcome,
+                http_status,
+                verdict,
+            },
+        )
+        .await
+    }
+
+    async fn settle(
+        &self,
+        due: &DueDelivery,
+        started_at: time::OffsetDateTime,
+        started: Instant,
+        number: u32,
+        result: AttemptResult,
+    ) -> Result<Settled, ()> {
+        let delivery = &due.delivery;
+        let AttemptResult {
+            outcome,
+            http_status,
+            verdict,
+        } = result;
 
         let next = match verdict {
             Verdict::Done => Next::Delivered,
@@ -287,17 +422,35 @@ where
             http_status,
             error: outcome_note(outcome),
         };
+        let (disabled_action, resource_type, metric_prefix) = match due.destination {
+            OutboundDestination::Webhook { .. } => (
+                AuditAction::WebhookSubscriptionDisabled,
+                ResourceType::WebhookSubscription,
+                "webhook",
+            ),
+            OutboundDestination::Broker { .. } => (
+                AuditAction::BrokerSubscriptionDisabled,
+                ResourceType::BrokerSubscription,
+                "broker",
+            ),
+        };
         let off = AuditRecord::engine(
             delivery.tenant_id,
-            AuditAction::WebhookSubscriptionDisabled,
-            ResourceType::WebhookSubscription,
+            disabled_action,
+            resource_type,
             delivery.subscription_id.to_string(),
             "too many deliveries in a row were set aside",
             None,
             started_at,
         );
-        metrics::histogram!("webhook_attempt_seconds").record(started.elapsed().as_secs_f64());
-        metrics::counter!("webhook_attempts_total", "outcome" => outcome.as_str()).increment(1);
+        metrics::histogram!("outbound_attempt_seconds", "destination" => metric_prefix)
+            .record(started.elapsed().as_secs_f64());
+        metrics::counter!("outbound_attempts_total", "destination" => metric_prefix, "outcome" => outcome.as_str())
+            .increment(1);
+        if metric_prefix == "webhook" {
+            metrics::histogram!("webhook_attempt_seconds").record(started.elapsed().as_secs_f64());
+            metrics::counter!("webhook_attempts_total", "outcome" => outcome.as_str()).increment(1);
+        }
         match self
             .store
             .record_attempt(due, &record, &next, Some(&off))
@@ -306,20 +459,34 @@ where
             Ok(switched_off) => match &next {
                 Next::Delivered => {
                     let lag = (self.clock.now() - delivery.created_at).as_seconds_f64();
-                    metrics::histogram!("webhook_delivery_lag_seconds").record(lag.max(0.0));
-                    metrics::counter!("webhook_deliveries_total", "outcome" => "delivered")
+                    metrics::histogram!("outbound_delivery_lag_seconds", "destination" => metric_prefix)
+                        .record(lag.max(0.0));
+                    metrics::counter!("outbound_deliveries_total", "destination" => metric_prefix, "outcome" => "delivered")
                         .increment(1);
+                    if metric_prefix == "webhook" {
+                        metrics::histogram!("webhook_delivery_lag_seconds").record(lag.max(0.0));
+                        metrics::counter!("webhook_deliveries_total", "outcome" => "delivered")
+                            .increment(1);
+                    }
                     Ok(Settled::Delivered)
                 }
                 Next::Retry { .. } => Ok(Settled::Retry),
                 Next::Dead => {
-                    metrics::counter!("webhook_deliveries_total", "outcome" => "dead").increment(1);
+                    metrics::counter!("outbound_deliveries_total", "destination" => metric_prefix, "outcome" => "dead").increment(1);
+                    if metric_prefix == "webhook" {
+                        metrics::counter!("webhook_deliveries_total", "outcome" => "dead")
+                            .increment(1);
+                    }
                     if switched_off {
                         tracing::warn!(
                             subscription = %delivery.subscription_id,
                             "a subscription was switched off after too many dead deliveries"
                         );
-                        metrics::counter!("webhook_subscriptions_switched_off_total").increment(1);
+                        metrics::counter!("outbound_subscriptions_switched_off_total", "destination" => metric_prefix).increment(1);
+                        if metric_prefix == "webhook" {
+                            metrics::counter!("webhook_subscriptions_switched_off_total")
+                                .increment(1);
+                        }
                     }
                     Ok(Settled::Dead { switched_off })
                 }
@@ -337,12 +504,13 @@ where
     /// verifies with either accepts the request.
     async fn sign(&self, due: &DueDelivery) -> Option<Signature> {
         let delivery = &due.delivery;
+        let (_, secret_name) = due.webhook()?;
         let versions = self
             .store
             .signing_secrets(
                 delivery.tenant_id,
                 delivery.namespace_id,
-                &due.secret_name,
+                secret_name,
                 SIGNING_VERSIONS,
             )
             .await
@@ -384,6 +552,26 @@ where
             timestamp,
         })
     }
+
+    async fn credentials(&self, due: &DueDelivery, name: &SecretName) -> Option<SecretValue> {
+        let delivery = &due.delivery;
+        let stored = self
+            .store
+            .signing_secrets(delivery.tenant_id, delivery.namespace_id, name, 1)
+            .await
+            .map_err(|error| tracing::error!(%error, "reading broker credentials failed"))
+            .ok()?
+            .into_iter()
+            .next()?;
+        let aad = associated_data(
+            delivery.tenant_id,
+            delivery.namespace_id,
+            &stored.meta.name,
+            stored.meta.id,
+            &stored.meta.key_id,
+        );
+        self.cipher.open(&stored.sealed, &aad).ok()
+    }
 }
 
 struct Signature {
@@ -395,6 +583,12 @@ enum Settled {
     Delivered,
     Retry,
     Dead { switched_off: bool },
+}
+
+struct AttemptResult {
+    outcome: AttemptOutcome,
+    http_status: Option<u16>,
+    verdict: Verdict,
 }
 
 /// What is recorded about a failed attempt: a class, never a detail from the network or from the
@@ -411,6 +605,9 @@ fn outcome_note(outcome: AttemptOutcome) -> Option<String> {
             Some("the egress policy of the namespace does not allow the destination".to_owned())
         }
         AttemptOutcome::Unsigned => Some("there is no signing secret to sign with".to_owned()),
+        AttemptOutcome::CredentialUnavailable => {
+            Some("there are no usable broker credentials".to_owned())
+        }
     }
 }
 

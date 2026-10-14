@@ -13,6 +13,7 @@ is written only on success.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import sys
@@ -27,6 +28,8 @@ from sagat_octopus_orchestrator import (
     SDK_VERSION,
     ActivityContext,
     ActivityFailure,
+    BlobDescriptor,
+    BlobOutput,
     ClientConfig,
     Flow,
     RetryPolicy,
@@ -186,8 +189,13 @@ def error_json(error: BaseException) -> Obj:
 # ------------------------------------------------------------------------------------------ workers
 
 
-def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj]) -> Any:
+def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measurement: Obj) -> Any:
     async def handler(run_input: Any, ctx: ActivityContext) -> Any:
+        measurement["active"] += 1
+        measurement["peakInflight"] = max(measurement["peakInflight"], measurement["active"])
+        measurement["deliveries"].append(
+            {"runId": ctx.run_id, "node": ctx.node, "takenAtUnixMs": int(_now().timestamp() * 1000)}
+        )
         outcome = "returned"
         try:
             until = behavior.get("failsUntilAttempt")
@@ -228,6 +236,38 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj]) -> Any
                         return {**(behavior.get("returns") or {}), "secretError": error.code}
                     raise
                 return {**(behavior.get("returns") or {}), "secretLength": len(secrets.get(behavior["readsSecret"]))}
+            if behavior.get("blobRoundTripBytes") is not None:
+                body = b"x" * behavior["blobRoundTripBytes"]
+                descriptor = await ctx.write_blob(
+                    [body], content_type="application/octet-stream", expected_size=len(body),
+                    expected_sha256=hashlib.sha256(body).hexdigest(),
+                )
+                read = bytearray()
+                async for chunk in ctx.read_blob(descriptor):
+                    read.extend(chunk)
+                if read != body:
+                    raise RuntimeError("blob round trip failed")
+                return {"blobSize": descriptor.size, "blobSha256": descriptor.sha256, "roundTrip": True}
+            if behavior.get("blobInputBytes") is not None:
+                raw = run_input["$blob"]
+                descriptor = BlobDescriptor(raw["id"], raw["size"], raw["sha256"], raw["contentType"])
+                read = bytearray()
+                async for chunk in ctx.read_blob(descriptor):
+                    read.extend(chunk)
+                if read != b"i" * behavior["blobInputBytes"]:
+                    raise RuntimeError("run-input blob did not match")
+                return {"inputBlobSize": descriptor.size, "inputBlobSha256": descriptor.sha256}
+            if behavior.get("blobOutputBytes") is not None:
+                descriptor = await ctx.write_blob(
+                    [b"y" * behavior["blobOutputBytes"]], content_type="application/octet-stream"
+                )
+                return BlobOutput(descriptor)
+            if behavior.get("blobInlineBytes") is not None:
+                descriptor = await ctx.write_blob(
+                    [b"z" * behavior["blobInlineBytes"]], content_type="application/octet-stream"
+                )
+                return {"$blob": {"id": descriptor.id, "size": descriptor.size, "sha256": descriptor.sha256,
+                                  "contentType": descriptor.content_type}}
             if behavior.get("verdict") is not None:
                 verdict = behavior["verdict"]
                 if verdict == "applied":
@@ -241,6 +281,7 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj]) -> Any
                 return "x" * behavior["returnsText"]
             return behavior.get("returns")
         finally:
+            measurement["active"] -= 1
             log.append(
                 {
                     "activity": name,
@@ -270,7 +311,7 @@ def _now() -> Any:
     return datetime.now(timezone.utc)
 
 
-def host_of(definition: Obj, config: Obj, plan: FaultPlan, log: list[Obj]) -> WorkerHost:
+def host_of(definition: Obj, config: Obj, plan: FaultPlan, log: list[Obj], measurement: Obj) -> WorkerHost:
     heartbeat = definition.get("heartbeatIntervalMs")
     token = config["unboundWorkerToken"] if definition.get("token") == "unbound" else config["workerToken"]
     host = WorkerHost(
@@ -281,6 +322,7 @@ def host_of(definition: Obj, config: Obj, plan: FaultPlan, log: list[Obj]) -> Wo
             worker_name=definition["workerName"],
             max_inflight=definition.get("maxInflight", 4),
             protocol_version=definition.get("protocolVersion"),
+            transport=definition.get("transport", "auto"),
             heartbeat_interval=heartbeat / 1000 if heartbeat else None,
             interceptors=plan.interceptors(),
             retry=RetryPolicy(initial_delay=0.02, max_delay=0.2),
@@ -288,7 +330,7 @@ def host_of(definition: Obj, config: Obj, plan: FaultPlan, log: list[Obj]) -> Wo
     )
     for name, activity in definition["activities"].items():
         kind = activity.get("as") or "activity"
-        handler = behavior_handler(name, kind, activity.get("behavior") or {}, log)
+        handler = behavior_handler(name, kind, activity.get("behavior") or {}, log, measurement)
         if kind == "compensation":
             host.register_compensation(name, handler)
         elif kind == "reconciler":
@@ -329,16 +371,18 @@ async def run(scenario: Obj, config: Obj) -> Obj:
         "other": client_for(config["otherTenantToken"]),
     }
     logs: dict[str, list[Obj]] = {}
+    measurements: dict[str, Obj] = {}
     hosts: dict[str, tuple[Obj, list[WorkerHost]]] = {}
     for key, definition in (scenario.get("workers") or {}).items():
         logs[key] = []
+        measurements[key] = {"active": 0, "peakInflight": 0, "deliveries": []}
         hosts[key] = (definition, [])
 
     async def start_worker(key: str) -> Obj:
         if key not in hosts:
             raise ValueError(f"no worker {key}")
         definition, started = hosts[key]
-        host = host_of(definition, config, plan, logs[key])
+        host = host_of(definition, config, plan, logs[key], measurements[key])
         started.append(host)
         await host.start()
         return {"protocolVersion": host.protocol_version}
@@ -378,6 +422,17 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                             deadline_in=deadline_in / 1000 if deadline_in is not None else None,
                         )
                     )
+                elif op == "startWithBlob":
+                    workflow_id = config["workflows"][step["workflow"]]["workflowId"]
+                    blob_body = b"i" * step["inputBlobBytes"]
+                    descriptor = await client.upload_run_input(
+                        [blob_body], expected_size=len(blob_body), expected_sha256=hashlib.sha256(blob_body).hexdigest()
+                    )
+                    result = run_json(await client.start_with_blob(
+                        workflow_id, descriptor, idempotency_key=step.get("idempotencyKey"),
+                        correlation_id=step.get("correlationId"), traceparent=step.get("traceparent"),
+                        deadline_in=(step["deadlineInMs"] / 1000 if step.get("deadlineInMs") is not None else None),
+                    ))
                 elif op == "workflowByName":
                     name = config["workflows"][step["workflow"]]["name"]
                     result = run_json(
@@ -521,6 +576,10 @@ async def run(scenario: Obj, config: Obj) -> Obj:
         "sdkVersion": SDK_VERSION,
         "observations": observations,
         "workerLog": logs,
+        "workerMeasurements": {
+            key: {"peakInflight": value["peakInflight"], "deliveries": value["deliveries"]}
+            for key, value in measurements.items()
+        },
         "faultsApplied": plan.applied(),
     }
 

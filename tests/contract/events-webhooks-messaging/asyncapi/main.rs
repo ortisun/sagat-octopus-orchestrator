@@ -28,8 +28,7 @@ pub const BASELINE: &str = concat!(
 );
 
 pub fn load() -> Value {
-    serde_yaml_ng::from_str(&std::fs::read_to_string(DOCUMENT).expect("the document"))
-        .expect("YAML")
+    serde_saphyr::from_str(&std::fs::read_to_string(DOCUMENT).expect("the document")).expect("YAML")
 }
 
 /// What a consumer depends on in one schema: for every property path its type and enumeration, and

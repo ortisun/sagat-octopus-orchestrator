@@ -14,7 +14,9 @@ fn webhook_path(id: impl std::fmt::Display) -> String {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateEndpointBody {
     pub slug: String,
-    pub secret_name: String,
+    pub secret_name: Option<String>,
+    #[serde(default)]
+    pub authentication: Option<WebhookAuthenticationBody>,
     #[serde(default)]
     pub default_event_type: Option<String>,
     #[serde(default)]
@@ -34,7 +36,9 @@ pub struct CreateEndpointBody {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateEndpointBody {
-    pub secret_name: String,
+    pub secret_name: Option<String>,
+    #[serde(default)]
+    pub authentication: Option<WebhookAuthenticationBody>,
     #[serde(default)]
     pub default_event_type: Option<String>,
     #[serde(default)]
@@ -55,7 +59,9 @@ pub struct EndpointBody {
     pub id: String,
     pub namespace_id: String,
     pub slug: String,
-    pub secret_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_name: Option<String>,
+    pub authentication: WebhookAuthenticationBody,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_event_type: Option<String>,
     pub dedupe_ttl_seconds: u64,
@@ -78,7 +84,8 @@ impl From<&EndpointRecord> for EndpointBody {
             id: endpoint.id.to_string(),
             namespace_id: endpoint.namespace_id.to_string(),
             slug: endpoint.slug.to_string(),
-            secret_name: endpoint.secret_name.to_string(),
+            secret_name: endpoint.secret_name.as_ref().map(ToString::to_string),
+            authentication: WebhookAuthenticationBody::from(&endpoint.authentication),
             default_event_type: endpoint
                 .default_event_type
                 .as_ref()
@@ -338,11 +345,16 @@ impl SubscriptionBody {
     /// The subscription as `reveal`ing callers (those who can manage events) and others see it.
     #[must_use]
     pub fn of(subscription: &SubscriptionRecord, reveal: bool) -> Self {
+        let sagat_domain::outbound::OutboundDestination::Webhook { url, .. } =
+            &subscription.destination
+        else {
+            unreachable!("webhook routes return webhook subscriptions")
+        };
         Self {
             url: if reveal {
-                subscription.url.as_str().to_owned()
+                url.as_str().to_owned()
             } else {
-                redacted_url(&subscription.url)
+                redacted_url(url)
             },
             ..Self::from(subscription)
         }
@@ -351,12 +363,19 @@ impl SubscriptionBody {
 
 impl From<&SubscriptionRecord> for SubscriptionBody {
     fn from(subscription: &SubscriptionRecord) -> Self {
+        let sagat_domain::outbound::OutboundDestination::Webhook {
+            url,
+            signing_secret,
+        } = &subscription.destination
+        else {
+            unreachable!("webhook routes return webhook subscriptions")
+        };
         Self {
             id: subscription.id.to_string(),
             namespace_id: subscription.namespace_id.to_string(),
             name: subscription.name.to_string(),
-            url: subscription.url.as_str().to_owned(),
-            secret_name: subscription.secret_name.to_string(),
+            url: url.as_str().to_owned(),
+            secret_name: signing_secret.to_string(),
             events: subscription.kinds.iter().map(|k| k.as_str()).collect(),
             rate_per_second: subscription.limits.rate_per_second(),
             timeout_ms: u64::try_from(subscription.limits.timeout().as_millis()).unwrap_or(0),
@@ -377,6 +396,135 @@ impl From<&SubscriptionRecord> for SubscriptionBody {
 #[derive(Debug, Serialize)]
 pub struct SubscriptionListBody {
     pub items: Vec<SubscriptionBody>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateBrokerSubscriptionBody {
+    pub name: String,
+    pub kind: String,
+    pub settings: Value,
+    #[serde(default)]
+    pub secret_name: Option<String>,
+    pub events: Vec<String>,
+    #[serde(default)]
+    pub rate_per_second: Option<u32>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateBrokerSubscriptionBody {
+    pub kind: String,
+    pub settings: Value,
+    #[serde(default)]
+    pub secret_name: Option<String>,
+    pub events: Vec<String>,
+    #[serde(default)]
+    pub rate_per_second: Option<u32>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutboundNatsSettingsBody {
+    pub servers: Vec<String>,
+    pub subject: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutboundKafkaSettingsBody {
+    pub servers: Vec<String>,
+    pub topic: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutboundSqsSettingsBody {
+    pub queue_url: String,
+    pub region: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSubscriptionBody {
+    pub id: String,
+    pub namespace_id: String,
+    pub name: String,
+    pub kind: &'static str,
+    pub settings: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_name: Option<String>,
+    pub events: Vec<&'static str>,
+    pub rate_per_second: u32,
+    pub timeout_ms: u64,
+    pub status: &'static str,
+    pub health: HealthBody,
+    pub created_by: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: time::OffsetDateTime,
+}
+
+impl From<&SubscriptionRecord> for BrokerSubscriptionBody {
+    fn from(subscription: &SubscriptionRecord) -> Self {
+        use sagat_domain::outbound::{BrokerDestination, OutboundDestination};
+        let OutboundDestination::Broker {
+            settings,
+            credentials_secret,
+        } = &subscription.destination
+        else {
+            unreachable!("broker routes return broker subscriptions")
+        };
+        let value = match settings {
+            BrokerDestination::Nats { servers, subject } => serde_json::json!({
+                "servers": servers.iter().map(sagat_domain::connectors::Server::configured_address).collect::<Vec<_>>(),
+                "subject": subject,
+            }),
+            BrokerDestination::Kafka { servers, topic } => serde_json::json!({
+                "servers": servers.iter().map(sagat_domain::connectors::Server::configured_address).collect::<Vec<_>>(),
+                "topic": topic,
+            }),
+            BrokerDestination::Sqs { queue_url, region } => serde_json::json!({
+                "queueUrl": queue_url.as_str(),
+                "region": region,
+            }),
+        };
+        Self {
+            id: subscription.id.to_string(),
+            namespace_id: subscription.namespace_id.to_string(),
+            name: subscription.name.to_string(),
+            kind: settings.kind().as_str(),
+            settings: value,
+            secret_name: credentials_secret.as_ref().map(ToString::to_string),
+            events: subscription.kinds.iter().map(|k| k.as_str()).collect(),
+            rate_per_second: subscription.limits.rate_per_second(),
+            timeout_ms: u64::try_from(subscription.limits.timeout().as_millis()).unwrap_or(0),
+            status: subscription.status.as_str(),
+            health: HealthBody {
+                consecutive_dead: subscription.health.consecutive_dead,
+                last_success_at: subscription.health.last_success_at,
+                last_failure_at: subscription.health.last_failure_at,
+                disabled_reason: subscription.health.disabled_reason.clone(),
+            },
+            created_by: subscription.created_by.clone(),
+            created_at: subscription.created_at,
+            updated_at: subscription.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct BrokerSubscriptionListBody {
+    pub items: Vec<BrokerSubscriptionBody>,
 }
 
 #[derive(Debug, Serialize)]
@@ -690,4 +838,35 @@ pub struct DeadLetterPageBody {
     pub items: Vec<DeadLetterBody>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+/// Exactly one credential mechanism, with no client-controlled trust roots or discovery URLs.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum WebhookAuthenticationBody {
+    #[serde(rename = "HMAC")]
+    Hmac,
+    #[serde(rename = "OIDC")]
+    Oidc { profile: String, subject: String },
+    #[serde(rename = "MTLS")]
+    Mtls {
+        #[serde(rename = "certificateSha256")]
+        certificate_sha256: String,
+    },
+}
+
+impl From<&sagat_domain::events::WebhookAuthentication> for WebhookAuthenticationBody {
+    fn from(value: &sagat_domain::events::WebhookAuthentication) -> Self {
+        use sagat_domain::events::WebhookAuthentication;
+        match value {
+            WebhookAuthentication::Hmac => Self::Hmac,
+            WebhookAuthentication::Oidc { profile, subject } => Self::Oidc {
+                profile: profile.to_string(),
+                subject: subject.clone(),
+            },
+            WebhookAuthentication::Mtls { certificate_sha256 } => Self::Mtls {
+                certificate_sha256: certificate_sha256.clone(),
+            },
+        }
+    }
 }

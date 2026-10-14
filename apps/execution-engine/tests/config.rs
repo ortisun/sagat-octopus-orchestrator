@@ -632,3 +632,38 @@ fn a_batch_a_database_should_not_be_asked_for_is_refused_by_name() {
         );
     }
 }
+
+#[test]
+fn blob_storage_is_opt_in_and_ephemeral_storage_is_development_only() {
+    assert!(parse(&[]).expect("defaults").blobs.is_none());
+    assert!(parse(&[("SAGAT_BLOB_PROVIDER", "memory")]).is_err());
+    let configured = EngineConfig::from_lookup(
+        &env(&with(&[("SAGAT_BLOB_PROVIDER", "memory")])),
+        Environment::Dev,
+    )
+    .expect("development memory backend");
+    assert!(configured.blobs.is_some());
+    assert_eq!(
+        configured.blob_transfer.timeout,
+        configured.grpc.transfer_timeout
+    );
+    assert!(parse(&[("SAGAT_BLOB_MAX_TRANSFERS", "0")]).is_err());
+    assert!(parse(&[("SAGAT_BLOB_TRANSFER_TIMEOUT_SECS", "0")]).is_err());
+}
+
+#[test]
+fn insecure_blob_endpoints_cannot_be_enabled_outside_development() {
+    let settings = with(&[
+        ("SAGAT_BLOB_PROVIDER", "s3"),
+        ("SAGAT_BLOB_S3_BUCKET", "test"),
+        ("SAGAT_BLOB_S3_REGION", "us-east-1"),
+        ("SAGAT_BLOB_S3_ENDPOINT", "http://127.0.0.1:9001"),
+        ("SAGAT_BLOB_S3_ALLOW_HTTP", "true"),
+    ]);
+    for environment in [Environment::Prod, Environment::Staging] {
+        let error =
+            EngineConfig::from_lookup(&env(&settings), environment).expect_err("TLS required");
+        assert!(error.to_string().contains("SAGAT_BLOB_S3_ALLOW_HTTP"));
+    }
+    assert!(EngineConfig::from_lookup(&env(&settings), Environment::Dev).is_ok());
+}

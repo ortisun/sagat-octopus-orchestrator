@@ -224,6 +224,9 @@ mod tests {
         assert!(accept(Language::TypeScript, Some(&lock("not json"))).is_err());
         assert!(accept(Language::TypeScript, Some(&lock("[1]"))).is_err());
         assert!(accept(Language::Go, Some(&lock("x"))).is_err());
+        assert!(accept(Language::Java, Some(&lock("x"))).is_err());
+        assert_eq!(accept(Language::Go, Some(&lock(""))), Ok(()));
+        assert_eq!(accept(Language::Java, None), Ok(()));
     }
 
     #[test]

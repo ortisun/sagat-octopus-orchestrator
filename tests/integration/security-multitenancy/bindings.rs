@@ -590,6 +590,7 @@ async fn the_store_refuses_a_session_that_the_binding_no_longer_covers() {
         languages: vec![],
         pools: vec![],
         max_inflight: 10,
+        accepted_protocol_minor: 0,
         ttl: std::time::Duration::from_secs(60),
         tenant_limit: 1000,
     };

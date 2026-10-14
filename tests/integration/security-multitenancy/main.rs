@@ -6,6 +6,7 @@
 mod support;
 
 mod bindings;
+mod durable_quotas;
 mod egress;
 mod incidents;
 mod quotas;

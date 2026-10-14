@@ -1,0 +1,22 @@
+{
+  "canonical": {
+    "input": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"input\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"blob-run-input\"},\"nodes\":[{\"activity\":\"blob.input\",\"id\":\"input\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "input": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "input",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "blob-run-input"
+      },
+      "nodes": [
+        {
+          "activity": "blob.input",
+          "id": "input",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

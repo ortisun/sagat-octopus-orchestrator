@@ -28,6 +28,8 @@ test('US03 an operator opens a run that retried and took one branch: attempts, s
   await expect(card(page, 'validate')).toBeVisible();
   await expect(card(page, 'validate')).toContainText(/Ready|Pending|Not started/);
   await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Live', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+  // The graph opens at a readable scale; choose the overview before following every branch at once.
+  await page.getByRole('button', { name: 'Fit View', exact: true }).click();
 
   // A worker comes: the first step fails once (retry), the payment is declined, the reservation is undone.
   const attempts = new Map<string, number>();
@@ -45,7 +47,6 @@ test('US03 an operator opens a run that retried and took one branch: attempts, s
     // The page followed it: the states are the platform's, reached without reloading the page.
     await expect(page.getByRole('region', { name: 'Run detail' }).getByText('Compensated', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
     await expect(card(page, 'validate')).toContainText('Succeeded');
-    await expect(card(page, 'validate')).toContainText(/attempt 2/);
     await expect(card(page, 'check')).toContainText('Succeeded');
     await expect(card(page, 'review')).toContainText('Not started');
     await expect(card(page, 'reserve')).toContainText('Succeeded');
@@ -56,6 +57,11 @@ test('US03 an operator opens a run that retried and took one branch: attempts, s
     // The way not taken is told as omitted, in words and not only by its line.
     await expect(page.getByRole('img', { name: /check to review: If true, omitted/ })).toBeAttached();
     await expect(page.getByRole('img', { name: /check to settlement: If false, taken/ })).toBeAttached();
+    // Detailed retry history belongs to the selected step, independent of card hover.
+    await card(page, 'validate').focus();
+    await page.keyboard.press('Enter');
+    const panel = page.getByTestId('node-panel');
+    await expect(panel.getByText('attempt 2', { exact: true })).toBeVisible();
   } finally {
     await host.stop();
   }
@@ -66,7 +72,7 @@ test('US03 an operator opens a run that retried and took one branch: attempts, s
 
   // The same data as a table, for anyone who does not use the canvas.
   await page.getByRole('tab', { name: 'Table' }).click();
-  const rows = page.getByRole('table').getByRole('row');
+  const rows = page.getByRole('table', { name: 'Steps of the run' }).getByRole('row');
   await expect(rows.filter({ hasText: 'submit' }).first()).toContainText('Failed');
   await expect(rows.filter({ hasText: 'reserve~c' }).first()).toContainText('Succeeded');
   await expect(rows).toHaveCount(10); // the header and nine steps

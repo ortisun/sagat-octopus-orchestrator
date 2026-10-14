@@ -142,6 +142,21 @@ pub struct RunOutcome {
 
 /// Builds and runs scripts without trusting them.
 pub trait Sandbox: Send + Sync {
+    /// Prove capabilities that need a production-path startup check before advertisement.
+    /// An adapter must explicitly implement the native Go proof; unknown adapters fail closed.
+    fn probe_language(
+        &self,
+        language: Language,
+    ) -> impl Future<Output = Result<(), BuildFailure>> + Send {
+        async move {
+            if language == Language::Go {
+                Err(BuildFailure::Unsupported)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     /// The identity of the toolchain that builds `language` (the digest of its image and the
     /// version of the shim), which is part of every build key.
     fn toolchain(

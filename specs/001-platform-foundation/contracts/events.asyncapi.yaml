@@ -3,7 +3,7 @@ info:
   title: Sagat Octopus Orchestrator Integration Events
   version: 0.2.0
   description: |
-    Event contract; at-least-once everywhere. Hints on NATS are deduplicated by the Nats-Msg-Id header (the outbox row id); events that come in (webhook, API, broker) are deduplicated by (tenant, namespace, source, eventId) for the endpoint's window; events that go out (webhooks) carry a stable delivery id.
+    Event contract; at-least-once everywhere. Hints on NATS are deduplicated by the Nats-Msg-Id header (the outbox row id); events that come in (webhook, API, broker) are deduplicated by (tenant, namespace, source, eventId) for the endpoint's window; events that go out (webhooks and broker subscriptions) carry a stable delivery id.
 
     Evolution (FR-004-007): within a version of this document a message only grows. A property is never removed, renamed or given another type; a new property is optional; an enumeration gains values and never loses them; `required` never gains a member. A change that cannot be made that way is a new message with a new name next to the old one, and the old one is kept for the period the deprecation notice in `docs/event-schema-evolution.md` states. `tests/contract/events-webhooks-messaging/asyncapi` holds the previous shape of every message (`events.baseline.json`) and fails a change that breaks it.
 defaultContentType: application/json
@@ -63,6 +63,15 @@ channels:
         $ref: '#/components/messages/RunFinishedWebhook'
       operationalAlertWebhook:
         $ref: '#/components/messages/OperationalAlertWebhook'
+  outboundBroker:
+    address: '{subjectTopicOrQueue}'
+    description: The platform publishes an event to a managed NATS JetStream subject, Kafka topic or SQS queue after the namespace egress policy permits the destination. The delivery id stays stable across retries. JetStream receives it as Nats-Msg-Id, Kafka as the record key, and an SQS FIFO queue as MessageDeduplicationId. A lost acknowledgement may produce a repeat.
+    parameters:
+      subjectTopicOrQueue:
+        description: The NATS subject, Kafka topic or SQS queue URL of a broker subscription.
+    messages:
+      runFinishedBroker:
+        $ref: '#/components/messages/RunFinishedBroker'
   brokerMessages:
     address: '{topicOrQueue}'
     description: A Kafka topic, an SQS queue or a NATS JetStream stream that a connector reads. Whatever the broker, the message is the event data (a JSON object) and the envelope travels in headers (Kafka, NATS) or message attributes (SQS).
@@ -93,6 +102,10 @@ operations:
     action: send
     channel: {$ref: '#/channels/outboundWebhook'}
     messages: [{$ref: '#/channels/outboundWebhook/messages/operationalAlertWebhook'}]
+  sendRunFinishedBroker:
+    action: send
+    channel: {$ref: '#/channels/outboundBroker'}
+    messages: [{$ref: '#/channels/outboundBroker/messages/runFinishedBroker'}]
   consumeBrokerMessage:
     action: receive
     channel: {$ref: '#/channels/brokerMessages'}
@@ -219,6 +232,21 @@ components:
               workflow: {type: string}
               status: {type: string, enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}
               traceId: {type: [string, 'null'], description: 'W3C trace id (32 hex) of the run, so a subscriber can put what it does about the run in the run''s trace.'}
+    RunFinishedBroker:
+      name: RunFinishedBroker
+      contentType: application/json
+      headers:
+        type: object
+        required: [event-id, event-type, delivery-id, attempt, schema-version]
+        properties:
+          event-id: {type: string, description: 'The event id shared by every subscription.'}
+          event-type: {type: string, enum: [run.finished]}
+          delivery-id: {type: string, format: uuid, description: 'Stable across attempts and used for protocol-native deduplication metadata.'}
+          attempt: {type: string, pattern: '^[0-9]+$'}
+          schema-version: {type: string}
+          traceparent: {type: string}
+          Nats-Msg-Id: {type: string, description: 'For JetStream, the delivery id.'}
+      payload: {$ref: '#/components/messages/RunFinishedWebhook/payload'}
     OperationalAlertWebhook:
       name: OperationalAlertWebhook
       contentType: application/json

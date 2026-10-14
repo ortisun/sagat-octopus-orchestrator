@@ -14,6 +14,8 @@
     {"id": "offer-1.0", "op": "probeWorker", "protocolVersion": "1.0"},
     {"id": "offer-1.1", "op": "probeWorker", "protocolVersion": "1.1"},
     {"id": "offer-1.2", "op": "probeWorker", "protocolVersion": "1.2"},
+    {"id": "offer-1.3", "op": "probeWorker", "protocolVersion": "1.3"},
+    {"id": "offer-1.4", "op": "probeWorker", "protocolVersion": "1.4"},
     {"id": "offer-1.9", "op": "probeWorker", "protocolVersion": "1.9"},
     {"id": "offer-2", "op": "probeWorker", "protocolVersion": "2"},
     {"id": "offer-0.9", "op": "probeWorker", "protocolVersion": "0.9"},

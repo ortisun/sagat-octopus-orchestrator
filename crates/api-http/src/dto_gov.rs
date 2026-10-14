@@ -2,7 +2,7 @@
 
 use sagat_application::bindings::{BindingView, Revoked};
 use sagat_application::egress::StoredPolicy;
-use sagat_application::quotas::QuotaView;
+use sagat_application::quotas::{ActivityQuotaView, QuotaView};
 use sagat_application::secrets::SecretView;
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,33 @@ pub struct QuotaListBody {
 #[serde(deny_unknown_fields)]
 pub struct SetQuotaBody {
     pub limit: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityQuotaBody {
+    pub activity: String,
+    pub limit: u64,
+    pub used: u64,
+    pub ceiling: u64,
+    pub overridden: bool,
+}
+
+impl From<&ActivityQuotaView> for ActivityQuotaBody {
+    fn from(view: &ActivityQuotaView) -> Self {
+        Self {
+            activity: view.activity.as_str().to_owned(),
+            limit: view.limit,
+            used: view.used,
+            ceiling: view.ceiling,
+            overridden: view.overridden,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivityQuotaListBody {
+    pub items: Vec<ActivityQuotaBody>,
 }
 
 #[derive(Debug, Serialize)]

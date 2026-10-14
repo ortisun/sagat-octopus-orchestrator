@@ -9,6 +9,7 @@ use sagat_domain::operations::AlertState;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::admission::admit;
 use crate::dto_ops::{
     AlertBody, AlertPageBody, AuditPageBody, AuditRecordBody, DrainBody, ReasonBody, UndrainBody,
     WorkerBody, WorkerListBody,
@@ -16,6 +17,7 @@ use crate::dto_ops::{
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
 use crate::governance::Governance;
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,6 +54,13 @@ pub async fn list_alerts<B: Governance>(
         })
         .transpose()?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    admit(
+        &state,
+        &caller,
+        ApiOperation::OpsRead,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
     let mut found = service
         .alerts(
             &caller.session.principal,
@@ -85,6 +94,13 @@ pub async fn list_workers<B: Governance>(
 ) -> Result<Json<WorkerListBody>, ApiError> {
     let service = state.operations().ok_or_else(ApiError::not_found)?;
     let namespace: NamespaceId = namespace.parse().map_err(|_| ApiError::not_found())?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::OpsRead,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
     let items = service
         .workers(&caller.session.principal, namespace, &caller.ctx)
         .await?;
@@ -106,6 +122,13 @@ pub async fn drain_worker<B: Governance>(
 ) -> Result<Json<DrainBody>, ApiError> {
     let service = state.operations().ok_or_else(ApiError::not_found)?;
     let namespace: NamespaceId = namespace.parse().map_err(|_| ApiError::not_found())?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::WorkerManage,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
     let record = service
         .drain(
             &caller.session.principal,
@@ -127,6 +150,13 @@ pub async fn undrain_worker<B: Governance>(
 ) -> Result<Json<UndrainBody>, ApiError> {
     let service = state.operations().ok_or_else(ApiError::not_found)?;
     let namespace: NamespaceId = namespace.parse().map_err(|_| ApiError::not_found())?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::WorkerManage,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
     let was_draining = service
         .undrain(
             &caller.session.principal,
@@ -164,6 +194,10 @@ fn instant(
 }
 
 /// `GET /audit`
+///
+/// The current endpoint is tenant-wide and therefore exempt from namespace admission. If a
+/// canonical namespace filter is added, that filtered request must be charged to its resolved
+/// namespace exactly once before the audit query executes.
 pub async fn list_audit<B: Governance>(
     caller: Caller,
     State(state): State<B>,

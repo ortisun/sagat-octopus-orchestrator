@@ -20,7 +20,7 @@ fn load_yaml(relative: &str) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../specs/001-platform-foundation/contracts")
         .join(relative);
-    serde_yaml_ng::from_str(&std::fs::read_to_string(&path).expect("contract exists"))
+    serde_saphyr::from_str(&std::fs::read_to_string(&path).expect("contract exists"))
         .unwrap_or_else(|error| panic!("{} is valid YAML: {error}", path.display()))
 }
 

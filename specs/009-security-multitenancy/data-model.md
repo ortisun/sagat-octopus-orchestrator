@@ -10,8 +10,8 @@ Data ownership follows the bounded contexts of `docs/architecture/overview.md`, 
 
 | Entity | Table | Notes |
 |---|---|---|
-| Quota setting | `quota_limits` | `(tenant, namespace or NULL, resource) -> max_value` (0 to 1 000 000 000). `NULL` namespace is the tenant-wide setting; a resource counted per tenant (`tenant_active_runs`, `worker_sessions`) has no namespace level (check constraint). A missing row means the provisional platform default (`sagat_domain::quota`). Composite foreign key to `namespaces`. |
-| Quota ceiling | `quota_ceilings` | `(tenant, resource) -> max_value` (0 to 1 000 000 000): the most a tenant's administrators may set for that resource, and the most that can be in force. No row means the platform default (`sagat_domain::quota`). Written only by the operator's command (`control-plane quota-ceiling`); no API route writes it. |
+| Quota setting | `quota_limits` | `(tenant, namespace or NULL, resource) -> max_value` (resource-specific ranges in `sagat_domain::quota`). `NULL` namespace is the tenant-wide setting; a resource counted per tenant (`tenant_active_runs`, `worker_sessions`) has no namespace level (check constraint). A missing row means the provisional platform default (`sagat_domain::quota`). Composite foreign key to `namespaces`. |
+| Quota ceiling | `quota_ceilings` | `(tenant, resource) -> max_value` (resource-specific ranges in `sagat_domain::quota`): the most a tenant's administrators may set for that resource, and the most that can be in force. No row means the platform default (`sagat_domain::quota`). Written only by the operator's command (`control-plane quota-ceiling`); no API route writes it. |
 | Active-run index | `runs_active_idx` | Partial index `(tenant_id, namespace_id) WHERE finished_at IS NULL`: what the exact count of a start reads. |
 | Worker binding | `worker_bindings` | One row per `(tenant, namespace, subject, pattern)`; a pattern is `*`, `prefix.*` or an exact activity name (check constraint mirrors the grammar of `sagat_domain::binding`). No row, no registration. |
 | Secret | `secrets` | `(tenant, namespace, name)` unique; `current_version`; no value. Target of the composite foreign keys below. |
@@ -40,3 +40,29 @@ Run row, then the child-run tree (feature 002), then the quota scope of the name
 ## Migrations
 
 Additive, with a tested `down` (checked by the rollback test of feature 001: no table, function or trigger is left behind). The runtime role `sagat_app` receives only what it needs: `SELECT, INSERT, UPDATE, DELETE` on `quota_limits`, `quota_ceilings`, `worker_bindings`, `egress_policies`, `secrets` and `secret_versions`, and `SELECT, INSERT, DELETE` on `secret_access`. Constraints that widen an earlier table (`quota_limits_resource_valid` gains `secrets`) are replaced, never edited, and restored by the `down`.
+
+
+## Durable quota accounting (ADR-0027)
+
+| Entity | Durable representation | Invariant |
+|---|---|---|
+| Retained usage | `tenant_retained_usage`: tenant, content bytes, reserved content bytes, log bytes | Exact nonnegative committed byte totals; catalog triggers fold transaction-local deltas into the tenant row. Runtime cannot directly mutate totals. |
+| Transaction delta | `quota_transaction_deltas`: transaction, tenant, signed deltas | Owned by security-definer accounting functions; checked at transaction completion, rolled back with the owning mutation. |
+| Admission bucket | `quota_rate_buckets`: tenant, namespace, resource/source kind and stored source ID, microtokens, DB update time | One request costs 1,000,000 microtokens; capacity is two seconds of rate. Database clock is read after the bucket lock. |
+| Blob reservation | `blob_objects.reservation_bytes`, `uploaded_at`, size/status | Unknown uploads keep reservation; known uploads charge actual measured bytes, including zero. Committing a reference never charges a second time. |
+| Accounting switches | `quota_accounting_control` | Owner-only rollout control, never tenant-settable. |
+| Storage classification | `infra-postgres/storage-classification.json` | Every variable-size column classified as charged content, charged logs, or independently bounded protected operational metadata; schema coverage is tested against PostgreSQL. |
+
+Byte resources allow 0..2^50; API/event rates 0..1,000,000 per second; event retention is
+zero or 60..2,592,000 seconds; script retention 0..365 days. Settings and operator ceilings
+share the same fences as admission. Retention and rate resources omit misleading live-object
+`used` counts; byte resources report authoritative counters.
+
+Build versions add `failure_code` (closed enum) and `build_log_truncated`; event and connector
+last-error fields have explicit truncation flags. Script trace IDs are null or nonzero lowercase
+32-hex values. Script lease journal details capture a versioned retention policy plus forward,
+compensation and reconciliation retention pins when applicable. These are admission evidence;
+stored record expiry is not rewritten after a policy decrease.
+
+The coordinated upgrade, legacy trace preflight and guarded rollback are documented in
+[the governance runbook](../../docs/runbooks/security-governance.md#upgrade-and-rollback).

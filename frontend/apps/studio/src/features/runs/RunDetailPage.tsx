@@ -20,10 +20,12 @@ import { NotAllowed } from './NotAllowed';
 import { NowProvider, Relative } from './Now';
 import { OperationDialog } from './OperationDialog';
 import type { Decision } from './OperationDialog';
+import { PayloadInspector } from './PayloadInspection';
 import { runOperations, stepOperations } from './ops';
 import type { Operation, RunFacts } from './ops';
 import { useVersions, versionLabel } from './queries';
 import { RunHeader } from './RunHeader';
+import { SendSignal } from './SendSignal';
 import { RunsPage } from './RunsPage';
 import { TableView } from './TableView';
 import { TimelineView } from './TimelineView';
@@ -258,6 +260,16 @@ function RunDetail({ runId }: { runId: string }) {
           refreshing={snapshot.reloading}
         />
 
+        <div className="rn-run-context">
+          <SendSignal runId={runId} status={status} onSent={refresh} />
+          <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
+          {finished ? (
+            <p className="hint">
+              {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
+            </p>
+          ) : null}
+        </div>
+
         {snapshot.lagMs > 0 ? (
           <Banner tone="info" title="The graph may be behind the journal.">
             When it was read, the projection of the graph was {formatDuration(snapshot.lagMs)} behind the journal. It catches up as updates arrive; the timeline is always the journal itself.
@@ -276,11 +288,6 @@ function RunDetail({ runId }: { runId: string }) {
         {snapshot.follow === 'polling' ? <Banner tone="info">The live stream is not available. The Studio asks the platform for changes every few seconds instead.</Banner> : null}
         {snapshot.reloadError !== undefined ? <ErrorState error={snapshot.reloadError} what="Reading the graph again" onRetry={() => void live.refresh()} /> : null}
         {run.isError ? <ErrorState error={run.error} what="Refreshing the run" onRetry={() => void run.refetch()} /> : null}
-        {finished ? (
-          <p className="hint">
-            {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
-          </p>
-        ) : null}
 
         <div className={selectedId === undefined ? 'rn-body' : 'rn-body with-panel'}>
           <div className="rn-main" ref={main} tabIndex={-1}>
@@ -298,6 +305,7 @@ function RunDetail({ runId }: { runId: string }) {
           {selectedId !== undefined && model !== undefined ? (
             <NodePanel
               node={selectedNode}
+              runId={runId}
               selectedId={selectedId}
               model={model}
               journal={journal}

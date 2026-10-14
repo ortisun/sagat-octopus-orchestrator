@@ -2,6 +2,7 @@
 name = "sagat-api-grpc"
 description = "gRPC adapter: the worker protocol (register, poll, heartbeat, complete, fail) over tonic."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
@@ -12,6 +13,7 @@ build = "build.rs"
 workspace = true
 
 [dependencies]
+bytes.workspace = true
 metrics.workspace = true
 prost.workspace = true
 sagat-api-http.workspace = true

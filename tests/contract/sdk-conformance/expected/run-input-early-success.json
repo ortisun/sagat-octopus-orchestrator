@@ -1,0 +1,24 @@
+{
+  "faultsApplied": [
+    1
+  ],
+  "observations": [
+    {
+      "error": {
+        "code": "PROTOCOL",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The server's answer did not match the contract: update the SDK, and report the trace id if it persists.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": null,
+        "traceId": ""
+      },
+      "id": "refused",
+      "ok": false,
+      "op": "startWithBlob"
+    }
+  ],
+  "serverState": [],
+  "workerLog": {}
+}

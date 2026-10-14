@@ -6,6 +6,7 @@
 #[path = "../../../support/mod.rs"]
 mod support;
 
+mod api_rate_admission;
 mod battery;
 mod conformance;
 mod incidents;

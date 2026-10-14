@@ -19,9 +19,11 @@ use sagat_application::secrets::StoredSecret;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Slug, TenantId};
 use sagat_domain::outbound::{
-    AttemptOutcome, DISABLE_AFTER_DEAD, DeliveryId, DeliveryLimits, DeliveryStatus,
-    MAX_PENDING_PER_SUBSCRIPTION, OutboundKind, SubscriptionId, SubscriptionStatus, TargetUrl,
+    AttemptOutcome, BrokerDestination, DISABLE_AFTER_DEAD, DeliveryId, DeliveryLimits,
+    DeliveryStatus, MAX_PENDING_PER_SUBSCRIPTION, OutboundDestination, OutboundKind,
+    SubscriptionId, SubscriptionStatus, TargetUrl,
 };
+use sagat_domain::quota::QuotaResource;
 use sagat_domain::secrets::SecretName;
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
@@ -38,7 +40,8 @@ const MAX_PER_SUBSCRIPTION: i64 = 25;
 macro_rules! select_subscriptions {
     ($tail:literal) => {
         concat!(
-            "SELECT id, tenant_id, namespace_id, name, url, secret_name, kinds, rate_per_second, ",
+            "SELECT id, tenant_id, namespace_id, name, destination_kind, destination_settings, \
+             url, secret_name, kinds, rate_per_second, ",
             "timeout_ms, status, consecutive_dead, last_success_at, last_failure_at, ",
             "disabled_reason, created_by, created_at, updated_at FROM webhook_subscriptions ",
             $tail
@@ -59,8 +62,6 @@ macro_rules! select_deliveries {
 
 fn subscription_from_row(row: &PgRow) -> Result<SubscriptionRecord, StoreError> {
     let name: String = col(row, "name")?;
-    let url: String = col(row, "url")?;
-    let secret: String = col(row, "secret_name")?;
     let kinds: Vec<String> = col(row, "kinds")?;
     let rate: i32 = col(row, "rate_per_second")?;
     let timeout: i32 = col(row, "timeout_ms")?;
@@ -71,8 +72,7 @@ fn subscription_from_row(row: &PgRow) -> Result<SubscriptionRecord, StoreError> 
         tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
         namespace_id: NamespaceId::new(col::<Uuid>(row, "namespace_id")?),
         name: Slug::parse(&name).map_err(|_| corrupt("subscription name"))?,
-        url: TargetUrl::parse(&url).map_err(|_| corrupt("subscription url"))?,
-        secret_name: SecretName::parse(&secret).map_err(|_| corrupt("subscription secret"))?,
+        destination: destination_from_row(row)?,
         kinds: kinds
             .iter()
             .map(|k| {
@@ -100,6 +100,98 @@ fn subscription_from_row(row: &PgRow) -> Result<SubscriptionRecord, StoreError> 
         created_at: col(row, "created_at")?,
         updated_at: col(row, "updated_at")?,
     })
+}
+
+fn destination_from_row(row: &PgRow) -> Result<OutboundDestination, StoreError> {
+    let kind: String = col(row, "destination_kind")?;
+    let secret: Option<String> = col(row, "secret_name")?;
+    let secret = secret
+        .map(|s| SecretName::parse(&s).map_err(|_| corrupt("subscription secret")))
+        .transpose()?;
+    if kind == "WEBHOOK" {
+        let url: Option<String> = col(row, "url")?;
+        return Ok(OutboundDestination::Webhook {
+            url: TargetUrl::parse(url.as_deref().ok_or_else(|| corrupt("subscription url"))?)
+                .map_err(|_| corrupt("subscription url"))?,
+            signing_secret: secret.ok_or_else(|| corrupt("subscription secret"))?,
+        });
+    }
+    let settings: serde_json::Value = col(row, "destination_settings")?;
+    let text = |name: &str| {
+        settings
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| corrupt("subscription destination settings"))
+    };
+    let broker = match kind.as_str() {
+        "NATS" | "KAFKA" => {
+            let servers = settings
+                .get("servers")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| corrupt("subscription destination settings"))?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| corrupt("subscription destination settings"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if kind == "NATS" {
+                BrokerDestination::nats(&servers, text("subject")?)
+            } else {
+                BrokerDestination::kafka(&servers, text("topic")?)
+            }
+            .map_err(|_| corrupt("subscription destination settings"))?
+        }
+        "SQS" => BrokerDestination::sqs(text("queueUrl")?, text("region")?)
+            .map_err(|_| corrupt("subscription destination settings"))?,
+        _ => return Err(corrupt("subscription destination kind")),
+    };
+    Ok(OutboundDestination::Broker {
+        settings: broker,
+        credentials_secret: secret,
+    })
+}
+
+fn destination_columns(
+    destination: &OutboundDestination,
+) -> (&'static str, Option<&str>, Option<&str>, serde_json::Value) {
+    match destination {
+        OutboundDestination::Webhook {
+            url,
+            signing_secret,
+        } => (
+            "WEBHOOK",
+            Some(url.as_str()),
+            Some(signing_secret.as_str()),
+            serde_json::json!({}),
+        ),
+        OutboundDestination::Broker {
+            settings,
+            credentials_secret,
+        } => {
+            let value = match settings {
+                BrokerDestination::Nats { servers, subject } => serde_json::json!({
+                    "servers": servers.iter().map(sagat_domain::connectors::Server::configured_address).collect::<Vec<_>>(),
+                    "subject": subject,
+                }),
+                BrokerDestination::Kafka { servers, topic } => serde_json::json!({
+                    "servers": servers.iter().map(sagat_domain::connectors::Server::configured_address).collect::<Vec<_>>(),
+                    "topic": topic,
+                }),
+                BrokerDestination::Sqs { queue_url, region } => serde_json::json!({
+                    "queueUrl": queue_url.as_str(),
+                    "region": region,
+                }),
+            };
+            (
+                settings.kind().as_str(),
+                None,
+                credentials_secret.as_ref().map(SecretName::as_str),
+                value,
+            )
+        }
+    }
 }
 
 fn delivery_from_row(row: &PgRow) -> Result<DeliveryRecord, StoreError> {
@@ -249,26 +341,41 @@ impl OutboundStore for PgRunStore {
         audit: &AuditRecord,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        lock_subscriptions(&mut tx, subscription.tenant_id, subscription.namespace_id).await?;
+        let resource = match &subscription.destination {
+            OutboundDestination::Webhook { .. } => QuotaResource::WebhookSubscriptions,
+            OutboundDestination::Broker { .. } => QuotaResource::BrokerSubscriptions,
+        };
+        lock_subscriptions(
+            &mut tx,
+            subscription.tenant_id,
+            subscription.namespace_id,
+            resource,
+        )
+        .await?;
         ensure_room_for_subscription(
             &mut tx,
             subscription.tenant_id,
             subscription.namespace_id,
+            resource,
             limit,
         )
         .await?;
+        let (destination_kind, url, secret, destination_settings) =
+            destination_columns(&subscription.destination);
         sqlx::query(
             "INSERT INTO webhook_subscriptions \
-             (id, tenant_id, namespace_id, name, url, secret_name, kinds, rate_per_second, \
-              timeout_ms, status, created_by, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)",
+             (id, tenant_id, namespace_id, name, destination_kind, destination_settings, url, \
+              secret_name, kinds, rate_per_second, timeout_ms, status, created_by, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)",
         )
         .bind(subscription.id.as_uuid())
         .bind(subscription.tenant_id.as_uuid())
         .bind(subscription.namespace_id.as_uuid())
         .bind(subscription.name.as_str())
-        .bind(subscription.url.as_str())
-        .bind(subscription.secret_name.as_str())
+        .bind(destination_kind)
+        .bind(destination_settings)
+        .bind(url)
+        .bind(secret)
         .bind(kind_texts(&subscription.kinds))
         .bind(i32::try_from(subscription.limits.rate_per_second()).unwrap_or(i32::MAX))
         .bind(millis(subscription.limits.timeout()))
@@ -303,18 +410,23 @@ impl OutboundStore for PgRunStore {
         // Only a subscription the platform switched off is "turned back on": that is the
         // administrator saying the receiver is back. A resume after a pause is not that.
         let turned_on = before == "DISABLED" && subscription.status == SubscriptionStatus::Active;
+        let (destination_kind, url, secret, destination_settings) =
+            destination_columns(&subscription.destination);
         sqlx::query(
-            "UPDATE webhook_subscriptions SET url = $3, secret_name = $4, kinds = $5, \
-                 rate_per_second = $6, timeout_ms = $7, status = $8, updated_at = $9, \
-                 consecutive_dead = CASE WHEN $10 THEN 0 ELSE consecutive_dead END, \
-                 disabled_reason = CASE WHEN $10 THEN NULL ELSE disabled_reason END, \
-                 next_slot_at = CASE WHEN $10 THEN '-infinity' ELSE next_slot_at END \
+            "UPDATE webhook_subscriptions SET destination_kind = $3, destination_settings = $4, \
+                 url = $5, secret_name = $6, kinds = $7, rate_per_second = $8, timeout_ms = $9, \
+                 status = $10, updated_at = $11, \
+                 consecutive_dead = CASE WHEN $12 THEN 0 ELSE consecutive_dead END, \
+                 disabled_reason = CASE WHEN $12 THEN NULL ELSE disabled_reason END, \
+                 next_slot_at = CASE WHEN $12 THEN '-infinity' ELSE next_slot_at END \
              WHERE tenant_id = $1 AND id = $2",
         )
         .bind(subscription.tenant_id.as_uuid())
         .bind(subscription.id.as_uuid())
-        .bind(subscription.url.as_str())
-        .bind(subscription.secret_name.as_str())
+        .bind(destination_kind)
+        .bind(destination_settings)
+        .bind(url)
+        .bind(secret)
         .bind(kind_texts(&subscription.kinds))
         .bind(i32::try_from(subscription.limits.rate_per_second()).unwrap_or(i32::MAX))
         .bind(millis(subscription.limits.timeout()))
@@ -381,12 +493,16 @@ impl OutboundStore for PgRunStore {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        brokers: bool,
     ) -> Result<Vec<SubscriptionRecord>, StoreError> {
         sqlx::query(select_subscriptions!(
-            "WHERE tenant_id = $1 AND namespace_id = $2 ORDER BY name"
+            "WHERE tenant_id = $1 AND namespace_id = $2 \
+               AND (($3 AND destination_kind <> 'WEBHOOK') OR (NOT $3 AND destination_kind = 'WEBHOOK')) \
+             ORDER BY name"
         ))
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
+        .bind(brokers)
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?
@@ -588,8 +704,7 @@ impl DeliveryStore for PgRunStore {
             for row in &rows {
                 due.push(DueDelivery {
                     delivery: delivery_from_row(row)?,
-                    url: sub.url.clone(),
-                    secret_name: sub.secret_name.clone(),
+                    destination: sub.destination.clone(),
                     limits: sub.limits,
                 });
             }

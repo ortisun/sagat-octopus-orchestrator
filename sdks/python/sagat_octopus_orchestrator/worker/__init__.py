@@ -4,6 +4,8 @@ from .activity import (
     ActivityContext,
     ActivityFailure,
     ActivityHandler,
+    BlobDescriptor,
+    BlobOutput,
     CancellationToken,
     CancelReason,
     Secrets,
@@ -11,12 +13,14 @@ from .activity import (
     Verdict,
     run_blocking,
 )
-from .host import WorkerConfig, WorkerEvent, WorkerHost
+from .host import WorkerConfig, WorkerEvent, WorkerHost, WorkerTransport
 
 __all__ = [
     "ActivityContext",
     "ActivityFailure",
     "ActivityHandler",
+    "BlobDescriptor",
+    "BlobOutput",
     "CancelReason",
     "CancellationToken",
     "Secrets",
@@ -25,5 +29,6 @@ __all__ = [
     "WorkerConfig",
     "WorkerEvent",
     "WorkerHost",
+    "WorkerTransport",
     "run_blocking",
 ]

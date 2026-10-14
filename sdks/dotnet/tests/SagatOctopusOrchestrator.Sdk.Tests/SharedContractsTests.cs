@@ -82,7 +82,7 @@ public class SharedContractsTests
     {
         var informational = typeof(SagatClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
         Assert.StartsWith(SdkInfo.Version, informational, StringComparison.Ordinal);
-        Assert.Equal("1.2", SdkInfo.ProtocolVersion);
+        Assert.Equal("1.4", SdkInfo.ProtocolVersion);
         Assert.Equal("SagatOctopusOrchestrator.Sdk", SdkInfo.ActivitySourceName);
     }
 }

@@ -5,6 +5,8 @@
 //! expression with the bounded evaluator, canonicalise and hash. Nothing here executes business
 //! logic; compiling a document has no side effects.
 
+mod payload_projection;
+pub use payload_projection::JsonPayloadProjector;
 mod canonical;
 mod convert;
 pub mod cron;

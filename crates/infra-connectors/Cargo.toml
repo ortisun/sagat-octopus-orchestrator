@@ -2,6 +2,7 @@
 name = "sagat-infra-connectors"
 description = "Adapters between the event gateway and the outside: guarded outbound webhooks and message brokers (NATS, Kafka, SQS)."
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
@@ -18,6 +19,7 @@ unguarded-for-tests = []
 async-nats.workspace = true
 aws-credential-types = "1"
 aws-sigv4 = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 metrics.workspace = true
 quick-xml = "0.42"

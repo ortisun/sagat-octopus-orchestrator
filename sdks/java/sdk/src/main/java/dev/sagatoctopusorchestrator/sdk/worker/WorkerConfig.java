@@ -19,6 +19,7 @@ public final class WorkerConfig {
     private final TokenProvider tokenProvider;
     private final String workerName;
     private final int maxInflight;
+    private final WorkerTransport transport;
     private final List<String> languages;
     private final List<String> pools;
     private final TlsOptions tls;
@@ -37,6 +38,7 @@ public final class WorkerConfig {
         this.tokenProvider = b.tokenProvider;
         this.workerName = b.workerName;
         this.maxInflight = b.maxInflight;
+        this.transport = b.transport;
         this.languages = List.copyOf(b.languages);
         this.pools = List.copyOf(b.pools);
         this.tls = b.tls;
@@ -76,6 +78,8 @@ public final class WorkerConfig {
     public int maxInflight() {
         return maxInflight;
     }
+
+    public WorkerTransport transport() { return transport; }
 
     /** The {@code languages} capability; {@code java} by default. */
     public List<String> languages() {
@@ -141,6 +145,7 @@ public final class WorkerConfig {
         private TokenProvider tokenProvider;
         private String workerName;
         private int maxInflight = 10;
+        private WorkerTransport transport = WorkerTransport.AUTO;
         private List<String> languages = List.of(SagatSdk.LANGUAGE);
         private List<String> pools = List.of();
         private TlsOptions tls;
@@ -182,6 +187,12 @@ public final class WorkerConfig {
 
         public Builder maxInflight(int value) {
             this.maxInflight = value;
+            return this;
+        }
+
+        /** Selects automatic, polling, or required streaming task reception. */
+        public Builder transport(WorkerTransport value) {
+            this.transport = Objects.requireNonNull(value);
             return this;
         }
 

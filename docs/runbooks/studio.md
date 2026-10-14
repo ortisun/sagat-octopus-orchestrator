@@ -33,6 +33,21 @@ files and links that resolve outside the directory are not served; assets under 
 buffer `text/event-stream` (the stream sends `X-Accel-Buffering: no`). A Studio on another origin than the API is not supported by the API (it has no CORS);
 put both behind one host.
 
+The page is read from the configured directory on each request, including deep links and
+`/studio/index.html`. It must be a regular, readable file of at most 64 KiB, not a symlink. A missing,
+oversized or unsafe page after startup returns `503`, `Retry-After: 1` and `no-store`; it never falls
+back to HTML that references a previous build. Asset transfer quotas still apply independently.
+
+For deployments, build in a separate directory, publish new hashed assets before replacing
+`index.html` atomically, and retain previous hashed assets for existing tabs during rollout. Running
+Vite directly over the served directory removes old assets and can temporarily leave no page.
+Once the build is complete, new page requests see it without restarting the control plane.
+If an existing tab cannot load a route, **Reload Studio** loads the current document. It explicitly
+warns that unsaved edits will be lost and authentication is required again; there is no automatic
+reload. If even a fresh page requests obsolete assets, compare its asset names with the served
+directory and verify that the control plane includes T007-050 (older binaries retained HTML in
+memory until restart). A browser-cache purge cannot correct that old server behavior.
+
 ## 3. Using it (short)
 
 - **Sign in**: paste a token, or use your organisation's single sign-on. The header shows who you are and your role; what you cannot do is not hidden but explained.
@@ -41,11 +56,15 @@ put both behind one host.
   shown the difference and nothing is overwritten without it. *Publish…* shows what changes against the active version and which changes can break callers.
 - **Watch a run**: on wide screens the filtered Runs list stays beside the detail; selecting another run preserves its filters,
   loaded rows and scroll position. On narrow screens, use the separate Runs list and detail routes. The graph shows each step's
-  state, attempts and the way the run took; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner
+  identity, type, state and the way the run took. Select a step for attempts, failure/wait details,
+  saga information and child-run links; the *Table* tab has the same data as a list; the *Timeline* is the journal. A banner
   tells how the view is kept current (live, polling, reconnecting). Missing finish times stay unknown rather than counting through now.
 - **Act on a failure**: choose the step, *Retry*, *Retry compensation*, *Skip compensation* or *Resolve*; each asks for a reason, says what it will do, and is recorded with your name.
   Skipping or resolving needs the administrator permission `saga:override`.
 - **Everything the canvas does, the list view does** (*Canvas | List* toggle), for keyboard and screen-reader use.
+- Graphs initially open at reading size on their starting node; **Fit View** shows the complete
+  overview. In a run, **Run details** expands tenant/namespace, correlation, trace, deadline and
+  parent facts. Small-screen Scripts tables can be focused and scrolled horizontally with the keyboard.
 - **A reader** (`definition:read` without `definition:write`) can open every workflow but is not sent to the platform's checks, which answer only people who can change a workflow; the
   validation panel says so. The same reader on a run sees every action, disabled, with the permission it needs.
 
@@ -77,7 +96,7 @@ automated screenshots do not complete visual acceptance.
 
 ## 6. What is not built
 
-Showing a step's input, output or error text (the journal carries none: G144); *retry run as new* and *mark manual review* (the API refuses them: G145); human approval and
+Raw input, output or error values (the authorized structure-only inspection hides all values and keys: ADR-0028); *retry run as new* and *mark manual review* (the API refuses them: G145); human approval and
 for-each nodes can be drawn but not published (G147); manual positions of cards are kept in the browser only (G148); pushing changes from the engine instead of polling
 the database (G143); a screen-reader test by a person (G146).
 
@@ -101,3 +120,49 @@ The API, engine and browser remain real. PostgreSQL is still required; `SAGAT_TE
 administrative test connection when Docker cannot start it. The default/CI path still starts real containers and includes US02.
 Report partial results as such: they provide no evidence that scripts build or execute in the sandbox.
 
+
+## Payload structure inspection
+
+An Admin or Operator can explicitly inspect the run input or a selected journal event from the run
+detail view. The server authorizes `run:payload:inspect` and commits a bounded access audit before
+returning a projection. The view contains JSON types, structure and bounded counts; every field name
+and scalar value is removed. Large external content is represented only by verified catalog
+metadata, and missing/unsupported content has an explicit unavailable state. There is no raw-value
+export or automatic fetch of external object bytes.
+
+The selected journal sequence identifies historical output, not the node's latest attempt. Changing
+the run, event or authenticated session clears the prior result and cancels its request. Responses
+use `Cache-Control: private, no-store`. Customer payload classification and permission to disclose
+actual values remain separate decisions; structure-only inspection does not infer those permissions.
+
+## Trace links and signals
+
+Set `SAGAT_STUDIO_TRACE_URL` on the control plane to a public URL template with exactly one
+`{traceId}`, for example `http://127.0.0.1:16686/trace/{traceId}` for local Jaeger. HTTPS is
+required outside loopback; embedded credentials are refused. Restart the control plane after
+changing its environment. The browser loads this setting from `/studio/config.json`; no Studio
+rebuild is needed. Run details retain **Copy trace id** and add **Open trace** when configured.
+The link opens only on user action and sends no authorization header or referrer. The trace
+backend must enforce its own access policy. A missing trace in that backend is not proof of a
+missing journal transition.
+
+**Send signal** is available on unfinished runs with `run:signal`. Enter the exact awaited event
+name and a JSON object up to 256 KiB, read the consequences and choose **Confirm signal**. All
+matching waiting steps receive the payload; signals are not buffered. A conflict means the run
+may no longer be waiting. Repeating an unchanged request after a lost response keeps its
+idempotency key. Changing fields creates a new request. Closing the dialog clears the local
+payload; closing during a request does not undo a signal already committed by the server.
+
+
+## Operations menu
+
+Select a namespace and open **Operations** to inspect alerts and worker sessions. Alert filters
+follow every result page. Persistent drained identities remain visible even after their last
+session expires. Read access requires `ops:read`; drain and resume require `worker:manage`.
+
+A drain applies to every session of that identity in the selected namespace. It prevents new
+claims and does not cancel work already leased. Confirm the identity, namespace and reason in the
+dialog; the platform audits the decision. Resume enables new claims again. A failed request keeps
+its retry identity while the input is unchanged. Changing namespace or authentication context
+clears confirmation and ignores late responses. Runbook links require safe HTTP(S) destinations;
+repository-relative paths are shown as text to locate in the project documentation.

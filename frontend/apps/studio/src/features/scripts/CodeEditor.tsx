@@ -1,3 +1,4 @@
+import '../../styles/code-editor.css';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import { Banner } from '../../ui/Banner';
@@ -28,7 +29,8 @@ export interface CodeEditorProps {
   /** CSS height of the editor. */
   height?: string;
   /** The id of text that describes the editor (the limit, the problems...). */
-  describedBy?: string;
+  describedBy?: string | undefined;
+  invalid?: boolean;
 }
 
 type Loading = { kind: 'loading' } | { kind: 'ready'; module: EditorModule } | { kind: 'failed' };
@@ -40,7 +42,7 @@ type Loading = { kind: 'loading' } | { kind: 'ready'; module: EditorModule } | {
  * Monaco traps the Tab key by design, so the editor says how to get out (Ctrl+M), has a visible
  * switch for the same thing and a "Skip editor" button.
  */
-export function CodeEditor({ label, model, language, value, onChange, readOnly = false, onProblems, jsonSchema, controlsRef, hint, height = '22rem', describedBy }: CodeEditorProps) {
+export function CodeEditor({ label, model, language, value, onChange, readOnly = false, onProblems, jsonSchema, controlsRef, hint, height = '22rem', describedBy, invalid = false }: CodeEditorProps) {
   const [plainChosen, setPlainChosen] = useState(readPlainPreference);
   const [loading, setLoading] = useState<Loading>({ kind: 'loading' });
   const [tabMovesFocus, setTabMovesFocus] = useState(false);
@@ -119,6 +121,7 @@ export function CodeEditor({ label, model, language, value, onChange, readOnly =
         <textarea
           className="code-textarea"
           aria-label={label}
+          aria-invalid={invalid || undefined}
           aria-describedby={describedByIds}
           value={value}
           readOnly={readOnly}

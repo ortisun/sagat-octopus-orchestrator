@@ -52,6 +52,7 @@ test('SEC text that comes from outside is shown as text and never runs: a descri
   // The run: the correlation id is on the page, as the characters it is made of.
   await goTo(page, `/runs/${run}`);
   await expect(page.getByRole('heading', { level: 1 })).toContainText(run);
+  await page.getByText('Run details', { exact: true }).click();
   await expect(page.getByText(HOSTILE, { exact: true }).first()).toBeVisible();
   await nothingRan(page);
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -47,7 +48,7 @@ func (h *Host) dispatch(l *link, lease *pb.TaskLease) {
 	h.tasks[lease.GetTaskId()] = task
 	h.wg.Add(1)
 	h.mu.Unlock()
-	h.emit(Event{Type: EventTaskTaken, TaskID: lease.GetTaskId(), Activity: lease.GetActivityName(), Attempt: int(lease.GetAttempt())})
+	h.emit(Event{Type: EventTaskTaken, TaskID: lease.GetTaskId(), Activity: lease.GetActivityName(), Attempt: int(lease.GetAttempt()), Traceparent: lease.GetTraceparent()})
 	go func() {
 		defer func() {
 			cancel(nil)
@@ -138,6 +139,12 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	}
 	task.deadline.Store(lease.GetExpiresAtEpochMs())
 	task.resolve = func(ctx context.Context) (*Secrets, error) { return h.resolveSecrets(ctx, l, lease, minor) }
+	task.writeBlob = func(ctx context.Context, source io.Reader, options WriteBlobOptions) (BlobDescriptor, error) {
+		return h.writeBlob(ctx, l, lease, minor, source, options)
+	}
+	task.readBlob = func(ctx context.Context, descriptor BlobDescriptor) (io.ReadCloser, error) {
+		return h.readBlob(ctx, l, lease, minor, descriptor)
+	}
 	handlerCtx := context.WithValue(ctx, taskKey{}, task)
 
 	// The heartbeat starts before the handler and runs until the report is made.
@@ -168,6 +175,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 	}
 
 	var output string
+	var blob *BlobDescriptor
 	if reg.reconciler != nil {
 		if verdict.Effect != EffectApplied && verdict.Effect != EffectNotApplied && verdict.Effect != EffectUnknown {
 			h.fail(l, lease, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, not_applied or unknown", false, started)
@@ -179,7 +187,18 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 		}
 		result = answer
 	}
-	if _, none := result.(Void); !none {
+	if blobOutput, ok := result.(BlobOutput); ok {
+		if minor < 3 {
+			h.fail(l, lease, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", false, started)
+			return
+		}
+		if err := validateDescriptor(blobOutput.descriptor); err != nil {
+			h.fail(l, lease, "OUTPUT_INVALID", "the blob output descriptor is malformed", false, started)
+			return
+		}
+		copy := blobOutput.descriptor
+		blob = &copy
+	} else if _, none := result.(Void); !none {
 		encoded, err := jsonx.Encode(result)
 		if err != nil {
 			message := "the output is not JSON"
@@ -196,7 +215,7 @@ func (h *Host) execute(ctx context.Context, l *link, cancel context.CancelCauseF
 		h.fail(l, lease, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", false, started)
 		return
 	}
-	h.complete(l, lease, output, started)
+	h.complete(l, lease, output, blob, started)
 }
 
 func (h *Host) lookup(name string) *registered {
@@ -333,11 +352,15 @@ func (h *Host) report(l *link, call func(ctx context.Context) error) (stale bool
 	}
 }
 
-func (h *Host) complete(l *link, lease *pb.TaskLease, output string, started time.Time) {
+func (h *Host) complete(l *link, lease *pb.TaskLease, output string, blob *BlobDescriptor, started time.Time) {
 	request := &pb.CompleteStepRequest{
 		TaskId: lease.GetTaskId(), RunId: lease.GetRunId(), StepId: lease.GetStepId(), Attempt: lease.GetAttempt(),
 		Generation: lease.GetGeneration(), LeaseToken: lease.GetLeaseToken(), IdempotencyKey: "done-" + lease.GetTaskId(),
 		OutputJson: output, Traceparent: lease.GetTraceparent(),
+	}
+	if blob != nil {
+		request.OutputBlobRef = blob.ID
+		request.OutputSha256 = blob.SHA256
 	}
 	stale, err := h.report(l, func(ctx context.Context) error {
 		_, err := l.rpc.completeStep(ctx, request, lease.GetTraceparent())

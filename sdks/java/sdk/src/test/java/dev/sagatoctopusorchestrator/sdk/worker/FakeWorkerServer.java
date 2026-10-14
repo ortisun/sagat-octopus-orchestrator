@@ -52,6 +52,7 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     final Deque<Worker.TaskLease> leases = new ArrayDeque<>();
     /** Per method, failures to answer with before succeeding (consumed in order). */
     private final Map<String, Deque<Failure>> failures = new ConcurrentHashMap<>();
+    private final Deque<String> acceptedVersions = new java.util.concurrent.ConcurrentLinkedDeque<>();
     volatile String acceptedVersion = "1.2";
     volatile boolean cancelRequested;
     volatile long heartbeatExpiresMs = System.currentTimeMillis() + 60_000;
@@ -59,6 +60,13 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
     /** How long a poll takes to answer, and the wait the answer asks for when it brings no task. */
     volatile long pollDelayMs;
     volatile int pollRetryAfterMs = 50;
+    /** Number of leases in each nonempty stream frame. */
+    volatile int streamFrameSize = Integer.MAX_VALUE;
+    /** Keep the receive open after its scripted frames until the client cancels it. */
+    volatile boolean holdStreamOpen;
+    /** Fail after forwarding the first nonempty frame. */
+    volatile Failure streamFailureAfterFirst;
+    volatile boolean streamCancelled;
     /** A misbehaving service: answers a poll with every task it has, whatever {@code max_tasks} says. */
     volatile boolean ignoreMax;
     private final Server server;
@@ -87,6 +95,12 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
         }
     }
 
+    void acceptVersions(String... versions) {
+        for (String version : versions) {
+            acceptedVersions.add(version);
+        }
+    }
+
     synchronized void addLeases(Worker.TaskLease... more) {
         for (Worker.TaskLease lease : more) {
             leases.add(lease);
@@ -109,12 +123,17 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
             leases.clear();
         }
         failures.clear();
+        acceptedVersions.clear();
         acceptedVersion = "1.2";
         cancelRequested = false;
         heartbeatExpiresMs = System.currentTimeMillis() + 60_000;
         secrets = List.of();
         pollDelayMs = 0;
         pollRetryAfterMs = 50;
+        streamFrameSize = Integer.MAX_VALUE;
+        holdStreamOpen = false;
+        streamFailureAfterFirst = null;
+        streamCancelled = false;
         ignoreMax = false;
     }
 
@@ -146,11 +165,14 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
 
     @Override
     public void registerWorker(Worker.RegisterWorkerRequest request, StreamObserver<Worker.RegisterWorkerResponse> out) {
-        answer("RegisterWorker", request, out, r -> Worker.RegisterWorkerResponse.newBuilder()
-                .setWorkerId("w-1")
-                .setSessionToken("session-1")
-                .setAcceptedProtocolVersion(acceptedVersion)
-                .build());
+        answer("RegisterWorker", request, out, r -> {
+            String scripted = acceptedVersions.poll();
+            return Worker.RegisterWorkerResponse.newBuilder()
+                    .setWorkerId("w-1")
+                    .setSessionToken("session-1")
+                    .setAcceptedProtocolVersion(scripted == null ? acceptedVersion : scripted)
+                    .build();
+        });
     }
 
     @Override
@@ -165,6 +187,60 @@ final class FakeWorkerServer extends WorkerServiceGrpc.WorkerServiceImplBase imp
             }
             return response.build();
         });
+    }
+
+    @Override
+    public void streamTasks(Worker.PollTasksRequest request, StreamObserver<Worker.PollTasksResponse> out) {
+        calls.add(new Call("StreamTasks", request, HEADERS.get(), System.nanoTime()));
+        Deque<Failure> queue = failures.get("StreamTasks");
+        Failure initial = queue == null ? null : queue.poll();
+        if (initial != null) {
+            fail(out, initial);
+            return;
+        }
+
+        int remaining = ignoreMax ? Integer.MAX_VALUE : request.getMaxTasks();
+        boolean sent = false;
+        while (remaining > 0) {
+            Worker.PollTasksResponse.Builder frame = Worker.PollTasksResponse.newBuilder();
+            synchronized (this) {
+                for (int i = 0; i < Math.min(remaining, streamFrameSize) && !leases.isEmpty(); i++) {
+                    frame.addTasks(leases.poll());
+                }
+            }
+            if (frame.getTasksCount() == 0) {
+                break;
+            }
+            out.onNext(frame.build());
+            remaining -= frame.getTasksCount();
+            if (!sent && streamFailureAfterFirst != null) {
+                Failure failure = streamFailureAfterFirst;
+                streamFailureAfterFirst = null;
+                fail(out, failure);
+                return;
+            }
+            sent = true;
+        }
+
+        if (holdStreamOpen) {
+            Context.current().addListener(ignored -> streamCancelled = true, Runnable::run);
+            return;
+        }
+        if (remaining > 0) {
+            out.onNext(Worker.PollTasksResponse.newBuilder().setRetryAfterMs(pollRetryAfterMs).build());
+        }
+        out.onCompleted();
+    }
+
+    private static void fail(StreamObserver<?> out, Failure failure) {
+        Metadata trailers = new Metadata();
+        if (failure.reason() != null) {
+            trailers.put(Metadata.Key.of("x-sagat-error", Metadata.ASCII_STRING_MARSHALLER), failure.reason());
+        }
+        if (failure.retryAfterMs() != null) {
+            trailers.put(Metadata.Key.of("retry-after-ms", Metadata.ASCII_STRING_MARSHALLER), Long.toString(failure.retryAfterMs()));
+        }
+        out.onError(failure.code().toStatus().withDescription("scripted").asRuntimeException(trailers));
     }
 
     @Override

@@ -7,6 +7,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::scripts::{DraftChange, ScriptService, ScriptSpec};
 use sagat_domain::identity::{NamespaceId, Slug};
 use sagat_domain::scripts::{
@@ -15,6 +16,7 @@ use sagat_domain::scripts::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::admission::admit;
 use crate::dto_scripts::{
     ArtifactSummaryBody, CreateScriptBody, ExecutionBody, ExecutionListBody, ExecutionSummaryBody,
     PublishedBody, ScriptBody, ScriptListBody, ScriptSummaryBody, TestRunBody, TestRunListBody,
@@ -43,6 +45,43 @@ fn scripts<B: Governance>(state: &B) -> Result<&ScriptService<B::Store, B::Clock
 
 fn invalid(message: &'static str) -> ApiError {
     ApiError::validation(message)
+}
+
+async fn admitted_namespace<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw: &str,
+    operation: ApiOperation,
+) -> Result<NamespaceId, ApiError> {
+    let namespace = namespace_id(raw)?;
+    admit(state, caller, operation, ApiTarget::Namespace(namespace)).await?;
+    Ok(namespace)
+}
+
+async fn admitted_script<B: Governance>(
+    state: &B,
+    caller: &Caller,
+    raw_namespace: &str,
+    raw_script: &str,
+    operation: ApiOperation,
+) -> Result<sagat_application::scripts::ScriptRecord, ApiError> {
+    let namespace = namespace_id(raw_namespace)?;
+    let script = scripts(state)?
+        .get(
+            &caller.session.principal,
+            namespace,
+            script_id(raw_script)?,
+            &caller.ctx,
+        )
+        .await?;
+    admit(
+        state,
+        caller,
+        operation,
+        ApiTarget::Namespace(script.namespace_id),
+    )
+    .await?;
+    Ok(script)
 }
 
 fn source(text: &str) -> Result<Source, ApiError> {
@@ -76,13 +115,10 @@ pub async fn create_script<B: Governance>(
         policy: body.policy.clone().unwrap_or_default().request()?,
         retention: body.retention_days.map(retention).transpose()?,
     };
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::ScriptWrite).await?;
     let created = scripts(&state)?
-        .create(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            spec,
-            &caller.ctx,
-        )
+        .create(&caller.session.principal, namespace, spec, &caller.ctx)
         .await?;
     Ok((StatusCode::CREATED, Json(ScriptBody::from(&created))))
 }
@@ -100,10 +136,12 @@ pub async fn list_scripts<B: Governance>(
     Path(namespace): Path<String>,
     Query(page): Query<ScriptPage>,
 ) -> Result<Json<ScriptListBody>, ApiError> {
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::ScriptRead).await?;
     let items = scripts(&state)?
         .list(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             page.after.as_deref(),
             page.limit.unwrap_or(50),
             &caller.ctx,
@@ -119,14 +157,7 @@ pub async fn get_script<B: Governance>(
     State(state): State<B>,
     Path((namespace, id)): Path<(String, String)>,
 ) -> Result<Json<ScriptBody>, ApiError> {
-    let found = scripts(&state)?
-        .get(
-            &caller.session.principal,
-            namespace_id(&namespace)?,
-            script_id(&id)?,
-            &caller.ctx,
-        )
-        .await?;
+    let found = admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptRead).await?;
     Ok(Json(ScriptBody::from(&found)))
 }
 
@@ -148,6 +179,7 @@ pub async fn update_script<B: Governance>(
         policy: body.policy.as_ref().map(|p| p.request()).transpose()?,
         retention: body.retention_days.map(retention).transpose()?,
     };
+    admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptWrite).await?;
     let updated = scripts(&state)?
         .update(
             &caller.session.principal,
@@ -166,6 +198,7 @@ pub async fn delete_script<B: Governance>(
     State(state): State<B>,
     Path((namespace, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptWrite).await?;
     scripts(&state)?
         .delete(
             &caller.session.principal,
@@ -184,6 +217,14 @@ pub async fn publish_version<B: Governance>(
     State(state): State<B>,
     Path((namespace, id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<PublishedBody>), ApiError> {
+    admitted_script(
+        &state,
+        &caller,
+        &namespace,
+        &id,
+        ApiOperation::ScriptPublish,
+    )
+    .await?;
     let published = scripts(&state)?
         .publish(
             &caller.session.principal,
@@ -223,6 +264,7 @@ pub async fn list_versions<B: Governance>(
         .before
         .map(|n| VersionNumber::new(n).map_err(|_| invalid("a version number is 1 or more")))
         .transpose()?;
+    admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptRead).await?;
     let items = scripts(&state)?
         .versions(
             &caller.session.principal,
@@ -244,6 +286,7 @@ pub async fn get_version<B: Governance>(
     Path((namespace, id, number)): Path<(String, String, u32)>,
 ) -> Result<Json<VersionBody>, ApiError> {
     let number = VersionNumber::new(number).map_err(|_| ApiError::not_found())?;
+    admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptRead).await?;
     let found = scripts(&state)?
         .version(
             &caller.session.principal,
@@ -263,6 +306,7 @@ pub async fn create_test_run<B: Governance>(
     ApiJson(body): ApiJson<TestRunRequestBody>,
 ) -> Result<(StatusCode, Json<TestRunBody>), ApiError> {
     let input = serde_json::to_vec(&body.input).map_err(|_| invalid("the input is not JSON"))?;
+    admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptWrite).await?;
     let run = scripts(&state)?
         .test(
             &caller.session.principal,
@@ -281,6 +325,7 @@ pub async fn get_test_run<B: Governance>(
     Path((namespace, id, run)): Path<(String, String, String)>,
 ) -> Result<Json<TestRunBody>, ApiError> {
     let run: TestRunId = run.parse().map_err(|_| ApiError::not_found())?;
+    admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptWrite).await?;
     let found = scripts(&state)?
         .test_run(
             &caller.session.principal,
@@ -304,6 +349,7 @@ pub async fn list_test_runs<B: Governance>(
     Path((namespace, id)): Path<(String, String)>,
     Query(page): Query<Limit>,
 ) -> Result<Json<TestRunListBody>, ApiError> {
+    admitted_script(&state, &caller, &namespace, &id, ApiOperation::ScriptWrite).await?;
     let items = scripts(&state)?
         .test_runs(
             &caller.session.principal,
@@ -348,10 +394,12 @@ pub async fn list_executions<B: Governance>(
                 .map_err(|_| ApiError::bad_request("the cursor is not valid"))
         })
         .transpose()?;
+    let namespace =
+        admitted_namespace(&state, &caller, &namespace, ApiOperation::ScriptRead).await?;
     let items = scripts(&state)?
         .executions(
             &caller.session.principal,
-            namespace_id(&namespace)?,
+            namespace,
             digest.as_ref(),
             before,
             page.limit.unwrap_or(50),
@@ -389,5 +437,12 @@ pub async fn get_execution<B: Governance>(
             &caller.ctx,
         )
         .await?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::ScriptRead,
+        ApiTarget::Namespace(found.execution.namespace_id),
+    )
+    .await?;
     Ok(Json(ExecutionBody::from(&found)))
 }

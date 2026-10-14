@@ -4,7 +4,7 @@ import * as grpc from '@grpc/grpc-js';
 export interface Fault {
   channel: 'http' | 'grpc';
   match: string;
-  action: 'dropResponse' | 'failBefore' | 'status';
+  action: 'dropResponse' | 'dropStreamAfterFirst' | 'failBefore' | 'status';
   times?: number;
   after?: number;
   status?: number;
@@ -99,6 +99,28 @@ export class FaultPlan {
           cancel(): void {},
         };
         return new grpc.InterceptingCall(null as never, requester as unknown as grpc.Requester);
+      }
+      if (fault.action === 'dropStreamAfterFirst') {
+        const underlying = nextCall(options);
+        let delivered = false;
+        return new grpc.InterceptingCall(underlying, {
+          start(metadata, listener, next) {
+            next(metadata, {
+              onReceiveMetadata: (md, forward) => forward(md),
+              onReceiveMessage: (message: unknown, forward) => {
+                forward(message);
+                const tasks = (message as { tasks?: unknown[] } | null)?.tasks;
+                if (!delivered && Array.isArray(tasks) && tasks.length > 0) {
+                  delivered = true;
+                  queueMicrotask(() => underlying.cancelWithStatus(grpc.status.CANCELLED, 'injected'));
+                }
+              },
+              onReceiveStatus: (received, forward) =>
+                forward(delivered ? status(grpc.status.UNAVAILABLE) : received),
+            });
+            void listener;
+          },
+        });
       }
       // dropResponse: the server applies the call; its answer is replaced by a failure to deliver it.
       return new grpc.InterceptingCall(nextCall(options), {

@@ -46,6 +46,13 @@ describe('ScriptsPage: the list', () => {
     expect(asked?.url).toBe(`/v1/namespaces/${NAMESPACE_ID}/scripts?limit=50`);
   });
 
+  it('keeps the populated table in a labelled keyboard-scrollable region', async () => {
+    await open(DEVELOPER, { scripts: [aSummary()] });
+    const region = await screen.findByRole('region', { name: 'Scripts table' });
+    expect(region).toHaveAttribute('tabindex', '0');
+    expect(within(region).getByRole('table', { name: 'Scripts in the namespace, by name' })).toBeInTheDocument();
+  });
+
   it('says there are none, and how to make one', async () => {
     await open(DEVELOPER, { scripts: [] });
     expect(await screen.findByText(/No scripts in this namespace yet/)).toHaveTextContent('Make one with “New script”');

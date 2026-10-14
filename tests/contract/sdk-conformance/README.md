@@ -121,6 +121,10 @@ A worker definition may carry `"token": "unbound"` to use `unboundWorkerToken` i
 | `{"verdict": "applied"\|"not_applied"\|"unknown", "output": V}` | for a reconciler |
 | `{"readsSecret": "name", "returns": V}` | resolves the step's secrets and returns `V` plus `secretLength`, the length of the named one (never the value) |
 | `{"readsSecret": "name", "reportsSecretError": true, "returns": V}` | the same, but if resolving raises a canonical error the output is `V` plus `secretError`, its code (a protocol-1 worker has no `ResolveSecrets`: `UNSUPPORTED_PROTOCOL`) |
+| `{"blobRoundTripBytes": N}` | streams `N` deterministic bytes with size/SHA preconditions, reads the descriptor back to verified EOF, and returns only the verified size/hash |
+| `{"blobOutputBytes": N}` | streams `N` deterministic bytes and returns the SDK's explicit native `BlobOutput` wrapper |
+| `{"blobInlineBytes": N}` | streams `N` deterministic bytes and returns ordinary JSON shaped as `{ "$blob": descriptor }`; it must remain inline |
+| `{"blobInputBytes": N}` | reads the run's lease-bound input descriptor through verified EOF and returns only the verified size/hash |
 
 Every attempt appends an entry to the worker's `workerLog` **when the handler ends**:
 `{activity, kind, node, attempt, input, taskKind, targetNode, targetIdempotencyKey, idempotencyKey,
@@ -136,6 +140,7 @@ stop the scenario.
 | `op` | Fields | Calls | Result |
 |---|---|---|---|
 | `start` | `workflow` (key), `input`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?`, `token?` (`bad`\|`other`) | `start` | the Run |
+| `startWithBlob` | `workflow` (key), `inputBlobBytes`, `idempotencyKey?`, `correlationId?`, `traceparent?`, `deadlineInMs?` | `uploadRunInput` then `startWithBlob` | the Run; a successful upload response is refused unless the one-pass source reached EOF |
 | `get` | `run`, `token?` | `get` | the Run |
 | `list` | `status?`, `limit?`, `all?` | `list` / `listAll` | `{items: [runId…]}` in the order the server gave (newest first), also across pages |
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
@@ -217,3 +222,18 @@ the acceptance scenario: both calls are the same run, and the run's `traceId` is
 
 `expected/<scenario>.json` is the normalized result. It is reviewed by a person: a blessed file that is
 wrong makes five SDKs wrong the same way.
+
+## Protocol 1.4 streaming completion
+
+Workers accept `transport: "auto" | "poll" | "stream"` (auto by default), as specified by
+[ADR-0029](../../../docs/adr/ADR-0029-worker-task-streams-spend-finite-receive-credit.md).
+Existing scenarios that specifically inject PollTasks faults explicitly select poll. Other
+default hosts use the negotiated transport. `worker-stream-faults` requires streaming and
+injects faults into StreamTasks itself.
+
+The gRPC-only `dropStreamAfterFirst` fault opens the real server stream, forwards its first
+nonempty task frame intact to the SDK, then cancels only that receive stream and makes the next
+read fail with UNAVAILABLE. It must not cancel task handlers or silently discard the first frame.
+Its plan is counted once when the matching stream is opened, with the same `times`/`after` rules
+as unary faults. A scenario must contain queued work so the nonempty frame is actually reached.
+The runner must not manufacture a task or substitute a unary poll for this operation.

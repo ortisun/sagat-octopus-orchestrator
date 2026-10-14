@@ -92,3 +92,16 @@ tests/contract/scalability-ha/ (with fixtures/), tests/integration/scalability-h
 ## Delivery Gate
 
 Performance reports with hardware/configuration, zero confirmed Run loss in fault injection and validated DR restore.
+
+## Completion hardening
+
+T010-037 groups named engine loops and server futures in a JoinSet, observes their
+termination and drains them for at most 30 seconds after shared shutdown. An atomic
+process-failure flag is sticky for both probes. No execution state or fencing semantics
+change. T010-038 installs the real chart and tests queue-driven scaling in a disposable
+cluster; rendering and canary policy tests alone do not close that gate.
+
+T010-040 orders ready activity candidates before transactional admission. PostgreSQL takes shared
+tenant/namespace policy fences then exact activity locks; defaults and ceilings exclusively fence
+their changed level before writing/auditing. Gated real-DB tests reproduce opposite-node-order
+deadlocks and prove that a limit update cannot acknowledge while an older admission is unfinished.

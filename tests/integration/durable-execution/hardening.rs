@@ -18,7 +18,7 @@ use sagat_domain::identity::{Principal, Role};
 use serde_json::{Value, json};
 
 use crate::support::engine::{
-    World, activity, document, subject_of, task_ref, wait_node, with, world,
+    World, activity, document, parallel_node, subject_of, task_ref, wait_node, with, world,
 };
 
 /// A JSON object of about `bytes` bytes once serialised.
@@ -175,8 +175,8 @@ async fn a_poll_is_bounded_in_bytes_and_the_rest_waits_for_the_next_one() {
         first.len()
     );
     assert!(
-        bytes < MAX_POLL_BYTES + MAX_PAYLOAD_BYTES + 64 * 1024,
-        "one response carries at most the budget plus the last task: {bytes}"
+        bytes <= MAX_POLL_BYTES,
+        "the serialized inputs fit the budget without a last-task overshoot: {bytes}"
     );
 
     // Nothing was lost: what the first poll left is handed out by the next ones.
@@ -191,6 +191,124 @@ async fn a_poll_is_bounded_in_bytes_and_the_rest_waits_for_the_next_one() {
         total,
         "every task reached a worker exactly once"
     );
+}
+
+/// Compact numeric JSON expands when the task context is parsed and serialized: each `1e15`
+/// becomes `1000000000000000.0`. Stored byte limits alone do not bound a worker response.
+fn expanding_output() -> Vec<u8> {
+    format!("[{}0]", "1e15,".repeat(48_000)).into_bytes()
+}
+
+#[tokio::test]
+async fn a_serialized_task_over_the_poll_budget_fails_instead_of_staying_ready() {
+    let w = world().await;
+    let output = expanding_output();
+    let expanded =
+        serde_json::to_vec(&serde_json::from_slice::<Value>(&output).expect("valid numeric JSON"))
+            .expect("canonical JSON");
+    assert!(output.len() < MAX_PAYLOAD_BYTES);
+    assert!(expanded.len() > output.len() * 3);
+    let completed = MAX_POLL_BYTES / expanded.len() + 1;
+    assert!(completed * output.len() < MAX_RUN_OUTPUT_BYTES);
+    let (doc, activities) = long_chain("expanded-context", completed + 1);
+    let (wf, _) = w.publish(doc).await;
+    let run = w.start(wf, &json!({})).await;
+    let session = w.session(&refs(&activities)).await;
+    for n in 0..completed {
+        let task = w.one_task(&session).await;
+        assert!(task.input.len() <= MAX_POLL_BYTES);
+        w.workers
+            .complete(
+                &session.principal,
+                &task_ref(&task),
+                &output,
+                &format!("expanded-output-{n}"),
+            )
+            .await
+            .expect("compact output is within the storage limit");
+    }
+
+    assert!(
+        w.poll(&session, 64).await.is_empty(),
+        "no oversized lease escapes"
+    );
+    let (status, code, attempt, token): (String, Option<String>, i32, Option<Vec<u8>>) =
+        sqlx::query_as(
+            "SELECT status, failure_code, attempt, lease_token_hash FROM steps \
+             WHERE run_id = $1 AND node = $2",
+        )
+        .bind(run.as_uuid())
+        .bind(format!("s{completed}"))
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("failed preflight");
+    assert_eq!(status, "FAILED");
+    assert_eq!(code.as_deref(), Some("RUN_DATA_LIMIT"));
+    assert_eq!(
+        attempt, 1,
+        "a deterministic preflight failure is not retried"
+    );
+    assert!(token.is_none(), "there is no stranded live lease");
+    assert_eq!(w.run_status(run).await, RunStatus::Failed);
+    assert!(w.poll(&session, 64).await.is_empty());
+    w.assert_consistent(run).await;
+}
+
+#[tokio::test]
+async fn large_sibling_tasks_are_budgeted_before_their_leases_commit() {
+    let w = world().await;
+    let branches = ["a", "b", "c", "d"];
+    let mut nodes = vec![
+        with(activity("s0"), "next", json!("s1")),
+        with(activity("s1"), "next", json!("s2")),
+        with(activity("s2"), "next", json!("fanout")),
+        parallel_node("fanout", &branches, "all"),
+    ];
+    nodes.extend(branches.iter().map(|id| activity(id)));
+    let (wf, _) = w.publish(document("large-siblings", "s0", nodes)).await;
+    let run = w.start(wf, &json!({})).await;
+    let session = w
+        .session(&[
+            "act.s0", "act.s1", "act.s2", "act.a", "act.b", "act.c", "act.d",
+        ])
+        .await;
+    let output = expanding_output();
+    for n in 0..3 {
+        let task = w.one_task(&session).await;
+        w.workers
+            .complete(
+                &session.principal,
+                &task_ref(&task),
+                &output,
+                &format!("sibling-output-{n}"),
+            )
+            .await
+            .expect("store output");
+    }
+    let first = w.poll(&session, 64).await;
+    assert_eq!(first.len(), 3, "only three expanded contexts fit");
+    assert!(first.iter().map(|task| task.input.len()).sum::<usize>() <= MAX_POLL_BYTES);
+    let leased: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM steps WHERE run_id = $1 AND status = 'LEASED'")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("leased count");
+    assert_eq!(leased, 3, "every committed lease was returned");
+    let last = w.one_task(&session).await;
+    assert_eq!(
+        last.fence.attempt, 1,
+        "waiting for response space spends no attempt"
+    );
+    assert_eq!(last.fence.generation, 1);
+    assert!(first.iter().all(|task| task.node != last.node));
+    for task in first.iter().chain(std::iter::once(&last)) {
+        w.complete(&session, task, &json!({}))
+            .await
+            .expect("finish branch");
+    }
+    assert_eq!(w.run_status(run).await, RunStatus::Succeeded);
+    w.assert_consistent(run).await;
 }
 
 // ------------------------------------------------------------- registration
@@ -230,6 +348,38 @@ async fn what_a_worker_advertises_is_validated_and_bounded() {
             matches!(refused, Err(AppError::NotAllowed(_))),
             "{bad:?} -> {refused:?}"
         );
+    }
+    for bad in [
+        Capabilities {
+            activities: vec!["a".repeat(129)],
+            ..capabilities(vec![])
+        },
+        Capabilities {
+            activities: (0..=256).map(|i| format!("act.{i}")).collect(),
+            ..capabilities(vec![])
+        },
+        Capabilities {
+            pools: vec!["x".repeat(65)],
+            ..capabilities(vec![])
+        },
+        Capabilities {
+            pools: (0..=MAX_LABELS).map(|i| format!("p{i}")).collect(),
+            ..capabilities(vec![])
+        },
+    ] {
+        let refused = w
+            .workers
+            .register(&w.worker, "payments", "validated-bounds", &bad)
+            .await;
+        assert!(matches!(refused, Err(AppError::NotAllowed(_))), "{bad:?}");
+    }
+    for bad_name in ["x".repeat(121), "line\nbreak".to_owned()] {
+        assert!(matches!(
+            w.workers
+                .register(&w.worker, "payments", &bad_name, &capabilities(vec![]))
+                .await,
+            Err(AppError::NotAllowed(_))
+        ));
     }
 }
 
@@ -324,6 +474,7 @@ async fn the_claim_query_walks_the_ready_index_and_never_aggregates_the_backlog(
     .bind(w.namespace.id().as_uuid())
     .bind(vec!["act.a".to_owned(), "act.b".to_owned()])
     .bind(8_i64)
+    .bind(3_i32) // current negotiated worker minor; legacy compatibility is tested separately
     .fetch_all(&mut *conn)
     .await
     .expect("explain");

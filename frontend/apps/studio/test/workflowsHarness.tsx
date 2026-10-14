@@ -163,6 +163,7 @@ async function signedIn(platform: Platform, permissions: string[], wrap?: MountO
 /** The editor page on its route, over a platform that behaves like the real one. */
 function prepareStorage(options: MountOptions): void {
   if (!options.keepStorage || typeof globalThis.localStorage?.getItem !== 'function') installStorage();
+  globalThis.localStorage.setItem('studio.scripts.plainEditor', '1');
   for (const [key, value] of Object.entries(options.seed ?? {})) localStorage.setItem(key, value);
 }
 

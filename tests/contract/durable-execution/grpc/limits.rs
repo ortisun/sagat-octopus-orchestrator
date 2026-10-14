@@ -15,7 +15,9 @@ use sagat_api_grpc::pb::{
     PollTasksResponse, RegisterWorkerRequest, RegisterWorkerResponse, ResolveSecretsRequest,
     ResolveSecretsResponse, StepCommandResponse,
 };
-use sagat_api_grpc::{ERROR_METADATA, GrpcConfig, RETRY_AFTER_METADATA, serve, worker_service};
+use sagat_api_grpc::{
+    AdmissionProvider, ERROR_METADATA, GrpcConfig, RETRY_AFTER_METADATA, serve, worker_service,
+};
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, oneshot};
 use tonic::transport::{Channel, Endpoint};
@@ -26,6 +28,8 @@ struct Stub {
     gate: Arc<Semaphore>,
     entered: Arc<AtomicUsize>,
 }
+
+impl AdmissionProvider for Stub {}
 
 impl Stub {
     async fn park(&self) {
@@ -38,6 +42,26 @@ impl Stub {
 
 #[tonic::async_trait]
 impl WorkerService for Stub {
+    type StreamTasksStream = tokio_stream::Empty<Result<PollTasksResponse, Status>>;
+
+    async fn write_blob(
+        &self,
+        _: Request<tonic::Streaming<sagat_api_grpc::pb::WriteBlobRequest>>,
+    ) -> Result<Response<sagat_api_grpc::pb::WriteBlobResponse>, Status> {
+        self.park().await;
+        Ok(Response::new(
+            sagat_api_grpc::pb::WriteBlobResponse::default(),
+        ))
+    }
+    type ReadBlobStream = tokio_stream::Empty<Result<sagat_api_grpc::pb::ReadBlobResponse, Status>>;
+    async fn read_blob(
+        &self,
+        _: Request<sagat_api_grpc::pb::ReadBlobRequest>,
+    ) -> Result<Response<Self::ReadBlobStream>, Status> {
+        self.park().await;
+        Ok(Response::new(tokio_stream::empty()))
+    }
+
     async fn register_worker(
         &self,
         _: Request<RegisterWorkerRequest>,
@@ -51,6 +75,13 @@ impl WorkerService for Stub {
     ) -> Result<Response<PollTasksResponse>, Status> {
         self.park().await;
         Ok(Response::new(PollTasksResponse::default()))
+    }
+    async fn stream_tasks(
+        &self,
+        _: Request<PollTasksRequest>,
+    ) -> Result<Response<Self::StreamTasksStream>, Status> {
+        self.park().await;
+        Ok(Response::new(tokio_stream::empty()))
     }
     async fn heartbeat(
         &self,

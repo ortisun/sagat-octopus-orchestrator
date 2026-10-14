@@ -81,3 +81,14 @@ Every `[x]` above has a test or an artifact; the evidence per story, the reviews
 ## Incremental implementation strategy
 
 Contract → first failing test → domain → adapter → happy path → failure/recovery → observability → security gate → performance → release.
+
+## Studio operations completion
+
+- [x] T008-036 Implement an Operations menu with namespace alerts, worker sessions and persistent
+  identity drain/resume controls (FR-008-004/005, G181). Verify pagination, read/manage permission
+  separation, scoped confirmation/reason, failure and late-response handling, and a real browser
+  journey. Preserve existing backend audit, telemetry and tenant boundaries.
+  — Implementation and 5 focused Operations scenarios pass; Studio and Playwright typechecks and
+  focused lint pass. `frontend/e2e/tests/operations.spec.ts` is written with an isolated namespace,
+  worker and guaranteed resume cleanup. The real Chromium/API journey passed on 2026-10-12
+  (`target/usability/operations-browser.log`); it creates an explicit activity binding and removes it after cleanup.

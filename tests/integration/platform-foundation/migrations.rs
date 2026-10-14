@@ -22,7 +22,7 @@ fn forward_migrations() -> i64 {
     i64::try_from(count).expect("count fits")
 }
 
-const TABLES: [&str; 29] = [
+const TABLES: [&str; 31] = [
     "tenants",
     "workspaces",
     "namespaces",
@@ -56,6 +56,9 @@ const TABLES: [&str; 29] = [
     "scheduler_members",
     "tenant_scheduling",
     "run_active_counts",
+    "activity_quota_limits",
+    // Added by feature 002 completion hardening.
+    "blobs",
 ];
 
 #[tokio::test]

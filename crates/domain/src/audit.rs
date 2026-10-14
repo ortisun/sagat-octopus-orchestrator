@@ -30,6 +30,10 @@ pub enum AuditAction {
     RunCancelRequested,
     RunPaused,
     RunResumed,
+    /// An operator inspected a payload's uniformly redacted structure.
+    PayloadInspected,
+    /// An authenticated caller without the dedicated permission tried to inspect a payload.
+    PayloadInspectionDenied,
     /// A signal was delivered to a waiting run.
     RunSignalled,
     /// The caller asked for a resource that exists only in another tenant. The record carries the
@@ -105,6 +109,13 @@ pub enum AuditAction {
     WebhookSubscriptionDisabled,
     /// An operator put dead deliveries back in the queue.
     WebhookDeliveryRedriven,
+    /// An outbound broker subscription was created, changed, deleted or disabled.
+    BrokerSubscriptionCreated,
+    BrokerSubscriptionChanged,
+    BrokerSubscriptionDeleted,
+    BrokerSubscriptionDisabled,
+    /// An operator put dead broker deliveries back in the queue.
+    BrokerDeliveryRedriven,
     /// A connector to a broker was created, changed or deleted.
     ConnectorCreated,
     ConnectorChanged,
@@ -126,6 +137,9 @@ pub enum AuditAction {
     /// it did not declare). Written once per script, kind and reason, and at most a hundred
     /// different ones per script: a script in a loop can ask as often as it likes.
     ScriptViolation,
+    BlobUploaded,
+    BlobRead,
+    BlobDeleted,
 }
 
 impl AuditAction {
@@ -144,12 +158,15 @@ impl AuditAction {
     pub const fn collapses_repeats(self) -> bool {
         matches!(
             self,
-            Self::SecretResolved
+            Self::BlobRead
+                | Self::SecretResolved
                 | Self::SecretDenied
                 | Self::EventRejected
                 | Self::ScriptViolation
                 | Self::AuditRead
                 | Self::PublicationDenied
+                | Self::PayloadInspected
+                | Self::PayloadInspectionDenied
         )
     }
 
@@ -160,7 +177,10 @@ impl AuditAction {
     #[must_use]
     pub const fn repeat_window(self) -> Option<std::time::Duration> {
         match self {
-            Self::AuditRead | Self::PublicationDenied => Some(std::time::Duration::from_secs(300)),
+            Self::AuditRead
+            | Self::PublicationDenied
+            | Self::PayloadInspected
+            | Self::PayloadInspectionDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
     }
@@ -190,6 +210,8 @@ impl AuditAction {
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",
+            Self::PayloadInspected => "payload.inspected",
+            Self::PayloadInspectionDenied => "payload.inspection_denied",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
             Self::SecretStored => "secret.stored",
@@ -230,6 +252,11 @@ impl AuditAction {
             Self::WebhookSubscriptionDeleted => "webhook.subscription_deleted",
             Self::WebhookSubscriptionDisabled => "webhook.subscription_disabled",
             Self::WebhookDeliveryRedriven => "webhook.delivery_redriven",
+            Self::BrokerSubscriptionCreated => "broker.subscription_created",
+            Self::BrokerSubscriptionChanged => "broker.subscription_changed",
+            Self::BrokerSubscriptionDeleted => "broker.subscription_deleted",
+            Self::BrokerSubscriptionDisabled => "broker.subscription_disabled",
+            Self::BrokerDeliveryRedriven => "broker.delivery_redriven",
             Self::ConnectorCreated => "connector.created",
             Self::ConnectorChanged => "connector.changed",
             Self::ConnectorDeleted => "connector.deleted",
@@ -242,6 +269,9 @@ impl AuditAction {
             Self::ScriptBuilt => "script.built",
             Self::ScriptTested => "script.tested",
             Self::ScriptViolation => "script.violation",
+            Self::BlobUploaded => "blob.uploaded",
+            Self::BlobRead => "blob.read",
+            Self::BlobDeleted => "blob.deleted",
         }
     }
 }
@@ -255,6 +285,7 @@ impl fmt::Display for AuditAction {
 /// Kind of resource an audit record refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceType {
+    Blob,
     Tenant,
     Workspace,
     Namespace,
@@ -272,6 +303,7 @@ pub enum ResourceType {
     /// An event admitted to the inbox, as `source/id`.
     Event,
     WebhookSubscription,
+    BrokerSubscription,
     Connector,
     Script,
     /// A version of a script, as `script-id/number`.
@@ -284,6 +316,7 @@ impl ResourceType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Blob => "blob",
             Self::Tenant => "tenant",
             Self::Workspace => "workspace",
             Self::Namespace => "namespace",
@@ -299,6 +332,7 @@ impl ResourceType {
             Self::EventEndpoint => "event_endpoint",
             Self::Event => "event",
             Self::WebhookSubscription => "webhook_subscription",
+            Self::BrokerSubscription => "broker_subscription",
             Self::Connector => "connector",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
