@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use sagat_application::definitions::{IrCodec, IrError};
-use sagat_domain::workflow::NodeId;
+use sagat_domain::workflow::{NodeId, NodeKind};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
 
@@ -55,6 +55,22 @@ fn validates_and_preserves_policy_transfer_and_graph_without_enabling_publicatio
         parsed.policy().timeout(),
         Duration::from_millis(31_622_400_000)
     );
+    let domain_policy = parsed
+        .definition()
+        .continuation_policy()
+        .expect("domain continuation policy");
+    assert_eq!(domain_policy.max_segments(), 10_000);
+    assert_eq!(domain_policy.timeout(), parsed.policy().timeout());
+    assert!(matches!(
+        parsed
+            .definition()
+            .node(&NodeId::parse("rollover").expect("node"))
+            .expect("domain continuation")
+            .kind(),
+        NodeKind::ContinueAsNew { input, state }
+            if input.as_str() == "result.nextInput"
+                && state.as_ref().is_some_and(|state| state.as_str() == "state")
+    ));
     let rollover = parsed
         .continuation(&NodeId::parse("rollover").expect("node"))
         .expect("continuation");

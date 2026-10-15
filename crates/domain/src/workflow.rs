@@ -143,6 +143,8 @@ pub enum WorkflowError {
     BodyDepthExceeded(u8),
     #[error("invalid workflow limit: {0}")]
     InvalidWorkflowLimit(&'static str),
+    #[error("invalid continuation policy: {0}")]
+    InvalidContinuationPolicy(&'static str),
     #[error("switch node '{node}': {reason}")]
     InvalidSwitch { node: NodeId, reason: &'static str },
 }
@@ -716,6 +718,12 @@ pub enum NodeKind {
     },
     /// Returns a value from a named body; never a workflow terminal.
     Return { result: Expression },
+    /// Ends this segment and selects the immutable input and optional declared state of its
+    /// same-version successor.
+    ContinueAsNew {
+        input: Expression,
+        state: Option<Expression>,
+    },
     /// Closes the workflow successfully.
     End { output: Option<Expression> },
 }
@@ -739,6 +747,7 @@ impl NodeKind {
             Self::While { .. } => "while",
             Self::RepeatUntil { .. } => "repeatUntil",
             Self::Return { .. } => "return",
+            Self::ContinueAsNew { .. } => "continueAsNew",
         }
     }
 }
@@ -922,6 +931,44 @@ pub struct WorkflowLimits {
     max_depth: u8,
 }
 
+/// Finite lifetime bounds captured by every run in a continuation chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuationPolicy {
+    max_segments: u16,
+    timeout: Duration,
+}
+
+impl ContinuationPolicy {
+    /// # Errors
+    /// Rejects a segment limit outside 1..=10000 or a timeout outside 1 ms..=366 days.
+    pub fn new(max_segments: u16, timeout: Duration) -> Result<Self, WorkflowError> {
+        if !(1..=10_000).contains(&max_segments) {
+            return Err(WorkflowError::InvalidContinuationPolicy(
+                "maxSegments must be in 1..=10000",
+            ));
+        }
+        if timeout < Duration::from_millis(1) || timeout > MAX_WAIT {
+            return Err(WorkflowError::InvalidContinuationPolicy(
+                "timeout must be in 1..=31622400000 milliseconds",
+            ));
+        }
+        Ok(Self {
+            max_segments,
+            timeout,
+        })
+    }
+
+    #[must_use]
+    pub const fn max_segments(self) -> u16 {
+        self.max_segments
+    }
+
+    #[must_use]
+    pub const fn timeout(self) -> Duration {
+        self.timeout
+    }
+}
+
 impl WorkflowLimits {
     /// # Errors
     /// Rejects an instance ceiling outside 1..=100000 or depth outside 1..=8.
@@ -1025,6 +1072,7 @@ struct DefinitionGraph {
 enum GraphKind {
     Legacy,
     Structured,
+    StructuredContinuation,
     Body,
 }
 
@@ -1037,6 +1085,7 @@ pub struct WorkflowDefinition {
     bodies: BTreeMap<NodeId, BodyDefinition>,
     limits: WorkflowLimits,
     structured: bool,
+    continuation_policy: Option<ContinuationPolicy>,
     triggers: Vec<Trigger>,
 }
 
@@ -1073,6 +1122,7 @@ impl WorkflowDefinition {
             bodies: BTreeMap::new(),
             limits: WorkflowLimits::default(),
             structured: false,
+            continuation_policy: None,
             triggers: Vec::new(),
         })
     }
@@ -1088,7 +1138,62 @@ impl WorkflowDefinition {
         bodies: Vec<BodyDefinition>,
         limits: WorkflowLimits,
     ) -> Result<Self, WorkflowError> {
-        let graph = DefinitionGraph::new(entrypoint, nodes, GraphKind::Structured)?;
+        Self::new_structured_inner(
+            name,
+            entrypoint,
+            nodes,
+            bodies,
+            limits,
+            GraphKind::Structured,
+            None,
+        )
+    }
+
+    /// Validates a structured definition containing a top-level continuation boundary.
+    ///
+    /// # Errors
+    /// Rejects an invalid graph, a continuation in a nested region, or a policy without a
+    /// continuation boundary.
+    pub fn new_structured_with_continuation(
+        name: Slug,
+        entrypoint: NodeId,
+        nodes: Vec<Node>,
+        bodies: Vec<BodyDefinition>,
+        limits: WorkflowLimits,
+        policy: ContinuationPolicy,
+    ) -> Result<Self, WorkflowError> {
+        Self::new_structured_inner(
+            name,
+            entrypoint,
+            nodes,
+            bodies,
+            limits,
+            GraphKind::StructuredContinuation,
+            Some(policy),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_structured_inner(
+        name: Slug,
+        entrypoint: NodeId,
+        nodes: Vec<Node>,
+        bodies: Vec<BodyDefinition>,
+        limits: WorkflowLimits,
+        kind: GraphKind,
+        continuation_policy: Option<ContinuationPolicy>,
+    ) -> Result<Self, WorkflowError> {
+        let graph = DefinitionGraph::new(entrypoint, nodes, kind)?;
+        if kind == GraphKind::StructuredContinuation
+            && !graph
+                .nodes
+                .values()
+                .any(|node| matches!(node.kind(), NodeKind::ContinueAsNew { .. }))
+        {
+            return Err(WorkflowError::InvalidContinuationPolicy(
+                "chainPolicy requires a continueAsNew node",
+            ));
+        }
         let mut named = BTreeMap::new();
         let mut total = graph.declared;
         for body in bodies {
@@ -1109,6 +1214,7 @@ impl WorkflowDefinition {
             bodies: named,
             limits,
             structured: true,
+            continuation_policy,
             triggers: Vec::new(),
         };
         definition.check_aggregate_limits()?;
@@ -1123,6 +1229,11 @@ impl WorkflowDefinition {
     #[must_use]
     pub const fn limits(&self) -> WorkflowLimits {
         self.limits
+    }
+
+    #[must_use]
+    pub const fn continuation_policy(&self) -> Option<ContinuationPolicy> {
+        self.continuation_policy
     }
 
     #[must_use]
@@ -1606,6 +1717,20 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
                 ));
             }
         }
+        NodeKind::ContinueAsNew { .. } => {
+            if kind != GraphKind::StructuredContinuation {
+                return Err(scope_error(
+                    node.id(),
+                    "continueAsNew requires a continuation policy and is forbidden in bodies",
+                ));
+            }
+            if node.next().is_some() || node.on_error().is_some() || node.timeout().is_some() {
+                return Err(scope_error(
+                    node.id(),
+                    "continueAsNew cannot route or own an attempt timeout",
+                ));
+            }
+        }
         NodeKind::End { .. } if kind == GraphKind::Body => {
             return Err(scope_error(
                 node.id(),
@@ -1639,6 +1764,9 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
                 ..
             } => vec![condition, initial, carry],
             NodeKind::Return { result } => vec![result],
+            NodeKind::ContinueAsNew { input, state } => {
+                std::iter::once(input).chain(state.iter()).collect()
+            }
             _ => Vec::new(),
         };
         if expressions
@@ -1918,6 +2046,12 @@ fn parallel_regions(map: &BTreeMap<NodeId, Node>) -> Result<Regions, WorkflowErr
                         node: member.clone(),
                     });
                 }
+                if matches!(map[member].kind(), NodeKind::ContinueAsNew { .. }) {
+                    return Err(scope_error(
+                        member,
+                        "continueAsNew is forbidden inside a parallel branch",
+                    ));
+                }
                 let entered_only_from_inside = preds.get(member).is_none_or(|p| {
                     p.iter().all(|&q| {
                         region.contains(q) || (q == node.id() && branches.contains(member))
@@ -1968,6 +2102,12 @@ fn saga_regions(
                     saga: node.id().clone(),
                     node: member.clone(),
                 });
+            }
+            if matches!(map[member].kind(), NodeKind::ContinueAsNew { .. }) {
+                return Err(scope_error(
+                    member,
+                    "continueAsNew is forbidden inside a saga",
+                ));
             }
             let entered_only_from_inside = preds.get(member).is_none_or(|p| {
                 p.iter()

@@ -324,7 +324,8 @@ fn start_pending(
             | NodeKind::Approval { .. }
             | NodeKind::While { .. }
             | NodeKind::RepeatUntil { .. }
-            | NodeKind::Return { .. } => {
+            | NodeKind::Return { .. }
+            | NodeKind::ContinueAsNew { .. } => {
                 return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
             }
         };

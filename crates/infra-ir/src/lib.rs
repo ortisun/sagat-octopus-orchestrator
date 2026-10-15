@@ -283,6 +283,13 @@ fn check_node_expressions<'a>(
                 Compiled::compile(result.as_str())
                     .map_err(|e| expression_error(id, "result", e))?;
             }
+            NodeKind::ContinueAsNew { input, state } => {
+                Compiled::compile(input.as_str()).map_err(|e| expression_error(id, "input", e))?;
+                if let Some(state) = state {
+                    Compiled::compile(state.as_str())
+                        .map_err(|e| expression_error(id, "state", e))?;
+                }
+            }
             _ => {}
         }
     }

@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use sagat_application::definitions::IrError;
 use sagat_domain::identity::Slug;
-use sagat_domain::workflow::{DefinitionWarning, Digest, Expression, NodeId};
+use sagat_domain::workflow::{
+    ContinuationPolicy, DefinitionWarning, Digest, Expression, NodeId, WorkflowDefinition,
+};
 use serde_json::Value;
 
 use crate::canonical;
@@ -60,6 +62,7 @@ impl ContinueAsNewDefinition {
 /// Canonical continuation metadata validated without making the workflow executable.
 #[derive(Debug, Clone)]
 pub struct ParsedContinuation {
+    definition: WorkflowDefinition,
     workflow_name: Slug,
     entrypoint: NodeId,
     policy: ChainPolicyDefinition,
@@ -71,6 +74,12 @@ pub struct ParsedContinuation {
 }
 
 impl ParsedContinuation {
+    /// Typed graph retained for planner integration once the runtime gate is complete.
+    #[must_use]
+    pub const fn definition(&self) -> &WorkflowDefinition {
+        &self.definition
+    }
+
     #[must_use]
     pub const fn workflow_name(&self) -> &Slug {
         &self.workflow_name
@@ -218,39 +227,38 @@ fn graph_document(document: &Value) -> Result<Value, IrError> {
         .ok_or_else(|| issue("", "expected an object"))?;
     root.remove("chainPolicy");
     root.remove("state");
-    let nodes = root
-        .get_mut("nodes")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| issue("/nodes", "expected an array"))?;
-    for node in nodes {
-        let Some(node) = node.as_object_mut() else {
-            continue;
-        };
-        if node.get("type").and_then(Value::as_str) == Some("continueAsNew") {
-            node.insert("type".to_owned(), Value::String("end".to_owned()));
-            node.remove("input");
-            node.remove("state");
-        }
-    }
     Ok(graph)
 }
 
 pub(crate) fn parse(document: &Value) -> Result<ParsedContinuation, IrError> {
     let policy = policy(document)?;
+    let domain_policy = ContinuationPolicy::new(
+        u16::try_from(policy.max_segments()).map_err(|_| {
+            issue(
+                "/chainPolicy/maxSegments",
+                "expected an integer in 1..=10000",
+            )
+        })?,
+        policy.timeout(),
+    )
+    .map_err(IrError::Invalid)?;
     let continuations = continuations(document)?;
     let state = document
         .get("state")
         .map(|_| parse_state(document))
         .transpose()?;
     let graph = graph_document(document)?;
-    let definition = crate::convert::structured_definition(&graph)?;
+    let definition = crate::convert::continuation_definition(&graph, domain_policy)?;
     crate::check_expressions(&definition)?;
     let canonical = canonical::canonical_json(document);
     let digest = canonical::digest_of(&canonical);
     let warnings = definition.warnings();
+    let workflow_name = definition.name().clone();
+    let entrypoint = definition.entrypoint().clone();
     Ok(ParsedContinuation {
-        workflow_name: definition.name().clone(),
-        entrypoint: definition.entrypoint().clone(),
+        definition,
+        workflow_name,
+        entrypoint,
         policy,
         continuations,
         state,

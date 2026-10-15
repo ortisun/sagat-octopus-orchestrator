@@ -15,9 +15,9 @@ use sagat_domain::scripts::{Digest, Language, activity_of};
 use sagat_domain::secrets::{MAX_SECRETS_PER_ACTIVITY, SecretName};
 use sagat_domain::triggers::{CronSpec, Trigger, TriggerKind};
 use sagat_domain::workflow::{
-    ActivityName, BackoffStrategy, BodyDefinition, CancelPolicy, EventType, Expression, JoinPolicy,
-    Node, NodeId, NodeKind, RetryPolicy, SwitchCase, WorkflowDefinition, WorkflowError,
-    WorkflowLimits,
+    ActivityName, BackoffStrategy, BodyDefinition, CancelPolicy, ContinuationPolicy, EventType,
+    Expression, JoinPolicy, Node, NodeId, NodeKind, RetryPolicy, SwitchCase, WorkflowDefinition,
+    WorkflowError, WorkflowLimits,
 };
 use serde_json::{Map, Value};
 
@@ -88,7 +88,6 @@ fn unsupported_structured(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "foreach" => "legacy collection placeholder has no executable definition",
         "humanApproval" => "legacy approval placeholder has no executable definition",
-        "continueAsNew" => "this workflow capability has no validated domain mapping",
         _ => return None,
     })
 }
@@ -463,6 +462,12 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
         "return" => NodeKind::Return {
             result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
         },
+        "continueAsNew" => NodeKind::ContinueAsNew {
+            input: expression(text(node, "input", at)?, &format!("{at}/input"))?,
+            state: optional_text(node, "state", at)?
+                .map(|value| expression(value, &format!("{at}/state")))
+                .transpose()?,
+        },
         "end" => NodeKind::End {
             output: optional_text(node, "outputExpr", at)?
                 .map(|e| expression(e, &format!("{at}/outputExpr")))
@@ -598,6 +603,20 @@ pub(crate) fn declared_state_definition(document: &Value) -> Result<WorkflowDefi
 }
 
 fn structured_definition_inner(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    structured_definition_with_policy(document, None)
+}
+
+pub(crate) fn continuation_definition(
+    document: &Value,
+    policy: ContinuationPolicy,
+) -> Result<WorkflowDefinition, IrError> {
+    structured_definition_with_policy(document, Some(policy))
+}
+
+fn structured_definition_with_policy(
+    document: &Value,
+    continuation_policy: Option<ContinuationPolicy>,
+) -> Result<WorkflowDefinition, IrError> {
     let (name, entrypoint) = identity(document)?;
     let root = root_nodes(document, true)?;
     let mut bodies = Vec::new();
@@ -644,7 +663,13 @@ fn structured_definition_inner(document: &Value) -> Result<WorkflowDefinition, I
         }
         Some(_) => return Err(issue("/limits".into(), "expected an object")),
     };
-    WorkflowDefinition::new_structured(name, entrypoint, root, bodies, limits)
+    let definition = match continuation_policy {
+        Some(policy) => WorkflowDefinition::new_structured_with_continuation(
+            name, entrypoint, root, bodies, limits, policy,
+        ),
+        None => WorkflowDefinition::new_structured(name, entrypoint, root, bodies, limits),
+    };
+    definition
         .and_then(|definition| definition.with_triggers(triggers(document)?))
         .map_err(IrError::Invalid)
 }
