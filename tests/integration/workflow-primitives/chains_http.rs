@@ -49,6 +49,139 @@ fn activity_document(name: &str) -> Value {
     })
 }
 
+fn continuation_document(name: &str) -> Value {
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {
+                "id": "work",
+                "type": "activity",
+                "activity": "chain.work",
+                "next": "rollover"
+            },
+            {
+                "id": "rollover",
+                "type": "continueAsNew",
+                "input": "input.next"
+            }
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000}
+    })
+}
+
+#[tokio::test]
+async fn public_start_creates_the_initial_chain_atomically() {
+    let api = support::api::start().await;
+    let tenant = api.tenant("acme", "alice").await;
+    let workspace = api.create_workspace("alice", "acme", "chains").await;
+    let namespace: NamespaceId = api
+        .create_namespace("alice", "acme", &workspace, "payments", "dev")
+        .await
+        .parse()
+        .expect("namespace id");
+    let name = format!("public-chain-{}", Uuid::now_v7());
+    let created = api
+        .as_user(Method::POST, "/workflows", "alice", "acme")
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", Uuid::now_v7().to_string())
+        .json(&json!({"name": name, "ir": continuation_document(&name)}))
+        .send()
+        .await
+        .expect("create workflow");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let workflow = json_of(created).await["id"]
+        .as_str()
+        .expect("workflow id")
+        .to_owned();
+    let published = api
+        .as_user(
+            Method::POST,
+            &format!("/workflows/{workflow}/publish"),
+            "alice",
+            "acme",
+        )
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", Uuid::now_v7().to_string())
+        .json(&json!({"draftRevision": 1}))
+        .send()
+        .await
+        .expect("publish workflow");
+    assert_eq!(published.status(), StatusCode::CREATED);
+    let before = support::now();
+    let started = api
+        .as_user(Method::POST, "/runs", "alice", "acme")
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", Uuid::now_v7().to_string())
+        .json(&json!({
+            "workflowId": workflow,
+            "input": {"segment": 1, "next": {"segment": 2}}
+        }))
+        .send()
+        .await
+        .expect("start run");
+    assert_eq!(started.status(), StatusCode::ACCEPTED);
+    let chain: RunId = json_of(started).await["runId"]
+        .as_str()
+        .expect("run id")
+        .parse()
+        .expect("run id");
+
+    let projection: (
+        Uuid,
+        i32,
+        i32,
+        time::OffsetDateTime,
+        Option<time::OffsetDateTime>,
+    ) = sqlx::query_as(
+        "SELECT current_run_id,segment_count,max_segments,original_deadline_at,r.deadline_at \
+             FROM execution_chains ec JOIN runs r ON r.tenant_id=ec.tenant_id AND r.id=ec.chain_id \
+             WHERE ec.tenant_id=$1 AND ec.namespace_id=$2 AND ec.chain_id=$3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&api.db.pool)
+    .await
+    .expect("initial chain projection");
+    assert_eq!(projection.0, chain.as_uuid());
+    assert_eq!(projection.1, 1);
+    assert_eq!(projection.2, 3);
+    assert_eq!(projection.4, Some(projection.3));
+    assert!(projection.3 >= before + time::Duration::minutes(59));
+    assert!(projection.3 <= before + time::Duration::minutes(61));
+    let events: Vec<String> = sqlx::query_scalar(
+        "SELECT event_type FROM run_events WHERE tenant_id=$1 AND run_id=$2 ORDER BY seq",
+    )
+    .bind(tenant.as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_all(&api.db.pool)
+    .await
+    .expect("initial chain journal");
+    assert_eq!(
+        events,
+        ["run.started", "step.released", "execution_chain.started"]
+    );
+
+    let inspection = api
+        .get_as(
+            &format!("/namespaces/{namespace}/chains/{chain}"),
+            "alice",
+            "acme",
+        )
+        .await;
+    assert_eq!(inspection.status(), StatusCode::OK);
+    let inspection = json_of(inspection).await;
+    assert_eq!(inspection["chainId"], chain.to_string());
+    assert_eq!(inspection["currentRunId"], chain.to_string());
+    assert_eq!(
+        inspection["segments"].as_array().expect("segments").len(),
+        1
+    );
+}
+
 async fn fixture(name: &str, document: Value) -> Fixture {
     let api = support::api::start().await;
     let tenant = api.tenant("acme", "alice").await;

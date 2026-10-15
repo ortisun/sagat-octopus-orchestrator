@@ -14,7 +14,7 @@ use std::time::Duration;
 use sagat_application::error::StoreError;
 use sagat_application::maintenance::{
     EndedChild, LeaseLoss, LostLease, MaintenanceStore, OutboxDue, OutboxMessage, OutboxStore,
-    PendingChild, RunRef, StepRef, Window,
+    PendingChild, PendingContinuation, RunRef, StepRef, Window,
 };
 use sagat_domain::execution::{Fence, InstancePath, RunId};
 use sagat_domain::identity::TenantId;
@@ -98,6 +98,52 @@ fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
 }
 
 impl MaintenanceStore for PgRunStore {
+    async fn continuation_candidates(
+        &self,
+        window: &Window,
+    ) -> Result<Vec<PendingContinuation>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT candidate.tenant_id,candidate.namespace_id,candidate.chain_id, \
+                    candidate.run_id,candidate.node \
+             FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+               SELECT step.tenant_id,chain.namespace_id,chain.chain_id,step.run_id,step.node, \
+                      step.updated_at \
+               FROM steps step JOIN runs run \
+                 ON run.tenant_id=step.tenant_id AND run.id=step.run_id \
+               JOIN execution_chains chain \
+                 ON chain.tenant_id=step.tenant_id AND chain.current_run_id=step.run_id \
+               WHERE run_shard(step.run_id)=sh.s AND run.status='RUNNING' \
+                 AND step.status='PENDING' AND cardinality(step.instance_path_nodes)=0 \
+                 AND chain.cancel_requested=false AND chain.final_outcome IS NULL \
+                 AND step.tenant_id <> ALL($3::uuid[]) \
+               ORDER BY step.updated_at LIMIT $1 \
+             ) candidate ORDER BY candidate.updated_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(|row| {
+            let node: String = col(row, "node")?;
+            Ok(PendingContinuation {
+                tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+                namespace_id: sagat_domain::identity::NamespaceId::new(col::<Uuid>(
+                    row,
+                    "namespace_id",
+                )?),
+                chain_id: RunId::new(col::<Uuid>(row, "chain_id")?),
+                run_id: RunId::new(col::<Uuid>(row, "run_id")?),
+                node: NodeId::parse_stored(&node).map_err(|_| corrupt("continuation node"))?,
+            })
+        })
+        .collect()
+    }
+
     // Each query is the same shape: for every shard the replica owns, the oldest `limit` due items of
     // that shard (the first entries of an index whose leading column is the shard, so a shard with
     // nothing due costs one probe), then the oldest `limit` of all of them. The oldest `limit` of the
@@ -125,22 +171,28 @@ impl MaintenanceStore for PgRunStore {
                         scope.owner_path_nodes,scope.owner_path_indices,scope.updated_at \
                  FROM iteration_scopes scope JOIN runs run \
                    ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
-                 WHERE run_shard(scope.run_id)=sh.s AND run.status IN ('RUNNING','WAITING') \
-                   AND scope.kind='COLLECTION' AND scope.lifecycle='OPEN' \
+                 WHERE run_shard(scope.run_id)=sh.s \
+                   AND run.status IN ('RUNNING','WAITING','CANCELLING') \
+                   AND scope.kind='COLLECTION' \
                    AND scope.tenant_id <> ALL($3::uuid[]) \
                    AND ( \
-                     (scope.next_admission_index < scope.item_count \
-                       AND scope.active_count < scope.max_concurrency) \
-                     OR scope.completed_count = scope.item_count \
-                     OR EXISTS ( \
-                       SELECT 1 FROM collection_iterations member JOIN steps returned \
-                         ON returned.tenant_id=member.tenant_id \
-                        AND returned.run_id=member.run_id \
-                        AND returned.instance_path_nodes=member.entry_path_nodes \
-                        AND returned.instance_path_indices=member.entry_path_indices \
-                       WHERE member.tenant_id=scope.tenant_id \
-                         AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
-                         AND member.lifecycle='ADMITTED' AND returned.status='PENDING')) \
+                     scope.lifecycle='DRAINING' \
+                     OR (scope.lifecycle='OPEN' AND ( \
+                       run.status='CANCELLING' \
+                       OR (scope.next_admission_index < scope.item_count \
+                         AND scope.active_count < scope.max_concurrency) \
+                       OR scope.completed_count = scope.item_count \
+                       OR EXISTS ( \
+                         SELECT 1 FROM collection_iterations member JOIN steps returned \
+                           ON returned.tenant_id=member.tenant_id \
+                          AND returned.run_id=member.run_id \
+                          AND returned.instance_path_nodes=member.entry_path_nodes \
+                          AND returned.instance_path_indices=member.entry_path_indices \
+                         WHERE member.tenant_id=scope.tenant_id \
+                           AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
+                           AND member.lifecycle='ADMITTED' \
+                           AND returned.status IN ('PENDING','FAILED')))) \
+                   ) \
                ) work ORDER BY work.updated_at LIMIT $1 \
              ) candidate ORDER BY candidate.updated_at LIMIT $1",
         )

@@ -56,6 +56,302 @@ impl IrCodec for ContinuationCodec {
     }
 }
 
+#[tokio::test]
+async fn public_activity_completion_is_handed_to_a_successor_by_the_scheduler() {
+    let world = world().await;
+    let name = format!("public-chain-handoff-{}", Uuid::now_v7());
+    let document = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {
+                "id": "work",
+                "type": "activity",
+                "activity": "segment.work",
+                "next": "rollover"
+            },
+            {
+                "id": "rollover",
+                "type": "continueAsNew",
+                "input": "input.next"
+            }
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000}
+    });
+    let (workflow, _) = world.publish(document).await;
+    let chain = world
+        .start(workflow, &json!({"segment": 1, "next": {"segment": 2}}))
+        .await;
+    let session = world.session(&["segment.work"]).await;
+    let task = world.one_task(&session).await;
+    world
+        .complete(&session, &task, &json!({"processed": true}))
+        .await
+        .expect("complete activity");
+
+    let placement = Placement::new(format!("public-chain-scheduler-{name}"));
+    Keeper::new(
+        world.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: StdDuration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        world.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let report = scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+
+    let projection: (Uuid, i32) = sqlx::query_as(
+        "SELECT current_run_id,segment_count FROM execution_chains \
+         WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("chain projection");
+    assert_ne!(projection.0, chain.as_uuid());
+    assert_eq!(projection.1, 2);
+    let predecessor: (String, Option<String>) = sqlx::query_as(
+        "SELECT run.status,segment.completion_kind FROM runs run \
+             JOIN chain_segments segment \
+               ON segment.tenant_id=run.tenant_id AND segment.run_id=run.id \
+             WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("predecessor");
+    assert_eq!(predecessor.0, "SUCCEEDED");
+    assert_eq!(predecessor.1.as_deref(), Some("CONTINUED"));
+    let successor_input: Vec<u8> = sqlx::query_scalar(
+        "SELECT payload.content FROM runs run JOIN payloads payload \
+           ON payload.tenant_id=run.tenant_id AND payload.digest=run.input_digest \
+         WHERE run.tenant_id=$1 AND run.id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(projection.0)
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("successor input");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&successor_input)
+            .expect("successor input JSON"),
+        json!({"segment": 2})
+    );
+}
+
+#[tokio::test]
+async fn public_conditional_continuation_reaches_a_successful_final_outcome() {
+    let world = world().await;
+    let name = format!("public-chain-final-{}", Uuid::now_v7());
+    let document = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {
+                "id": "work",
+                "type": "activity",
+                "activity": "segment.work",
+                "next": "again"
+            },
+            {
+                "id": "again",
+                "type": "condition",
+                "expression": "input.continue",
+                "ifTrue": "rollover",
+                "ifFalse": "done"
+            },
+            {
+                "id": "rollover",
+                "type": "continueAsNew",
+                "input": "input.next"
+            },
+            {"id": "done", "type": "end"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000}
+    });
+    let (workflow, _) = world.publish(document).await;
+    let chain = world
+        .start(
+            workflow,
+            &json!({"continue": true, "next": {"continue": false}}),
+        )
+        .await;
+    let session = world.session(&["segment.work"]).await;
+    let first = world.one_task(&session).await;
+    world
+        .complete(&session, &first, &json!({"processed": true}))
+        .await
+        .expect("complete continuing segment");
+
+    let placement = Placement::new(format!("public-chain-final-scheduler-{name}"));
+    Keeper::new(
+        world.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: StdDuration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        world.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let handoff = scheduler.tick().await;
+    assert_eq!(handoff.continuations_advanced, 1, "{handoff:?}");
+    assert_eq!(handoff.failed, 0, "{handoff:?}");
+
+    let final_task = world.one_task(&session).await;
+    world
+        .complete(&session, &final_task, &json!({"processed": true}))
+        .await
+        .expect("complete final segment");
+    let projection: (i32, Option<String>, String, Option<String>) = sqlx::query_as(
+        "SELECT chain.segment_count,chain.final_outcome,run.status,segment.completion_kind \
+         FROM execution_chains chain \
+         JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
+         JOIN chain_segments segment ON segment.tenant_id=chain.tenant_id \
+              AND segment.chain_id=chain.chain_id AND segment.run_id=chain.current_run_id \
+         WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("successful chain projection");
+    assert_eq!(projection.0, 2);
+    assert_eq!(projection.1.as_deref(), Some("SUCCEEDED"));
+    assert_eq!(projection.2, "SUCCEEDED");
+    assert_eq!(projection.3.as_deref(), Some("FINAL"));
+    let after_final = scheduler.tick().await;
+    assert_eq!(after_final.continuations_advanced, 0, "{after_final:?}");
+    assert_eq!(after_final.failed, 0, "{after_final:?}");
+}
+
+#[tokio::test]
+async fn segment_limit_finalizes_once_and_is_not_rediscovered() {
+    let world = world().await;
+    let name = format!("public-chain-limit-{}", Uuid::now_v7());
+    let document = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {
+                "id": "work",
+                "type": "activity",
+                "activity": "segment.work",
+                "next": "rollover"
+            },
+            {
+                "id": "rollover",
+                "type": "continueAsNew",
+                "input": "input.next"
+            }
+        ],
+        "chainPolicy": {"maxSegments": 2, "timeoutMs": 3_600_000}
+    });
+    let (workflow, _) = world.publish(document).await;
+    let chain = world
+        .start(
+            workflow,
+            &json!({"segment": 1, "next": {"segment": 2, "next": {"segment": 3}}}),
+        )
+        .await;
+    let session = world.session(&["segment.work"]).await;
+    let placement = Placement::new(format!("public-chain-limit-scheduler-{name}"));
+    Keeper::new(
+        world.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: StdDuration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        world.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+
+    let first = world.one_task(&session).await;
+    world
+        .complete(&session, &first, &json!({"processed": true}))
+        .await
+        .expect("complete first segment");
+    let first_tick = scheduler.tick().await;
+    assert_eq!(first_tick.continuations_advanced, 1, "{first_tick:?}");
+    assert_eq!(first_tick.failed, 0, "{first_tick:?}");
+
+    let second = world.one_task(&session).await;
+    world
+        .complete(&session, &second, &json!({"processed": true}))
+        .await
+        .expect("complete final segment activity");
+    let limit_tick = scheduler.tick().await;
+    assert_eq!(limit_tick.continuations_advanced, 1, "{limit_tick:?}");
+    assert_eq!(limit_tick.failed, 0, "{limit_tick:?}");
+    let repeated_tick = scheduler.tick().await;
+    assert_eq!(repeated_tick.continuations_advanced, 0, "{repeated_tick:?}");
+    assert_eq!(repeated_tick.failed, 0, "{repeated_tick:?}");
+
+    let projection: (Uuid, i32, Option<String>, String, Option<String>) = sqlx::query_as(
+        "SELECT chain.current_run_id,chain.segment_count,chain.final_outcome,run.status, \
+                segment.completion_kind \
+         FROM execution_chains chain \
+         JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
+         JOIN chain_segments segment ON segment.tenant_id=chain.tenant_id \
+              AND segment.chain_id=chain.chain_id AND segment.run_id=chain.current_run_id \
+         WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("terminal chain projection");
+    assert_ne!(projection.0, chain.as_uuid());
+    assert_eq!(projection.1, 2);
+    assert_eq!(projection.2.as_deref(), Some("FAILED"));
+    assert_eq!(projection.3, "FAILED");
+    assert_eq!(projection.4.as_deref(), Some("FINAL"));
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='run.finished' \
+           AND resource_id=$2 AND reason='chain segment limit exhausted'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(projection.0.to_string())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("chain limit audit");
+    assert_eq!(audits, 1);
+}
+
 fn digest(bytes: &[u8]) -> Digest {
     Digest::new(Sha256::digest(bytes).into())
 }

@@ -67,11 +67,11 @@ impl JsonIrCodec {
         Ok(ParsedDeclaredState::new(parsed, state))
     }
 
-    /// Validates and preserves additive-v1 continuation declarations without enabling them.
+    /// Validates and preserves additive-v1 continuation declarations.
     ///
     /// # Errors
-    /// Returns bounded syntax, schema, graph or expression errors. The production
-    /// [`IrCodec::parse`] path remains fail-closed for `chainPolicy` and `continueAsNew`.
+    /// Returns bounded syntax, schema, graph or expression errors. Publication accepts only the
+    /// narrower runtime shape enforced by [`IrCodec::parse`].
     pub fn parse_continuation(&self, document: &[u8]) -> Result<ParsedContinuation, IrError> {
         let value = validated_document(document)?;
         continuation::parse(&value)
@@ -102,6 +102,23 @@ impl IrCodec for JsonIrCodec {
         if value.get("state").is_some() {
             declared_state::parse(&value)?;
             converted_document(&value, convert::published_declared_state_definition)
+        } else if value.get("chainPolicy").is_some()
+            && value
+                .get("nodes")
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| {
+                    nodes.iter().any(|node| {
+                        node.get("type").and_then(Value::as_str) == Some("continueAsNew")
+                    })
+                })
+        {
+            let parsed = continuation::parse_published(&value)?;
+            Ok(ParsedDefinition {
+                definition: parsed.definition().clone(),
+                canonical: parsed.canonical().to_vec(),
+                digest: parsed.digest(),
+                warnings: parsed.warnings().to_vec(),
+            })
         } else {
             converted_document(&value, convert::definition)
         }

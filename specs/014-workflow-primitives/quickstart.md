@@ -59,9 +59,11 @@ default route wins. A missing `amount` fails evaluation; no later case or defaul
 switch integration target exercises these outcomes against PostgreSQL and checks journal/replay.
 
 The five SDKs can construct additive v1 collection, bounded-loop, approval and continuation
-documents. These builder fixtures check authoring only. The server accepts a bounded root
-approval with basic nodes; collection, loop and continuation nodes still fail publication. Run
-the current builder parity checks with:
+documents. These builder fixtures check authoring only. The server accepts a bounded root approval
+with basic nodes and two closed continuation graphs: `activity -> continueAsNew`, and
+`activity -> condition -> (continueAsNew | end)`. Continuation transfer is input-only; declared
+state, bodies, top-level limits, triggers and wider graphs fail publication. Run the current builder
+parity checks with:
 
 ```sh
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
@@ -69,6 +71,21 @@ SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformanc
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
+
+The real PostgreSQL continuation checks publish through the normal codec, start through the public
+run service, complete activities through the worker boundary and let a fenced scheduler tick move
+the chain head. They cover a successful conditional final outcome and terminal `CHAIN_LIMIT`
+without rediscovery:
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked chain_handoff -- --nocapture
+cargo test -p sagat-tests --test integration_workflow_primitives --locked chains_http -- --nocapture
+```
+
+The five-SDK chain command scenario remains pending because its signal-controlled wait graph is
+outside the published continuation subset. Typed inspect and cancel can address chains created by
+the reviewed server shapes; signal has only its negative no-matching-wait path there. The pending
+fixture is not runtime proof.
 
 Run-addressed declared Query/Update is available for workflows made from the existing basic
 root nodes. The shared runtime scenario publishes one such workflow, starts a run, applies and

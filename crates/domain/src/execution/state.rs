@@ -653,6 +653,13 @@ impl CollectionState {
             .count()
     }
 
+    /// Admitted members that still hold a durable tenant slot.
+    pub fn active_iterations(&self) -> impl Iterator<Item = u32> + '_ {
+        self.iterations
+            .iter()
+            .filter_map(|(index, iteration)| iteration.is_active().then_some(*index))
+    }
+
     /// Result references in immutable input-index order, independent of completion order.
     pub fn ordered_results(&self) -> impl Iterator<Item = (u32, &CollectionResult)> {
         self.results.iter().map(|(index, result)| (*index, result))

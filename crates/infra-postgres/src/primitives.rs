@@ -8,15 +8,15 @@
 use sagat_application::error::StoreError;
 use sagat_application::execution::{DefinitionCache, instance_step_id};
 use sagat_application::primitives::{
-    CollectionAdmission, CollectionCheckpoint, CollectionEntry, CollectionFinish,
-    CollectionProgress, CollectionScopeId, CollectionStore, CollectionTransition,
-    PrimitiveStoreError, PrimitiveWrite,
+    CollectionAdmission, CollectionCheckpoint, CollectionDrain, CollectionDrainFinish,
+    CollectionEntry, CollectionFinish, CollectionIterationDrain, CollectionProgress,
+    CollectionScopeId, CollectionStore, CollectionTransition, PrimitiveStoreError, PrimitiveWrite,
 };
 use sagat_domain::definition::WorkflowVersionId;
-use sagat_domain::execution::ExecutionInstanceId;
+use sagat_domain::execution::{CollectionDrainReason, ExecutionInstanceId};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::sharding::Shard;
-use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
+use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::{PgConnection, PgPool, Row};
@@ -159,6 +159,45 @@ async fn lock_run(
     })
 }
 
+#[derive(Debug, Clone)]
+struct LockedDrainRun {
+    run: LockedRun,
+    status: String,
+    stop_reason: Option<String>,
+    stop_code: Option<String>,
+}
+
+async fn lock_drain_run(
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+) -> Result<LockedDrainRun, PrimitiveStoreError> {
+    let row = sqlx::query(
+        "SELECT namespace_id,workflow_version_id,run_version,status,stop_reason,stop_code \
+         FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?
+    .ok_or(PrimitiveStoreError::Missing)?;
+    let run = LockedRun {
+        namespace_id: NamespaceId::new(row.get("namespace_id")),
+        version_id: WorkflowVersionId::new(row.get("workflow_version_id")),
+        run_version: u64::try_from(row.get::<i64, _>("run_version"))
+            .map_err(|_| invalid_storage("run version"))?,
+    };
+    if run.namespace_id != transition.namespace_id() {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    Ok(LockedDrainRun {
+        run,
+        status: row.get("status"),
+        stop_reason: row.get("stop_reason"),
+        stop_code: row.get("stop_code"),
+    })
+}
+
 fn check_revision(
     run: LockedRun,
     transition: &CollectionTransition,
@@ -279,6 +318,58 @@ async fn finish_version(
     if let Some(audit) = transition.audit() {
         insert_audit(conn, audit).await?;
     }
+    Ok(())
+}
+
+async fn finish_drain_version(
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+    new_version: u64,
+) -> Result<(), PrimitiveStoreError> {
+    let updated = sqlx::query(
+        "UPDATE runs SET run_version=$3,updated_at=$4 \
+         WHERE tenant_id=$1 AND id=$2 AND status='CANCELLING'",
+    )
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .bind(number(new_version, "run version")?)
+    .bind(transition.occurred_at())
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(PrimitiveStoreError::InvalidTransition);
+    }
+    if let Some(audit) = transition.audit() {
+        insert_audit(conn, audit).await?;
+    }
+    Ok(())
+}
+
+async fn append_run_event(
+    conn: &mut PgConnection,
+    transition: &CollectionTransition,
+    sequence: u64,
+    event_type: &str,
+    detail: Value,
+) -> Result<(), PrimitiveStoreError> {
+    sqlx::query(
+        "INSERT INTO run_events \
+         (tenant_id,run_id,seq,event_type,node,detail,actor,trace_id,occurred_at, \
+          instance_id,instance_path_nodes,instance_path_indices) \
+         VALUES ($1,$2,$3,$4,NULL,$5,$6,$7,$8,NULL,NULL,NULL)",
+    )
+    .bind(transition.tenant_id().as_uuid())
+    .bind(transition.run_id().as_uuid())
+    .bind(number(sequence, "journal sequence")?)
+    .bind(event_type)
+    .bind(detail)
+    .bind(transition.actor().as_str())
+    .bind(transition.trace_id())
+    .bind(transition.occurred_at())
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
     Ok(())
 }
 
@@ -1336,6 +1427,623 @@ impl CollectionStore for PgCollectionStore {
         })
     }
 
+    async fn start_collection_drain(
+        &self,
+        drain: &CollectionDrain,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        check_audit(&drain.transition)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let locked = lock_drain_run(&mut tx, &drain.transition).await?;
+        check_scheduler_fence(&mut tx, &drain.transition).await?;
+        let (owner_nodes, owner_indices) = path_parts(drain.transition.owner());
+        let scope = sqlx::query(
+            "SELECT namespace_id,owner_path_nodes,owner_path_indices,owner_node,lifecycle, \
+                    drain_kind,drain_iteration,drain_failure_code,drain_sequence,drain_outbox_id \
+             FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 FOR UPDATE",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.scope_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .ok_or(PrimitiveStoreError::Missing)?;
+        if NamespaceId::new(scope.get("namespace_id")) != locked.run.namespace_id
+            || scope.get::<Vec<String>, _>("owner_path_nodes") != owner_nodes
+            || scope.get::<Vec<i32>, _>("owner_path_indices") != owner_indices
+            || scope.get::<String, _>("owner_node") != drain.transition.owner().node().as_str()
+        {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let (kind, iteration, code) = match &drain.reason {
+            CollectionDrainReason::Failed { iteration, code } => (
+                "FAILED",
+                Some(
+                    i32::try_from(*iteration)
+                        .map_err(|_| PrimitiveStoreError::InvalidTransition)?,
+                ),
+                Some(code.as_str()),
+            ),
+            CollectionDrainReason::Cancelled => ("CANCELLED", None, None),
+        };
+        if matches!(
+            scope.get::<String, _>("lifecycle").as_str(),
+            "DRAINING" | "FAILED" | "CANCELLED"
+        ) {
+            let matches = scope.get::<Option<String>, _>("drain_kind").as_deref() == Some(kind)
+                && scope.get::<Option<i32>, _>("drain_iteration") == iteration
+                && scope
+                    .get::<Option<String>, _>("drain_failure_code")
+                    .as_deref()
+                    == code
+                && scope.get::<Option<Uuid>, _>("drain_outbox_id") == Some(drain.outbox_id);
+            if !matches {
+                return Err(PrimitiveStoreError::DuplicateMismatch);
+            }
+            let sequence = scope
+                .get::<Option<i64>, _>("drain_sequence")
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| invalid_storage("collection drain sequence"))?;
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(PrimitiveWrite {
+                applied: false,
+                run_version: sequence,
+            });
+        }
+        if scope.get::<String, _>("lifecycle") != "OPEN" {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        check_revision(locked.run, &drain.transition)?;
+
+        let mut sequence = locked.run.run_version;
+        match &drain.reason {
+            CollectionDrainReason::Cancelled => {
+                if locked.status != "CANCELLING"
+                    || locked.stop_reason.as_deref() != Some("CANCELLED")
+                    || locked.stop_code.is_some()
+                {
+                    return Err(PrimitiveStoreError::InvalidTransition);
+                }
+            }
+            CollectionDrainReason::Failed { iteration, code } => {
+                let failed: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM collection_iterations i JOIN steps s \
+                       ON s.tenant_id=i.tenant_id AND s.run_id=i.run_id \
+                      AND s.instance_path_nodes=i.entry_path_nodes \
+                      AND s.instance_path_indices=i.entry_path_indices \
+                     WHERE i.tenant_id=$1 AND i.run_id=$2 AND i.scope_id=$3 \
+                       AND i.iteration_index=$4 AND i.lifecycle='ADMITTED' \
+                       AND s.status='FAILED' AND s.failure_code=$5)",
+                )
+                .bind(drain.transition.tenant_id().as_uuid())
+                .bind(drain.transition.run_id().as_uuid())
+                .bind(drain.scope_id.as_uuid())
+                .bind(i32::try_from(*iteration).unwrap_or(i32::MAX))
+                .bind(code.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_error)?;
+                if !failed {
+                    return Err(PrimitiveStoreError::InvalidTransition);
+                }
+                match (
+                    locked.status.as_str(),
+                    locked.stop_reason.as_deref(),
+                    locked.stop_code.as_deref(),
+                ) {
+                    ("RUNNING" | "WAITING", None, None) => {
+                        sequence += 1;
+                        append_run_event(
+                            &mut tx,
+                            &drain.transition,
+                            sequence,
+                            "run.stop_requested",
+                            json!({"reason":"FAILED","code":code.as_str()}),
+                        )
+                        .await?;
+                        sqlx::query(
+                            "UPDATE runs SET status='CANCELLING',stop_reason='FAILED',stop_code=$3 \
+                             WHERE tenant_id=$1 AND id=$2",
+                        )
+                        .bind(drain.transition.tenant_id().as_uuid())
+                        .bind(drain.transition.run_id().as_uuid())
+                        .bind(code.as_str())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(store_error)?;
+                    }
+                    ("CANCELLING", Some("FAILED"), Some(stored)) if stored == code.as_str() => {}
+                    _ => return Err(PrimitiveStoreError::InvalidTransition),
+                }
+            }
+        }
+        sequence += 1;
+        sqlx::query(
+            "UPDATE iteration_scopes SET lifecycle='DRAINING',drain_kind=$4,drain_iteration=$5, \
+                    drain_failure_code=$6,drain_sequence=$7,drain_outbox_id=$8,updated_at=$9 \
+             WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.scope_id.as_uuid())
+        .bind(kind)
+        .bind(iteration)
+        .bind(code)
+        .bind(number(sequence, "journal sequence")?)
+        .bind(drain.outbox_id)
+        .bind(drain.transition.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let detail = match &drain.reason {
+            CollectionDrainReason::Failed { iteration, code } => {
+                json!({"reason":"failed","iteration":iteration,"code":code.as_str()})
+            }
+            CollectionDrainReason::Cancelled => json!({"reason":"cancelled"}),
+        };
+        append_event(
+            &mut tx,
+            &drain.transition,
+            locked.run,
+            sequence,
+            "collection.drain_started",
+            detail,
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO event_outbox \
+             (id,tenant_id,aggregate_id,event_type,routing_key,payload) \
+             VALUES ($1,$2,$3,'collection.drain.started',$4,$5)",
+        )
+        .bind(drain.outbox_id)
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.transition.owner().node().as_str())
+        .bind(json!({
+            "tenantId":drain.transition.tenant_id().to_string(),
+            "namespaceId":drain.transition.namespace_id().to_string(),
+            "runId":drain.transition.run_id().to_string(),
+            "scopeId":drain.scope_id.as_uuid().to_string(),
+            "reason":kind,
+            "traceId":drain.transition.trace_id(),
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        finish_drain_version(&mut tx, &drain.transition, sequence).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(PrimitiveWrite {
+            applied: true,
+            run_version: sequence,
+        })
+    }
+
+    async fn drain_collection_iteration(
+        &self,
+        drain: &CollectionIterationDrain,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        check_audit(&drain.transition)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let locked = lock_drain_run(&mut tx, &drain.transition).await?;
+        check_scheduler_fence(&mut tx, &drain.transition).await?;
+        let _: i32 = sqlx::query_scalar(
+            "SELECT active_iterations FROM tenant_iteration_usage WHERE tenant_id=$1 FOR UPDATE",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let _: i32 = sqlx::query_scalar(
+            "SELECT reserved_instances FROM run_instance_usage \
+             WHERE tenant_id=$1 AND run_id=$2 FOR UPDATE",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let (owner_nodes, owner_indices) = path_parts(drain.transition.owner());
+        let scope = sqlx::query(
+            "SELECT namespace_id,owner_path_nodes,owner_path_indices,owner_node,lifecycle, \
+                    active_count,drain_kind,drain_iteration,drain_failure_code \
+             FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 FOR UPDATE",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.scope_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .ok_or(PrimitiveStoreError::Missing)?;
+        if NamespaceId::new(scope.get("namespace_id")) != locked.run.namespace_id
+            || scope.get::<Vec<String>, _>("owner_path_nodes") != owner_nodes
+            || scope.get::<Vec<i32>, _>("owner_path_indices") != owner_indices
+            || scope.get::<String, _>("owner_node") != drain.transition.owner().node().as_str()
+        {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let iteration = sqlx::query(
+            "SELECT lifecycle,slot_held,remaining_reservations,entry_path_nodes,entry_path_indices, \
+                    entry_node,drained_sequence,drain_outbox_id \
+             FROM collection_iterations WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 \
+               AND iteration_index=$4 FOR UPDATE",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.scope_id.as_uuid())
+        .bind(i32::try_from(drain.index).unwrap_or(i32::MAX))
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .ok_or(PrimitiveStoreError::Missing)?;
+        if iteration.get::<String, _>("lifecycle") == "DRAINED" {
+            if iteration.get::<Option<Uuid>, _>("drain_outbox_id") != Some(drain.outbox_id) {
+                return Err(PrimitiveStoreError::DuplicateMismatch);
+            }
+            let sequence = iteration
+                .get::<Option<i64>, _>("drained_sequence")
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| invalid_storage("collection iteration drain sequence"))?;
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(PrimitiveWrite {
+                applied: false,
+                run_version: sequence,
+            });
+        }
+        if scope.get::<String, _>("lifecycle") != "DRAINING" {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        if locked.status != "CANCELLING" {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        check_revision(locked.run, &drain.transition)?;
+        if iteration.get::<String, _>("lifecycle") != "ADMITTED"
+            || !iteration.get::<bool, _>("slot_held")
+            || scope.get::<i32, _>("active_count") <= 0
+        {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let path_nodes = iteration.get::<Vec<String>, _>("entry_path_nodes");
+        let path_indices = iteration.get::<Vec<i32>, _>("entry_path_indices");
+        let entry_node = iteration.get::<String, _>("entry_node");
+        let remaining = iteration.get::<i32, _>("remaining_reservations");
+        let member_steps = sqlx::query(
+            "SELECT node,status,attempt FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND instance_path_nodes=$3 AND instance_path_indices=$4 ORDER BY node FOR UPDATE",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if member_steps.is_empty() {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        for step in &member_steps {
+            let node = NodeId::parse_stored(&step.get::<String, _>("node"))
+                .map_err(|_| invalid_storage("collection member node"))?;
+            let status = step.get::<String, _>("status");
+            let terminal = matches!(
+                status.as_str(),
+                "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED"
+            );
+            let safe_unstarted = matches!(status.as_str(), "PENDING" | "READY")
+                && step.get::<i32, _>("attempt") == 0;
+            if (node.is_derived() && !matches!(status.as_str(), "SUCCEEDED" | "SKIPPED"))
+                || (!terminal && !safe_unstarted)
+            {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+        }
+        let failure_entry = scope.get::<Option<String>, _>("drain_kind").as_deref()
+            == Some("FAILED")
+            && scope.get::<Option<i32>, _>("drain_iteration")
+                == Some(i32::try_from(drain.index).unwrap_or(i32::MAX));
+        let failure_code = scope.get::<Option<String>, _>("drain_failure_code");
+        sqlx::query(
+            "UPDATE steps SET status=CASE WHEN $5 AND node=$6 THEN 'FAILED' ELSE 'CANCELLED' END, \
+                    failure_code=CASE WHEN $5 AND node=$6 THEN $7 ELSE failure_code END, \
+                    routed=true,waiting_kind=NULL,due_at=NULL,event_type=NULL,correlation_key=NULL, \
+                    next_attempt_at=NULL,cancel_requested=false,updated_at=$8 \
+             WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+               AND instance_path_indices=$4 AND status IN ('PENDING','READY') AND attempt=0",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(&path_nodes)
+        .bind(&path_indices)
+        .bind(failure_entry)
+        .bind(&entry_node)
+        .bind(failure_code.as_deref())
+        .bind(drain.transition.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let sequence = locked.run.run_version + 1;
+        sqlx::query(
+            "UPDATE collection_iterations SET lifecycle='DRAINED',slot_held=false, \
+                    remaining_reservations=0,drained_sequence=$5,drain_outbox_id=$6,updated_at=$7 \
+             WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 AND iteration_index=$4",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.scope_id.as_uuid())
+        .bind(i32::try_from(drain.index).unwrap_or(i32::MAX))
+        .bind(number(sequence, "journal sequence")?)
+        .bind(drain.outbox_id)
+        .bind(drain.transition.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        sqlx::query(
+            "UPDATE iteration_scopes SET completed_count=completed_count+1,active_count=active_count-1, \
+                    updated_at=$4 WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.scope_id.as_uuid())
+        .bind(drain.transition.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let tenant_updated = sqlx::query(
+            "UPDATE tenant_iteration_usage SET active_iterations=active_iterations-1 \
+             WHERE tenant_id=$1 AND active_iterations>0",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let usage_updated = sqlx::query(
+            "UPDATE run_instance_usage SET reserved_instances=reserved_instances-$3 \
+             WHERE tenant_id=$1 AND run_id=$2 AND reserved_instances >= $3",
+        )
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(remaining)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if tenant_updated.rows_affected() != 1 || usage_updated.rows_affected() != 1 {
+            return Err(invalid_storage("collection drain usage projection"));
+        }
+        append_event(
+            &mut tx,
+            &drain.transition,
+            locked.run,
+            sequence,
+            "collection.iteration_drained",
+            json!({"index":drain.index}),
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO event_outbox \
+             (id,tenant_id,aggregate_id,event_type,routing_key,payload) \
+             VALUES ($1,$2,$3,'collection.iteration.drained',$4,$5)",
+        )
+        .bind(drain.outbox_id)
+        .bind(drain.transition.tenant_id().as_uuid())
+        .bind(drain.transition.run_id().as_uuid())
+        .bind(drain.transition.owner().node().as_str())
+        .bind(json!({
+            "tenantId":drain.transition.tenant_id().to_string(),
+            "namespaceId":drain.transition.namespace_id().to_string(),
+            "runId":drain.transition.run_id().to_string(),
+            "scopeId":drain.scope_id.as_uuid().to_string(),
+            "index":drain.index,
+            "traceId":drain.transition.trace_id(),
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        finish_drain_version(&mut tx, &drain.transition, sequence).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(PrimitiveWrite {
+            applied: true,
+            run_version: sequence,
+        })
+    }
+
+    async fn finish_collection_drain(
+        &self,
+        finish: &CollectionDrainFinish,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        check_audit(&finish.transition)?;
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let locked = lock_drain_run(&mut tx, &finish.transition).await?;
+        check_scheduler_fence(&mut tx, &finish.transition).await?;
+        let (owner_nodes, owner_indices) = path_parts(finish.transition.owner());
+        let scope = sqlx::query(
+            "SELECT namespace_id,owner_path_nodes,owner_path_indices,owner_node,lifecycle, \
+                    active_count,drain_kind,drain_failure_code,finish_sequence,finish_outbox_id \
+             FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 FOR UPDATE",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(finish.scope_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .ok_or(PrimitiveStoreError::Missing)?;
+        if NamespaceId::new(scope.get("namespace_id")) != locked.run.namespace_id
+            || scope.get::<Vec<String>, _>("owner_path_nodes") != owner_nodes
+            || scope.get::<Vec<i32>, _>("owner_path_indices") != owner_indices
+            || scope.get::<String, _>("owner_node") != finish.transition.owner().node().as_str()
+        {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let lifecycle = scope.get::<String, _>("lifecycle");
+        if matches!(lifecycle.as_str(), "FAILED" | "CANCELLED") {
+            if scope.get::<Option<Uuid>, _>("finish_outbox_id") != Some(finish.outbox_id) {
+                return Err(PrimitiveStoreError::DuplicateMismatch);
+            }
+            let sequence = scope
+                .get::<Option<i64>, _>("finish_sequence")
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| invalid_storage("collection finish sequence"))?;
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(PrimitiveWrite {
+                applied: false,
+                run_version: sequence + 1,
+            });
+        }
+        if locked.status != "CANCELLING" {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        check_revision(locked.run, &finish.transition)?;
+        if lifecycle != "DRAINING" || scope.get::<i32, _>("active_count") != 0 {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let unsettled: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM collection_iterations \
+             WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3 AND lifecycle='ADMITTED')",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(finish.scope_id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let other_active: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM steps WHERE tenant_id=$1 AND run_id=$2 \
+               AND NOT (instance_path_nodes=$3 AND instance_path_indices=$4 AND node=$5) \
+               AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED','SKIPPED'))",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(&owner_nodes)
+        .bind(&owner_indices)
+        .bind(finish.transition.owner().node().as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if unsettled || other_active {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let kind = scope
+            .get::<Option<String>, _>("drain_kind")
+            .ok_or_else(|| invalid_storage("collection drain reason"))?;
+        let code = scope.get::<Option<String>, _>("drain_failure_code");
+        let (outcome, terminal_status) = match (kind.as_str(), code.as_deref()) {
+            ("FAILED", Some(code)) => (json!({"outcome":"failed","code":code}), "FAILED"),
+            ("CANCELLED", None) => (json!({"outcome":"cancelled"}), "CANCELLED"),
+            _ => return Err(invalid_storage("collection drain reason")),
+        };
+        let expected_reason = kind.as_str();
+        if locked.stop_reason.as_deref() != Some(expected_reason)
+            || (kind == "FAILED" && locked.stop_code.as_deref() != code.as_deref())
+        {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let owner = sqlx::query(
+            "UPDATE steps SET status=$6,waiting_kind=NULL,failure_code=$7,updated_at=$8 \
+             WHERE tenant_id=$1 AND run_id=$2 AND instance_path_nodes=$3 \
+               AND instance_path_indices=$4 AND node=$5 \
+               AND status='WAITING' AND waiting_kind='COLLECTION'",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(&owner_nodes)
+        .bind(&owner_indices)
+        .bind(finish.transition.owner().node().as_str())
+        .bind(terminal_status)
+        .bind(code.as_deref())
+        .bind(finish.transition.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if owner.rows_affected() != 1 {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let finish_sequence = locked.run.run_version + 1;
+        let final_sequence = finish_sequence + 1;
+        sqlx::query(
+            "UPDATE iteration_scopes SET lifecycle=$4,finish_sequence=$5,finish_outbox_id=$6, \
+                    updated_at=$7 WHERE tenant_id=$1 AND run_id=$2 AND scope_id=$3",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(finish.scope_id.as_uuid())
+        .bind(terminal_status)
+        .bind(number(finish_sequence, "journal sequence")?)
+        .bind(finish.outbox_id)
+        .bind(finish.transition.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        append_event(
+            &mut tx,
+            &finish.transition,
+            locked.run,
+            finish_sequence,
+            "collection.finished",
+            outcome,
+        )
+        .await?;
+        append_run_event(
+            &mut tx,
+            &finish.transition,
+            final_sequence,
+            "run.finished",
+            json!({"status":terminal_status}),
+        )
+        .await?;
+        let run_finished = sqlx::query(
+            "UPDATE runs SET status=$3,run_version=$4,updated_at=$5,finished_at=$5 \
+             WHERE tenant_id=$1 AND id=$2 AND status='CANCELLING'",
+        )
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(terminal_status)
+        .bind(number(final_sequence, "run version")?)
+        .bind(finish.transition.occurred_at())
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if run_finished.rows_affected() != 1 {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        if let Some(audit) = finish.transition.audit() {
+            insert_audit(&mut tx, audit).await?;
+        }
+        sqlx::query(
+            "INSERT INTO event_outbox \
+             (id,tenant_id,aggregate_id,event_type,routing_key,payload) \
+             VALUES ($1,$2,$3,'collection.finished',$4,$5), \
+                    ($6,$2,$3,'run.finished',NULL,$7)",
+        )
+        .bind(finish.outbox_id)
+        .bind(finish.transition.tenant_id().as_uuid())
+        .bind(finish.transition.run_id().as_uuid())
+        .bind(finish.transition.owner().node().as_str())
+        .bind(json!({
+            "tenantId":finish.transition.tenant_id().to_string(),
+            "namespaceId":finish.transition.namespace_id().to_string(),
+            "runId":finish.transition.run_id().to_string(),
+            "scopeId":finish.scope_id.as_uuid().to_string(),
+            "status":terminal_status,
+            "traceId":finish.transition.trace_id(),
+        }))
+        .bind(Uuid::now_v7())
+        .bind(json!({
+            "tenantId":finish.transition.tenant_id().to_string(),
+            "namespaceId":finish.transition.namespace_id().to_string(),
+            "runId":finish.transition.run_id().to_string(),
+            "status":terminal_status,
+            "traceId":finish.transition.trace_id(),
+        }))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(PrimitiveWrite {
+            applied: true,
+            run_version: final_sequence,
+        })
+    }
+
     async fn finish_collection(
         &self,
         finish: &CollectionFinish,
@@ -1720,6 +2428,33 @@ impl CollectionStore for PgRunStore {
     ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
         PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
             .checkpoint_collection_iteration(checkpoint)
+            .await
+    }
+
+    async fn start_collection_drain(
+        &self,
+        drain: &CollectionDrain,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .start_collection_drain(drain)
+            .await
+    }
+
+    async fn drain_collection_iteration(
+        &self,
+        drain: &CollectionIterationDrain,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .drain_collection_iteration(drain)
+            .await
+    }
+
+    async fn finish_collection_drain(
+        &self,
+        finish: &CollectionDrainFinish,
+    ) -> Result<PrimitiveWrite, PrimitiveStoreError> {
+        PgCollectionStore::with_definition_cache(self.pool.clone(), self.cache.clone())
+            .finish_collection_drain(finish)
             .await
     }
 

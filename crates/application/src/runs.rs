@@ -632,6 +632,21 @@ where
                 ));
             }
         }
+        let chain_deadline = definition
+            .continuation_policy()
+            .map(|policy| {
+                time::Duration::try_from(policy.timeout())
+                    .ok()
+                    .and_then(|timeout| now.checked_add(timeout))
+                    .ok_or(AppError::NotAllowed(
+                        "the chain timeout exceeds the supported deadline",
+                    ))
+            })
+            .transpose()?;
+        let effective_deadline = match (request.deadline, chain_deadline) {
+            (Some(requested), Some(chain)) => Some(requested.min(chain)),
+            (requested, chain) => requested.or(chain),
+        };
         let run_id = RunId::generate();
         let info = RunInfo {
             run_id,
@@ -644,7 +659,7 @@ where
             trace_id: ctx.trace_id.clone(),
             parent_span: ctx.span_id.clone(),
             rerun_of: rerun.map(|r| r.of),
-            deadline_at: request.deadline,
+            deadline_at: effective_deadline,
             created_at: now,
             parent: None,
             depth: 0,

@@ -5,11 +5,15 @@ use std::collections::BTreeMap;
 
 use sagat_domain::execution::{
     AddressedRunEvent, CollectionDrainReason, CollectionOutcome, CollectionPhase, ExecutionError,
-    ExecutionInstanceId, FailureCode, Fence, InstancePath, RunEvent, RunId, RunState, StepStatus,
-    lease_instance,
+    ExecutionInstanceId, FailureCode, Fence, InstancePath, Plan, RunEvent, RunId, RunState,
+    StepStatus, StopReason, lease_instance, plan,
 };
-use sagat_domain::workflow::Digest;
-use sagat_domain::workflow::NodeId;
+use sagat_domain::identity::Slug;
+use sagat_domain::workflow::{
+    ActivityName, BodyDefinition, Digest, Expression, Node, NodeId, NodeKind, RetryPolicy,
+    WorkflowDefinition, WorkflowLimits,
+};
+use time::OffsetDateTime;
 
 fn node(value: &str) -> NodeId {
     NodeId::parse(value).expect("valid node")
@@ -26,6 +30,55 @@ fn body(index: u32) -> ExecutionInstanceId {
             .expect("bounded path"),
         node("work"),
     )
+}
+
+fn definition() -> WorkflowDefinition {
+    let body = BodyDefinition::new(
+        node("line"),
+        node("work"),
+        vec![
+            Node::new(
+                node("work"),
+                NodeKind::Activity {
+                    activity: ActivityName::parse("line.process").expect("activity"),
+                    retry: RetryPolicy::DEFAULT,
+                    compensate_with: None,
+                    reconcile_with: None,
+                    idempotency_template: None,
+                    secrets: Vec::new(),
+                },
+            )
+            .with_next(node("returned")),
+            Node::new(
+                node("returned"),
+                NodeKind::Return {
+                    result: Expression::parse("steps.work.output").expect("result expression"),
+                },
+            ),
+        ],
+    )
+    .expect("collection body");
+    WorkflowDefinition::new_structured(
+        Slug::parse("collection-drain").expect("workflow name"),
+        node("items"),
+        vec![
+            Node::new(
+                node("items"),
+                NodeKind::ForEach {
+                    items: Expression::parse("input.items").expect("items expression"),
+                    body: node("line"),
+                    result: Expression::parse("bodyResult").expect("collection result"),
+                    max_items: 2,
+                    max_concurrency: 2,
+                },
+            )
+            .with_next(node("done")),
+            Node::new(node("done"), NodeKind::End { output: None }),
+        ],
+        vec![body],
+        WorkflowLimits::default(),
+    )
+    .expect("collection workflow")
 }
 
 fn started(item_count: u32, max_concurrency: u16) -> RunState {
@@ -559,4 +612,21 @@ fn drain_refuses_to_hide_failed_derived_obligations() {
         );
         assert!(restored.collection(&collection()).is_none());
     }
+}
+
+#[test]
+fn run_cancellation_leaves_the_collection_owner_for_transactional_drain() {
+    let mut state = started(1, 1);
+    admit(&mut state, 0);
+    state
+        .apply(&RunEvent::RunStopRequested {
+            reason: StopReason::Cancelled,
+            code: None,
+        })
+        .expect("request cancellation");
+
+    assert_eq!(
+        plan(&definition(), &state, OffsetDateTime::UNIX_EPOCH).expect("plan drain"),
+        Plan::Idle
+    );
 }

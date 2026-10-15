@@ -19,10 +19,12 @@ use sagat_application::execution::{
     RunTx,
 };
 use sagat_application::maintenance::{
-    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, RunRef, StepRef, Window,
+    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, PendingContinuation, RunRef, StepRef,
+    Window,
 };
 use sagat_application::primitives::{
-    CollectionAdmission, CollectionCheckpoint, CollectionEntry, CollectionFinish, CollectionLimits,
+    CollectionAdmission, CollectionCheckpoint, CollectionDrain, CollectionDrainFinish,
+    CollectionEntry, CollectionFinish, CollectionIterationDrain, CollectionLimits,
     CollectionScopeId, CollectionStore, CollectionTransition, PrimitiveInputError,
     PrimitiveStoreError, SchedulerAuthority,
 };
@@ -95,6 +97,7 @@ impl Default for SchedulerSettings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Report {
     pub collections_advanced: u32,
+    pub continuations_advanced: u32,
     pub approvals_opened: u32,
     pub approvals_expired: u32,
     pub timers_fired: u32,
@@ -122,6 +125,9 @@ pub enum CollectionAdvance {
     Entered,
     Admitted { index: u32 },
     Checkpointed { index: u32 },
+    DrainStarted,
+    Drained { index: u32 },
+    DrainFinished,
     Finished,
     Waiting,
     AlreadyFinished,
@@ -141,6 +147,8 @@ pub enum CollectionAdvanceError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
+    Engine(#[from] EngineError),
+    #[error(transparent)]
     Primitive(#[from] PrimitiveStoreError),
     #[error(transparent)]
     Input(#[from] PrimitiveInputError),
@@ -159,12 +167,16 @@ pub enum ContinuationAdvanceError {
     NotContinuation,
     #[error("continuation expression evaluation failed")]
     Expression,
+    #[error("the continuation boundary exhausted its segment limit and finalized the chain")]
+    ChainLimitFinalized,
     #[error(transparent)]
     Preparation(#[from] ContinuationPreparationError),
     #[error(transparent)]
     Progress(#[from] ChainProgressError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Engine(#[from] EngineError),
 }
 
 impl Report {
@@ -173,6 +185,7 @@ impl Report {
     pub const fn did_work(&self) -> bool {
         self.timers_fired
             + self.collections_advanced
+            + self.continuations_advanced
             + self.approvals_opened
             + self.approvals_expired
             + self.waits_timed_out
@@ -386,7 +399,11 @@ where
     }
 
     /// Runs every pass once, over the shards this replica holds (all of them when it is alone).
-    pub async fn tick(&self) -> Report {
+    pub async fn tick(&self) -> Report
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
         let mut report = Report::default();
         if self.view().shards.is_empty() {
             // A replica that holds nothing (it has not got its share yet, or it cannot reach the
@@ -397,6 +414,7 @@ where
         // leases the keeper has renewed since, not keep acting on the snapshot it began with until
         // that runs out (every later action would be counted as fenced and the later passes starved).
         self.collections(&self.view(), &mut report).await;
+        self.continuations(&self.view(), &mut report).await;
         self.approvals_expire(&self.view(), &mut report).await;
         self.approvals_open(&self.view(), &mut report).await;
         self.timers(&self.view(), &mut report).await;
@@ -450,6 +468,22 @@ where
         S::Tx: ChainRunTx,
     {
         let view = self.view();
+        self.advance_continuation_in_view(&view, tenant, namespace, chain_id, boundary)
+            .await
+    }
+
+    async fn advance_continuation_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        chain_id: RunId,
+        boundary: &NodeId,
+    ) -> Result<ChainHandoffWrite, ContinuationAdvanceError>
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
         let scope = execution::ChainScope::new(tenant, namespace);
         let Some(mut tx) = self.store.begin_chain_head(scope, chain_id).await? else {
             return Err(ContinuationAdvanceError::MissingChain);
@@ -519,18 +553,63 @@ where
             expected_run_version,
             successor,
             transfer,
-            SchedulerAuthority::new(view.owner, lease),
+            SchedulerAuthority::new(view.owner.clone(), lease),
             Subject::engine(),
-            info.trace_id,
+            info.trace_id.clone(),
             occurred_at,
             audit,
             uuid::Uuid::now_v7(),
             uuid::Uuid::now_v7(),
         );
-        self.store
+        match self
+            .store
             .continue_evaluated(&selection.into_command(handoff)?)
             .await
-            .map_err(ContinuationAdvanceError::from)
+        {
+            Ok(write) => Ok(write),
+            Err(ChainProgressError::Chain(
+                sagat_domain::execution::ChainError::SegmentLimitExceeded,
+            )) => {
+                let Some(mut tx) = self.store.begin_chain_head(scope, chain_id).await? else {
+                    return Err(ContinuationAdvanceError::MissingChain);
+                };
+                let current = *tx.locked_chain()?;
+                if current.head() != chain.head() || current.revision() != chain.revision() {
+                    return Err(ContinuationAdvanceError::NotContinuation);
+                }
+                if !view.holds(&mut tx, &Hold::Lease(lease)).await? {
+                    return Err(ContinuationAdvanceError::FenceUnavailable);
+                }
+                let mut effects = Effects::by(Actor::System("continuation"), info.trace_id.clone());
+                effects.audit = Some(AuditRecord::engine(
+                    tenant,
+                    AuditAction::RunFinished,
+                    ResourceType::Run,
+                    chain.head().to_string(),
+                    "chain segment limit exhausted",
+                    info.trace_id,
+                    tx.now(),
+                ));
+                self.engine
+                    .run(&mut tx, effects, |definition, state, now| {
+                        let code = FailureCode::parse("CHAIN_LIMIT")?;
+                        Ok((
+                            (),
+                            execution::stop_run(
+                                definition,
+                                state,
+                                StopReason::Failed,
+                                Some(code),
+                                now,
+                            )?,
+                        ))
+                    })
+                    .await?;
+                tx.commit().await?;
+                Err(ContinuationAdvanceError::ChainLimitFinalized)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn advance_collection_in_view(
@@ -628,10 +707,102 @@ where
             return Ok(CollectionAdvance::Entered);
         };
 
-        if collection.phase() == execution::CollectionPhase::Succeeded {
+        if matches!(
+            collection.phase(),
+            execution::CollectionPhase::Succeeded
+                | execution::CollectionPhase::Failed
+                | execution::CollectionPhase::Cancelled
+        ) {
             return Ok(CollectionAdvance::AlreadyFinished);
         }
-        if collection.phase() != execution::CollectionPhase::Open {
+        if collection.phase() == execution::CollectionPhase::Open {
+            let reason = if state.stop_reason() == Some(StopReason::Cancelled) {
+                Some(execution::CollectionDrainReason::Cancelled)
+            } else {
+                collection.active_iterations().find_map(|index| {
+                    let path = collection.entry_instance(index)?.path();
+                    state.instances().find_map(|(instance, step)| {
+                        (instance.path() == path && step.status() == execution::StepStatus::Failed)
+                            .then(|| step.failure().cloned())
+                            .flatten()
+                            .map(|code| execution::CollectionDrainReason::Failed {
+                                iteration: index,
+                                code,
+                            })
+                    })
+                })
+            };
+            if let Some(reason) = reason {
+                self.store
+                    .start_collection_drain(&CollectionDrain::new(
+                        transition(state.version()),
+                        self.store
+                            .collection_progress(tenant, run, owner)
+                            .await?
+                            .ok_or(CollectionAdvanceError::InvalidProgress)?
+                            .scope_id,
+                        reason,
+                        uuid::Uuid::now_v7(),
+                    ))
+                    .await?;
+                return Ok(CollectionAdvance::DrainStarted);
+            }
+        } else if collection.phase() == execution::CollectionPhase::Draining {
+            let progress = self
+                .store
+                .collection_progress(tenant, run, owner)
+                .await?
+                .ok_or(CollectionAdvanceError::InvalidProgress)?;
+            if let Some(index) = collection.active_iterations().next() {
+                let path = collection
+                    .entry_instance(index)
+                    .ok_or(CollectionAdvanceError::InvalidProgress)?
+                    .path();
+                let safe = state
+                    .instances()
+                    .filter(|(instance, _)| instance.path() == path)
+                    .all(|(instance, step)| {
+                        let settled_derived = instance.node().is_derived()
+                            && matches!(
+                                step.status(),
+                                execution::StepStatus::Succeeded | execution::StepStatus::Skipped
+                            );
+                        let safe_unstarted = step.attempt() == 0
+                            && matches!(
+                                step.status(),
+                                execution::StepStatus::Pending | execution::StepStatus::Ready
+                            );
+                        step.status().is_terminal() && !instance.node().is_derived()
+                            || settled_derived
+                            || safe_unstarted
+                    });
+                if !safe {
+                    return Ok(CollectionAdvance::Waiting);
+                }
+                self.store
+                    .drain_collection_iteration(&CollectionIterationDrain::new(
+                        transition(state.version()),
+                        progress.scope_id,
+                        index,
+                        uuid::Uuid::now_v7(),
+                    ))
+                    .await?;
+                return Ok(CollectionAdvance::Drained { index });
+            }
+            if state.instances().any(|(instance, step)| {
+                instance != owner && instance.path().is_root() && !step.status().is_terminal()
+            }) {
+                return Ok(CollectionAdvance::Waiting);
+            }
+            self.store
+                .finish_collection_drain(&CollectionDrainFinish::new(
+                    transition(state.version()),
+                    progress.scope_id,
+                    uuid::Uuid::now_v7(),
+                ))
+                .await?;
+            return Ok(CollectionAdvance::DrainFinished);
+        } else {
             return Err(CollectionAdvanceError::InvalidProgress);
         }
         let progress = self
@@ -1335,6 +1506,9 @@ where
                         CollectionAdvance::Entered
                         | CollectionAdvance::Admitted { .. }
                         | CollectionAdvance::Checkpointed { .. }
+                        | CollectionAdvance::DrainStarted
+                        | CollectionAdvance::Drained { .. }
+                        | CollectionAdvance::DrainFinished
                         | CollectionAdvance::Finished,
                     ) => Outcome::Done,
                     Ok(CollectionAdvance::Waiting | CollectionAdvance::AlreadyFinished)
@@ -1367,6 +1541,77 @@ where
             .await;
         for outcome in outcomes {
             Self::tally(report, outcome, |value| value.collections_advanced += 1);
+        }
+    }
+
+    async fn continuations(&self, view: &View, report: &mut Report)
+    where
+        S: ChainCommandStore + ChainProgressStore,
+        S::Tx: ChainRunTx,
+    {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "continuations",
+                report,
+                |candidate: &PendingContinuation| candidate.tenant_id,
+                |candidate| (candidate.chain_id, candidate.run_id, candidate.node.clone()),
+                |store, window| async move { store.continuation_candidates(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| async move {
+                let outcome = match self
+                    .advance_continuation_in_view(
+                        view,
+                        candidate.tenant_id,
+                        candidate.namespace_id,
+                        candidate.chain_id,
+                        &candidate.node,
+                    )
+                    .await
+                {
+                    Ok(_) | Err(ContinuationAdvanceError::ChainLimitFinalized) => Outcome::Done,
+                    Err(
+                        ContinuationAdvanceError::MissingChain
+                        | ContinuationAdvanceError::NotContinuation
+                        | ContinuationAdvanceError::Progress(ChainProgressError::Chain(
+                            sagat_domain::execution::ChainError::ContinuationConflict,
+                        )),
+                    ) => Outcome::Skipped,
+                    Err(ContinuationAdvanceError::FenceUnavailable)
+                    | Err(ContinuationAdvanceError::Progress(
+                        ChainProgressError::SchedulerFenceLost,
+                    )) => Outcome::Fenced,
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            run_id = %candidate.run_id,
+                            chain_id = %candidate.chain_id,
+                            node = %candidate.node,
+                            "a continuation scheduler action failed"
+                        );
+                        Outcome::Failed
+                    }
+                };
+                metrics::counter!(
+                    "scheduler_actions_total",
+                    "kind" => "continuation",
+                    "outcome" => outcome.label()
+                )
+                .increment(1);
+                if outcome == Outcome::Fenced {
+                    metrics::counter!("scheduler_fenced_total", "kind" => "continuation")
+                        .increment(1);
+                }
+                outcome
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.continuations_advanced += 1);
         }
     }
 

@@ -7,7 +7,7 @@
 use std::future::Future;
 
 use sagat_domain::audit::AuditRecord;
-use sagat_domain::execution::{ExecutionInstanceId, RunId};
+use sagat_domain::execution::{CollectionDrainReason, ExecutionInstanceId, RunId};
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{ActivityName, Digest};
@@ -375,6 +375,81 @@ pub struct CollectionFinish {
     pub outbox_id: Uuid,
 }
 
+/// Starts fail-fast or cancellation drain under the collection owner's scheduler fence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionDrain {
+    pub transition: CollectionTransition,
+    pub scope_id: CollectionScopeId,
+    pub reason: CollectionDrainReason,
+    pub outbox_id: Uuid,
+}
+
+impl CollectionDrain {
+    #[must_use]
+    pub const fn new(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        reason: CollectionDrainReason,
+        outbox_id: Uuid,
+    ) -> Self {
+        Self {
+            transition,
+            scope_id,
+            reason,
+            outbox_id,
+        }
+    }
+}
+
+/// Marks one admitted member drained only after all of its effect obligations are settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionIterationDrain {
+    pub transition: CollectionTransition,
+    pub scope_id: CollectionScopeId,
+    pub index: u32,
+    pub outbox_id: Uuid,
+}
+
+impl CollectionIterationDrain {
+    #[must_use]
+    pub const fn new(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        outbox_id: Uuid,
+    ) -> Self {
+        Self {
+            transition,
+            scope_id,
+            index,
+            outbox_id,
+        }
+    }
+}
+
+/// Closes a drained collection with the outcome pinned when drain began.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionDrainFinish {
+    pub transition: CollectionTransition,
+    pub scope_id: CollectionScopeId,
+    pub outbox_id: Uuid,
+}
+
+impl CollectionDrainFinish {
+    #[must_use]
+    pub const fn new(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        outbox_id: Uuid,
+    ) -> Self {
+        Self {
+            transition,
+            scope_id,
+            outbox_id,
+        }
+    }
+}
+
 impl CollectionFinish {
     #[must_use]
     pub const fn new(
@@ -469,6 +544,21 @@ pub trait CollectionStore: Send + Sync {
     fn checkpoint_collection_iteration(
         &self,
         checkpoint: &CollectionCheckpoint,
+    ) -> impl Future<Output = Result<PrimitiveWrite, PrimitiveStoreError>> + Send;
+
+    fn start_collection_drain(
+        &self,
+        drain: &CollectionDrain,
+    ) -> impl Future<Output = Result<PrimitiveWrite, PrimitiveStoreError>> + Send;
+
+    fn drain_collection_iteration(
+        &self,
+        drain: &CollectionIterationDrain,
+    ) -> impl Future<Output = Result<PrimitiveWrite, PrimitiveStoreError>> + Send;
+
+    fn finish_collection_drain(
+        &self,
+        finish: &CollectionDrainFinish,
     ) -> impl Future<Output = Result<PrimitiveWrite, PrimitiveStoreError>> + Send;
 
     fn finish_collection(

@@ -1,9 +1,9 @@
 //! Transaction boundaries and authorized commands for bounded execution chains.
 //!
-//! Chain initialization is deliberately expressed as data that a run-creation transaction can
-//! persist before it commits. Inspection, signalling and cancellation address the serialized
-//! current head through the public control API. Creating a chain and moving its head remain
-//! internal scheduler operations until canonical workflow routing is integrated.
+//! Chain initialization is expressed as data that the run-creation transaction persists before it
+//! commits. Inspection, signalling and cancellation address the serialized current head through
+//! the public control API. The scheduler alone moves that head after the canonical planner reaches
+//! a continuation boundary.
 
 use std::future::Future;
 
@@ -651,7 +651,7 @@ pub enum ChainProgressError {
     Storage(#[from] StoreError),
 }
 
-/// Internal continuation boundary. No public transport calls this port while runtime gates remain.
+/// Scheduler-owned continuation boundary; public transports never write a handoff directly.
 pub trait ChainProgressStore: Send + Sync {
     fn continue_as_new(
         &self,

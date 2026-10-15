@@ -1,4 +1,4 @@
-//! PostgreSQL transaction adapter for private execution-chain continuation.
+//! PostgreSQL transaction adapter for scheduler-owned execution-chain continuation.
 //!
 //! The adapter commits an already evaluated object input into an activity-entrypoint successor.
 //! Schema-checked state transfer and non-activity successor planning remain closed at the port.
@@ -1384,10 +1384,14 @@ impl ChainProgressStore for PgChainProgressStore {
             || run.run_version != command.expected_run_version()
             || chain.cancel_requested
             || chain.final_outcome.is_some()
-            || chain.segment_count >= chain.max_segments
             || chain.original_deadline <= transaction_now
         {
             return Err(ChainProgressError::RuntimeNotIntegrated);
+        }
+        if chain.segment_count >= chain.max_segments {
+            return Err(ChainProgressError::Chain(
+                sagat_domain::execution::ChainError::SegmentLimitExceeded,
+            ));
         }
         ensure_tree_capacity_for_successor(&mut tx, command.scope().tenant_id(), &run).await?;
         ensure_replacement_capacity(&mut tx, command).await?;

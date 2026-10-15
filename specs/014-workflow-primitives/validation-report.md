@@ -687,3 +687,36 @@ current tested slices together; it does not open collection, loop or continuatio
 
 This checkpoint predates any public chain creation or scoped production-worker capability. Those
 gates, the remaining primitive fault matrix and measured capacity evidence remain open.
+
+## Public bounded continuation checkpoint (2026-10-15)
+
+The public v1 parser now accepts two closed continuation graphs. Both start with one root activity.
+The first routes directly to an input-only `continueAsNew`; the second routes through one condition
+that selects either the input-only continuation or a terminal `end` without output. Publication
+still rejects declared-state transfer, bodies, top-level limits, triggers, `onError`, non-activity
+entrypoints and wider graphs.
+
+Starting either shape creates the initial run, chain row, first segment, journal and outbox in one
+transaction. The original chain deadline derives from `chainPolicy.timeoutMs` and cannot be renewed
+by a successor. A fair scheduler pass discovers a pending boundary at the current head, evaluates
+the selected input outside the write transaction, then rechecks the chain, run, scheduler fence and
+payload under the canonical handoff locks. The predecessor completion, successor run and task,
+lineage, head revision, audit and outbox commit together.
+
+When the current segment already consumes `maxSegments`, the scheduler uses the normal engine and
+run transaction to persist `RunStopRequested(FAILED, CHAIN_LIMIT)`, drain the continuation boundary,
+finish the run and project the segment and chain as `FINAL`. One audit record explains the limit.
+A later tick cannot rediscover the finalized chain. The conditional shape also proves a successful
+second segment reaches `SUCCEEDED` and latches the chain outcome without another handoff.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-infra-ir --locked --test continuation -- --nocapture` | Passed: 7/7, including both public shapes and fail-closed combinations |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked chain_handoff -- --nocapture` with real PostgreSQL | Passed: 4/4 for prepared atomic handoff/replay/rollback, public handoff, conditional `SUCCEEDED`/`FINAL`, and terminal `CHAIN_LIMIT` with zero rediscovery |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked chains_http -- --nocapture` with real PostgreSQL | Passed: 3/3 for atomic public start, tenant-scoped inspect/signal replay and cancellation CAS/replay |
+| `cargo clippy -p sagat-infra-ir -p sagat-scheduler -p sagat-infra-postgres --all-targets --locked -- -D warnings` | Passed |
+
+The five-SDK chain-command fixture stays pending because it needs a signal-controlled `waitEvent`
+graph, which is outside this publication subset. State transfer, child-chain creation, chain-level
+Query/Update and all other continuation graph combinations remain closed until their own runtime
+and conformance evidence exists.

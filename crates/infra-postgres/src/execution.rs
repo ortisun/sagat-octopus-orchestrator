@@ -12,7 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use sagat_application::chain_progress::{ChainRunTx, LockedChainHead};
+use sagat_application::chain_progress::{
+    ChainInitialization, ChainProgressError, ChainRunTx, LockedChainHead,
+};
 use sagat_application::definitions::{
     Applied, DefinitionStore, Idempotency, VersionRecord, WorkflowRecord,
 };
@@ -27,11 +29,11 @@ use sagat_application::runs::{
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    AddressedRunEvent, ApprovalRequestId, ChainFinalOutcome, ChainScope,
-    CollectionIterationRestore, CollectionPhase, ContinuationTransfer, CorrelationKey,
-    ExecutionInstanceId, FailureCode, InstancePath, RunChainState, RunEvent, RunId, RunState,
-    RunStatus, SagaPhase, SagaState, SegmentCompletionKind, SegmentIndex, StepState, StepStatus,
-    StopReason, SwitchSelection, WaitingOn,
+    AddressedRunEvent, ApprovalRequestId, ChainFinalOutcome, ChainPolicy, ChainScope,
+    CollectionDrainReason, CollectionIterationRestore, CollectionPhase, ContinuationTransfer,
+    CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath, RunChainState, RunEvent, RunId,
+    RunState, RunStatus, SagaPhase, SagaState, SegmentCompletionKind, SegmentIndex, StepState,
+    StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -242,6 +244,7 @@ impl PgRunStore {
             script_retention: BTreeMap::new(),
             signals: Vec::new(),
             chain_lock,
+            initialize_chain: false,
         }))
     }
 
@@ -619,6 +622,7 @@ impl RunStore for PgRunStore {
                     script_retention: BTreeMap::new(),
                     signals: Vec::new(),
                     chain_lock: None,
+                    initialize_chain: true,
                 }));
             }
         }
@@ -1278,7 +1282,8 @@ async fn load_collections(
         "SELECT scope_id, owner_path_nodes, owner_path_indices, owner_node, kind, lifecycle, \
                 snapshot_digest, item_count, max_items, max_concurrency, next_admission_index, \
                 admitted_count, completed_count, active_count, result_digest, finish_sequence, \
-                finish_outbox_id \
+                finish_outbox_id, drain_kind, drain_iteration, drain_failure_code, drain_sequence, \
+                drain_outbox_id \
          FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2 \
          ORDER BY owner_path_nodes, owner_path_indices, owner_node",
     )
@@ -1296,6 +1301,7 @@ async fn load_collections(
                 i.entry_node, i.entry_instance_id, i.item_digest, i.lifecycle, i.slot_held, \
                 i.remaining_reservations, i.return_path_nodes, i.return_path_indices, \
                 i.return_node, i.return_instance_id, i.result_digest, i.checkpoint_sequence, \
+                i.drained_sequence, i.drain_outbox_id, \
                 entry_step.step_id AS projected_entry_id, \
                 return_step.step_id AS projected_return_id \
          FROM collection_iterations i \
@@ -1359,6 +1365,8 @@ async fn load_collections(
         let return_id = col::<Option<Uuid>>(row, "return_instance_id")?;
         let result_digest = col::<Option<Vec<u8>>>(row, "result_digest")?;
         let checkpoint_sequence = col::<Option<i64>>(row, "checkpoint_sequence")?;
+        let drained_sequence = col::<Option<i64>>(row, "drained_sequence")?;
+        let drain_outbox_id = col::<Option<Uuid>>(row, "drain_outbox_id")?;
         if col::<Uuid>(row, "entry_instance_id")?
             != col::<Option<Uuid>>(row, "projected_entry_id")?
                 .ok_or_else(|| corrupt("collection entry projection"))?
@@ -1385,14 +1393,20 @@ async fn load_collections(
                     && return_node.is_none()
                     && return_id.is_none()
                     && result_digest.is_none()
-                    && checkpoint_sequence.is_none() =>
+                    && checkpoint_sequence.is_none()
+                    && drained_sequence.is_none()
+                    && drain_outbox_id.is_none() =>
             {
                 (
                     CollectionIterationRestore::admitted(index, entry, item_digest),
                     false,
                 )
             }
-            "CHECKPOINTED" if !col::<bool>(row, "slot_held")? => {
+            "CHECKPOINTED"
+                if !col::<bool>(row, "slot_held")?
+                    && drained_sequence.is_none()
+                    && drain_outbox_id.is_none() =>
+            {
                 let return_id_value =
                     return_id.ok_or_else(|| corrupt("collection checkpoint return identity"))?;
                 let result = stored_digest(
@@ -1423,6 +1437,23 @@ async fn load_collections(
                         )?,
                         result,
                     ),
+                    true,
+                )
+            }
+            "DRAINED"
+                if !col::<bool>(row, "slot_held")?
+                    && col::<i32>(row, "remaining_reservations")? == 0
+                    && return_nodes.is_none()
+                    && return_indices.is_none()
+                    && return_node.is_none()
+                    && return_id.is_none()
+                    && result_digest.is_none()
+                    && checkpoint_sequence.is_none()
+                    && drained_sequence.is_some()
+                    && drain_outbox_id.is_some() =>
+            {
+                (
+                    CollectionIterationRestore::drained(index, entry, item_digest),
                     true,
                 )
             }
@@ -1469,20 +1500,67 @@ async fn load_collections(
         let owner_node: String = col(row, "owner_node")?;
         let parsed_owner_node =
             NodeId::parse_stored(&owner_node).map_err(|_| corrupt("collection owner node"))?;
+        let drain_reason = match (
+            col::<Option<String>>(row, "drain_kind")?.as_deref(),
+            col::<Option<i32>>(row, "drain_iteration")?,
+            col::<Option<String>>(row, "drain_failure_code")?,
+            col::<Option<i64>>(row, "drain_sequence")?,
+            col::<Option<Uuid>>(row, "drain_outbox_id")?,
+        ) {
+            (None, None, None, None, None) => None,
+            (Some("FAILED"), Some(iteration), Some(code), Some(_), Some(_)) => {
+                Some(CollectionDrainReason::Failed {
+                    iteration: u32::try_from(iteration)
+                        .map_err(|_| corrupt("collection drain iteration"))?,
+                    code: FailureCode::parse(&code)
+                        .map_err(|_| corrupt("collection drain failure code"))?,
+                })
+            }
+            (Some("CANCELLED"), None, None, Some(_), Some(_)) => {
+                Some(CollectionDrainReason::Cancelled)
+            }
+            _ => return Err(corrupt("collection drain projection")),
+        };
         let phase = match lifecycle.as_str() {
             "OPEN"
                 if stored_result_digest.is_none()
                     && col::<Option<i64>>(row, "finish_sequence")?.is_none()
-                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_none() =>
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_none()
+                    && drain_reason.is_none() =>
             {
                 CollectionPhase::Open
             }
             "SUCCEEDED"
                 if stored_result_digest.is_some()
                     && col::<Option<i64>>(row, "finish_sequence")?.is_some()
-                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_some() =>
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_some()
+                    && drain_reason.is_none() =>
             {
                 CollectionPhase::Succeeded
+            }
+            "DRAINING"
+                if stored_result_digest.is_none()
+                    && col::<Option<i64>>(row, "finish_sequence")?.is_none()
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_none()
+                    && drain_reason.is_some() =>
+            {
+                CollectionPhase::Draining
+            }
+            "FAILED"
+                if stored_result_digest.is_none()
+                    && col::<Option<i64>>(row, "finish_sequence")?.is_some()
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_some()
+                    && matches!(&drain_reason, Some(CollectionDrainReason::Failed { .. })) =>
+            {
+                CollectionPhase::Failed
+            }
+            "CANCELLED"
+                if stored_result_digest.is_none()
+                    && col::<Option<i64>>(row, "finish_sequence")?.is_some()
+                    && col::<Option<Uuid>>(row, "finish_outbox_id")?.is_some()
+                    && matches!(&drain_reason, Some(CollectionDrainReason::Cancelled)) =>
+            {
+                CollectionPhase::Cancelled
             }
             _ => return Err(corrupt("unsupported collection scope projection")),
         };
@@ -1495,7 +1573,7 @@ async fn load_collections(
             return Err(corrupt("unsupported collection scope projection"));
         }
         state
-            .restore_collection(
+            .restore_collection_progress(
                 ExecutionInstanceId::in_path(owner_path, parsed_owner_node),
                 phase,
                 u32::try_from(col::<i32>(row, "item_count")?)
@@ -1506,6 +1584,7 @@ async fn load_collections(
                     .map_err(|_| corrupt("collection concurrency limit"))?,
                 stored_digest(col(row, "snapshot_digest")?, "collection snapshot digest")?,
                 stored_result_digest,
+                drain_reason,
                 admitted.iterations,
             )
             .map_err(|_| corrupt("collection projection"))?;
@@ -1689,6 +1768,7 @@ pub struct PgRunTx {
     /// Counted when (and only when) the transaction commits.
     signals: Vec<Signal>,
     chain_lock: Option<LockedChainHead>,
+    initialize_chain: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2680,7 +2760,33 @@ impl RunTx for PgRunTx {
         Ok(inserted)
     }
 
-    async fn commit(self) -> Result<(), StoreError> {
+    async fn commit(mut self) -> Result<(), StoreError> {
+        if self.initialize_chain
+            && let Some(policy) = self.def.continuation_policy()
+        {
+            if self.info.parent.is_some() {
+                return Err(StoreError::Internal {
+                    detail: "child continuation chains are not enabled".to_owned(),
+                });
+            }
+            let chain_policy =
+                ChainPolicy::new(policy.max_segments()).map_err(|_| StoreError::Internal {
+                    detail: "validated continuation policy became invalid".to_owned(),
+                })?;
+            let initialization = ChainInitialization::new(
+                ChainScope::new(self.info.tenant_id, self.info.namespace_id),
+                self.info.run_id,
+                chain_policy,
+            );
+            crate::chain_progress::initialize_chain_in_transaction(&mut self.tx, &initialization)
+                .await
+                .map_err(|error| match error {
+                    ChainProgressError::Storage(error) => error,
+                    other => StoreError::Internal {
+                        detail: format!("continuation chain initialization failed: {other}"),
+                    },
+                })?;
+        }
         self.tx.commit().await.map_err(store_error)?;
         for signal in self.signals {
             signal.emit();

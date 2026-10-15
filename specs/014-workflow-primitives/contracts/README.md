@@ -22,13 +22,16 @@ set. This is the publication boundary for run-addressed Query/Update. A document
 `state` with `bodies`, top-level `limits`, `chainPolicy`, `continueAsNew`, approval, collection,
 loop or body-return forms remains rejected until that combined runtime has its own evidence.
 
-The internal continuation parser retains `chainPolicy` as a bounded domain policy and
-`continueAsNew` as a typed terminal with its input and optional state expressions. It validates
-the real graph shape, including top-level placement, absence of outgoing routes and exclusion from
-parallel, saga and named-body regions. This retained model is an integration boundary for the
-planner; it does not make the document publishable. The production parser continues to return the
-typed unsupported-capability error until run creation, expression transfer and handoff share the
-canonical chain/run transaction and pass the runtime release evidence.
+The continuation parser retains `chainPolicy` as a bounded domain policy and `continueAsNew` as a
+typed terminal with its input and optional state expressions. The public runtime accepts two closed
+root shapes: an activity followed directly by an input-only continuation, or an activity followed
+by one condition that selects between an input-only continuation and an `end` without output. Run
+creation writes the initial chain membership atomically. The scheduler evaluates the transfer and
+commits the predecessor, successor, chain head, journal, audit and outbox under the chain and run
+compare-and-swap guards. Reaching `maxSegments` stops the current run with durable `CHAIN_LIMIT`,
+marks the segment `FINAL` and latches the chain outcome so another tick cannot repeat the boundary.
+Declared state transfer, bodies, top-level limits, triggers, `onError`, non-activity entrypoints and
+all wider graph combinations remain rejected at publication.
 
 The document adds a `bodies` map, optional `state` declarations, `chainPolicy` and optional
 `limits: {maxInstances,maxDepth}`. Omitted limit fields default to 100000 and 8 respectively;
@@ -96,9 +99,10 @@ durable behavior implicitly. No generated pseudo-API is added to current example
 All paths are relative to the existing `/v1` REST base. New operations use existing authentication,
 namespace resolution, canonical error envelope and request/trace headers. They never accept tenant
 or actor identity from the request body. The implemented run Query/Update, approval decision and
-chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. Public chain creation,
-handoff, chain Query/Update and paged segment operations remain gated until their transactional
-resolution and conformance evidence are complete.
+chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. The reviewed workflow
+shapes above create chains and hand off through the scheduler; chain Query/Update, paged segment
+operations and wider continuation graphs remain gated until their transactional resolution and
+conformance evidence are complete.
 
 | Method/path | Body/query | Success result / authorization |
 | --- | --- | --- |

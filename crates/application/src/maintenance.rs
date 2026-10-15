@@ -11,7 +11,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use sagat_domain::execution::{ExecutionInstanceId, Fence, InstancePath, RunId, RunStatus};
-use sagat_domain::identity::TenantId;
+use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::sharding::ShardSet;
 use sagat_domain::workflow::NodeId;
 use time::OffsetDateTime;
@@ -55,6 +55,16 @@ impl StepRef {
     pub fn instance(&self) -> ExecutionInstanceId {
         ExecutionInstanceId::in_path(self.instance_path.clone(), self.node.clone())
     }
+}
+
+/// A pending top-level continuation boundary tied to its serialized chain head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingContinuation {
+    pub tenant_id: TenantId,
+    pub namespace_id: NamespaceId,
+    pub chain_id: RunId,
+    pub run_id: RunId,
+    pub node: NodeId,
 }
 
 /// A run found by a maintenance query.
@@ -105,6 +115,12 @@ pub struct LostLease {
 /// Candidate queries and housekeeping. Implemented by `sagat-infra-postgres`; every time
 /// comparison uses the database clock, so instances with skewed clocks agree.
 pub trait MaintenanceStore: Send + Sync {
+    /// Pending continuation boundaries whose run is still the current chain head.
+    fn continuation_candidates(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<PendingContinuation>, StoreError>> + Send;
+
     /// Collection owners that can enter, admit, checkpoint or finish without waiting for worker
     /// progress. The query only discovers candidates; the fenced transition revalidates them.
     fn collection_candidates(
