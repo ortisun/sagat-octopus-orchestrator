@@ -1,0 +1,32 @@
+{
+  "canonical": {
+    "chain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"chain-inspect-cancel-runtime\"},\"nodes\":[{\"activity\":\"chain.work\",\"id\":\"work\",\"next\":\"next\",\"type\":\"activity\"},{\"id\":\"next\",\"input\":\"input\",\"type\":\"continueAsNew\"}]}"
+  },
+  "workflows": {
+    "chain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "chain-inspect-cancel-runtime"
+      },
+      "nodes": [
+        {
+          "activity": "chain.work",
+          "id": "work",
+          "next": "next",
+          "type": "activity"
+        },
+        {
+          "id": "next",
+          "input": "input",
+          "type": "continueAsNew"
+        }
+      ]
+    }
+  }
+}

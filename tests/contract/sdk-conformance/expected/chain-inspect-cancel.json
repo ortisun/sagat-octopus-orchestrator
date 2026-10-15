@@ -1,0 +1,130 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": "<createdAt+86400s>",
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "inspect",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": false,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:1>",
+        "finalOutcome": null,
+        "revision": 0,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": null
+          }
+        ]
+      }
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:2>"
+      },
+      "id": "foreign",
+      "ok": false,
+      "op": "inspectChain"
+    },
+    {
+      "id": "cancel",
+      "ok": true,
+      "op": "cancelChain",
+      "result": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "cancel-replay",
+      "ok": true,
+      "op": "cancelChain",
+      "result": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "inspect-cancelled",
+      "ok": true,
+      "op": "inspectChain",
+      "result": {
+        "cancelRequested": true,
+        "chainId": "<uuid:1>",
+        "currentRunId": "<uuid:1>",
+        "finalOutcome": "CANCELLED",
+        "revision": 2,
+        "segments": [
+          {
+            "index": 0,
+            "predecessorRunId": null,
+            "runId": "<uuid:1>",
+            "successorRunId": null
+          }
+        ]
+      }
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "next",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "continueAsNew",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "CANCELLED"
+    }
+  ],
+  "workerLog": {}
+}
