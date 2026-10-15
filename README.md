@@ -648,7 +648,9 @@ kubectl -n sagat logs deployment/sagat-octopus-orchestrator-engine --previous --
 Further procedures: [control plane](docs/runbooks/control-plane.md),
 [execution engine](docs/runbooks/execution-engine.md), [scripts](docs/runbooks/scripts.md),
 [security/governance](docs/runbooks/security-governance.md), [events](docs/runbooks/events.md),
-[Studio](docs/runbooks/studio.md), [alerts](docs/runbooks/alerts.md).
+[Studio](docs/runbooks/studio.md), [alerts](docs/runbooks/alerts.md),
+[workflow primitives](docs/runbooks/workflow-primitives.md) and
+[SDK compatibility](docs/sdk-compatibility.md).
 
 ## Repository and operational scripts
 
