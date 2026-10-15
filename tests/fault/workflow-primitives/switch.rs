@@ -137,7 +137,7 @@ async fn restart_recovers_the_recorded_choice_when_the_broker_hint_is_lost() {
         .expect("fresh replica polls PostgreSQL");
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].run_id, run);
-    assert_eq!(tasks[0].node.as_str(), "accepted");
+    assert_eq!(tasks[0].instance.node().as_str(), "accepted");
     assert_eq!(tasks[0].activity.as_str(), "act.accepted");
     assert_eq!(switch_counts(&w, run).await, (1, 1, 1));
     w.assert_consistent(run).await;

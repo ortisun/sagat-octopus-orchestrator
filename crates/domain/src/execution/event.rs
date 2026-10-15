@@ -9,7 +9,7 @@ use super::instance::{ExecutionInstanceId, InstancePath};
 use super::state::{RunId, RunStatus};
 use crate::identity::clip;
 use crate::saga::{ReconcileVerdict, SagaOutcome};
-use crate::workflow::NodeId;
+use crate::workflow::{Digest, NodeId};
 
 const MAX_CODE_LEN: usize = 64;
 const MAX_KEY_LEN: usize = 256;
@@ -377,6 +377,23 @@ pub enum ChildOutcome {
     Failed(FailureCode),
 }
 
+/// Why a collection stops admitting new iterations and drains the ones already accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionDrainReason {
+    /// One admitted iteration failed permanently.
+    Failed { iteration: u32, code: FailureCode },
+    /// The enclosing run asked the collection to stop.
+    Cancelled,
+}
+
+/// The terminal result of a collection scope after all accepted iterations have settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionOutcome {
+    Succeeded,
+    Failed(FailureCode),
+    Cancelled,
+}
+
 /// Why an event happened: a closed `kind` (a failure, a retry, a review, a stop, an operator's
 /// decision, a request, the outcome of the run) and the `code` that goes with it. What a timeline
 /// shows next to a transition (US01).
@@ -477,6 +494,49 @@ pub enum RunEvent {
     ParallelJoined {
         node: NodeId,
         outcome: JoinOutcome,
+    },
+    /// Captures immutable collection membership and its effective scope limits before admission.
+    CollectionEntered {
+        node: NodeId,
+        item_count: u32,
+        max_items: u32,
+        max_concurrency: u16,
+        snapshot_digest: Digest,
+    },
+    /// Allocates the first body instance for exactly one collection index.
+    CollectionIterationAdmitted {
+        node: NodeId,
+        index: u32,
+        entry: ExecutionInstanceId,
+        item_digest: Digest,
+    },
+    /// Records the explicit body return instance for an admitted index.
+    CollectionIterationReturned {
+        node: NodeId,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+    },
+    /// Makes one returned result durable and releases its collection concurrency slot.
+    CollectionIterationCheckpointed {
+        node: NodeId,
+        index: u32,
+        return_instance: ExecutionInstanceId,
+        result_digest: Digest,
+    },
+    /// Stops new admission while accepted iterations settle.
+    CollectionDrainStarted {
+        node: NodeId,
+        reason: CollectionDrainReason,
+    },
+    /// Records that one accepted iteration ended without a result during drain.
+    CollectionIterationDrained {
+        node: NodeId,
+        index: u32,
+    },
+    /// Closes the scope only after every required result or drain record exists.
+    CollectionFinished {
+        node: NodeId,
+        outcome: CollectionOutcome,
     },
     /// A child run was reserved for the step: its id is journaled before the child exists, so a
     /// crash between the two is repaired by starting exactly that run (`FR-002-009`).
@@ -636,11 +696,27 @@ impl AddressedRunEvent {
     /// path; opening a new dynamic iteration remains the responsibility of its scope event.
     #[must_use]
     pub fn changed_instances(&self) -> Vec<ExecutionInstanceId> {
-        self.event
+        let mut instances = self
+            .event
             .changed_nodes()
             .into_iter()
             .map(|node| ExecutionInstanceId::in_path(self.path.clone(), node))
-            .collect()
+            .collect::<Vec<_>>();
+        match &self.event {
+            RunEvent::CollectionIterationAdmitted { entry, .. } => {
+                instances.push(entry.clone());
+            }
+            RunEvent::CollectionIterationReturned {
+                return_instance, ..
+            }
+            | RunEvent::CollectionIterationCheckpointed {
+                return_instance, ..
+            } => {
+                instances.push(return_instance.clone());
+            }
+            _ => {}
+        }
+        instances
     }
 }
 
@@ -667,6 +743,13 @@ impl RunEvent {
             Self::WaitTimedOut { .. } => "wait.timed_out",
             Self::ParallelForked { .. } => "parallel.forked",
             Self::ParallelJoined { .. } => "parallel.joined",
+            Self::CollectionEntered { .. } => "collection.entered",
+            Self::CollectionIterationAdmitted { .. } => "collection.iteration_admitted",
+            Self::CollectionIterationReturned { .. } => "collection.iteration_returned",
+            Self::CollectionIterationCheckpointed { .. } => "collection.iteration_checkpointed",
+            Self::CollectionDrainStarted { .. } => "collection.drain_started",
+            Self::CollectionIterationDrained { .. } => "collection.iteration_drained",
+            Self::CollectionFinished { .. } => "collection.finished",
             Self::ChildStarted { .. } => "child.started",
             Self::ChildFinished { .. } => "child.finished",
             Self::EndReached { .. } => "end.reached",
@@ -711,6 +794,13 @@ impl RunEvent {
             | Self::WaitTimedOut { node, .. }
             | Self::ParallelForked { node, .. }
             | Self::ParallelJoined { node, .. }
+            | Self::CollectionEntered { node, .. }
+            | Self::CollectionIterationAdmitted { node, .. }
+            | Self::CollectionIterationReturned { node, .. }
+            | Self::CollectionIterationCheckpointed { node, .. }
+            | Self::CollectionDrainStarted { node, .. }
+            | Self::CollectionIterationDrained { node, .. }
+            | Self::CollectionFinished { node, .. }
             | Self::ChildStarted { node, .. }
             | Self::ChildFinished { node, .. }
             | Self::EndReached { node }
@@ -798,6 +888,22 @@ impl RunEvent {
                 outcome: JoinOutcome::Failed,
                 ..
             } => cause("failure", "BRANCH_FAILED"),
+            Self::CollectionDrainStarted {
+                reason: CollectionDrainReason::Failed { code, .. },
+                ..
+            }
+            | Self::CollectionFinished {
+                outcome: CollectionOutcome::Failed(code),
+                ..
+            } => cause("failure", code.as_str()),
+            Self::CollectionDrainStarted {
+                reason: CollectionDrainReason::Cancelled,
+                ..
+            }
+            | Self::CollectionFinished {
+                outcome: CollectionOutcome::Cancelled,
+                ..
+            } => cause("cancel", "REQUESTED"),
             Self::RunPaused => cause("request", "PAUSE"),
             Self::RunResumed => cause("request", "RESUME"),
             Self::RunFinished { status } => cause("outcome", status.as_str()),

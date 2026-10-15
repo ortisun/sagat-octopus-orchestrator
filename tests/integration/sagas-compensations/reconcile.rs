@@ -50,7 +50,7 @@ async fn a_lost_response_is_reconciled_before_any_second_attempt() {
         ("lookup.submit", TaskKind::Reconciliation)
     );
     let target = lookup.target.clone().expect("a lookup names its target");
-    assert_eq!(target.node.as_str(), "submit");
+    assert_eq!(target.instance.node().as_str(), "submit");
     // The key the lost attempt carried is what identifies the payment at the provider.
     assert!(
         target.idempotency_key.ends_with(":submit"),

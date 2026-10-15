@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
-    self, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
+    self, ExecutionInstanceId, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Slug, TenantId};
 use sagat_domain::workflow::{ActivityName, NodeId, NodeKind};
@@ -28,7 +28,7 @@ use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
     Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, compensation_key, step_id,
+    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, RunTx, compensation_key, instance_step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -235,7 +235,7 @@ pub struct Registered {
 #[derive(Debug, Clone)]
 pub struct ClaimedTask {
     pub run_id: RunId,
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub step_id: Uuid,
     pub fence: Fence,
     pub lease_token: Token,
@@ -277,15 +277,40 @@ impl TaskKind {
 /// The forward step a compensation or a reconciliation is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskTarget {
-    pub node: NodeId,
+    pub instance: ExecutionInstanceId,
     pub idempotency_key: String,
 }
 
 impl ClaimedTask {
-    /// The identifier a worker echoes back: `run/node/generation`.
+    /// The legacy identifier a worker echoes back: `run/node/generation`.
+    ///
+    /// Scoped claims remain disabled while the server advertises protocol 1.4. Enabling them must
+    /// replace this root-only identifier with the negotiated 1.5 representation before a lease is
+    /// serialized.
     #[must_use]
     pub fn task_id(&self) -> String {
-        format!("{}/{}/{}", self.run_id, self.node, self.fence.generation)
+        format!(
+            "{}/{}/{}",
+            self.run_id,
+            self.instance.node(),
+            self.fence.generation
+        )
+    }
+}
+
+#[cfg(test)]
+fn root_task_id(run_id: RunId, instance: &ExecutionInstanceId, generation: u64) -> Option<String> {
+    instance
+        .path()
+        .is_root()
+        .then(|| format!("{run_id}/{}/{generation}", instance.node()))
+}
+
+fn require_root_task(instance: &ExecutionInstanceId) -> Result<(), AppError> {
+    if instance.path().is_root() {
+        Ok(())
+    } else {
+        Err(AppError::StaleAttempt)
     }
 }
 
@@ -293,7 +318,7 @@ impl ClaimedTask {
 #[derive(Clone)]
 pub struct TaskRef<'a> {
     pub run_id: RunId,
-    pub node: &'a NodeId,
+    pub instance: &'a ExecutionInstanceId,
     /// The step identity the worker was handed; checked when present.
     pub step_id: Option<Uuid>,
     pub fence: Fence,
@@ -305,7 +330,7 @@ impl std::fmt::Debug for TaskRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskRef")
             .field("run_id", &self.run_id)
-            .field("node", &self.node)
+            .field("instance", &self.instance)
             .field("step_id", &self.step_id)
             .field("fence", &self.fence)
             .field("lease_token", &"<redacted>")
@@ -1005,23 +1030,24 @@ where
             (TaskKind::Compensation, Some(forward)) => (
                 compensation_key(version, run_id, &forward),
                 Some(TaskTarget {
-                    node: forward,
+                    instance: ExecutionInstanceId::root(forward),
                     idempotency_key: forward_key,
                 }),
             ),
             (TaskKind::Reconciliation, Some(forward)) => (
                 format!("reconciliation:{run_id}:{forward}"),
                 Some(TaskTarget {
-                    node: forward,
+                    instance: ExecutionInstanceId::root(forward),
                     idempotency_key: forward_key,
                 }),
             ),
             _ => (forward_key, None),
         };
+        let instance = ExecutionInstanceId::root(node.clone());
         Ok(ClaimedTask {
             run_id,
-            node: node.clone(),
-            step_id: step_id(version, run_id, node),
+            step_id: instance_step_id(version, run_id, &instance),
+            instance,
             fence,
             lease_token: token,
             expires_at,
@@ -1050,10 +1076,10 @@ where
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.renewal = Some(LeaseRenewal {
-            node: task.node.clone(),
+            node: task.instance.node().clone(),
             ttl: self.settings.lease_ttl,
         });
-        let node = task.node.clone();
+        let node = task.instance.node().clone();
         let fence = task.fence;
         let cancel_requested = self
             .engine
@@ -1082,7 +1108,7 @@ where
             .await
             .map_err(engine_error)?;
         let lease_expires_at = tx
-            .lease_expiry(task.node)
+            .lease_expiry(task.instance.node())
             .await?
             .unwrap_or_else(|| tx.now());
         tx.commit().await?;
@@ -1217,14 +1243,16 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         if !tx
-            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+            .lease_unexpired(task.instance.node(), &Token::hash_of(task.lease_token))
             .await?
         {
             return Err(AppError::StaleAttempt);
         }
         {
             let (_, state) = tx.parts();
-            let step = state.step(task.node).ok_or(AppError::StaleAttempt)?;
+            let step = state
+                .instance(task.instance)
+                .ok_or(AppError::StaleAttempt)?;
             if step.attempt() != task.fence.attempt || step.generation() != task.fence.generation {
                 return Err(AppError::StaleAttempt);
             }
@@ -1249,7 +1277,10 @@ where
                 )
                 .with_reason(format!(
                     "run {} node {} attempt {} generation {}",
-                    task.run_id, task.node, task.fence.attempt, task.fence.generation
+                    task.run_id,
+                    task.instance.node(),
+                    task.fence.attempt,
+                    task.fence.generation
                 )),
             );
             tx.persist(&[], effects).await?;
@@ -1283,7 +1314,7 @@ where
                 namespace_id: info.namespace_id,
             },
             run_id: info.run_id,
-            step_id: step_id(info.version_id, info.run_id, task.node),
+            step_id: instance_step_id(info.version_id, info.run_id, task.instance),
             attempt: task.fence.attempt,
             generation: task.fence.generation,
         }
@@ -1317,7 +1348,7 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         if blob.is_some() {
-            if task.node.is_reconciliation() || task.node.is_compensation() {
+            if task.instance.node().is_reconciliation() || task.instance.node().is_compensation() {
                 return Err(AppError::NotAllowed(
                     "blob output requires a forward activity",
                 ));
@@ -1328,7 +1359,7 @@ where
                 ));
             }
             if !tx
-                .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+                .lease_unexpired(task.instance.node(), &Token::hash_of(task.lease_token))
                 .await?
             {
                 return Err(AppError::StaleAttempt);
@@ -1341,7 +1372,7 @@ where
             // A detection, counted when found: should the commit below fail the retry finds it again.
             metrics::counter!("secret_output_detected_total").increment(1);
             effects.audit = Some(self.leak_audit(principal, &tx, task, &name, "output"));
-            let node = task.node.clone();
+            let node = task.instance.node().clone();
             let fence = task.fence;
             let fallback_audit = effects.audit.clone();
             let completed = self
@@ -1369,7 +1400,7 @@ where
                 .await;
         }
         // A reconciliation does not produce the output of a step, it says whether the step happened.
-        if task.node.is_reconciliation() {
+        if task.instance.node().is_reconciliation() {
             let result = self
                 .complete_reconciliation(tx, task, output, effects, idempotency.clone())
                 .await;
@@ -1381,8 +1412,8 @@ where
         // of the step it follows, not of the one that undid it), so it must not count against the
         // run's budget either, or an undo that worked would be recorded as a failure because the
         // forward steps had filled it.
-        if task.node.is_compensation() {
-            let node = task.node.clone();
+        if task.instance.node().is_compensation() {
+            let node = task.instance.node().clone();
             let fence = task.fence;
             let completed = self
                 .engine
@@ -1407,7 +1438,7 @@ where
         // a completion that would exceed it fails the step (a retry would only exceed it again).
         let retained: usize = tx.data().await?.outputs.values().map(Vec::len).sum();
         if retained + output.len() > MAX_RUN_OUTPUT_BYTES {
-            let node = task.node.clone();
+            let node = task.instance.node().clone();
             let fence = task.fence;
             let completed = self
                 .engine
@@ -1433,9 +1464,9 @@ where
                 .recover_success_storage_quota(principal, task, idempotency, None, result)
                 .await;
         }
-        effects.outputs = vec![(task.node.clone(), output.to_vec())];
+        effects.outputs = vec![(task.instance.node().clone(), output.to_vec())];
         effects.blobs = blob.into_iter().collect();
-        let node = task.node.clone();
+        let node = task.instance.node().clone();
         let fence = task.fence;
         let completed = self
             .engine
@@ -1493,7 +1524,7 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        let node = task.node.clone();
+        let node = task.instance.node().clone();
         let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.audit = audit;
@@ -1519,10 +1550,10 @@ where
         mut effects: Effects,
         idempotency: Idempotency,
     ) -> Result<StepAck, AppError> {
-        let forward = task.node.forward().ok_or(AppError::Internal)?;
+        let forward = task.instance.node().forward().ok_or(AppError::Internal)?;
         let rejected = match self.engine.evaluator().reconcile_answer(output) {
             Err(failure) => {
-                tracing::warn!(error = %failure, node = %task.node, "a reconciliation answered nonsense");
+                tracing::warn!(error = %failure, node = %task.instance.node(), "a reconciliation answered nonsense");
                 Some(FailureCode::reconciliation_answer_invalid())
             }
             Ok(answer) => {
@@ -1540,7 +1571,8 @@ where
                     if let Some(bytes) = substitute {
                         effects.outputs = vec![(forward.clone(), bytes)];
                     }
-                    let (node, fence, verdict) = (task.node.clone(), task.fence, answer.verdict);
+                    let (node, fence, verdict) =
+                        (task.instance.node().clone(), task.fence, answer.verdict);
                     let jitter = self.entropy.unit();
                     self.engine
                         .run(&mut tx, effects, move |def, state, now| {
@@ -1556,7 +1588,7 @@ where
             }
         };
         let code = rejected.ok_or(AppError::Internal)?;
-        let (node, fence) = (task.node.clone(), task.fence);
+        let (node, fence) = (task.instance.node().clone(), task.fence);
         self.engine
             .run(&mut tx, effects, move |def, state, now| {
                 let failure = execution::Failure {
@@ -1618,7 +1650,7 @@ where
             code = FailureCode::secret_in_output();
             retryable = false;
         }
-        let node = task.node.clone();
+        let node = task.instance.node().clone();
         let fence = task.fence;
         let jitter = self.entropy.unit();
         let fallback_code = code.clone();
@@ -1695,7 +1727,7 @@ where
         }
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
-        let node = task.node.clone();
+        let node = task.instance.node().clone();
         let fence = task.fence;
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.audit = audit;
@@ -1729,7 +1761,8 @@ where
         )
         .with_reason(format!(
             "{what} of {} on run {} contained the value of a secret",
-            task.node, task.run_id
+            task.instance.node(),
+            task.run_id
         ))
     }
 
@@ -1739,6 +1772,7 @@ where
         task: &TaskRef<'_>,
         lock: Lock,
     ) -> Result<S::Tx, AppError> {
+        require_root_task(task.instance)?;
         if let Some(tx) = self
             .store
             .begin(principal.tenant_id(), task.run_id, lock)
@@ -1789,7 +1823,7 @@ where
     /// The secrets the step declares, from its definition.
     fn declared_secrets<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> Vec<SecretName> {
         let (def, _) = tx.parts();
-        def.node(task.node)
+        def.node(task.instance.node())
             .map(|node| node.secrets().to_vec())
             .unwrap_or_default()
     }
@@ -1826,7 +1860,7 @@ where
         // The capability ends when the lease does, not when the scheduler gets round to reclaiming
         // the attempt: a worker that stopped renewing no longer gets to read secrets.
         if !tx
-            .lease_unexpired(task.node, &Token::hash_of(task.lease_token))
+            .lease_unexpired(task.instance.node(), &Token::hash_of(task.lease_token))
             .await?
         {
             return Err(AppError::StaleAttempt);
@@ -1875,7 +1909,8 @@ where
                 AuditAction::SecretDenied,
                 format!(
                     "node {} attempt {}: {name} not usable by its publisher",
-                    task.node, task.fence.attempt
+                    task.instance.node(),
+                    task.fence.attempt
                 ),
             );
             tx.persist(&[], effects).await?;
@@ -1919,7 +1954,8 @@ where
             AuditAction::SecretResolved,
             format!(
                 "node {} attempt {}: {listed}",
-                task.node, task.fence.attempt
+                task.instance.node(),
+                task.fence.attempt
             ),
         );
         tx.persist(&[], effects).await?;
@@ -1993,7 +2029,10 @@ where
     ) -> Result<(), AppError> {
         let activity = {
             let (def, _) = tx.parts();
-            match def.node(task.node).map(sagat_domain::workflow::Node::kind) {
+            match def
+                .node(task.instance.node())
+                .map(sagat_domain::workflow::Node::kind)
+            {
                 Some(NodeKind::Activity { activity, .. }) => activity.to_string(),
                 _ => return Ok(()),
             }
@@ -2016,12 +2055,12 @@ where
         // A step id that does not belong to this run and node is a misdirected report.
         if let Some(claimed) = task.step_id {
             let info = tx.info();
-            if claimed != step_id(info.version_id, info.run_id, task.node) {
+            if claimed != instance_step_id(info.version_id, info.run_id, task.instance) {
                 return Err(AppError::StaleAttempt);
             }
         }
         if tx
-            .lease_matches(task.node, &Token::hash_of(task.lease_token))
+            .lease_matches(task.instance.node(), &Token::hash_of(task.lease_token))
             .await?
         {
             Ok(())
@@ -2040,7 +2079,7 @@ where
         let (step_status, run_status, version) = {
             let (_, state) = tx.parts();
             let step = state
-                .step(task.node)
+                .instance(task.instance)
                 .map(sagat_domain::execution::StepState::status);
             (
                 step.unwrap_or(StepStatus::Cancelled),
@@ -2115,7 +2154,23 @@ fn engine_error(error: EngineError) -> AppError {
 fn report_scope(task: &TaskRef<'_>) -> String {
     use std::fmt::Write as _;
     let hash = Token::hash_of(task.lease_token);
-    let mut scope = format!("step:{}:{}:", task.run_id, task.node);
+    let mut scope = if task.instance.path().is_root() {
+        format!("step:{}:{}:", task.run_id, task.instance.node())
+    } else {
+        let mut scoped = format!("step:{}:scoped:", task.run_id);
+        for segment in task.instance.path().segments() {
+            let name = segment.scope_node().as_str();
+            let _ = write!(
+                scoped,
+                "{}:{name}:{};",
+                name.len(),
+                segment.iteration_index()
+            );
+        }
+        let node = task.instance.node().as_str();
+        let _ = write!(scoped, "{}:{node}:", node.len());
+        scoped
+    };
     for byte in hash.iter().take(8) {
         let _ = write!(scope, "{byte:02x}");
     }
@@ -2165,8 +2220,14 @@ pub fn describe(events: &[RunEvent]) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use sagat_domain::blobs::BlobId;
+    use sagat_domain::execution::{ExecutionInstanceId, Fence, InstancePath, RunId};
+    use sagat_domain::workflow::NodeId;
+    use uuid::Uuid;
 
-    use super::{PROTOCOL_MINOR, blob_report_identity, json_escaped, negotiate_protocol};
+    use super::{
+        PROTOCOL_MINOR, TaskRef, blob_report_identity, json_escaped, negotiate_protocol,
+        report_scope, require_root_task, root_task_id,
+    };
 
     #[test]
     fn blob_report_identity_normalizes_sha256_hex_case() {
@@ -2193,6 +2254,66 @@ mod tests {
         assert_eq!(negotiate_protocol(&own).as_deref(), Some(own.as_str()));
         // A worker that is ahead of the server runs at the server's version.
         assert_eq!(negotiate_protocol("1.999").as_deref(), Some(own.as_str()));
+    }
+
+    #[test]
+    fn scoped_identity_is_not_negotiated_before_the_server_can_claim_it() {
+        assert_eq!(PROTOCOL_MINOR, 4);
+        assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.4"));
+    }
+
+    #[test]
+    fn legacy_task_ids_and_worker_entry_points_are_root_only() {
+        let run = RunId::new(Uuid::from_u128(1));
+        let node = NodeId::parse("charge").expect("node");
+        let root = ExecutionInstanceId::root(node.clone());
+        let scoped = ExecutionInstanceId::in_path(
+            InstancePath::root()
+                .child(NodeId::parse("lines").expect("scope"), 0)
+                .expect("path"),
+            node,
+        );
+
+        assert_eq!(root_task_id(run, &root, 3), Some(format!("{run}/charge/3")));
+        assert_eq!(root_task_id(run, &scoped, 3), None);
+        assert!(require_root_task(&root).is_ok());
+        assert!(matches!(
+            require_root_task(&scoped),
+            Err(super::AppError::StaleAttempt)
+        ));
+    }
+
+    #[test]
+    fn report_identity_keeps_root_keys_and_separates_scoped_members() {
+        fn task(run: RunId, instance: &ExecutionInstanceId) -> TaskRef<'_> {
+            TaskRef {
+                run_id: run,
+                instance,
+                step_id: None,
+                fence: Fence {
+                    attempt: 1,
+                    generation: 1,
+                },
+                lease_token: "super-secret-token",
+            }
+        }
+
+        let run = RunId::new(Uuid::from_u128(1));
+        let node = NodeId::parse("charge").expect("node");
+        let scope = NodeId::parse("lines").expect("scope");
+        let root = ExecutionInstanceId::root(node.clone());
+        let first = ExecutionInstanceId::in_path(
+            InstancePath::root().child(scope.clone(), 0).expect("path"),
+            node.clone(),
+        );
+        let second =
+            ExecutionInstanceId::in_path(InstancePath::root().child(scope, 1).expect("path"), node);
+        assert!(report_scope(&task(run, &root)).starts_with(&format!("step:{run}:charge:")));
+        assert_ne!(
+            report_scope(&task(run, &first)),
+            report_scope(&task(run, &second))
+        );
+        assert!(!format!("{:?}", task(run, &first)).contains("super-secret-token"));
     }
 
     #[test]

@@ -22,9 +22,9 @@ pub use command::{
 };
 pub use error::ExecutionError;
 pub use event::{
-    AddressedRunEvent, Cause, ChildOutcome, CorrelationKey, EventAddressError, FailureCode, Fence,
-    JoinOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, StopReason,
-    SwitchSelection,
+    AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
+    CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, PlannedEntry,
+    ReconcileResult, ReviewOutcome, RunEvent, StopReason, SwitchSelection,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
@@ -32,5 +32,6 @@ pub use instance::{
 };
 pub use plan::{Evaluation, Plan, plan};
 pub use state::{
-    RunId, RunState, RunStatus, SagaPhase, SagaState, StepState, StepStatus, WaitingOn,
+    CollectionPhase, CollectionResult, CollectionState, RunId, RunState, RunStatus, SagaPhase,
+    SagaState, StepState, StepStatus, WaitingOn,
 };

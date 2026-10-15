@@ -1,7 +1,7 @@
 //! Typed errors of the execution model. None of them carries payload data.
 
 use super::instance::ExecutionInstanceId;
-use super::state::{RunStatus, StepStatus};
+use super::state::{CollectionPhase, RunStatus, StepStatus};
 use crate::workflow::NodeId;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -61,4 +61,46 @@ pub enum ExecutionError {
     /// A scoped transition is valid journal vocabulary but its reducer path is not enabled yet.
     #[error("scoped event '{0}' is not executable by this runtime")]
     UnsupportedScopedEvent(&'static str),
+    #[error("the run has no collection scope '{0:?}'")]
+    UnknownCollection(ExecutionInstanceId),
+    #[error("collection scope '{0:?}' has already entered")]
+    CollectionAlreadyEntered(ExecutionInstanceId),
+    #[error("collection scope '{collection:?}' has no admitted iteration {index}")]
+    UnknownCollectionIteration {
+        collection: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("collection scope '{collection:?}' already admitted iteration {index}")]
+    DuplicateCollectionAdmission {
+        collection: ExecutionInstanceId,
+        index: u32,
+    },
+    #[error("collection scope '{collection:?}' expected admission {expected}, got {actual}")]
+    UnexpectedCollectionAdmission {
+        collection: ExecutionInstanceId,
+        expected: u32,
+        actual: u32,
+    },
+    #[error("collection scope '{collection:?}' reached concurrency {limit}")]
+    CollectionConcurrencyExceeded {
+        collection: ExecutionInstanceId,
+        limit: u16,
+    },
+    #[error("collection scope '{collection:?}' is {phase:?} and does not admit work")]
+    CollectionNotOpen {
+        collection: ExecutionInstanceId,
+        phase: CollectionPhase,
+    },
+    #[error("collection scope '{collection:?}' received an invalid instance '{instance:?}'")]
+    InvalidCollectionInstance {
+        collection: ExecutionInstanceId,
+        instance: ExecutionInstanceId,
+    },
+    #[error("collection scope '{collection:?}' has invalid limits or cardinality")]
+    InvalidCollectionLimits { collection: ExecutionInstanceId },
+    #[error("collection scope '{collection:?}' cannot apply '{event}' in its current progress")]
+    IllegalCollectionTransition {
+        collection: ExecutionInstanceId,
+        event: &'static str,
+    },
 }

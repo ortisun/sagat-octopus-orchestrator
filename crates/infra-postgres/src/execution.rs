@@ -2139,6 +2139,11 @@ impl PgRunTx {
             Some(WaitingOn::Saga) => (Some("SAGA"), None, None),
             Some(WaitingOn::Reconciliation) => (Some("RECONCILIATION"), None, None),
             Some(WaitingOn::Operator { .. }) => (Some("OPERATOR"), None, None),
+            Some(WaitingOn::Collection) => {
+                return Err(StoreError::Internal {
+                    detail: "collection projection is not persisted".into(),
+                });
+            }
         };
         // How far back an event wait accepts events, beyond the moment it began waiting.
         let lookback = match def_node.map(sagat_domain::workflow::Node::kind) {

@@ -1039,7 +1039,7 @@ pub struct Session {
 pub fn task_ref(task: &ClaimedTask) -> TaskRef<'_> {
     TaskRef {
         run_id: task.run_id,
-        node: &task.node,
+        instance: &task.instance,
         step_id: Some(task.step_id),
         fence: task.fence,
         lease_token: task.lease_token.expose(),

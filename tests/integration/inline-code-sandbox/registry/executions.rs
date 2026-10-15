@@ -40,7 +40,7 @@ fn execution_for(
 ) -> NewExecution {
     let mut execution = execution(w, digest);
     execution.run_id = Some(task.run_id.as_uuid());
-    execution.node = Some(task.node.as_str().to_owned());
+    execution.node = Some(task.instance.node().as_str().to_owned());
     execution.attempt = Some(task.fence.attempt);
     execution
 }
@@ -191,7 +191,7 @@ async fn a_leased_script_pins_retention_before_policy_changes_and_replay_is_free
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(task.run_id.as_uuid())
-    .bind(task.node.as_str())
+    .bind(task.instance.node().as_str())
     .bind(i64::from(task.fence.attempt))
     .fetch_one(&w.db.pool)
     .await
@@ -222,7 +222,7 @@ async fn a_leased_script_pins_retention_before_policy_changes_and_replay_is_free
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(task.run_id.as_uuid())
-    .bind(task.node.as_str())
+    .bind(task.instance.node().as_str())
     .bind(i64::from(task.fence.attempt))
     .fetch_one(&w.db.pool)
     .await
@@ -247,7 +247,7 @@ async fn a_leased_script_pins_retention_before_policy_changes_and_replay_is_free
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(task.run_id.as_uuid())
-    .bind(task.node.as_str())
+    .bind(task.instance.node().as_str())
     .bind(i64::from(task.fence.attempt))
     .fetch_one(&w.db.pool)
     .await
@@ -380,7 +380,7 @@ async fn legacy_leases_are_accepted_but_unknown_or_incomplete_retention_pins_fai
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(legacy.run_id.as_uuid())
-    .bind(legacy.node.as_str())
+    .bind(legacy.instance.node().as_str())
     .bind(i64::from(legacy.fence.attempt))
     .execute(&w.db.pool)
     .await
@@ -391,7 +391,7 @@ async fn legacy_leases_are_accepted_but_unknown_or_incomplete_retention_pins_fai
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(unknown.run_id.as_uuid())
-    .bind(unknown.node.as_str())
+    .bind(unknown.instance.node().as_str())
     .bind(i64::from(unknown.fence.attempt))
     .execute(&w.db.pool)
     .await
@@ -402,7 +402,7 @@ async fn legacy_leases_are_accepted_but_unknown_or_incomplete_retention_pins_fai
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(missing.run_id.as_uuid())
-    .bind(missing.node.as_str())
+    .bind(missing.instance.node().as_str())
     .bind(i64::from(missing.fence.attempt))
     .execute(&w.db.pool)
     .await
@@ -413,7 +413,7 @@ async fn legacy_leases_are_accepted_but_unknown_or_incomplete_retention_pins_fai
     )
     .bind(w.admin.tenant_id().as_uuid())
     .bind(invalid.run_id.as_uuid())
-    .bind(invalid.node.as_str())
+    .bind(invalid.instance.node().as_str())
     .bind(i64::from(invalid.fence.attempt))
     .execute(&w.db.pool)
     .await

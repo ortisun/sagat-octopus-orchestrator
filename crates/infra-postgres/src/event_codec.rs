@@ -5,11 +5,12 @@
 //! Times are stored as microseconds since the epoch, the precision PostgreSQL keeps.
 
 use sagat_domain::execution::{
-    ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry, ReconcileResult,
-    ReviewOutcome, RunEvent, RunId, RunStatus, StopReason, SwitchSelection,
+    ChildOutcome, CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId,
+    FailureCode, Fence, InstancePath, JoinOutcome, PlannedEntry, ReconcileResult, ReviewOutcome,
+    RunEvent, RunId, RunStatus, StopReason, SwitchSelection,
 };
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
-use sagat_domain::workflow::NodeId;
+use sagat_domain::workflow::{Digest, NodeId};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 
@@ -31,6 +32,29 @@ fn from_micros(value: i64) -> Option<OffsetDateTime> {
 
 fn names(nodes: &[NodeId]) -> Value {
     Value::Array(nodes.iter().map(|n| json!(n.as_str())).collect())
+}
+
+fn instance_value(instance: &ExecutionInstanceId) -> Value {
+    json!({
+        "node": instance.node().as_str(),
+        "path": instance.path().segments().iter().map(|segment| json!({
+            "scope": segment.scope_node().as_str(),
+            "index": segment.iteration_index(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn instance_of(value: &Value) -> Option<ExecutionInstanceId> {
+    let object = value.as_object()?;
+    let node = NodeId::parse_stored(object.get("node")?.as_str()?).ok()?;
+    let mut path = InstancePath::root();
+    for segment in object.get("path")?.as_array()? {
+        let segment = segment.as_object()?;
+        let scope = NodeId::parse_stored(segment.get("scope")?.as_str()?).ok()?;
+        let index = u32::try_from(segment.get("index")?.as_u64()?).ok()?;
+        path = path.child(scope, index).ok()?;
+    }
+    Some(ExecutionInstanceId::in_path(path, node))
 }
 
 pub(crate) fn encode(event: &RunEvent) -> Encoded {
@@ -95,6 +119,60 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
                 JoinOutcome::Failed => "failed",
             }
         }),
+        RunEvent::CollectionEntered {
+            item_count,
+            max_items,
+            max_concurrency,
+            snapshot_digest,
+            ..
+        } => json!({
+            "item_count": item_count,
+            "max_items": max_items,
+            "max_concurrency": max_concurrency,
+            "snapshot_digest": snapshot_digest.to_hex(),
+        }),
+        RunEvent::CollectionIterationAdmitted {
+            index,
+            entry,
+            item_digest,
+            ..
+        } => json!({
+            "index": index,
+            "entry": instance_value(entry),
+            "item_digest": item_digest.to_hex(),
+        }),
+        RunEvent::CollectionIterationReturned {
+            index,
+            return_instance,
+            ..
+        } => json!({
+            "index": index,
+            "return_instance": instance_value(return_instance),
+        }),
+        RunEvent::CollectionIterationCheckpointed {
+            index,
+            return_instance,
+            result_digest,
+            ..
+        } => json!({
+            "index": index,
+            "return_instance": instance_value(return_instance),
+            "result_digest": result_digest.to_hex(),
+        }),
+        RunEvent::CollectionDrainStarted { reason, .. } => match reason {
+            CollectionDrainReason::Failed { iteration, code } => json!({
+                "reason": "failed", "iteration": iteration, "code": code.as_str(),
+            }),
+            CollectionDrainReason::Cancelled => json!({"reason": "cancelled"}),
+        },
+        RunEvent::CollectionIterationDrained { index, .. } => json!({"index": index}),
+        RunEvent::CollectionFinished { outcome, .. } => match outcome {
+            CollectionOutcome::Succeeded => json!({"outcome": "succeeded"}),
+            CollectionOutcome::Failed(code) => {
+                json!({"outcome": "failed", "code": code.as_str()})
+            }
+            CollectionOutcome::Cancelled => json!({"outcome": "cancelled"}),
+        },
         RunEvent::ChildStarted { child, .. } => json!({ "child": child.to_string() }),
         RunEvent::ChildFinished { child, outcome, .. } => json!({
             "child": child.to_string(),
@@ -302,6 +380,54 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                 _ => return None,
             },
         },
+        "collection.entered" => RunEvent::CollectionEntered {
+            node: node_id()?,
+            item_count: u32::try_from(number(d, "item_count")?).ok()?,
+            max_items: u32::try_from(number(d, "max_items")?).ok()?,
+            max_concurrency: u16::try_from(number(d, "max_concurrency")?).ok()?,
+            snapshot_digest: Digest::from_hex(text(d, "snapshot_digest")?)?,
+        },
+        "collection.iteration_admitted" => RunEvent::CollectionIterationAdmitted {
+            node: node_id()?,
+            index: u32::try_from(number(d, "index")?).ok()?,
+            entry: instance_of(d.get("entry")?)?,
+            item_digest: Digest::from_hex(text(d, "item_digest")?)?,
+        },
+        "collection.iteration_returned" => RunEvent::CollectionIterationReturned {
+            node: node_id()?,
+            index: u32::try_from(number(d, "index")?).ok()?,
+            return_instance: instance_of(d.get("return_instance")?)?,
+        },
+        "collection.iteration_checkpointed" => RunEvent::CollectionIterationCheckpointed {
+            node: node_id()?,
+            index: u32::try_from(number(d, "index")?).ok()?,
+            return_instance: instance_of(d.get("return_instance")?)?,
+            result_digest: Digest::from_hex(text(d, "result_digest")?)?,
+        },
+        "collection.drain_started" => RunEvent::CollectionDrainStarted {
+            node: node_id()?,
+            reason: match text(d, "reason")? {
+                "failed" => CollectionDrainReason::Failed {
+                    iteration: u32::try_from(number(d, "iteration")?).ok()?,
+                    code: FailureCode::parse(text(d, "code")?).ok()?,
+                },
+                "cancelled" => CollectionDrainReason::Cancelled,
+                _ => return None,
+            },
+        },
+        "collection.iteration_drained" => RunEvent::CollectionIterationDrained {
+            node: node_id()?,
+            index: u32::try_from(number(d, "index")?).ok()?,
+        },
+        "collection.finished" => RunEvent::CollectionFinished {
+            node: node_id()?,
+            outcome: match text(d, "outcome")? {
+                "succeeded" => CollectionOutcome::Succeeded,
+                "failed" => CollectionOutcome::Failed(FailureCode::parse(text(d, "code")?).ok()?),
+                "cancelled" => CollectionOutcome::Cancelled,
+                _ => return None,
+            },
+        },
         "child.started" => RunEvent::ChildStarted {
             node: node_id()?,
             child: text(d, "child")?.parse::<RunId>().ok()?,
@@ -420,8 +546,11 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
 
 #[cfg(test)]
 mod tests {
-    use sagat_domain::execution::{RunEvent, SwitchSelection};
-    use sagat_domain::workflow::NodeId;
+    use sagat_domain::execution::{
+        CollectionDrainReason, CollectionOutcome, ExecutionInstanceId, FailureCode, InstancePath,
+        RunEvent, SwitchSelection,
+    };
+    use sagat_domain::workflow::{Digest, NodeId};
     use serde_json::json;
 
     use super::{decode, encode};
@@ -463,6 +592,81 @@ mod tests {
             json!({"case_id": "invalid/case"}),
         ] {
             assert_eq!(decode("switch.evaluated", Some("choose"), &detail), None);
+        }
+    }
+
+    #[test]
+    fn collection_events_keep_digest_and_scoped_instance_fields() {
+        let owner = node("items");
+        let path = InstancePath::root()
+            .child(owner.clone(), 1)
+            .expect("bounded path");
+        let entry = ExecutionInstanceId::in_path(path.clone(), node("work"));
+        let returned = ExecutionInstanceId::in_path(path, node("return"));
+        let digest = Digest::new([7; 32]);
+        let failure = FailureCode::parse("ITEM_REJECTED").expect("failure code");
+        let events = [
+            RunEvent::CollectionEntered {
+                node: owner.clone(),
+                item_count: 2,
+                max_items: 17,
+                max_concurrency: 1,
+                snapshot_digest: digest,
+            },
+            RunEvent::CollectionIterationAdmitted {
+                node: owner.clone(),
+                index: 1,
+                entry,
+                item_digest: digest,
+            },
+            RunEvent::CollectionIterationReturned {
+                node: owner.clone(),
+                index: 1,
+                return_instance: returned.clone(),
+            },
+            RunEvent::CollectionIterationCheckpointed {
+                node: owner.clone(),
+                index: 1,
+                return_instance: returned,
+                result_digest: digest,
+            },
+            RunEvent::CollectionDrainStarted {
+                node: owner.clone(),
+                reason: CollectionDrainReason::Failed {
+                    iteration: 1,
+                    code: failure.clone(),
+                },
+            },
+            RunEvent::CollectionIterationDrained {
+                node: owner.clone(),
+                index: 1,
+            },
+            RunEvent::CollectionFinished {
+                node: owner,
+                outcome: CollectionOutcome::Failed(failure),
+            },
+        ];
+        for event in events {
+            let encoded = encode(&event);
+            assert_eq!(
+                decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+                Some(event)
+            );
+        }
+        assert!(decode("collection.entered", Some("items"), &json!({})).is_none());
+        for entry in [
+            json!({"node": "work", "path": [{"scope": "items", "index": 10000}]}),
+            json!({"node": "work", "path": [{"scope": "bad/name", "index": 0}]}),
+            json!({"node": "work", "path": "items/0"}),
+        ] {
+            assert!(
+                decode(
+                    "collection.iteration_admitted",
+                    Some("items"),
+                    &json!({"index": 0, "entry": entry, "item_digest": digest.to_hex()})
+                )
+                .is_none()
+            );
         }
     }
 }

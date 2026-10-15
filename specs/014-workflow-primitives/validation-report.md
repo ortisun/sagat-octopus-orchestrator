@@ -199,3 +199,31 @@ does not publish or execute these workflows. Its golden was reviewed manually.
 The full Rust workspace test invocation was interrupted during compilation to free Cargo's build
 lock for the five-SDK conformance run. The focused Rust domain, IR, contract, PostgreSQL and fault
 targets above passed. A clean full-workspace run is still a release gate.
+
+## Collection reducer and worker identity checkpoint (2026-10-15)
+
+The domain now records collection entry, ordered admission, return, result checkpoint, drain and
+completion as typed events. Digests identify the captured input, individual items and retained
+results. Replay rejects a return without its admission. The reducer refuses to drain an iteration
+with an in-flight, waiting, retrying or otherwise unreconciled attempt. The PostgreSQL event codec
+round-trips these event fields and rejects malformed instance paths. PostgreSQL storage still
+refuses to project a collection wait, because durable scope/checkpoint storage is not integrated.
+
+The worker application and gRPC request types now carry `ExecutionInstanceId`. Root task IDs and
+step IDs remain compatible; the server validates path shape but refuses scoped RPC operations before
+opening storage. It continues to negotiate protocol 1.4, including for clients requesting 1.5.
+This does not enable scoped claims, completions, secret access or blob access.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-domain -p sagat-application -p sagat-api-grpc -p sagat-infra-postgres --locked -q` | Passed across all package test targets, including 10 collection reducer tests and 3 PostgreSQL event codec tests |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --test contract_grpc_sdk_multilanguage --test integration_workflow_primitives --locked -q` | Passed: 15 contract, 7 gRPC compatibility and 10 real-PostgreSQL integration tests |
+| `cargo check --workspace --all-targets --locked -q` | Passed |
+| `cargo clippy -p sagat-domain -p sagat-application -p sagat-api-grpc -p sagat-infra-postgres -p sagat-tests --all-targets --locked -- -D warnings` | Passed |
+| `cargo fmt --all -- --check` and `git diff --check` | Passed |
+
+An earlier `cargo test -p sagat-tests --no-run --locked` reached test linking and failed with
+`No space left on device`. Regenerable test executables were removed, and the focused checks above
+passed afterward. A complete workspace test run remains a release gate. Planner admission, full
+scope/journal projection, tenant-wide quota, worker 1.5, scoped fault tests and publication support
+are still pending; no collection runtime guarantee is claimed by this checkpoint.

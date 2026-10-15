@@ -21,6 +21,7 @@ use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
 use sagat_domain::blobs::BlobId;
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
 use sagat_domain::workflow::NodeId;
 use sagat_telemetry::TraceContext;
 use sha2::{Digest, Sha256};
@@ -677,7 +678,7 @@ where
         observe("ResolveSecrets", trace, async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
@@ -685,7 +686,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
+            attach_instance(&mut attempt, message.instance.as_ref())?;
             let resolved = self
                 .workers
                 .resolve_secrets(
@@ -719,7 +720,7 @@ where
             if !message.worker_id.is_empty() {
                 worker_id(&message.worker_id)?;
             }
-            let attempt = Attempt::parse_heartbeat(
+            let mut attempt = Attempt::parse_heartbeat(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
@@ -727,7 +728,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
+            attach_instance(&mut attempt, message.instance.as_ref())?;
             let ack = self
                 .workers
                 .heartbeat(&auth.session.principal, &attempt.task_ref())
@@ -748,7 +749,7 @@ where
         observe("CompleteStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
@@ -756,7 +757,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
+            attach_instance(&mut attempt, message.instance.as_ref())?;
             let key = idempotency_key(&message.idempotency_key)?;
             if !message.output_blob_ref.is_empty() {
                 if !message.output_json.is_empty() {
@@ -847,7 +848,7 @@ where
             else {
                 return Err(invalid("the first message of an upload must be the header"));
             };
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &header.task_id,
                 &header.run_id,
                 &header.step_id,
@@ -855,7 +856,7 @@ where
                 header.generation,
                 &header.lease_token,
             )?;
-            validate_root_identity(header.instance.as_ref(), &attempt.node)?;
+            attach_instance(&mut attempt, header.instance.as_ref())?;
             let principal = &auth.session.principal;
             let scope = self
                 .workers
@@ -902,7 +903,7 @@ where
             let blobs = self.blob_access()?;
             let place = blobs.permit()?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
@@ -910,7 +911,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
+            attach_instance(&mut attempt, message.instance.as_ref())?;
             let id = message
                 .blob_id
                 .parse::<BlobId>()
@@ -955,7 +956,7 @@ where
         observe("FailStep", trace_of(&request), async {
             let auth = self.authenticate(&request).await?;
             let message = request.get_ref();
-            let attempt = Attempt::parse(
+            let mut attempt = Attempt::parse(
                 &message.task_id,
                 &message.run_id,
                 &message.step_id,
@@ -963,7 +964,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
-            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
+            attach_instance(&mut attempt, message.instance.as_ref())?;
             let key = idempotency_key(&message.idempotency_key)?;
             if message.error_code.len() > 128 || message.safe_message.len() > 2048 {
                 return Err(invalid("error_code or safe_message is too long"));
@@ -1020,30 +1021,66 @@ fn step_response(ack: &StepAck) -> pb::StepCommandResponse {
     }
 }
 
-fn root_identity(node: &NodeId) -> pb::ExecutionInstanceIdentity {
+fn instance_identity(instance: &ExecutionInstanceId) -> pb::ExecutionInstanceIdentity {
     pb::ExecutionInstanceIdentity {
-        instance_path: Vec::new(),
-        definition_node_id: node.to_string(),
+        instance_path: instance
+            .path()
+            .segments()
+            .iter()
+            .map(|segment| pb::ScopePathSegment {
+                scope_node_id: segment.scope_node().to_string(),
+                iteration_index: segment.iteration_index(),
+            })
+            .collect(),
+        definition_node_id: instance.node().to_string(),
     }
 }
 
-fn validate_root_identity(
+#[cfg(test)]
+fn root_identity(node: &NodeId) -> pb::ExecutionInstanceIdentity {
+    instance_identity(&ExecutionInstanceId::root(node.clone()))
+}
+
+fn parse_instance_identity(
     identity: Option<&pb::ExecutionInstanceIdentity>,
     expected_node: &NodeId,
-) -> Result<(), Status> {
+) -> Result<ExecutionInstanceId, Status> {
     let Some(identity) = identity else {
-        return Ok(());
+        return Ok(ExecutionInstanceId::root(expected_node.clone()));
     };
-    if !identity.instance_path.is_empty() {
-        return Err(invalid(
-            "scoped execution identity is not supported by this server",
-        ));
-    }
     if identity.definition_node_id != expected_node.as_str() {
         return Err(invalid(
             "instance.definition_node_id does not match task_id",
         ));
     }
+    let mut path = InstancePath::root();
+    for segment in &identity.instance_path {
+        let scope_node = NodeId::parse(&segment.scope_node_id)
+            .map_err(|_| invalid("instance.instance_path has a malformed scope_node_id"))?;
+        path = path
+            .child(scope_node, segment.iteration_index)
+            .map_err(|_| invalid("instance.instance_path exceeds its bounds"))?;
+    }
+    Ok(ExecutionInstanceId::in_path(path, expected_node.clone()))
+}
+
+fn require_root_identity(identity: &ExecutionInstanceId) -> Result<(), Status> {
+    if identity.path().is_root() {
+        Ok(())
+    } else {
+        Err(Status::unimplemented(
+            "scoped execution identity requires worker protocol 1.5 support",
+        ))
+    }
+}
+
+fn attach_instance(
+    attempt: &mut Attempt,
+    identity: Option<&pb::ExecutionInstanceIdentity>,
+) -> Result<(), Status> {
+    let parsed = parse_instance_identity(identity, attempt.instance.node())?;
+    require_root_identity(&parsed)?;
+    attempt.instance = parsed;
     Ok(())
 }
 
@@ -1054,15 +1091,15 @@ mod identity_tests {
     #[test]
     fn old_and_explicit_root_reports_are_accepted() {
         let node = NodeId::parse("charge").expect("node");
-        assert!(validate_root_identity(None, &node).is_ok());
-        assert!(validate_root_identity(Some(&root_identity(&node)), &node).is_ok());
+        assert!(parse_instance_identity(None, &node).is_ok());
+        assert!(parse_instance_identity(Some(&root_identity(&node)), &node).is_ok());
     }
 
     #[test]
     fn an_unimplemented_scope_or_mismatched_root_is_rejected() {
         let node = NodeId::parse("charge").expect("node");
         let other = NodeId::parse("refund").expect("node");
-        assert!(validate_root_identity(Some(&root_identity(&other)), &node).is_err());
+        assert!(parse_instance_identity(Some(&root_identity(&other)), &node).is_err());
 
         let scoped = pb::ExecutionInstanceIdentity {
             instance_path: vec![pb::ScopePathSegment {
@@ -1071,16 +1108,59 @@ mod identity_tests {
             }],
             definition_node_id: node.to_string(),
         };
-        assert!(validate_root_identity(Some(&scoped), &node).is_err());
+        let parsed = parse_instance_identity(Some(&scoped), &node).expect("valid scoped identity");
+        let error = require_root_identity(&parsed).expect_err("scoped execution remains disabled");
+        assert_eq!(error.code(), Code::Unimplemented);
+    }
+
+    #[test]
+    fn a_wire_path_is_bounded_and_round_trips_structurally() {
+        let node = NodeId::parse("charge").expect("node");
+        let identity = pb::ExecutionInstanceIdentity {
+            instance_path: (0..8)
+                .map(|index| pb::ScopePathSegment {
+                    scope_node_id: format!("scope{index}"),
+                    iteration_index: 9_999,
+                })
+                .collect(),
+            definition_node_id: node.to_string(),
+        };
+        let parsed = parse_instance_identity(Some(&identity), &node).expect("bounded identity");
+        assert_eq!(parsed.path().depth(), 8);
+        assert_eq!(instance_identity(&parsed), identity);
+
+        let mut too_deep = identity;
+        too_deep.instance_path.push(pb::ScopePathSegment {
+            scope_node_id: "overflow".into(),
+            iteration_index: 0,
+        });
+        assert!(parse_instance_identity(Some(&too_deep), &node).is_err());
+
+        let bad_index = pb::ExecutionInstanceIdentity {
+            instance_path: vec![pb::ScopePathSegment {
+                scope_node_id: "lines".into(),
+                iteration_index: 10_000,
+            }],
+            definition_node_id: node.to_string(),
+        };
+        assert!(parse_instance_identity(Some(&bad_index), &node).is_err());
+    }
+
+    #[test]
+    fn an_absent_identity_keeps_the_legacy_root() {
+        let node = NodeId::parse("charge").expect("node");
+        let parsed = parse_instance_identity(None, &node).expect("legacy root");
+        assert!(parsed.path().is_root());
+        assert_eq!(parsed.node(), &node);
     }
 }
 
 fn lease(task: &ClaimedTask) -> pb::TaskLease {
-    let instance = Some(root_identity(&task.node));
+    let instance = Some(instance_identity(&task.instance));
     let target_instance = task
         .target
         .as_ref()
-        .map(|target| root_identity(&target.node));
+        .map(|target| instance_identity(&target.instance));
     pb::TaskLease {
         task_id: task.task_id(),
         run_id: task.run_id.to_string(),
@@ -1101,7 +1181,7 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
         target_node: task
             .target
             .as_ref()
-            .map(|t| t.node.to_string())
+            .map(|t| t.instance.node().to_string())
             .unwrap_or_default(),
         target_idempotency_key: task
             .target

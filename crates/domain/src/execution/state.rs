@@ -13,13 +13,14 @@ use time::OffsetDateTime;
 
 use super::error::ExecutionError;
 use super::event::{
-    AddressedRunEvent, ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, ReconcileResult,
-    ReviewOutcome, RunEvent, StopReason, SwitchSelection,
+    AddressedRunEvent, ChildOutcome, CollectionDrainReason, CollectionOutcome, CorrelationKey,
+    FailureCode, JoinOutcome, ReconcileResult, ReviewOutcome, RunEvent, StopReason,
+    SwitchSelection,
 };
-use super::instance::ExecutionInstanceId;
+use super::instance::{ExecutionInstanceId, InstancePath, MAX_ITERATION_INDEX};
 use crate::identity::IdentityError;
 use crate::saga::{ReconcileVerdict, SagaOutcome};
-use crate::workflow::NodeId;
+use crate::workflow::{Digest, NodeId};
 
 uuid_id!(
     /// Identifier of a run.
@@ -223,6 +224,8 @@ pub enum WaitingOn {
         deadline: OffsetDateTime,
     },
     Branches,
+    /// A bounded dynamic collection whose accepted iterations are tracked separately.
+    Collection,
     /// A child run, reserved by `child.started`; it may not exist yet.
     Child {
         run: RunId,
@@ -236,6 +239,131 @@ pub enum WaitingOn {
     Operator {
         code: FailureCode,
     },
+}
+
+/// Durable lifecycle of one collection scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionPhase {
+    Open,
+    Draining,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CollectionIterationState {
+    Admitted,
+    Returned {
+        return_instance: ExecutionInstanceId,
+    },
+    Checkpointed,
+    Drained,
+}
+
+/// Durable reference to one body result; the value itself remains in bounded run data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionResult {
+    return_instance: ExecutionInstanceId,
+    digest: Digest,
+}
+
+impl CollectionResult {
+    #[must_use]
+    pub const fn return_instance(&self) -> &ExecutionInstanceId {
+        &self.return_instance
+    }
+
+    #[must_use]
+    pub const fn digest(&self) -> Digest {
+        self.digest
+    }
+}
+
+impl CollectionIterationState {
+    const fn is_active(&self) -> bool {
+        matches!(self, Self::Admitted { .. } | Self::Returned { .. })
+    }
+
+    const fn is_settled(&self) -> bool {
+        matches!(self, Self::Checkpointed { .. } | Self::Drained)
+    }
+}
+
+/// Journal-derived progress for one bounded collection activation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionState {
+    phase: CollectionPhase,
+    item_count: u32,
+    max_items: u32,
+    max_concurrency: u16,
+    snapshot_digest: Digest,
+    next_admission: u32,
+    entries: BTreeMap<u32, ExecutionInstanceId>,
+    item_digests: BTreeMap<u32, Digest>,
+    iterations: BTreeMap<u32, CollectionIterationState>,
+    results: BTreeMap<u32, CollectionResult>,
+    drain_reason: Option<CollectionDrainReason>,
+}
+
+impl CollectionState {
+    #[must_use]
+    pub const fn phase(&self) -> CollectionPhase {
+        self.phase
+    }
+
+    #[must_use]
+    pub const fn item_count(&self) -> u32 {
+        self.item_count
+    }
+
+    #[must_use]
+    pub const fn max_items(&self) -> u32 {
+        self.max_items
+    }
+
+    #[must_use]
+    pub const fn max_concurrency(&self) -> u16 {
+        self.max_concurrency
+    }
+
+    #[must_use]
+    pub const fn snapshot_digest(&self) -> Digest {
+        self.snapshot_digest
+    }
+
+    #[must_use]
+    pub const fn next_admission(&self) -> u32 {
+        self.next_admission
+    }
+
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.iterations
+            .values()
+            .filter(|iteration| iteration.is_active())
+            .count()
+    }
+
+    /// Result references in immutable input-index order, independent of completion order.
+    pub fn ordered_results(&self) -> impl Iterator<Item = (u32, &CollectionResult)> {
+        self.results.iter().map(|(index, result)| (*index, result))
+    }
+
+    #[must_use]
+    pub fn item_digest(&self, index: u32) -> Option<Digest> {
+        self.item_digests.get(&index).copied()
+    }
+
+    #[must_use]
+    pub fn entry_instance(&self, index: u32) -> Option<&ExecutionInstanceId> {
+        self.entries.get(&index)
+    }
+
+    #[must_use]
+    pub fn drain_reason(&self) -> Option<&CollectionDrainReason> {
+        self.drain_reason.as_ref()
+    }
 }
 
 /// Where a saga is in its life.
@@ -504,6 +632,7 @@ pub struct RunState {
     stop: Option<(StopReason, Option<FailureCode>)>,
     paused: bool,
     steps: BTreeMap<ExecutionInstanceId, StepState>,
+    collections: BTreeMap<ExecutionInstanceId, CollectionState>,
     sagas: BTreeMap<NodeId, SagaState>,
     applied: u64,
 }
@@ -518,6 +647,7 @@ impl RunState {
             stop: None,
             paused: false,
             steps: BTreeMap::new(),
+            collections: BTreeMap::new(),
             sagas: BTreeMap::new(),
             applied: 0,
         }
@@ -534,6 +664,21 @@ impl RunState {
         let mut state = Self::new(run_id);
         for event in events {
             state.apply(event)?;
+        }
+        Ok(state)
+    }
+
+    /// Rebuilds root and scoped state by folding explicitly addressed events in order.
+    ///
+    /// # Errors
+    /// The first event the reducer rejects.
+    pub fn replay_addressed<'a>(
+        run_id: RunId,
+        events: impl IntoIterator<Item = &'a AddressedRunEvent>,
+    ) -> Result<Self, ExecutionError> {
+        let mut state = Self::new(run_id);
+        for event in events {
+            state.apply_addressed(event)?;
         }
         Ok(state)
     }
@@ -583,6 +728,7 @@ impl RunState {
             stop,
             paused,
             steps,
+            collections: BTreeMap::new(),
             sagas,
             applied: version,
         }
@@ -634,6 +780,16 @@ impl RunState {
     #[must_use]
     pub fn instance(&self, id: &ExecutionInstanceId) -> Option<&StepState> {
         self.steps.get(id)
+    }
+
+    #[must_use]
+    pub fn collection(&self, id: &ExecutionInstanceId) -> Option<&CollectionState> {
+        self.collections.get(id)
+    }
+
+    /// Every entered collection scope, ordered by its complete instance identity.
+    pub fn collections(&self) -> impl Iterator<Item = (&ExecutionInstanceId, &CollectionState)> {
+        self.collections.iter()
     }
 
     /// All root steps, ordered by node id. Scoped instances have their own iterator.
@@ -824,6 +980,409 @@ impl RunState {
                 Err(ExecutionError::UnknownStep(node.clone()))
             }
         }
+    }
+
+    fn collection_iteration_path(
+        collection: &ExecutionInstanceId,
+        index: u32,
+    ) -> Result<InstancePath, ExecutionError> {
+        collection
+            .path()
+            .child(collection.node().clone(), index)
+            .map_err(|_| ExecutionError::InvalidCollectionLimits {
+                collection: collection.clone(),
+            })
+    }
+
+    fn validate_collection_instance(
+        collection: &ExecutionInstanceId,
+        index: u32,
+        instance: &ExecutionInstanceId,
+    ) -> Result<(), ExecutionError> {
+        let expected = Self::collection_iteration_path(collection, index)?;
+        if instance.path() == &expected {
+            Ok(())
+        } else {
+            Err(ExecutionError::InvalidCollectionInstance {
+                collection: collection.clone(),
+                instance: instance.clone(),
+            })
+        }
+    }
+
+    fn apply_collection_event(
+        &mut self,
+        collection: &ExecutionInstanceId,
+        event: &RunEvent,
+    ) -> Result<(), ExecutionError> {
+        let name = event.name();
+        match event {
+            RunEvent::CollectionEntered {
+                item_count,
+                max_items,
+                max_concurrency,
+                snapshot_digest,
+                ..
+            } => {
+                let max_cardinality = MAX_ITERATION_INDEX + 1;
+                if *max_items == 0
+                    || *max_items > max_cardinality
+                    || *item_count > *max_items
+                    || !(1..=256).contains(max_concurrency)
+                {
+                    return Err(ExecutionError::InvalidCollectionLimits {
+                        collection: collection.clone(),
+                    });
+                }
+                if self.collections.contains_key(collection) {
+                    return Err(ExecutionError::CollectionAlreadyEntered(collection.clone()));
+                }
+                let step = self.instance_mut(collection, name, &[StepStatus::Pending])?;
+                step.status = StepStatus::Waiting;
+                step.waiting = Some(WaitingOn::Collection);
+                self.collections.insert(
+                    collection.clone(),
+                    CollectionState {
+                        phase: CollectionPhase::Open,
+                        item_count: *item_count,
+                        max_items: *max_items,
+                        max_concurrency: *max_concurrency,
+                        snapshot_digest: *snapshot_digest,
+                        next_admission: 0,
+                        entries: BTreeMap::new(),
+                        item_digests: BTreeMap::new(),
+                        iterations: BTreeMap::new(),
+                        results: BTreeMap::new(),
+                        drain_reason: None,
+                    },
+                );
+            }
+            RunEvent::CollectionIterationAdmitted {
+                index,
+                entry,
+                item_digest,
+                ..
+            } => {
+                let scope = self
+                    .collections
+                    .get(collection)
+                    .ok_or_else(|| ExecutionError::UnknownCollection(collection.clone()))?;
+                if scope.iterations.contains_key(index) {
+                    return Err(ExecutionError::DuplicateCollectionAdmission {
+                        collection: collection.clone(),
+                        index: *index,
+                    });
+                }
+                if scope.phase != CollectionPhase::Open {
+                    return Err(ExecutionError::CollectionNotOpen {
+                        collection: collection.clone(),
+                        phase: scope.phase,
+                    });
+                }
+                if *index != scope.next_admission || *index >= scope.item_count {
+                    return Err(ExecutionError::UnexpectedCollectionAdmission {
+                        collection: collection.clone(),
+                        expected: scope.next_admission,
+                        actual: *index,
+                    });
+                }
+                if scope.active_count() >= usize::from(scope.max_concurrency) {
+                    return Err(ExecutionError::CollectionConcurrencyExceeded {
+                        collection: collection.clone(),
+                        limit: scope.max_concurrency,
+                    });
+                }
+                Self::validate_collection_instance(collection, *index, entry)?;
+                if self.steps.contains_key(entry) {
+                    return Err(ExecutionError::InvalidCollectionInstance {
+                        collection: collection.clone(),
+                        instance: entry.clone(),
+                    });
+                }
+                self.steps.insert(entry.clone(), StepState::pending());
+                let scope =
+                    self.collections
+                        .get_mut(collection)
+                        .ok_or(ExecutionError::Invariant(
+                            "validated collection disappeared",
+                        ))?;
+                scope
+                    .iterations
+                    .insert(*index, CollectionIterationState::Admitted);
+                scope.entries.insert(*index, entry.clone());
+                scope.item_digests.insert(*index, *item_digest);
+                scope.next_admission += 1;
+            }
+            RunEvent::CollectionIterationReturned {
+                index,
+                return_instance,
+                ..
+            } => {
+                Self::validate_collection_instance(collection, *index, return_instance)?;
+                let scope = self
+                    .collections
+                    .get(collection)
+                    .ok_or_else(|| ExecutionError::UnknownCollection(collection.clone()))?;
+                let Some(CollectionIterationState::Admitted) = scope.iterations.get(index) else {
+                    return if scope.iterations.contains_key(index) {
+                        Err(ExecutionError::IllegalCollectionTransition {
+                            collection: collection.clone(),
+                            event: name,
+                        })
+                    } else {
+                        Err(ExecutionError::UnknownCollectionIteration {
+                            collection: collection.clone(),
+                            index: *index,
+                        })
+                    };
+                };
+                let returned = self.instance_mut(return_instance, name, &[StepStatus::Pending])?;
+                returned.status = StepStatus::Succeeded;
+                returned.routed = true;
+                let scope =
+                    self.collections
+                        .get_mut(collection)
+                        .ok_or(ExecutionError::Invariant(
+                            "validated collection disappeared",
+                        ))?;
+                scope.iterations.insert(
+                    *index,
+                    CollectionIterationState::Returned {
+                        return_instance: return_instance.clone(),
+                    },
+                );
+            }
+            RunEvent::CollectionIterationCheckpointed {
+                index,
+                return_instance,
+                result_digest,
+                ..
+            } => {
+                let scope = self
+                    .collections
+                    .get(collection)
+                    .ok_or_else(|| ExecutionError::UnknownCollection(collection.clone()))?;
+                match scope.iterations.get(index) {
+                    Some(CollectionIterationState::Returned {
+                        return_instance: recorded,
+                    }) if recorded == return_instance => {}
+                    Some(_) => {
+                        return Err(ExecutionError::IllegalCollectionTransition {
+                            collection: collection.clone(),
+                            event: name,
+                        });
+                    }
+                    None => {
+                        return Err(ExecutionError::UnknownCollectionIteration {
+                            collection: collection.clone(),
+                            index: *index,
+                        });
+                    }
+                }
+                let scope =
+                    self.collections
+                        .get_mut(collection)
+                        .ok_or(ExecutionError::Invariant(
+                            "validated collection disappeared",
+                        ))?;
+                let result = CollectionResult {
+                    return_instance: return_instance.clone(),
+                    digest: *result_digest,
+                };
+                scope.results.insert(*index, result.clone());
+                scope
+                    .iterations
+                    .insert(*index, CollectionIterationState::Checkpointed);
+            }
+            RunEvent::CollectionDrainStarted { reason, .. } => {
+                let scope = self
+                    .collections
+                    .get(collection)
+                    .ok_or_else(|| ExecutionError::UnknownCollection(collection.clone()))?;
+                if scope.phase != CollectionPhase::Open {
+                    return Err(ExecutionError::CollectionNotOpen {
+                        collection: collection.clone(),
+                        phase: scope.phase,
+                    });
+                }
+                if let CollectionDrainReason::Failed { iteration, .. } = reason
+                    && !matches!(
+                        scope.iterations.get(iteration),
+                        Some(CollectionIterationState::Admitted)
+                    )
+                {
+                    return if scope.iterations.contains_key(iteration) {
+                        Err(ExecutionError::IllegalCollectionTransition {
+                            collection: collection.clone(),
+                            event: name,
+                        })
+                    } else {
+                        Err(ExecutionError::UnknownCollectionIteration {
+                            collection: collection.clone(),
+                            index: *iteration,
+                        })
+                    };
+                }
+                let scope =
+                    self.collections
+                        .get_mut(collection)
+                        .ok_or(ExecutionError::Invariant(
+                            "validated collection disappeared",
+                        ))?;
+                scope.phase = CollectionPhase::Draining;
+                scope.drain_reason = Some(reason.clone());
+            }
+            RunEvent::CollectionIterationDrained { index, .. } => {
+                let scope = self
+                    .collections
+                    .get(collection)
+                    .ok_or_else(|| ExecutionError::UnknownCollection(collection.clone()))?;
+                if scope.phase != CollectionPhase::Draining {
+                    return Err(ExecutionError::IllegalCollectionTransition {
+                        collection: collection.clone(),
+                        event: name,
+                    });
+                }
+                if !matches!(
+                    scope.iterations.get(index),
+                    Some(CollectionIterationState::Admitted)
+                ) {
+                    return if scope.iterations.contains_key(index) {
+                        Err(ExecutionError::IllegalCollectionTransition {
+                            collection: collection.clone(),
+                            event: name,
+                        })
+                    } else {
+                        Err(ExecutionError::UnknownCollectionIteration {
+                            collection: collection.clone(),
+                            index: *index,
+                        })
+                    };
+                }
+                let path = Self::collection_iteration_path(collection, *index)?;
+                let reason = scope.drain_reason.clone().ok_or(ExecutionError::Invariant(
+                    "a draining collection has no reason",
+                ))?;
+                let entry = scope.entries.get(index).cloned().ok_or(
+                    ExecutionError::UnknownCollectionIteration {
+                        collection: collection.clone(),
+                        index: *index,
+                    },
+                )?;
+                let mut found = false;
+                for (_, step) in self.steps.iter().filter(|(id, _)| id.path() == &path) {
+                    found = true;
+                    let safe_to_stop = step.attempt == 0
+                        && matches!(step.status, StepStatus::Pending | StepStatus::Ready);
+                    if !step.status.is_terminal() && !safe_to_stop {
+                        return Err(ExecutionError::IllegalCollectionTransition {
+                            collection: collection.clone(),
+                            event: name,
+                        });
+                    }
+                }
+                if !found {
+                    return Err(ExecutionError::InvalidCollectionInstance {
+                        collection: collection.clone(),
+                        instance: entry,
+                    });
+                }
+                for (instance, step) in self.steps.iter_mut().filter(|(id, _)| id.path() == &path) {
+                    if !step.status.is_terminal() {
+                        match &reason {
+                            CollectionDrainReason::Failed {
+                                iteration, code, ..
+                            } if iteration == index && instance == &entry => {
+                                step.status = StepStatus::Failed;
+                                step.failure = Some(code.clone());
+                            }
+                            _ => step.status = StepStatus::Cancelled,
+                        }
+                        step.waiting = None;
+                        step.next_attempt_at = None;
+                        step.cancel_requested = false;
+                        step.routed = true;
+                    }
+                }
+                let scope =
+                    self.collections
+                        .get_mut(collection)
+                        .ok_or(ExecutionError::Invariant(
+                            "validated collection disappeared",
+                        ))?;
+                scope
+                    .iterations
+                    .insert(*index, CollectionIterationState::Drained);
+            }
+            RunEvent::CollectionFinished { outcome, .. } => {
+                let scope = self
+                    .collections
+                    .get(collection)
+                    .ok_or_else(|| ExecutionError::UnknownCollection(collection.clone()))?;
+                let all_settled = scope
+                    .iterations
+                    .values()
+                    .all(CollectionIterationState::is_settled);
+                let valid = match (outcome, &scope.drain_reason) {
+                    (CollectionOutcome::Succeeded, None) => {
+                        scope.phase == CollectionPhase::Open
+                            && scope.next_admission == scope.item_count
+                            && scope.results.len() == scope.item_count as usize
+                            && all_settled
+                    }
+                    (
+                        CollectionOutcome::Failed(code),
+                        Some(CollectionDrainReason::Failed { code: recorded, .. }),
+                    ) => {
+                        scope.phase == CollectionPhase::Draining && code == recorded && all_settled
+                    }
+                    (CollectionOutcome::Cancelled, Some(CollectionDrainReason::Cancelled)) => {
+                        scope.phase == CollectionPhase::Draining && all_settled
+                    }
+                    _ => false,
+                };
+                if !valid {
+                    return Err(ExecutionError::IllegalCollectionTransition {
+                        collection: collection.clone(),
+                        event: name,
+                    });
+                }
+                let step = self.instance_mut(collection, name, &[StepStatus::Waiting])?;
+                if !matches!(step.waiting, Some(WaitingOn::Collection)) {
+                    return Err(ExecutionError::IllegalInstanceTransition {
+                        instance: collection.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.waiting = None;
+                match outcome {
+                    CollectionOutcome::Succeeded => step.status = StepStatus::Succeeded,
+                    CollectionOutcome::Failed(code) => {
+                        step.status = StepStatus::Failed;
+                        step.failure = Some(code.clone());
+                    }
+                    CollectionOutcome::Cancelled => step.status = StepStatus::Cancelled,
+                }
+                let scope =
+                    self.collections
+                        .get_mut(collection)
+                        .ok_or(ExecutionError::Invariant(
+                            "validated collection disappeared",
+                        ))?;
+                scope.phase = match outcome {
+                    CollectionOutcome::Succeeded => CollectionPhase::Succeeded,
+                    CollectionOutcome::Failed(_) => CollectionPhase::Failed,
+                    CollectionOutcome::Cancelled => CollectionPhase::Cancelled,
+                };
+            }
+            _ => {
+                return Err(ExecutionError::Invariant(
+                    "a non-collection event reached the collection reducer",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Applies one journal event.
@@ -1030,6 +1589,16 @@ impl RunState {
                         step.failure = Some(FailureCode::branch_failed());
                     }
                 }
+            }
+            event @ (RunEvent::CollectionEntered { node, .. }
+            | RunEvent::CollectionIterationAdmitted { node, .. }
+            | RunEvent::CollectionIterationReturned { node, .. }
+            | RunEvent::CollectionIterationCheckpointed { node, .. }
+            | RunEvent::CollectionDrainStarted { node, .. }
+            | RunEvent::CollectionIterationDrained { node, .. }
+            | RunEvent::CollectionFinished { node, .. }) => {
+                let collection = ExecutionInstanceId::root(node.clone());
+                self.apply_collection_event(&collection, event)?;
             }
             RunEvent::ChildStarted { node, child } => {
                 let step = self.step_mut(node, name, &[Pending])?;
@@ -1398,9 +1967,9 @@ impl RunState {
 
     /// Applies a journal event at its explicit logical instance address.
     ///
-    /// Root events retain the complete existing reducer behavior. Scoped execution currently
-    /// accepts only release, lease and start, which is enough to prove isolated ownership and
-    /// fencing while completion/routing remains gated behind durable planner integration.
+    /// Root events retain the complete existing reducer behavior. Scoped collection control and
+    /// release, lease and start use the same typed address; other scoped transitions stay gated
+    /// behind durable planner integration.
     ///
     /// # Errors
     /// An [`ExecutionError`] when the addressed transition is illegal or not enabled.
@@ -1443,6 +2012,15 @@ impl RunState {
             } => {
                 self.fenced_instance(&instance, name, &[Leased], *attempt, *generation)?
                     .status = StepStatus::Running;
+            }
+            event @ (RunEvent::CollectionEntered { .. }
+            | RunEvent::CollectionIterationAdmitted { .. }
+            | RunEvent::CollectionIterationReturned { .. }
+            | RunEvent::CollectionIterationCheckpointed { .. }
+            | RunEvent::CollectionDrainStarted { .. }
+            | RunEvent::CollectionIterationDrained { .. }
+            | RunEvent::CollectionFinished { .. }) => {
+                self.apply_collection_event(&instance, event)?;
             }
             _ => return Err(ExecutionError::UnsupportedScopedEvent(name)),
         }
