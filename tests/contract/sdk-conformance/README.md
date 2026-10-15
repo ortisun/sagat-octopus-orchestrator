@@ -67,6 +67,13 @@ PostgreSQL store. It checks the observed revisions, exact update replay, stale-r
 durable validator rejection, authentication and opaque cross-tenant lookup. Every retry preserves
 the body `updateKey`; no idempotency header is synthesized.
 
+`approval-decisions.json` publishes and starts native approval workflows, discovers each request through
+the public run approval page, and calls the public decision route from all five SDKs. It covers
+authentication, opaque tenant isolation, approve and reject routing, exact replay and conflicting reuse
+of the body decision key. No private store is seeded; the scheduler creates every request through the
+published workflow path. The SDK unit suites separately cover multi-page cursor traversal and strict
+response parsing.
+
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
@@ -96,13 +103,6 @@ rm tests/contract/sdk-conformance/scenarios/scoped-identity.json
 
 Enable the fixture permanently only when worker activity context and logs expose typed instance identity, graph inspection exposes each logical
 instance, scoped work is withheld from older workers, and a reviewed cross-language runtime golden exists.
-
-`approval-decisions.json` publishes and starts native approval workflows, discovers each request through
-the public run approval page, and calls the public decision route from all five SDKs. It covers
-authentication, opaque tenant isolation, approve and reject routing, exact replay and conflicting reuse
-of the body decision key. No private store is seeded; the scheduler creates every request through the
-published workflow path. The SDK unit suites separately cover multi-page cursor traversal and strict
-response parsing.
 
 `chain-commands.json.pending` exercises the typed chain inspection, root-signal and cancellation calls
 implemented by all five SDKs, including expected-head fencing, exact command replay and tenant opacity.
