@@ -75,8 +75,9 @@ namespace in the tenant. Its default operator ceiling is 1,024 active iterations
 ceiling is a separate operator action.
 
 The server also accepts a bounded root approval with basic nodes and two closed continuation graphs: `activity -> continueAsNew`, and
-`activity -> condition -> (continueAsNew | end)`. Continuation transfer is input-only; declared
-state, bodies, top-level limits, triggers and wider graphs fail publication. Run the current builder
+`activity -> condition -> (continueAsNew | end)`. The direct form may transfer the exact declared
+`state` snapshot with its input. The conditional form remains input-only; bodies, top-level limits,
+triggers and wider graphs fail publication. Run the current builder
 parity checks with:
 
 ```sh
@@ -86,15 +87,17 @@ SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformanc
 SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=chain-query cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
 
 The `collection-runtime` and `loop-runtime` scenarios execute their restricted public shapes
-through PostgreSQL, the scheduler and worker protocol 1.5 in every language. The other commands
-in this group compare authored documents only.
+through PostgreSQL, the scheduler and worker protocol 1.5 in every language. `chain-query` starts
+a public stateful chain and queries its initial head in every language. The builder commands
+compare authored documents only.
 
 The real PostgreSQL continuation checks publish through the normal codec, start through the public
 run service, complete activities through the worker boundary and let a fenced scheduler tick move
-the chain head. They cover a successful conditional final outcome and terminal `CHAIN_LIMIT`
+the chain head. They cover the direct stateful snapshot, a successful conditional final outcome and terminal `CHAIN_LIMIT`
 without rediscovery:
 
 ```sh
@@ -107,10 +110,10 @@ outside the published continuation subset. Typed inspect and cancel can address 
 the reviewed server shapes; signal has only its negative no-matching-wait path there. The pending
 fixture is not runtime proof.
 
-The chain Query REST route can resolve declared state on an existing chain, as exercised by
-internally seeded compatibility tests. Public publication still rejects a workflow that combines
-declared state with continuation, so this route does not yet provide a public end-to-end Query
-example. For a chain with declared state, the request shape is:
+The chain Query REST route resolves declared state on an existing chain. The five-SDK `chain-query`
+scenario exercises this on a public initial head; Query after public handoff and chain Update
+runtime parity still need coverage.
+For a chain with declared state, the request shape is:
 
 ```sh
 curl -X POST \
@@ -154,9 +157,8 @@ cargo test -p sagat-tests --test integration_workflow_primitives \
   chain_update_ --locked -- --nocapture --test-threads=1
 ```
 
-Public workflow publication still rejects a document that combines declared state and continuation,
-so these chain operation checks use a retained compatibility fixture. They prove the HTTP and
-transaction behavior, but do not yet provide a public authoring example for that combination.
+These chain operation checks use a retained compatibility fixture. Direct public continuation now
+transfers declared state, but the combined public Query/Update path remains to be exercised.
 
 Run-addressed declared Query/Update is available for workflows made from the existing basic
 root nodes. The shared runtime scenario publishes one such workflow, starts a run, applies and

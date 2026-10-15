@@ -89,13 +89,11 @@ fn preserves_typed_state_and_operation_metadata_for_publication() {
 fn publication_rejects_unreleased_capabilities_combined_with_declared_state() {
     let mut with_chain = document();
     with_chain["chainPolicy"] = json!({"maxSegments": 2, "timeoutMs": 1_000});
-    assert!(matches!(
-        JsonIrCodec.parse(with_chain.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration {
-            field: "chainPolicy",
-            ..
-        })
-    ));
+    assert!(
+        JsonIrCodec
+            .parse(with_chain.to_string().as_bytes())
+            .is_err()
+    );
 
     let mut with_limits = document();
     with_limits["limits"] = json!({"maxInstances": 100, "maxDepth": 2});

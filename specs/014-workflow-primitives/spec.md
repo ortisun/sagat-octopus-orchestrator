@@ -182,10 +182,11 @@ response.
 structural inspection. The bounded run-addressed slice is enabled after authorization, audit,
 bounded result, receipt/replay, transaction-fault and all-five conformance tests passed. The
 chain-addressed Query/Update routes have chain-before-run locking, authorization, audit, head-CAS,
-handoff-race and stable-receipt evidence from seeded chain fixtures; a combined
-state-and-continuation workflow cannot yet be published. A state document combined with another
-structured primitive remains disabled until its separate transactional and conformance evidence
-passes.
+handoff-race and stable-receipt evidence from seeded chain fixtures. A direct
+activity-to-continuation workflow can now publish and transfer its exact declared snapshot; the
+combined public Query after handoff and Update scenarios remain open. Initial-head chain Query
+passes all-five runtime conformance. Other combinations of
+state with structured primitives remain disabled until separate evidence passes.
 
 **Acceptance Scenarios**:
 

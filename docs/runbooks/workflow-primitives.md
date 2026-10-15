@@ -6,8 +6,9 @@ with the existing basic root nodes. A public collection workflow is a chain of `
 ends at `end`; every referenced body contains exactly one activity followed by one `return`.
 The restricted public loop shape uses an activity followed by a return in its body. Nested
 collections, triggers, structured-primitive combinations and broader body graphs remain closed.
-The public continuation subset accepts an activity followed by `continueAsNew`, or an
-activity and condition that select `continueAsNew` or `end`. Approval documents cannot combine
+The public continuation subset accepts an activity followed by `continueAsNew`, including exact
+declared-state transfer, or an activity and condition that select an input-only continuation or
+`end`. Approval documents cannot combine
 approval with parallel execution, declared state or another structured primitive yet.
 
 Collection admission has no implicit capacity. An administrator must configure the tenant-wide
@@ -141,9 +142,9 @@ reads either the complete old-head snapshot or the complete successor snapshot, 
 It appends no workflow event and schedules no task. Operation arguments and results remain limited
 to 256 KiB each, retained run data to 4 MiB and task context to 8 MiB. The immutable declaration's
 closed argument/result schemas and disclosure mode still apply; Query cannot read secrets or make
-network calls. The focused Query tests seed chains with declared state directly; public publication
-still rejects declared state combined with continuation, so there is no public end-to-end chain
-Query workflow yet.
+network calls. The shared `chain-query` scenario publishes a direct stateful continuation and
+reads its initial head through all five SDKs. Focused Query race tests seed chains directly;
+public Query after a handoff still needs a combined end-to-end test.
 
 A declared Update may address the chain with
 `POST /namespaces/{namespaceId}/chains/{chainId}/updates/{operationName}`. Keep one stable
@@ -154,8 +155,8 @@ the original applied or rejected receipt after rollover, and reports the run tha
 committed it. Reusing the key with changed arguments, operation, revision or expected run fails with
 `IDEMPOTENCY_KEY_REUSED`. Authorization is checked again on every replay, the resolved-run audit
 commits with the decision, and every response carries `Cache-Control: no-store`. The focused Update
-test uses the same seeded compatibility boundary as chain Query; a publicly authored workflow still
-cannot combine declared state and continuation. Use the exact-run Update route when the caller
+test uses the same seeded compatibility boundary as chain Query; the combined public Update path
+is not yet tested. Use the exact-run Update route when the caller
 deliberately accepts segment-bound, non-forwarding semantics.
 
 `POST` to the chain's `signals/{signalName}` or `cancel` path requires `expectedRunId` in the body
@@ -163,8 +164,8 @@ and `Idempotency-Key` in the header. For a stale Query or command, inspect the c
 choosing whether to retry against the new head. Replaying the same command key and body returns the
 same receipt; a different body is a conflict. A published workflow in the restricted continuation
 subset creates the chain on start and hands off under a scheduler fence. At the segment limit, the
-run fails with `CHAIN_LIMIT` and the chain records `FINAL` once. Declared state transfer, body-local
-continuation, triggers and broader graphs remain disabled. Exact-run commands remain bound to their
+run fails with `CHAIN_LIMIT` and the chain records `FINAL` once. Direct declared-state transfer is
+available; body-local continuation, triggers and broader graphs remain disabled. Exact-run commands remain bound to their
 segment and do not forward silently.
 
 ## Rollback and compatibility

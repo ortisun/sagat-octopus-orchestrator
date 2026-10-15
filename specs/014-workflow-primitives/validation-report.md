@@ -1043,3 +1043,42 @@ formatting, architecture and diff checks passed.
 |---|---|
 | `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test integration_workflow_primitives --locked -- --test-threads=1` | Passed: 135/135, 222.94 seconds after mapped-result change |
 | `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked -- --test-threads=1` | Passed: 23/23, 49.40 seconds after mapped-result change |
+
+## Direct declared-state continuation (2026-10-15)
+
+The public parser now accepts only the direct `activity -> continueAsNew` form when a workflow
+declares state, and requires the continuation's state expression to be exactly `state`. It still
+rejects missing or alternate state transfer and conditional stateful graphs. In the handoff
+transaction PostgreSQL verifies the selected state digest, exact bytes, size and expected revision
+against the locked predecessor snapshot, then copies its digest, schema, size and revision to the
+successor before advancing the chain head. The public PostgreSQL test publishes the document,
+starts it, completes a worker task, advances it with the fenced scheduler, checks the successor's
+declared state and resolves a chain Query snapshot to that successor. Its successor input contains
+a different account value, so the observed state is specifically the transferred snapshot.
+
+The first shared `chain-query` attempt published successfully but returned
+`OPERATION_EVALUATION_FAILED`: operation evaluation reparsed the pinned definition through a
+state-only gate that rejected `chainPolicy`. The operation reader now uses the same restricted
+published continuation parser, preserving the definition digest and Query disclosure rules. The
+TypeScript normalized observation was reviewed: initial run `RUNNING`, pending activity, Query
+result `"19.99"`, run version 3 and state revision 0. The reviewed scenario also starts another
+chain and receives `409 CHAIN_HEAD_CHANGED` when its run ID is used as the first chain's
+`expectedRunId`. All five SDKs then matched the reviewed workflow and runtime goldens without
+blessing. This proves public initial-head chain Query, not
+Query after rollover or chain Update parity.
+
+Focused parser tests passed 8/8; the focused public PostgreSQL handoff test passed 1/1. The
+complete PostgreSQL integration target passed 136/136 in 220.88 seconds before the operation
+reader adjustment; the all-five Query scenario and subsequent focused parser tests exercised
+that adjustment. Updated state revisions and every handoff fault order remain open. The remaining
+validation for this increment is recorded below.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-infra-ir --locked` | Passed after updating stale publication assertions; parser acceptance/rejection and operation reparse included |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock SAGAT_SDK_SCENARIO=chain-query cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: five SDKs without bless; runtime SHA-256 `f4df508341e60e92f7b1f3bd946a50895acda94857eaa11e1d9718520b919bbe`, workflow SHA-256 `428b7640ff6fc47bf9eb21eae08cd2b7ff05047ead35a89e0d254c4f5bf22c5f` |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked -- --test-threads=1` | Passed: 23/23, 51.69 seconds |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 26/26 after updating a stale rejection assertion |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings`; `python3 scripts/check-architecture.py`; `git diff --check` | Passed |
+| `cargo fmt --all -- --check`; `cargo test -p sagat-tests --test contract_developer_experience --locked` | Passed after regenerating the schema-derived workflow reference; 8/8 documentation contract tests |
+| Focused public stateful handoff after the operation-reader change | Passed: 1/1 with real PostgreSQL and fenced scheduler |

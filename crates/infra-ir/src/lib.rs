@@ -58,12 +58,22 @@ impl JsonIrCodec {
     /// closed.
     ///
     /// # Errors
-    /// Returns bounded syntax, schema, graph or expression errors. A chain policy remains outside
-    /// this capability slice.
+    /// Returns bounded syntax, schema, graph or expression errors. A chain policy is accepted only
+    /// for the published direct continuation shape that transfers the exact declared state.
     pub fn parse_declared_state(&self, document: &[u8]) -> Result<ParsedDeclaredState, IrError> {
         let value = validated_document(document)?;
         let state = declared_state::parse(&value)?;
-        let parsed = converted_document(&value, convert::declared_state_definition)?;
+        let parsed = if value.get("chainPolicy").is_some() {
+            let continuation = continuation::parse_published(&value)?;
+            ParsedDefinition {
+                definition: continuation.definition().clone(),
+                canonical: continuation.canonical().to_vec(),
+                digest: continuation.digest(),
+                warnings: continuation.warnings().to_vec(),
+            }
+        } else {
+            converted_document(&value, convert::declared_state_definition)?
+        };
         Ok(ParsedDeclaredState::new(parsed, state))
     }
 
@@ -101,7 +111,17 @@ impl IrCodec for JsonIrCodec {
         let value = validated_document(document)?;
         if value.get("state").is_some() {
             declared_state::parse(&value)?;
-            converted_document(&value, convert::published_declared_state_definition)
+            if value.get("chainPolicy").is_some() {
+                let parsed = continuation::parse_published(&value)?;
+                Ok(ParsedDefinition {
+                    definition: parsed.definition().clone(),
+                    canonical: parsed.canonical().to_vec(),
+                    digest: parsed.digest(),
+                    warnings: parsed.warnings().to_vec(),
+                })
+            } else {
+                converted_document(&value, convert::published_declared_state_definition)
+            }
         } else if value.get("chainPolicy").is_some()
             && value
                 .get("nodes")

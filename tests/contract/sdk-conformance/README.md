@@ -126,10 +126,9 @@ It remains pending because its signal-controlled `waitEvent` continuation graph 
 published chain subset. The runner now resolves the namespace UUID and current head from public
 responses. Do not seed the private chain store or substitute the namespace slug.
 
-`chain-query.json.pending` exercises the typed chain Query call and expected-head fence in all five
-SDK runners. It has no runtime golden because the public workflow subset still rejects a definition
-that combines declared state with continuation. Run-addressed Query/Update remains the executable
-shared scenario.
+`chain-query.json` exercises the typed chain Query call and expected-head fence against a public
+stateful chain in all five SDK runners. Its activity remains unserved, so the observation covers
+the initial head; Query after handoff and chain Update remain separate runtime work.
 
 ## What each SDK ships
 

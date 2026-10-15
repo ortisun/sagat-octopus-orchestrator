@@ -1,7 +1,6 @@
 {
   "name": "chain-query",
-  "status": "pending a public workflow subset that combines declared state and continuation",
-  "description": "The five SDKs resolve a continuation head and query its committed declared state with optional expected-head fencing. The scenario remains pending because the public parser rejects state and chain policy in one workflow.",
+  "description": "The five SDKs query declared state through a publicly created chain and reject a mismatched expected head while the first activity remains pending.",
   "workflows": {
     "chain": {
       "name": "chain-query-runtime",
@@ -25,12 +24,15 @@
         "updates": {}
       },
       "program": [
-        { "op": "step", "id": "hold", "activity": "operations.unserved" }
+        { "op": "step", "id": "hold", "activity": "operations.unserved" },
+        { "op": "continueAsNew", "id": "rollover", "input": "input", "state": "state" }
       ]
     }
   },
   "steps": [
     { "id": "start", "op": "start", "workflow": "chain", "input": { "account": { "amount": "19.99" } } },
-    { "id": "query", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{chainId:start}}", "name": "amount.read", "args": {} }
+    { "id": "query", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{chainId:start}}", "name": "amount.read", "args": {} },
+    { "id": "other", "op": "start", "workflow": "chain", "input": { "account": { "amount": "7.00" } } },
+    { "id": "stale", "op": "queryChain", "namespaceId": "{{namespaceId}}", "chainId": "{{chainId:start}}", "expectedRunId": "{{chainId:other}}", "name": "amount.read", "args": {} }
   ]
 }

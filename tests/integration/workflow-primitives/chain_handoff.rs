@@ -7,6 +7,7 @@ use sagat_application::chain_progress::{
     ChainHandoffCommand, ChainInitialization, ChainProgressError, ChainProgressStore,
     EvaluatedChainHandoffCommand,
 };
+use sagat_application::declared_operations::{DeclaredOperationStore, DeclaredQuery};
 use sagat_application::definitions::{IrCodec, IrError, ParsedDefinition};
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine, instance_step_id};
@@ -14,12 +15,15 @@ use sagat_application::primitives::SchedulerAuthority;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{
-    ChainPolicy, ChainScope, ContinuationTransfer, ExecutionInstanceId, RunId,
+    ChainPolicy, ChainScope, ContinuationTransfer, ExecutionInstanceId, OperationAddress,
+    OperationScope, RunId,
 };
 use sagat_domain::sharding::Shard;
-use sagat_domain::workflow::Digest;
+use sagat_domain::workflow::{ActivityName, Digest};
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
-use sagat_infra_postgres::{PgChainProgressStore, PgRunStore, initialize_chain_in_transaction};
+use sagat_infra_postgres::{
+    PgChainProgressStore, PgDeclaredOperationStore, PgRunStore, initialize_chain_in_transaction,
+};
 use sagat_scheduler::{Keeper, KeeperSettings, Placement, Scheduler, SchedulerSettings};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -152,6 +156,120 @@ async fn public_activity_completion_is_handed_to_a_successor_by_the_scheduler() 
             .expect("successor input JSON"),
         json!({"segment": 2})
     );
+}
+
+#[tokio::test]
+async fn public_stateful_handoff_preserves_the_declared_snapshot() {
+    let world = world().await;
+    let name = format!("public-state-chain-{}", Uuid::now_v7());
+    let document = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "segment.work", "next": "rollover"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next", "state": "state"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000},
+        "state": {
+            "schema": {
+                "type": "object", "additionalProperties": false,
+                "properties": {"amount": {"type": "integer"}},
+                "required": ["amount"]
+            },
+            "initial": "input.account",
+            "queries": {
+                "amount.read": {
+                    "argsSchema": {"type": "object", "additionalProperties": false},
+                    "resultSchema": {"type": "integer"},
+                    "expression": "state.amount",
+                    "disclosure": "declared-business-result-v1"
+                }
+            },
+            "updates": {}
+        }
+    });
+    let (workflow, _) = world.publish(document).await;
+    let chain = world
+        .start(
+            workflow,
+            &json!({"account": {"amount": 19}, "next": {"account": {"amount": 0}}}),
+        )
+        .await;
+    let session = world.session(&["segment.work"]).await;
+    let task = world.one_task(&session).await;
+    world
+        .complete(&session, &task, &json!({"processed": true}))
+        .await
+        .expect("complete stateful segment");
+
+    let placement = Placement::new(format!("public-state-chain-scheduler-{name}"));
+    Keeper::new(
+        world.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: StdDuration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        world.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let report = scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+
+    let successor: Uuid = sqlx::query_scalar(
+        "SELECT current_run_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("chain head");
+    assert_ne!(successor, chain.as_uuid());
+    let state: (i64, serde_json::Value) = sqlx::query_as(
+        "SELECT operation.state_revision, convert_from(payload.content,'UTF8')::jsonb \
+         FROM workflow_operation_states operation JOIN payloads payload \
+           ON payload.tenant_id=operation.tenant_id AND payload.digest=operation.state_digest \
+         WHERE operation.tenant_id=$1 AND operation.run_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(successor)
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("successor declared state");
+    assert_eq!(state, (0, json!({"amount": 19})));
+    let query = DeclaredQuery::for_chain(
+        OperationScope::new(
+            world.admin.tenant_id(),
+            world.namespace.id(),
+            OperationAddress::Chain(chain),
+        ),
+        None,
+        ActivityName::parse("amount.read").expect("query name"),
+        world.admin.subject().clone(),
+    );
+    let access = AuditRecord::by(
+        &world.admin,
+        AuditAction::RunQueried,
+        ResourceType::Run,
+        chain.to_string(),
+        Some("0af7651916cd43dd8448eb211c80319c".into()),
+        crate::support::now(),
+    );
+    let snapshot = PgDeclaredOperationStore::new(world.db.pool.clone())
+        .query_snapshot(&query, &access)
+        .await
+        .expect("query committed successor");
+    assert_eq!(snapshot.run_id().as_uuid(), successor);
 }
 
 #[tokio::test]

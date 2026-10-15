@@ -313,39 +313,47 @@ pub(crate) fn parse_published(document: &Value) -> Result<ParsedContinuation, Ir
     let direct_continuation = successor
         .and_then(find_node)
         .filter(|node| node.get("type").and_then(Value::as_str) == Some("continueAsNew"));
-    let direct =
-        nodes.len() == 2 && direct_continuation.is_some_and(|node| node.get("state").is_none());
-    let conditional = successor
-        .and_then(find_node)
-        .filter(|node| node.get("type").and_then(Value::as_str) == Some("condition"))
-        .is_some_and(|condition| {
-            let Some(if_true) = condition.get("ifTrue").and_then(Value::as_str) else {
-                return false;
-            };
-            let Some(if_false) = condition.get("ifFalse").and_then(Value::as_str) else {
-                return false;
-            };
-            let Some(true_node) = find_node(if_true) else {
-                return false;
-            };
-            let Some(false_node) = find_node(if_false) else {
-                return false;
-            };
-            let continuation_and_end = |continuation: &Value, end: &Value| {
-                continuation.get("type").and_then(Value::as_str) == Some("continueAsNew")
-                    && continuation.get("state").is_none()
-                    && end.get("type").and_then(Value::as_str) == Some("end")
-                    && end.get("output").is_none()
-            };
-            nodes.len() == 4
-                && (continuation_and_end(true_node, false_node)
-                    || continuation_and_end(false_node, true_node))
+    let has_declared_state = document.get("state").is_some();
+    let direct = nodes.len() == 2
+        && direct_continuation.is_some_and(|node| {
+            if has_declared_state {
+                node.get("state").and_then(Value::as_str) == Some("state")
+            } else {
+                node.get("state").is_none()
+            }
         });
+    let conditional = !has_declared_state
+        && successor
+            .and_then(find_node)
+            .filter(|node| node.get("type").and_then(Value::as_str) == Some("condition"))
+            .is_some_and(|condition| {
+                let Some(if_true) = condition.get("ifTrue").and_then(Value::as_str) else {
+                    return false;
+                };
+                let Some(if_false) = condition.get("ifFalse").and_then(Value::as_str) else {
+                    return false;
+                };
+                let Some(true_node) = find_node(if_true) else {
+                    return false;
+                };
+                let Some(false_node) = find_node(if_false) else {
+                    return false;
+                };
+                let continuation_and_end = |continuation: &Value, end: &Value| {
+                    continuation.get("type").and_then(Value::as_str) == Some("continueAsNew")
+                        && continuation.get("state").is_none()
+                        && end.get("type").and_then(Value::as_str) == Some("end")
+                        && end.get("output").is_none()
+                };
+                nodes.len() == 4
+                    && (continuation_and_end(true_node, false_node)
+                        || continuation_and_end(false_node, true_node))
+            });
     if entry.get("onError").is_some() || (!direct && !conditional) {
         return Err(IrError::Unsupported {
             node: entrypoint.chars().take(64).collect(),
             kind: "continuation".to_owned(),
-            reason: "the runtime supports an activity followed by an input-only continuation, optionally selected against a terminal end by one condition",
+            reason: "the runtime supports an activity followed by a continuation that transfers input and, when declared, the exact state snapshot; input-only continuation may also be selected by one condition",
         });
     }
     parse(document)

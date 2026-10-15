@@ -95,13 +95,7 @@ fn explicit_disclosure_is_typed_and_the_bounded_runtime_slice_is_publishable() {
 
     let mut chain = value.clone();
     chain["chainPolicy"] = json!({"maxSegments": 2, "timeoutMs": 1_000});
-    assert!(matches!(
-        JsonIrCodec.parse(chain.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration {
-            field: "chainPolicy",
-            ..
-        })
-    ));
+    assert!(JsonIrCodec.parse(chain.to_string().as_bytes()).is_err());
 
     let mut structured = value;
     structured["entrypoint"] = json!("review");

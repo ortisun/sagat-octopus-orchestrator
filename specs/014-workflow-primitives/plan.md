@@ -10,10 +10,9 @@ Deliver current-API order examples for all five SDKs (US01), then implement boun
 collections, sequential loops, native approval, switch, declarative Query/Update and run-chain
 continuation (US02–US07) through accepted dependency-ordered slices. US01, bounded switch,
 run-addressed Query/Update and root approval have public runtime evidence. Chain-addressed Query and
-Update have focused transaction and HTTP evidence, but state plus continuation cannot yet be
-published. Continuation has a restricted public input-only path; the combined public authoring path,
-wider chain semantics and the remaining primitive release tasks stay open until their named tests
-pass.
+Update have focused transaction and HTTP evidence. Direct public continuation now transfers the
+declared state snapshot atomically; combined public chain Query/Update, wider chain semantics and
+the remaining primitive release tasks stay open until their named tests pass.
 The design retains an acyclic immutable IR, adds durable scoped instance identities and reuses the
 pure reducer, PostgreSQL transaction boundary, leases, quotas and outbox.
 

@@ -275,7 +275,7 @@ fn structured_validation_enforces_closed_bodies_and_capability_boundaries() {
 }
 
 #[test]
-fn structured_loops_match_the_reviewed_sdk_golden_and_remain_unpublishable() {
+fn structured_loops_match_the_reviewed_sdk_golden_and_publish() {
     let golden: Value = serde_json::from_str(LOOP_BUILDERS_GOLDEN).expect("loop golden is JSON");
     let document = &golden["workflows"]["pre-and-post-test"];
     let expected = golden["canonical"]["pre-and-post-test"]
@@ -353,7 +353,10 @@ fn structured_loops_match_the_reviewed_sdk_golden_and_remain_unpublishable() {
         .expect("canonical loops reparse");
     assert_eq!(reparsed.canonical, parsed.canonical);
     assert_eq!(reparsed.digest, parsed.digest);
-    assert!(JsonIrCodec.parse(document.to_string().as_bytes()).is_err());
+    let published = JsonIrCodec
+        .parse(document.to_string().as_bytes())
+        .expect("restricted loop golden is publishable");
+    assert_eq!(published.digest, parsed.digest);
 }
 
 #[test]

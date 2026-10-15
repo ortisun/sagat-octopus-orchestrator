@@ -143,6 +143,26 @@ fn publishes_a_single_condition_between_continuation_and_successful_end() {
 }
 
 #[test]
+fn publishes_direct_continuation_with_exact_declared_state_transfer() {
+    let bytes = stateful_document().to_string();
+    let parsed = JsonIrCodec
+        .parse(bytes.as_bytes())
+        .expect("stateful continuation is publishable");
+    let operation_view = JsonIrCodec
+        .parse_declared_state(bytes.as_bytes())
+        .expect("operations read the published continuation declaration");
+    assert_eq!(operation_view.parsed().digest, parsed.digest);
+    assert!(matches!(
+        parsed
+            .definition
+            .node(&NodeId::parse("rollover").expect("node"))
+            .expect("continuation")
+            .kind(),
+        NodeKind::ContinueAsNew { state: Some(state), .. } if state.as_str() == "state"
+    ));
+}
+
+#[test]
 fn publication_rejects_unproven_continuation_combinations() {
     let mut entrypoint = published_document();
     entrypoint["entrypoint"] = json!("rollover");
@@ -151,15 +171,30 @@ fn publication_rejects_unproven_continuation_combinations() {
         Err(IrError::Unsupported { kind, .. }) if kind == "continueAsNew"
     ));
 
-    let mut state = published_document();
-    state["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
-    state["nodes"][1]["state"] = json!("state");
+    let mut state = stateful_document();
+    state["nodes"][1]["state"] = json!("input.initial");
     assert!(matches!(
         JsonIrCodec.parse(state.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration {
-            field: "chainPolicy",
-            ..
-        })
+        Err(IrError::Unsupported { .. })
+    ));
+
+    let mut missing_transfer = stateful_document();
+    missing_transfer["nodes"][1]
+        .as_object_mut()
+        .expect("continuation")
+        .remove("state");
+    assert!(
+        JsonIrCodec
+            .parse(missing_transfer.to_string().as_bytes())
+            .is_err()
+    );
+
+    let mut conditional_state = conditional_document();
+    conditional_state["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+    conditional_state["nodes"][2]["state"] = json!("state");
+    assert!(matches!(
+        JsonIrCodec.parse(conditional_state.to_string().as_bytes()),
+        Err(IrError::Unsupported { .. })
     ));
 
     let mut extra_node = published_document();
@@ -184,7 +219,7 @@ fn publication_rejects_unproven_continuation_combinations() {
 }
 
 #[test]
-fn validates_and_preserves_policy_transfer_and_graph_without_enabling_publication() {
+fn validates_and_preserves_policy_transfer_and_graph() {
     let document = stateful_document();
     let bytes = serde_json::to_vec(&document).expect("document");
     let parsed = JsonIrCodec
@@ -229,13 +264,7 @@ fn validates_and_preserves_policy_transfer_and_graph_without_enabling_publicatio
         document
     );
 
-    assert!(matches!(
-        JsonIrCodec.parse(&bytes),
-        Err(IrError::UnsupportedDeclaration {
-            field: "chainPolicy",
-            ..
-        })
-    ));
+    JsonIrCodec.parse(&bytes).expect("publishable continuation");
     assert!(matches!(
         JsonIrCodec.parse_structured(&bytes),
         Err(IrError::UnsupportedDeclaration { field: "state", .. })
@@ -303,10 +332,7 @@ fn stateful_sdk_golden_reparses_to_the_reviewed_canonical_v1_bytes() {
 
     assert!(matches!(
         JsonIrCodec.parse(document.to_string().as_bytes()),
-        Err(IrError::UnsupportedDeclaration {
-            field: "chainPolicy",
-            ..
-        })
+        Err(IrError::Unsupported { .. })
     ));
 }
 

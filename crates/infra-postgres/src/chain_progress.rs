@@ -1426,6 +1426,18 @@ impl ChainProgressStore for PgChainProgressStore {
             state_row.as_ref(),
         ) {
             (None, None, None, None) => {}
+            (Some(expected), Some(content), Some(revision), Some(row)) => {
+                if digest(row.get("state_digest"), "operation state digest")? != expected
+                    || row.get::<i64, _>("state_revision")
+                        != number(revision, "operation state revision")?
+                    || row.get::<i32, _>("state_size_bytes")
+                        != i32::try_from(content.len())
+                            .map_err(|_| corrupt("operation state size exceeds storage"))?
+                {
+                    return Err(ChainProgressError::RuntimeNotIntegrated);
+                }
+                retain_payload(&mut tx, command.scope().tenant_id(), expected, content).await?;
+            }
             _ => return Err(ChainProgressError::RuntimeNotIntegrated),
         }
         let definition = self
@@ -1605,6 +1617,25 @@ impl ChainProgressStore for PgChainProgressStore {
                 &metadata,
             )
             .await?;
+        }
+        if let (Some(state_digest), Some(state_row)) = (command.transfer().state(), state_row) {
+            sqlx::query(
+                "INSERT INTO workflow_operation_states \
+                 (tenant_id, namespace_id, run_id, state_digest, state_schema_digest, \
+                  state_size_bytes, state_revision, last_changed_run_version, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,2,$8)",
+            )
+            .bind(command.scope().tenant_id().as_uuid())
+            .bind(command.scope().namespace_id().as_uuid())
+            .bind(command.successor().as_uuid())
+            .bind(state_digest.as_bytes().as_slice())
+            .bind(state_row.get::<Vec<u8>, _>("state_schema_digest"))
+            .bind(state_row.get::<i32, _>("state_size_bytes"))
+            .bind(state_row.get::<i64, _>("state_revision"))
+            .bind(command.occurred_at())
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         }
         let segment_changed = sqlx::query(
             "UPDATE chain_segments SET completion_kind = 'CONTINUED', successor_run_id = $5, \

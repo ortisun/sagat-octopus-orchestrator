@@ -19,13 +19,14 @@ come from that definition plus explicit stored identity/chain data, not from a s
 
 The public parser accepts a closed `state` declaration with the already enabled basic root-node
 set. This is the publication boundary for run-addressed Query/Update. A document that combines
-`state` with `bodies`, top-level `limits`, `chainPolicy`, `continueAsNew`, approval, collection,
-loop or body-return forms remains rejected until that combined runtime has its own evidence.
+`state` with `bodies`, top-level `limits`, approval, collection, loop or body-return forms remains
+rejected. The one combined continuation form described below is available.
 
 The continuation parser retains `chainPolicy` as a bounded domain policy and `continueAsNew` as a
 typed terminal with its input and optional state expressions. The public runtime accepts two closed
-root shapes: an activity followed directly by an input-only continuation, or an activity followed
-by one condition that selects between an input-only continuation and an `end` without output. Run
+root shapes: an activity followed directly by a continuation transferring input and, when declared,
+the exact `state` snapshot; or an activity followed by one condition that selects between an
+input-only continuation and an `end` without output. Run
 creation writes the initial chain membership atomically. The scheduler evaluates the transfer and
 commits the predecessor, successor, chain head, journal, audit and outbox under the chain and run
 compare-and-swap guards. Reaching `maxSegments` stops the current run with durable `CHAIN_LIMIT`,
@@ -100,10 +101,11 @@ All paths are relative to the existing `/v1` REST base. New operations use exist
 namespace resolution, canonical error envelope and request/trace headers. They never accept tenant
 or actor identity from the request body. The implemented run Query/Update, chain Query/Update, approval
 decision and chain inspect/signal/cancel shapes are mirrored in the canonical OpenAPI. The reviewed
-workflow shapes above create chains and hand off through the scheduler. Declared state combined with
-continuation cannot yet be published, so chain operations on declared state currently have seeded
-PostgreSQL/HTTP evidence rather than a public authoring scenario. Paged segment operations and wider
-continuation graphs remain gated.
+workflow shapes above create chains and hand off through the scheduler. The direct stateful shape
+also preserves the declared state digest, schema, size and revision in the successor transaction.
+Chain Query/Update have seeded PostgreSQL/HTTP evidence, and initial-head chain Query runs on all
+five SDKs. Query after handoff and public chain Update runtime parity remain pending. Paged segment
+operations and wider continuation graphs remain gated.
 
 | Method/path | Body/query | Success result / authorization |
 | --- | --- | --- |
