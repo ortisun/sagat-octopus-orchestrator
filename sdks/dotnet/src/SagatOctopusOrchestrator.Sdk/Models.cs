@@ -188,6 +188,35 @@ public sealed record ApprovalDecisionReceipt(
     bool Replayed,
     JsonElement Raw);
 
+/// <summary>The result of a declared query and the committed revisions it observed.</summary>
+public sealed record QueryResult(string RunId, long RunVersion, long StateRevision, JsonElement Result, JsonElement Raw);
+
+/// <summary>Options that identify one durable state update.</summary>
+public sealed record UpdateOptions
+{
+    /// <summary>One to 128 printable ASCII characters, preserved across retries.</summary>
+    public required string UpdateKey { get; init; }
+
+    /// <summary>Apply only at this committed state revision.</summary>
+    public long? ExpectedStateRevision { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
+/// <summary>The durable result of an applied or replayed declared update.</summary>
+public sealed record UpdateReceipt(
+    string RunId,
+    string Operation,
+    string UpdateKey,
+    string Status,
+    JsonElement Result,
+    long BeforeStateRevision,
+    long AfterStateRevision,
+    long RunVersion,
+    bool Replayed,
+    JsonElement Raw);
+
 /// <summary>What the server answers to a signal: the steps that were waiting for it.</summary>
 public sealed record SignalResult(IReadOnlyList<string> DeliveredTo);
 

@@ -591,6 +591,55 @@ class SagatClientTest {
     }
 
     @Test
+    void declaredQueryAndUpdatePreserveRevisionsResultAndUpdateKey() {
+        server.prepare((req, reply) -> reply.send(200, req.path().contains("/queries/")
+                ? "{\"runId\":\"" + RUN + "\",\"runVersion\":4,\"stateRevision\":1,\"result\":{\"balance\":12}}"
+                : "{\"runId\":\"" + RUN + "\",\"operation\":\"account.credit\",\"updateKey\":\"credit-1\","
+                        + "\"status\":\"APPLIED\",\"result\":{\"balance\":15},\"beforeStateRevision\":1,"
+                        + "\"afterStateRevision\":2,\"runVersion\":5,\"replayed\":false,\"future\":true}"));
+        SagatClient c = client();
+        QueryResult queried = c.query(RUN, "account.balance", Map.of("currency", "BRL"), null);
+        UpdateReceipt updated = c.update(RUN, "account.credit", Map.of("amount", 3),
+                UpdateOptions.create("credit-1").expectedStateRevision(1L).traceparent(TRACE));
+        assertEquals("/v1/runs/" + RUN + "/queries/account.balance", server.seen.get(0).path());
+        assertEquals("/v1/runs/" + RUN + "/updates/account.credit", server.seen.get(1).path());
+        assertEquals("{\"args\":{\"currency\":\"BRL\"}}", server.seen.get(0).rawBody());
+        assertEquals("{\"updateKey\":\"credit-1\",\"args\":{\"amount\":3},\"expectedStateRevision\":1}", server.seen.get(1).rawBody());
+        assertEquals(null, server.seen.get(1).header("idempotency-key"));
+        assertEquals(12, queried.result().path("balance").intValue());
+        assertEquals(2, updated.afterStateRevision());
+        assertTrue(updated.raw().path("future").booleanValue());
+    }
+
+    @Test
+    void malformedDeclaredOperationInputIsRejectedBeforeAnythingIsSent() {
+        server.prepare((req, reply) -> reply.send(500, ""));
+        SagatClient c = client();
+        assertThrows(SagatException.class, () -> c.query(RUN, "bad operation", Map.of(), null));
+        assertThrows(SagatException.class, () -> c.update(RUN, "credit", Map.of(), UpdateOptions.create("bad key")));
+        assertThrows(SagatException.class, () -> c.update(
+                RUN, "credit", Map.of(), UpdateOptions.create("credit-2").expectedStateRevision(-1L)));
+        assertEquals(0, server.seen.size());
+    }
+
+    @Test
+    void declaredUpdateRetriesWithTheSameBodyKey() {
+        AtomicInteger attempts = new AtomicInteger();
+        server.prepare((req, reply) -> {
+            if (attempts.incrementAndGet() == 1) {
+                reply.send(503, "{\"code\":\"UNAVAILABLE\",\"message\":\"busy\",\"retryable\":true}");
+            } else {
+                reply.send(200, "{\"runId\":\"" + RUN + "\",\"operation\":\"account.credit\","
+                        + "\"updateKey\":\"credit-1\",\"status\":\"APPLIED\",\"result\":15,"
+                        + "\"beforeStateRevision\":1,\"afterStateRevision\":2,\"runVersion\":5,\"replayed\":false}");
+            }
+        });
+        client().update(RUN, "account.credit", Map.of("amount", 3), UpdateOptions.create("credit-1"));
+        assertEquals(2, server.seen.size());
+        assertEquals(server.seen.get(0).rawBody(), server.seen.get(1).rawBody());
+    }
+
+    @Test
     void waitingForCompletionPollsUntilTheRunIsTerminal() {
         AtomicInteger polls = new AtomicInteger();
         server.prepare((req, reply) -> reply.send(200, run("status", polls.incrementAndGet() < 3 ? "\"RUNNING\"" : "\"SUCCEEDED\"")));

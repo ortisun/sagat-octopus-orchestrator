@@ -57,6 +57,12 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     [GeneratedRegex("^[A-Za-z0-9_.:-]{1,64}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex ApprovalReasonCodePattern();
 
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\\z", RegexOptions.CultureInvariant)]
+    private static partial Regex DeclaredOperationNamePattern();
+
+    [GeneratedRegex("^[\\x21-\\x7e]{1,128}\\z", RegexOptions.CultureInvariant)]
+    private static partial Regex UpdateKeyPattern();
+
     /// <inheritdoc/>
     public async Task<string> ResolveWorkflowAsync(string workflow, CancellationToken cancellationToken = default)
     {
@@ -330,6 +336,88 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     }
 
     /// <inheritdoc/>
+    public async Task<QueryResult> QueryAsync<TArgs>(
+        string runId,
+        string name,
+        TArgs args,
+        RequestOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        var path = DeclaredOperationPath(runId, "queries", name);
+        var body = Wire.Write(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WritePropertyName("args");
+            Wire.WritePayload(writer, args, json);
+            writer.WriteEndObject();
+        });
+        var answer = await transport.SendAsync(
+            new HttpCall("query", HttpMethod.Post, path, "/runs/{runId}/queries/{name}", [], body, null, TraceOf(options?.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "a query result");
+        if (!raw.TryGetProperty("result", out var result))
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "result is missing from the answer");
+        }
+
+        return new QueryResult(Str(raw, "runId"), Revision(raw, "runVersion", 0), Revision(raw, "stateRevision", 0), result, raw);
+    }
+
+    /// <inheritdoc/>
+    public async Task<UpdateReceipt> UpdateAsync<TArgs>(
+        string runId,
+        string name,
+        TArgs args,
+        UpdateOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var path = DeclaredOperationPath(runId, "updates", name);
+        if (string.IsNullOrEmpty(options.UpdateKey) || !UpdateKeyPattern().IsMatch(options.UpdateKey))
+        {
+            throw SagatException.Invalid("an update key is 1 to 128 printable ASCII characters");
+        }
+
+        if (options.ExpectedStateRevision is < 0)
+        {
+            throw SagatException.Invalid("expected state revision is non-negative");
+        }
+
+        var body = Wire.Write(writer =>
+        {
+            writer.WriteStartObject();
+            writer.WriteString("updateKey", options.UpdateKey);
+            writer.WritePropertyName("args");
+            Wire.WritePayload(writer, args, json);
+            if (options.ExpectedStateRevision is { } revision)
+            {
+                writer.WriteNumber("expectedStateRevision", revision);
+            }
+
+            writer.WriteEndObject();
+        });
+        var answer = await transport.SendAsync(
+            new HttpCall("update", HttpMethod.Post, path, "/runs/{runId}/updates/{name}", [], body, null, TraceOf(options.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "an update receipt");
+        if (Str(raw, "status") != "APPLIED")
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "status is invalid in the answer");
+        }
+
+        if (!raw.TryGetProperty("result", out var result))
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "result is missing from the answer");
+        }
+
+        return new UpdateReceipt(
+            Str(raw, "runId"), Str(raw, "operation"), Str(raw, "updateKey"), "APPLIED", result,
+            Revision(raw, "beforeStateRevision", 0), Revision(raw, "afterStateRevision", 1),
+            Revision(raw, "runVersion", 1),
+            raw.TryGetProperty("replayed", out var replayed) && replayed.ValueKind == JsonValueKind.True, raw);
+    }
+
+    /// <inheritdoc/>
     public async Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= new RequestOptions();
@@ -449,6 +537,11 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             ? "/runs/" + runId
             : throw SagatException.Invalid("a run id is a UUID");
 
+    private static string DeclaredOperationPath(string runId, string kind, string name) =>
+        name is not null && DeclaredOperationNamePattern().IsMatch(name)
+            ? RunPath(runId) + "/" + kind + "/" + Uri.EscapeDataString(name)
+            : throw SagatException.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+
     /// <summary>A name in a path (a signal's): percent-encoded, and never empty, <c>.</c> or <c>..</c>.</summary>
     private static string Segment(string name) =>
         string.IsNullOrEmpty(name) || name is "." or ".."
@@ -508,6 +601,12 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         raw.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number
             ? (value.TryGetInt64(out var integer) ? integer : (long)value.GetDouble())
             : 0;
+
+    private static long Revision(JsonElement raw, string key, long minimum) =>
+        raw.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number
+            && value.TryGetInt64(out var revision) && revision >= minimum
+                ? revision
+                : throw new SagatException(SagatErrorCode.Protocol, $"{key} is invalid in the answer");
 
     internal static Run ToRun(JsonElement? value)
     {

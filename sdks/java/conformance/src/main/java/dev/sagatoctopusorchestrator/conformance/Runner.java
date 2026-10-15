@@ -757,6 +757,30 @@ public final class Runner {
                 result.put("replayed", receipt.replayed());
                 return result;
             }
+            case "query": {
+                dev.sagatoctopusorchestrator.sdk.QueryResult queried = client.query(
+                        runOf(step, results), step.get("name").asText(), step.get("args"), CallOptions.create());
+                ObjectNode result = F.objectNode();
+                result.put("runVersion", queried.runVersion());
+                result.put("stateRevision", queried.stateRevision());
+                result.set("result", queried.result());
+                return result;
+            }
+            case "update": {
+                dev.sagatoctopusorchestrator.sdk.UpdateOptions options =
+                        dev.sagatoctopusorchestrator.sdk.UpdateOptions.create(step.get("updateKey").asText());
+                if (step.has("expectedStateRevision")) options.expectedStateRevision(step.get("expectedStateRevision").longValue());
+                if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                dev.sagatoctopusorchestrator.sdk.UpdateReceipt updated = client.update(
+                        runOf(step, results), step.get("name").asText(), step.get("args"), options);
+                ObjectNode result = F.objectNode();
+                result.put("operation", updated.operation()); result.put("updateKey", updated.updateKey());
+                result.put("status", updated.status()); result.set("result", updated.result());
+                result.put("beforeStateRevision", updated.beforeStateRevision());
+                result.put("afterStateRevision", updated.afterStateRevision());
+                result.put("runVersion", updated.runVersion()); result.put("replayed", updated.replayed());
+                return result;
+            }
             case "signal": {
                 SignalResult signalled = client.signal(
                         runOf(step, results), step.get("name").asText(), step.has("payload") ? step.get("payload") : F.objectNode(), CallOptions.create());

@@ -50,9 +50,14 @@ and optional state transfer, the 10,000-segment and duration ceilings, inherited
 and the top-level-only boundary. It does not count as continuation runtime conformance.
 
 `state-operation-builders.json` checks additive v1 typed state plus finite Query/Update declarations
-in the five SDKs. It is build-only: no operation client method, HTTP call or runtime guarantee is
-enabled. The reviewed fixture covers explicit result disclosure, closed state/result schemas,
+in the five SDKs. It remains build-only and checks authoring separately from runtime calls. The
+reviewed fixture covers explicit result disclosure, closed state/result schemas,
 bounded strings and arrays, operation-count/name limits and the 1,024-byte expression boundary.
+
+`state-operations.json` runs the public Query/Update calls in all five SDKs against the real API and
+PostgreSQL store. It checks the observed revisions, exact update replay, stale-revision conflict,
+durable validator rejection, authentication and opaque cross-tenant lookup. Every retry preserves
+the body `updateKey`; no idempotency header is synthesized.
 
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
@@ -61,6 +66,7 @@ SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformanc
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -229,6 +235,8 @@ stop the scenario.
 | `cancel` | `run`, `reason`, `expectedRunVersion?` | `cancel` | `{accepted, runStatus}` |
 | `operate` | `run`, `action`, `reason`, … | `operate` | `{accepted, runStatus}` |
 | `decideApproval` | `approvalId`, `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
+| `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
+| `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
 | `signal` | `run`, `name`, `payload` | `signal` | `{deliveredTo}` |
 | `publishEvent` | `type`, `data`, `eventId?`, `correlationKey?` | `publishEvent` | `{eventId, status}` |
 | `waitForCompletion` | `run`, `timeoutMs` | `waitForCompletion` | the Run |

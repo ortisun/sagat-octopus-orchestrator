@@ -123,6 +123,53 @@ test('an approval decision surfaces authorization and idempotency failures and r
   assert.equal(seen.length, sent);
 });
 
+test('declared query and update calls preserve typed revisions, result and update key', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000001';
+  prepare((req, res) => {
+    if (req.url.includes('/queries/')) {
+      reply(res, 200, { runId, runVersion: 4, stateRevision: 1, result: { balance: 12 }, future: true });
+    } else {
+      reply(res, 200, {
+        runId, operation: 'account.credit', updateKey: 'credit-1', status: 'APPLIED', result: { balance: 15 },
+        beforeStateRevision: 1, afterStateRevision: 2, runVersion: 5, replayed: false, future: true,
+      });
+    }
+  });
+  const queried = await client().query<{ balance: number }>(runId, 'account.balance', { currency: 'BRL' });
+  const updated = await client().update<{ balance: number }>(runId, 'account.credit', { amount: 3 }, {
+    updateKey: 'credit-1', expectedStateRevision: 1,
+  });
+  assert.deepEqual(seen[0]?.body, { args: { currency: 'BRL' } });
+  assert.deepEqual(seen[1]?.body, { updateKey: 'credit-1', args: { amount: 3 }, expectedStateRevision: 1 });
+  assert.equal(seen[1]?.headers['idempotency-key'], undefined);
+  assert.equal(queried.result.balance, 12);
+  assert.equal(queried.stateRevision, 1);
+  assert.equal(updated.result.balance, 15);
+  assert.equal(updated.afterStateRevision, 2);
+  assert.equal(updated.raw['future'], true);
+});
+
+test('declared updates keep their body key across retries and reject invalid input locally', async () => {
+  const runId = '0190aaaa-0000-7000-8000-000000000001';
+  let attempts = 0;
+  prepare((_req, res) => {
+    attempts++;
+    if (attempts === 1) reply(res, 503, { code: 'UNAVAILABLE', message: 'busy', retryable: true });
+    else reply(res, 200, {
+      runId, operation: 'account.credit', updateKey: 'credit-1', status: 'APPLIED', result: 15,
+      beforeStateRevision: 1, afterStateRevision: 2, runVersion: 5, replayed: false,
+    });
+  });
+  await client().update(runId, 'account.credit', { amount: 3 }, { updateKey: 'credit-1' });
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen[0]?.body, seen[1]?.body);
+  const sent = seen.length;
+  await assert.rejects(client().query(runId, 'bad operation', {}), /operation name/);
+  await assert.rejects(client().update(runId, 'account.credit', {}, { updateKey: 'bad key' }), /update key/);
+  await assert.rejects(client().update(runId, 'account.credit', {}, { updateKey: 'credit-2', expectedStateRevision: -1 }), /expectedStateRevision/);
+  assert.equal(seen.length, sent);
+});
+
 test('an event without an id gets one per call, kept across retries, so a repetition is a duplicate and not a second event', async () => {
   let attempts = 0;
   prepare((_req, res) => (++attempts < 2 ? reply(res, 503, 'upstream down') : reply(res, 202, { eventId: 'e', source: 'api', status: 'ACCEPTED' })));

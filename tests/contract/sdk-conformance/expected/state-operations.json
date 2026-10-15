@@ -1,0 +1,173 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "start",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "initial",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 12,
+        "runVersion": 2,
+        "stateRevision": 0
+      }
+    },
+    {
+      "id": "apply",
+      "ok": true,
+      "op": "update",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "balance.replace",
+        "replayed": false,
+        "result": 20,
+        "runVersion": 3,
+        "status": "APPLIED",
+        "updateKey": "replace-{{unique}}"
+      }
+    },
+    {
+      "id": "replay",
+      "ok": true,
+      "op": "update",
+      "result": {
+        "afterStateRevision": 1,
+        "beforeStateRevision": 0,
+        "operation": "balance.replace",
+        "replayed": true,
+        "result": 20,
+        "runVersion": 3,
+        "status": "APPLIED",
+        "updateKey": "replace-{{unique}}"
+      }
+    },
+    {
+      "id": "after",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 22,
+        "runVersion": 3,
+        "stateRevision": 1
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "REVISION_CONFLICT",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "stale",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "UPDATE_REJECTED",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:3>"
+      },
+      "id": "rejected",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "UPDATE_REJECTED",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:4>"
+      },
+      "id": "rejected-replay",
+      "ok": false,
+      "op": "update"
+    },
+    {
+      "error": {
+        "code": "UNAUTHENTICATED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The token was refused: check its issuer, audience, tenant claim and expiry, and that the token provider returns a fresh one.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 401,
+        "traceId": "<trace:5>"
+      },
+      "id": "unauthenticated",
+      "ok": false,
+      "op": "query"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:6>"
+      },
+      "id": "other-tenant",
+      "ok": false,
+      "op": "query"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "RUNNING"
+    }
+  ],
+  "workerLog": {}
+}

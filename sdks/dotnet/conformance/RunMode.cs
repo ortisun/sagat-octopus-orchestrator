@@ -368,6 +368,38 @@ internal sealed class RunMode : IAsyncDisposable
                     };
                 }
 
+            case "query":
+                {
+                    var queried = await client.QueryAsync(
+                        RunOf(step), (string)step["name"]!, step["args"]?.DeepClone(),
+                        new RequestOptions { Traceparent = (string?)step["traceparent"] }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["runVersion"] = queried.RunVersion,
+                        ["stateRevision"] = queried.StateRevision,
+                        ["result"] = JsonNode.Parse(queried.Result.GetRawText()),
+                    };
+                }
+
+            case "update":
+                {
+                    var updated = await client.UpdateAsync(
+                        RunOf(step), (string)step["name"]!, step["args"]?.DeepClone(),
+                        new UpdateOptions
+                        {
+                            UpdateKey = (string)step["updateKey"]!,
+                            ExpectedStateRevision = (long?)step["expectedStateRevision"],
+                            Traceparent = (string?)step["traceparent"],
+                        }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["operation"] = updated.Operation, ["updateKey"] = updated.UpdateKey, ["status"] = updated.Status,
+                        ["result"] = JsonNode.Parse(updated.Result.GetRawText()),
+                        ["beforeStateRevision"] = updated.BeforeStateRevision, ["afterStateRevision"] = updated.AfterStateRevision,
+                        ["runVersion"] = updated.RunVersion, ["replayed"] = updated.Replayed,
+                    };
+                }
+
             case "signal":
                 {
                     var signalled = await client.SignalAsync(RunOf(step), (string)step["name"]!, step["payload"]?.DeepClone() ?? new JsonObject(), null, cancellationToken).ConfigureAwait(false);

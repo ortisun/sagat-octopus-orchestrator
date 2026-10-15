@@ -499,6 +499,62 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DeclaredQueryAndUpdatePreserveRevisionsResultAndUpdateKey()
+    {
+        server.Handler = request => request.PathAndQuery.Contains("/queries/", StringComparison.Ordinal)
+            ? Reply(200, new JsonObject { ["runId"] = Ids.Run, ["runVersion"] = 4, ["stateRevision"] = 1, ["result"] = new JsonObject { ["balance"] = 12 } })
+            : Reply(200, new JsonObject
+            {
+                ["runId"] = Ids.Run, ["operation"] = "account.credit", ["updateKey"] = "credit-1", ["status"] = "APPLIED",
+                ["result"] = new JsonObject { ["balance"] = 15 }, ["beforeStateRevision"] = 1, ["afterStateRevision"] = 2,
+                ["runVersion"] = 5, ["replayed"] = false, ["future"] = true,
+            });
+        var client = NewClient();
+        var query = await client.QueryAsync(Ids.Run, "account.balance", new { currency = "BRL" });
+        var update = await client.UpdateAsync(
+            Ids.Run, "account.credit", new { amount = 3 },
+            new UpdateOptions { UpdateKey = "credit-1", ExpectedStateRevision = 1, Traceparent = Trace });
+        Assert.Equal($"/v1/runs/{Ids.Run}/queries/account.balance", server.Requests[0].PathAndQuery);
+        Assert.Equal($"/v1/runs/{Ids.Run}/updates/account.credit", server.Requests[1].PathAndQuery);
+        Assert.Equal("""{"args":{"currency":"BRL"}}""", server.Requests[0].BodyText);
+        Assert.Equal("""{"updateKey":"credit-1","args":{"amount":3},"expectedStateRevision":1}""", server.Requests[1].BodyText);
+        Assert.Empty(server.Requests[1].Header("idempotency-key"));
+        Assert.Equal(12, query.Result.GetProperty("balance").GetInt32());
+        Assert.Equal(2, update.AfterStateRevision);
+        Assert.True(update.Raw.GetProperty("future").GetBoolean());
+    }
+
+    [Fact]
+    public async Task InvalidDeclaredOperationInputIsRejectedBeforeAnythingIsSent()
+    {
+        var client = NewClient();
+        await Assert.ThrowsAsync<SagatException>(() => client.QueryAsync(Ids.Run, "bad operation", new { }));
+        await Assert.ThrowsAsync<SagatException>(() => client.UpdateAsync(
+            Ids.Run, "credit", new { }, new UpdateOptions { UpdateKey = "bad key" }));
+        await Assert.ThrowsAsync<SagatException>(() => client.UpdateAsync(
+            Ids.Run, "credit", new { }, new UpdateOptions { UpdateKey = "credit-2", ExpectedStateRevision = -1 }));
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
+    public async Task DeclaredUpdateRetriesWithTheSameBodyKey()
+    {
+        var attempts = 0;
+        server.Handler = _ => ++attempts == 1
+            ? Reply(503, Envelope("UNAVAILABLE", "busy", true))
+            : Reply(200, new JsonObject
+            {
+                ["runId"] = Ids.Run, ["operation"] = "account.credit", ["updateKey"] = "credit-1",
+                ["status"] = "APPLIED", ["result"] = 15, ["beforeStateRevision"] = 1,
+                ["afterStateRevision"] = 2, ["runVersion"] = 5, ["replayed"] = false,
+            });
+        await NewClient().UpdateAsync(
+            Ids.Run, "account.credit", new { amount = 3 }, new UpdateOptions { UpdateKey = "credit-1" });
+        Assert.Equal(2, server.Requests.Count);
+        Assert.Equal(server.Requests[0].BodyText, server.Requests[1].BodyText);
+    }
+
+    [Fact]
     public async Task OperationsOtherThanCancelNameTheirActionAndCarryTheirArguments()
     {
         server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true });

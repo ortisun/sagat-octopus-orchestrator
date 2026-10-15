@@ -100,6 +100,8 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `cancel(runId, reason, options)` | `POST /runs/{runId}/operations` with `{action: "CANCEL", reason, expectedRunVersion?}`, `Idempotency-Key` | `202` OperationResult |
 | `signal(runId, name, payload, options)` | `POST /runs/{runId}/signals/{name}` with the payload object, `Idempotency-Key` | `202` `{deliveredTo}` |
 | `decideApproval(approvalId, decision, options)` | `POST /approvals/{approvalId}/decisions` with `{decisionKey, decision: APPROVE \| REJECT, reasonCode?}` | `200` ApprovalDecisionReceipt |
+| `query(runId, name, args, options)` | `POST /runs/{runId}/queries/{name}` with `{args}` | `200` QueryResult with the observed run and state revisions |
+| `update(runId, name, args, options)` | `POST /runs/{runId}/updates/{name}` with `{updateKey, args, expectedStateRevision?}` | `200` UpdateReceipt |
 | `publishEvent(event)` | `POST /events` with `{eventId, type, data, subject?, occurredAt?, correlationKey?, dedupeTtlSeconds?}` | `202` `{eventId, source, status: ACCEPTED \| DUPLICATE}` |
 | `waitForCompletion(runId, options)` | polls `get` every `pollInterval` (default 500 ms, ±20 % jitter) until the status is terminal or `timeout` | the final Run |
 
@@ -118,6 +120,10 @@ Rules:
   requires it, sends no `Idempotency-Key` header, and may safely retry the exact same body. A replay
   returns the original receipt with `replayed: true`; changing the body under the same key is a
   `CONFLICT` with reason `IDEMPOTENCY_KEY_REUSED`. The receipt is typed and retains the raw JSON.
+- A declared operation name is 1 to 128 characters and matches `[A-Za-z0-9][A-Za-z0-9_.:-]*`.
+  An update key is 1 to 128 visible ASCII characters. It lives in the body, is required, and is
+  preserved with the exact arguments and expected revision across retries. Query and update results
+  are typed, retain raw JSON and expose the exact committed revisions returned by the server.
 - `start` with a `deadline` sends an RFC 3339 instant in UTC (`...Z`); the SDK **MUST NOT** send a local
   offset it computed. A `deadline` option as a duration is converted by the SDK from the clock at the
   call, once, before the first attempt.
@@ -160,6 +166,7 @@ jitter (`min(maxDelay, initialDelay * 2^n)` scaled by a random factor in `[0.5, 
 | `GET` (REST) | `TRANSPORT`, `UNAVAILABLE`, `RATE_LIMITED`, `INTERNAL` with `retryable` true |
 | `POST` that carries an idempotency key or event id | the same; **never** after any other answer |
 | approval decision with its body `decisionKey` | the same, with the exact same body |
+| declared query, and declared update with its body `updateKey` | the same, with the exact same body |
 | `uploadRunInput` | never: its one-pass body is not replayable |
 | worker `PollTasks`, `Heartbeat` | `UNAVAILABLE`, `RESOURCE_EXHAUSTED`, transport failures |
 | worker `CompleteStep`, `FailStep` | the same, with the **same** idempotency key and body; at most 5 times |

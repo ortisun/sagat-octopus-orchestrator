@@ -51,6 +51,9 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 _KEY = re.compile(r"[\x21-\x7e]{8,160}")
 _APPROVAL_DECISION_KEY = re.compile(r"[\x21-\x7e]{1,128}")
 _APPROVAL_REASON_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_DECLARED_OPERATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_UPDATE_KEY = re.compile(r"[\x21-\x7e]{1,128}")
+_MAX_I64 = (1 << 63) - 1
 _NAME_TTL = 60.0
 
 
@@ -114,6 +117,29 @@ class ApprovalDecisionReceipt:
     actor: str
     decided_at: datetime
     outcome_sequence: int
+    replayed: bool
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class QueryResult:
+    run_id: str
+    run_version: int
+    state_revision: int
+    result: Any
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class UpdateReceipt:
+    run_id: str
+    operation: str
+    update_key: str
+    status: Literal["APPLIED"]
+    result: Any
+    before_state_revision: int
+    after_state_revision: int
+    run_version: int
     replayed: bool
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
@@ -234,6 +260,19 @@ def _name(value: str, what: str) -> str:
     """A name (a signal, an event type, a workflow) is not empty and is not the path segment ``.`` or ``..``."""
     if not isinstance(value, str) or value in ("", ".", ".."):
         raise invalid(f"{what} is a name: not empty, not '.' and not '..'")
+    return value
+
+
+def _declared_operation_name(value: str) -> str:
+    if not isinstance(value, str) or not _DECLARED_OPERATION_NAME.fullmatch(value):
+        raise invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit")
+    return value
+
+
+def _revision(raw: Mapping[str, Any], key: str, minimum: int) -> int:
+    value = raw.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= _MAX_I64:
+        raise SagatError("PROTOCOL", f"{key} is invalid in the answer")
     return value
 
 
@@ -362,8 +401,9 @@ class SagatClient:
         expected_sha256: str | None = None,
     ) -> BlobDescriptor:
         """Streams a staged run input once and verifies the returned descriptor locally."""
-        if expected_size is not None and (isinstance(expected_size, bool) or not isinstance(expected_size, int)
-                                          or expected_size < 0):
+        if expected_size is not None and (
+            isinstance(expected_size, bool) or not isinstance(expected_size, int) or expected_size < 0
+        ):
             raise invalid("blob expected_size is a non-negative integer")
         if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
             raise invalid("blob expected_sha256 is lowercase SHA-256 hex")
@@ -395,16 +435,28 @@ class SagatClient:
             headers["x-octopus-blob-size"] = str(expected_size)
         if expected_sha256 is not None:
             headers["x-octopus-blob-sha256"] = expected_sha256
-        response = await self._http.request(HttpRequest(
-            "POST", "/run-input-blobs", stream=measured(), content_type=content_type,
-            headers=headers, traceparent=self._trace(), safe_to_repeat=False,
-        ))
+        response = await self._http.request(
+            HttpRequest(
+                "POST",
+                "/run-input-blobs",
+                stream=measured(),
+                content_type=content_type,
+                headers=headers,
+                traceparent=self._trace(),
+                safe_to_repeat=False,
+            )
+        )
         raw = _object(response.body, "a blob descriptor")
         descriptor = BlobDescriptor(
             _str(raw, "id"), _int(raw, "size", -1), _str(raw, "sha256"), _str(raw, "contentType")
         )
-        if (not source_eof or not _UUID.fullmatch(descriptor.id) or descriptor.size != size
-                or descriptor.sha256 != digest.hexdigest() or not descriptor.content_type):
+        if (
+            not source_eof
+            or not _UUID.fullmatch(descriptor.id)
+            or descriptor.size != size
+            or descriptor.sha256 != digest.hexdigest()
+            or not descriptor.content_type
+        ):
             raise SagatError("PROTOCOL", "the run-input descriptor does not match the uploaded bytes")
         return descriptor
 
@@ -421,9 +473,13 @@ class SagatClient:
         traceparent: str | None = None,
     ) -> Run:
         """Atomically starts a run with a descriptor returned by :meth:`upload_run_input`."""
-        if (not isinstance(descriptor, BlobDescriptor) or not _UUID.fullmatch(descriptor.id)
-                or descriptor.size < 0 or not re.fullmatch(r"[0-9a-f]{64}", descriptor.sha256)
-                or not descriptor.content_type):
+        if (
+            not isinstance(descriptor, BlobDescriptor)
+            or not _UUID.fullmatch(descriptor.id)
+            or descriptor.size < 0
+            or not re.fullmatch(r"[0-9a-f]{64}", descriptor.sha256)
+            or not descriptor.content_type
+        ):
             raise invalid("a run-input blob descriptor is malformed")
         if deadline is not None and deadline_in is not None:
             raise invalid("give a deadline or a deadline_in, not both")
@@ -439,9 +495,9 @@ class SagatClient:
             body["correlationId"] = correlation_id
         if deadline is not None:
             body["deadline"] = format_instant(deadline)
-        response = await self._http.request(HttpRequest(
-            "POST", "/runs", body=body, idempotency_key=key, traceparent=trace
-        ))
+        response = await self._http.request(
+            HttpRequest("POST", "/runs", body=body, idempotency_key=key, traceparent=trace)
+        )
         return to_run(response.body)
 
     async def get(self, run_id: str) -> Run:
@@ -618,6 +674,72 @@ class SagatClient:
             actor=_str(raw, "actor"),
             decided_at=decided_at,
             outcome_sequence=outcome_sequence,
+            replayed=raw.get("replayed") is True,
+            raw=raw,
+        )
+
+    async def query(
+        self,
+        run_id: str,
+        name: str,
+        args: Any = None,
+        *,
+        traceparent: str | None = None,
+    ) -> QueryResult:
+        """Evaluates a declared side-effect-free query over one committed state snapshot."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/queries/{quote(_declared_operation_name(name), safe='')}"
+        response = await self._http.request(
+            HttpRequest("POST", path, body={"args": args}, traceparent=self._trace(traceparent))
+        )
+        raw = _object(response.body, "a query result")
+        if "result" not in raw:
+            raise SagatError("PROTOCOL", "result is missing from the answer")
+        return QueryResult(
+            run_id=_str(raw, "runId"),
+            run_version=_revision(raw, "runVersion", 0),
+            state_revision=_revision(raw, "stateRevision", 0),
+            result=raw["result"],
+            raw=raw,
+        )
+
+    async def update(
+        self,
+        run_id: str,
+        name: str,
+        args: Any,
+        *,
+        update_key: str,
+        expected_state_revision: int | None = None,
+        traceparent: str | None = None,
+    ) -> UpdateReceipt:
+        """Applies or replays a declared durable state update."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/updates/{quote(_declared_operation_name(name), safe='')}"
+        if not isinstance(update_key, str) or not _UPDATE_KEY.fullmatch(update_key):
+            raise invalid("an update key is 1 to 128 printable ASCII characters")
+        if expected_state_revision is not None and (
+            not isinstance(expected_state_revision, int)
+            or isinstance(expected_state_revision, bool)
+            or not 0 <= expected_state_revision <= _MAX_I64
+        ):
+            raise invalid("expected state revision is non-negative")
+        body: dict[str, Any] = {"updateKey": update_key, "args": args}
+        if expected_state_revision is not None:
+            body["expectedStateRevision"] = expected_state_revision
+        response = await self._http.request(HttpRequest("POST", path, body=body, traceparent=self._trace(traceparent)))
+        raw = _object(response.body, "an update receipt")
+        if raw.get("status") != "APPLIED":
+            raise SagatError("PROTOCOL", "status is invalid in the answer")
+        if "result" not in raw:
+            raise SagatError("PROTOCOL", "result is missing from the answer")
+        return UpdateReceipt(
+            run_id=_str(raw, "runId"),
+            operation=_str(raw, "operation"),
+            update_key=_str(raw, "updateKey"),
+            status="APPLIED",
+            result=raw["result"],
+            before_state_revision=_revision(raw, "beforeStateRevision", 0),
+            after_state_revision=_revision(raw, "afterStateRevision", 1),
+            run_version=_revision(raw, "runVersion", 1),
             replayed=raw.get("replayed") is True,
             raw=raw,
         )

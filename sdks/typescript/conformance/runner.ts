@@ -405,6 +405,22 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           };
           break;
         }
+        case 'query': {
+          const r = await client.query(runOf(step), step['name'], step['args'] ?? null, { traceparent: step['traceparent'] });
+          result = { runVersion: r.runVersion, stateRevision: r.stateRevision, result: r.result };
+          break;
+        }
+        case 'update': {
+          const r = await client.update(runOf(step), step['name'], step['args'] ?? null, {
+            updateKey: step['updateKey'], expectedStateRevision: step['expectedStateRevision'], traceparent: step['traceparent'],
+          });
+          result = {
+            operation: r.operation, updateKey: r.updateKey, status: r.status, result: r.result,
+            beforeStateRevision: r.beforeStateRevision, afterStateRevision: r.afterStateRevision,
+            runVersion: r.runVersion, replayed: r.replayed,
+          };
+          break;
+        }
         case 'signal': result = { ...(await client.signal(runOf(step), step['name'], step['payload'] ?? {})) }; break;
         case 'publishEvent': {
           const r = await client.publishEvent({ type: step['type'], data: step['data'] ?? {}, eventId: step['eventId'], correlationKey: step['correlationKey'] });

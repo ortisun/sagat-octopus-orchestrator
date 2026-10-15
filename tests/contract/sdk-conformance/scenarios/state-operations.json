@@ -1,0 +1,64 @@
+{
+  "name": "state-operations",
+  "description": "The five SDKs query one committed state snapshot and apply a durable state update with exact replay, optimistic revision conflict, validator rejection, authentication and tenant isolation.",
+  "workflows": {
+    "account": {
+      "name": "declared-account-operations",
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "balance": { "type": "integer", "minimum": 0 } },
+          "required": ["balance"]
+        },
+        "initial": "input.account",
+        "queries": {
+          "balance.read": {
+            "argsSchema": { "type": "integer" },
+            "resultSchema": { "type": "integer" },
+            "expression": "state.balance + args",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "balance.replace": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allowed": { "type": "boolean" },
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": { "balance": { "type": "integer", "minimum": 0 } },
+                  "required": ["balance"]
+                }
+              },
+              "required": ["allowed", "nextState"]
+            },
+            "validate": "args.allowed",
+            "state": "args.nextState",
+            "result": "newState.balance",
+            "resultSchema": { "type": "integer", "minimum": 0 },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        { "op": "step", "id": "hold", "activity": "operations.unserved" }
+      ]
+    }
+  },
+  "steps": [
+    { "id": "start", "op": "start", "workflow": "account", "input": { "account": { "balance": 10 } }, "idempotencyKey": "operations-start-{{unique}}" },
+    { "id": "initial", "op": "query", "run": "start", "name": "balance.read", "args": 2 },
+    { "id": "apply", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "replace-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 20 } } },
+    { "id": "replay", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "replace-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 20 } } },
+    { "id": "after", "op": "query", "run": "start", "name": "balance.read", "args": 2 },
+    { "id": "stale", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "stale-{{unique}}", "expectedStateRevision": 0, "args": { "allowed": true, "nextState": { "balance": 30 } } },
+    { "id": "rejected", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "rejected-{{unique}}", "expectedStateRevision": 1, "args": { "allowed": false, "nextState": { "balance": 30 } } },
+    { "id": "rejected-replay", "op": "update", "run": "start", "name": "balance.replace", "updateKey": "rejected-{{unique}}", "expectedStateRevision": 1, "args": { "allowed": false, "nextState": { "balance": 30 } } },
+    { "id": "unauthenticated", "op": "query", "token": "bad", "run": "start", "name": "balance.read", "args": 0 },
+    { "id": "other-tenant", "op": "query", "token": "other", "run": "start", "name": "balance.read", "args": 0 }
+  ]
+}

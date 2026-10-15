@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -306,6 +307,78 @@ func TestAnApprovalDecisionSurfacesAuthorizationAndIdempotencyFailuresAndRejects
 	}
 	if len(f.requests()) != 0 {
 		t.Errorf("malformed decisions sent %d requests", len(f.requests()))
+	}
+}
+
+func TestDeclaredQueryAndUpdatePreserveRevisionsResultAndUpdateKey(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(request seen, w http.ResponseWriter) {
+		if strings.Contains(request.url, "/queries/") {
+			reply(w, 200, map[string]any{"runId": runUUID, "runVersion": 4, "stateRevision": 1, "result": map[string]any{"balance": 12}})
+			return
+		}
+		reply(w, 200, map[string]any{"runId": runUUID, "operation": "account.credit", "updateKey": "credit-1", "status": "APPLIED", "result": map[string]any{"balance": 15}, "beforeStateRevision": 1, "afterStateRevision": 2, "runVersion": 5, "replayed": false, "future": true})
+	})
+	c := newClient(t, f)
+	query, err := c.Query(context.Background(), runUUID, "account.balance", map[string]any{"currency": "BRL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := int64(1)
+	expectedTrace := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	updated, err := c.Update(context.Background(), runUUID, "account.credit", client.UpdateRequest{UpdateKey: "credit-1", Args: map[string]any{"amount": 3}, ExpectedStateRevision: &expected}, client.WithTraceparent(expectedTrace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := f.requests()
+	if requests[0].url != "/v1/runs/"+runUUID+"/queries/account.balance" || requests[1].url != "/v1/runs/"+runUUID+"/updates/account.credit" {
+		t.Errorf("paths: %s %s", requests[0].url, requests[1].url)
+	}
+	if requests[1].headers.Get("Idempotency-Key") != "" || requests[1].headers.Get("traceparent") != expectedTrace || requests[1].json(t)["updateKey"] != "credit-1" {
+		t.Errorf("update request: %+v", requests[1])
+	}
+	if query.StateRevision != 1 || query.Result.(map[string]any)["balance"] != float64(12) || updated.AfterStateRevision != 2 || string(updated.Raw["future"]) != "true" {
+		t.Errorf("query=%+v update=%+v", query, updated)
+	}
+}
+
+func TestDeclaredUpdateRetriesKeepTheBodyKeyAndInvalidInputIsLocal(t *testing.T) {
+	f := newFake(t)
+	attempts := 0
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		attempts++
+		if attempts == 1 {
+			reply(w, 503, map[string]any{"code": "UNAVAILABLE", "message": "busy", "retryable": true})
+			return
+		}
+		reply(w, 200, map[string]any{"runId": runUUID, "operation": "account.credit", "updateKey": "credit-1", "status": "APPLIED", "result": 15, "beforeStateRevision": 1, "afterStateRevision": 2, "runVersion": 5, "replayed": false})
+	})
+	c := newClient(t, f)
+	if _, err := c.Update(context.Background(), runUUID, "account.credit", client.UpdateRequest{UpdateKey: "credit-1", Args: map[string]any{"amount": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	requests := f.requests()
+	if len(requests) != 2 || !reflect.DeepEqual(requests[0].json(t), requests[1].json(t)) {
+		t.Fatalf("retry bodies differ: %+v", requests)
+	}
+	badRevision := int64(-1)
+	for _, invoke := range []func() error{
+		func() error { _, err := c.Query(context.Background(), runUUID, "bad operation", nil); return err },
+		func() error {
+			_, err := c.Update(context.Background(), runUUID, "credit", client.UpdateRequest{UpdateKey: "bad key"})
+			return err
+		},
+		func() error {
+			_, err := c.Update(context.Background(), runUUID, "credit", client.UpdateRequest{UpdateKey: "credit-2", ExpectedStateRevision: &badRevision})
+			return err
+		},
+	} {
+		if err := invoke(); !sagat.IsCode(err, sagat.CodeValidationFailed) {
+			t.Errorf("%v", err)
+		}
+	}
+	if len(f.requests()) != 2 {
+		t.Errorf("invalid calls sent requests")
 	}
 }
 

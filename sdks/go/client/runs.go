@@ -522,6 +522,8 @@ func (c *Client) Cancel(ctx context.Context, runID, reason string, opts ...CallO
 
 var approvalDecisionKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,128}$`)
 var approvalReasonCodePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
+var declaredOperationNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+var updateKeyPattern = regexp.MustCompile(`^[\x21-\x7e]{1,128}$`)
 
 // DecideApproval records an eligible actor's durable decision. The body DecisionKey makes retries
 // safe; WithTraceparent is the only call option this method reads.
@@ -583,6 +585,126 @@ func (c *Client) DecideApproval(ctx context.Context, approvalID string, decision
 	}
 	receipt.Replayed, _ = jsonx.Bool(raw, "replayed")
 	return receipt, nil
+}
+
+// Query evaluates a declared side-effect-free query over one committed state snapshot.
+func (c *Client) Query(ctx context.Context, runID, name string, args any, opts ...CallOption) (*QueryResult, error) {
+	path, err := declaredOperationPath(runID, "queries", name)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: path, body: map[string]any{"args": args}, hasBody: true, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a query result")
+	if err != nil {
+		return nil, err
+	}
+	result := &QueryResult{Raw: raw}
+	if result.RunID, err = requiredString(raw, "runId"); err != nil {
+		return nil, err
+	}
+	if result.RunVersion, err = requiredRevision(raw, "runVersion", 0); err != nil {
+		return nil, err
+	}
+	if result.StateRevision, err = requiredRevision(raw, "stateRevision", 0); err != nil {
+		return nil, err
+	}
+	if value, ok := raw["result"]; ok {
+		if err := json.Unmarshal(value, &result.Result); err != nil {
+			return nil, protocolError("result is invalid in the answer")
+		}
+	} else {
+		return nil, protocolError("result is missing from the answer")
+	}
+	return result, nil
+}
+
+// Update applies or replays a declared durable state update.
+func (c *Client) Update(ctx context.Context, runID, name string, update UpdateRequest, opts ...CallOption) (*UpdateReceipt, error) {
+	path, err := declaredOperationPath(runID, "updates", name)
+	if err != nil {
+		return nil, err
+	}
+	if !updateKeyPattern.MatchString(update.UpdateKey) {
+		return nil, sagat.Invalid("an update key is 1 to 128 visible ASCII characters")
+	}
+	if update.ExpectedStateRevision != nil && *update.ExpectedStateRevision < 0 {
+		return nil, sagat.Invalid("expected state revision is non-negative")
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{"updateKey": update.UpdateKey, "args": update.Args}
+	if update.ExpectedStateRevision != nil {
+		body["expectedStateRevision"] = *update.ExpectedStateRevision
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: path, body: body, hasBody: true, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "an update receipt")
+	if err != nil {
+		return nil, err
+	}
+	receipt := &UpdateReceipt{Raw: raw}
+	if receipt.RunID, err = requiredString(raw, "runId"); err != nil {
+		return nil, err
+	}
+	if receipt.Operation, err = requiredString(raw, "operation"); err != nil {
+		return nil, err
+	}
+	if receipt.UpdateKey, err = requiredString(raw, "updateKey"); err != nil {
+		return nil, err
+	}
+	if receipt.Status, err = requiredString(raw, "status"); err != nil || receipt.Status != "APPLIED" {
+		return nil, protocolError("status is invalid in the answer")
+	}
+	if value, ok := raw["result"]; ok {
+		if err := json.Unmarshal(value, &receipt.Result); err != nil {
+			return nil, protocolError("result is invalid in the answer")
+		}
+	} else {
+		return nil, protocolError("result is missing from the answer")
+	}
+	if receipt.BeforeStateRevision, err = requiredRevision(raw, "beforeStateRevision", 0); err != nil {
+		return nil, err
+	}
+	if receipt.AfterStateRevision, err = requiredRevision(raw, "afterStateRevision", 1); err != nil {
+		return nil, err
+	}
+	if receipt.RunVersion, err = requiredRevision(raw, "runVersion", 1); err != nil {
+		return nil, err
+	}
+	receipt.Replayed, _ = jsonx.Bool(raw, "replayed")
+	return receipt, nil
+}
+
+func declaredOperationPath(runID, kind, name string) (string, error) {
+	path, err := runPath(runID)
+	if err != nil {
+		return "", err
+	}
+	if !declaredOperationNamePattern.MatchString(name) {
+		return "", sagat.Invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit")
+	}
+	return path + "/" + kind + "/" + url.PathEscape(name), nil
+}
+
+func requiredRevision(raw map[string]json.RawMessage, key string, minimum int64) (int64, error) {
+	value, ok := jsonx.Int(raw, key)
+	if !ok || value < minimum {
+		return 0, protocolError("%s is invalid in the answer", key)
+	}
+	return value, nil
 }
 
 // Signal sends a signal to the steps of a run that wait for it; a signal nobody waits for is a

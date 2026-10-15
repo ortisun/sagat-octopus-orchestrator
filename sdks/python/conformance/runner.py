@@ -122,15 +122,27 @@ def apply(target: Flow, ops: list[Obj]) -> None:
             )
         elif kind == "while":
             target.while_loop(
-                op["id"], op["condition"], op["body"], op["initial"], op["carry"],
-                max_iterations=op["maxIterations"], timeout_ms=op["timeoutMs"],
-                delay_ms=op.get("delayMs"), on_error=op.get("onError"),
+                op["id"],
+                op["condition"],
+                op["body"],
+                op["initial"],
+                op["carry"],
+                max_iterations=op["maxIterations"],
+                timeout_ms=op["timeoutMs"],
+                delay_ms=op.get("delayMs"),
+                on_error=op.get("onError"),
             )
         elif kind == "repeatUntil":
             target.repeat_until(
-                op["id"], op["condition"], op["body"], op["initial"], op["carry"],
-                max_iterations=op["maxIterations"], timeout_ms=op["timeoutMs"],
-                delay_ms=op.get("delayMs"), on_error=op.get("onError"),
+                op["id"],
+                op["condition"],
+                op["body"],
+                op["initial"],
+                op["carry"],
+                max_iterations=op["maxIterations"],
+                timeout_ms=op["timeoutMs"],
+                delay_ms=op.get("delayMs"),
+                on_error=op.get("onError"),
             )
         elif kind == "approval":
             policy = op["policy"]
@@ -204,12 +216,14 @@ def builder_of(definition: Obj) -> Any:
             )
             for name, update in (declared.get("updates") or {}).items()
         }
-        builder.state(StateDefinition(
-            schema=declared.get("schema"),
-            initial=declared.get("initial"),
-            queries=queries,
-            updates=updates,
-        ))
+        builder.state(
+            StateDefinition(
+                schema=declared.get("schema"),
+                initial=declared.get("initial"),
+                queries=queries,
+                updates=updates,
+            )
+        )
     if definition.get("chainPolicy") is not None:
         policy = definition["chainPolicy"]
         builder.chain_policy(max_segments=policy["maxSegments"], timeout_ms=policy["timeoutMs"])
@@ -337,7 +351,9 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
             if behavior.get("blobRoundTripBytes") is not None:
                 body = b"x" * behavior["blobRoundTripBytes"]
                 descriptor = await ctx.write_blob(
-                    [body], content_type="application/octet-stream", expected_size=len(body),
+                    [body],
+                    content_type="application/octet-stream",
+                    expected_size=len(body),
                     expected_sha256=hashlib.sha256(body).hexdigest(),
                 )
                 read = bytearray()
@@ -364,8 +380,14 @@ def behavior_handler(name: str, kind: str, behavior: Obj, log: list[Obj], measur
                 descriptor = await ctx.write_blob(
                     [b"z" * behavior["blobInlineBytes"]], content_type="application/octet-stream"
                 )
-                return {"$blob": {"id": descriptor.id, "size": descriptor.size, "sha256": descriptor.sha256,
-                                  "contentType": descriptor.content_type}}
+                return {
+                    "$blob": {
+                        "id": descriptor.id,
+                        "size": descriptor.size,
+                        "sha256": descriptor.sha256,
+                        "contentType": descriptor.content_type,
+                    }
+                }
             if behavior.get("verdict") is not None:
                 verdict = behavior["verdict"]
                 if verdict == "applied":
@@ -526,11 +548,16 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     descriptor = await client.upload_run_input(
                         [blob_body], expected_size=len(blob_body), expected_sha256=hashlib.sha256(blob_body).hexdigest()
                     )
-                    result = run_json(await client.start_with_blob(
-                        workflow_id, descriptor, idempotency_key=step.get("idempotencyKey"),
-                        correlation_id=step.get("correlationId"), traceparent=step.get("traceparent"),
-                        deadline_in=(step["deadlineInMs"] / 1000 if step.get("deadlineInMs") is not None else None),
-                    ))
+                    result = run_json(
+                        await client.start_with_blob(
+                            workflow_id,
+                            descriptor,
+                            idempotency_key=step.get("idempotencyKey"),
+                            correlation_id=step.get("correlationId"),
+                            traceparent=step.get("traceparent"),
+                            deadline_in=(step["deadlineInMs"] / 1000 if step.get("deadlineInMs") is not None else None),
+                        )
+                    )
                 elif op == "workflowByName":
                     name = config["workflows"][step["workflow"]]["name"]
                     result = run_json(
@@ -581,6 +608,34 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         "decidedAt": receipt.decided_at.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                         "outcomeSequence": receipt.outcome_sequence,
                         "replayed": receipt.replayed,
+                    }
+                elif op == "query":
+                    queried = await client.query(
+                        run_of(step), step["name"], step.get("args"), traceparent=step.get("traceparent")
+                    )
+                    result = {
+                        "runVersion": queried.run_version,
+                        "stateRevision": queried.state_revision,
+                        "result": queried.result,
+                    }
+                elif op == "update":
+                    updated = await client.update(
+                        run_of(step),
+                        step["name"],
+                        step.get("args"),
+                        update_key=step["updateKey"],
+                        expected_state_revision=step.get("expectedStateRevision"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {
+                        "operation": updated.operation,
+                        "updateKey": updated.update_key,
+                        "status": updated.status,
+                        "result": updated.result,
+                        "beforeStateRevision": updated.before_state_revision,
+                        "afterStateRevision": updated.after_state_revision,
+                        "runVersion": updated.run_version,
+                        "replayed": updated.replayed,
                     }
                 elif op == "signal":
                     signalled = await client.signal(run_of(step), step["name"], step.get("payload") or {})

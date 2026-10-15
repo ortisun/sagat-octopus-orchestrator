@@ -353,6 +353,43 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			"decision": string(receipt.Decision), "reasonCode": orNull(receipt.ReasonCode), "actor": receipt.Actor,
 			"decidedAt": iso(receipt.DecidedAt), "outcomeSequence": receipt.OutcomeSequence, "replayed": receipt.Replayed,
 		}, nil
+	case "query":
+		id, err := runOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.Query(ctx, id, asString(step["name"]), payloadOf(step["args"]), opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{"runVersion": result.RunVersion, "stateRevision": result.StateRevision, "result": result.Result}, nil
+	case "update":
+		id, err := runOf(step)
+		if err != nil {
+			return nil, broken("%v", err)
+		}
+		request := client.UpdateRequest{UpdateKey: asString(step["updateKey"]), Args: payloadOf(step["args"])}
+		if value, ok := step["expectedStateRevision"]; ok {
+			revision := int64(asInt(value))
+			request.ExpectedStateRevision = &revision
+		}
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.Update(ctx, id, asString(step["name"]), request, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{
+			"operation": result.Operation, "updateKey": result.UpdateKey, "status": result.Status, "result": result.Result,
+			"beforeStateRevision": result.BeforeStateRevision, "afterStateRevision": result.AfterStateRevision,
+			"runVersion": result.RunVersion, "replayed": result.Replayed,
+		}, nil
 	case "signal":
 		id, err := runOf(step)
 		if err != nil {

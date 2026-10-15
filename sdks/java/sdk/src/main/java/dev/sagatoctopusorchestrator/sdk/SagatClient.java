@@ -43,6 +43,8 @@ public final class SagatClient implements AutoCloseable {
     private static final Pattern KEY = Pattern.compile("^[\\x21-\\x7e]{8,160}$");
     private static final Pattern APPROVAL_DECISION_KEY = Pattern.compile("^[\\x21-\\x7e]{1,128}$");
     private static final Pattern APPROVAL_REASON_CODE = Pattern.compile("^[A-Za-z0-9_.:-]{1,64}$");
+    private static final Pattern DECLARED_OPERATION_NAME = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$");
+    private static final Pattern UPDATE_KEY = Pattern.compile("^[\\x21-\\x7e]{1,128}$");
     private static final long NAME_CACHE_MILLIS = 60_000;
 
     private final ClientConfig config;
@@ -494,6 +496,57 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> decideApproval(approvalId, decision, options));
     }
 
+    /** Evaluates a declared side-effect-free query over one committed state snapshot. */
+    public QueryResult query(String runId, String name, Object args, CallOptions options) {
+        CallOptions opts = options == null ? CallOptions.create() : options;
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.set("args", Json.toTree(args));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", declaredOperationPath(runId, "queries", name), null, body, null,
+                trace(opts.traceparent()), true)).body(), "a query result");
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new QueryResult(str(raw, "runId"), revision(raw, "runVersion", 0),
+                revision(raw, "stateRevision", 0), raw.get("result"), raw);
+    }
+
+    public CompletableFuture<QueryResult> queryAsync(String runId, String name, Object args, CallOptions options) {
+        return async(() -> query(runId, name, args, options));
+    }
+
+    /** Applies or replays a declared durable state update. */
+    public UpdateReceipt update(String runId, String name, Object args, UpdateOptions options) {
+        if (options == null || options.updateKey() == null || !UPDATE_KEY.matcher(options.updateKey()).matches()) {
+            throw SagatException.invalid("an update key is 1 to 128 printable ASCII characters");
+        }
+        if (options.expectedStateRevision() != null && options.expectedStateRevision() < 0) {
+            throw SagatException.invalid("expected state revision is non-negative");
+        }
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("updateKey", options.updateKey());
+        body.set("args", Json.toTree(args));
+        if (options.expectedStateRevision() != null) {
+            body.put("expectedStateRevision", options.expectedStateRevision());
+        }
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", declaredOperationPath(runId, "updates", name), null, body, null,
+                trace(options.traceparent()), true)).body(), "an update receipt");
+        if (!"APPLIED".equals(str(raw, "status"))) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "status is invalid in the answer");
+        }
+        if (!raw.has("result")) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "result is missing from the answer");
+        }
+        return new UpdateReceipt(str(raw, "runId"), str(raw, "operation"), str(raw, "updateKey"), "APPLIED",
+                raw.get("result"), revision(raw, "beforeStateRevision", 0), revision(raw, "afterStateRevision", 1),
+                revision(raw, "runVersion", 1), raw.path("replayed").isBoolean() && raw.path("replayed").booleanValue(), raw);
+    }
+
+    public CompletableFuture<UpdateReceipt> updateAsync(String runId, String name, Object args, UpdateOptions options) {
+        return async(() -> update(runId, name, args, options));
+    }
+
     /** Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a {@code CONFLICT}. */
     public SignalResult signal(String runId, String name, Object payload, CallOptions options) {
         CallOptions opts = options == null ? CallOptions.create() : options;
@@ -643,6 +696,21 @@ public final class SagatClient implements AutoCloseable {
     private static long num(JsonNode raw, String key, long fallback) {
         JsonNode value = raw.path(key);
         return value.isNumber() ? value.longValue() : fallback;
+    }
+
+    private static long revision(JsonNode raw, String key, long minimum) {
+        JsonNode value = raw.path(key);
+        if (!value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() < minimum) {
+            throw SagatException.of(ErrorCode.PROTOCOL, key + " is invalid in the answer");
+        }
+        return value.longValue();
+    }
+
+    private static String declaredOperationPath(String runId, String kind, String name) {
+        if (name == null || !DECLARED_OPERATION_NAME.matcher(name).matches()) {
+            throw SagatException.invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
+        }
+        return "/runs/" + runId(runId) + "/" + kind + "/" + Endpoints.encodeComponent(name);
     }
 
     static Run toRun(JsonNode value) {

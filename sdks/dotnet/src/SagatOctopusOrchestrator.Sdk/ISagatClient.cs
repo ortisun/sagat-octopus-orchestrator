@@ -39,6 +39,12 @@ public interface ISagatClient
     /// <summary>Records an eligible actor's durable decision for an approval request.</summary>
     Task<ApprovalDecisionReceipt> DecideApprovalAsync(string approvalId, ApprovalDecision decision, ApprovalDecisionOptions options, CancellationToken cancellationToken = default);
 
+    /// <summary>Evaluates a declared side-effect-free query over one committed state snapshot.</summary>
+    Task<QueryResult> QueryAsync<TArgs>(string runId, string name, TArgs args, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Applies or replays a declared durable state update.</summary>
+    Task<UpdateReceipt> UpdateAsync<TArgs>(string runId, string name, TArgs args, UpdateOptions options, CancellationToken cancellationToken = default);
+
     /// <summary>Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a <see cref="SagatErrorCode.Conflict"/>.</summary>
     Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default);
 

@@ -117,6 +117,36 @@ type ApprovalDecisionReceipt struct {
 	Raw             map[string]json.RawMessage
 }
 
+// QueryResult is the declared result and exact committed revisions observed by a query.
+type QueryResult struct {
+	RunID         string
+	RunVersion    int64
+	StateRevision int64
+	Result        any
+	Raw           map[string]json.RawMessage
+}
+
+// UpdateRequest identifies one durable update. Retries keep UpdateKey unchanged.
+type UpdateRequest struct {
+	UpdateKey             string
+	Args                  any
+	ExpectedStateRevision *int64
+}
+
+// UpdateReceipt is the durable applied result of a declared update.
+type UpdateReceipt struct {
+	RunID               string
+	Operation           string
+	UpdateKey           string
+	Status              string
+	Result              any
+	BeforeStateRevision int64
+	AfterStateRevision  int64
+	RunVersion          int64
+	Replayed            bool
+	Raw                 map[string]json.RawMessage
+}
+
 // SignalResult lists the steps a signal was delivered to.
 type SignalResult struct {
 	DeliveredTo []string

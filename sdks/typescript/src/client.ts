@@ -103,6 +103,38 @@ export interface ApprovalDecisionReceipt {
   raw: Record<string, unknown>;
 }
 
+export interface QueryOptions {
+  traceparent?: string;
+}
+
+export interface QueryResult<TResult = unknown> {
+  runId: string;
+  runVersion: number;
+  stateRevision: number;
+  result: TResult;
+  raw: Record<string, unknown>;
+}
+
+export interface UpdateOptions {
+  /** Caller-chosen durable key. Every retry of this update keeps the exact value. */
+  updateKey: string;
+  expectedStateRevision?: number;
+  traceparent?: string;
+}
+
+export interface UpdateReceipt<TResult = unknown> {
+  runId: string;
+  operation: string;
+  updateKey: string;
+  status: 'APPLIED';
+  result: TResult;
+  beforeStateRevision: number;
+  afterStateRevision: number;
+  runVersion: number;
+  replayed: boolean;
+  raw: Record<string, unknown>;
+}
+
 export interface SignalResult {
   deliveredTo: string[];
 }
@@ -150,6 +182,8 @@ function segmentOf(value: string, what: string): string {
 const KEY = /^[\x21-\x7e]{8,160}$/;
 const APPROVAL_DECISION_KEY = /^[\x21-\x7e]{1,128}$/;
 const REASON_CODE = /^[A-Za-z0-9_.:-]{1,64}$/;
+const DECLARED_OPERATION_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const UPDATE_KEY = /^[\x21-\x7e]{1,128}$/;
 
 function object(value: unknown, what: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -179,6 +213,21 @@ function optDate(raw: Record<string, unknown>, key: string): Date | null {
 function num(raw: Record<string, unknown>, key: string, fallback: number): number {
   const value = raw[key];
   return typeof value === 'number' ? value : fallback;
+}
+
+function revision(raw: Record<string, unknown>, key: string, minimum = 0): number {
+  const value = raw[key];
+  if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+    throw new SagatError({ code: 'PROTOCOL', message: `${key} is invalid in the answer` });
+  }
+  return value as number;
+}
+
+function operationName(value: string): string {
+  if (typeof value !== 'string' || !DECLARED_OPERATION_NAME.test(value)) {
+    throw invalid('an operation name is 1 to 128 letters, digits, dots, underscores, colons or hyphens and starts with a letter or digit');
+  }
+  return value;
 }
 
 export function toRun(value: unknown): Run {
@@ -449,6 +498,62 @@ export class SagatClient {
       receiptId: str(raw, 'receiptId'), approvalId: str(raw, 'approvalId'), decisionKey: str(raw, 'decisionKey'),
       decision: receiptDecision, reasonCode: optStr(raw, 'reasonCode'), actor: str(raw, 'actor'), decidedAt,
       outcomeSequence: outcomeSequence as number, replayed: raw['replayed'] === true, raw,
+    };
+  }
+
+  /** Evaluates a declared side-effect-free query over one committed state snapshot. */
+  async query<TResult = unknown>(runId: string, name: string, args: unknown, options: QueryOptions = {}): Promise<QueryResult<TResult>> {
+    const response = await this.#http.request({
+      method: 'POST',
+      path: `/runs/${encodeURIComponent(runIdOf(runId))}/queries/${encodeURIComponent(operationName(name))}`,
+      body: { args },
+      traceparent: this.trace(options.traceparent),
+      safeToRepeat: true,
+    });
+    const raw = object(response.body, 'a query result');
+    if (!Object.prototype.hasOwnProperty.call(raw, 'result')) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'result is missing from the answer' });
+    }
+    return {
+      runId: str(raw, 'runId'),
+      runVersion: revision(raw, 'runVersion'),
+      stateRevision: revision(raw, 'stateRevision'),
+      result: raw['result'] as TResult,
+      raw,
+    };
+  }
+
+  /** Applies or replays a declared durable state update. */
+  async update<TResult = unknown>(runId: string, name: string, args: unknown, options: UpdateOptions): Promise<UpdateReceipt<TResult>> {
+    if (!options || typeof options.updateKey !== 'string' || !UPDATE_KEY.test(options.updateKey)) {
+      throw invalid('an update key is 1 to 128 printable ASCII characters');
+    }
+    if (options.expectedStateRevision !== undefined
+      && (!Number.isSafeInteger(options.expectedStateRevision) || options.expectedStateRevision < 0)) {
+      throw invalid('expectedStateRevision is a non-negative safe integer');
+    }
+    const body: Record<string, unknown> = { updateKey: options.updateKey, args };
+    if (options.expectedStateRevision !== undefined) body['expectedStateRevision'] = options.expectedStateRevision;
+    const response = await this.#http.request({
+      method: 'POST',
+      path: `/runs/${encodeURIComponent(runIdOf(runId))}/updates/${encodeURIComponent(operationName(name))}`,
+      body,
+      traceparent: this.trace(options.traceparent),
+      safeToRepeat: true,
+    });
+    const raw = object(response.body, 'an update receipt');
+    if (raw['status'] !== 'APPLIED') {
+      throw new SagatError({ code: 'PROTOCOL', message: 'status is invalid in the answer' });
+    }
+    if (!Object.prototype.hasOwnProperty.call(raw, 'result')) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'result is missing from the answer' });
+    }
+    return {
+      runId: str(raw, 'runId'), operation: str(raw, 'operation'), updateKey: str(raw, 'updateKey'),
+      status: 'APPLIED', result: raw['result'] as TResult,
+      beforeStateRevision: revision(raw, 'beforeStateRevision'),
+      afterStateRevision: revision(raw, 'afterStateRevision', 1),
+      runVersion: revision(raw, 'runVersion', 1), replayed: raw['replayed'] === true, raw,
     };
   }
 

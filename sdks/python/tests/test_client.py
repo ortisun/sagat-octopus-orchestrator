@@ -180,6 +180,84 @@ async def test_an_approval_decision_surfaces_authorization_and_idempotency_failu
     assert not http.seen
 
 
+async def test_declared_query_and_update_preserve_revisions_result_and_update_key(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    def serve(seen: Seen) -> Any:
+        if "/queries/" in seen.url:
+            return reply(200, {"runId": RUN, "runVersion": 4, "stateRevision": 1, "result": {"balance": 12}})
+        return reply(
+            200,
+            {
+                "runId": RUN,
+                "operation": "account.credit",
+                "updateKey": "credit-1",
+                "status": "APPLIED",
+                "result": {"balance": 15},
+                "beforeStateRevision": 1,
+                "afterStateRevision": 2,
+                "runVersion": 5,
+                "replayed": False,
+                "future": True,
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    queried = await client.query(RUN, "account.balance", {"currency": "BRL"})
+    updated = await client.update(
+        RUN, "account.credit", {"amount": 3}, update_key="credit-1", expected_state_revision=1, traceparent=TRACE
+    )
+    assert [seen.url for seen in http.seen] == [
+        f"/v1/runs/{RUN}/queries/account.balance",
+        f"/v1/runs/{RUN}/updates/account.credit",
+    ]
+    assert http.seen[0].body == {"args": {"currency": "BRL"}}
+    assert http.seen[1].body == {"updateKey": "credit-1", "args": {"amount": 3}, "expectedStateRevision": 1}
+    assert "idempotency-key" not in http.seen[1].headers
+    assert queried.state_revision == 1 and queried.result == {"balance": 12}
+    assert updated.after_state_revision == 2 and updated.raw["future"] is True
+
+
+async def test_declared_update_retries_with_the_same_body_key_and_rejects_bad_input_locally(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    attempts = 0
+
+    def serve(_seen: Seen) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return reply(503, refusal("UNAVAILABLE", "busy", True))
+        return reply(
+            200,
+            {
+                "runId": RUN,
+                "operation": "account.credit",
+                "updateKey": "credit-1",
+                "status": "APPLIED",
+                "result": 15,
+                "beforeStateRevision": 1,
+                "afterStateRevision": 2,
+                "runVersion": 5,
+                "replayed": False,
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    await client.update(RUN, "account.credit", {"amount": 3}, update_key="credit-1")
+    assert len(http.seen) == 2 and http.seen[0].body == http.seen[1].body
+    http.seen.clear()
+    with pytest.raises(SagatError):
+        await client.query(RUN, "bad operation")
+    with pytest.raises(SagatError):
+        await client.update(RUN, "credit", {}, update_key="bad key")
+    with pytest.raises(SagatError):
+        await client.update(RUN, "credit", {}, update_key="credit-2", expected_state_revision=-1)
+    assert not http.seen
+
+
 async def test_get_is_retried_on_unavailability_and_on_rate_limiting_honouring_retry_after_and_gives_up_after_the_attempts(
     http: FakeHttpServer, make_client: MakeClient
 ) -> None:
