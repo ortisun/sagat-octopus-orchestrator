@@ -1,8 +1,10 @@
 //! Additive storage for root-compatible scoped execution identity.
 
+use sagat_application::execution::RunTx;
 use sagat_application::execution::instance_step_id;
+use sagat_application::runs::{Lock, RunStore};
 use sagat_domain::definition::WorkflowVersionId;
-use sagat_domain::execution::{ExecutionInstanceId, RunId};
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::workflow::NodeId;
 use sagat_infra_postgres::{MIGRATOR, migrate};
 use serde_json::{Value, json};
@@ -317,4 +319,59 @@ async fn one_definition_node_can_have_distinct_tenant_scoped_instance_paths() {
         ],
         "tenant is the first dimension of the full path identity"
     );
+}
+
+#[tokio::test]
+async fn locked_run_restores_every_scoped_instance_of_the_same_node() {
+    let w = world().await;
+    let (workflow, _) = w.publish(chain("scoped-restore")).await;
+    let run = w.start(workflow, &json!({})).await;
+    let tenant = w.admin.tenant_id().as_uuid();
+
+    for index in [0_i32, 1_i32] {
+        sqlx::query(
+            "INSERT INTO steps \
+             SELECT (jsonb_populate_record(NULL::steps, to_jsonb(s) || jsonb_build_object( \
+                 'step_id', $3::text, \
+                 'instance_path_nodes', jsonb_build_array('items'), \
+                 'instance_path_indices', jsonb_build_array($4::integer) \
+             ))).* \
+             FROM steps s \
+             WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.node = 'a' \
+               AND cardinality(s.instance_path_nodes) = 0",
+        )
+        .bind(tenant)
+        .bind(run.as_uuid())
+        .bind(Uuid::now_v7())
+        .bind(index)
+        .execute(&w.db.pool)
+        .await
+        .expect("scoped fixture");
+    }
+
+    let mut tx = w
+        .store
+        .begin(w.admin.tenant_id(), run, Lock::Wait)
+        .await
+        .expect("locked run")
+        .expect("run exists");
+    let (_, state) = tx.parts();
+    let node = NodeId::parse("a").expect("node");
+    assert_eq!(state.instances().count(), 3);
+    assert!(
+        state
+            .instance(&ExecutionInstanceId::root(node.clone()))
+            .is_some()
+    );
+    for index in [0_u32, 1_u32] {
+        let path = InstancePath::root()
+            .child(NodeId::parse("items").expect("scope"), index)
+            .expect("bounded path");
+        assert!(
+            state
+                .instance(&ExecutionInstanceId::in_path(path, node.clone()))
+                .is_some(),
+            "scoped instance {index} is retained"
+        );
+    }
 }

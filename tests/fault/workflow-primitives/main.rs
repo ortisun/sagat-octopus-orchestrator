@@ -4,3 +4,5 @@
 
 #[path = "../../support/mod.rs"]
 mod support;
+
+mod switch;

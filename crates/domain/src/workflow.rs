@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
+use crate::execution::ExecutionInstanceId;
 use crate::identity::{Slug, clip};
 use crate::saga::{EffectPolicy, NodeOrigin, OnCompensationFailure, SagaCancelPolicy};
 use crate::secrets::{MAX_DECLARED_SECRETS, SecretName};
@@ -1157,6 +1158,27 @@ impl WorkflowDefinition {
     #[must_use]
     pub fn node(&self, id: &NodeId) -> Option<&Node> {
         self.graph.nodes.get(id)
+    }
+
+    /// Resolves a logical execution through its declared collection bodies. Local node names
+    /// may repeat in different bodies; each scope owner selects the next graph.
+    #[must_use]
+    pub fn node_for_instance(&self, instance: &ExecutionInstanceId) -> Option<&Node> {
+        let mut graph = &self.graph;
+        for segment in instance.path().segments() {
+            let owner = graph.nodes.get(segment.scope_node())?;
+            let NodeKind::ForEach {
+                body, max_items, ..
+            } = owner.kind()
+            else {
+                return None;
+            };
+            if segment.iteration_index() >= *max_items {
+                return None;
+            }
+            graph = &self.bodies.get(body)?.graph;
+        }
+        graph.nodes.get(instance.node())
     }
 
     /// The root graph's authored nodes, ordered by local id; bodies have separate local graphs.

@@ -48,6 +48,12 @@ must inspect every restored instance, including scoped ones. This does not by it
 execution: commands, planner transitions, leases and journal addressing must all carry the same key
 before a nonroot instance can be scheduled.
 
+The locked PostgreSQL reader reconstructs each projected step from its stored path arrays, validates
+the bounded typed path and retains root and scoped rows independently. Definition lookup follows
+each path owner through its declared collection body, checks the member index against that owner's
+limit and resolves the final local node in that body. These are read-side foundations; writes and
+worker task addressing remain root-only until their transaction and protocol gates pass.
+
 **IterationScope**: owner instance, kind (`COLLECTION`, `WHILE`, `REPEAT_UNTIL`), lifecycle,
 captured input/state reference, cardinality, admitted cursor, completed count, next iteration index,
 effective limits, original deadline, reserved slots and ordered result references. Collection

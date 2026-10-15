@@ -26,8 +26,8 @@ use sagat_application::runs::{
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, ExecutionInstanceId, FailureCode, RunEvent, RunId, RunState, RunStatus,
-    SagaPhase, SagaState, StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
+    CorrelationKey, ExecutionInstanceId, FailureCode, InstancePath, RunEvent, RunId, RunState,
+    RunStatus, SagaPhase, SagaState, StepState, StepStatus, StopReason, SwitchSelection, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -376,7 +376,7 @@ impl RunStore for PgRunStore {
         let now: OffsetDateTime = col(&row, "db_now")?;
         let input_digest: Vec<u8> = col(&row, "input_digest")?;
         let step_rows = sqlx::query(
-            "SELECT node, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
+            "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
                     timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, \
                     child_run_id \
              FROM steps WHERE tenant_id = $1 AND run_id = $2",
@@ -391,8 +391,23 @@ impl RunStore for PgRunStore {
         for row in &step_rows {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
-            stored.insert(node.clone());
-            steps.insert(node, step_state(row)?);
+            let path_nodes: Vec<String> = col(row, "instance_path_nodes")?;
+            let path_indices: Vec<i32> = col(row, "instance_path_indices")?;
+            if path_nodes.len() != path_indices.len() {
+                return Err(corrupt("step instance path"));
+            }
+            let mut path = InstancePath::root();
+            for (scope, index) in path_nodes.into_iter().zip(path_indices) {
+                let scope = NodeId::parse_stored(&scope).map_err(|_| corrupt("step scope"))?;
+                let index = u32::try_from(index).map_err(|_| corrupt("step iteration index"))?;
+                path = path
+                    .child(scope, index)
+                    .map_err(|_| corrupt("step instance path"))?;
+            }
+            if path.is_root() {
+                stored.insert(node.clone());
+            }
+            steps.insert(ExecutionInstanceId::in_path(path, node), step_state(row)?);
         }
         let sagas = load_sagas(&mut tx, tenant, run).await?;
         let stop = match record.stop_reason {
@@ -405,7 +420,7 @@ impl RunStore for PgRunStore {
                     .map_err(|_| corrupt("stop code"))?,
             )),
         };
-        let state = RunState::restore(
+        let state = RunState::restore_instances(
             run,
             record.status,
             stop,

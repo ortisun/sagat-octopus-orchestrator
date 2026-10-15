@@ -1,6 +1,6 @@
 {
   "name": "switch-builders",
-  "description": "The five builders emit the same ordered v1 switch node and reject structural mistakes before publication.",
+  "description": "WP-07: the five SDKs emit the same ordered v1 switch node, reject structural mistakes, and observe first-match, default and predicate-error runtime behavior.",
   "workflows": {
     "ordered": {
       "name": "switch-flow",
@@ -85,5 +85,57 @@
       }
     }
   },
-  "steps": []
+  "workers": {
+    "w1": {
+      "workerName": "switch-worker",
+      "maxInflight": 3,
+      "heartbeatIntervalMs": 200,
+      "activities": {
+        "amount.positive": { "behavior": { "returns": { "route": "positive" } } },
+        "amount.also-positive": { "behavior": { "returns": { "route": "also-positive" } } },
+        "amount.fallback": { "behavior": { "returns": { "route": "fallback" } } }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "first-match",
+      "op": "start",
+      "workflow": "ordered",
+      "input": { "amount": 1 }
+    },
+    {
+      "id": "first-match-done",
+      "op": "waitForCompletion",
+      "run": "first-match",
+      "timeoutMs": 30000
+    },
+    { "id": "first-match-journal", "op": "events", "run": "first-match" },
+    {
+      "id": "default",
+      "op": "start",
+      "workflow": "ordered",
+      "input": { "amount": -1 }
+    },
+    {
+      "id": "default-done",
+      "op": "waitForCompletion",
+      "run": "default",
+      "timeoutMs": 30000
+    },
+    { "id": "default-journal", "op": "events", "run": "default" },
+    {
+      "id": "predicate-error",
+      "op": "start",
+      "workflow": "ordered",
+      "input": {}
+    },
+    {
+      "id": "predicate-error-done",
+      "op": "waitForCompletion",
+      "run": "predicate-error",
+      "timeoutMs": 30000
+    },
+    { "id": "predicate-error-journal", "op": "events", "run": "predicate-error" }
+  ]
 }

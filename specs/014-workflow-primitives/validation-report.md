@@ -129,13 +129,32 @@ error cannot be disguised as a fallback route.
 | `cargo test -p sagat-tests --test contract_grpc_sdk_multilanguage --locked -q` | Passed: 7 worker-protocol compatibility tests after synchronizing the five SDK proto copies |
 | `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` with real PostgreSQL | Passed: 8 tests, including case/default, first match, predicate failure, duplicate start, replay/projection, outbox rollback/retry, legacy NULL upgrade and guarded migration rollback |
 | Full TypeScript, Go, Python, .NET and Java SDK unit suites | Passed: TypeScript 112, Python 243, .NET 429, Java 216; Go `go test ./...` passed (supporting agent execution) |
-| Shared five-language switch builder fixture | Passed: identical normalized v1 output hash `a3d1fd0a4dfd23e9a4dd87ce1942eb259353b14443eddc584439ae31d2237d9f` (supporting agent execution) |
+| `SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: 1 shared WP-07 scenario in TypeScript, Go, Python, C# and Java. All five produced the same reviewed builder document and runtime observations for first match, default and `EXPRESSION_ERROR`; canonical workflow text SHA-256 `e3ba58ef16d08ee7c9c8d250877c3aa233d6b5becf7ad3db7c8e0b5d296f75d8`. |
+| `cargo test -p sagat-tests --test fault_workflow_primitives --locked switch:: -- --nocapture` with real PostgreSQL | Passed: 3 tests for lost start response/duplicate replay, restart with an undelivered broker hint, and atomic rollback/retry when successor outbox insertion fails. Each test independently checks one journaled choice, one selected successor and one task hint. |
 | `cargo check --workspace --all-targets --locked -q` | Passed |
 | `cargo clippy -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres -p sagat-api-http -p sagat-scheduler -p sagat-telemetry -p sagat-tests --all-targets --locked -- -D warnings` | Passed after fixing test-only lint findings |
 | `cargo test -p sagat-tests --test contract_developer_experience --locked -q` | Passed: 8 tests after regenerating the schema-derived workflow reference with a capability warning |
 
-The switch-specific fault target and full worker/client runtime conformance golden are still open.
-The builder fixture remains `.pending` by design and is not counted as server runtime parity. The
-other proposed primitives remain rejected at publication. The server still advertises worker
-protocol 1.4 and rejects scoped work; additive 1.5 fields in the canonical and SDK copies do not
-enable collection execution. No workflow IR v2 is introduced.
+The enabled switch fixture and both reviewed goldens cover the five public SDKs: amount `1` proves
+the first of two true cases, amount `-1` proves the default, and a missing amount proves typed failure
+without fallthrough. The runtime golden also verifies that non-selected nodes remain `NOT_STARTED`.
+The real PostgreSQL fault target separately proves durable replay, broker-independent recovery and
+transaction rollback. The other proposed primitives remain rejected at publication. The server still
+advertises worker protocol 1.4 and rejects scoped work; additive 1.5 fields in the canonical and SDK
+copies do not enable collection execution. No workflow IR v2 is introduced.
+
+## Scoped read-side checkpoint (2026-10-15)
+
+The locked run reader now reconstructs every step using its full typed path instead of collapsing
+equal definition-node names. A real PostgreSQL regression inserts a root step and two scoped rows
+for the same node, then checks that `RunStore::begin` retains all three. The domain resolver follows
+declared collection bodies for nested paths and rejects invalid owners, local nodes and indices.
+These changes do not schedule scoped work; planner commands, storage writers and worker 1.5 remain
+release gates.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-domain --locked -q` | Passed: all domain test targets, including nested resolution and scoped finalization |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --test integration_workflow_primitives --test fault_workflow_primitives --locked -q` | Passed: 14 contract, 10 real-PostgreSQL integration and 3 fault tests |
+| `cargo clippy -p sagat-domain -p sagat-infra-postgres -p sagat-tests --all-targets --locked -- -D warnings` | Passed |
+| `cargo fmt --all` | Passed |

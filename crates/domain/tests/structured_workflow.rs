@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
 use sagat_domain::identity::Slug;
 use sagat_domain::workflow::{
     BodyDefinition, Expression, Node, NodeId, NodeKind, WorkflowDefinition, WorkflowError,
@@ -84,6 +85,71 @@ fn closed_collection_body_keeps_definition_names_local() {
             .expect("body")
             .node(&id("return"))
             .is_some()
+    );
+}
+
+#[test]
+fn instance_paths_resolve_nodes_in_their_declared_body() {
+    let workflow = build(
+        root_nodes("outer"),
+        vec![nested_body("outer", "inner"), simple_body("inner")],
+        WorkflowLimits::default(),
+    )
+    .expect("nested definition");
+    let root = ExecutionInstanceId::root(id("items"));
+    let outer = InstancePath::root()
+        .child(id("items"), 0)
+        .expect("outer path");
+    let inner = outer.child(id("items"), 1).expect("inner path");
+
+    assert_eq!(
+        workflow.node_for_instance(&root).expect("root").id(),
+        &id("items")
+    );
+    assert_eq!(
+        workflow
+            .node_for_instance(&ExecutionInstanceId::in_path(outer.clone(), id("items")))
+            .expect("outer collection")
+            .kind()
+            .label(),
+        "forEach"
+    );
+    assert_eq!(
+        workflow
+            .node_for_instance(&ExecutionInstanceId::in_path(inner.clone(), id("return")))
+            .expect("inner return")
+            .kind()
+            .label(),
+        "return"
+    );
+    assert!(
+        workflow
+            .node_for_instance(&ExecutionInstanceId::in_path(inner, id("done")))
+            .is_none()
+    );
+    assert!(
+        workflow
+            .node_for_instance(&ExecutionInstanceId::in_path(
+                InstancePath::root().child(id("done"), 0).expect("path"),
+                id("return"),
+            ))
+            .is_none()
+    );
+    assert!(
+        workflow
+            .node_for_instance(&ExecutionInstanceId::in_path(
+                outer.child(id("return"), 0).expect("path"),
+                id("return"),
+            ))
+            .is_none()
+    );
+    assert!(
+        workflow
+            .node_for_instance(&ExecutionInstanceId::in_path(
+                InstancePath::root().child(id("items"), 17).expect("path"),
+                id("return"),
+            ))
+            .is_none()
     );
 }
 

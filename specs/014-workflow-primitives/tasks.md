@@ -79,7 +79,8 @@ without fallthrough and replay preserves the recorded case.
   _Evidence: domain switch tests, schema contract, codec validation and the real PostgreSQL first-match/default/error tests in `tests/integration/workflow-primitives/switch_storage.rs`._
 - [x] T014-027 [US05] Implement switch validation, typed decision and recorded routing in `crates/domain/src/workflow.rs`, `crates/domain/src/execution/{plan.rs,state.rs,event.rs}` and `crates/infra-ir/src/`; retain binary condition semantics. Refs: FR-014-009,014.
   _Evidence: selected local case or default is journaled and projected atomically; domain replay, IR codec and real PostgreSQL integration tests pass. This does not close fault or all-language runtime parity._
-- [ ] T014-028 [US05] Add all-five switch builders in `sdks/{typescript,go,python,dotnet,java}/`, run WP-07 golden parity and persist/restart/fault evidence in `tests/fault/workflow-primitives/switch.rs`; document typed predicate failure and telemetry. Refs: FR-014-009,016–017, SC-014-002–003.
+- [x] T014-028 [US05] Add all-five switch builders in `sdks/{typescript,go,python,dotnet,java}/`, run WP-07 golden parity and persist/restart/fault evidence in `tests/fault/workflow-primitives/switch.rs`; document typed predicate failure and telemetry. Refs: FR-014-009,016–017, SC-014-002–003.
+  _Evidence: the enabled `switch-builders` scenario and manually reviewed goldens pass in all five SDKs for first match, default, predicate error and non-selected nodes; 3 real-PostgreSQL fault tests pass for lost response/duplicate replay, restart with an undelivered hint and transactional rollback/retry. Typed `EXPRESSION_ERROR`, trace span and bounded metric evidence is recorded in the switch validation report._
 
 ## Phase 8 — US06: declared Query/Update (P2, pending)
 

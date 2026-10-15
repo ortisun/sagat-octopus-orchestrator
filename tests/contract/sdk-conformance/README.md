@@ -16,16 +16,25 @@ SAGAT_SDK_REUSE=1 …                                                           
 
 `--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
+## Workflow-primitives scenarios
+
+`switch-builders.json` is the reviewed WP-07 contract. Its build phase verifies that all five public
+builders preserve the ordered cases, mandatory default and v1 document shape, and reject empty cases,
+duplicate case ids and dangling targets. Its runtime phase starts overlapping-true, no-match and
+predicate-error runs through every SDK. The golden requires only the first case activity and the default
+activity to execute, leaves every non-selected node `NOT_STARTED`, and records `EXPRESSION_ERROR` without
+a `switch.evaluated` event for the invalid predicate. The two golden files were written after inspecting
+the builder documents and equal normalized runtime outputs from all five SDKs; they were not auto-blessed.
+
+```text
+SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
 ## Pending scenarios
 
 Files ending in `.json.pending` are reviewed contracts for behavior that the server and all five SDKs
 cannot execute yet. The harness deliberately ignores them, so they are never counted as passing evidence
 and have no golden result.
-
-`switch-builders.json.pending` exercises only the public builders. It keeps the workflow document at
-`sagat-octopus-orchestrator.io/v1`, preserves case order and deliberately has no reviewed golden or runtime
-steps. To compare the five builder outputs while keeping the scenario red until review, copy it to the
-enabled suffix and run `SAGAT_SDK_SCENARIO=switch-builders` with the command above, then remove the copy.
 
 The scoped-identity fixture extends the existing `sagat-octopus-orchestrator.io/v1` document shape
 additively. Worker protocol 1.5 is negotiated independently and does not imply a new workflow IR revision.
