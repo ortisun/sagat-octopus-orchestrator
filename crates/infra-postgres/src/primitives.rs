@@ -693,6 +693,40 @@ impl CollectionStore for PgCollectionStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let run = lock_run(&mut tx, &admission.transition).await?;
         check_scheduler_fence(&mut tx, &admission.transition).await?;
+        let definition = self
+            .definition(
+                &mut tx,
+                admission.transition.tenant_id().as_uuid(),
+                run.version_id,
+            )
+            .await?;
+        let Some(owner_definition) = definition.node_for_instance(admission.transition.owner())
+        else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        let NodeKind::ForEach { body, .. } = owner_definition.kind() else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        let Some(body) = definition.body(body) else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        let Some(entry_definition) = body.node(body.entrypoint()) else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        let Some(expected_reservations) = body.all_nodes().count().checked_sub(1) else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        let expected_reservations = u16::try_from(expected_reservations)
+            .map_err(|_| PrimitiveStoreError::InvalidTransition)?;
+        if admission.entry.node() != body.entrypoint()
+            || !matches!(
+                entry_definition.kind(),
+                NodeKind::Activity { activity, .. } if activity == &admission.activity
+            )
+            || admission.reserved_instances != expected_reservations
+        {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
         let (owner_nodes, owner_indices) = path_parts(admission.transition.owner());
         let stored_owner = sqlx::query(
             "SELECT namespace_id, owner_path_nodes, owner_path_indices, owner_node \
