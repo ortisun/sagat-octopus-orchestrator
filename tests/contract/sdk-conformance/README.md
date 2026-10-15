@@ -45,6 +45,11 @@ It is build-only while durable loop execution remains disabled. The reviewed fix
 and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,
 named body references and the required successor. It does not count as loop runtime conformance.
 
+`loop-runtime.json` publishes the restricted activity/return bodies, then executes one pre-test
+`while` and one post-test `repeatUntil` through the real scheduler and worker protocol 1.5. The
+five SDKs produce the same terminal graph and worker observations, with distinct scoped identities
+for the two body activities. Broader bodies, delay and error routing remain separate gates.
+
 `approval-builders.json` checks additive v1 native approval authoring in the five SDKs. It remains
 build-only so the authoring contract is reviewed independently of runtime behavior.
 The reviewed fixture covers subject and built-in role policies, the default initiator exclusion,
@@ -52,8 +57,8 @@ bounded deadlines, all three routes and local validation failures. It does not c
 runtime conformance.
 
 `continuation-builders.json` checks additive v1 `continueAsNew` authoring and the required finite
-`chainPolicy` in the five SDKs. It remains build-only while atomic handoff persistence, chain command
-serialization and parent-child finalization are disabled. The reviewed fixture covers explicit input
+`chainPolicy` in the five SDKs. It remains build-only because the full authored continuation shape
+exceeds the restricted public runtime path. The reviewed fixture covers explicit input
 and optional state transfer, the 10,000-segment and duration ceilings, inherited policy requirements
 and the top-level-only boundary. It does not count as continuation runtime conformance.
 
@@ -89,10 +94,16 @@ indices plus a third distinct item, preserves each typed identity, captured `{it
 idempotency key across a retry, and reaches a terminal graph with all three logical instances. No
 private store or control tick advances the collection.
 
+`collection-runtime.json` executes the public `map` builder with a non-identity result expression
+in all five SDKs. Its reviewed graph has two ordered scoped members and a terminal result. The
+scenario chooses polling in every language so worker-stream lifetime races do not alter attempt
+counts in this semantic comparison; stream behavior has its own conformance cases.
+
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
@@ -100,6 +111,7 @@ SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conform
 SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-inspect-cancel cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios

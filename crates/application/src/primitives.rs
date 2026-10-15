@@ -474,6 +474,7 @@ pub struct CollectionFinish {
     pub result_digest: Digest,
     pub outbox_id: Uuid,
     result_content: Option<Vec<u8>>,
+    source_digests: Option<Vec<(u32, Digest)>>,
 }
 
 /// Starts fail-fast or cancellation drain under the collection owner's scheduler fence.
@@ -565,6 +566,7 @@ impl CollectionFinish {
             result_digest,
             outbox_id,
             result_content: None,
+            source_digests: None,
         }
     }
 
@@ -582,8 +584,31 @@ impl CollectionFinish {
     }
 
     #[must_use]
+    pub fn from_evaluated_result(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        result_content: Vec<u8>,
+        source_results: &[(u32, Vec<u8>)],
+        outbox_id: Uuid,
+    ) -> Self {
+        let mut finish = Self::from_result(transition, scope_id, result_content, outbox_id);
+        finish.source_digests = Some(
+            source_results
+                .iter()
+                .map(|(index, content)| (*index, digest(content)))
+                .collect(),
+        );
+        finish
+    }
+
+    #[must_use]
     pub fn result_content(&self) -> Option<&[u8]> {
         self.result_content.as_deref()
+    }
+
+    #[must_use]
+    pub fn source_digests(&self) -> Option<&[(u32, Digest)]> {
+        self.source_digests.as_deref()
     }
 }
 

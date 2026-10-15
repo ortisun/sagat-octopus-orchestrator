@@ -971,8 +971,9 @@ lease takeover without changing production behavior. That case passed in isolati
 fault suite then passed 23/23. The complete PostgreSQL integration suite passed 135/135 with one
 test thread after the public loop fix. Contract tests passed 26/26. The locked workspace check,
 workspace Clippy with `-D warnings`, workspace library tests, format, architecture checks and
-`git diff --check` passed. The empty feature-specific E2E target and the remaining task matrix are
-still open; these aggregate runs are not a full release claim.
+`git diff --check` passed. At this checkpoint the feature-specific E2E target was still empty,
+and the remaining task matrix was open; these aggregate runs are not a full release claim. The
+following E2E checkpoint fills that target with a real public scenario.
 
 | Check | Result |
 |---|---|
@@ -981,3 +982,64 @@ still open; these aggregate runs are not a full release claim.
 | `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | Passed: 26/26 |
 | `cargo check --workspace --all-targets --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo test --workspace --lib --locked` | Passed |
 | `cargo fmt --all -- --check`; `python3 scripts/check-architecture.py`; `python3 -m unittest discover -s scripts/tests -q`; `git diff --check` | Passed |
+
+## Feature E2E harness (2026-10-15)
+
+The previously empty `e2e_workflow_primitives` target now runs a real PostgreSQL-backed HTTP
+scenario. It creates and publishes a switch workflow through the public API, starts positive,
+default and invalid-predicate runs, and reads each committed graph without a sleep or a mocked
+platform. Both valid routes finish and the invalid predicate fails without selecting either
+terminal route. The target passed 1/1 with no ignored or filtered cases. This proves the harness
+and this route scenario, not the remaining structured-primitive E2E matrix.
+
+| Check | Result |
+|---|---|
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test e2e_workflow_primitives --locked -- --nocapture` | Passed: 1/1 real HTTP/PostgreSQL scenario |
+
+## Five-SDK restricted loop runtime (2026-10-15)
+
+The shared `loop-runtime` scenario builds the same additive-v1 document in TypeScript, Go, Python,
+C# and Java. Each language publishes a restricted `while` followed by `repeatUntil`, starts a
+worker negotiated at 1.5, completes one activity/return iteration in each loop and observes a
+terminal `SUCCEEDED` graph. The golden distinguishes `pre[0]/work` from `post[0]/work` and records
+two different worker activities. The TypeScript document and normalized PostgreSQL observation
+were inspected before the two goldens were retained; the five-language run then passed without
+blessing. The existing `loop-builders` scenario still covers broader authoring only and also
+passed in all five languages. This runtime case does not prove delay, error routing, nested body
+graphs or all loop fault orders.
+
+| Check | Result |
+|---|---|
+| `SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: all five builders |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: all five SDKs against reviewed runtime and workflow goldens, no bless; runtime SHA-256 `40fb51face6671645bce5aae420c96bfd167ca1e51c45e9e76cc08e7c77298ed`, workflow SHA-256 `0d5c7b2e7c9c225e77ce565242e4bd9db7a95c36ec9be5caf4a4ba45596f077e` |
+
+## Mapped collection result and five-SDK runtime (2026-10-15)
+
+The first shared `map` runtime attempt timed out. PostgreSQL showed that both return nodes had
+checkpointed but the owner remained `WAITING`: the finish adapter required the aggregate to equal
+the raw checkpoint array, so a legitimate `bodyResult.amount` mapping was rejected. The finish
+command now binds the scheduler-evaluated aggregate to the ordered checkpoint source digests. The
+same transaction verifies each source index/digest, retains the aggregate and writes the terminal
+journal, projection, audit and outbox. The identity mapping still requires exact raw-array equality.
+The public two-scope PostgreSQL test first reproduced the failure, then passed with a mapped
+second scope and asserted `[1,2]` from durable storage; a wrong source digest is rejected. The
+first five-SDK run with automatic worker transport differed in attempt count: TypeScript and
+Python received their second task after a stream lifetime and retry, while Go, C# and Java claimed
+attempt 1. The semantic scenario now selects supported polling transport in all five SDKs. It
+passed without blessing against reviewed goldens, with two distinct scoped members and one
+terminal graph. Stream timing remains a separate transport behavior, not mapped-result parity.
+
+| Check | Result |
+|---|---|
+| Focused public PostgreSQL mapped collection and source-digest tests | Passed: 2/2 after the failing mapped-finish reproduction |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed: all five SDKs, no bless; runtime SHA-256 `3ee04e2567bd92d95d720eec7ad2d15fd6ded53eca7d6c6718b17ab7df53f8db`, workflow SHA-256 `b12d8efe915d2cea7fed18cefc81f321806e9a537c9308d296842bac45664ce5` |
+
+The complete PostgreSQL integration target passed 135/135 in 222.94 seconds after the mapped
+aggregate change. The post-change fault target passed 23/23 in 49.40 seconds. Contract tests
+passed 26/26 and the locked workspace library suite passed. Workspace Clippy with `-D warnings`,
+formatting, architecture and diff checks passed.
+
+| Check | Result |
+|---|---|
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test integration_workflow_primitives --locked -- --test-threads=1` | Passed: 135/135, 222.94 seconds after mapped-result change |
+| `DOCKER_HOST=unix:///Users/marcelo/.colima/sagat-remaining/docker.sock TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock cargo test -p sagat-tests --test fault_workflow_primitives --locked -- --test-threads=1` | Passed: 23/23, 49.40 seconds after mapped-result change |

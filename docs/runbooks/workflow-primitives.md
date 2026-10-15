@@ -32,6 +32,9 @@ checkpoint, finish, replay, cancellation, stale fences and lost broker hints. Th
 publishes and starts through HTTP, provisions capacity and worker binding through their authorized
 routes, executes each body activity through worker protocol 1.5, then verifies `collection.finished`,
 the terminal `end`, `run.finished` and the reconstructed projection.
+For a `map` result expression such as `bodyResult.amount`, the scheduler evaluates each member
+against its checkpointed body result. The finish transaction verifies the checkpoint source
+digests and retains the mapped aggregate with the journal, projection and outbox.
 
 Sequential-loop persistence now records timeout, cancellation and expression-failure drain in one
 PostgreSQL transaction with the journal, projection, timer cancellation, capacity release, audit,
@@ -62,7 +65,9 @@ For authoring parity, run the shared five-language SDK scenarios individually:
 
 ```sh
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=state-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
@@ -70,7 +75,10 @@ SAGAT_SDK_SCENARIO=approval-decisions cargo test -p sagat-tests --test sdk_confo
 ```
 
 The four builder scenarios compare normalized documents with reviewed goldens and do not call
-the server's runtime APIs. `state-operations` publishes a supported document and exercises
+the server's runtime APIs. `collection-runtime` publishes and executes a mapped collection result
+in every SDK using worker polling. `loop-runtime` publishes the restricted body shape and
+completes both loop types with worker protocol 1.5 in every SDK. `state-operations` publishes a
+supported document and exercises
 Query/Update through the real server in all five languages. `approval-decisions` publishes a
 root approval workflow, lists its pending request and submits approve/reject decisions through
 the real server in all five languages. Do not replace a golden merely

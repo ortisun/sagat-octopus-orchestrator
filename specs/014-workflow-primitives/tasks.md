@@ -13,7 +13,8 @@ there are not in numeric order. Existing IDs were kept so that references stay v
   _Evidence: `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/README.md`, `contracts/conformance.md`, `quickstart.md`, this task list and `checklists/requirements.md`; no runtime guarantee inferred._
 - [x] T014-002 Accept structured instances/continuation as ADR-0030 and the separate declared-operation value-disclosure policy as ADR-0031; supersede the initial separate-revision allocation with additive v1 in ADR-0032; update dependent 001/002/003/004/005/006/007/008/009/010/011 feature docs before their contract changes. Record additive v1/worker 1.5, effective evaluator limits, iteration compensation, role grants, bounded product defaults, derived-instance admission reserve, child-link lock order and explicit release gates. Refs: FR-014-003,005,007–008,010–011,014–017, NFR-014-004.
   _Evidence: `docs/adr/ADR-0030-structured-instances-and-continuation-chains.md`, `ADR-0031-declared-operation-result-disclosure.md`, and superseding `ADR-0032-additive-workflow-ir.md`, aligned feature design/contracts and dependent spec/plan sections. Documentation consistency verified with relative Markdown target checks (anchors excluded) and `git diff --check`; no runtime implementation, benchmark or security result inferred._
-- [ ] T014-003 Register future contract/integration/fault/e2e targets in `tests/Cargo.toml` and create real-platform harnesses in `tests/{contract,integration,fault,e2e}/workflow-primitives/main.rs` with deterministic barriers; reject skipped infrastructure as passing evidence. Refs: NFR-014-001, SC-014-002–005.
+- [x] T014-003 Register future contract/integration/fault/e2e targets in `tests/Cargo.toml` and create real-platform harnesses in `tests/{contract,integration,fault,e2e}/workflow-primitives/main.rs` with deterministic barriers; reject skipped infrastructure as passing evidence. Refs: NFR-014-001, SC-014-002–005.
+  _Evidence: contract, PostgreSQL integration and fault targets plus `e2e_workflow_primitives` run against real infrastructure. The E2E test publishes through HTTP, starts positive/default/error cases and reads committed graphs without sleeps; it passed 1/1. This harness registration does not close the remaining primitive-specific release gates._
 
 ## Phase 2 — Runtime foundation (blocks US02–US07, not current-API US01)
 
@@ -44,9 +45,10 @@ This phase reuses existing foundations and does not depend on unchecked T014-002
 
 The public parser accepts a root chain of `forEach` nodes with an Activity→Return body and an
 explicit tenant iteration policy. PostgreSQL, fault and five-SDK scoped-worker identity tests
-cover that slice, including transactional payload retention and storage-quota drain. The tasks
-below remain open for broader bodies, scoped compensation/reconciliation and the complete shared
-collection conformance matrix; evidence is in `validation-report.md`.
+cover that slice, including transactional payload retention and storage-quota drain. A public
+`map` result expression now commits with source-checkpoint proofs, and its runtime scenario passed
+all five SDKs. The tasks below remain open for broader bodies, scoped compensation/reconciliation
+and the complete shared collection conformance matrix; evidence is in `validation-report.md`.
 
 **Independent test**: 17 items, concurrency 3, reverse completion, restart, empty/oversized input and
 permanent failure; one ordered result per index, no fourth active iteration and correct saga drain.
@@ -61,7 +63,8 @@ permanent failure; one ordered result per index, no fourth active iteration and 
 Entry, checkpoint, delay and terminal drain have PostgreSQL restart, timer-race, rollback and
 projection evidence. Loop carry/result bytes now commit in the progress transaction after the
 scheduler fence, replay, revision and quota checks. A restricted public activity/return body passed
-PostgreSQL worker, restart and rollback tests; broader bodies and the all-SDK runtime and full fault
+PostgreSQL worker, restart and rollback tests, and one `while`/`repeatUntil` scenario passed the
+five-SDK runtime conformance. Broader bodies, delay/error routing, nested budgets and the full fault
 matrix remain open.
 
 **Independent test**: False pre-test, true post-test, three durable carry checkpoints, interruption

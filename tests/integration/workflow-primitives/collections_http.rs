@@ -96,7 +96,7 @@ fn proven_collection(name: &str) -> Value {
                 "type": "forEach",
                 "items": "input.lines",
                 "body": "tax",
-                "result": "bodyResult",
+                "result": "bodyResult.tax",
                 "maxItems": 17,
                 "maxConcurrency": 3,
                 "next": "done"
@@ -466,6 +466,18 @@ async fn proven_collection_can_be_published_and_started_over_http() {
     let finish = scheduler.tick().await;
     assert_eq!(finish.collections_advanced, 1, "finish: {finish:?}");
     assert_eq!(finish.failed, 0, "finish: {finish:?}");
+    let aggregate: Value = sqlx::query_scalar(
+        "SELECT convert_from(payload.content, 'UTF8')::jsonb \
+         FROM iteration_scopes scope JOIN payloads payload \
+           ON payload.tenant_id=scope.tenant_id AND payload.digest=scope.result_digest \
+         WHERE scope.run_id=$1 AND scope.owner_node='taxes' \
+           AND cardinality(scope.owner_path_nodes)=0",
+    )
+    .bind(run.as_uuid())
+    .fetch_one(&api.db.pool)
+    .await
+    .expect("mapped collection result");
+    assert_eq!(aggregate, json!([1, 2]));
     let terminal: (String, String, String, bool, i64, i64) = sqlx::query_as(
         "SELECT run.status,scope.lifecycle,terminal.status,terminal.routed, \
            (SELECT count(*) FROM run_events event WHERE event.tenant_id=run.tenant_id \

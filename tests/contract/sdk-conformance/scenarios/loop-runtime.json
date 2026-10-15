@@ -1,0 +1,73 @@
+{
+  "name": "loop-runtime",
+  "description": "A pre-test and a post-test loop run through scoped worker protocol 1.5 in all SDKs.",
+  "server": {
+    "iterationConcurrency": 2
+  },
+  "workflows": {
+    "pre-and-post": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "loop-pre-post-runtime",
+      "limits": {
+        "maxInstances": 12,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "first": {
+          "program": [
+            { "op": "step", "id": "work", "activity": "counter.first" },
+            { "op": "return", "id": "returned", "result": "steps.work.output" }
+          ]
+        },
+        "second": {
+          "program": [
+            { "op": "step", "id": "work", "activity": "counter.second" },
+            { "op": "return", "id": "returned", "result": "steps.work.output" }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "while",
+          "id": "pre",
+          "condition": "carry < 1",
+          "body": "first",
+          "initial": "0",
+          "carry": "bodyResult",
+          "maxIterations": 3,
+          "timeoutMs": 60000
+        },
+        {
+          "op": "repeatUntil",
+          "id": "post",
+          "condition": "carry >= 2",
+          "body": "second",
+          "initial": "0",
+          "carry": "bodyResult",
+          "maxIterations": 3,
+          "timeoutMs": 60000
+        },
+        { "op": "end", "id": "done", "options": { "outputExpr": "steps.post.output" } }
+      ]
+    }
+  },
+  "workers": {
+    "current": {
+      "workerName": "loop-current",
+      "protocolVersion": "1.5",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "counter.first": { "behavior": { "returns": 1 } },
+        "counter.second": { "behavior": { "returns": 2 } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "start-worker", "op": "startWorker", "worker": "current" },
+    { "id": "run", "op": "start", "workflow": "pre-and-post", "input": {} },
+    { "id": "done", "op": "waitForCompletion", "run": "run", "timeoutMs": 30000 },
+    { "id": "two-iterations", "op": "awaitWorkerLog", "worker": "current", "count": 2, "timeoutMs": 30000 },
+    { "id": "stop-worker", "op": "stopWorker", "worker": "current" }
+  ]
+}

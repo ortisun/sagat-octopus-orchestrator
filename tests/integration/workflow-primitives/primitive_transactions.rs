@@ -1540,6 +1540,26 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     assert_eq!(error, PrimitiveStoreError::InvalidTransition);
     let aggregate_content = br#"["member-result"]"#.to_vec();
     let aggregate = digest(&aggregate_content);
+    let wrong_source = CollectionFinish::from_evaluated_result(
+        transition(
+            &w,
+            run,
+            checkpointed.run_version,
+            owner.clone(),
+            authority.clone(),
+        ),
+        scope,
+        aggregate_content.clone(),
+        &[(0, b"different-checkpoint".to_vec())],
+        Uuid::now_v7(),
+    );
+    assert_eq!(
+        store
+            .finish_collection(&wrong_source)
+            .await
+            .expect_err("evaluated aggregate must name its exact checkpoint source"),
+        PrimitiveStoreError::InvalidTransition
+    );
     let finish_outbox = Uuid::now_v7();
     let finish_request = CollectionFinish::from_result(
         transition(

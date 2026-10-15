@@ -2454,7 +2454,7 @@ impl CollectionStore for PgCollectionStore {
         )
         .await?;
         let result_rows = sqlx::query(
-            "SELECT c.result_digest, p.content FROM iteration_checkpoints c \
+            "SELECT c.iteration_index, c.result_digest, p.content FROM iteration_checkpoints c \
              JOIN payloads p ON p.tenant_id = c.tenant_id AND p.digest = c.result_digest \
              WHERE c.tenant_id = $1 AND c.run_id = $2 AND c.scope_id = $3 \
              ORDER BY c.iteration_index FOR UPDATE OF c",
@@ -2479,13 +2479,33 @@ impl CollectionStore for PgCollectionStore {
             .collect::<Result<Vec<Value>, PrimitiveStoreError>>()?;
         let aggregate: Value = serde_json::from_slice(&aggregate_content)
             .map_err(|_| invalid_storage("collection aggregate payload"))?;
-        if aggregate != Value::Array(ordered_results) {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
         let Some(owner_definition) = definition.node_for_instance(finish.transition.owner()) else {
             return Err(PrimitiveStoreError::InvalidTransition);
         };
-        if !matches!(owner_definition.kind(), NodeKind::ForEach { .. }) {
+        let NodeKind::ForEach { result, .. } = owner_definition.kind() else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        if aggregate.as_array().map(Vec::len) != Some(result_rows.len()) {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        if let Some(sources) = finish.source_digests() {
+            if sources.len() != result_rows.len() {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+            for ((index, digest), row) in sources.iter().zip(&result_rows) {
+                let stored_index = u32::try_from(row.get::<i32, _>("iteration_index"))
+                    .map_err(|_| invalid_storage("collection checkpoint index"))?;
+                let stored_digest = row.get::<Vec<u8>, _>("result_digest");
+                if *index != stored_index
+                    || digest.as_bytes().as_slice() != stored_digest.as_slice()
+                {
+                    return Err(PrimitiveStoreError::InvalidTransition);
+                }
+            }
+        } else if result.as_str() != "bodyResult" {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        if result.as_str() == "bodyResult" && aggregate != Value::Array(ordered_results) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
         let successor_node = owner_definition

@@ -1090,10 +1090,11 @@ where
             }
             let aggregate =
                 serde_json::to_vec(&mapped).map_err(|_| CollectionAdvanceError::Expression)?;
-            let finish = CollectionFinish::from_result(
+            let finish = CollectionFinish::from_evaluated_result(
                 transition(state.version()),
                 progress.scope_id,
                 aggregate,
+                &progress.results,
                 uuid::Uuid::now_v7(),
             );
             match self.store.finish_collection(&finish).await {

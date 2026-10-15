@@ -81,10 +81,16 @@ parity checks with:
 
 ```sh
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=collection-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
+SAGAT_SDK_SCENARIO=loop-runtime cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored
 ```
+
+The `collection-runtime` and `loop-runtime` scenarios execute their restricted public shapes
+through PostgreSQL, the scheduler and worker protocol 1.5 in every language. The other commands
+in this group compare authored documents only.
 
 The real PostgreSQL continuation checks publish through the normal codec, start through the public
 run service, complete activities through the worker boundary and let a fenced scheduler tick move
