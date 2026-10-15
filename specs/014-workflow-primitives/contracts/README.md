@@ -248,6 +248,10 @@ secret markers. The journal-derived runtime graph (`/runs/{runId}/graph`, `/grap
 ADR-0016) and the telemetry projector (ADR-0017) expose instance index, scope, selected case and
 chain links with lag; telemetry is never the authoritative workflow graph. A Studio or projector
 that does not know a new capability shows its nodes as unsupported and keeps working (T014-045).
+Scoped graph nodes use a stable `scopeNode[index]/localNode` id and carry `nodeId` plus an ordered
+`instancePath`; only persisted scoped instances appear. Until the journal change feed identifies
+the complete path for each touched instance, a change after scoped work appears as a full `reset`
+snapshot, so clients never apply a local node update to the wrong iteration.
 
 Durable audit covers opening/deciding/expiring approval, decision denial, query access, update
 application/rejection, continuation, cancel/manual decisions and quota/policy changes. Workflow
