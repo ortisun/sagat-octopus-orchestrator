@@ -1,6 +1,6 @@
 # ADR-0030 — Structured instances share the reducer and continuation creates an explicit chain
 
-Status: **Accepted architecture; implementation and release evidence pending** | Date: 2026-10-14 | Feature: 014 | Refines ADR-0003, ADR-0005, ADR-0010 and ADR-0015; supersedes none
+Status: **Accepted architecture with version decision superseded by ADR-0032; implementation and release evidence pending** | Date: 2026-10-14 | Feature: 014 | Refines ADR-0003, ADR-0005, ADR-0010 and ADR-0015
 
 **Partial supersession:** [ADR-0032](ADR-0032-additive-workflow-ir.md) replaces the separate v2 IR
 allocation and all version-based rollout/dispatch wording below with additive v1 capabilities.
@@ -30,11 +30,13 @@ state operations; accepting this ADR does not authorize a general payload viewer
 
 ### Version and identity
 
-1. Allocate IR `sagat-octopus-orchestrator.io/v2` and worker protocol **1.5**. The checked baseline
-   is v1 and worker 1.4 (`application/worker.rs::PROTOCOL_MINOR`). Keep v1 validation, event meaning,
-   root identities and every accepted worker minor form. Unsupported or disabled v2 capabilities
-   fail before publication/run creation with the existing error envelope, without new `Error.code`
-   or run-status enum values. Rollout enables each primitive only after its own evidence passes.
+1. **Superseded workflow IR allocation:** This decision originally allocated
+   `sagat-octopus-orchestrator.io/v2`. ADR-0032 instead keeps the only workflow IR at v1 and adds
+   capabilities in place. Worker protocol **1.5** remains a separate additive negotiation. Keep
+   v1 validation, event meaning, root identities and every accepted worker minor form. Unsupported
+   or disabled capabilities fail before publication/run creation with the existing error envelope,
+   without new `Error.code` or run-status enum values. Rollout enables each primitive only after its
+   own evidence passes.
 2. Keep the top-level graph, each body and the body-reference graph acyclic. A named body is a
    closed graph with an entry and logical return; it cannot contain workflow `end` or
    `continueAsNew`, escape into another body or recurse. All authored nodes, including bodies,
@@ -146,7 +148,7 @@ state operations; accepting this ADR does not authorize a general payload viewer
     receipt replay. Chain cancellation sets a durable latch checked by every handoff. RERUN_AS_NEW
     starts an unrelated singleton chain. Existing waits remain segment waits; a new explicit chain
     wait ends only at FINAL, and client timeout stops waiting rather than the workflow.
-18. For v2, lock chain before its current run; preserve applicable scheduler/drain/session/activity
+18. For runs using continuation chains, lock chain before its current run; preserve applicable scheduler/drain/session/activity
     admission ordering. Take the tree-admission advisory lock for creation before ordered
     subordinate resources. Handoff inserts its successor and does not lock two preexisting runs.
     Direct-run mutations of a chain member follow the same chain-before-run order. Never impose
@@ -198,5 +200,5 @@ growth and scheduler delay for the plan's workloads, including 10,000-item mater
 Record failures/skips and operational recovery cost. None of these results is supplied by this ADR.
 
 Disable new publications/starts to roll back capability, but retain compatible readers and workers
-until v2 runs drain. Changing scope identity, compensation dependencies, lock order, evaluator caps,
+until affected runs drain. Changing scope identity, compensation dependencies, lock order, evaluator caps,
 value policy or in-flight compatibility requires a new decision with the constitution's evidence.
