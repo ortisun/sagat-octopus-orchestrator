@@ -3,8 +3,9 @@
 use std::str::FromStr;
 
 use sagat_application::approval_progress::{
-    ApprovalAddress, ApprovalDecisionAttempt, ApprovalExpiryAttempt, ApprovalOpening,
-    ApprovalProgressError, ApprovalProgressStore, ApprovalRoutes,
+    ApprovalAddress, ApprovalDecisionAttempt, ApprovalExpiryAttempt, ApprovalListItem,
+    ApprovalOpening, ApprovalPageSize, ApprovalProgressError, ApprovalProgressStore,
+    ApprovalRoutes,
 };
 use sagat_application::error::StoreError;
 use sagat_application::execution::instance_step_id;
@@ -1152,5 +1153,49 @@ impl ApprovalProgressStore for PgApprovalProgressStore {
         let stored = load_request(&mut tx, address, false).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(stored.request)
+    }
+
+    async fn list_for_run(
+        &self,
+        tenant_id: TenantId,
+        namespace_id: sagat_domain::identity::NamespaceId,
+        run_id: RunId,
+        after_opened_sequence: Option<u64>,
+        limit: ApprovalPageSize,
+    ) -> Result<Vec<ApprovalListItem>, ApprovalProgressError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let after = after_opened_sequence
+            .map(|sequence| stored_i64(sequence, "approval list cursor"))
+            .transpose()?
+            .unwrap_or(0);
+        let request_ids = sqlx::query_scalar::<_, Uuid>(
+            "SELECT request_id FROM approval_requests \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $3 \
+               AND opened_sequence > $4 \
+             ORDER BY opened_sequence, request_id LIMIT $5",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(namespace_id.as_uuid())
+        .bind(run_id.as_uuid())
+        .bind(after)
+        .bind(i64::from(limit.get()))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let mut items = Vec::with_capacity(request_ids.len());
+        for request_id in request_ids {
+            let stored = load_request(
+                &mut tx,
+                ApprovalAddress::new(tenant_id, namespace_id, ApprovalRequestId::new(request_id)),
+                false,
+            )
+            .await?;
+            if stored.request.run_id() != run_id {
+                return Err(ApprovalProgressError::CorruptProjection);
+            }
+            items.push(ApprovalListItem::from_request(&stored.request));
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(items)
     }
 }

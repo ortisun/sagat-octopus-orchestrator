@@ -9,7 +9,8 @@ use std::future::Future;
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{
     ApprovalDecisionCommand, ApprovalDecisionResolution, ApprovalError, ApprovalReceiptId,
-    ApprovalRequest, ApprovalRequestId, ApprovalTransition,
+    ApprovalRequest, ApprovalRequestId, ApprovalStatus, ApprovalTransition, ExecutionInstanceId,
+    RunId,
 };
 use sagat_domain::identity::{NamespaceId, Subject, TenantId};
 use sagat_domain::workflow::NodeId;
@@ -121,6 +122,93 @@ pub struct ApprovalAddress {
     tenant_id: TenantId,
     namespace_id: NamespaceId,
     request_id: ApprovalRequestId,
+}
+
+/// Non-sensitive approval data visible to callers that can read the owning run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalListItem {
+    request_id: ApprovalRequestId,
+    run_id: RunId,
+    owner: ExecutionInstanceId,
+    opened_sequence: u64,
+    deadline: OffsetDateTime,
+    status: ApprovalStatus,
+    settled_at: Option<OffsetDateTime>,
+}
+
+/// A page bound enforced before the persistence adapter is called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApprovalPageSize(u32);
+
+impl ApprovalPageSize {
+    pub const DEFAULT: Self = Self(50);
+    pub const MAX: u32 = 201;
+
+    #[must_use]
+    pub const fn new(requested: u32) -> Self {
+        if requested == 0 {
+            Self(1)
+        } else if requested > Self::MAX {
+            Self(Self::MAX)
+        } else {
+            Self(requested)
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl ApprovalListItem {
+    #[must_use]
+    pub fn from_request(request: &ApprovalRequest) -> Self {
+        Self {
+            request_id: request.id(),
+            run_id: request.run_id(),
+            owner: request.owner().clone(),
+            opened_sequence: request.opened_sequence(),
+            deadline: request.deadline(),
+            status: request.status(),
+            settled_at: request.settled_at(),
+        }
+    }
+
+    #[must_use]
+    pub const fn request_id(&self) -> ApprovalRequestId {
+        self.request_id
+    }
+
+    #[must_use]
+    pub const fn run_id(&self) -> RunId {
+        self.run_id
+    }
+
+    #[must_use]
+    pub const fn owner(&self) -> &ExecutionInstanceId {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn opened_sequence(&self) -> u64 {
+        self.opened_sequence
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> OffsetDateTime {
+        self.deadline
+    }
+
+    #[must_use]
+    pub const fn status(&self) -> ApprovalStatus {
+        self.status
+    }
+
+    #[must_use]
+    pub const fn settled_at(&self) -> Option<OffsetDateTime> {
+        self.settled_at
+    }
 }
 
 impl ApprovalAddress {
@@ -317,4 +405,13 @@ pub trait ApprovalProgressStore: Send + Sync {
         &self,
         address: ApprovalAddress,
     ) -> impl Future<Output = Result<ApprovalRequest, ApprovalProgressError>> + Send;
+
+    fn list_for_run(
+        &self,
+        tenant_id: TenantId,
+        namespace_id: NamespaceId,
+        run_id: RunId,
+        after_opened_sequence: Option<u64>,
+        limit: ApprovalPageSize,
+    ) -> impl Future<Output = Result<Vec<ApprovalListItem>, ApprovalProgressError>> + Send;
 }

@@ -4,23 +4,26 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::routing::post;
+use axum::routing::{get, post};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sagat_application::api_admission::{
     ApiAdmissionService, ApiAdmissionStore, ApiOperation, ApiTarget,
 };
 use sagat_application::approval_progress::{
-    ApprovalAddress, ApprovalDecisionAttempt, ApprovalProgressStore,
+    ApprovalAddress, ApprovalDecisionAttempt, ApprovalPageSize, ApprovalProgressStore,
 };
 use sagat_application::clock::Clock;
 use sagat_application::error::AppError;
 use sagat_application::identity::IdentityStore;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
-    ApprovalDecisionCommand, ApprovalError, ApprovalReceiptId, ApprovalRequestId,
+    ApprovalDecisionCommand, ApprovalError, ApprovalReceiptId, ApprovalRequestId, RunId,
 };
 use sagat_domain::workflow::Digest;
+use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tower_http::limit::RequestBodyLimitLayer;
 use uuid::Uuid;
@@ -28,7 +31,9 @@ use uuid::Uuid;
 use crate::admission::{Admission, admit};
 use crate::concurrency::TenantConcurrency;
 use crate::core::Core;
-use crate::dto_primitives::{ApprovalDecisionReceiptBody, DecideApprovalBody};
+use crate::dto_primitives::{
+    ApprovalDecisionReceiptBody, ApprovalListBody, ApprovalListItemBody, DecideApprovalBody,
+};
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
 use crate::limits::RateLimiter;
@@ -152,12 +157,85 @@ where
     T: Clone + Send + Sync + 'static,
 {
     Router::new()
+        .route("/runs/{run_id}/approvals", get(list_approvals::<B>))
         .route(
             "/approvals/{approval_id}/decisions",
             post(decide_approval::<B>),
         )
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .with_state(state)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalListQuery {
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+fn decode_cursor(cursor: &str) -> Result<u64, ApiError> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| ApiError::bad_request("the cursor is not valid"))?;
+    let bytes: [u8; 8] = bytes
+        .try_into()
+        .map_err(|_| ApiError::bad_request("the cursor is not valid"))?;
+    let sequence = u64::from_be_bytes(bytes);
+    if sequence == 0 {
+        return Err(ApiError::bad_request("the cursor is not valid"));
+    }
+    Ok(sequence)
+}
+
+fn encode_cursor(sequence: u64) -> String {
+    URL_SAFE_NO_PAD.encode(sequence.to_be_bytes())
+}
+
+pub async fn list_approvals<B: ApprovalApi>(
+    caller: Caller,
+    State(state): State<B>,
+    Path(run_id): Path<String>,
+    Query(query): Query<ApprovalListQuery>,
+) -> Result<(HeaderMap, Json<ApprovalListBody>), ApiError> {
+    let run_id: RunId = run_id.parse().map_err(|_| ApiError::not_found())?;
+    let namespace = admit(
+        &state,
+        &caller,
+        ApiOperation::ApprovalRead,
+        ApiTarget::Run(run_id),
+    )
+    .await?;
+    let cursor = query.cursor.as_deref().map(decode_cursor).transpose()?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let mut found = state
+        .approval_store()
+        .list_for_run(
+            caller.session.principal.tenant_id(),
+            namespace,
+            run_id,
+            cursor,
+            ApprovalPageSize::new(limit + 1),
+        )
+        .await?;
+    let next_cursor = if found.len() > limit as usize {
+        found.truncate(limit as usize);
+        found
+            .last()
+            .map(|item| encode_cursor(item.opened_sequence()))
+    } else {
+        None
+    };
+    metrics::counter!("workflow_approval_http_reads_total", "outcome" => "listed").increment(1);
+    tracing::info!(item_count = found.len(), "workflow approvals listed");
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok((
+        headers,
+        Json(ApprovalListBody {
+            items: found.iter().map(ApprovalListItemBody::from).collect(),
+            next_cursor,
+        }),
+    ))
 }
 
 pub async fn decide_approval<B: ApprovalApi>(

@@ -61,6 +61,15 @@ fn document(name: &str) -> Value {
                 "onReject": "rejected",
                 "onExpire": "expired"
             },
+            {
+                "id": "approval-two",
+                "type": "approval",
+                "timeoutMs": 60000,
+                "policy": {"roles": ["operator"], "excludeInitiator": true},
+                "onApprove": "approved",
+                "onReject": "rejected",
+                "onExpire": "expired"
+            },
             {"id": "approved", "type": "activity", "activity": "approval.approved"},
             {"id": "rejected", "type": "activity", "activity": "approval.rejected"},
             {"id": "expired", "type": "activity", "activity": "approval.expired"}
@@ -273,6 +282,140 @@ async fn decision(fixture: &Fixture, subject: &str, body: &Value) -> reqwest::Re
         .api
         .post_as(&path(fixture), subject, "acme", body)
         .await
+}
+
+#[tokio::test]
+async fn run_approvals_are_tenant_scoped_bounded_and_do_not_disclose_eligibility() {
+    let fixture = fixture("http-approval-list").await;
+    add_member(&fixture, "vera", Role::Viewer).await;
+    add_member(&fixture, "wendy", Role::Worker).await;
+    let version = WorkflowVersionId::new(
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT workflow_version_id FROM runs WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(fixture.tenant.as_uuid())
+        .bind(fixture.request.run_id().as_uuid())
+        .fetch_one(&fixture.api.db.pool)
+        .await
+        .expect("workflow version"),
+    );
+    let second_owner =
+        ExecutionInstanceId::root(NodeId::parse("approval-two").expect("second approval node"));
+    sqlx::query(
+        "INSERT INTO steps \
+         (tenant_id, run_id, node, step_id, namespace_id, status, updated_at, kind, \
+          instance_path_nodes, instance_path_indices) \
+         VALUES ($1,$2,'approval-two',$3,$4,'PENDING',$5,'FORWARD','{}','{}')",
+    )
+    .bind(fixture.tenant.as_uuid())
+    .bind(fixture.request.run_id().as_uuid())
+    .bind(instance_step_id(
+        version,
+        fixture.request.run_id(),
+        &second_owner,
+    ))
+    .bind(fixture.namespace.as_uuid())
+    .bind(fixture.opened_at)
+    .execute(&fixture.api.db.pool)
+    .await
+    .expect("second approval step");
+    let second = ApprovalRequest::open(
+        ApprovalRequestId::generate(),
+        fixture.tenant,
+        fixture.namespace,
+        fixture.request.run_id(),
+        second_owner,
+        ApprovalPolicy::new(Vec::new(), vec![Role::Operator]).expect("approval policy"),
+        Subject::parse("alice").expect("initiator"),
+        fixture.request.opened_sequence() + 1,
+        fixture.opened_at + Duration::from_secs(120),
+    );
+    PgApprovalProgressStore::new(fixture.api.db.pool.clone())
+        .open(&ApprovalOpening::new(
+            second.clone(),
+            ApprovalRoutes::new(
+                NodeId::parse("approved").expect("approved route"),
+                NodeId::parse("rejected").expect("rejected route"),
+                NodeId::parse("expired").expect("expired route"),
+            ),
+            fixture.scheduler.clone(),
+            AuditRecord::engine(
+                fixture.tenant,
+                AuditAction::ApprovalOpened,
+                ResourceType::ApprovalRequest,
+                second.id().to_string(),
+                "approval opened",
+                Some("0af7651916cd43dd8448eb211c80319c".into()),
+                fixture.opened_at,
+            ),
+            Uuid::now_v7(),
+            fixture.opened_at,
+        ))
+        .await
+        .expect("open second approval");
+    let path = format!("/runs/{}/approvals?limit=1", fixture.request.run_id());
+
+    let response = fixture.api.get_as(&path, "vera", "acme").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body = json_of(response).await;
+    let item = &body["items"][0];
+    assert_eq!(item["approvalId"], fixture.request.id().to_string());
+    assert_eq!(item["runId"], fixture.request.run_id().to_string());
+    assert_eq!(item["nodeId"], "approval");
+    assert_eq!(item["instancePath"], json!([]));
+    assert_eq!(item["status"], "PENDING");
+    let next_cursor = body["nextCursor"].as_str().expect("next cursor");
+    let serialized = body.to_string();
+    for hidden in [
+        "policy",
+        "subjects",
+        "roles",
+        "initiator",
+        "actor",
+        "winningReceiptId",
+    ] {
+        assert!(!serialized.contains(hidden), "disclosed {hidden}");
+    }
+
+    let next = fixture
+        .api
+        .get_as(
+            &format!(
+                "/runs/{}/approvals?limit=1&cursor={next_cursor}",
+                fixture.request.run_id()
+            ),
+            "vera",
+            "acme",
+        )
+        .await;
+    assert_eq!(next.status(), StatusCode::OK);
+    let next = json_of(next).await;
+    assert_eq!(next["items"][0]["approvalId"], second.id().to_string());
+    assert_eq!(next["nextCursor"], Value::Null);
+
+    let invalid_cursor = fixture
+        .api
+        .get_as(
+            &format!(
+                "/runs/{}/approvals?cursor=not-a-cursor",
+                fixture.request.run_id()
+            ),
+            "vera",
+            "acme",
+        )
+        .await;
+    assert_eq!(invalid_cursor.status(), StatusCode::BAD_REQUEST);
+
+    let forbidden = fixture.api.get_as(&path, "wendy", "acme").await;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let foreign = fixture.api.get_as(&path, "bob", "globex").await;
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    let foreign = json_of(foreign).await;
+    assert_eq!(foreign["code"], "NOT_FOUND");
+    assert!(!foreign.to_string().contains("acme"));
+    assert!(!foreign.to_string().contains("payments"));
 }
 
 #[tokio::test]

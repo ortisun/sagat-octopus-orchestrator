@@ -22,6 +22,14 @@ set. This is the publication boundary for run-addressed Query/Update. A document
 `state` with `bodies`, top-level `limits`, `chainPolicy`, `continueAsNew`, approval, collection,
 loop or body-return forms remains rejected until that combined runtime has its own evidence.
 
+The internal continuation parser retains `chainPolicy` as a bounded domain policy and
+`continueAsNew` as a typed terminal with its input and optional state expressions. It validates
+the real graph shape, including top-level placement, absence of outgoing routes and exclusion from
+parallel, saga and named-body regions. This retained model is an integration boundary for the
+planner; it does not make the document publishable. The production parser continues to return the
+typed unsupported-capability error until run creation, expression transfer and handoff share the
+canonical chain/run transaction and pass the runtime release evidence.
+
 The document adds a `bodies` map, optional `state` declarations, `chainPolicy` and optional
 `limits: {maxInstances,maxDepth}`. Omitted limit fields default to 100000 and 8 respectively;
 valid ranges are 1..100000 and 1..8, and tenant policy may lower them.

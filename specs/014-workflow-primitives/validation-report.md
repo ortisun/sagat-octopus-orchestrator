@@ -556,3 +556,46 @@ The outstanding release gates include automatic collection admission, scoped com
 reconciliation, scoped scripts and blobs, public approval creation, public continuation handoff,
 and the corresponding five-language runtime scenarios. These passing checkpoint suites do not
 establish those capabilities.
+
+## Typed continuation definition checkpoint (2026-10-15)
+
+The internal continuation parser now retains the bounded chain policy and the actual
+`continueAsNew` terminal in the domain workflow definition. It no longer substitutes an ordinary
+workflow end while validating the graph. Domain validation requires the terminal at the top level,
+forbids a successor, error route or attempt timeout, and rejects it inside named bodies, parallel
+branches and saga regions. Both transfer expressions are compiled by the bounded evaluator.
+
+The production publication parser remains fail-closed for `chainPolicy` and `continueAsNew`, and
+the execution planner still rejects the terminal as an unsupported structured node. This evidence
+therefore establishes lossless typed retention only. It does not establish run initialization,
+expression transfer, atomic handoff, successor scheduling or public continuation.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-domain --test continuation_workflow --locked` | Passed: 3/3 policy, terminal-shape and region tests |
+| `cargo test -p sagat-infra-ir --test continuation --locked` | Passed: 4/4 canonical retention, SDK golden and invalid-expression/graph tests |
+| `cargo check --workspace --all-targets --locked` | Passed |
+| `cargo clippy -p sagat-domain -p sagat-application -p sagat-infra-ir --all-targets --locked -- -D warnings` | Passed |
+| Focused `rustfmt --check` for the changed domain/application/IR files; `git diff --check` | Passed |
+
+## Approval discovery checkpoint (2026-10-15)
+
+An authorized caller can list the approval requests owned by a run through a bounded, cursor-based
+read. Admission resolves the run inside the authenticated tenant and requires both `run:read` and
+`approval:read`. The PostgreSQL adapter filters by tenant, namespace and run, then verifies every
+returned projection against the canonical approval journal before exposing its safe view. The
+response includes the approval identifier, full scoped node identity, status and timestamps. It
+does not include the eligibility policy, initiating identity, decision actor or receipt.
+
+The endpoint returns `Cache-Control: no-store`, uses the common typed error envelope, records a
+bounded read metric without identifiers and makes foreign-tenant and missing runs indistinguishable.
+The public workflow parser still rejects approval nodes: discovery and decisions are usable only for
+requests opened through the internal durable approval boundary until scheduler opening, expiry and
+routing are proven end to end.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives approvals_http:: --locked -- --nocapture` | Passed: 5/5 against real HTTP and PostgreSQL; includes two-page traversal, invalid cursor, viewer access, worker denial, tenant opacity, no-store and disclosure canaries |
+| `cargo test -p sagat-tests --test contract_developer_experience --locked` after regenerating `docs/reference/api.md` | Passed: 8/8 documentation contracts |
+| `cargo clippy -p sagat-application -p sagat-infra-postgres -p sagat-api-http -p sagat-tests --test integration_workflow_primitives --locked -- -D warnings` | Passed |
+| Focused `rustfmt --check`; `git diff --check` | Passed |

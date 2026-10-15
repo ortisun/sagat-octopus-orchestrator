@@ -76,3 +76,54 @@ impl From<&ApprovalDecisionResolution> for ApprovalDecisionReceiptBody {
         }
     }
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalScopeBody {
+    pub scope_node_id: String,
+    pub iteration_index: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalListItemBody {
+    pub approval_id: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub instance_path: Vec<ApprovalScopeBody>,
+    pub status: &'static str,
+    #[serde(with = "time::serde::rfc3339")]
+    pub deadline: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub settled_at: Option<time::OffsetDateTime>,
+}
+
+impl From<&sagat_application::approval_progress::ApprovalListItem> for ApprovalListItemBody {
+    fn from(item: &sagat_application::approval_progress::ApprovalListItem) -> Self {
+        Self {
+            approval_id: item.request_id().to_string(),
+            run_id: item.run_id().to_string(),
+            node_id: item.owner().node().as_str().to_owned(),
+            instance_path: item
+                .owner()
+                .path()
+                .segments()
+                .iter()
+                .map(|segment| ApprovalScopeBody {
+                    scope_node_id: segment.scope_node().as_str().to_owned(),
+                    iteration_index: segment.iteration_index(),
+                })
+                .collect(),
+            status: item.status().as_str(),
+            deadline: item.deadline(),
+            settled_at: item.settled_at(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalListBody {
+    pub items: Vec<ApprovalListItemBody>,
+    pub next_cursor: Option<String>,
+}

@@ -42,6 +42,7 @@ pub enum ApiOperation {
     RunOperate,
     RunRerun,
     RunSignal,
+    ApprovalRead,
     ApprovalDecide,
     SagaOverride,
     QuotaRead,
@@ -67,11 +68,12 @@ pub enum ApiOperation {
 impl ApiOperation {
     const fn permissions(self) -> &'static [Permission] {
         use Permission::{
-            ApprovalDecide, DefinitionPublish, DefinitionRead, DefinitionWrite, EgressManage,
-            EventManage, EventPublish, EventRead, NamespaceRead, OpsRead, PublicationApprove,
-            PublicationManage, QuotaManage, QuotaRead, RunOperate, RunPayloadInspect, RunQuery,
-            RunRead, RunSignal, RunStart, RunUpdate, SagaOverride, ScriptPublish, ScriptRead,
-            ScriptWrite, SecretManage, SecretRead, VersionActivate, WorkerBind, WorkerManage,
+            ApprovalDecide, ApprovalRead, DefinitionPublish, DefinitionRead, DefinitionWrite,
+            EgressManage, EventManage, EventPublish, EventRead, NamespaceRead, OpsRead,
+            PublicationApprove, PublicationManage, QuotaManage, QuotaRead, RunOperate,
+            RunPayloadInspect, RunQuery, RunRead, RunSignal, RunStart, RunUpdate, SagaOverride,
+            ScriptPublish, ScriptRead, ScriptWrite, SecretManage, SecretRead, VersionActivate,
+            WorkerBind, WorkerManage,
         };
         match self {
             Self::NamespaceRead => &[NamespaceRead],
@@ -86,6 +88,7 @@ impl ApiOperation {
             Self::RunOperate => &[RunOperate],
             Self::RunRerun => &[RunOperate, RunStart],
             Self::RunSignal => &[RunSignal],
+            Self::ApprovalRead => &[RunRead, ApprovalRead],
             Self::ApprovalDecide => &[ApprovalDecide],
             Self::SagaOverride => &[SagaOverride],
             Self::QuotaRead => &[QuotaRead],

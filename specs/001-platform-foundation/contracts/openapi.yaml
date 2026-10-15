@@ -916,6 +916,35 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/approvals:
+    get:
+      operationId: listRunApprovals
+      summary: List approval requests for one run
+      tags: [Operations]
+      x-implemented: '014'
+      description: |
+        Needs both `run:read` and `approval:read`. Results are ordered by the immutable opening journal sequence and use a bounded opaque cursor. The response deliberately omits the eligibility policy, initiating identity and decision actor. Missing and foreign-tenant run identifiers both return the same `404` response.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: 'A bounded page of approval requests for the run'
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+            X-Trace-Id: {$ref: '#/components/headers/TraceId'}
+            X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApprovalList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /approvals/{approvalId}/decisions:
     post:
       operationId: decideWorkflowApproval
@@ -3834,6 +3863,38 @@ components:
         afterStateRevision: {type: integer, format: int64, minimum: 1}
         runVersion: {type: integer, format: int64, minimum: 1}
         replayed: {type: boolean}
+    ApprovalScope:
+      type: object
+      additionalProperties: false
+      required: [scopeNodeId, iterationIndex]
+      properties:
+        scopeNodeId: {type: string, minLength: 1, maxLength: 64}
+        iterationIndex: {type: integer, minimum: 0, maximum: 9999}
+    ApprovalListItem:
+      type: object
+      additionalProperties: false
+      required: [approvalId, runId, nodeId, instancePath, status, deadline, settledAt]
+      properties:
+        approvalId: {type: string, format: uuid}
+        runId: {type: string, format: uuid}
+        nodeId: {type: string, minLength: 1, maxLength: 64}
+        instancePath:
+          type: array
+          maxItems: 8
+          items: {$ref: '#/components/schemas/ApprovalScope'}
+        status: {type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED]}
+        deadline: {type: string, format: date-time}
+        settledAt: {type: [string, 'null'], format: date-time}
+    ApprovalList:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: {$ref: '#/components/schemas/ApprovalListItem'}
+        nextCursor: {type: [string, 'null']}
     ApprovalDecisionRequest:
       type: object
       additionalProperties: false
