@@ -144,7 +144,7 @@ async fn admitted_collection_reopens_with_exact_scope_and_verifies_from_addresse
     let store = PgCollectionStore::new(w.db.pool.clone());
     let scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, br#"[1,2]"#).await;
-    let item = retain_payload(&w.db.pool, tenant, b"1").await;
+    let item = digest(b"1");
     let entered = store
         .enter_collection(
             &CollectionEntry::new(
@@ -158,6 +158,14 @@ async fn admitted_collection_reopens_with_exact_scope_and_verifies_from_addresse
         )
         .await
         .expect("enter collection");
+    let retained_item: Vec<u8> =
+        sqlx::query_scalar("SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2")
+            .bind(tenant)
+            .bind(item.as_bytes().as_slice())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("entry retains each captured item atomically");
+    assert_eq!(retained_item, b"1");
     let member = ExecutionInstanceId::in_path(
         InstancePath::root()
             .child(owner.node().clone(), 0)

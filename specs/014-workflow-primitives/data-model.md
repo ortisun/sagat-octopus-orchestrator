@@ -273,6 +273,11 @@ commands serialize on run/chain and current authorization without acquiring a sc
 | Continue | predecessor terminal event, successor/start/state/tasks, links/head, parent lineage, transfers, audit, outbox | Zero or one successor; never a terminal predecessor with missing successor. |
 | Chain-target command | chain head resolution, dedup receipt/inbox, current-run mutation and all its records | Rollover cannot split resolution from application. |
 
+For a collection snapshot, entry also retains the canonical bytes of each captured item under
+its digest in that transaction. Admission reads those bytes by the pinned digest; it must not
+depend on a caller preloading individual items or accept an existing digest row with different
+content.
+
 For chain-capable runs, lock order is chain, its current run, then applicable ownership/admission fences and ordered
 subordinate resources. Preserve the existing run → shared drain fence → session row → sorted
 activity quota order; creation takes the tree-admission advisory lock before its subordinate

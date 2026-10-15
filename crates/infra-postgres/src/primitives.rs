@@ -402,14 +402,51 @@ impl CollectionStore for PgCollectionStore {
         if items.len() != usize::try_from(entry.item_count).unwrap_or(usize::MAX) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
-        let item_digests = items
+        let item_payloads = items
             .iter()
             .map(|item| {
                 serde_json::to_vec(item)
-                    .map(|bytes| Sha256::digest(bytes).to_vec())
+                    .map(|bytes| (Sha256::digest(&bytes).to_vec(), bytes))
                     .map_err(|_| invalid_storage("collection snapshot item"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let item_digests = item_payloads
+            .iter()
+            .map(|(digest, _)| digest.clone())
+            .collect::<Vec<_>>();
+        let item_contents = item_payloads
+            .into_iter()
+            .map(|(_, content)| content)
+            .collect::<Vec<_>>();
+        if !item_digests.is_empty() {
+            sqlx::query(
+                "INSERT INTO payloads (tenant_id, digest, content) \
+                 SELECT $1, item.digest, item.content \
+                 FROM unnest($2::bytea[], $3::bytea[]) AS item(digest, content) \
+                 ON CONFLICT (tenant_id, digest) DO NOTHING",
+            )
+            .bind(entry.transition.tenant_id().as_uuid())
+            .bind(&item_digests)
+            .bind(&item_contents)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            let mismatched: bool = sqlx::query_scalar(
+                "SELECT EXISTS ( \
+                   SELECT 1 FROM unnest($2::bytea[], $3::bytea[]) AS item(digest, content) \
+                   JOIN payloads p ON p.tenant_id = $1 AND p.digest = item.digest \
+                   WHERE p.content <> item.content)",
+            )
+            .bind(entry.transition.tenant_id().as_uuid())
+            .bind(&item_digests)
+            .bind(&item_contents)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_error)?;
+            if mismatched {
+                return Err(PrimitiveStoreError::InvalidTransition);
+            }
+        }
 
         let usage = sqlx::query(
             "SELECT admitted_instances, reserved_instances FROM run_instance_usage \

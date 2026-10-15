@@ -715,6 +715,29 @@ async fn collection_payloads_require_same_tenant_and_matching_content_digests() 
         .expect_err("snapshot content must match its digest");
     assert_eq!(error, PrimitiveStoreError::InvalidTransition);
 
+    let mismatched_item = digest(b"4");
+    sqlx::query("INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, '5')")
+        .bind(tenant)
+        .bind(mismatched_item.as_bytes().as_slice())
+        .execute(&w.db.pool)
+        .await
+        .expect("corrupt captured item fixture");
+    let mismatch_snapshot = retain_payload(&w.db.pool, tenant, b"[4]").await;
+    let error = PgCollectionStore::new(w.db.pool.clone())
+        .enter_collection(
+            &CollectionEntry::new(
+                transition(&w, run, 0, owner.clone(), authority.clone()),
+                CollectionScopeId::generate(),
+                1,
+                mismatch_snapshot,
+                CollectionLimits::new(1, 1, 100_000, 8).expect("limits"),
+            )
+            .expect("entry"),
+        )
+        .await
+        .expect_err("an existing item digest with different content must reject entry");
+    assert_eq!(error, PrimitiveStoreError::InvalidTransition);
+
     let store = PgCollectionStore::new(w.db.pool.clone());
     let scope = CollectionScopeId::generate();
     let local_snapshot = retain_payload(&w.db.pool, tenant, b"[2]").await;
@@ -737,36 +760,6 @@ async fn collection_payloads_require_same_tenant_and_matching_content_digests() 
             .expect("member path"),
         NodeId::parse("work").expect("activity node"),
     );
-    let corrupted_item = digest(b"2");
-    sqlx::query("INSERT INTO payloads (tenant_id, digest, content) VALUES ($1, $2, '3')")
-        .bind(tenant)
-        .bind(corrupted_item.as_bytes().as_slice())
-        .execute(&w.db.pool)
-        .await
-        .expect("corrupt item payload fixture");
-    let error = store
-        .admit_collection_activity(
-            &CollectionAdmission::new(
-                transition(
-                    &w,
-                    run,
-                    entered.run_version,
-                    owner.clone(),
-                    authority.clone(),
-                ),
-                scope,
-                0,
-                member.clone(),
-                ActivityName::parse("line.process").expect("activity"),
-                corrupted_item,
-                1,
-                Uuid::now_v7(),
-            )
-            .expect("admission"),
-        )
-        .await
-        .expect_err("item content must match its captured digest");
-    assert_eq!(error, PrimitiveStoreError::InvalidTransition);
     let error = store
         .admit_collection_activity(
             &CollectionAdmission::new(
