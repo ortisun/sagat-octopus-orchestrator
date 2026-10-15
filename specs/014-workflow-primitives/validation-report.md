@@ -620,3 +620,19 @@ path is integrated. Structured workflow publication and production worker 1.5 re
 Collection failure/cancellation drain, nested scopes, compensation/reconciliation reservations,
 scoped scripts and blobs, all successor kinds, and five-language runtime execution are still
 release gates. The passing internal tick does not authorize publishing a collection workflow.
+
+## Derived reservation and tenant contention checkpoint (2026-10-15)
+
+Collection admission now reads the pinned workflow definition and verifies the owner, body,
+entrypoint and activity before calculating the exact reservation for derived instances. A caller
+cannot under-reserve capacity to bypass tenant limits. The admission and its quota charge remain
+one PostgreSQL transaction; an insufficient reservation leaves no iteration or charge. Two runs
+from the same tenant contend for the same slot budget, including after a policy reduction.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives security:: --locked -q` | Passed: 3/3 real-PostgreSQL tests for tenant isolation, cross-run slot contention and derived reservation rejection |
+| Focused Clippy for PostgreSQL and integration targets with `-D warnings`; `git diff --check` | Passed, as reported by the implementing agent |
+
+This verifies admission for the tested collection shape. Nested bodies, compensation and
+reconciliation settlement, retained-byte ceilings and full production publication remain open.
