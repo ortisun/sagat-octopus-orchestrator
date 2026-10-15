@@ -7,14 +7,18 @@
 //! and commits them together (`FR-002-002`, `FR-002-003`). If the transaction is dropped without a
 //! commit, nothing happened.
 
+mod collection_plan;
+#[cfg(test)]
+mod instance_port_tests;
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, Evaluation, ExecutionError, ExecutionInstanceId, FailureCode, Progress,
-    Resolution, RunEvent, RunId, RunState, RunStatus, StopReason,
+    AddressedRunEvent, CorrelationKey, Evaluation, ExecutionError, ExecutionInstanceId,
+    FailureCode, Progress, Resolution, RunEvent, RunId, RunState, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::{ActivityName, CancelPolicy, Expression, NodeId, WorkflowDefinition};
@@ -51,6 +55,9 @@ pub const MAX_RUN_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Deepest nesting of child runs: a run started by the API is at depth 0, its children at 1, and so
 /// on. A recursive workflow therefore ends in a failed step, never in an unbounded tree.
 pub const MAX_CHILD_DEPTH: u8 = 8;
+
+const SCOPED_EXECUTION_ADAPTER_REQUIRED: &str =
+    "the storage adapter does not support scoped execution identities";
 
 /// The id of the child run a `child` step of `parent` reserves. Derived, not random, so a retried
 /// reservation names the same run and a crash between journaling it and creating it is repaired by
@@ -608,6 +615,19 @@ pub trait RunTx: Send {
         outputs: &[(NodeId, Vec<u8>)],
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Makes outputs addressed by their complete logical identity visible to evaluations in this
+    /// transaction. The compatibility implementation accepts root instances only and delegates to
+    /// [`Self::stage_outputs`]; adapters must override this method before scoped work is enabled.
+    fn stage_instance_outputs(
+        &mut self,
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            let root_outputs = root_outputs_for_legacy_adapter(outputs)?;
+            self.stage_outputs(&root_outputs).await
+        }
+    }
+
     /// Appends `events` to the journal and updates every projection (steps, timers, subscriptions,
     /// payloads, the run row, the outbox) in this transaction. `state` already includes `events`.
     fn persist(
@@ -615,6 +635,23 @@ pub trait RunTx: Send {
         events: &[RunEvent],
         effects: Effects,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Persists explicitly addressed events and outputs without discarding their instance paths.
+    /// The compatibility implementation delegates only when every identity is root. A scoped item
+    /// fails before [`Self::persist`] is called, so a legacy adapter cannot flatten it silently.
+    fn persist_addressed(
+        &mut self,
+        events: &[AddressedRunEvent],
+        outputs: &[(ExecutionInstanceId, Vec<u8>)],
+        mut effects: Effects,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            let root_events = root_events_for_legacy_adapter(events)?;
+            let root_outputs = root_outputs_for_legacy_adapter(outputs)?;
+            effects.outputs.extend(root_outputs);
+            self.persist(&root_events, effects).await
+        }
+    }
 
     /// Records, in this transaction, that an event was delivered to a consumer of this run (a step
     /// it wakes, or the trigger that starts it). `true` when the delivery is new; `false` when the
@@ -628,6 +665,40 @@ pub trait RunTx: Send {
 
     /// Commits. Dropping the transaction instead rolls everything back.
     fn commit(self) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+fn root_events_for_legacy_adapter(
+    events: &[AddressedRunEvent],
+) -> Result<Vec<RunEvent>, StoreError> {
+    if events.iter().any(|event| !event.path().is_root()) {
+        return Err(scoped_execution_adapter_required());
+    }
+    Ok(events
+        .iter()
+        .cloned()
+        .map(AddressedRunEvent::into_event)
+        .collect())
+}
+
+fn root_outputs_for_legacy_adapter(
+    outputs: &[(ExecutionInstanceId, Vec<u8>)],
+) -> Result<Vec<(NodeId, Vec<u8>)>, StoreError> {
+    if outputs
+        .iter()
+        .any(|(instance, _)| !instance.path().is_root())
+    {
+        return Err(scoped_execution_adapter_required());
+    }
+    Ok(outputs
+        .iter()
+        .map(|(instance, output)| (instance.node().clone(), output.clone()))
+        .collect())
+}
+
+fn scoped_execution_adapter_required() -> StoreError {
+    StoreError::Internal {
+        detail: SCOPED_EXECUTION_ADAPTER_REQUIRED.into(),
+    }
 }
 
 /// Why an engine call failed.
