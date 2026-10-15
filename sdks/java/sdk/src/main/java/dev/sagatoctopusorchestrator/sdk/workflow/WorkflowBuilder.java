@@ -36,6 +36,7 @@ public final class WorkflowBuilder {
     private String description;
     private JsonNode inputSchema;
     private JsonNode outputSchema;
+    private ObjectNode state;
     private ChainPolicy chainPolicy;
 
     private WorkflowBuilder(String name) {
@@ -73,6 +74,12 @@ public final class WorkflowBuilder {
 
     public WorkflowBuilder outputSchema(Object schema) {
         this.outputSchema = objectOrThrow(schema, "outputSchema");
+        return this;
+    }
+
+    /** Declares bounded business state without enabling operation transport or runtime execution. */
+    public WorkflowBuilder state(StateDefinition definition) {
+        this.state = StateDefinitionValidator.build(definition);
         return this;
     }
 
@@ -284,6 +291,9 @@ public final class WorkflowBuilder {
         }
         if (outputSchema != null) {
             document.set("outputSchema", outputSchema.deepCopy());
+        }
+        if (state != null) {
+            document.set("state", state.deepCopy());
         }
         if (chainPolicy != null) {
             ObjectNode policy = document.putObject("chainPolicy");

@@ -645,6 +645,7 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     private string? descriptionText;
     private JsonObject? input;
     private JsonObject? output;
+    private JsonObject? state;
     private JsonObject? chainPolicy;
     private readonly SortedDictionary<string, Body> bodies = new(StringComparer.Ordinal);
 
@@ -694,6 +695,13 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     public WorkflowBuilder OutputSchema(JsonObject schema)
     {
         output = (JsonObject)schema.DeepClone();
+        return this;
+    }
+
+    /// <summary>Declares bounded business state and side-effect-free named operations.</summary>
+    public WorkflowBuilder State(StateDefinition definition)
+    {
+        state = StateDefinitionValidator.Build(definition);
         return this;
     }
 
@@ -887,6 +895,11 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         if (output is not null)
         {
             document["outputSchema"] = output.DeepClone();
+        }
+
+        if (state is not null)
+        {
+            document["state"] = state.DeepClone();
         }
 
         if (chainPolicy is not null)

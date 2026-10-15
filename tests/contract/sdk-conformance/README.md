@@ -49,12 +49,18 @@ serialization and parent-child finalization are disabled. The reviewed fixture c
 and optional state transfer, the 10,000-segment and duration ceilings, inherited policy requirements
 and the top-level-only boundary. It does not count as continuation runtime conformance.
 
+`state-operation-builders.json` checks additive v1 typed state plus finite Query/Update declarations
+in the five SDKs. It is build-only: no operation client method, HTTP call or runtime guarantee is
+enabled. The reviewed fixture covers explicit result disclosure, closed state/result schemas,
+bounded strings and arrays, operation-count/name limits and the 1,024-byte expression boundary.
+
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=state-operation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -155,6 +161,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `forEach`, `map` | `id`, `items`, `body`, `result`, `maxItems`, `maxConcurrency` | collection builder |
 | `while`, `repeatUntil` | `id`, `condition`, `body`, `initial`, `carry`, `maxIterations`, `timeoutMs`, `delayMs?`, `onError?` | sequential loop builder |
 | `continueAsNew` | `id`, `input`, `state?` | terminal continuation builder; the workflow also declares `chainPolicy: {maxSegments,timeoutMs}` |
+| top-level `state` | closed `schema`, `initial`, up to 32 named `queries` and 32 named `updates` | typed state/declaration builder; every operation explicitly declares `declared-business-result-v1` disclosure |
 | `return` | `id`, `result` inside a named body | body return builder |
 | `parallel` | `id`, `join`, `branches` (array of op arrays) | `parallel` |
 | `saga` | `id`, `options?`, `body` (op array) | `saga` |

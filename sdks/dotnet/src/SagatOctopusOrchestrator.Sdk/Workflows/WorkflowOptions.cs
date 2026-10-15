@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace SagatOctopusOrchestrator.Sdk.Workflows;
 
 /// <summary>How the wait between the attempts of a step grows.</summary>
@@ -233,6 +235,53 @@ public sealed record ChainPolicyOptions
 
     /// <summary>Original deadline retained by every segment.</summary>
     public required TimeSpan Timeout { get; init; }
+}
+
+/// <summary>The explicit authorization boundary for declared operation results.</summary>
+public static class OperationDisclosure
+{
+    /// <summary>An authorized caller may receive the declared, bounded business result.</summary>
+    public const string DeclaredBusinessResultV1 = "declared-business-result-v1";
+}
+
+/// <summary>A bounded snapshot projection over declared workflow state.</summary>
+public sealed record QueryDefinition
+{
+    public required JsonObject? ArgsSchema { get; init; }
+
+    public required JsonObject? ResultSchema { get; init; }
+
+    public required string? Expression { get; init; }
+
+    public required string? Disclosure { get; init; }
+}
+
+/// <summary>An atomic declarative validator, state reducer and result projection.</summary>
+public sealed record UpdateDefinition
+{
+    public required JsonObject? ArgsSchema { get; init; }
+
+    public string? Validate { get; init; }
+
+    public required string? State { get; init; }
+
+    public required string? Result { get; init; }
+
+    public required JsonObject? ResultSchema { get; init; }
+
+    public required string? Disclosure { get; init; }
+}
+
+/// <summary>Bounded business state and its named side-effect-free operations.</summary>
+public sealed record StateDefinition
+{
+    public required JsonObject? Schema { get; init; }
+
+    public required string? Initial { get; init; }
+
+    public IReadOnlyDictionary<string, QueryDefinition>? Queries { get; init; }
+
+    public IReadOnlyDictionary<string, UpdateDefinition>? Updates { get; init; }
 }
 
 /// <summary>The kind of a workflow trigger.</summary>

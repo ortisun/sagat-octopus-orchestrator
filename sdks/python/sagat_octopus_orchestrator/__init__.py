@@ -50,7 +50,21 @@ from .worker import (
     WorkerTransport,
     run_blocking,
 )
-from .workflow import ApprovalPolicy, Body, Flow, RetryOptions, SwitchCase, WorkflowBuilder, body, flow, workflow
+from .workflow import (
+    ApprovalPolicy,
+    Body,
+    DisclosurePolicy,
+    Flow,
+    QueryDefinition,
+    RetryOptions,
+    StateDefinition,
+    SwitchCase,
+    UpdateDefinition,
+    WorkflowBuilder,
+    body,
+    flow,
+    workflow,
+)
 
 __version__ = SDK_VERSION
 
@@ -71,6 +85,7 @@ __all__ = [
     "CancelReason",
     "CancellationToken",
     "ClientConfig",
+    "DisclosurePolicy",
     "ErrorCode",
     "EventAccepted",
     "Flow",
@@ -78,6 +93,7 @@ __all__ = [
     "JournalPage",
     "OperateAction",
     "OperationResult",
+    "QueryDefinition",
     "RetryOptions",
     "RetryPolicy",
     "Run",
@@ -88,12 +104,14 @@ __all__ = [
     "SagatError",
     "Secrets",
     "SignalResult",
+    "StateDefinition",
     "SwitchCase",
     "SyncSagatClient",
     "TaskKind",
     "TlsOptions",
     "TokenSource",
     "TraceContext",
+    "UpdateDefinition",
     "Verdict",
     "WorkerConfig",
     "WorkerEvent",

@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
   ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, reconcile, workflow,
-  type ActivityContext, type Body, type Flow, type Run, type WorkflowBuilder,
+  type ActivityContext, type Body, type Flow, type Run, type StateDefinition, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
 
@@ -70,6 +70,7 @@ function builderOf(definition: Obj): WorkflowBuilder {
   for (const trigger of definition['triggers'] ?? []) builder.trigger(trigger);
   if (definition['inputSchema']) builder.inputSchema(definition['inputSchema']);
   if (definition['outputSchema']) builder.outputSchema(definition['outputSchema']);
+  if (definition['state']) builder.state(definition['state'] as StateDefinition);
   if (definition['chainPolicy']) builder.chainPolicy(definition['chainPolicy']);
   for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {
     const nested = body();

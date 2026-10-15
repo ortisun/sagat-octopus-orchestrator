@@ -39,11 +39,14 @@ import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChainPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.QueryDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.StateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SwitchCase;
 import dev.sagatoctopusorchestrator.sdk.workflow.Trigger;
+import dev.sagatoctopusorchestrator.sdk.workflow.UpdateDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
 import java.io.File;
@@ -341,6 +344,25 @@ public final class Runner {
         }
         if (definition.has("outputSchema")) {
             builder.outputSchema(definition.get("outputSchema"));
+        }
+        if (definition.has("state")) {
+            JsonNode state = definition.path("state");
+            Map<String, QueryDefinition> queries = new LinkedHashMap<>();
+            state.path("queries").properties().forEach(entry -> {
+                JsonNode query = entry.getValue();
+                queries.put(entry.getKey(), new QueryDefinition(
+                        query.get("argsSchema"), query.get("resultSchema"),
+                        query.path("expression").textValue(), query.path("disclosure").textValue()));
+            });
+            Map<String, UpdateDefinition> updates = new LinkedHashMap<>();
+            state.path("updates").properties().forEach(entry -> {
+                JsonNode update = entry.getValue();
+                updates.put(entry.getKey(), new UpdateDefinition(
+                        update.get("argsSchema"), update.path("validate").textValue(),
+                        update.path("state").textValue(), update.path("result").textValue(),
+                        update.get("resultSchema"), update.path("disclosure").textValue()));
+            });
+            builder.state(new StateDefinition(state.get("schema"), state.path("initial").textValue(), queries, updates));
         }
         if (definition.has("chainPolicy")) {
             JsonNode policy = definition.path("chainPolicy");

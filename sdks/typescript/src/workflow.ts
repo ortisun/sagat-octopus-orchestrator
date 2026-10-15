@@ -1,8 +1,33 @@
 import { SagatError, invalid } from './errors.js';
 import { canonicalJson } from './json.js';
 
-type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Node = Record<string, Json>;
+
+export type DisclosurePolicy = 'declared-business-result-v1';
+
+export interface QueryDefinition {
+  readonly argsSchema: Record<string, Json>;
+  readonly resultSchema: Record<string, Json>;
+  readonly expression: string;
+  readonly disclosure: DisclosurePolicy;
+}
+
+export interface UpdateDefinition {
+  readonly argsSchema: Record<string, Json>;
+  readonly validate?: string;
+  readonly state: string;
+  readonly result: string;
+  readonly resultSchema: Record<string, Json>;
+  readonly disclosure: DisclosurePolicy;
+}
+
+export interface StateDefinition {
+  readonly schema: Record<string, Json>;
+  readonly initial: string;
+  readonly queries?: Readonly<Record<string, QueryDefinition>>;
+  readonly updates?: Readonly<Record<string, UpdateDefinition>>;
+}
 
 export interface RetryOptions {
   maxAttempts?: number;
@@ -100,7 +125,9 @@ export interface Trigger {
 }
 
 const NAME = /^[a-z][a-z0-9-]{2,63}$/;
+const OPERATION_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const SECRET = /^[a-z][a-z0-9._-]{0,63}$/;
+const DISCLOSURE: DisclosurePolicy = 'declared-business-result-v1';
 
 function clean(options: object | undefined): Record<string, Json> {
   const out: Record<string, Json> = {};
@@ -108,6 +135,115 @@ function clean(options: object | undefined): Record<string, Json> {
     if (value !== undefined) out[key] = value as Json;
   }
   return out;
+}
+
+function copyJson<T extends Json>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => copyJson(item)) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyJson(item)])) as T;
+  }
+  return value;
+}
+
+function expression(value: unknown, subject: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw invalid(`${subject} needs an expression`);
+  if (new TextEncoder().encode(value).length > 1024) throw invalid(`${subject} expression exceeds 1024 UTF-8 bytes`);
+  return value;
+}
+
+function integer(value: Json | undefined, minimum: number, maximum: number, subject: string): number {
+  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw invalid(`${subject} must be between ${minimum} and ${maximum}`);
+  }
+  return value as number;
+}
+
+function resultSchema(value: unknown, subject: string): Record<string, Json> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalid(`${subject} must be a closed bounded schema`);
+  }
+  const schema = value as Record<string, Json>;
+  const description = schema['description'];
+  if (description !== undefined && (typeof description !== 'string' || [...description].length > 1024)) {
+    throw invalid(`${subject}.description must be a string of at most 1024 characters`);
+  }
+  const kind = schema['type'];
+  const allowed = new Set(['type', 'description']);
+  switch (kind) {
+    case 'object': {
+      allowed.add('properties'); allowed.add('required'); allowed.add('additionalProperties');
+      const properties = schema['properties'];
+      if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
+        throw invalid(`${subject}.properties must be an object`);
+      }
+      if (schema['additionalProperties'] !== false) {
+        throw invalid(`${subject}.additionalProperties must be false`);
+      }
+      for (const [name, nested] of Object.entries(properties as Record<string, Json>)) {
+        resultSchema(nested, `${subject}.properties.${name}`);
+      }
+      if (schema['required'] !== undefined) {
+        const required = schema['required'];
+        if (!Array.isArray(required) || required.length > 10_000 || required.some((name) => typeof name !== 'string')
+            || new Set(required).size !== required.length
+            || required.some((name) => !Object.prototype.hasOwnProperty.call(properties, name as string))) {
+          throw invalid(`${subject}.required must name unique declared properties`);
+        }
+      }
+      break;
+    }
+    case 'array': {
+      allowed.add('items'); allowed.add('minItems'); allowed.add('maxItems');
+      resultSchema(schema['items'], `${subject}.items`);
+      const maximum = integer(schema['maxItems'], 0, 10_000, `${subject}.maxItems`);
+      if (schema['minItems'] !== undefined && integer(schema['minItems'], 0, 10_000, `${subject}.minItems`) > maximum) {
+        throw invalid(`${subject}.minItems must not exceed maxItems`);
+      }
+      break;
+    }
+    case 'string': {
+      allowed.add('minLength'); allowed.add('maxLength');
+      const maximum = integer(schema['maxLength'], 0, 262_144, `${subject}.maxLength`);
+      if (schema['minLength'] !== undefined && integer(schema['minLength'], 0, 262_144, `${subject}.minLength`) > maximum) {
+        throw invalid(`${subject}.minLength must not exceed maxLength`);
+      }
+      break;
+    }
+    case 'integer':
+    case 'number': {
+      allowed.add('minimum'); allowed.add('maximum');
+      for (const field of ['minimum', 'maximum'] as const) {
+        const bound = schema[field];
+        if (bound !== undefined && (typeof bound !== 'number' || !Number.isFinite(bound))) {
+          throw invalid(`${subject}.${field} must be a finite number`);
+        }
+      }
+      if (typeof schema['minimum'] === 'number' && typeof schema['maximum'] === 'number'
+          && schema['minimum'] > schema['maximum']) {
+        throw invalid(`${subject}.minimum must not exceed maximum`);
+      }
+      break;
+    }
+    case 'boolean':
+    case 'null':
+      break;
+    default:
+      throw invalid(`${subject}.type is not a supported closed result type`);
+  }
+  for (const key of Object.keys(schema)) {
+    if (!allowed.has(key)) throw invalid(`${subject}.${key} is not supported in a closed result schema`);
+  }
+  if (new TextEncoder().encode(canonicalJson(schema)).length > 65_536) {
+    throw invalid(`${subject} exceeds 65536 UTF-8 bytes`);
+  }
+  return copyJson(schema);
+}
+
+function argsSchema(value: unknown, subject: string): Record<string, Json> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalid(`${subject}.argsSchema must be an object`);
+  }
+  return copyJson(value as Record<string, Json>);
 }
 
 /** A chain of nodes: the body of a workflow, of a parallel branch or of a saga. */
@@ -345,6 +481,7 @@ export class WorkflowBuilder extends Flow {
   private readonly triggerList: Trigger[] = [];
   private input: Record<string, Json> | undefined;
   private output: Record<string, Json> | undefined;
+  private stateDeclaration: Record<string, Json> | undefined;
   private chain: ChainPolicy | undefined;
   private readonly namedBodies = new Map<string, Body>();
 
@@ -375,6 +512,48 @@ export class WorkflowBuilder extends Flow {
 
   outputSchema(schema: Record<string, Json>): this {
     this.output = schema;
+    return this;
+  }
+
+  /** Declares bounded business state and its side-effect-free named operations. */
+  state(definition: StateDefinition): this {
+    const state: Record<string, Json> = {
+      schema: resultSchema(definition.schema, 'state.schema'),
+      initial: expression(definition.initial, 'state.initial'),
+    };
+    const queryEntries = Object.entries(definition.queries ?? {});
+    if (queryEntries.length > 32) throw invalid('state supports at most 32 queries');
+    if (queryEntries.length > 0) {
+      state['queries'] = Object.fromEntries(queryEntries.map(([name, query]) => {
+        if (!OPERATION_NAME.test(name)) throw invalid(`query name ${JSON.stringify(name)} is invalid`);
+        if (query === null || typeof query !== 'object') throw invalid(`query ${name} is required`);
+        if (query.disclosure !== DISCLOSURE) throw invalid(`query ${name} needs disclosure ${DISCLOSURE}`);
+        return [name, {
+          argsSchema: argsSchema(query.argsSchema, `query ${name}`),
+          resultSchema: resultSchema(query.resultSchema, `query ${name}.resultSchema`),
+          expression: expression(query.expression, `query ${name}`),
+          disclosure: query.disclosure,
+        }];
+      }));
+    }
+    const updateEntries = Object.entries(definition.updates ?? {});
+    if (updateEntries.length > 32) throw invalid('state supports at most 32 updates');
+    if (updateEntries.length > 0) {
+      state['updates'] = Object.fromEntries(updateEntries.map(([name, update]) => {
+        if (!OPERATION_NAME.test(name)) throw invalid(`update name ${JSON.stringify(name)} is invalid`);
+        if (update === null || typeof update !== 'object') throw invalid(`update ${name} is required`);
+        if (update.disclosure !== DISCLOSURE) throw invalid(`update ${name} needs disclosure ${DISCLOSURE}`);
+        return [name, clean({
+          argsSchema: argsSchema(update.argsSchema, `update ${name}`),
+          validate: update.validate === undefined ? undefined : expression(update.validate, `update ${name}.validate`),
+          state: expression(update.state, `update ${name}.state`),
+          result: expression(update.result, `update ${name}.result`),
+          resultSchema: resultSchema(update.resultSchema, `update ${name}.resultSchema`),
+          disclosure: update.disclosure,
+        })];
+      }));
+    }
+    this.stateDeclaration = state;
     return this;
   }
 
@@ -472,6 +651,7 @@ export class WorkflowBuilder extends Flow {
     if (this.triggerList.length > 0) document['triggers'] = this.triggerList.map((t) => clean(t));
     if (this.input) document['inputSchema'] = this.input;
     if (this.output) document['outputSchema'] = this.output;
+    if (this.stateDeclaration) document['state'] = copyJson(this.stateDeclaration);
     if (this.chain) document['chainPolicy'] = { ...this.chain };
     if (bodyNodes.size > 0) {
       document['bodies'] = Object.fromEntries([...bodyNodes].map(([name, body]) => [name, {

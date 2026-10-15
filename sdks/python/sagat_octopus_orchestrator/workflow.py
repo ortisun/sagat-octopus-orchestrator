@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any, Literal, TypeVar
 
 from ._json import canonical_json
 from .errors import invalid
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{2,63}")
+_OPERATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _SECRET = re.compile(r"[a-z][a-z0-9._-]{0,63}")
 
 Node = dict[str, Any]
@@ -61,6 +64,41 @@ class ApprovalPolicy:
     exclude_initiator: bool | None = None
 
 
+DisclosurePolicy = Literal["declared-business-result-v1"]
+
+
+@dataclass(frozen=True)
+class QueryDefinition:
+    """A bounded snapshot projection with an explicit result-disclosure policy."""
+
+    args_schema: Mapping[str, Any]
+    result_schema: Mapping[str, Any]
+    expression: str
+    disclosure: DisclosurePolicy
+
+
+@dataclass(frozen=True)
+class UpdateDefinition:
+    """An atomic declarative validator, state reducer and result projection."""
+
+    args_schema: Mapping[str, Any]
+    state: str
+    result: str
+    result_schema: Mapping[str, Any]
+    disclosure: DisclosurePolicy
+    validate: str | None = None
+
+
+@dataclass(frozen=True)
+class StateDefinition:
+    """Bounded business state and its named side-effect-free operations."""
+
+    schema: Mapping[str, Any]
+    initial: str
+    queries: Mapping[str, QueryDefinition] | None = None
+    updates: Mapping[str, UpdateDefinition] | None = None
+
+
 RetrySpec = RetryOptions | Mapping[str, Any]
 """A ``RetryOptions``, or a mapping already in the IR's own keys (for a field a newer schema adds)."""
 
@@ -77,6 +115,89 @@ def _add(node: Node, **fields: Any) -> Node:
         if value is not None:
             node[key] = value
     return node
+
+
+def _state_expression(value: Any, subject: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise invalid(f"{subject} needs an expression")
+    if len(value.encode("utf-8")) > 1024:
+        raise invalid(f"{subject} expression exceeds 1024 UTF-8 bytes")
+    return value
+
+
+def _schema_integer(value: Any, minimum: int, maximum: int, subject: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise invalid(f"{subject} must be between {minimum} and {maximum}")
+    return value
+
+
+def _result_schema(value: Any, subject: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise invalid(f"{subject} must be a closed bounded schema")
+    schema = dict(value)
+    description = schema.get("description")
+    if description is not None and (not isinstance(description, str) or len(description) > 1024):
+        raise invalid(f"{subject}.description must be a string of at most 1024 characters")
+    allowed = {"type", "description"}
+    kind = schema.get("type")
+    if kind == "object":
+        allowed |= {"properties", "required", "additionalProperties"}
+        properties = schema.get("properties")
+        if not isinstance(properties, Mapping):
+            raise invalid(f"{subject}.properties must be an object")
+        if schema.get("additionalProperties") is not False:
+            raise invalid(f"{subject}.additionalProperties must be false")
+        for name, nested in properties.items():
+            _result_schema(nested, f"{subject}.properties.{name}")
+        if "required" in schema:
+            required = schema["required"]
+            if (
+                not isinstance(required, list)
+                or len(required) > 10_000
+                or any(not isinstance(name, str) for name in required)
+                or len(set(required)) != len(required)
+                or any(name not in properties for name in required)
+            ):
+                raise invalid(f"{subject}.required must name unique declared properties")
+    elif kind == "array":
+        allowed |= {"items", "minItems", "maxItems"}
+        _result_schema(schema.get("items"), f"{subject}.items")
+        maximum = _schema_integer(schema.get("maxItems"), 0, 10_000, f"{subject}.maxItems")
+        if "minItems" in schema and _schema_integer(schema["minItems"], 0, 10_000, f"{subject}.minItems") > maximum:
+            raise invalid(f"{subject}.minItems must not exceed maxItems")
+    elif kind == "string":
+        allowed |= {"minLength", "maxLength"}
+        maximum = _schema_integer(schema.get("maxLength"), 0, 262_144, f"{subject}.maxLength")
+        if "minLength" in schema and _schema_integer(schema["minLength"], 0, 262_144, f"{subject}.minLength") > maximum:
+            raise invalid(f"{subject}.minLength must not exceed maxLength")
+    elif kind in ("integer", "number"):
+        allowed |= {"minimum", "maximum"}
+        for field in ("minimum", "maximum"):
+            bound = schema.get(field)
+            if bound is not None and (
+                isinstance(bound, bool) or not isinstance(bound, (int, float)) or not isfinite(bound)
+            ):
+                raise invalid(f"{subject}.{field} must be a finite number")
+        if (
+            schema.get("minimum") is not None
+            and schema.get("maximum") is not None
+            and schema["minimum"] > schema["maximum"]
+        ):
+            raise invalid(f"{subject}.minimum must not exceed maximum")
+    elif kind not in ("boolean", "null"):
+        raise invalid(f"{subject}.type is not a supported closed result type")
+    for key in schema:
+        if key not in allowed:
+            raise invalid(f"{subject}.{key} is not supported in a closed result schema")
+    if len(canonical_json(schema).encode("utf-8")) > 65_536:
+        raise invalid(f"{subject} exceeds 65536 UTF-8 bytes")
+    return deepcopy(schema)
+
+
+def _args_schema(value: Any, subject: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise invalid(f"{subject}.argsSchema must be an object")
+    return deepcopy(dict(value))
 
 
 class Flow:
@@ -522,6 +643,7 @@ class WorkflowBuilder(Flow):
         self._triggers: list[dict[str, Any]] = []
         self._input_schema: dict[str, Any] | None = None
         self._output_schema: dict[str, Any] | None = None
+        self._state: dict[str, Any] | None = None
         self._chain_policy: dict[str, int] | None = None
         self._bodies: dict[str, Body] = {}
 
@@ -566,6 +688,61 @@ class WorkflowBuilder(Flow):
 
     def output_schema(self, schema: Mapping[str, Any]) -> WorkflowBuilder:
         self._output_schema = dict(schema)
+        return self
+
+    def state(self, definition: StateDefinition) -> WorkflowBuilder:
+        """Declares business state without enabling operation transport or runtime execution."""
+        state: dict[str, Any] = {
+            "schema": _result_schema(definition.schema, "state.schema"),
+            "initial": _state_expression(definition.initial, "state.initial"),
+        }
+        queries = dict(definition.queries or {})
+        if len(queries) > 32:
+            raise invalid("state supports at most 32 queries")
+        if queries:
+            declared_queries: dict[str, Any] = {}
+            for name, query in queries.items():
+                if not _OPERATION_NAME.fullmatch(name):
+                    raise invalid(f"query name {name!r} is invalid")
+                if not isinstance(query, QueryDefinition):
+                    raise invalid(f"query {name} is required")
+                if query.disclosure != "declared-business-result-v1":
+                    raise invalid(f"query {name} needs disclosure declared-business-result-v1")
+                declared_queries[name] = {
+                    "argsSchema": _args_schema(query.args_schema, f"query {name}"),
+                    "resultSchema": _result_schema(query.result_schema, f"query {name}.resultSchema"),
+                    "expression": _state_expression(query.expression, f"query {name}"),
+                    "disclosure": query.disclosure,
+                }
+            state["queries"] = declared_queries
+        updates = dict(definition.updates or {})
+        if len(updates) > 32:
+            raise invalid("state supports at most 32 updates")
+        if updates:
+            declared_updates: dict[str, Any] = {}
+            for name, update in updates.items():
+                if not _OPERATION_NAME.fullmatch(name):
+                    raise invalid(f"update name {name!r} is invalid")
+                if not isinstance(update, UpdateDefinition):
+                    raise invalid(f"update {name} is required")
+                if update.disclosure != "declared-business-result-v1":
+                    raise invalid(f"update {name} needs disclosure declared-business-result-v1")
+                declared_updates[name] = _add(
+                    {
+                        "argsSchema": _args_schema(update.args_schema, f"update {name}"),
+                        "state": _state_expression(update.state, f"update {name}.state"),
+                        "result": _state_expression(update.result, f"update {name}.result"),
+                        "resultSchema": _result_schema(update.result_schema, f"update {name}.resultSchema"),
+                        "disclosure": update.disclosure,
+                    },
+                    validate=(
+                        _state_expression(update.validate, f"update {name}.validate")
+                        if update.validate is not None
+                        else None
+                    ),
+                )
+            state["updates"] = declared_updates
+        self._state = state
         return self
 
     def chain_policy(self, *, max_segments: int, timeout_ms: int) -> WorkflowBuilder:
@@ -661,6 +838,8 @@ class WorkflowBuilder(Flow):
             document["inputSchema"] = self._input_schema
         if self._output_schema is not None:
             document["outputSchema"] = self._output_schema
+        if self._state is not None:
+            document["state"] = deepcopy(self._state)
         if self._chain_policy is not None:
             document["chainPolicy"] = dict(self._chain_policy)
         if bodies:

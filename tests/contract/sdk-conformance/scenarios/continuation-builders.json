@@ -12,6 +12,15 @@
     },
     "input-and-state-maximum": {
       "name": "continuation-input-state",
+      "state": {
+        "schema": {
+          "type": "object",
+          "properties": { "cursor": { "type": "integer" } },
+          "required": ["cursor"],
+          "additionalProperties": false
+        },
+        "initial": "input.state"
+      },
       "chainPolicy": { "maxSegments": 10000, "timeoutMs": 31622400000 },
       "program": [
         { "op": "continueAsNew", "id": "rollover", "input": "result.nextInput", "state": "state" }

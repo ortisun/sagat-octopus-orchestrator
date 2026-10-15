@@ -75,6 +75,11 @@ internal static class BuildMode
             builder.OutputSchema(output);
         }
 
+        if (definition["state"] is JsonObject state)
+        {
+            builder.State(StateOf(state));
+        }
+
         if (definition["chainPolicy"] is JsonObject chainPolicy)
         {
             builder.ChainPolicy(new ChainPolicyOptions
@@ -93,6 +98,45 @@ internal static class BuildMode
 
         Apply(builder, definition["program"]!.AsArray());
         return builder;
+    }
+
+    private static StateDefinition StateOf(JsonObject state)
+    {
+        var queries = new Dictionary<string, QueryDefinition>(StringComparer.Ordinal);
+        foreach (var (name, value) in state["queries"]?.AsObject() ?? [])
+        {
+            var query = value!.AsObject();
+            queries[name] = new QueryDefinition
+            {
+                ArgsSchema = query["argsSchema"] as JsonObject,
+                ResultSchema = query["resultSchema"] as JsonObject,
+                Expression = (string?)query["expression"],
+                Disclosure = (string?)query["disclosure"],
+            };
+        }
+
+        var updates = new Dictionary<string, UpdateDefinition>(StringComparer.Ordinal);
+        foreach (var (name, value) in state["updates"]?.AsObject() ?? [])
+        {
+            var update = value!.AsObject();
+            updates[name] = new UpdateDefinition
+            {
+                ArgsSchema = update["argsSchema"] as JsonObject,
+                Validate = (string?)update["validate"],
+                State = (string?)update["state"],
+                Result = (string?)update["result"],
+                ResultSchema = update["resultSchema"] as JsonObject,
+                Disclosure = (string?)update["disclosure"],
+            };
+        }
+
+        return new StateDefinition
+        {
+            Schema = state["schema"] as JsonObject,
+            Initial = (string?)state["initial"],
+            Queries = queries,
+            Updates = updates,
+        };
     }
 
     private static void Apply<TFlow>(FlowBase<TFlow> target, JsonArray program)

@@ -34,11 +34,14 @@ from sagat_octopus_orchestrator import (
     Body,
     ClientConfig,
     Flow,
+    QueryDefinition,
     RetryPolicy,
     Run,
     SagatClient,
     SagatError,
+    StateDefinition,
     SwitchCase,
+    UpdateDefinition,
     Verdict,
     WorkerConfig,
     WorkerHost,
@@ -179,6 +182,34 @@ def builder_of(definition: Obj) -> Any:
         builder.input_schema(definition["inputSchema"])
     if definition.get("outputSchema") is not None:
         builder.output_schema(definition["outputSchema"])
+    if definition.get("state") is not None:
+        declared = definition["state"]
+        queries = {
+            name: QueryDefinition(
+                args_schema=query.get("argsSchema"),
+                result_schema=query.get("resultSchema"),
+                expression=query.get("expression"),
+                disclosure=query.get("disclosure"),
+            )
+            for name, query in (declared.get("queries") or {}).items()
+        }
+        updates = {
+            name: UpdateDefinition(
+                args_schema=update.get("argsSchema"),
+                validate=update.get("validate"),
+                state=update.get("state"),
+                result=update.get("result"),
+                result_schema=update.get("resultSchema"),
+                disclosure=update.get("disclosure"),
+            )
+            for name, update in (declared.get("updates") or {}).items()
+        }
+        builder.state(StateDefinition(
+            schema=declared.get("schema"),
+            initial=declared.get("initial"),
+            queries=queries,
+            updates=updates,
+        ))
     if definition.get("chainPolicy") is not None:
         policy = definition["chainPolicy"]
         builder.chain_policy(max_segments=policy["maxSegments"], timeout_ms=policy["timeoutMs"])

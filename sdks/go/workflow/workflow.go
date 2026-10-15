@@ -62,6 +62,7 @@ type Builder struct {
 	triggers    []Trigger
 	input       map[string]any
 	output      map[string]any
+	state       map[string]any
 	chainPolicy map[string]any
 	bodies      map[string]*Builder
 
@@ -713,6 +714,9 @@ func (b *Builder) Build() (map[string]any, error) {
 	}
 	if b.output != nil {
 		document["outputSchema"] = b.output
+	}
+	if b.state != nil {
+		document["state"] = clone(b.state)
 	}
 	if b.chainPolicy != nil {
 		document["chainPolicy"] = map[string]any{

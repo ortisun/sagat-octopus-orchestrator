@@ -295,6 +295,28 @@ func builderOf(definition object) *workflow.Builder {
 	if schema := asObject(definition["outputSchema"]); schema != nil {
 		b.OutputSchema(schema)
 	}
+	if state := asObject(definition["state"]); state != nil {
+		queries := make(map[string]workflow.QueryDefinition)
+		for name, value := range asObject(state["queries"]) {
+			query := asObject(value)
+			queries[name] = workflow.QueryDefinition{
+				ArgsSchema: asObject(query["argsSchema"]), ResultSchema: asObject(query["resultSchema"]),
+				Expression: asString(query["expression"]), Disclosure: workflow.DisclosurePolicy(asString(query["disclosure"])),
+			}
+		}
+		updates := make(map[string]workflow.UpdateDefinition)
+		for name, value := range asObject(state["updates"]) {
+			update := asObject(value)
+			updates[name] = workflow.UpdateDefinition{
+				ArgsSchema: asObject(update["argsSchema"]), Validate: asString(update["validate"]),
+				State: asString(update["state"]), Result: asString(update["result"]),
+				ResultSchema: asObject(update["resultSchema"]), Disclosure: workflow.DisclosurePolicy(asString(update["disclosure"])),
+			}
+		}
+		b.State(workflow.StateDefinition{
+			Schema: asObject(state["schema"]), Initial: asString(state["initial"]), Queries: queries, Updates: updates,
+		})
+	}
 	if policy := asObject(definition["chainPolicy"]); policy != nil {
 		b.ChainPolicy(asInt(policy["maxSegments"]), asMillis(policy["timeoutMs"]))
 	}
