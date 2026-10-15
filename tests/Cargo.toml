@@ -331,6 +331,10 @@ name = "perf_scalability_ha"
 path = "performance/scalability-ha/main.rs"
 
 [[test]]
+name = "perf_workflow_primitives"
+path = "performance/workflow-primitives/main.rs"
+
+[[test]]
 name = "fault_failover"
 path = "fault/failover/main.rs"
 
