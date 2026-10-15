@@ -16,6 +16,14 @@ SAGAT_SDK_REUSE=1 …                                                           
 
 `--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
+## Protocol compatibility
+
+`protocol-negotiation.json` keeps the production worker ceiling and old-minor path executable in
+all five SDKs. It probes the accepted 1.x minors, malformed input and incompatible majors, then
+runs the same root activity through protocol 1, a current 1.4 worker and a worker offering 1.5.
+The 1.5 offer must be accepted as 1.4 by the production adapter. This scenario does not enable or
+exercise scoped work; scoped identity remains a separate pending scenario and test-only adapter gate.
+
 ## Workflow-primitives scenarios
 
 `switch-builders.json` is the reviewed WP-07 contract. Its build phase verifies that all five public
