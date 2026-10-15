@@ -42,6 +42,12 @@ nonroot derivation uses a domain-separated, length-delimited encoding of the typ
 logical instance or effect idempotency key. Every lease, result, timer, subscription, compensation
 reference and journal event that addresses a dynamic node carries the instance identity.
 
+The projection restore API accepts the full typed instance key and preserves equal definition-node
+names at different paths; its legacy restore form maps old rows to the empty path. Run finalization
+must inspect every restored instance, including scoped ones. This does not by itself enable scoped
+execution: commands, planner transitions, leases and journal addressing must all carry the same key
+before a nonroot instance can be scheduled.
+
 **IterationScope**: owner instance, kind (`COLLECTION`, `WHILE`, `REPEAT_UNTIL`), lifecycle,
 captured input/state reference, cardinality, admitted cursor, completed count, next iteration index,
 effective limits, original deadline, reserved slots and ordered result references. Collection

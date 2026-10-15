@@ -2,9 +2,12 @@
 #![allow(clippy::expect_used)]
 
 use sagat_domain::execution::{
-    ExecutionInstanceId, InstanceIdentityError, InstancePath, RunEvent, RunId, RunState,
+    ExecutionInstanceId, InstanceIdentityError, InstancePath, RunEvent, RunId, RunState, RunStatus,
+    StepState, StepStatus,
 };
-use sagat_domain::workflow::NodeId;
+use sagat_domain::identity::Slug;
+use sagat_domain::workflow::{Node, NodeId, NodeKind, WorkflowDefinition};
+use std::collections::BTreeMap;
 
 fn node(value: &str) -> NodeId {
     NodeId::parse(value).expect("valid node")
@@ -63,4 +66,99 @@ fn old_journal_events_replay_as_empty_path_instances() {
         .collect::<Vec<_>>();
     assert_eq!(instances, [ExecutionInstanceId::root(node("begin"))]);
     assert!(state.step(&node("begin")).is_some());
+}
+
+#[test]
+fn projection_restore_keeps_equal_definition_nodes_in_distinct_scopes() {
+    let run = RunId::generate();
+    let first = ExecutionInstanceId::in_path(
+        InstancePath::root().child(node("items"), 0).expect("path"),
+        node("work"),
+    );
+    let second = ExecutionInstanceId::in_path(
+        InstancePath::root().child(node("items"), 1).expect("path"),
+        node("work"),
+    );
+    let step =
+        |status| StepState::restore(status, 0, 0, false, false, None, None, None, None, false);
+    let state = RunState::restore_instances(
+        run,
+        RunStatus::Running,
+        None,
+        false,
+        BTreeMap::from([
+            (first.clone(), step(StepStatus::Ready)),
+            (second.clone(), step(StepStatus::Succeeded)),
+        ]),
+        BTreeMap::new(),
+        2,
+    );
+    assert_eq!(
+        state.instance(&first).map(StepState::status),
+        Some(StepStatus::Ready)
+    );
+    assert_eq!(
+        state.instance(&second).map(StepState::status),
+        Some(StepStatus::Succeeded)
+    );
+    assert!(state.step(&node("work")).is_none());
+    assert_eq!(state.instances().count(), 2);
+    assert_eq!(state.steps().count(), 0);
+}
+
+#[test]
+fn a_live_scoped_instance_prevents_run_finalization() {
+    let run = RunId::generate();
+    let active = ExecutionInstanceId::in_path(
+        InstancePath::root().child(node("items"), 0).expect("path"),
+        node("work"),
+    );
+    let root_done = StepState::restore(
+        StepStatus::Succeeded,
+        0,
+        0,
+        false,
+        true,
+        None,
+        None,
+        None,
+        None,
+        false,
+    );
+    let scoped_ready = StepState::restore(
+        StepStatus::Ready,
+        0,
+        0,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        false,
+    );
+    let state = RunState::restore_instances(
+        run,
+        RunStatus::Running,
+        None,
+        false,
+        BTreeMap::from([
+            (ExecutionInstanceId::root(node("done")), root_done),
+            (active, scoped_ready),
+        ]),
+        BTreeMap::new(),
+        2,
+    );
+    let def = WorkflowDefinition::new(
+        Slug::parse("scope-guard").expect("name"),
+        node("done"),
+        vec![Node::new(node("done"), NodeKind::End { output: None })],
+    )
+    .expect("definition");
+    let decision = sagat_domain::execution::plan(&def, &state, time::OffsetDateTime::UNIX_EPOCH)
+        .expect("planning");
+    assert!(!matches!(
+        decision,
+        sagat_domain::execution::Plan::Emit(RunEvent::RunFinished { .. })
+    ));
 }

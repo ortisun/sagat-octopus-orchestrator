@@ -100,7 +100,7 @@ pub fn plan(
     }
     let all_done = state.has_started()
         && state
-            .steps()
+            .instances()
             .all(|(_, step)| step.status().is_terminal() && step.routed());
     Ok(if all_done {
         Plan::Emit(RunEvent::RunFinished {

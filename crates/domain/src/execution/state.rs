@@ -551,15 +551,38 @@ impl RunState {
         sagas: BTreeMap<NodeId, SagaState>,
         version: u64,
     ) -> Self {
+        Self::restore_instances(
+            run_id,
+            status,
+            stop,
+            paused,
+            steps
+                .into_iter()
+                .map(|(node, state)| (ExecutionInstanceId::root(node), state))
+                .collect(),
+            sagas,
+            version,
+        )
+    }
+
+    /// Rebuilds every logical instance from a trusted projection, retaining distinct scope paths.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_instances(
+        run_id: RunId,
+        status: RunStatus,
+        stop: Option<(StopReason, Option<FailureCode>)>,
+        paused: bool,
+        steps: BTreeMap<ExecutionInstanceId, StepState>,
+        sagas: BTreeMap<NodeId, SagaState>,
+        version: u64,
+    ) -> Self {
         Self {
             run_id,
             status,
             stop,
             paused,
-            steps: steps
-                .into_iter()
-                .map(|(node, state)| (ExecutionInstanceId::root(node), state))
-                .collect(),
+            steps,
             sagas,
             applied: version,
         }
@@ -606,6 +629,11 @@ impl RunState {
     #[must_use]
     pub fn step(&self, node: &NodeId) -> Option<&StepState> {
         self.steps.get(&ExecutionInstanceId::root(node.clone()))
+    }
+
+    #[must_use]
+    pub fn instance(&self, id: &ExecutionInstanceId) -> Option<&StepState> {
+        self.steps.get(id)
     }
 
     /// All root steps, ordered by node id. Scoped instances have their own iterator.
