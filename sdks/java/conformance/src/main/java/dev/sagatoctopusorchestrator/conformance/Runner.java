@@ -651,6 +651,26 @@ public final class Runner {
         return items.get(0).get("approvalId").asText();
     }
 
+    private static String chainRef(JsonNode value, JsonNode config, Map<String, JsonNode> results) {
+        String text = value.asText();
+        if (text.equals("{{namespaceId}}")) return config.get("namespaceId").asText();
+        String field;
+        String key;
+        if (text.startsWith("{{chainId:") && text.endsWith("}}")) {
+            field = "runId";
+            key = text.substring(10, text.length() - 2);
+        } else if (text.startsWith("{{currentRunId:") && text.endsWith("}}")) {
+            field = "currentRunId";
+            key = text.substring(15, text.length() - 2);
+        } else {
+            return text;
+        }
+        JsonNode source = results.get(key);
+        JsonNode resolved = source == null ? null : source.get(field);
+        if (resolved == null || !resolved.isTextual()) throw new IllegalStateException("step " + key + " has no " + field);
+        return resolved.asText();
+    }
+
     private static void pause(long millis) throws InterruptedException {
         Thread.sleep(millis);
     }
@@ -839,8 +859,17 @@ public final class Runner {
             case "inspectChain": {
                 CallOptions options = CallOptions.create();
                 if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
+                String namespaceId = chainRef(step.get("namespaceId"), config, results);
+                String chainId = chainRef(step.get("chainId"), config, results);
                 dev.sagatoctopusorchestrator.sdk.ChainInspection chain = client.inspectChain(
-                        step.get("namespaceId").asText(), step.get("chainId").asText(), options);
+                        namespaceId, chainId, options);
+                if (step.has("waitForHeadChange")) {
+                    String previous = chainRef(step.get("waitForHeadChange"), config, results);
+                    for (int attempt = 0; chain.currentRunId().equals(previous) && attempt < 100; attempt++) {
+                        pause(50);
+                        chain = client.inspectChain(namespaceId, chainId, options);
+                    }
+                }
                 ObjectNode result = F.objectNode();
                 result.put("chainId", chain.chainId()); result.put("currentRunId", chain.currentRunId());
                 result.put("revision", chain.revision()); result.put("cancelRequested", chain.cancelRequested());
@@ -855,20 +884,20 @@ public final class Runner {
             }
             case "signalChain": {
                 dev.sagatoctopusorchestrator.sdk.ChainCommandOptions options =
-                        dev.sagatoctopusorchestrator.sdk.ChainCommandOptions.create(step.get("expectedRunId").asText());
+                        dev.sagatoctopusorchestrator.sdk.ChainCommandOptions.create(chainRef(step.get("expectedRunId"), config, results));
                 if (step.has("idempotencyKey")) options.idempotencyKey(step.get("idempotencyKey").asText());
                 if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
-                SignalResult signal = client.signalChain(step.get("namespaceId").asText(), step.get("chainId").asText(),
+                SignalResult signal = client.signalChain(chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results),
                         step.get("name").asText(), step.get("payload"), options);
                 ObjectNode result = F.objectNode(); ArrayNode delivered = result.putArray("deliveredTo"); signal.deliveredTo().forEach(delivered::add);
                 return result;
             }
             case "cancelChain": {
                 dev.sagatoctopusorchestrator.sdk.ChainCommandOptions options =
-                        dev.sagatoctopusorchestrator.sdk.ChainCommandOptions.create(step.get("expectedRunId").asText());
+                        dev.sagatoctopusorchestrator.sdk.ChainCommandOptions.create(chainRef(step.get("expectedRunId"), config, results));
                 if (step.has("idempotencyKey")) options.idempotencyKey(step.get("idempotencyKey").asText());
                 if (step.has("traceparent")) options.traceparent(step.get("traceparent").asText());
-                client.cancelChain(step.get("namespaceId").asText(), step.get("chainId").asText(), step.get("reason").asText(), options);
+                client.cancelChain(chainRef(step.get("namespaceId"), config, results), chainRef(step.get("chainId"), config, results), step.get("reason").asText(), options);
                 ObjectNode result = F.objectNode(); result.put("accepted", true); return result;
             }
             case "signal": {

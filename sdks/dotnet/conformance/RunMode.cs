@@ -185,6 +185,34 @@ internal sealed class RunMode : IAsyncDisposable
             : throw new InvalidOperationException($"step {key} has no approval");
     }
 
+    private string ChainRef(JsonNode? value)
+    {
+        var text = (string)value!;
+        if (text == "{{namespaceId}}")
+        {
+            return (string)config["namespaceId"]!;
+        }
+        string? field = null;
+        string? key = null;
+        if (text.StartsWith("{{chainId:", StringComparison.Ordinal) && text.EndsWith("}}", StringComparison.Ordinal))
+        {
+            field = "runId";
+            key = text[10..^2];
+        }
+        else if (text.StartsWith("{{currentRunId:", StringComparison.Ordinal) && text.EndsWith("}}", StringComparison.Ordinal))
+        {
+            field = "currentRunId";
+            key = text[15..^2];
+        }
+        if (field is null)
+        {
+            return text;
+        }
+        return results.TryGetValue(key!, out var result) && result[field] is JsonValue id && id.TryGetValue<string>(out var resolved)
+            ? resolved
+            : throw new InvalidOperationException($"step {key} has no {field}");
+    }
+
     internal async Task<JsonObject> PlayAsync(CancellationToken cancellationToken)
     {
         foreach (var (key, definition) in scenario["workers"]?.AsObject() ?? [])
@@ -453,9 +481,19 @@ internal sealed class RunMode : IAsyncDisposable
 
             case "inspectChain":
                 {
-                    var chain = await client.InspectChainAsync(
-                        (string)step["namespaceId"]!, (string)step["chainId"]!,
-                        new RequestOptions { Traceparent = (string?)step["traceparent"] }, cancellationToken).ConfigureAwait(false);
+                    var namespaceId = ChainRef(step["namespaceId"]);
+                    var chainId = ChainRef(step["chainId"]);
+                    var options = new RequestOptions { Traceparent = (string?)step["traceparent"] };
+                    var chain = await client.InspectChainAsync(namespaceId, chainId, options, cancellationToken).ConfigureAwait(false);
+                    if (step["waitForHeadChange"] is not null)
+                    {
+                        var previous = ChainRef(step["waitForHeadChange"]);
+                        for (var attempt = 0; chain.CurrentRunId == previous && attempt < 100; attempt++)
+                        {
+                            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                            chain = await client.InspectChainAsync(namespaceId, chainId, options, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
                     return new JsonObject
                     {
                         ["chainId"] = chain.ChainId, ["currentRunId"] = chain.CurrentRunId, ["revision"] = chain.Revision,
@@ -471,16 +509,16 @@ internal sealed class RunMode : IAsyncDisposable
             case "signalChain":
                 {
                     var signal = await client.SignalChainAsync(
-                        (string)step["namespaceId"]!, (string)step["chainId"]!, (string)step["name"]!, step["payload"]?.DeepClone(),
-                        new ChainCommandOptions { ExpectedRunId = (string)step["expectedRunId"]!, IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
+                        ChainRef(step["namespaceId"]), ChainRef(step["chainId"]), (string)step["name"]!, step["payload"]?.DeepClone(),
+                        new ChainCommandOptions { ExpectedRunId = ChainRef(step["expectedRunId"]), IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
                         cancellationToken).ConfigureAwait(false);
                     return new JsonObject { ["deliveredTo"] = new JsonArray([.. signal.DeliveredTo.Select(item => (JsonNode?)JsonValue.Create(item))]) };
                 }
 
             case "cancelChain":
                 await client.CancelChainAsync(
-                    (string)step["namespaceId"]!, (string)step["chainId"]!, (string)step["reason"]!,
-                    new ChainCommandOptions { ExpectedRunId = (string)step["expectedRunId"]!, IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
+                    ChainRef(step["namespaceId"]), ChainRef(step["chainId"]), (string)step["reason"]!,
+                    new ChainCommandOptions { ExpectedRunId = ChainRef(step["expectedRunId"]), IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
                     cancellationToken).ConfigureAwait(false);
                 return new JsonObject { ["accepted"] = true };
 

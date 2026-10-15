@@ -343,6 +343,15 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
     if (typeof id !== 'string') throw new Error(`step ${String(step['approval'])} has no approval`);
     return id;
   };
+  const chainRef = (value: string): string => {
+    if (value === '{{namespaceId}}') return config['namespaceId'] as string;
+    const match = /^\{\{(chainId|currentRunId):([^}]+)\}\}$/.exec(value);
+    if (!match) return value;
+    const field = match[1] === 'chainId' ? 'runId' : 'currentRunId';
+    const resolved = results.get(match[2]!)?.[field];
+    if (typeof resolved !== 'string') throw new Error(`step ${match[2]} has no ${field}`);
+    return resolved;
+  };
 
   for (const [key, entry] of Object.entries(hosts)) {
     if (entry.def['autostart'] !== false) await startWorker(key);
@@ -441,16 +450,20 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           break;
         }
         case 'inspectChain': {
-          const r = await client.inspectChain(step['namespaceId'], step['chainId'], { traceparent: step['traceparent'] });
+          let r = await client.inspectChain(chainRef(step['namespaceId']), chainRef(step['chainId']), { traceparent: step['traceparent'] });
+          for (let attempt = 0; step['waitForHeadChange'] && r.currentRunId === chainRef(step['waitForHeadChange']) && attempt < 100; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            r = await client.inspectChain(chainRef(step['namespaceId']), chainRef(step['chainId']), { traceparent: step['traceparent'] });
+          }
           result = { chainId: r.chainId, currentRunId: r.currentRunId, revision: r.revision, cancelRequested: r.cancelRequested,
             finalOutcome: r.finalOutcome, segments: r.segments };
           break;
         }
-        case 'signalChain': result = { ...(await client.signalChain(step['namespaceId'], step['chainId'], step['name'], step['payload'], {
-          expectedRunId: step['expectedRunId'], idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
+        case 'signalChain': result = { ...(await client.signalChain(chainRef(step['namespaceId']), chainRef(step['chainId']), step['name'], step['payload'], {
+          expectedRunId: chainRef(step['expectedRunId']), idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
         })) }; break;
-        case 'cancelChain': await client.cancelChain(step['namespaceId'], step['chainId'], step['reason'], {
-          expectedRunId: step['expectedRunId'], idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
+        case 'cancelChain': await client.cancelChain(chainRef(step['namespaceId']), chainRef(step['chainId']), step['reason'], {
+          expectedRunId: chainRef(step['expectedRunId']), idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
         }); result = { accepted: true }; break;
         case 'signal': result = { ...(await client.signal(runOf(step), step['name'], step['payload'] ?? {})) }; break;
         case 'publishEvent': {

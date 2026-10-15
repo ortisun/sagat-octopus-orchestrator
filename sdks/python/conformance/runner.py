@@ -528,6 +528,18 @@ async def run(scenario: Obj, config: Obj) -> Obj:
             raise ValueError(f"step {step.get('approval')} has no approval")
         return approval_id
 
+    def chain_ref(value: str) -> str:
+        if value == "{{namespaceId}}":
+            return str(config["namespaceId"])
+        for prefix, field in (("{{chainId:", "runId"), ("{{currentRunId:", "currentRunId")):
+            if value.startswith(prefix) and value.endswith("}}"):
+                source = value[len(prefix) : -2]
+                resolved = results.get(source, {}).get(field)
+                if not isinstance(resolved, str):
+                    raise ValueError(f"step {source} has no {field}")
+                return resolved
+        return value
+
     try:
         for key, (definition, _) in hosts.items():
             if definition.get("autostart") is not False:
@@ -688,8 +700,18 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     }
                 elif op == "inspectChain":
                     chain = await client.inspect_chain(
-                        step["namespaceId"], step["chainId"], traceparent=step.get("traceparent")
+                        chain_ref(step["namespaceId"]), chain_ref(step["chainId"]), traceparent=step.get("traceparent")
                     )
+                    if step.get("waitForHeadChange"):
+                        previous = chain_ref(step["waitForHeadChange"])
+                        for _ in range(100):
+                            if chain.current_run_id != previous:
+                                break
+                            await asyncio.sleep(0.05)
+                            chain = await client.inspect_chain(
+                                chain_ref(step["namespaceId"]), chain_ref(step["chainId"]),
+                                traceparent=step.get("traceparent"),
+                            )
                     result = {
                         "chainId": chain.chain_id,
                         "currentRunId": chain.current_run_id,
@@ -708,21 +730,21 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     }
                 elif op == "signalChain":
                     signalled = await client.signal_chain(
-                        step["namespaceId"],
-                        step["chainId"],
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
                         step["name"],
                         step.get("payload"),
-                        expected_run_id=step["expectedRunId"],
+                        expected_run_id=chain_ref(step["expectedRunId"]),
                         idempotency_key=step.get("idempotencyKey"),
                         traceparent=step.get("traceparent"),
                     )
                     result = {"deliveredTo": list(signalled.delivered_to)}
                 elif op == "cancelChain":
                     await client.cancel_chain(
-                        step["namespaceId"],
-                        step["chainId"],
+                        chain_ref(step["namespaceId"]),
+                        chain_ref(step["chainId"]),
                         step["reason"],
-                        expected_run_id=step["expectedRunId"],
+                        expected_run_id=chain_ref(step["expectedRunId"]),
                         idempotency_key=step.get("idempotencyKey"),
                         traceparent=step.get("traceparent"),
                     )

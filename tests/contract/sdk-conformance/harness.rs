@@ -736,8 +736,10 @@ async fn stage(scenario: &Value, built: &Value, lang: &str) -> (Run, Value, Stri
         "{lang}-{}",
         &uuid::Uuid::now_v7().simple().to_string()[20..]
     );
+    let namespace_id = run.platform.namespace_id().await;
     let config = json!({
         "apiUrl": run.platform.api.base, "grpcUrl": run.engine.grpc_url, "namespace": NAMESPACE,
+        "namespaceId": namespace_id,
         "clientToken": run.client_token, "workerToken": run.worker_token, "otherTenantToken": run.other_token,
         "unboundWorkerToken": run.unbound_token, "badToken": "not-a-jwt", "controlUrl": run.control, "unique": unique, "workflows": workflows,
         "leaseTtlSeconds": scenario["server"]["leaseTtlSeconds"].as_u64().unwrap_or(30),
