@@ -39,7 +39,7 @@ fn environment(
     }
     if needed.contains("steps") {
         let mut steps = Map::new();
-        for (id, bytes) in &data.outputs {
+        for (id, bytes) in data.root_outputs() {
             steps.insert(id.as_str().to_owned(), json!({ "output": parse(bytes)? }));
         }
         env = env.with("steps", Value::Object(steps));
@@ -106,7 +106,7 @@ impl ExpressionEvaluator for JsonEvaluator {
     fn task_input(&self, data: &RunData, node: &NodeId) -> Vec<u8> {
         let input = parse(&data.input).unwrap_or(Value::Null);
         let mut steps = Map::new();
-        for (id, bytes) in &data.outputs {
+        for (id, bytes) in data.root_outputs() {
             if let Ok(output) = parse(bytes) {
                 steps.insert(id.as_str().to_owned(), json!({ "output": output }));
             }

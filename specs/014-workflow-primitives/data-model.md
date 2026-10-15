@@ -64,6 +64,9 @@ journal remain unsupported until durable admission events and the full writer/wo
 The explicit `JsonIrCodec::parse_structured` checks and canonicalizes v1 collection bodies and
 limits for contract validation. The production parse used by publication still rejects structured
 declarations, so a validated body cannot enter execution prematurely.
+`RunData` retains outputs under `ExecutionInstanceId`, keeping equal local names in separate paths
+distinct after database reload. Existing expression contexts read only the empty-path root outputs;
+scoped evaluator contexts and output staging still need typed effects and worker targets.
 
 **IterationScope**: owner instance, kind (`COLLECTION`, `WHILE`, `REPEAT_UNTIL`), lifecycle,
 captured input/state reference, cardinality, admitted cursor, completed count, next iteration index,

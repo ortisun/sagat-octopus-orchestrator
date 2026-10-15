@@ -1110,7 +1110,7 @@ impl RunTx for PgRunTx {
             .await
             .map_err(store_error)?;
             let rows = sqlx::query(
-                "SELECT s.node, p.content FROM steps s \
+                "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, p.content FROM steps s \
                  JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest \
                  WHERE s.tenant_id = $1 AND s.run_id = $2",
             )
@@ -1123,7 +1123,10 @@ impl RunTx for PgRunTx {
             for row in &rows {
                 let node: String = col(row, "node")?;
                 outputs.insert(
-                    NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+                    ExecutionInstanceId::in_path(
+                        step_instance_path(row)?,
+                        NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?,
+                    ),
                     col::<Vec<u8>>(row, "content")?,
                 );
             }
@@ -1144,7 +1147,7 @@ impl RunTx for PgRunTx {
         self.data().await?;
         if let Some(data) = &mut self.data {
             for (node, bytes) in outputs {
-                data.outputs.insert(node.clone(), bytes.clone());
+                data.insert_root_output(node.clone(), bytes.clone());
             }
         }
         Ok(())
@@ -1466,7 +1469,7 @@ impl RunTx for PgRunTx {
         let tenant = self.info.tenant_id;
         let run = self.info.run_id;
 
-        // 1. Outputs: content-addressed payloads, remembered per node.
+        // 1. Outputs: content-addressed payloads, remembered per root node.
         let mut output_digest: BTreeMap<&NodeId, Vec<u8>> = BTreeMap::new();
         for (node, bytes) in &effects.outputs {
             let digest = Sha256::digest(bytes).to_vec();
@@ -1482,7 +1485,7 @@ impl RunTx for PgRunTx {
             .map_err(store_error)?;
             output_digest.insert(node, digest);
             if let Some(data) = &mut self.data {
-                data.outputs.insert(node.clone(), bytes.clone());
+                data.insert_root_output(node.clone(), bytes.clone());
             }
         }
 

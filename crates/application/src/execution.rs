@@ -180,8 +180,46 @@ pub struct RunData {
     pub input: Vec<u8>,
     /// Catalog-backed run input only; a caller-provided JSON lookalike never sets this identity.
     pub input_blob: Option<sagat_domain::blobs::BlobId>,
-    /// Outputs of the steps that succeeded, by node id.
-    pub outputs: BTreeMap<NodeId, Vec<u8>>,
+    /// Outputs of the step instances that succeeded.
+    pub outputs: BTreeMap<ExecutionInstanceId, Vec<u8>>,
+}
+
+impl RunData {
+    /// The output retained for one logical instance.
+    #[must_use]
+    pub fn output(&self, instance: &ExecutionInstanceId) -> Option<&[u8]> {
+        self.outputs.get(instance).map(Vec::as_slice)
+    }
+
+    /// Retains an output under its full run-local identity.
+    pub fn insert_output(
+        &mut self,
+        instance: ExecutionInstanceId,
+        output: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        self.outputs.insert(instance, output)
+    }
+
+    /// The output of an existing root node.
+    #[must_use]
+    pub fn root_output(&self, node: &NodeId) -> Option<&[u8]> {
+        self.output(&ExecutionInstanceId::root(node.clone()))
+    }
+
+    /// Retains an output produced by the existing root-only execution path.
+    pub fn insert_root_output(&mut self, node: NodeId, output: Vec<u8>) -> Option<Vec<u8>> {
+        self.insert_output(ExecutionInstanceId::root(node), output)
+    }
+
+    /// Root outputs in definition-node order, for the existing public expression context.
+    pub fn root_outputs(&self) -> impl Iterator<Item = (&NodeId, &[u8])> {
+        self.outputs.iter().filter_map(|(instance, output)| {
+            instance
+                .path()
+                .is_root()
+                .then_some((instance.node(), output.as_slice()))
+        })
+    }
 }
 
 /// An expression failed to evaluate. The detail is for logs; it never reaches clients.
@@ -353,7 +391,8 @@ pub struct Effects {
     pub actor: Actor,
     pub trace_id: Option<String>,
     /// The outputs of steps that finished in this transaction: what a worker returned, or the
-    /// payload of the signal that woke a wait.
+    /// payload of the signal that woke a wait. This existing writer path addresses root nodes;
+    /// scoped writers must carry [`ExecutionInstanceId`] through effects and transaction staging.
     pub outputs: Vec<(NodeId, Vec<u8>)>,
     /// The lease granted to a worker by a `step.leased` event of this transaction.
     pub lease: Option<LeaseGrant>,
@@ -562,7 +601,8 @@ pub trait RunTx: Send {
     fn data(&mut self) -> impl Future<Output = Result<&RunData, StoreError>> + Send;
 
     /// Makes outputs that are about to be persisted visible to this transaction's evaluations: a
-    /// condition that follows a step that just completed must see what that step returned.
+    /// condition that follows a step that just completed must see what that step returned. The
+    /// existing path stages root nodes; scoped staging requires a typed effect identity.
     fn stage_outputs(
         &mut self,
         outputs: &[(NodeId, Vec<u8>)],

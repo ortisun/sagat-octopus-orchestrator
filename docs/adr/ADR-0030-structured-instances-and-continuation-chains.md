@@ -98,7 +98,7 @@ state operations; accepting this ADR does not authorize a general payload viewer
 
 ### Budgets and transactions
 
-12. V2 has optional top-level `limits: {maxInstances,maxDepth}`; omitted fields default to 100000
+12. The additive v1 IR has optional top-level `limits: {maxInstances,maxDepth}`; omitted fields default to 100000
     and 8 respectively. Allowed ranges are 1..100000 and 1..8. Tenant policy may lower them.
     Capture effective limits on run creation and honor a later reduction for new admissions.
     Required node-specific limits remain explicit: items/iterations 1..10000, concurrency 1..256,
