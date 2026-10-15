@@ -421,6 +421,18 @@ async function run(scenario: Obj, config: Obj): Promise<Obj> {
           };
           break;
         }
+        case 'inspectChain': {
+          const r = await client.inspectChain(step['namespaceId'], step['chainId'], { traceparent: step['traceparent'] });
+          result = { chainId: r.chainId, currentRunId: r.currentRunId, revision: r.revision, cancelRequested: r.cancelRequested,
+            finalOutcome: r.finalOutcome, segments: r.segments };
+          break;
+        }
+        case 'signalChain': result = { ...(await client.signalChain(step['namespaceId'], step['chainId'], step['name'], step['payload'], {
+          expectedRunId: step['expectedRunId'], idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
+        })) }; break;
+        case 'cancelChain': await client.cancelChain(step['namespaceId'], step['chainId'], step['reason'], {
+          expectedRunId: step['expectedRunId'], idempotencyKey: step['idempotencyKey'], traceparent: step['traceparent'],
+        }); result = { accepted: true }; break;
         case 'signal': result = { ...(await client.signal(runOf(step), step['name'], step['payload'] ?? {})) }; break;
         case 'publishEvent': {
           const r = await client.publishEvent({ type: step['type'], data: step['data'] ?? {}, eventId: step['eventId'], correlationKey: step['correlationKey'] });

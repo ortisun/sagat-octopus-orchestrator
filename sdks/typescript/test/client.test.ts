@@ -170,6 +170,27 @@ test('declared updates keep their body key across retries and reject invalid inp
   assert.equal(seen.length, sent);
 });
 
+test('chain inspection and commands use namespace identity, expected head and durable keys', async () => {
+  const namespaceId = '0190aaaa-0000-7000-8000-000000000010';
+  const chainId = '0190aaaa-0000-7000-8000-000000000011';
+  const head = '0190aaaa-0000-7000-8000-000000000012';
+  prepare((request, res) => request.url.includes('/signals/')
+    ? reply(res, 202, { deliveredTo: ['wait'] })
+    : request.url.endsWith('/cancel') ? reply(res, 202, undefined) : reply(res, 200, {
+      chainId, currentRunId: head, revision: 2, cancelRequested: false, finalOutcome: null,
+      segments: [{ index: 0, runId: chainId, predecessorRunId: null, successorRunId: head }, { index: 1, runId: head, predecessorRunId: chainId, successorRunId: null }],
+    }));
+  const sdk = client();
+  const inspection = await sdk.inspectChain(namespaceId, chainId);
+  const signal = await sdk.signalChain(namespaceId, chainId, 'chain.release', { ok: true }, { expectedRunId: head, idempotencyKey: 'chain-signal-1' });
+  await sdk.cancelChain(namespaceId, chainId, 'operator requested cancellation', { expectedRunId: head, idempotencyKey: 'chain-cancel-1' });
+  assert.equal(inspection.segments[1]?.predecessorRunId, chainId);
+  assert.deepEqual(signal.deliveredTo, ['wait']);
+  assert.deepEqual(seen[1]?.body, { expectedRunId: head, payload: { ok: true } });
+  assert.equal(seen[1]?.headers['idempotency-key'], 'chain-signal-1');
+  assert.deepEqual(seen[2]?.body, { expectedRunId: head, reason: 'operator requested cancellation' });
+});
+
 test('an event without an id gets one per call, kept across retries, so a repetition is a duplicate and not a second event', async () => {
   let attempts = 0;
   prepare((_req, res) => (++attempts < 2 ? reply(res, 503, 'upstream down') : reply(res, 202, { eventId: 'e', source: 'api', status: 'ACCEPTED' })));

@@ -400,6 +400,39 @@ internal sealed class RunMode : IAsyncDisposable
                     };
                 }
 
+            case "inspectChain":
+                {
+                    var chain = await client.InspectChainAsync(
+                        (string)step["namespaceId"]!, (string)step["chainId"]!,
+                        new RequestOptions { Traceparent = (string?)step["traceparent"] }, cancellationToken).ConfigureAwait(false);
+                    return new JsonObject
+                    {
+                        ["chainId"] = chain.ChainId, ["currentRunId"] = chain.CurrentRunId, ["revision"] = chain.Revision,
+                        ["cancelRequested"] = chain.CancelRequested, ["finalOutcome"] = chain.FinalOutcome,
+                        ["segments"] = new JsonArray([.. chain.Segments.Select(item => (JsonNode?)new JsonObject
+                        {
+                            ["index"] = item.Index, ["runId"] = item.RunId, ["predecessorRunId"] = item.PredecessorRunId,
+                            ["successorRunId"] = item.SuccessorRunId,
+                        })]),
+                    };
+                }
+
+            case "signalChain":
+                {
+                    var signal = await client.SignalChainAsync(
+                        (string)step["namespaceId"]!, (string)step["chainId"]!, (string)step["name"]!, step["payload"]?.DeepClone(),
+                        new ChainCommandOptions { ExpectedRunId = (string)step["expectedRunId"]!, IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
+                        cancellationToken).ConfigureAwait(false);
+                    return new JsonObject { ["deliveredTo"] = new JsonArray([.. signal.DeliveredTo.Select(item => (JsonNode?)JsonValue.Create(item))]) };
+                }
+
+            case "cancelChain":
+                await client.CancelChainAsync(
+                    (string)step["namespaceId"]!, (string)step["chainId"]!, (string)step["reason"]!,
+                    new ChainCommandOptions { ExpectedRunId = (string)step["expectedRunId"]!, IdempotencyKey = (string?)step["idempotencyKey"], Traceparent = (string?)step["traceparent"] },
+                    cancellationToken).ConfigureAwait(false);
+                return new JsonObject { ["accepted"] = true };
+
             case "signal":
                 {
                     var signalled = await client.SignalAsync(RunOf(step), (string)step["name"]!, step["payload"]?.DeepClone() ?? new JsonObject(), null, cancellationToken).ConfigureAwait(false);

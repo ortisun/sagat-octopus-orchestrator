@@ -139,6 +139,30 @@ export interface SignalResult {
   deliveredTo: string[];
 }
 
+export type ChainFinalOutcome =
+  | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'TIMED_OUT' | 'COMPENSATED' | 'PARTIAL' | 'COMPENSATION_FAILED';
+
+export interface ChainSegment {
+  index: number;
+  runId: string;
+  predecessorRunId: string | null;
+  successorRunId: string | null;
+}
+
+export interface ChainInspection {
+  chainId: string;
+  currentRunId: string;
+  revision: number;
+  cancelRequested: boolean;
+  finalOutcome: ChainFinalOutcome | null;
+  segments: ChainSegment[];
+  raw: Record<string, unknown>;
+}
+
+export interface ChainCommandOptions extends CallOptions {
+  expectedRunId: string;
+}
+
 export interface PublishEventInput {
   /** Unique within the source for the deduplication window; generated per call when absent. */
   eventId?: string;
@@ -171,6 +195,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A run id is a UUID: anything else would be a path of its own (`..`, `x/operations`) and is refused before a request (SPEC §10). */
 function runIdOf(value: string): string {
   if (typeof value !== 'string' || !UUID.test(value)) throw invalid('a run id is a UUID');
+  return value.toLowerCase();
+}
+
+function namespaceIdOf(value: string): string {
+  if (typeof value !== 'string' || !UUID.test(value)) throw invalid('a namespace id is a UUID');
   return value.toLowerCase();
 }
 
@@ -570,6 +599,66 @@ export class SagatClient {
     const raw = object(response.body, 'a signal result');
     const delivered = raw['deliveredTo'];
     return { deliveredTo: Array.isArray(delivered) ? delivered.map(String) : [] };
+  }
+
+  /** Reads one execution chain snapshot, including its current head and immutable lineage. */
+  async inspectChain(namespaceId: string, chainId: string, options: QueryOptions = {}): Promise<ChainInspection> {
+    const response = await this.#http.request({
+      method: 'GET',
+      path: `/namespaces/${encodeURIComponent(namespaceIdOf(namespaceId))}/chains/${encodeURIComponent(runIdOf(chainId))}`,
+      traceparent: this.trace(options.traceparent), safeToRepeat: true,
+    });
+    const raw = object(response.body, 'a chain inspection');
+    const segments = raw['segments'];
+    if (!Array.isArray(segments) || segments.length === 0) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'segments is invalid in the answer' });
+    }
+    const outcomes = new Set<string>(TERMINAL_STATUSES);
+    const finalOutcome = raw['finalOutcome'];
+    if (finalOutcome !== null && (typeof finalOutcome !== 'string' || !outcomes.has(finalOutcome))) {
+      throw new SagatError({ code: 'PROTOCOL', message: 'finalOutcome is invalid in the answer' });
+    }
+    return {
+      chainId: str(raw, 'chainId'), currentRunId: str(raw, 'currentRunId'), revision: revision(raw, 'revision'),
+      cancelRequested: raw['cancelRequested'] === true, finalOutcome: finalOutcome as ChainFinalOutcome | null,
+      segments: segments.map((value) => {
+        const segment = object(value, 'a chain segment');
+        const index = revision(segment, 'index');
+        if (index > 65_535) throw new SagatError({ code: 'PROTOCOL', message: 'index is invalid in the answer' });
+        return {
+          index, runId: str(segment, 'runId'), predecessorRunId: optStr(segment, 'predecessorRunId'),
+          successorRunId: optStr(segment, 'successorRunId'),
+        };
+      }), raw,
+    };
+  }
+
+  /** Signals a root wait on the expected current chain head. */
+  async signalChain(namespaceId: string, chainId: string, name: string, payload: unknown, options: ChainCommandOptions): Promise<SignalResult> {
+    if (!options) throw invalid('chain signal options are required');
+    const response = await this.#http.request({
+      method: 'POST',
+      path: `/namespaces/${encodeURIComponent(namespaceIdOf(namespaceId))}/chains/${encodeURIComponent(runIdOf(chainId))}/signals/${encodeURIComponent(segmentOf(name, 'a signal name'))}`,
+      body: { expectedRunId: runIdOf(options.expectedRunId), payload },
+      idempotencyKey: this.key(options.idempotencyKey), traceparent: this.trace(options.traceparent), safeToRepeat: true,
+    });
+    const raw = object(response.body, 'a chain signal result');
+    const delivered = raw['deliveredTo'];
+    return { deliveredTo: Array.isArray(delivered) ? delivered.map(String) : [] };
+  }
+
+  /** Latches cancellation and cancels the expected current chain head. */
+  async cancelChain(namespaceId: string, chainId: string, reason: string, options: ChainCommandOptions): Promise<void> {
+    if (!options) throw invalid('chain cancellation options are required');
+    if (typeof reason !== 'string' || [...reason].length < 1 || [...reason].length > 512) {
+      throw invalid('a chain cancellation reason is 1 to 512 characters');
+    }
+    await this.#http.request({
+      method: 'POST',
+      path: `/namespaces/${encodeURIComponent(namespaceIdOf(namespaceId))}/chains/${encodeURIComponent(runIdOf(chainId))}/cancel`,
+      body: { expectedRunId: runIdOf(options.expectedRunId), reason },
+      idempotencyKey: this.key(options.idempotencyKey), traceparent: this.trace(options.traceparent), safeToRepeat: true,
+    });
   }
 
   /** Publishes an event to the inbox of the namespace, once per event id for the deduplication window. */

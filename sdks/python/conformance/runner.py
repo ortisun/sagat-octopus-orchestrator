@@ -637,6 +637,47 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                         "runVersion": updated.run_version,
                         "replayed": updated.replayed,
                     }
+                elif op == "inspectChain":
+                    chain = await client.inspect_chain(
+                        step["namespaceId"], step["chainId"], traceparent=step.get("traceparent")
+                    )
+                    result = {
+                        "chainId": chain.chain_id,
+                        "currentRunId": chain.current_run_id,
+                        "revision": chain.revision,
+                        "cancelRequested": chain.cancel_requested,
+                        "finalOutcome": chain.final_outcome,
+                        "segments": [
+                            {
+                                "index": item.index,
+                                "runId": item.run_id,
+                                "predecessorRunId": item.predecessor_run_id,
+                                "successorRunId": item.successor_run_id,
+                            }
+                            for item in chain.segments
+                        ],
+                    }
+                elif op == "signalChain":
+                    signalled = await client.signal_chain(
+                        step["namespaceId"],
+                        step["chainId"],
+                        step["name"],
+                        step.get("payload"),
+                        expected_run_id=step["expectedRunId"],
+                        idempotency_key=step.get("idempotencyKey"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {"deliveredTo": list(signalled.delivered_to)}
+                elif op == "cancelChain":
+                    await client.cancel_chain(
+                        step["namespaceId"],
+                        step["chainId"],
+                        step["reason"],
+                        expected_run_id=step["expectedRunId"],
+                        idempotency_key=step.get("idempotencyKey"),
+                        traceparent=step.get("traceparent"),
+                    )
+                    result = {"accepted": True}
                 elif op == "signal":
                     signalled = await client.signal(run_of(step), step["name"], step.get("payload") or {})
                     result = {"deliveredTo": list(signalled.delivered_to)}

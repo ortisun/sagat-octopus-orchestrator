@@ -390,6 +390,44 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			"beforeStateRevision": result.BeforeStateRevision, "afterStateRevision": result.AfterStateRevision,
 			"runVersion": result.RunVersion, "replayed": result.Replayed,
 		}, nil
+	case "inspectChain":
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.InspectChain(ctx, asString(step["namespaceId"]), asString(step["chainId"]), opts...)
+		if err != nil {
+			return nil, err
+		}
+		segments := make([]any, 0, len(result.Segments))
+		for _, item := range result.Segments {
+			segments = append(segments, object{"index": item.Index, "runId": item.RunID, "predecessorRunId": orNull(item.PredecessorRunID), "successorRunId": orNull(item.SuccessorRunID)})
+		}
+		return object{"chainId": result.ChainID, "currentRunId": result.CurrentRunID, "revision": result.Revision, "cancelRequested": result.CancelRequested, "finalOutcome": orNull(result.FinalOutcome), "segments": segments}, nil
+	case "signalChain":
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		result, err := c.SignalChain(ctx, asString(step["namespaceId"]), asString(step["chainId"]), asString(step["name"]), payloadOf(step["payload"]), client.ChainCommand{ExpectedRunID: asString(step["expectedRunId"])}, opts...)
+		if err != nil {
+			return nil, err
+		}
+		delivered := make([]any, len(result.DeliveredTo))
+		for i, value := range result.DeliveredTo {
+			delivered[i] = value
+		}
+		return object{"deliveredTo": delivered}, nil
+	case "cancelChain":
+		opts := callOpts
+		if value := asString(step["traceparent"]); value != "" {
+			opts = append(opts, client.WithTraceparent(value))
+		}
+		err := c.CancelChain(ctx, asString(step["namespaceId"]), asString(step["chainId"]), asString(step["reason"]), client.ChainCommand{ExpectedRunID: asString(step["expectedRunId"])}, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return object{"accepted": true}, nil
 	case "signal":
 		id, err := runOf(step)
 		if err != nil {

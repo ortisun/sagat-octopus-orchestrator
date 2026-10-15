@@ -102,6 +102,9 @@ All calls are `<apiUrl><path>` with `Authorization: Bearer <token>`, `Accept: ap
 | `decideApproval(approvalId, decision, options)` | `POST /approvals/{approvalId}/decisions` with `{decisionKey, decision: APPROVE \| REJECT, reasonCode?}` | `200` ApprovalDecisionReceipt |
 | `query(runId, name, args, options)` | `POST /runs/{runId}/queries/{name}` with `{args}` | `200` QueryResult with the observed run and state revisions |
 | `update(runId, name, args, options)` | `POST /runs/{runId}/updates/{name}` with `{updateKey, args, expectedStateRevision?}` | `200` UpdateReceipt |
+| `inspectChain(namespaceId, chainId)` | `GET /namespaces/{namespaceId}/chains/{chainId}` | `200` ChainInspection |
+| `signalChain(namespaceId, chainId, name, payload, options)` | `POST /namespaces/{namespaceId}/chains/{chainId}/signals/{name}` with `{expectedRunId, payload}`, `Idempotency-Key` | `202` `{deliveredTo}` |
+| `cancelChain(namespaceId, chainId, reason, options)` | `POST /namespaces/{namespaceId}/chains/{chainId}/cancel` with `{expectedRunId, reason}`, `Idempotency-Key` | `202` empty |
 | `publishEvent(event)` | `POST /events` with `{eventId, type, data, subject?, occurredAt?, correlationKey?, dedupeTtlSeconds?}` | `202` `{eventId, source, status: ACCEPTED \| DUPLICATE}` |
 | `waitForCompletion(runId, options)` | polls `get` every `pollInterval` (default 500 ms, ±20 % jitter) until the status is terminal or `timeout` | the final Run |
 
@@ -124,6 +127,10 @@ Rules:
   An update key is 1 to 128 visible ASCII characters. It lives in the body, is required, and is
   preserved with the exact arguments and expected revision across retries. Query and update results
   are typed, retain raw JSON and expose the exact committed revisions returned by the server.
+- Chain commands require the namespace UUID and chain UUID because the chain is a namespace-scoped
+  resource. Every mutating command carries the caller's observed `expectedRunId`; a delayed command
+  fails with `CHAIN_HEAD_CHANGED` instead of reaching a replacement head. The SDK generates or accepts
+  an `Idempotency-Key` and preserves the exact key and body across retries.
 - `start` with a `deadline` sends an RFC 3339 instant in UTC (`...Z`); the SDK **MUST NOT** send a local
   offset it computed. A `deadline` option as a duration is converted by the SDK from the clock at the
   call, once, before the first attempt.

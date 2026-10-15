@@ -48,6 +48,15 @@ public interface ISagatClient
     /// <summary>Sends a signal to the steps of a run that wait for it; a signal nobody waits for is a <see cref="SagatErrorCode.Conflict"/>.</summary>
     Task<SignalResult> SignalAsync<TPayload>(string runId, string name, TPayload payload, RequestOptions? options = null, CancellationToken cancellationToken = default);
 
+    /// <summary>Reads one committed chain head and lineage snapshot.</summary>
+    Task<ChainInspection> InspectChainAsync(string namespaceId, string chainId, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Signals a root wait on the expected current chain head.</summary>
+    Task<SignalResult> SignalChainAsync<TPayload>(string namespaceId, string chainId, string name, TPayload payload, ChainCommandOptions options, CancellationToken cancellationToken = default);
+
+    /// <summary>Latches cancellation and cancels the expected current chain head.</summary>
+    Task CancelChainAsync(string namespaceId, string chainId, string reason, ChainCommandOptions options, CancellationToken cancellationToken = default);
+
     /// <summary>Publishes an event to the inbox of the namespace, once per event id for the deduplication window.</summary>
     Task<EventAccepted> PublishEventAsync(PublishEventRequest request, RequestOptions? options = null, CancellationToken cancellationToken = default);
 

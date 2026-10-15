@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/backoff"
@@ -138,6 +139,16 @@ func runPath(runID string) (string, error) {
 		return "", sagat.Invalid("a run id is a UUID")
 	}
 	return "/runs/" + runID, nil
+}
+
+func chainPath(namespaceID, chainID string) (string, error) {
+	if !uuidPattern.MatchString(namespaceID) {
+		return "", sagat.Invalid("a namespace id is a UUID")
+	}
+	if !uuidPattern.MatchString(chainID) {
+		return "", sagat.Invalid("a chain id is a UUID")
+	}
+	return "/namespaces/" + lower(namespaceID) + "/chains/" + lower(chainID), nil
 }
 
 // segment is a name in a URL path (a signal name): percent-encoded, and never ".", ".." or empty, which
@@ -749,6 +760,118 @@ func (c *Client) Signal(ctx context.Context, runID, name string, payload any, op
 		}
 	}
 	return result, nil
+}
+
+// InspectChain reads one committed chain head and lineage snapshot.
+func (c *Client) InspectChain(ctx context.Context, namespaceID, chainID string, opts ...CallOption) (*ChainInspection, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{method: "GET", path: path, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a chain inspection")
+	if err != nil {
+		return nil, err
+	}
+	result := &ChainInspection{Raw: raw}
+	if result.ChainID, err = requiredString(raw, "chainId"); err != nil {
+		return nil, err
+	}
+	if result.CurrentRunID, err = requiredString(raw, "currentRunId"); err != nil {
+		return nil, err
+	}
+	if result.Revision, err = requiredRevision(raw, "revision", 0); err != nil {
+		return nil, err
+	}
+	result.CancelRequested, _ = jsonx.Bool(raw, "cancelRequested")
+	result.FinalOutcome, _ = jsonx.String(raw, "finalOutcome")
+	var segments []map[string]json.RawMessage
+	if value, ok := raw["segments"]; !ok || json.Unmarshal(value, &segments) != nil || len(segments) == 0 {
+		return nil, protocolError("segments is invalid in the answer")
+	}
+	result.Segments = make([]ChainSegment, 0, len(segments))
+	for _, item := range segments {
+		index, err := requiredRevision(item, "index", 0)
+		if err != nil || index > 65535 {
+			return nil, protocolError("index is invalid in the answer")
+		}
+		runID, err := requiredString(item, "runId")
+		if err != nil {
+			return nil, err
+		}
+		predecessor, _ := jsonx.String(item, "predecessorRunId")
+		successor, _ := jsonx.String(item, "successorRunId")
+		result.Segments = append(result.Segments, ChainSegment{Index: int(index), RunID: runID, PredecessorRunID: predecessor, SuccessorRunID: successor})
+	}
+	return result, nil
+}
+
+// SignalChain signals a root wait on the expected current chain head.
+func (c *Client) SignalChain(ctx context.Context, namespaceID, chainID, name string, payload any, command ChainCommand, opts ...CallOption) (*SignalResult, error) {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return nil, err
+	}
+	if !uuidPattern.MatchString(command.ExpectedRunID) {
+		return nil, sagat.Invalid("an expected run id is a UUID")
+	}
+	encodedName, err := segment(name)
+	if err != nil {
+		return nil, err
+	}
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, request{method: "POST", path: path + "/signals/" + encodedName, body: map[string]any{"expectedRunId": lower(command.ExpectedRunID), "payload": payload}, hasBody: true, idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := object(resp.body, "a chain signal result")
+	if err != nil {
+		return nil, err
+	}
+	var delivered []string
+	_ = json.Unmarshal(raw["deliveredTo"], &delivered)
+	return &SignalResult{DeliveredTo: delivered, Raw: raw}, nil
+}
+
+// CancelChain latches cancellation and cancels the expected current chain head.
+func (c *Client) CancelChain(ctx context.Context, namespaceID, chainID, reason string, command ChainCommand, opts ...CallOption) error {
+	path, err := chainPath(namespaceID, chainID)
+	if err != nil {
+		return err
+	}
+	if !uuidPattern.MatchString(command.ExpectedRunID) {
+		return sagat.Invalid("an expected run id is a UUID")
+	}
+	if utf8.RuneCountInString(reason) < 1 || utf8.RuneCountInString(reason) > 512 {
+		return sagat.Invalid("a chain cancellation reason is 1 to 512 characters")
+	}
+	o := callOptionsOf(opts)
+	idempotencyKey, err := key(o.idempotencyKey)
+	if err != nil {
+		return err
+	}
+	traceparent, err := c.trace(ctx, o.traceparent)
+	if err != nil {
+		return err
+	}
+	_, err = c.do(ctx, request{method: "POST", path: path + "/cancel", body: map[string]any{"expectedRunId": lower(command.ExpectedRunID), "reason": reason}, hasBody: true, idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true})
+	return err
 }
 
 // Event is an event published to the inbox of the namespace.

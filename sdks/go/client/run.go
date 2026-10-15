@@ -153,6 +153,30 @@ type SignalResult struct {
 	Raw         map[string]json.RawMessage
 }
 
+// ChainSegment is one immutable run link in execution order.
+type ChainSegment struct {
+	Index            int
+	RunID            string
+	PredecessorRunID string
+	SuccessorRunID   string
+}
+
+// ChainInspection is one committed snapshot of an execution chain.
+type ChainInspection struct {
+	ChainID         string
+	CurrentRunID    string
+	Revision        int64
+	CancelRequested bool
+	FinalOutcome    string
+	Segments        []ChainSegment
+	Raw             map[string]json.RawMessage
+}
+
+// ChainCommand identifies the head a safely retryable chain command targets.
+type ChainCommand struct {
+	ExpectedRunID string
+}
+
 // EventStatus says what the inbox did with a published event.
 type EventStatus string
 

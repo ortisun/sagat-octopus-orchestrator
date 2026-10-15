@@ -435,6 +435,69 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     }
 
     /// <inheritdoc/>
+    public async Task<ChainInspection> InspectChainAsync(string namespaceId, string chainId, RequestOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var answer = await transport.SendAsync(
+            new HttpCall("inspect chain", HttpMethod.Get, ChainPath(namespaceId, chainId), "/namespaces/{namespaceId}/chains/{chainId}", [], null, null, TraceOf(options?.Traceparent), SafeToRepeat: true),
+            cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "a chain inspection");
+        if (!raw.TryGetProperty("segments", out var values) || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() == 0)
+        {
+            throw new SagatException(SagatErrorCode.Protocol, "segments is invalid in the answer");
+        }
+        var segments = new List<ChainSegment>();
+        foreach (var value in values.EnumerateArray())
+        {
+            var segment = Object(value, "a chain segment");
+            var index = Revision(segment, "index", 0);
+            if (index > ushort.MaxValue)
+            {
+                throw new SagatException(SagatErrorCode.Protocol, "index is invalid in the answer");
+            }
+            segments.Add(new ChainSegment((int)index, Str(segment, "runId"), OptStr(segment, "predecessorRunId"), OptStr(segment, "successorRunId")));
+        }
+        return new ChainInspection(Str(raw, "chainId"), Str(raw, "currentRunId"), Revision(raw, "revision", 0),
+            raw.TryGetProperty("cancelRequested", out var cancelled) && cancelled.ValueKind == JsonValueKind.True,
+            OptStr(raw, "finalOutcome"), segments, raw);
+    }
+
+    /// <inheritdoc/>
+    public async Task<SignalResult> SignalChainAsync<TPayload>(string namespaceId, string chainId, string name, TPayload payload, ChainCommandOptions options, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var body = Wire.Write(writer =>
+        {
+            writer.WriteStartObject(); writer.WriteString("expectedRunId", ExpectedRunId(options.ExpectedRunId));
+            writer.WritePropertyName("payload"); Wire.WritePayload(writer, payload, json); writer.WriteEndObject();
+        });
+        var answer = await transport.SendAsync(new HttpCall(
+            "signal chain", HttpMethod.Post, ChainPath(namespaceId, chainId) + "/signals/" + Segment(name),
+            "/namespaces/{namespaceId}/chains/{chainId}/signals/{name}", [], body, KeyOf(options.IdempotencyKey), TraceOf(options.Traceparent), SafeToRepeat: true), cancellationToken).ConfigureAwait(false);
+        var raw = Object(answer.Body, "a chain signal result");
+        var delivered = raw.TryGetProperty("deliveredTo", out var list) && list.ValueKind == JsonValueKind.Array
+            ? list.EnumerateArray().Select(item => item.GetString() ?? item.GetRawText()).ToList() : [];
+        return new SignalResult(delivered);
+    }
+
+    /// <inheritdoc/>
+    public async Task CancelChainAsync(string namespaceId, string chainId, string reason, ChainCommandOptions options, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (string.IsNullOrEmpty(reason) || reason.EnumerateRunes().Count() > 512)
+        {
+            throw SagatException.Invalid("a chain cancellation reason is 1 to 512 characters");
+        }
+        var body = Wire.Write(writer =>
+        {
+            writer.WriteStartObject(); writer.WriteString("expectedRunId", ExpectedRunId(options.ExpectedRunId));
+            writer.WriteString("reason", reason); writer.WriteEndObject();
+        });
+        await transport.SendAsync(new HttpCall(
+            "cancel chain", HttpMethod.Post, ChainPath(namespaceId, chainId) + "/cancel",
+            "/namespaces/{namespaceId}/chains/{chainId}/cancel", [], body, KeyOf(options.IdempotencyKey), TraceOf(options.Traceparent), SafeToRepeat: true), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
     public async Task<EventAccepted> PublishEventAsync(PublishEventRequest request, RequestOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -536,6 +599,14 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         runId is not null && UuidPattern().IsMatch(runId)
             ? "/runs/" + runId
             : throw SagatException.Invalid("a run id is a UUID");
+
+    private static string ChainPath(string namespaceId, string chainId) =>
+        namespaceId is not null && UuidPattern().IsMatch(namespaceId) && chainId is not null && UuidPattern().IsMatch(chainId)
+            ? "/namespaces/" + namespaceId.ToLowerInvariant() + "/chains/" + chainId.ToLowerInvariant()
+            : throw SagatException.Invalid("namespace and chain ids are UUIDs");
+
+    private static string ExpectedRunId(string runId) =>
+        runId is not null && UuidPattern().IsMatch(runId) ? runId.ToLowerInvariant() : throw SagatException.Invalid("an expected run id is a UUID");
 
     private static string DeclaredOperationPath(string runId, string kind, string name) =>
         name is not null && DeclaredOperationNamePattern().IsMatch(name)

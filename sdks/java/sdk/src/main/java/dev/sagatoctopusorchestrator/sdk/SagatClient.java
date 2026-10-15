@@ -571,6 +571,63 @@ public final class SagatClient implements AutoCloseable {
         return async(() -> signal(runId, name, payload, options));
     }
 
+    /** Reads one committed chain head and lineage snapshot. */
+    public ChainInspection inspectChain(String namespaceId, String chainId, CallOptions options) {
+        CallOptions opts = options == null ? CallOptions.create() : options;
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "GET", chainPath(namespaceId, chainId), null, null, null, trace(opts.traceparent()), true)).body(),
+                "a chain inspection");
+        JsonNode values = raw.path("segments");
+        if (!values.isArray() || values.isEmpty()) throw SagatException.of(ErrorCode.PROTOCOL, "segments is invalid in the answer");
+        List<ChainSegment> segments = new ArrayList<>();
+        for (JsonNode value : values) {
+            long index = revision(value, "index", 0);
+            if (index > 65535) throw SagatException.of(ErrorCode.PROTOCOL, "index is invalid in the answer");
+            segments.add(new ChainSegment((int) index, str(value, "runId"), optStr(value, "predecessorRunId"), optStr(value, "successorRunId")));
+        }
+        return new ChainInspection(str(raw, "chainId"), str(raw, "currentRunId"), revision(raw, "revision", 0),
+                raw.path("cancelRequested").asBoolean(false), optStr(raw, "finalOutcome"), List.copyOf(segments), raw);
+    }
+
+    public CompletableFuture<ChainInspection> inspectChainAsync(String namespaceId, String chainId, CallOptions options) {
+        return async(() -> inspectChain(namespaceId, chainId, options));
+    }
+
+    /** Signals a root wait on the expected current chain head. */
+    public SignalResult signalChain(String namespaceId, String chainId, String name, Object payload, ChainCommandOptions options) {
+        requireChainOptions(options);
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("expectedRunId", runId(options.expectedRunId())); body.set("payload", Json.toTree(payload));
+        JsonNode raw = object(http.request(new RestClient.Request(
+                "POST", chainPath(namespaceId, chainId) + "/signals/" + pathName(name, "a signal name"), null, body,
+                key(options.idempotencyKey()), trace(options.traceparent()), true)).body(), "a chain signal result");
+        List<String> delivered = new ArrayList<>();
+        for (JsonNode item : raw.path("deliveredTo")) delivered.add(item.asText());
+        return new SignalResult(List.copyOf(delivered), raw);
+    }
+
+    public CompletableFuture<SignalResult> signalChainAsync(String namespaceId, String chainId, String name, Object payload, ChainCommandOptions options) {
+        return async(() -> signalChain(namespaceId, chainId, name, payload, options));
+    }
+
+    /** Latches cancellation and cancels the expected current chain head. */
+    public void cancelChain(String namespaceId, String chainId, String reason, ChainCommandOptions options) {
+        requireChainOptions(options);
+        if (reason == null || reason.isEmpty() || reason.codePointCount(0, reason.length()) > 512) throw SagatException.invalid("a chain cancellation reason is 1 to 512 characters");
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("expectedRunId", runId(options.expectedRunId())); body.put("reason", reason);
+        http.request(new RestClient.Request("POST", chainPath(namespaceId, chainId) + "/cancel", null, body,
+                key(options.idempotencyKey()), trace(options.traceparent()), true));
+    }
+
+    public CompletableFuture<Void> cancelChainAsync(String namespaceId, String chainId, String reason, ChainCommandOptions options) {
+        return async(() -> { cancelChain(namespaceId, chainId, reason, options); return null; });
+    }
+
+    private static void requireChainOptions(ChainCommandOptions options) {
+        if (options == null || options.expectedRunId() == null) throw SagatException.invalid("an expected run id is a UUID");
+    }
+
     // ------------------------------------------------------------------------------------------- events
 
     /** Publishes an event to the inbox of the namespace, once per event id for the deduplication window. */
@@ -711,6 +768,13 @@ public final class SagatClient implements AutoCloseable {
             throw SagatException.invalid("an operation name is 1 to 128 permitted characters and starts with a letter or digit");
         }
         return "/runs/" + runId(runId) + "/" + kind + "/" + Endpoints.encodeComponent(name);
+    }
+
+    private static String chainPath(String namespaceId, String chainId) {
+        if (namespaceId == null || !UUID_TEXT.matcher(namespaceId).matches() || chainId == null || !UUID_TEXT.matcher(chainId).matches()) {
+            throw SagatException.invalid("namespace and chain ids are UUIDs");
+        }
+        return "/namespaces/" + namespaceId.toLowerCase(Locale.ROOT) + "/chains/" + chainId.toLowerCase(Locale.ROOT);
     }
 
     static Run toRun(JsonNode value) {

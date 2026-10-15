@@ -640,6 +640,29 @@ class SagatClientTest {
     }
 
     @Test
+    void chainInspectionAndCommandsUseExpectedHeadAndDurableKeys() {
+        String namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        String chainId = "0190aaaa-0000-7000-8000-000000000011";
+        String head = "0190aaaa-0000-7000-8000-000000000012";
+        server.prepare((req, reply) -> reply.send(req.path().contains("/signals/") || req.path().endsWith("/cancel") ? 202 : 200,
+                req.path().contains("/signals/") ? "{\"deliveredTo\":[\"wait\"]}" : req.path().endsWith("/cancel") ? "" :
+                        "{\"chainId\":\"" + chainId + "\",\"currentRunId\":\"" + head + "\",\"revision\":2,"
+                                + "\"cancelRequested\":false,\"finalOutcome\":null,\"segments\":["
+                                + "{\"index\":0,\"runId\":\"" + chainId + "\",\"predecessorRunId\":null,\"successorRunId\":\"" + head + "\"},"
+                                + "{\"index\":1,\"runId\":\"" + head + "\",\"predecessorRunId\":\"" + chainId + "\",\"successorRunId\":null}]}"));
+        SagatClient c = client();
+        ChainInspection inspection = c.inspectChain(namespaceId, chainId, null);
+        SignalResult signal = c.signalChain(namespaceId, chainId, "chain.release", Map.of("ok", true),
+                ChainCommandOptions.create(head).idempotencyKey("chain-signal-1"));
+        c.cancelChain(namespaceId, chainId, "operator requested cancellation",
+                ChainCommandOptions.create(head).idempotencyKey("chain-cancel-1"));
+        assertEquals(chainId, inspection.segments().get(1).predecessorRunId());
+        assertEquals(List.of("wait"), signal.deliveredTo());
+        assertEquals("chain-signal-1", server.seen.get(1).header("idempotency-key"));
+        assertEquals(head, server.seen.get(1).body().path("expectedRunId").asText());
+    }
+
+    @Test
     void waitingForCompletionPollsUntilTheRunIsTerminal() {
         AtomicInteger polls = new AtomicInteger();
         server.prepare((req, reply) -> reply.send(200, run("status", polls.incrementAndGet() < 3 ? "\"RUNNING\"" : "\"SUCCEEDED\"")));

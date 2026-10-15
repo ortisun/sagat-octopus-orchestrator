@@ -382,6 +382,45 @@ func TestDeclaredUpdateRetriesKeepTheBodyKeyAndInvalidInputIsLocal(t *testing.T)
 	}
 }
 
+func TestChainInspectionSignalAndCancelUseExpectedHeadAndKeys(t *testing.T) {
+	f := newFake(t)
+	namespaceID := "0190aaaa-0000-7000-8000-000000000010"
+	chainID := "0190aaaa-0000-7000-8000-000000000011"
+	head := "0190aaaa-0000-7000-8000-000000000012"
+	f.answer(func(request seen, w http.ResponseWriter) {
+		switch {
+		case strings.Contains(request.url, "/signals/"):
+			reply(w, 202, map[string]any{"deliveredTo": []string{"wait"}})
+		case strings.HasSuffix(request.url, "/cancel"):
+			reply(w, 202, nil)
+		default:
+			reply(w, 200, map[string]any{"chainId": chainID, "currentRunId": head, "revision": 2, "cancelRequested": false, "finalOutcome": nil, "segments": []any{map[string]any{"index": 0, "runId": chainID, "predecessorRunId": nil, "successorRunId": head}, map[string]any{"index": 1, "runId": head, "predecessorRunId": chainID, "successorRunId": nil}}})
+		}
+	})
+	c := newClient(t, f)
+	inspection, err := c.InspectChain(context.Background(), namespaceID, chainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signal, err := c.SignalChain(context.Background(), namespaceID, chainID, "chain.release", map[string]any{"ok": true}, client.ChainCommand{ExpectedRunID: head}, client.WithIdempotencyKey("chain-signal-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CancelChain(context.Background(), namespaceID, chainID, "operator requested cancellation", client.ChainCommand{ExpectedRunID: head}, client.WithIdempotencyKey("chain-cancel-1")); err != nil {
+		t.Fatal(err)
+	}
+	requests := f.requests()
+	if inspection.Segments[1].PredecessorRunID != chainID || len(signal.DeliveredTo) != 1 {
+		t.Fatalf("inspection=%+v signal=%+v", inspection, signal)
+	}
+	if requests[1].json(t)["expectedRunId"] != head || requests[1].headers.Get("Idempotency-Key") != "chain-signal-1" {
+		t.Fatalf("signal request: %+v", requests[1])
+	}
+	if requests[2].json(t)["reason"] != "operator requested cancellation" {
+		t.Fatalf("cancel request: %+v", requests[2])
+	}
+}
+
 func TestGetIsRetriedOnUnavailabilityAndOnRateLimitingHonouringRetryAfterAndGivesUpAfterTheAttempts(t *testing.T) {
 	f := newFake(t)
 	attempts := 0

@@ -258,6 +258,52 @@ async def test_declared_update_retries_with_the_same_body_key_and_rejects_bad_in
     assert not http.seen
 
 
+async def test_chain_inspection_and_commands_use_expected_head_and_durable_keys(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    namespace_id = "0190aaaa-0000-7000-8000-000000000010"
+    chain_id = "0190aaaa-0000-7000-8000-000000000011"
+    head = "0190aaaa-0000-7000-8000-000000000012"
+
+    def serve(seen: Seen) -> Any:
+        if "/signals/" in seen.url:
+            return reply(202, {"deliveredTo": ["wait"]})
+        if seen.url.endswith("/cancel"):
+            return reply(202)
+        return reply(
+            200,
+            {
+                "chainId": chain_id,
+                "currentRunId": head,
+                "revision": 2,
+                "cancelRequested": False,
+                "finalOutcome": None,
+                "segments": [
+                    {"index": 0, "runId": chain_id, "predecessorRunId": None, "successorRunId": head},
+                    {"index": 1, "runId": head, "predecessorRunId": chain_id, "successorRunId": None},
+                ],
+            },
+        )
+
+    http.serve(serve)
+    client = make_client()
+    inspection = await client.inspect_chain(namespace_id, chain_id)
+    signalled = await client.signal_chain(
+        namespace_id, chain_id, "chain.release", {"ok": True}, expected_run_id=head, idempotency_key="chain-signal-1"
+    )
+    await client.cancel_chain(
+        namespace_id,
+        chain_id,
+        "operator requested cancellation",
+        expected_run_id=head,
+        idempotency_key="chain-cancel-1",
+    )
+    assert inspection.segments[1].predecessor_run_id == chain_id and signalled.delivered_to == ("wait",)
+    assert http.seen[1].body == {"expectedRunId": head, "payload": {"ok": True}}
+    assert http.seen[1].headers["idempotency-key"] == "chain-signal-1"
+    assert http.seen[2].body == {"expectedRunId": head, "reason": "operator requested cancellation"}
+
+
 async def test_get_is_retried_on_unavailability_and_on_rate_limiting_honouring_retry_after_and_gives_up_after_the_attempts(
     http: FakeHttpServer, make_client: MakeClient
 ) -> None:

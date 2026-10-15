@@ -220,6 +220,27 @@ public sealed record UpdateReceipt(
 /// <summary>What the server answers to a signal: the steps that were waiting for it.</summary>
 public sealed record SignalResult(IReadOnlyList<string> DeliveredTo);
 
+/// <summary>One immutable run link in an execution chain.</summary>
+public sealed record ChainSegment(int Index, string RunId, string? PredecessorRunId, string? SuccessorRunId);
+
+/// <summary>One committed snapshot of an execution chain.</summary>
+public sealed record ChainInspection(
+    string ChainId, string CurrentRunId, long Revision, bool CancelRequested, string? FinalOutcome,
+    IReadOnlyList<ChainSegment> Segments, JsonElement Raw);
+
+/// <summary>Options for a command against an observed chain head.</summary>
+public sealed record ChainCommandOptions
+{
+    /// <summary>The current run id observed by the caller.</summary>
+    public required string ExpectedRunId { get; init; }
+
+    /// <summary>8 to 160 printable ASCII characters, preserved across retries.</summary>
+    public string? IdempotencyKey { get; init; }
+
+    /// <summary>An explicit W3C <c>traceparent</c>.</summary>
+    public string? Traceparent { get; init; }
+}
+
 /// <summary>An event to publish to the inbox of the namespace.</summary>
 public sealed record PublishEventRequest
 {

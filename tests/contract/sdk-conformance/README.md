@@ -97,6 +97,12 @@ fixture only after the runtime creates the request through the public workflow p
 can resolve `{{approvalId:start:review}}` from that public state; do not seed a private store to make
 the scenario pass.
 
+`chain-commands.json.pending` exercises the typed chain inspection, root-signal and cancellation calls
+implemented by all five SDKs, including expected-head fencing, exact command replay and tenant opacity.
+It remains pending because no public workflow path creates an execution chain yet and runner config does
+not expose the namespace UUID required by the route. Enable it only after both are public; do not seed
+the private chain store or substitute the namespace slug.
+
 ## What each SDK ships
 
 `sdks/<language>/conformance/` with two executables (shell scripts, `chmod +x`):
@@ -237,6 +243,9 @@ stop the scenario.
 | `decideApproval` | `approvalId`, `decisionKey`, `decision`, `reasonCode?`, `traceparent?`, `token?` | `decideApproval` | the normalized durable receipt |
 | `query` | `run`, `name`, `args`, `traceparent?`, `token?` | `query` | `{runVersion, stateRevision, result}` |
 | `update` | `run`, `name`, `args`, `updateKey`, `expectedStateRevision?`, `traceparent?`, `token?` | `update` | the normalized durable receipt |
+| `inspectChain` | `namespaceId`, `chainId`, `traceparent?`, `token?` | `inspectChain` | current head and ordered segments |
+| `signalChain` | `namespaceId`, `chainId`, `expectedRunId`, `name`, `payload`, `idempotencyKey?`, `traceparent?`, `token?` | `signalChain` | `{deliveredTo}` |
+| `cancelChain` | `namespaceId`, `chainId`, `expectedRunId`, `reason`, `idempotencyKey?`, `traceparent?`, `token?` | `cancelChain` | `{accepted: true}` |
 | `signal` | `run`, `name`, `payload` | `signal` | `{deliveredTo}` |
 | `publishEvent` | `type`, `data`, `eventId?`, `correlationKey?` | `publishEvent` | `{eventId, status}` |
 | `waitForCompletion` | `run`, `timeoutMs` | `waitForCompletion` | the Run |

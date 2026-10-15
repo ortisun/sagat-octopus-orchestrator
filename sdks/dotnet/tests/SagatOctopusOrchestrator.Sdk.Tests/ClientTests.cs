@@ -555,6 +555,33 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ChainInspectionAndCommandsUseExpectedHeadAndDurableKeys()
+    {
+        const string namespaceId = "0190aaaa-0000-7000-8000-000000000010";
+        const string chainId = "0190aaaa-0000-7000-8000-000000000011";
+        const string head = "0190aaaa-0000-7000-8000-000000000012";
+        server.Handler = request => request.PathAndQuery.Contains("/signals/", StringComparison.Ordinal)
+            ? Reply(202, new JsonObject { ["deliveredTo"] = new JsonArray("wait") })
+            : request.PathAndQuery.EndsWith("/cancel", StringComparison.Ordinal) ? Reply(202) : Reply(200, new JsonObject
+            {
+                ["chainId"] = chainId, ["currentRunId"] = head, ["revision"] = 2, ["cancelRequested"] = false,
+                ["finalOutcome"] = null, ["segments"] = new JsonArray(
+                    new JsonObject { ["index"] = 0, ["runId"] = chainId, ["predecessorRunId"] = null, ["successorRunId"] = head },
+                    new JsonObject { ["index"] = 1, ["runId"] = head, ["predecessorRunId"] = chainId, ["successorRunId"] = null })
+            });
+        var client = NewClient();
+        var inspection = await client.InspectChainAsync(namespaceId, chainId);
+        var signal = await client.SignalChainAsync(namespaceId, chainId, "chain.release", new { ok = true },
+            new ChainCommandOptions { ExpectedRunId = head, IdempotencyKey = "chain-signal-1" });
+        await client.CancelChainAsync(namespaceId, chainId, "operator requested cancellation",
+            new ChainCommandOptions { ExpectedRunId = head, IdempotencyKey = "chain-cancel-1" });
+        Assert.Equal(chainId, inspection.Segments[1].PredecessorRunId);
+        Assert.Equal(["wait"], signal.DeliveredTo);
+        Assert.Equal("""{"expectedRunId":"0190aaaa-0000-7000-8000-000000000012","payload":{"ok":true}}""", server.Requests[1].BodyText);
+        Assert.Equal("chain-signal-1", server.Requests[1].Header("idempotency-key"));
+    }
+
+    [Fact]
     public async Task OperationsOtherThanCancelNameTheirActionAndCarryTheirArguments()
     {
         server.Handler = _ => Reply(202, new JsonObject { ["operationId"] = "op-2", ["accepted"] = true });

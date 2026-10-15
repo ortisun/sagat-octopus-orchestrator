@@ -150,6 +150,25 @@ class SignalResult:
 
 
 @dataclass(frozen=True)
+class ChainSegment:
+    index: int
+    run_id: str
+    predecessor_run_id: str | None
+    successor_run_id: str | None
+
+
+@dataclass(frozen=True)
+class ChainInspection:
+    chain_id: str
+    current_run_id: str
+    revision: int
+    cancel_requested: bool
+    final_outcome: str | None
+    segments: tuple[ChainSegment, ...]
+    raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+
+@dataclass(frozen=True)
 class EventAccepted:
     event_id: str
     source: str
@@ -254,6 +273,12 @@ def _run_id(value: str) -> str:
     if not isinstance(value, str) or not _UUID.fullmatch(value):
         raise invalid("a run id is a UUID")
     return value
+
+
+def _namespace_id(value: str) -> str:
+    if not isinstance(value, str) or not _UUID.fullmatch(value):
+        raise invalid("a namespace id is a UUID")
+    return value.lower()
 
 
 def _name(value: str, what: str) -> str:
@@ -623,6 +648,99 @@ class SagatClient:
         raw = _object(response.body, "a signal result")
         delivered = raw.get("deliveredTo")
         return SignalResult(tuple(str(item) for item in delivered) if isinstance(delivered, list) else ())
+
+    async def inspect_chain(
+        self, namespace_id: str, chain_id: str, *, traceparent: str | None = None
+    ) -> ChainInspection:
+        """Reads one committed chain head and lineage snapshot."""
+        path = f"/namespaces/{quote(_namespace_id(namespace_id), safe='')}/chains/{quote(_run_id(chain_id), safe='')}"
+        response = await self._http.request(HttpRequest("GET", path, traceparent=self._trace(traceparent)))
+        raw = _object(response.body, "a chain inspection")
+        values = raw.get("segments")
+        if not isinstance(values, list) or not values:
+            raise SagatError("PROTOCOL", "segments is invalid in the answer")
+        segments: list[ChainSegment] = []
+        for value in values:
+            segment = _object(value, "a chain segment")
+            index = _revision(segment, "index", 0)
+            if index > 65_535:
+                raise SagatError("PROTOCOL", "index is invalid in the answer")
+            segments.append(
+                ChainSegment(
+                    index,
+                    _str(segment, "runId"),
+                    _opt_str(segment, "predecessorRunId"),
+                    _opt_str(segment, "successorRunId"),
+                )
+            )
+        outcome = _opt_str(raw, "finalOutcome")
+        if outcome is not None and outcome not in TERMINAL_STATUSES:
+            raise SagatError("PROTOCOL", "finalOutcome is invalid in the answer")
+        return ChainInspection(
+            _str(raw, "chainId"),
+            _str(raw, "currentRunId"),
+            _revision(raw, "revision", 0),
+            raw.get("cancelRequested") is True,
+            outcome,
+            tuple(segments),
+            raw,
+        )
+
+    async def signal_chain(
+        self,
+        namespace_id: str,
+        chain_id: str,
+        name: str,
+        payload: Any,
+        *,
+        expected_run_id: str,
+        idempotency_key: str | None = None,
+        traceparent: str | None = None,
+    ) -> SignalResult:
+        """Signals a root wait on the expected current chain head."""
+        path = (
+            f"/namespaces/{quote(_namespace_id(namespace_id), safe='')}/chains/{quote(_run_id(chain_id), safe='')}"
+            f"/signals/{quote(_name(name, 'a signal name'), safe='')}"
+        )
+        response = await self._http.request(
+            HttpRequest(
+                "POST",
+                path,
+                body={"expectedRunId": _run_id(expected_run_id), "payload": payload},
+                idempotency_key=self._key(idempotency_key),
+                traceparent=self._trace(traceparent),
+            )
+        )
+        raw = _object(response.body, "a chain signal result")
+        delivered = raw.get("deliveredTo")
+        return SignalResult(tuple(str(item) for item in delivered) if isinstance(delivered, list) else ())
+
+    async def cancel_chain(
+        self,
+        namespace_id: str,
+        chain_id: str,
+        reason: str,
+        *,
+        expected_run_id: str,
+        idempotency_key: str | None = None,
+        traceparent: str | None = None,
+    ) -> None:
+        """Latches cancellation and cancels the expected current chain head."""
+        if not isinstance(reason, str) or not 1 <= len(reason) <= 512:
+            raise invalid("a chain cancellation reason is 1 to 512 characters")
+        path = (
+            f"/namespaces/{quote(_namespace_id(namespace_id), safe='')}/chains/"
+            f"{quote(_run_id(chain_id), safe='')}/cancel"
+        )
+        await self._http.request(
+            HttpRequest(
+                "POST",
+                path,
+                body={"expectedRunId": _run_id(expected_run_id), "reason": reason},
+                idempotency_key=self._key(idempotency_key),
+                traceparent=self._trace(traceparent),
+            )
+        )
 
     async def decide_approval(
         self,
