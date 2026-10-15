@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, Evaluation, ExecutionError, FailureCode, Progress, Resolution, RunEvent, RunId,
-    RunState, RunStatus, StopReason,
+    CorrelationKey, Evaluation, ExecutionError, ExecutionInstanceId, FailureCode, Progress,
+    Resolution, RunEvent, RunId, RunState, RunStatus, StopReason,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::{ActivityName, CancelPolicy, Expression, NodeId, WorkflowDefinition};
@@ -75,6 +75,42 @@ pub fn step_id(version: WorkflowVersionId, run: RunId, node: &NodeId) -> uuid::U
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     // Mark it as a version-8 (custom) UUID with the RFC 4122 variant.
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// Stable opaque id of a logical step in a nested scope. Root work retains its historical id
+/// byte-for-byte. The nonroot encoding is domain-separated and length-delimited, so a path cannot
+/// collide by concatenating user-controlled node names. Attempts never enter this derivation.
+#[must_use]
+pub fn instance_step_id(
+    version: WorkflowVersionId,
+    run: RunId,
+    instance: &ExecutionInstanceId,
+) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+
+    if instance.path().is_root() {
+        return step_id(version, run, instance.node());
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"sagat.step.instance.scoped.v1\0");
+    digest.update(version.as_uuid().as_bytes());
+    digest.update(run.as_uuid().as_bytes());
+    digest.update([instance.path().depth() as u8]);
+    for segment in instance.path().segments() {
+        let name = segment.scope_node().as_str().as_bytes();
+        digest.update([name.len() as u8]);
+        digest.update(name);
+        digest.update((segment.iteration_index() as u16).to_be_bytes());
+    }
+    let name = instance.node().as_str().as_bytes();
+    digest.update([name.len() as u8]);
+    digest.update(name);
+    let hash = digest.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     uuid::Uuid::from_bytes(bytes)

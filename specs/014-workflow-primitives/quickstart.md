@@ -77,7 +77,7 @@ The release operator follows these scenarios after implementing the relevant unc
 
 Complete standard formatting, Clippy, locked workspace, architecture, contract compilation, Compose
 smoke and dependency advisory gates before merge of engine changes. Rollback first disables new
-primitive publication/start; keep readers for new-revision in-flight runs until they drain.
+primitive publication/start; keep readers for in-flight runs using the new capabilities until they drain.
 
 ## Evidence boundary
 

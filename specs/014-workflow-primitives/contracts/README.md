@@ -1,26 +1,45 @@
-# Proposed contracts for feature 014
+# Accepted contract design for feature 014
 
-**Status: design proposal — not a supported API or executable workflow schema.** Current examples
-use `sagat-octopus-orchestrator.io/v1` and the canonical contracts in
-`specs/001-platform-foundation/contracts/`. This document is not installed in those contracts.
-T014-002/T014-006 accept the design, allocate revision identifiers and add machine-verifiable
-contracts before runtime implementation. Proposed names below are normative for that review;
-they are not code snippets users can call today.
+**Status: architecture accepted by ADR-0030/0031/0032; canonical contracts/runtime pending.** Current
+examples use `sagat-octopus-orchestrator.io/v1` and the deployed canonical contracts in
+`specs/001-platform-foundation/contracts/`. The design below is normative for implementation;
+T014-006 adds machine-verifiable contracts and runtime mapping. Acceptance does not make the
+operations available or prove their release tests.
 
-## 1. IR revision and validation
+## 1. Additive IR and capability validation
 
-Use a new explicitly supported IR revision for structured scopes, state declarations and
-continuation; keep `v1` parsing and behavior unchanged. Do not silently permit unknown kinds in v1.
-The publish validator knows the supported revision and enabled primitives; unsupported revision or
-kind returns `VALIDATION_FAILED` with reason `UNSUPPORTED_NODE` before storing a runnable version. Immutable runs pin the exact
-revision and workflow version, independently of product/worker protocol version.
+Keep `sagat-octopus-orchestrator.io/v1` and extend the canonical `workflow.schema.json` in place,
+as accepted by [ADR-0032](../../../docs/adr/ADR-0032-additive-workflow-ir.md). Preserve every
+previously accepted root form and stored-run meaning. Historical unsupported `foreach` and
+`humanApproval` shapes remain unsupported, not aliases for the new kinds. Worker minor 1.5 carries
+scoped task identity independently of the IR version. Publication checks supported and enabled
+capabilities; an unavailable kind returns `VALIDATION_FAILED` with reason `UNSUPPORTED_NODE` before
+storing a runnable version. Immutable runs pin the exact workflow version, and required capabilities
+come from that definition plus explicit stored identity/chain data, not from a second `apiVersion`.
 
-The proposed document adds a `bodies` map, optional `state` declarations and `chainPolicy`.
+The document adds a `bodies` map, optional `state` declarations, `chainPolicy` and optional
+`limits: {maxInstances,maxDepth}`. Omitted limit fields default to 100000 and 8 respectively;
+valid ranges are 1..100000 and 1..8, and tenant policy may lower them.
 Named bodies have local nodes/entrypoint/return boundary. Definition graph, each body and body
 reference graph remain acyclic. Closed-region validation forbids cross-body references, workflow
 ends in bodies and overlapping ownership. Paths/expressions cannot dynamically name arbitrary
-nodes, secrets or capabilities. Existing expression grammar/type validation and evaluation budgets
-apply; no general code callback is accepted.
+nodes, secrets or capabilities. The existing evaluator is authoritative: source at most 1024 bytes, 256 tokens, depth 16,
+list literals at most 64, constructed/concatenated lists at most 4096 and generated strings at most
+64 KiB. The domain's 2048-byte wrapper is not an expanded evaluator allowance. No object/map literal,
+mutation operator or general code callback is added; expressions may select existing objects.
+
+A body is `{entrypoint, nodes}` with exactly one node `{id, type: "return", result}`. The return
+node has no successor and its expression produces the body result; it is forbidden in the root
+graph. Body nodes cannot be `end` or `continueAsNew`. A collection's `result` expression reads
+`bodyResult`, `item` and `index`; body expressions read `item`/`index` (collections) or
+`iteration`/`carry` (loops), plus input/state and local `steps.<node>.output`. Local completed outputs
+are resolved by scoped instance, never by flattening equal node names across iterations.
+
+The canonical `workflow.schema.json` checks document shape. Existing root schema branches remain
+compatible; new kinds and body declarations use closed bounded shapes. Publication must additionally check
+UTF-8 expression bytes/grammar, referenced targets/body closure/recursion, unique case/node ids,
+aggregate authored-node count, schema byte/depth limits and enabled runtime capabilities. JSON
+Schema `maxLength` counts characters, so its bound is not proof of the evaluator's byte limit.
 
 | Kind / declaration | Required fields | Semantics |
 | --- | --- | --- |
@@ -30,24 +49,30 @@ apply; no general code callback is accepted.
 | `approval` | `policy`, `timeoutMs`, `onApprove`, `onReject`, `onExpire` | Single eligible decision or expiry; all three routes declared; no activity runs while waiting. |
 | `switch` | ordered `cases[{id,when,target}]`, `default` | First boolean true wins; evaluated predicate error fails; recorded decision is replayed. |
 | `state` | `schema`, `initial`, optional `queries`/`updates` maps | Initialize typed business state with run creation; operation schemas and bounded expressions are pinned. |
-| query entry | `argsSchema`, `resultSchema`, `expression` | Read only; snapshot of input/state/completed outputs/args, with authorized projection. |
-| update entry | `argsSchema`, optional `validate`, `state`, `result`, `resultSchema` | Atomic validator/state reducer/result; no I/O, activity, wait or child invocation. |
+| query entry | `argsSchema`, `resultSchema`, `expression`, `disclosure: declared-business-result-v1` | Read only; snapshot of input/state/completed outputs/args, with authorized projection. |
+| update entry | `argsSchema`, optional `validate`, `state`, `result`, `resultSchema`, `disclosure: declared-business-result-v1` | Atomic validator/state reducer/result; no I/O, activity, wait or child invocation. |
 | `continueAsNew` | `input`, `state` (if state exists) | Top-level terminal boundary; same-version successor, quiescence and chain policy required; no `next`. |
+| `return` | `result` | Body-only terminal boundary; exactly one per body, no successor. |
 | `chainPolicy` | `maxSegments`, `timeoutMs` | Required if continuation is present; count includes initial run; original chain timeout never resets. |
 
 Loops may also specify `delayMs` in 1..31622400000, applied only between needed iterations. Absence
 means no delay. Shared run `maxInstances` and nesting limits are enforced even when individual node
-limits fit. ForEach's body sees immutable `{item,index}` plus captured input and declared state;
+limits fit. Each forward activation reserves its possible declared compensation/reconciliation
+identities inside the lifetime instance budget; derived activation uses that reservation without a
+second charge, including after a policy reduction. Retry does not allocate another logical instance. ForEach's body sees immutable `{item,index}` plus captured input and declared state;
 indices have no language-specific iteration semantics. Loop bodies see `{iteration,carry}`. Body
 `result` and loop `carry` expressions are evaluated and recorded by the same bounded adapter as
-conditions. A map output is always index-ordered; there is no unordered mode in this increment.
+conditions. A map output is always index-ordered; there is no unordered mode in this increment. A referenced
+input/blob array may contain up to 10,000 items within the capture/value/context byte limits, subject
+to bounded materialization evidence; this does not increase CEL literal/constructed-list limits.
+The engine assembles the indexed aggregate separately from expression list concatenation.
 
 Numeric limits, payload ceilings and uniqueness rules are specified in `data-model.md`. SDK builders
 perform useful local validation but the server owns all decisions and revalidates the document.
 A builder cannot turn language `for`, `await`, Promise/Task concurrency or arbitrary callbacks into
 durable behavior implicitly. No generated pseudo-API is added to current examples.
 
-## 2. Proposed HTTP operations
+## 2. HTTP operation design
 
 All paths are relative to the existing `/v1` REST base. New operations use existing authentication,
 namespace resolution, canonical error envelope and request/trace headers. They never accept tenant
@@ -67,16 +92,33 @@ unchecked implementation task, not a substitute contract served today.
 | `POST /chains/{chainId}/signals` | existing signal fields plus required `signalKey`, optional `expectedRunId` | Existing signal rules on the resolved head: accepted only if it is waiting for the signal, otherwise 409 `STATE_CONFLICT`; result names the resolved run id; the chain-scoped key prevents delivery to another segment. |
 | `POST /chains/{chainId}/cancel` | `cancelKey`, optional `expectedRunId` | Durable cancellation acceptance/result; latch chain cancellation, stop handoff, cancel current run under existing drain/child policies. |
 
-**Permissions (proposal, accepted in T014-002)**: new permissions follow the existing
+**Permissions (accepted by ADR-0030/0031/0032)**: new permissions follow the existing
 `resource:action` form. `approval:read` goes to `admin`, `developer`, `operator` and `viewer`;
 `approval:decide`, `run:query` and `run:update` go to `admin`, `developer` and `operator`.
 `worker` and `runner` get none. A role permission is necessary, not sufficient: approval also
-requires the request's eligibility policy.
+requires the request's eligibility policy. Namespace `run:query`/`run:update` grants authorize all
+declared operation names in that namespace; no per-name ACL or custom role is implied.
 
-**Value disclosure**: no current API returns payload values; ADR-0028 permits only authorized
-structural inspection and requires a new decision before any value is disclosed. Query results,
-Update results and replayed receipts return declared values, so these operations are not released
-until that decision is accepted (T014-002). It fixes the permission above, the audit and redaction.
+**Value disclosure**: ADR-0031 accepts only explicitly declared business-operation results. Each
+query/update declaration includes `disclosure: declared-business-result-v1` and a closed bounded
+result schema (recursively declared object keys, no arbitrary additional properties, bounded
+arrays/strings/depth, maximum 256 KiB serialized result). A schema annotation alone is not disclosure
+permission. Result values/declared keys are intentionally visible to the authorized operation caller;
+no generic raw payload selector/export is added. Responses use `Cache-Control: no-store`. Current
+authorization and successful audit precede any result or receipt replay. The evaluator receives no
+secret capability, credentials, network or callback; preserve protected-secret checks and do not
+claim heuristic classification of arbitrary business data. Normal graph/SSE/journal/log/audit/trace
+responses remain payload-free, and ADR-0028 structural inspection remains value/key-free. US06
+release still requires its real security, transaction and all-five conformance evidence.
+
+The initial closed result-schema vocabulary has one explicit `type` per schema: object, array,
+string, integer, number, boolean or null. Objects declare `properties` and `additionalProperties:
+false`, with optional `required`; arrays declare `items` and `maxItems`; strings declare `maxLength`.
+Numeric bounds and descriptions are optional. References/combinators, arbitrary object keys and
+unbounded array/string results are not part of this initial result contract. Schema compilation,
+64 KiB schema bytes, finite nesting and the aggregate serialized-result bound are checked by the
+adapter in addition to document-shape validation; argument/state schemas retain their existing
+local-schema validation path.
 
 Pagination reuses existing cursor/page bounds rather than introducing an unbounded list. Chain-level
 operations are explicit opt-ins; run-level methods never change address scope implicitly. Read APIs
@@ -112,7 +154,7 @@ not caller timestamps. The server supplies all outcome timestamps.
 | Cancel | Cancels only that nonterminal run; a terminal old segment is unchanged | Sets chain cancel latch and cancels current run; no later continuation can pass the latch. |
 | Child completion | Parent's child instance follows its child chain | Intermediate continued segments emit no parent completion; final outcome is applied once. |
 
-`waitForChainCompletion` is a proposed language-idiomatic addition; existing `waitForCompletion`
+`waitForChainCompletion` is a planned language-idiomatic addition; existing `waitForCompletion`
 behavior (where provided) and polling helpers remain segment waits. Documentation must not label
 an old run's SUCCEEDED as final chain success. No automatic redirect on a 409 or hidden retry with a
 new key. An optional `expectedRunId` enables a caller to reject rollover instead of accepting head
@@ -121,7 +163,7 @@ resolution. Without it, a chain-target caller explicitly chooses whichever head 
 Chain signal/cancel keys use the same 1..128 permitted ASCII constraint as update keys, scoped by
 `(tenant,namespace,chainId,operationKind,key)` and canonical content hash. Shared chain/run locking
 serializes continuation with commands. If a command commits first, the handoff sees its state,
-pending signal or cancellation latch. If handoff commits first, a chain command targets the new
+consumed-signal transition or cancellation latch. If handoff commits first, a chain command targets the new
 head or fails its expected-head precondition. A run command stays bound to the old run. Signals are
 never buffered (`signalRun` in the canonical OpenAPI): one is accepted only by a step waiting for it and consumed in that
 transaction, so there is no pending signal to drain, and an open wait already blocks the handoff.
@@ -135,19 +177,18 @@ for a segment via its run id; no hidden change to existing direct run waits is p
 ## 4. Worker and SDK compatibility
 
 Add full instance identity to task, heartbeat, completion, cancellation, reconciliation and secret-
-capability addressing using a negotiated next worker minor (allocate after baseline check; baseline
-1.4 is recorded in feature 006). Old root workflows still accept the old addressing forms. New
+capability addressing using worker minor 1.5 allocated by ADR-0030 after checking the 1.4 baseline. Old root workflows still accept the old addressing forms. New
 scoped tasks are eligible only for a worker that negotiated support, with unchanged lease/generation
 checks. SDK retry logic does not implement the workflow loop; it handles transport safely and passes
 idempotency/instance identity. The server remains authoritative about scheduling and quota.
 
 Every SDK gains idiomatic declarative builders for the six node types/state operations plus the
-explicit approval, query/update and chain client operations. Shared names in this proposal indicate
+explicit approval, query/update and chain client operations. Shared names in this design indicate
 semantics, not a mandate for identical language casing. All five must emit byte-identical canonical
 IR and pass the same operation/fault fixtures before enabling the advertised capability. Old SDKs
-can run old definitions; unsupported definitions produce an actionable typed version error.
+can run old definitions; unsupported definitions produce an actionable typed unsupported-capability error.
 
-## 5. Proposed typed errors
+## 5. Typed errors
 
 Every error retains canonical `code`, safe `message`, `retryable`, `traceId`, `requestId`; request id
 is server-generated. Details contain only authorized bounded identifiers/limits, never expressions,
@@ -163,7 +204,7 @@ error codes.
 
 | Situation | Durable failure code | API `code` (HTTP) | `details.reason` | Retryable |
 | --- | --- | --- | --- | --- |
-| IR revision/kind/worker capability unavailable | — | `VALIDATION_FAILED` (422) | `UNSUPPORTED_NODE` (existing) | false |
+| IR version/kind/worker capability unavailable | — | `VALIDATION_FAILED` (422) | `UNSUPPORTED_NODE` (existing) | false |
 | Cycle, escape, overlap, illegal continuation location, recursive body | — | `VALIDATION_FAILED` (422) | `INVALID_SCOPE` | false |
 | Next work exceeds a declared hard budget | `ITERATION_LIMIT` / `INSTANCE_LIMIT` / `CHAIN_LIMIT` | command: `QUOTA_EXCEEDED` (429) with `details.limit` | — | false |
 | Existing byte/context bound exceeded | `RUN_DATA_LIMIT` (existing) | command body too large: `BAD_REQUEST` (413) with `PAYLOAD_TOO_LARGE`; run's retained data would exceed: `QUOTA_EXCEEDED` (429) with `details.limit`, as signals do today | existing | false |
@@ -186,7 +227,7 @@ and to `crates/api-http/src/error.rs` together, and checks each mapping against 
 
 ## 6. Telemetry and audit
 
-Proposed OTel spans: `workflow.scope.admit`, `workflow.iteration.commit`, `workflow.approval.decide`,
+OTel span design: `workflow.scope.admit`, `workflow.iteration.commit`, `workflow.approval.decide`,
 `workflow.query`, `workflow.update`, `workflow.continue`. Link predecessor/successor traces and retain
 W3C trace context; put run/instance/chain/actor identifiers only in authorized spans or redacted logs,
 not metric labels. Tenant context is mandatory internally; metrics use bounded tenant service tier
@@ -200,7 +241,7 @@ bounded enums. All samples and structured logs exclude payload, state, arguments
 secret markers. The journal-derived runtime graph (`/runs/{runId}/graph`, `/graph/changes`;
 ADR-0016) and the telemetry projector (ADR-0017) expose instance index, scope, selected case and
 chain links with lag; telemetry is never the authoritative workflow graph. A Studio or projector
-that does not know a new revision shows its nodes as unsupported and keeps working (T014-045).
+that does not know a new capability shows its nodes as unsupported and keeps working (T014-045).
 
 Durable audit covers opening/deciding/expiring approval, decision denial, query access, update
 application/rejection, continuation, cancel/manual decisions and quota/policy changes. Workflow

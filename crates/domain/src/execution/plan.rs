@@ -224,6 +224,9 @@ fn start_pending(
                 input: input.clone(),
             }),
             NodeKind::End { .. } => Plan::Emit(RunEvent::EndReached { node: node.clone() }),
+            NodeKind::ForEach { .. } | NodeKind::Return { .. } => {
+                return Err(ExecutionError::UnsupportedStructuredNode(node.clone()));
+            }
         };
         return Ok(Some(action));
     }

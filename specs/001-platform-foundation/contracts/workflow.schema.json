@@ -107,6 +107,25 @@
       "items": {
         "$ref": "#/$defs/node"
       }
+    },
+    "bodies": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/nodeId"
+      },
+      "maxProperties": 10000,
+      "additionalProperties": {
+        "$ref": "#/$defs/body"
+      }
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    },
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "chainPolicy": {
+      "$ref": "#/$defs/chainPolicy"
     }
   },
   "$defs": {
@@ -144,6 +163,24 @@
         },
         {
           "$ref": "#/$defs/end"
+        },
+        {
+          "$ref": "#/$defs/forEach"
+        },
+        {
+          "$ref": "#/$defs/while"
+        },
+        {
+          "$ref": "#/$defs/repeatUntil"
+        },
+        {
+          "$ref": "#/$defs/approval"
+        },
+        {
+          "$ref": "#/$defs/switch"
+        },
+        {
+          "$ref": "#/$defs/continueAsNew"
         }
       ]
     },
@@ -627,6 +664,1315 @@
           }
         }
       ]
+    },
+    "nodeId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "expression": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "x-maxUtf8Bytes": 1024,
+      "description": "Bounded CEL subset. Publication additionally enforces 1024 UTF-8 bytes, 256 tokens, depth 16, literal lists 64 and constructed lists 4096. No object literal, mutation or callback; maxLength alone counts characters, not bytes."
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 31622400000
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxInstances": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 100000
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 8
+        }
+      },
+      "required": [],
+      "description": "Lifetime admission includes reservations for declared compensation/reconciliation identities; retries reuse identity. Tenant policy may lower ceilings."
+    },
+    "chainPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxSegments": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        }
+      },
+      "required": [
+        "maxSegments",
+        "timeoutMs"
+      ]
+    },
+    "forEach": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "forEach"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "items": {
+          "$ref": "#/$defs/expression"
+        },
+        "body": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "result": {
+          "$ref": "#/$defs/expression"
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "items",
+        "body",
+        "result",
+        "maxItems",
+        "maxConcurrency",
+        "next"
+      ]
+    },
+    "while": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "while"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "condition": {
+          "$ref": "#/$defs/expression"
+        },
+        "body": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "initial": {
+          "$ref": "#/$defs/expression"
+        },
+        "carry": {
+          "$ref": "#/$defs/expression"
+        },
+        "maxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "delayMs": {
+          "$ref": "#/$defs/duration"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "condition",
+        "body",
+        "initial",
+        "carry",
+        "maxIterations",
+        "timeoutMs",
+        "next"
+      ]
+    },
+    "repeatUntil": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "repeatUntil"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "condition": {
+          "$ref": "#/$defs/expression"
+        },
+        "body": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "initial": {
+          "$ref": "#/$defs/expression"
+        },
+        "carry": {
+          "$ref": "#/$defs/expression"
+        },
+        "maxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "delayMs": {
+          "$ref": "#/$defs/duration"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "condition",
+        "body",
+        "initial",
+        "carry",
+        "maxIterations",
+        "timeoutMs",
+        "next"
+      ]
+    },
+    "return": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "return"
+        },
+        "result": {
+          "$ref": "#/$defs/expression"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "result"
+      ]
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "when": {
+          "$ref": "#/$defs/expression"
+        },
+        "target": {
+          "$ref": "#/$defs/nodeId"
+        }
+      },
+      "required": [
+        "id",
+        "when",
+        "target"
+      ]
+    },
+    "switch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "switch"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/case"
+          },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "default": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "cases",
+        "default"
+      ]
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]+$",
+      "not": {
+        "pattern": "^system:"
+      },
+      "x-maxUtf8Bytes": 255
+    },
+    "approvalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subjects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subject"
+          },
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "admin",
+              "developer",
+              "operator"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "excludeInitiator": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [],
+      "anyOf": [
+        {
+          "required": [
+            "subjects"
+          ],
+          "properties": {
+            "subjects": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "roles"
+          ],
+          "properties": {
+            "roles": {
+              "minItems": 1
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "roles"
+            ],
+            "properties": {
+              "roles": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "subjects": {
+                "maxItems": 31
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "roles"
+            ],
+            "properties": {
+              "roles": {
+                "minItems": 2
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "subjects": {
+                "maxItems": 30
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "roles"
+            ],
+            "properties": {
+              "roles": {
+                "minItems": 3
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "subjects": {
+                "maxItems": 29
+              }
+            }
+          }
+        }
+      ]
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "approval"
+        },
+        "policy": {
+          "$ref": "#/$defs/approvalPolicy"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "onApprove": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onReject": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onExpire": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "policy",
+        "timeoutMs",
+        "onApprove",
+        "onReject",
+        "onExpire"
+      ]
+    },
+    "continueAsNew": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "continueAsNew"
+        },
+        "input": {
+          "$ref": "#/$defs/expression"
+        },
+        "state": {
+          "$ref": "#/$defs/expression"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "input"
+      ]
+    },
+    "resultSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "object"
+            },
+            "properties": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/resultSchema"
+              }
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 0,
+              "maxItems": 10000,
+              "uniqueItems": true
+            },
+            "additionalProperties": {
+              "const": false
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "type",
+            "properties",
+            "additionalProperties"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "array"
+            },
+            "items": {
+              "$ref": "#/$defs/resultSchema"
+            },
+            "minItems": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "type",
+            "items",
+            "maxItems"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "string"
+            },
+            "minLength": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 262144
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 262144
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "type",
+            "maxLength"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "integer"
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "number"
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "boolean"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "null"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ],
+      "x-maxSchemaBytes": 65536,
+      "description": "Closed, bounded operation-result schema subset. Publication validates finite schema nesting/bytes and coherent bounds; evaluation enforces at most 256 KiB serialized result including all keys/containers."
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "argsSchema": {
+          "type": "object"
+        },
+        "resultSchema": {
+          "$ref": "#/$defs/resultSchema"
+        },
+        "expression": {
+          "$ref": "#/$defs/expression"
+        },
+        "disclosure": {
+          "const": "declared-business-result-v1"
+        }
+      },
+      "required": [
+        "argsSchema",
+        "resultSchema",
+        "expression",
+        "disclosure"
+      ]
+    },
+    "update": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "argsSchema": {
+          "type": "object"
+        },
+        "validate": {
+          "$ref": "#/$defs/expression"
+        },
+        "state": {
+          "$ref": "#/$defs/expression"
+        },
+        "result": {
+          "$ref": "#/$defs/expression"
+        },
+        "resultSchema": {
+          "$ref": "#/$defs/resultSchema"
+        },
+        "disclosure": {
+          "const": "declared-business-result-v1"
+        }
+      },
+      "required": [
+        "argsSchema",
+        "state",
+        "result",
+        "resultSchema",
+        "disclosure"
+      ]
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "type": "object"
+        },
+        "initial": {
+          "$ref": "#/$defs/expression"
+        },
+        "queries": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "maxProperties": 32,
+          "additionalProperties": {
+            "$ref": "#/$defs/query"
+          }
+        },
+        "updates": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/name"
+          },
+          "maxProperties": 32,
+          "additionalProperties": {
+            "$ref": "#/$defs/update"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "initial"
+      ]
+    },
+    "bodyNode": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bodyActivity"
+        },
+        {
+          "$ref": "#/$defs/bodyTimer"
+        },
+        {
+          "$ref": "#/$defs/bodyWaitEvent"
+        },
+        {
+          "$ref": "#/$defs/bodyCondition"
+        },
+        {
+          "$ref": "#/$defs/bodyParallel"
+        },
+        {
+          "$ref": "#/$defs/bodyChild"
+        },
+        {
+          "$ref": "#/$defs/bodySaga"
+        },
+        {
+          "$ref": "#/$defs/bodyScript"
+        },
+        {
+          "$ref": "#/$defs/forEach"
+        },
+        {
+          "$ref": "#/$defs/while"
+        },
+        {
+          "$ref": "#/$defs/repeatUntil"
+        },
+        {
+          "$ref": "#/$defs/approval"
+        },
+        {
+          "$ref": "#/$defs/switch"
+        },
+        {
+          "$ref": "#/$defs/return"
+        }
+      ]
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entrypoint": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bodyNode"
+          },
+          "minItems": 1,
+          "maxItems": 10000,
+          "contains": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "return"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      },
+      "required": [
+        "entrypoint",
+        "nodes"
+      ],
+      "description": "One closed acyclic graph and exactly one explicit return. Publication checks entrypoint/targets, unique node identities, closure and recursive body references; no workflow terminal is permitted here."
+    },
+    "bodyActivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "activity"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "activity": {
+          "$ref": "#/$defs/name"
+        },
+        "retry": {
+          "$ref": "#/$defs/bodyRetry"
+        },
+        "compensateWith": {
+          "$ref": "#/$defs/name"
+        },
+        "reconcileWith": {
+          "$ref": "#/$defs/name"
+        },
+        "idempotencyTemplate": {
+          "$ref": "#/$defs/expression"
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "description": "Names of the secrets of the namespace the worker may ask for while it holds a lease on this step. Names only: a value is never part of a definition.",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+          }
+        },
+        "compensationRetry": {
+          "$ref": "#/$defs/bodyRetry",
+          "description": "The retry budget of the compensation (compensateWith). Five attempts, exponential from two seconds to five minutes, with jitter when absent."
+        },
+        "compensationTimeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "irreversible": {
+          "type": "boolean",
+          "description": "The effect cannot be undone once it has happened. A saga that has to compensate past it ends PARTIAL. Cannot be combined with compensateWith."
+        },
+        "highRisk": {
+          "type": "boolean",
+          "description": "An attempt whose outcome is unknown (lease lost, timeout, OUTCOME_UNKNOWN) is never retried or compensated blindly: it is reconciled when reconcileWith says how, and otherwise waits for an operator."
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "activity"
+      ]
+    },
+    "bodyTimer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "timer"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "durationMs": {
+          "$ref": "#/$defs/duration"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "durationMs"
+      ]
+    },
+    "bodyWaitEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "waitEvent"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "eventType": {
+          "$ref": "#/$defs/name"
+        },
+        "correlationExpr": {
+          "$ref": "#/$defs/expression"
+        },
+        "onTimeout": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "lookbackMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800000,
+          "description": "An event of this type and correlation that arrived up to this long before the wait started also wakes it (once). Zero or absent: only an event that arrives while it waits does. It reaches back only as far as the event is still remembered: the deduplication window of its source (24 hours for a connector and by default for an endpoint)."
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "eventType",
+        "correlationExpr",
+        "timeoutMs"
+      ]
+    },
+    "bodyCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "condition"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "expression": {
+          "$ref": "#/$defs/expression"
+        },
+        "ifTrue": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "ifFalse": {
+          "$ref": "#/$defs/nodeId"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "expression",
+        "ifTrue",
+        "ifFalse"
+      ]
+    },
+    "bodyParallel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "parallel"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nodeId"
+          },
+          "minItems": 2,
+          "maxItems": 256,
+          "uniqueItems": true
+        },
+        "join": {
+          "enum": [
+            "all",
+            "any"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "branches",
+        "join"
+      ]
+    },
+    "bodyChild": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "child"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "workflowId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,63}$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Pins a published version number; the workflow's active version when absent."
+        },
+        "input": {
+          "$ref": "#/$defs/expression"
+        },
+        "cancelPolicy": {
+          "enum": [
+            "propagate",
+            "detach",
+            "request_cancel"
+          ],
+          "description": "What happens to the child when the parent is stopped. propagate (default): the child is cancelled and the parent does not wait for it. request_cancel: the child is cancelled and the parent waits until it has settled. detach: the child keeps running."
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "workflowId"
+      ]
+    },
+    "bodySaga": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "saga"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "begin": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onCompensationFailure": {
+          "enum": [
+            "manual_review",
+            "fail"
+          ],
+          "description": "manual_review (default): a compensation that fails after its retries waits for an operator. fail: the saga ends COMPENSATION_FAILED."
+        },
+        "cancelPolicy": {
+          "enum": [
+            "compensate_completed",
+            "abort_no_compensation",
+            "wait_in_flight_then_compensate"
+          ],
+          "description": "What a cancellation or a deadline does to the saga. compensate_completed (default): stop what is in flight and compensate what completed. wait_in_flight_then_compensate: let the attempts in flight finish, then compensate everything that completed. abort_no_compensation: stop and compensate nothing."
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "begin"
+      ]
+    },
+    "bodyScript": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "type": {
+          "const": "script"
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration"
+        },
+        "artifactDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "The artifact a build made: the digest of a ready version of a script of the same tenant. The step runs exactly this code; publishing a newer version of the script changes nothing about a workflow that names this digest. Checked when the workflow is published."
+        },
+        "language": {
+          "enum": [
+            "typescript",
+            "python",
+            "csharp",
+            "go",
+            "java"
+          ],
+          "description": "Informational: the runner takes the language from the artifact."
+        },
+        "retry": {
+          "$ref": "#/$defs/bodyRetry"
+        },
+        "compensateWith": {
+          "$ref": "#/$defs/name"
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "description": "Names of the secrets of the namespace the script may ask for with octopus.secret while it holds a lease on this step. Names only: a value is never part of a definition. A script that asks for any other name is refused and audited.",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "artifactDigest"
+      ]
+    },
+    "bodyRetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "initialDelayMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "maxDelayMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "strategy": {
+          "enum": [
+            "fixed",
+            "exponential"
+          ]
+        },
+        "jitter": {
+          "type": "boolean"
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "nodes": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "const": "continueAsNew"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "chainPolicy"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "if": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "continueAsNew"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "state"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "required": [
+            "state"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "if": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "continueAsNew"
+                  }
+                }
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "state"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "description": "Canonical v1 workflow IR with additive bounded capabilities. Existing root shapes remain compatible. Schema acceptance does not enable publication: the codec and runtime must support every used capability."
 }

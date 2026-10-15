@@ -44,4 +44,7 @@ pub enum ExecutionError {
     /// A rule the reducer proves was broken; indicates a bug, never bad input.
     #[error("internal invariant violated: {0}")]
     Invariant(&'static str),
+    /// A structured node has a valid definition but its execution capability is not enabled.
+    #[error("structured node '{0}' is not executable by this runtime")]
+    UnsupportedStructuredNode(NodeId),
 }

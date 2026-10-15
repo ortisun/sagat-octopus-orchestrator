@@ -104,6 +104,11 @@ pub enum IrError {
         kind: String,
         reason: &'static str,
     },
+    #[error("declaration '{field}' is not supported yet: {reason}")]
+    UnsupportedDeclaration {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("{0}")]
     Invalid(WorkflowError),
     #[error("node '{node}', field '{field}': {message}")]
@@ -205,6 +210,9 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         IrError::Unsupported { node, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_node(node.clone())]
         }
+        IrError::UnsupportedDeclaration { field, .. } => {
+            vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
+        }
         // The message names the field: a `path` is a pointer into the document, and the codec knows the
         // node by its id, not where it stands in the list.
         IrError::Expression { node, .. } => {
@@ -256,6 +264,13 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidTrigger(_) => ("INVALID_TRIGGER", None),
         E::TooManyTriggers(_) => ("TOO_MANY_TRIGGERS", None),
         E::DuplicateTrigger => ("DUPLICATE_TRIGGER", None),
+        E::InvalidScope { node, .. } => ("INVALID_SCOPE", Some(node.to_string())),
+        E::DuplicateBody(body) => ("DUPLICATE_BODY", Some(body.to_string())),
+        E::UnknownBody { node, .. } => ("UNKNOWN_BODY", Some(node.to_string())),
+        E::UnreachableBody(body) => ("UNREACHABLE_BODY", Some(body.to_string())),
+        E::RecursiveBody(body) => ("RECURSIVE_BODY", Some(body.to_string())),
+        E::BodyDepthExceeded(_) => ("BODY_DEPTH_EXCEEDED", None),
+        E::InvalidWorkflowLimit(_) => ("INVALID_WORKFLOW_LIMIT", None),
     }
 }
 

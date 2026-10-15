@@ -1,21 +1,25 @@
-# Data model: durable primitive proposal
+# Data model: accepted durable primitive design
 
-**Status**: Proposed. No tables, events, SDK methods or new runtime guarantees are implemented by
-this document. Field/constraint names below are the design contract for future tasks.
+**Status**: Architecture accepted by ADR-0030/0031/0032. No tables, events, SDK methods or runtime
+guarantees are implemented by this document. Fields/constraints below are the implementation design;
+release requires the named runtime evidence.
 
 ## 1. Definitions and bounded values
 
 Wire documents remain adapter types; the domain uses typed IDs, bounded values and expression
 interfaces. A typed business-value tree may represent state, but domain rules must not depend on
 `serde_json`. Reuse existing tenant, namespace, run, node, version, deadline and failure types.
+The tables describe semantic entities, not a mandate for parallel Rust DTO/model hierarchies.
+Definitions remain `WorkflowDefinition`/`Node`/`NodeKind`; runtime activations remain `StepState`
+inside `RunState`. “Primitives” names product capabilities, not a new generic Rust node type.
 
 | Entity | Fields / relationships | Validation rules |
 | --- | --- | --- |
-| PrimitiveDefinition | Pinned IR revision, node id, kind, body reference, output/carry expressions, limit policy | `nodeId` remains 1..64 permitted ASCII characters; each scope is structurally acyclic; body references cannot form recursion. |
-| BodyDefinition | Local nodes, entrypoint, explicit return boundary, optional nested scope | Body has one entry and one logical return; no edge enters from or exits to another body; workflow `end` and `continueAsNew` are forbidden inside bodies. Local node count contributes to the existing 10,000 definition-node ceiling. |
-| PrimitiveLimits | maxItems, maxConcurrency, maxIterations, maxInstances, maxDepth, timeoutMs | `maxItems` and `maxIterations` are integers in 1..10000; `maxConcurrency` is 1..256; `maxInstances` is 1..100000; `maxDepth` is 1..8; `timeoutMs` is 1..31622400000. Required applicable limits cannot be omitted. Tenant policy may lower them. |
-| SwitchCase | Stable case id, predicate expression, target node | 1..32 ordered cases; case ids unique within switch; mandatory default; existing 2048-byte expression limit applies. |
-| StateDefinition | schema, initial expression, Query/Update declarations | At most 32 queries and 32 updates; names use existing 1..128 activity-name rules; state and operation result values are at most 256 KiB each. |
+| Structured node configuration (extends Node/NodeKind) | Pinned workflow definition and capability requirements, node id, kind, body reference, output/carry expressions, limit policy | `nodeId` remains 1..64 permitted ASCII characters; each scope is structurally acyclic; body references cannot form recursion. |
+| BodyDefinition | Local nodes, entrypoint, explicit return boundary, optional nested scope | Wire shape is `{entrypoint,nodes}` with exactly one `{id,type: "return",result}` node and no return successor. Body has one entry and one logical return; no edge enters from or exits to another body; workflow `end` and `continueAsNew` are forbidden inside bodies. Local node count contributes to the existing 10,000 definition-node ceiling. |
+| Workflow/node limits | Node limits maxItems, maxConcurrency, maxIterations, timeoutMs; top-level optional `limits` with maxInstances/maxDepth | `maxItems` and `maxIterations` are integers in 1..10000; `maxConcurrency` is 1..256; `maxInstances` is 1..100000; `maxDepth` is 1..8; `timeoutMs` is 1..31622400000. Required applicable node limits cannot be omitted. Top-level `limits` defaults omitted maxInstances/maxDepth to 100000/8; tenant policy may lower them. |
+| SwitchCase | Stable case id, predicate expression, target node | 1..32 ordered cases; case ids unique within switch; mandatory default; effective 1024-byte evaluator source limit applies (the domain wrapper's 2048-byte bound does not expand it). |
+| StateDefinition | schema, initial expression, Query/Update declarations with explicit disclosure policy | At most 32 queries and 32 updates; names use existing 1..128 activity-name rules; state and operation result values are at most 256 KiB each. Result schemas are closed/bounded; each operation declares `disclosure: declared-business-result-v1` (ADR-0031). |
 | ApprovalPolicy | subject ids and built-in role names, excludeInitiator, timeout | Between 1 and 32 total subjects/roles; subjects are members of the run's tenant/namespace; roles are only `admin`, `developer` or `operator` (never `viewer`, `worker`, `runner`). Custom roles and identity-provider groups do not exist (G39, feature 013), so a narrower approver set lists subjects. `excludeInitiator` defaults true. No dynamic arbitrary role-expression callback. |
 | ChainPolicy | maxSegments, timeoutMs | `maxSegments` is 1..10000, including the initial run; `timeoutMs` is 1..31622400000; both required on definitions containing continuation. |
 
@@ -28,10 +32,13 @@ change membership; digest/schema validation precedes admission.
 
 ## 2. Instance identity and scope state
 
-**ExecutionInstance**: `(tenantId, namespaceId, runId, instancePath, definitionNodeId)` is unique.
+**Execution instance identity**: `ExecutionInstanceId` in `execution/instance.rs` is the run-local
+key `{path,node}`; `RunState` owns the run id. Application/storage context completes the unique
+persisted identity `(tenantId, namespaceId, runId, instancePath, definitionNodeId)`.
 `instancePath` is a typed sequence of `(scopeNodeId, iterationIndex)` pairs; root path is empty,
 indices are zero-based integers in 0..9999 and path depth is at most 8. IDs are not constructed by
-concatenating user strings. Retry attempt/generation is a separate dimension and never changes the
+concatenating user strings. Existing root UUID/effect-key derivation is preserved byte-for-byte;
+nonroot derivation uses a domain-separated, length-delimited encoding of the typed identity. Retry attempt/generation is a separate dimension and never changes the
 logical instance or effect idempotency key. Every lease, result, timer, subscription, compensation
 reference and journal event that addresses a dynamic node carries the instance identity.
 
@@ -64,14 +71,27 @@ work durably waiting for fair scheduler admission; declared hard budget exhausti
 admission with the typed budget error. Reclaim only terminal/drained slots, transactionally.
 A policy reduction stops new admissions above its new ceiling but does not kill accepted work.
 
+`maxInstances` is a shared lifetime admission budget. Each forward activation charges one unit and
+reserves one for each possible declared compensation/reconciliation identity; reservations immediately
+consume budget and are not reused even if the derived work is never needed. A derived activation
+uses its reservation without a second charge, and retries keep the same identity. Control/scope/
+return instances each cost one unit. These reservations remain usable for accepted obligations after
+policy reduction or forward-budget exhaustion; byte limits still apply to their values. Mandatory
+terminal/drain metadata remains writable when forward payload admission is closed.
+
+Scope slot accounting and tenant execution capacity are distinct. The admission implementation must
+reserve descendant capacity or avoid charging suspended ancestors against all capacity needed by
+nested scopes; low-capacity/reduction tests are required before nesting is enabled. A quota must not
+create a permanent parent-waits-for-child/child-waits-for-slot cycle. No measured capacity or progress
+guarantee follows merely from these design ceilings.
+
 **EffectRecord**: existing effect identity extended by full instance identity and committed
 completion sequence. Compensation keeps the existing rule (FR-003-002, ADR-0005,
 `saga::reverse_dependencies`): reverse topological order that respects branch independence, not
 reverse completion order. Applied to scopes: within one iteration, the body's reverse topological
 order; between iterations of a collection, no order, because iterations are independent branches
 (they may compensate concurrently within `maxConcurrency`); between iterations of a sequential loop,
-reverse iteration order, because iteration `k+1` depends on the carry of `k`. This refinement of
-ADR-0005 is accepted in T014-002. Unknown effects reconcile before retry. A parent scope cannot
+reverse iteration order, because iteration `k+1` depends on the carry of `k`. ADR-0030 accepts this refinement of ADR-0005. Unknown effects reconcile before retry. A parent scope cannot
 claim drain complete while a child instance still has an unknown effect or unresolved compensation.
 Failed compensation retains MANUAL_REVIEW/PARTIAL semantics; a loop failure cannot overwrite it with
 a simpler FAILED outcome.
@@ -113,12 +133,16 @@ waits on a state predicate. Both are pending decisions, not implied features. `e
 is the Update's optimistic-concurrency token. It conflicts only with another Update, unlike the run
 version, which every activity completion and timer moves.
 
-**Value disclosure**: the API returns no payload value today; ADR-0028 allows only authorized
-structural inspection and requires a new decision for any value disclosure. Query results, Update
-results and receipt replays disclose declared values, so US06 requires that decision (T014-002)
-before release. It names the permission, the audit and the redaction that apply.
+**Value disclosure**: ADR-0028 continues to govern structural inspection. ADR-0031 separately
+accepts `declared-business-result-v1` for explicitly declared Query/Update results and receipt replay.
+Each operation has a closed bounded result schema and explicit disclosure declaration; namespace
+run:query/run:update grants authorize all declared operation names, not a per-name ACL. Ordinary
+graph/SSE/journal/audit/telemetry remain payload-free. Results use no-store responses and current
+authorization plus successful audit, with no secret capability in the evaluator. Security and
+conformance evidence still block release.
 
-**QueryDefinition**: name, argument schema, result schema, expression. Query evaluates against one
+**QueryDefinition**: name, argument schema, closed bounded result schema, expression and required
+`disclosure: declared-business-result-v1`. Query evaluates against one
 consistent persisted snapshot with `{input, state, completedResults, args}`; secrets, live leases,
 credentials and non-authorized payload fields are unavailable. Returns result, `runId`,
 `runVersion` and `stateRevision`; it never updates workflow journal/state. Authorized query access
@@ -126,10 +150,15 @@ is audited in an access-audit record, with no arguments/results. Query on retain
 is allowed; removed state returns `NOT_FOUND`. Limits/schema failures return typed errors.
 
 **UpdateDefinition**: name, argument schema, optional validator expression (default true), state
-expression, result expression, bounded declared-state schema. Evaluation order: validate arguments,
+expression, result expression, closed bounded result schema, bounded declared-state schema and
+required `disclosure: declared-business-result-v1`. Evaluation order: validate arguments,
 check expected state revision, evaluate validator, compute new state, validate state, compute result
 and validate result. Expressions see the same pre-state and arguments; result may explicitly
-reference `newState`. They cannot call activities, invoke children, wait or cause external effects.
+reference `newState`. They cannot call activities, invoke children, wait or cause external effects. The existing evaluator
+limits source to 1024 bytes, 256 tokens, depth 16, literal lists to 64, constructed/concatenated lists
+to 4096 and generated strings to 64 KiB. There is no object/map literal or mutation operator; selecting
+an existing object such as args/state is supported. Referencing a 10,000-element collection is
+separate from constructing a CEL list and requires bounded materialization/byte evidence.
 
 **UpdateReceipt**: tenant/namespace, address scope (`RUN` or `CHAIN`), target id, operation name,
 `updateKey`, canonical request hash, actual applied run id, status (`APPLIED`, `REJECTED`), rejection
@@ -181,16 +210,20 @@ if required quota is temporarily unavailable, it remains durably waiting before 
 is not marked complete. Original deadline remains enforceable while waiting.
 
 A parent awaiting a child follows its child's chain to FINAL; intermediate segments never emit
-`ChildSucceeded`/`ChildFailed`. Parent cancellation propagates to the chain's current member through
-the existing child policy. Child lineage is carried atomically; the final chain outcome notifies the
-parent once under the original parent child-instance identity.
+`ChildSucceeded`/`ChildFailed`. A durable parent child-instance link stores the original parent
+instance, child chain id, cancellation latch, final outcome and settlement marker. Parent cancellation
+writes that link under the existing child policy; every handoff checks its latch under lock and
+cancellation reconciliation targets the current segment. Child lineage/head changes are atomic;
+final outcome is applied once under the original parent instance and the parent's scheduler fence.
+Parent and child transitions each lock their own chain/run then the link, never the other's run.
 
 Tree budget: every run with the same root counts against the existing child-run tree budget
 (`MAX_TREE_RUNS` = 1,024, all runs ever created under the root, depth at most 8). A successor of a
 continuing child is a new run under the parent's root, so a child chain's segments consume that
 budget; reaching it fails the boundary with the existing tree-limit failure, whatever `maxSegments`
 allows. A successor of a root run starts its own tree, because its predecessor is quiescent. Children
-started inside collection bodies consume the same budget per iteration.
+started inside collection bodies consume the same budget per iteration. Lifetime tree/chain admission
+counters survive retention; deleting a segment or child cannot replenish either budget.
 
 Chain lineage is distinct from the existing `rerunOf` (RERUN_AS_NEW). A rerun of any segment starts
 an independent run with `rerunOf` set and a new singleton chain; it never joins or forks the old chain.
@@ -198,8 +231,9 @@ an independent run with `rerunOf` set and a new singleton chain; it never joins 
 ## 6. Transaction boundaries
 
 All rows/FKs/uniqueness include tenant and namespace where applicable. All writes use cancellation-
-safe begin, run journal CAS and current scheduler owner/fence; worker completions also validate
-lease token, attempt and generation. The transaction includes applicable quota deltas and audits.
+safe begin and run journal CAS. Scheduler-originated transitions validate current scheduler
+owner/fence; worker completions validate lease token, attempt and generation. Authenticated HTTP
+commands serialize on run/chain and current authorization without acquiring a scheduler lease. The transaction includes applicable quota deltas and audits.
 
 | Transition | One transaction MUST contain | Crash/retry invariant |
 | --- | --- | --- |
@@ -213,8 +247,19 @@ lease token, attempt and generation. The transaction includes applicable quota d
 | Continue | predecessor terminal event, successor/start/state/tasks, links/head, parent lineage, transfers, audit, outbox | Zero or one successor; never a terminal predecessor with missing successor. |
 | Chain-target command | chain head resolution, dedup receipt/inbox, current-run mutation and all its records | Rollover cannot split resolution from application. |
 
-Lock order is chain (if involved), run ids in stable sorted order, then scope/request/quota resources
-in stable key order. Direct-run mutations for a chain member use the same chain-before-run order.
+For chain-capable runs, lock order is chain, its current run, then applicable ownership/admission fences and ordered
+subordinate resources. Preserve the existing run → shared drain fence → session row → sorted
+activity quota order; creation takes the tree-admission advisory lock before its subordinate
+resources. Handoff inserts a new successor and never locks two preexisting runs. Direct-run mutations
+for a chain member use the same chain-before-run order.
+
+Parent transitions lock their own chain/run then child-instance links; child handoff/finalization
+locks its own chain/run then its link. Neither locks the other chain/run. Link cancellation/final
+outcome state is authoritative across rollover, preventing cancellation loss or premature parent
+completion. Legacy parent-first child creation and child-row UPDATE paths retain their behavior
+until explicitly migrated; do not mix their locks into this protocol or impose sorted run IDs on
+them. A scheduler parent notification checks the parent's shard fence.
+
 No caller response acknowledges a mutation before commit. Query uses a consistent read snapshot;
 a read audit must succeed before returning its data, without adding a workflow transition.
 
@@ -226,7 +271,12 @@ an expired receipt. API docs must state this finite deduplication window; no inf
 promise. Garbage collection checks live chain, child, saga and blob references before deletion.
 Snapshot/checkpoint storage is charged and deleting one segment cannot strand the active chain.
 
+Both existing and extended definitions use IR v1. Capability requirements are derived from the
+immutable published definition; persisted path and chain fields explicitly identify runtime state.
+Do not infer a run's lock/event protocol from `apiVersion`, automatically migrate an active legacy
+run, or attach chain semantics simply because a new reader is installed.
+
 Migration adds nullable/defaulted root identity and completion fields for old rows, tenant-scoped
 constraints and new primitive tables. Old journal events replay to the empty root path; never rewrite
 history or assign new meaning to old event types. New events are versioned. Rollback disables new
-starts/publications but retains compatible readers until all new-revision runs have drained.
+starts/publications but retains compatible readers until all runs using the new capabilities have drained.

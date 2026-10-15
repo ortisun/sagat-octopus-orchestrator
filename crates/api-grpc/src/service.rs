@@ -21,6 +21,7 @@ use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES};
 use sagat_application::runs::RunStore;
 use sagat_application::worker::{Capabilities, ClaimedTask, StepAck, WorkerService, WorkerStore};
 use sagat_domain::blobs::BlobId;
+use sagat_domain::workflow::NodeId;
 use sagat_telemetry::TraceContext;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -684,6 +685,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
+            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
             let resolved = self
                 .workers
                 .resolve_secrets(
@@ -725,6 +727,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
+            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
             let ack = self
                 .workers
                 .heartbeat(&auth.session.principal, &attempt.task_ref())
@@ -753,6 +756,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
+            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
             let key = idempotency_key(&message.idempotency_key)?;
             if !message.output_blob_ref.is_empty() {
                 if !message.output_json.is_empty() {
@@ -851,6 +855,7 @@ where
                 header.generation,
                 &header.lease_token,
             )?;
+            validate_root_identity(header.instance.as_ref(), &attempt.node)?;
             let principal = &auth.session.principal;
             let scope = self
                 .workers
@@ -905,6 +910,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
+            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
             let id = message
                 .blob_id
                 .parse::<BlobId>()
@@ -957,6 +963,7 @@ where
                 message.generation,
                 &message.lease_token,
             )?;
+            validate_root_identity(message.instance.as_ref(), &attempt.node)?;
             let key = idempotency_key(&message.idempotency_key)?;
             if message.error_code.len() > 128 || message.safe_message.len() > 2048 {
                 return Err(invalid("error_code or safe_message is too long"));
@@ -1013,7 +1020,67 @@ fn step_response(ack: &StepAck) -> pb::StepCommandResponse {
     }
 }
 
+fn root_identity(node: &NodeId) -> pb::ExecutionInstanceIdentity {
+    pb::ExecutionInstanceIdentity {
+        instance_path: Vec::new(),
+        definition_node_id: node.to_string(),
+    }
+}
+
+fn validate_root_identity(
+    identity: Option<&pb::ExecutionInstanceIdentity>,
+    expected_node: &NodeId,
+) -> Result<(), Status> {
+    let Some(identity) = identity else {
+        return Ok(());
+    };
+    if !identity.instance_path.is_empty() {
+        return Err(invalid(
+            "scoped execution identity is not supported by this server",
+        ));
+    }
+    if identity.definition_node_id != expected_node.as_str() {
+        return Err(invalid(
+            "instance.definition_node_id does not match task_id",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn old_and_explicit_root_reports_are_accepted() {
+        let node = NodeId::parse("charge").expect("node");
+        assert!(validate_root_identity(None, &node).is_ok());
+        assert!(validate_root_identity(Some(&root_identity(&node)), &node).is_ok());
+    }
+
+    #[test]
+    fn an_unimplemented_scope_or_mismatched_root_is_rejected() {
+        let node = NodeId::parse("charge").expect("node");
+        let other = NodeId::parse("refund").expect("node");
+        assert!(validate_root_identity(Some(&root_identity(&other)), &node).is_err());
+
+        let scoped = pb::ExecutionInstanceIdentity {
+            instance_path: vec![pb::ScopePathSegment {
+                scope_node_id: "lines".into(),
+                iteration_index: 0,
+            }],
+            definition_node_id: node.to_string(),
+        };
+        assert!(validate_root_identity(Some(&scoped), &node).is_err());
+    }
+}
+
 fn lease(task: &ClaimedTask) -> pb::TaskLease {
+    let instance = Some(root_identity(&task.node));
+    let target_instance = task
+        .target
+        .as_ref()
+        .map(|target| root_identity(&target.node));
     pb::TaskLease {
         task_id: task.task_id(),
         run_id: task.run_id.to_string(),
@@ -1041,6 +1108,8 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
             .as_ref()
             .map(|t| t.idempotency_key.clone())
             .unwrap_or_default(),
+        instance,
+        target_instance,
     }
 }
 

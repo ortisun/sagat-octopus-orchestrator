@@ -1,7 +1,7 @@
 # Conformance and failure matrix
 
-**Status**: Proposed runtime tests. The US01 example suite exists separately and has its own
-[validation report](../validation-report.md). None of the future cases below is claimed to pass.
+**Status**: Required runtime tests for the accepted architecture. The US01 example suite exists separately and has its own
+[validation report](../validation-report.md). None of the pending cases below is claimed to pass.
 
 ## Shared five-SDK contract
 
@@ -20,12 +20,12 @@ membership. Goldens are reviewed against the scenario, never auto-blessed from T
 | WP-05 loops | FR-014-006, US03 | False while=0 bodies; repeatUntil=at least 1; three iterations/carry checkpoints; maxIterations=1 limit failure; delay is durable and owns no worker; completed iterations compensate in reverse iteration order. |
 | WP-06 approval | FR-014-007–008, US04 | Approve/reject/expire routes; identical key replay, changed key body conflict, decision-vs-expiry/cancel first commit; raw signal cannot decide. |
 | WP-07 switch | FR-014-009, US05 | First of multiple true cases, default, predicate error, recorded-choice replay; no non-selected node activates. |
-| WP-08 queries | FR-014-010, US06 | Run version/state revision consistency with concurrent update, terminal read, schema/redaction failure; no state/journal mutation or activity scheduling; values only under the accepted disclosure decision. |
+| WP-08 queries | FR-014-010, US06 | Run version/state revision consistency with concurrent update, terminal read, schema/redaction failure; no state/journal mutation or activity scheduling; explicit disclosure declaration, closed/bounded result schema, no-store response and successful access audit under ADR-0031. |
 | WP-09 updates | FR-014-011, US06 | Atomic state/result, durable rejection, `expectedStateRevision` conflict (unaffected by unrelated activity completions), identical receipt replay after lost response, changed-key-body conflict, rejection in non-mutable run states; an update schedules no task. |
 | WP-10 continuation | FR-014-012–013, US07 | Three segments/one successor each; explicit transfer; same version/deadline; old segment SUCCEEDED/CONTINUED; chain wait FINAL; old run writes never forwarded. |
 | WP-11 chain races | FR-014-012–014, US07 | Signal/update/cancel vs rollover; chain signal to a head that is not waiting is refused, never held; chain dedup applies once across segments; expected-head conflict; cancelled chain cannot continue; parent waits final and cancels current child chain; RERUN_AS_NEW of a segment starts an unrelated run. |
-| WP-12 limits | FR-014-015, NFR-014-003 | Boundary/excess for item, concurrency, node, depth, case, operation, principal, segment and byte limits; children in bodies and child-chain successors against the 1,024-run tree budget; tenant contention across runs, no quota reset on continuation. |
-| WP-13 version compatibility | FR-014-016, NFR-014-004 | Old active runs + old SDK minors; new IR rejected on old server; scoped tasks withheld from old workers; no new `Error.code` value (new meaning only in `details.reason`); decimal/UTC behavior identical across five SDKs. |
+| WP-12 limits | FR-014-015, NFR-014-003 | Boundary/excess for item, concurrency, node, depth, case, operation, principal, segment and byte limits; children in bodies and child-chain successors against the 1,024-run tree budget; tenant contention across runs, descendant admission at low quotas, derived-instance reserve surviving exhaustion/policy reduction, lifetime tree/chain counts surviving retention, no quota reset on continuation. |
+| WP-13 capability compatibility | FR-014-016, NFR-014-004 | Old active runs + old SDK minors; new capability shapes rejected on an unsupported server while apiVersion stays v1; scoped tasks withheld from old workers; no new `Error.code` value (new meaning only in `details.reason`); worker 1.5 scoped identity versus retained 1.0–1.4 forms; effective 1024-byte expressions, 64 literal/4096 constructed lists and unsupported object literals; decimal/UTC behavior identical across five SDKs. |
 | WP-14 security/telemetry | FR-014-017, NFR-014-002 | Cross-tenant opacity, revoked role, initiator exclusion, `worker`/`runner`/`viewer` cannot decide, secret marker absent; mandatory trace/error/audit, bounded metric labels; query/update capability cannot access secrets or I/O. |
 
 WP-02–14 must be run for TypeScript, Go, Python, C# and Java wherever they expose a public behavior;
@@ -47,7 +47,7 @@ restart and connection drop rather than treating in-memory reducer replay as per
 | Iteration checkpoint/next timer | No checkpoint without carry/decision/next work | Replay uses recorded condition; one next iteration/timer after restart. |
 | Switch decision | No route/task if transaction rolls back | Recorded selected case reused; no predicate re-evaluation on replay. |
 | Approval open/decide/expire | No request without timer; no chosen route without audit | One winner, stable duplicate receipt; losing expiry/signal/cancel audited appropriately. |
-| Update computation/write | No state/result receipt if transaction aborts | Lost answer returns exact receipt; revoked caller cannot replay data after permission loss. |
+| Update computation/write | No state/result receipt if transaction aborts | Lost answer returns exact receipt; revoked caller cannot replay data after permission loss; failed audit returns no values. |
 | Continuation predecessor/successor | Old run remains active; no stray successor/head | One linked successor and correct current head; old run terminal, parent still waiting. |
 | Chain-head command resolution | No accepted command bound to a different unrecorded head | Stable resolved run and chain key; rollover cannot apply the command again. |
 | Outbox dispatch/ack | Committed DB work remains authoritative | Duplicate/lost hints do not duplicate claims/transitions; reconciliation resumes READY work. |
@@ -63,6 +63,6 @@ Assert no invariant violations rather than asserting physical external-effect ex
 ## Release evidence
 
 Each row records command, toolchain/environment, seed/barrier, failures/skips and observed persisted
-outcome in the future validation report. SC-014-002–006 require this evidence and the benchmark;
+outcome in the release validation report. SC-014-002–006 require this evidence and the benchmark;
 writing this matrix does not complete them. Existing baseline feature suites remain mandatory to
 catch changes to saga, child, waitEvent, quota, versioning and worker-minor behavior.

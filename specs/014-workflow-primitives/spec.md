@@ -1,9 +1,9 @@
 # Feature Specification: Durable workflow primitives and practical SDK examples
 
-**Feature Branch**: `feature/014-workflow-primitives`
+**Feature Branch**: `feature/workflow-primitives`
 **Created**: 2026-10-14
 **Revised**: 2026-10-14, after validation against accepted ADRs and canonical contracts ([analysis](./analysis.md))
-**Status**: Specified; proposed runtime semantics, implementation pending
+**Status**: Architecture accepted in ADR-0030/0031/0032; runtime implementation pending
 **Input**: Specify additional workflow primitives with Spec Kit and improve practical workflow examples in TypeScript, Go, Python, C# and Java.
 
 ## Context and delivery boundary
@@ -12,20 +12,39 @@ Developers need to route orders, process a runtime-sized collection, repeat work
 condition is met, request a person's decision, inspect/change a workflow's business state and
 continue a long-lived process without an ever-growing individual run.
 
-This delivery specifies those additions and supplies practical examples of **existing** behavior.
-Only US01 is an implementation slice in this delivery. US02–US07 are future implementation work;
-this document does not make them available. `condition`, static `parallel` with `all`/`any`, timers,
+The accepted implementation scope includes US01–US07. US01 supplies practical examples of
+**existing** behavior; US02–US07 remain pending runtime implementation and release evidence.
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) accepts the
+execution design and [ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md)
+accepts the declared-result disclosure policy. [ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md)
+keeps the existing v1 IR and adds capabilities without introducing a new public revision. These
+decisions do not make unimplemented operations available. `condition`, static `parallel` with `all`/`any`, timers,
 `waitEvent`, child workflows and sagas already exist. `parallel.any` means first **successful**
 branch, failing only when all branches fail; it is not a new first-completion race primitive.
 A signal-based sample approval is not a native approval with approver authorization.
 
-The proposed primitives build on these existing rules, which they do not change: a signal is accepted
+The accepted primitives build on these existing rules, which they do not change: a signal is accepted
 only by a step that is waiting for it and is consumed in the same transaction, never buffered
 (`signalRun` in the canonical OpenAPI); compensation runs in reverse topological order and respects branch independence
-(FR-003-002, ADR-0005); the API discloses no payload value, only authorized structure (ADR-0028);
+(FR-003-002, ADR-0005); general payload inspection discloses only authorized structure (ADR-0028),
+while explicit declared operation results follow ADR-0031;
 roles are the built-in ones, with no custom roles (G39); errors use the closed `Error.code` set with
 `details.reason` refinements; `Run.version`/`expectedRunVersion` is the run's optimistic-concurrency
 token; and one child-run tree holds at most 1,024 runs at depth 8 or less.
+
+## Domain vocabulary
+
+“Workflow primitives” is the product-level term for the added capabilities, not a replacement Rust
+abstraction. The existing definition model remains `WorkflowDefinition`, `Node` and `NodeKind`;
+execution records each activation as `StepState` inside `RunState`. Extend those models where the
+new behavior belongs. The cohesive `execution/instance.rs` module introduces instance identity,
+not a generic `Primitive` object or an alternate workflow engine.
+
+`ExecutionInstanceId` is the **run-local** key `{path, node}` because `RunState` already owns the run
+ID. The complete persisted identity is `(tenantId, namespaceId, runId, path, definitionNodeId)`;
+the application/store supplies the owning context. Do not duplicate tenant/run fields inside every
+run-local key or confuse definition nodes with their repeated runtime activations. Approval, state
+operations and chains can use separately named cohesive modules when implemented.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -150,8 +169,9 @@ result, rather than guessing state from activity logs or treating a signal ackno
 and race two updates with the same expected state revision; assert one mutation and stable replayed
 response.
 
-**Release gate**: Query and Update results disclose business values through the API, which ADR-0028
-does not permit today. US06 is not released before a value-disclosure decision is accepted (T014-002).
+**Release gate**: ADR-0031 accepts explicit declared-result disclosure separately from ADR-0028
+structural inspection. US06 remains disabled until its authorization, audit, bounded result,
+receipt/replay and all-five conformance tests pass; policy acceptance is not release evidence.
 
 **Acceptance Scenarios**:
 
@@ -243,8 +263,9 @@ verify one successor per segment, one current chain member and independently ins
   record the selected route and reject predicate failures without falling through.
 - **FR-014-010**: Workflow-defined Query MUST be a bounded, side-effect-free read over one committed
   state snapshot, return the observed run version (`Run.version`) and state revision and expose only
-  its declared result schema. Returning values requires the accepted value-disclosure decision
-  that refines ADR-0028.
+  its declared closed result schema under explicit `disclosure: declared-business-result-v1`
+  (ADR-0031). Ordinary graph, journal, SSE and structural inspection retain their existing
+  payload/value boundaries; namespace operation grants cover all declared operation names.
 - **FR-014-011**: Workflow-defined Update MUST be a bounded declarative validation/state-change/result
   operation with run-scoped serialization, durable idempotency, typed rejection and optional expected
   state revision; it MUST NOT execute user code, perform external effects, wait inside the operation
@@ -270,9 +291,22 @@ verify one successor per segment, one current chain member and independently ins
   structured logs, typed errors (existing `Error.code` plus a `details.reason`) and durable audits
   for decisions, denials and manual interventions. The journal-derived runtime graph and telemetry
   projection (ADR-0016/0017) MUST show scoped instances, chosen routes and chain links with their
-  lag; a Studio without support for a new revision shows those nodes as unsupported, never fails.
+  lag; a Studio without support for a new capability shows those nodes as unsupported, never fails.
 
 ### Non-functional requirements
+
+The accepted evaluator is the existing bounded subset: effective source limit 1024 bytes, 256
+tokens, depth 16, list literals at most 64, constructed/concatenated lists at most 4096, generated
+strings at most 64 KiB, and no object/map literal or mutation operator. Expressions may select an
+existing object (for example `args` or `state`) without inventing object-construction syntax.
+Collections may reference arrays of up to 10,000 input/blob elements only within the documented
+capture/value/context budgets and after bounded materialization tests; this is not permission to
+construct a 10,000-element CEL list. Optional top-level `limits` defaults to `maxInstances: 100000` and
+`maxDepth: 8`; forward admission reserves declared derived compensation/reconciliation identities
+within that shared lifetime budget so exhaustion or policy reduction cannot prevent their drain.
+The IR remains `sagat-octopus-orchestrator.io/v1` with additive capability declarations; scoped
+worker identity uses independent minor 1.5. Preserve previously accepted definitions and stored
+runs. Publication checks enabled capabilities; the API version alone does not select runtime behavior.
 
 - **NFR-014-001 (durability)**: A successfully committed logical instance, approval, update or handoff
   survives process/broker restart; duplicate delivery cannot create a second transition. External

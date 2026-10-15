@@ -59,6 +59,8 @@ time.workspace = true
 uuid.workspace = true
 tonic.workspace = true
 prost.workspace = true
+prost-types = "0.14"
+protox.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -102,6 +104,22 @@ path = "contract/durable-execution/grpc/main.rs"
 [[test]]
 name = "sdk_conformance"
 path = "contract/sdk-conformance/main.rs"
+
+[[test]]
+name = "contract_workflow_primitives"
+path = "contract/workflow-primitives/main.rs"
+
+[[test]]
+name = "integration_workflow_primitives"
+path = "integration/workflow-primitives/main.rs"
+
+[[test]]
+name = "fault_workflow_primitives"
+path = "fault/workflow-primitives/main.rs"
+
+[[test]]
+name = "e2e_workflow_primitives"
+path = "e2e/workflow-primitives/main.rs"
 
 [[test]]
 name = "contract_rest_workflow_studio"

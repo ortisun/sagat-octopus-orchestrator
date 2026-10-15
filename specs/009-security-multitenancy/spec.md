@@ -134,3 +134,16 @@ terminal evidence. Log exhaustion truncates with persisted evidence. Rejected as
 ends with a fenced typed failure and repeatable acknowledgement. Lowering retention policy does not
 rewrite existing expiry or authorize deletion. These are conservative engineering limits; quota
 tiers and regulatory retention classification remain the open product questions above.
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Add the accepted built-in approval/read/decision and run/query/update grants, current authorization on receipt replay, tenant-scoped instance/chain references and atomic quotas/audit. ADR-0031 permits only explicitly declared bounded business results; ordinary structural inspection retains ADR-0028 and no custom/per-operation roles are invented.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

@@ -16,6 +16,7 @@ use super::event::{
     ChildOutcome, CorrelationKey, FailureCode, JoinOutcome, ReconcileResult, ReviewOutcome,
     RunEvent, StopReason,
 };
+use super::instance::ExecutionInstanceId;
 use crate::identity::IdentityError;
 use crate::saga::{ReconcileVerdict, SagaOutcome};
 use crate::workflow::NodeId;
@@ -486,7 +487,7 @@ pub struct RunState {
     status: RunStatus,
     stop: Option<(StopReason, Option<FailureCode>)>,
     paused: bool,
-    steps: BTreeMap<NodeId, StepState>,
+    steps: BTreeMap<ExecutionInstanceId, StepState>,
     sagas: BTreeMap<NodeId, SagaState>,
     applied: u64,
 }
@@ -525,7 +526,7 @@ impl RunState {
     /// journal events the rows reflect.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
-    pub const fn restore(
+    pub fn restore(
         run_id: RunId,
         status: RunStatus,
         stop: Option<(StopReason, Option<FailureCode>)>,
@@ -539,7 +540,10 @@ impl RunState {
             status,
             stop,
             paused,
-            steps,
+            steps: steps
+                .into_iter()
+                .map(|(node, state)| (ExecutionInstanceId::root(node), state))
+                .collect(),
             sagas,
             applied: version,
         }
@@ -585,11 +589,19 @@ impl RunState {
 
     #[must_use]
     pub fn step(&self, node: &NodeId) -> Option<&StepState> {
-        self.steps.get(node)
+        self.steps.get(&ExecutionInstanceId::root(node.clone()))
     }
 
-    /// All steps, ordered by node id.
+    /// All root steps, ordered by node id. Scoped instances have their own iterator.
     pub fn steps(&self) -> impl Iterator<Item = (&NodeId, &StepState)> {
+        self.steps
+            .iter()
+            .filter(|(id, _)| id.path().is_root())
+            .map(|(id, step)| (id.node(), step))
+    }
+
+    /// Every logical step, including repeated definition nodes in distinct scopes.
+    pub fn instances(&self) -> impl Iterator<Item = (&ExecutionInstanceId, &StepState)> {
         self.steps.iter()
     }
 
@@ -633,7 +645,11 @@ impl RunState {
     pub(super) fn expected_outcome(&self, saga: &SagaState) -> SagaOutcome {
         let (mut failed, mut skipped) = (false, false);
         for node in saga.entries.keys() {
-            match self.steps.get(&node.compensation()).map(|s| s.status) {
+            match self
+                .steps
+                .get(&ExecutionInstanceId::root(node.compensation()))
+                .map(|s| s.status)
+            {
                 Some(StepStatus::Failed | StepStatus::Cancelled) => failed = true,
                 Some(StepStatus::Skipped) => skipped = true,
                 _ => {}
@@ -661,7 +677,7 @@ impl RunState {
     ) -> Result<&mut StepState, ExecutionError> {
         let step = self
             .steps
-            .get_mut(node)
+            .get_mut(&ExecutionInstanceId::root(node.clone()))
             .ok_or_else(|| ExecutionError::UnknownStep(node.clone()))?;
         if allowed.contains(&step.status) {
             Ok(step)
@@ -692,12 +708,19 @@ impl RunState {
 
     fn activate(&mut self, nodes: &[NodeId]) -> Result<(), ExecutionError> {
         for (i, node) in nodes.iter().enumerate() {
-            if self.steps.contains_key(node) || nodes[..i].contains(node) {
+            if self
+                .steps
+                .contains_key(&ExecutionInstanceId::root(node.clone()))
+                || nodes[..i].contains(node)
+            {
                 return Err(ExecutionError::AlreadyScheduled(node.clone()));
             }
         }
         for node in nodes {
-            self.steps.insert(node.clone(), StepState::pending());
+            self.steps.insert(
+                ExecutionInstanceId::root(node.clone()),
+                StepState::pending(),
+            );
         }
         Ok(())
     }
@@ -752,7 +775,7 @@ impl RunState {
                     });
                 }
                 self.activate(activated)?;
-                if let Some(step) = self.steps.get_mut(node) {
+                if let Some(step) = self.steps.get_mut(&ExecutionInstanceId::root(node.clone())) {
                     step.routed = true;
                 }
             }
@@ -897,7 +920,7 @@ impl RunState {
                 // Validate everything first: `activate` inserts nothing unless all branches are new.
                 self.step_mut(node, name, &[Pending])?;
                 self.activate(branches)?;
-                if let Some(step) = self.steps.get_mut(node) {
+                if let Some(step) = self.steps.get_mut(&ExecutionInstanceId::root(node.clone())) {
                     step.status = Waiting;
                     step.waiting = Some(WaitingOn::Branches);
                 }
@@ -991,7 +1014,7 @@ impl RunState {
                 }
                 self.step_mut(node, name, &[Pending])?;
                 self.activate(std::slice::from_ref(begin))?;
-                if let Some(step) = self.steps.get_mut(node) {
+                if let Some(step) = self.steps.get_mut(&ExecutionInstanceId::root(node.clone())) {
                     step.status = Waiting;
                     step.waiting = Some(WaitingOn::Saga);
                 }
@@ -1049,7 +1072,7 @@ impl RunState {
                 if let Some(saga) = self.sagas.get(node) {
                     let settled = saga.entries.keys().all(|forward| {
                         self.steps
-                            .get(&forward.compensation())
+                            .get(&ExecutionInstanceId::root(forward.compensation()))
                             .is_some_and(|s| s.status.is_terminal())
                     });
                     if !settled {
@@ -1079,7 +1102,10 @@ impl RunState {
             }
             RunEvent::ReconciliationRequested { node, fence, cause } => {
                 let reconciliation = node.reconciliation();
-                let reusable = match self.steps.get(&reconciliation) {
+                let reusable = match self
+                    .steps
+                    .get(&ExecutionInstanceId::root(reconciliation.clone()))
+                {
                     None => true,
                     Some(step) => matches!(step.status, Succeeded | Failed),
                 };
@@ -1102,7 +1128,7 @@ impl RunState {
                 // the retry budget of the reconciliation is shared by every round.
                 let companion = self
                     .steps
-                    .entry(reconciliation)
+                    .entry(ExecutionInstanceId::root(reconciliation))
                     .or_insert_with(StepState::pending);
                 companion.status = Pending;
                 companion.routed = false;

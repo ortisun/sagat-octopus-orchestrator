@@ -18,7 +18,7 @@ use sagat_application::definitions::{
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, ParentLink, RunData, RunInfo,
-    RunRecord, RunTx, compensation_id, step_id,
+    RunRecord, RunTx, compensation_id, instance_step_id,
 };
 use sagat_application::runs::{
     GraphSnapshot, JournalEntry, Lock, NewRun, RunFilter, RunStore, SagaView, StepView,
@@ -26,8 +26,8 @@ use sagat_application::runs::{
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::definition::{Workflow, WorkflowId, WorkflowVersion, WorkflowVersionId};
 use sagat_domain::execution::{
-    CorrelationKey, FailureCode, RunEvent, RunId, RunState, RunStatus, SagaPhase, SagaState,
-    StepState, StepStatus, StopReason, WaitingOn,
+    CorrelationKey, ExecutionInstanceId, FailureCode, RunEvent, RunId, RunState, RunStatus,
+    SagaPhase, SagaState, StepState, StepStatus, StopReason, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Principal, Slug, TenantId};
 use sagat_domain::saga::{NodeOrigin, SagaOutcome};
@@ -1500,26 +1500,39 @@ impl RunTx for PgRunTx {
                     )
                 })
                 .and_then(|n| output_digest.get(n));
-            sqlx::query(
+            let root_instance_id = event.node().map(|node| {
+                let instance = ExecutionInstanceId::root(node.clone());
+                instance_step_id(self.info.version_id, run, &instance)
+            });
+            let insert = sqlx::query(
                 "INSERT INTO run_events \
                  (tenant_id, run_id, seq, event_type, node, attempt, detail, payload_digest, actor, \
-                  trace_id, occurred_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-            )
-            .bind(tenant.as_uuid())
-            .bind(run.as_uuid())
-            .bind(seq)
-            .bind(encoded.event_type)
-            .bind(encoded.node.as_deref())
-            .bind(encoded.attempt)
-            .bind(&encoded.detail)
-            .bind(payload.map(Vec::as_slice))
-            .bind(effects.actor.label())
-            .bind(effects.trace_id.as_deref().or(self.info.trace_id.as_deref()))
-            .bind(self.now)
-            .execute(&mut *self.tx)
-            .await
-            .map_err(store_error)?;
+                  trace_id, occurred_at, instance_id, instance_path_nodes, instance_path_indices) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+            );
+            insert
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(seq)
+                .bind(encoded.event_type)
+                .bind(encoded.node.as_deref())
+                .bind(encoded.attempt)
+                .bind(&encoded.detail)
+                .bind(payload.map(Vec::as_slice))
+                .bind(effects.actor.label())
+                .bind(
+                    effects
+                        .trace_id
+                        .as_deref()
+                        .or(self.info.trace_id.as_deref()),
+                )
+                .bind(self.now)
+                .bind(root_instance_id)
+                .bind(root_instance_id.map(|_| Vec::<String>::new()))
+                .bind(root_instance_id.map(|_| Vec::<i32>::new()))
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
 
             // The steps the event created or changed, from the one definition of them the platform has
             // (the Studio's changes of the graph are made of the same list).
@@ -2105,7 +2118,8 @@ impl PgRunTx {
         let renewal = effects.renewal.as_ref().filter(|r| &r.node == node);
         let leased = matches!(step.status(), StepStatus::Leased | StepStatus::Running);
         let fresh_grant = grant.filter(|_| leased);
-        let step_uuid = step_id(self.info.version_id, self.info.run_id, node);
+        let instance = ExecutionInstanceId::root(node.clone());
+        let step_uuid = instance_step_id(self.info.version_id, self.info.run_id, &instance);
         let status = step.status().as_str();
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;

@@ -88,3 +88,16 @@ tests/performance/gitops-versioning/  and  tests/performance/reports/gitops-vers
 ## Delivery Gate
 
 V2→V3 with a suspended V2 run resumes correctly; rollback only affects new runs. Proved by `tests/e2e/gitops-versioning/us02.rs` (a run waiting on version 1 resumes with version 1's activity after version 2 is published, and a run started after it uses version 2) and `us04.rs` (a rollback moves the pointer and rewrites nothing; the run in flight keeps its version).
+
+
+## Approved workflow-primitives dependency (2026-10-14)
+
+[ADR-0030](../../docs/adr/ADR-0030-structured-instances-and-continuation-chains.md) and
+[ADR-0031](../../docs/adr/ADR-0031-declared-operation-result-disclosure.md) accept the feature-014
+architecture and separate declared-result disclosure policy.
+[ADR-0032](../../docs/adr/ADR-0032-additive-workflow-ir.md) keeps the workflow IR at v1 and
+supersedes the earlier separate-revision allocation. Published definitions using new capabilities and operation disclosure policies are immutable and each run pins its immutable workflow version and capability requirements. Continuation keeps the same version; rollback disables new starts but retains compatible readers/workers for live runs using those capabilities. Existing root-workflow and publication approval semantics remain unchanged.
+
+This approves the described dependency for implementation, not a runtime guarantee. Canonical
+contracts, migration/replay, tenant/fault tests and applicable five-SDK evidence remain the
+feature-014 release gates; existing feature behavior stays supported.

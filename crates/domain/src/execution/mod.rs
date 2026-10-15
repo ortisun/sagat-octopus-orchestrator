@@ -7,6 +7,7 @@
 mod command;
 mod error;
 mod event;
+mod instance;
 mod plan;
 mod sagas;
 mod state;
@@ -22,6 +23,10 @@ pub use error::ExecutionError;
 pub use event::{
     Cause, ChildOutcome, CorrelationKey, FailureCode, Fence, JoinOutcome, PlannedEntry,
     ReconcileResult, ReviewOutcome, RunEvent, StopReason,
+};
+pub use instance::{
+    ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
+    ScopeSegment,
 };
 pub use plan::{Evaluation, Plan, plan};
 pub use state::{

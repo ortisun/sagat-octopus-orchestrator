@@ -16,6 +16,26 @@ SAGAT_SDK_REUSE=1 …                                                           
 
 `--ignored` because the suite needs the five toolchains (Node, Python, Go, .NET and a JDK) and Docker, which `cargo test --workspace` cannot assume; the `sdks` job of CI sets them up and runs the suite with `--ignored`. `SAGAT_SDK_REUSE=1` also skips the build of the runners, so run once without it after changing an SDK or a runner.
 
+## Pending scenarios
+
+Files ending in `.json.pending` are reviewed contracts for behavior that the server and all five SDKs
+cannot execute yet. The harness deliberately ignores them, so they are never counted as passing evidence
+and have no golden result.
+
+The scoped-identity fixture extends the existing `sagat-octopus-orchestrator.io/v1` document shape
+additively. Worker protocol 1.5 is negotiated independently and does not imply a new workflow IR revision.
+To expose the current failure, copy it to the enabled suffix, run only that scenario, then remove the copy:
+
+```text
+cp tests/contract/sdk-conformance/scenarios/scoped-identity.json.pending tests/contract/sdk-conformance/scenarios/scoped-identity.json
+SAGAT_SDK_SCENARIO=scoped-identity cargo test -p sagat-tests --test sdk_conformance -- --ignored --nocapture
+rm tests/contract/sdk-conformance/scenarios/scoped-identity.json
+```
+
+Enable the fixture permanently only when the public builders support named bodies, `forEach` and `return`,
+worker activity context and logs expose typed instance identity, graph inspection exposes each logical
+instance, scoped work is withheld from older workers, and a reviewed cross-language golden exists.
+
 ## What each SDK ships
 
 `sdks/<language>/conformance/` with two executables (shell scripts, `chmod +x`):

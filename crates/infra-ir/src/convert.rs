@@ -69,11 +69,13 @@ fn reference(node: &Map<String, Value>, field: &str, at: &str) -> Result<Option<
         .transpose()
 }
 
-/// Why a node kind that exists in the schema is not executed yet.
+/// Historical placeholder shapes have no executable definition.
 fn unsupported(kind: &str) -> Option<&'static str> {
     Some(match kind {
-        "foreach" => "bounded loops are not part of any planned feature yet",
-        "humanApproval" => "human approval is not part of any planned feature yet",
+        "foreach" => "legacy collection placeholder has no executable definition",
+        "humanApproval" => "legacy approval placeholder has no executable definition",
+        "forEach" | "while" | "repeatUntil" | "approval" | "switch" | "return"
+        | "continueAsNew" => "this workflow capability is not enabled by the runtime",
         _ => return None,
     })
 }
@@ -349,6 +351,14 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
 }
 
 pub(crate) fn definition(document: &Value) -> Result<WorkflowDefinition, IrError> {
+    for field in ["bodies", "limits", "state", "chainPolicy"] {
+        if document.get(field).is_some() {
+            return Err(IrError::UnsupportedDeclaration {
+                field,
+                reason: "this workflow capability is not enabled by the runtime",
+            });
+        }
+    }
     let name = document
         .pointer("/metadata/name")
         .and_then(Value::as_str)

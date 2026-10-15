@@ -1,5 +1,4 @@
-//! The IR codec against the repository's own example and against hostile documents
-//! (T002-002, T002-009; FR-001-002, FR-002-001, NFR-002-SEC).
+//! The IR codec against the repository's own example and hostile documents.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::time::Duration;
@@ -40,6 +39,62 @@ fn issues_of(doc: &Value) -> Vec<(String, String)> {
         Err(IrError::Schema(issues)) => issues.into_iter().map(|i| (i.path, i.message)).collect(),
         other => panic!("expected schema issues, got {other:?}"),
     }
+}
+
+#[test]
+fn additive_declarations_remain_unpublishable_until_the_runtime_supports_them() {
+    let mut document = minimal(json!([{"id": "done", "type": "end"}]), "done");
+    document["limits"] = json!({"maxInstances": 100, "maxDepth": 2});
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::UnsupportedDeclaration {
+            field: "limits",
+            ..
+        })
+    ));
+
+    document.as_object_mut().expect("document").remove("limits");
+    document["state"] = json!({"schema": {"type": "integer"}, "initial": "0"});
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::UnsupportedDeclaration { field: "state", .. })
+    ));
+    document.as_object_mut().expect("document").remove("state");
+    document["chainPolicy"] = json!({"maxSegments": 2, "timeoutMs": 1_000});
+    assert!(matches!(
+        parse(&document),
+        Err(IrError::UnsupportedDeclaration {
+            field: "chainPolicy",
+            ..
+        })
+    ));
+
+    let mut collection = minimal(
+        json!([
+            {"id": "lines", "type": "forEach", "items": "input.items", "body": "line",
+             "result": "bodyResult", "maxItems": 17, "maxConcurrency": 3, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "lines",
+    );
+    collection["bodies"] = json!({"line": {"entrypoint": "return", "nodes": [
+        {"id": "return", "type": "return", "result": "input.item"}
+    ]}});
+    assert!(matches!(
+        parse(&collection),
+        Err(IrError::UnsupportedDeclaration {
+            field: "bodies",
+            ..
+        })
+    ));
+    collection
+        .as_object_mut()
+        .expect("document")
+        .remove("bodies");
+    assert!(matches!(
+        parse(&collection),
+        Err(IrError::Unsupported { kind, .. }) if kind == "forEach"
+    ));
 }
 
 // ------------------------------------------------------------------ the shipped example
@@ -378,12 +433,12 @@ fn node_kinds_without_an_engine_are_refused_with_the_reason() {
         (
             "foreach",
             json!({"id": "c", "type": "foreach", "collectionExpr": "input.items", "itemKeyExpr": "item.id", "body": "x", "maxItems": 10}),
-            "any planned feature",
+            "legacy collection placeholder",
         ),
         (
             "humanApproval",
             json!({"id": "c", "type": "humanApproval", "approverPolicy": "p", "timeoutMs": 1000, "formSchema": {}}),
-            "any planned feature",
+            "legacy approval placeholder",
         ),
     ];
     for (kind, node, feature) in cases {
