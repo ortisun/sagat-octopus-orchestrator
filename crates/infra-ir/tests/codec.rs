@@ -5,12 +5,15 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
+use sagat_domain::execution::{ExecutionInstanceId, InstancePath};
 use sagat_domain::saga::{OnCompensationFailure, SagaCancelPolicy};
 use sagat_domain::workflow::{NodeId, NodeKind, RetryPolicy, WorkflowError};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
 
 const EXAMPLE: &str = include_str!("../../../examples/payment-saga.workflow.json");
+const LOOP_BUILDERS_GOLDEN: &str =
+    include_str!("../../../tests/contract/sdk-conformance/expected/loop-builders.workflows.json");
 
 fn parse(doc: &Value) -> Result<ParsedDefinition, IrError> {
     JsonIrCodec.parse(doc.to_string().as_bytes())
@@ -229,7 +232,228 @@ fn structured_validation_enforces_closed_bodies_and_capability_boundaries() {
     });
     assert!(matches!(
         JsonIrCodec.parse_structured(document.to_string().as_bytes()),
-        Err(IrError::Unsupported { kind, .. }) if kind == "while"
+        Err(IrError::Invalid(WorkflowError::RecursiveBody(body))) if body.as_str() == "line"
+    ));
+}
+
+#[test]
+fn structured_loops_match_the_reviewed_sdk_golden_and_remain_unpublishable() {
+    let golden: Value = serde_json::from_str(LOOP_BUILDERS_GOLDEN).expect("loop golden is JSON");
+    let document = &golden["workflows"]["pre-and-post-test"];
+    let expected = golden["canonical"]["pre-and-post-test"]
+        .as_str()
+        .expect("canonical loop document");
+
+    let parsed = JsonIrCodec
+        .parse_structured(document.to_string().as_bytes())
+        .expect("structured loops validate");
+    assert_eq!(parsed.canonical, expected.as_bytes());
+    let pre = parsed
+        .definition
+        .node(&NodeId::parse("pre").expect("node id"))
+        .expect("while node");
+    assert!(matches!(
+        pre.kind(),
+        NodeKind::While {
+            condition,
+            body,
+            initial,
+            carry,
+            max_iterations: 3,
+            delay: Some(delay),
+        } if condition.as_str() == "carry < 3"
+            && body.as_str() == "iteration"
+            && initial.as_str() == "input.start"
+            && carry.as_str() == "bodyResult"
+            && *delay == Duration::from_millis(250)
+    ));
+    assert_eq!(pre.timeout(), Some(Duration::from_millis(60_000)));
+
+    let post = parsed
+        .definition
+        .node(&NodeId::parse("post").expect("node id"))
+        .expect("repeatUntil node");
+    assert!(matches!(
+        post.kind(),
+        NodeKind::RepeatUntil {
+            max_iterations: 10_000,
+            delay: None,
+            ..
+        }
+    ));
+    assert_eq!(post.timeout(), Some(Duration::from_millis(31_622_400_000)));
+
+    let pre_path = InstancePath::root()
+        .child(NodeId::parse("pre").expect("scope id"), 2)
+        .expect("bounded loop path");
+    let iteration = ExecutionInstanceId::in_path(
+        pre_path.clone(),
+        NodeId::parse("increment").expect("body node id"),
+    );
+    assert!(matches!(
+        parsed
+            .definition
+            .node_for_instance(&iteration)
+            .map(|node| node.kind()),
+        Some(NodeKind::Activity { .. })
+    ));
+    let outside_budget = ExecutionInstanceId::in_path(
+        InstancePath::root()
+            .child(NodeId::parse("pre").expect("scope id"), 3)
+            .expect("bounded loop path"),
+        NodeId::parse("increment").expect("body node id"),
+    );
+    assert!(
+        parsed
+            .definition
+            .node_for_instance(&outside_budget)
+            .is_none()
+    );
+
+    let reparsed = JsonIrCodec
+        .parse_structured(&parsed.canonical)
+        .expect("canonical loops reparse");
+    assert_eq!(reparsed.canonical, parsed.canonical);
+    assert_eq!(reparsed.digest, parsed.digest);
+    assert!(matches!(
+        JsonIrCodec.parse(document.to_string().as_bytes()),
+        Err(IrError::UnsupportedDeclaration {
+            field: "bodies",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn structured_loops_compile_all_expressions_and_validate_their_body() {
+    let mut document = minimal(
+        json!([
+            {"id": "poll", "type": "while", "condition": "carry < 3", "body": "iteration",
+             "initial": "input.start", "carry": "bodyResult", "maxIterations": 3,
+             "timeoutMs": 60_000, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]),
+        "poll",
+    );
+    document["bodies"] = json!({"iteration": {"entrypoint": "returned", "nodes": [
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]}});
+
+    for (field, invalid) in [
+        ("condition", "carry <"),
+        ("initial", "input["),
+        ("carry", "bodyResult["),
+    ] {
+        let mut invalid_document = document.clone();
+        invalid_document["nodes"][0][field] = json!(invalid);
+        assert!(matches!(
+            JsonIrCodec.parse_structured(invalid_document.to_string().as_bytes()),
+            Err(IrError::Expression {
+                node,
+                field: actual,
+                ..
+            }) if node == "poll" && actual == field
+        ));
+    }
+
+    document["nodes"][0]["body"] = json!("missing");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::UnknownBody { node, body }))
+            if node.as_str() == "poll" && body.as_str() == "missing"
+    ));
+
+    document["nodes"][0]["body"] = json!("iteration");
+    document["bodies"]["iteration"]["nodes"] = json!([
+        {"id": "again", "type": "repeatUntil", "condition": "carry >= 3",
+         "body": "iteration", "initial": "carry", "carry": "bodyResult",
+         "maxIterations": 3, "timeoutMs": 60_000, "next": "returned"},
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]);
+    document["bodies"]["iteration"]["entrypoint"] = json!("again");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(document.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::RecursiveBody(body)))
+            if body.as_str() == "iteration"
+    ));
+}
+
+#[test]
+fn structured_loop_limits_and_body_boundaries_fail_before_runtime() {
+    let base = || {
+        let mut document = minimal(
+            json!([
+                {"id": "poll", "type": "repeatUntil", "condition": "carry >= 3",
+                 "body": "iteration", "initial": "0", "carry": "bodyResult",
+                 "maxIterations": 3, "timeoutMs": 60_000, "next": "done"},
+                {"id": "done", "type": "end"}
+            ]),
+            "poll",
+        );
+        document["bodies"] = json!({"iteration": {"entrypoint": "returned", "nodes": [
+            {"id": "returned", "type": "return", "result": "carry"}
+        ]}});
+        document
+    };
+
+    for (field, value) in [
+        ("maxIterations", json!(0)),
+        ("maxIterations", json!(10_001)),
+        ("timeoutMs", json!(0)),
+        ("timeoutMs", json!(31_622_400_001_u64)),
+        ("delayMs", json!(0)),
+        ("delayMs", json!(31_622_400_001_u64)),
+    ] {
+        let mut document = base();
+        document["nodes"][0][field] = value;
+        let issues = match JsonIrCodec.parse_structured(document.to_string().as_bytes()) {
+            Err(IrError::Schema(issues)) => issues,
+            other => panic!("expected {field} schema issue, got {other:?}"),
+        };
+        assert!(
+            issues.iter().any(|issue| issue.path.ends_with(field)),
+            "{issues:?}"
+        );
+    }
+
+    let mut terminal = base();
+    terminal["nodes"][0]
+        .as_object_mut()
+        .expect("loop node")
+        .remove("next");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(terminal.to_string().as_bytes()),
+        Err(IrError::Schema(_))
+    ));
+
+    let mut body_end = base();
+    body_end["bodies"]["iteration"]["nodes"] = json!([
+        {"id": "finished", "type": "end"},
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]);
+    body_end["bodies"]["iteration"]["entrypoint"] = json!("finished");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(body_end.to_string().as_bytes()),
+        Err(IrError::Schema(_))
+    ));
+
+    let mut body_continuation = base();
+    body_continuation["bodies"]["iteration"]["nodes"] = json!([
+        {"id": "continued", "type": "continueAsNew", "input": "carry"},
+        {"id": "returned", "type": "return", "result": "carry"}
+    ]);
+    body_continuation["bodies"]["iteration"]["entrypoint"] = json!("continued");
+    assert!(matches!(
+        JsonIrCodec.parse_structured(body_continuation.to_string().as_bytes()),
+        Err(IrError::Schema(_))
+    ));
+
+    let mut oversized_expression = base();
+    oversized_expression["nodes"][0]["condition"] = json!("é".repeat(513));
+    assert!(matches!(
+        JsonIrCodec.parse_structured(oversized_expression.to_string().as_bytes()),
+        Err(IrError::Invalid(WorkflowError::InvalidScope { node, reason }))
+            if node.as_str() == "poll" && reason.contains("expression")
     ));
 }
 

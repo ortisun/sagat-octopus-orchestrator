@@ -86,9 +86,7 @@ fn unsupported_structured(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "foreach" => "legacy collection placeholder has no executable definition",
         "humanApproval" => "legacy approval placeholder has no executable definition",
-        "while" | "repeatUntil" | "approval" | "continueAsNew" => {
-            "this workflow capability has no validated domain mapping"
-        }
+        "approval" | "continueAsNew" => "this workflow capability has no validated domain mapping",
         _ => return None,
     })
 }
@@ -390,6 +388,28 @@ fn kind_of(node: &Map<String, Value>, kind: &str, at: &str) -> Result<NodeKind, 
             result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
             max_items: integer_u32(node, "maxItems", at)?,
             max_concurrency: integer_u16(node, "maxConcurrency", at)?,
+        },
+        "while" => NodeKind::While {
+            condition: expression(text(node, "condition", at)?, &format!("{at}/condition"))?,
+            body: node_id(text(node, "body", at)?, &format!("{at}/body"))?,
+            initial: expression(text(node, "initial", at)?, &format!("{at}/initial"))?,
+            carry: expression(text(node, "carry", at)?, &format!("{at}/carry"))?,
+            max_iterations: integer_u32(node, "maxIterations", at)?,
+            delay: match node.get("delayMs") {
+                None => None,
+                Some(_) => Some(millis(node, "delayMs", at)?),
+            },
+        },
+        "repeatUntil" => NodeKind::RepeatUntil {
+            condition: expression(text(node, "condition", at)?, &format!("{at}/condition"))?,
+            body: node_id(text(node, "body", at)?, &format!("{at}/body"))?,
+            initial: expression(text(node, "initial", at)?, &format!("{at}/initial"))?,
+            carry: expression(text(node, "carry", at)?, &format!("{at}/carry"))?,
+            max_iterations: integer_u32(node, "maxIterations", at)?,
+            delay: match node.get("delayMs") {
+                None => None,
+                Some(_) => Some(millis(node, "delayMs", at)?),
+            },
         },
         "return" => NodeKind::Return {
             result: expression(text(node, "result", at)?, &format!("{at}/result"))?,

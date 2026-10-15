@@ -689,6 +689,24 @@ pub enum NodeKind {
         max_items: u32,
         max_concurrency: u16,
     },
+    /// Evaluates the condition before each sequential body iteration.
+    While {
+        condition: Expression,
+        body: NodeId,
+        initial: Expression,
+        carry: Expression,
+        max_iterations: u32,
+        delay: Option<Duration>,
+    },
+    /// Executes one sequential body iteration before evaluating the stop condition.
+    RepeatUntil {
+        condition: Expression,
+        body: NodeId,
+        initial: Expression,
+        carry: Expression,
+        max_iterations: u32,
+        delay: Option<Duration>,
+    },
     /// Returns a value from a named body; never a workflow terminal.
     Return { result: Expression },
     /// Closes the workflow successfully.
@@ -710,6 +728,8 @@ impl NodeKind {
             Self::Saga { .. } => "saga",
             Self::End { .. } => "end",
             Self::ForEach { .. } => "forEach",
+            Self::While { .. } => "while",
+            Self::RepeatUntil { .. } => "repeatUntil",
             Self::Return { .. } => "return",
         }
     }
@@ -1167,13 +1187,23 @@ impl WorkflowDefinition {
         let mut graph = &self.graph;
         for segment in instance.path().segments() {
             let owner = graph.nodes.get(segment.scope_node())?;
-            let NodeKind::ForEach {
-                body, max_items, ..
-            } = owner.kind()
-            else {
-                return None;
+            let (body, max_iterations) = match owner.kind() {
+                NodeKind::ForEach {
+                    body, max_items, ..
+                } => (body, *max_items),
+                NodeKind::While {
+                    body,
+                    max_iterations,
+                    ..
+                }
+                | NodeKind::RepeatUntil {
+                    body,
+                    max_iterations,
+                    ..
+                } => (body, *max_iterations),
+                _ => return None,
             };
-            if segment.iteration_index() >= *max_items {
+            if segment.iteration_index() >= max_iterations {
                 return None;
             }
             graph = &self.bodies.get(body)?.graph;
@@ -1498,6 +1528,38 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
                 return Err(scope_error(node.id(), "collection requires a successor"));
             }
         }
+        NodeKind::While {
+            max_iterations,
+            delay,
+            ..
+        }
+        | NodeKind::RepeatUntil {
+            max_iterations,
+            delay,
+            ..
+        } => {
+            if kind == GraphKind::Legacy {
+                return Err(scope_error(
+                    node.id(),
+                    "loop requires a structured definition",
+                ));
+            }
+            if !(1..=10_000).contains(max_iterations) {
+                return Err(scope_error(
+                    node.id(),
+                    "loop iteration limit is out of range",
+                ));
+            }
+            if node.timeout().is_none() {
+                return Err(scope_error(node.id(), "loop requires a timeout"));
+            }
+            if node.next().is_none() {
+                return Err(scope_error(node.id(), "loop requires a successor"));
+            }
+            if let Some(delay) = delay {
+                duration_in_range(node.id(), "loop delay", *delay)?;
+            }
+        }
         NodeKind::Return { .. } => {
             if kind != GraphKind::Body {
                 return Err(scope_error(
@@ -1532,6 +1594,18 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
             NodeKind::Child { input, .. } => input.iter().collect(),
             NodeKind::End { output } => output.iter().collect(),
             NodeKind::ForEach { items, result, .. } => vec![items, result],
+            NodeKind::While {
+                condition,
+                initial,
+                carry,
+                ..
+            }
+            | NodeKind::RepeatUntil {
+                condition,
+                initial,
+                carry,
+                ..
+            } => vec![condition, initial, carry],
             NodeKind::Return { result } => vec![result],
             _ => Vec::new(),
         };
@@ -1582,15 +1656,20 @@ fn body_dependencies(
 ) -> Result<BTreeSet<NodeId>, WorkflowError> {
     let mut dependencies = BTreeSet::new();
     for node in graph.nodes.values() {
-        if let NodeKind::ForEach { body, .. } = node.kind() {
-            if !bodies.contains_key(body) {
-                return Err(WorkflowError::UnknownBody {
-                    node: node.id.clone(),
-                    body: body.clone(),
-                });
-            }
-            dependencies.insert(body.clone());
+        let body = match node.kind() {
+            NodeKind::ForEach { body, .. }
+            | NodeKind::While { body, .. }
+            | NodeKind::RepeatUntil { body, .. } => Some(body),
+            _ => None,
+        };
+        let Some(body) = body else { continue };
+        if !bodies.contains_key(body) {
+            return Err(WorkflowError::UnknownBody {
+                node: node.id.clone(),
+                body: body.clone(),
+            });
         }
+        dependencies.insert(body.clone());
     }
     Ok(dependencies)
 }

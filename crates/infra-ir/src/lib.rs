@@ -28,8 +28,9 @@ pub struct JsonIrCodec;
 impl JsonIrCodec {
     /// Validates the additive structured subset without making it publishable or executable.
     ///
-    /// This entry point currently maps named bodies, `forEach`, `return` and workflow limits. The
-    /// production [`IrCodec::parse`] path remains the publication capability gate.
+    /// This entry point currently maps named bodies, collections, sequential loops, `return` and
+    /// workflow limits. The production [`IrCodec::parse`] path remains the publication capability
+    /// gate.
     ///
     /// # Errors
     /// Returns the same bounded syntax, schema, graph and expression errors as publication parsing,
@@ -171,6 +172,24 @@ fn check_node_expressions<'a>(
                 Compiled::compile(items.as_str()).map_err(|e| expression_error(id, "items", e))?;
                 Compiled::compile(result.as_str())
                     .map_err(|e| expression_error(id, "result", e))?;
+            }
+            NodeKind::While {
+                condition,
+                initial,
+                carry,
+                ..
+            }
+            | NodeKind::RepeatUntil {
+                condition,
+                initial,
+                carry,
+                ..
+            } => {
+                Compiled::compile(condition.as_str())
+                    .map_err(|e| expression_error(id, "condition", e))?;
+                Compiled::compile(initial.as_str())
+                    .map_err(|e| expression_error(id, "initial", e))?;
+                Compiled::compile(carry.as_str()).map_err(|e| expression_error(id, "carry", e))?;
             }
             NodeKind::Return { result } => {
                 Compiled::compile(result.as_str())
