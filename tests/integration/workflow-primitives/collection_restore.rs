@@ -1,25 +1,50 @@
 //! Real PostgreSQL evidence for reopening admitted collection work.
 
-use sagat_application::execution::{Actor, Effects, RunTx, instance_step_id};
+use sagat_application::definitions::{IrCodec, IrError, ParsedDefinition};
+use sagat_application::execution::{Actor, DefinitionCache, Effects, RunTx, instance_step_id};
 use sagat_application::primitives::{
     CollectionAdmission, CollectionEntry, CollectionLimits, CollectionScopeId, CollectionStore,
     CollectionTransition, SchedulerAuthority,
 };
 use sagat_application::runs::{Lock, RunStore};
 use sagat_application::shards::{Lease, ShardStore};
+use sagat_domain::definition::WorkflowVersionId;
 use sagat_domain::execution::{
     AddressedRunEvent, ExecutionInstanceId, InstancePath, RunEvent, RunId, WaitingOn,
 };
 use sagat_domain::identity::Subject;
 use sagat_domain::sharding::Shard;
 use sagat_domain::workflow::{ActivityName, Digest, NodeId};
-use sagat_infra_postgres::PgCollectionStore;
+use sagat_infra_ir::JsonIrCodec;
+use sagat_infra_postgres::{PgCollectionStore, PgRunStore};
+use serde_json::json;
 use sha2::{Digest as _, Sha256};
 use sqlx::Row;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use crate::support::engine::{chain, world};
+
+#[derive(Debug)]
+struct StructuredJsonIrCodec;
+
+impl IrCodec for StructuredJsonIrCodec {
+    fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
+        IrCodec::check_draft(&JsonIrCodec, document)
+    }
+
+    fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        JsonIrCodec.parse_structured(document)
+    }
+
+    fn diff(
+        &self,
+        from: &[u8],
+        to: &[u8],
+    ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
+        IrCodec::diff(&JsonIrCodec, from, to)
+    }
+}
 
 fn digest(bytes: &[u8]) -> Digest {
     Digest::new(Sha256::digest(bytes).into())
@@ -40,8 +65,52 @@ async fn retain_payload(pool: &sqlx::PgPool, tenant: Uuid, bytes: &[u8]) -> Dige
     value
 }
 
-async fn collection_run(w: &crate::support::engine::World, owner: &ExecutionInstanceId) -> RunId {
-    let (workflow, version) = w.publish(chain("collection-restore")).await;
+async fn collection_run(
+    w: &crate::support::engine::World,
+    owner: &ExecutionInstanceId,
+) -> (RunId, DefinitionCache) {
+    let (workflow, _) = w.publish(chain("collection-restore")).await;
+    let document = serde_json::to_vec(&json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": { "name": "collection-restore" },
+        "entrypoint": owner.node().as_str(),
+        "bodies": {
+            "line": {
+                "entrypoint": "work",
+                "nodes": [
+                    {
+                        "id": "work", "type": "activity", "activity": "line.process",
+                        "next": "returned"
+                    },
+                    { "id": "returned", "type": "return", "result": "steps.work.output" }
+                ]
+            }
+        },
+        "nodes": [
+            {
+                "id": owner.node().as_str(), "type": "forEach", "items": "input.items",
+                "body": "line", "result": "bodyResult", "maxItems": 2,
+                "maxConcurrency": 1, "next": "done"
+            },
+            { "id": "done", "type": "end" }
+        ]
+    }))
+    .expect("structured collection definition");
+    let version = WorkflowVersionId::new(Uuid::now_v7());
+    sqlx::query(
+        "INSERT INTO workflow_versions \
+         (id, tenant_id, workflow_id, version_number, digest, document, published_by, published_at) \
+         VALUES ($1, $2, $3, 2, $4, $5, 'collection-restore', clock_timestamp())",
+    )
+    .bind(version.as_uuid())
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(workflow.as_uuid())
+    .bind(digest(&document).to_hex())
+    .bind(document)
+    .execute(&w.db.pool)
+    .await
+    .expect("trusted collection definition");
     let run = RunId::generate();
     let tenant = w.admin.tenant_id().as_uuid();
     sqlx::query(
@@ -99,7 +168,10 @@ async fn collection_run(w: &crate::support::engine::World, owner: &ExecutionInst
     .execute(&w.db.pool)
     .await
     .expect("pending collection owner");
-    run
+    (
+        run,
+        DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+    )
 }
 
 fn transition(
@@ -127,7 +199,7 @@ fn transition(
 async fn admitted_collection_reopens_with_exact_scope_and_verifies_from_addressed_journal() {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("b").expect("owner node"));
-    let run = collection_run(&w, &owner).await;
+    let (run, definitions) = collection_run(&w, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let lease = w
         .store
@@ -141,7 +213,8 @@ async fn admitted_collection_reopens_with_exact_scope_and_verifies_from_addresse
         .into_iter()
         .next()
         .expect("collection shard is available");
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let verifier = PgRunStore::new(w.db.pool.clone(), definitions.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, br#"[1,2]"#).await;
     let item = digest(b"1");
@@ -189,8 +262,7 @@ async fn admitted_collection_reopens_with_exact_scope_and_verifies_from_addresse
         .await
         .expect("admit activity");
 
-    let mut tx = w
-        .store
+    let mut tx = verifier
         .begin(w.admin.tenant_id(), run, Lock::Wait)
         .await
         .expect("open run")
@@ -212,14 +284,17 @@ async fn admitted_collection_reopens_with_exact_scope_and_verifies_from_addresse
     assert_eq!(collection.item_digest(0), Some(item));
     drop(tx);
 
-    w.assert_consistent(run).await;
+    verifier
+        .verify_run(w.admin.tenant_id(), run)
+        .await
+        .expect("journal and collection projection agree");
 }
 
 #[tokio::test]
 async fn addressed_persistence_keeps_scoped_journal_projection_and_output_identity() {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("b").expect("owner node"));
-    let run = collection_run(&w, &owner).await;
+    let (run, definitions) = collection_run(&w, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let lease = w
         .store
@@ -233,7 +308,8 @@ async fn addressed_persistence_keeps_scoped_journal_projection_and_output_identi
         .into_iter()
         .next()
         .expect("collection shard is available");
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let verifier = PgRunStore::new(w.db.pool.clone(), definitions.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
     let item = retain_payload(&w.db.pool, tenant, b"1").await;
@@ -337,8 +413,7 @@ async fn addressed_persistence_keeps_scoped_journal_projection_and_output_identi
         .expect("advance run version");
     prepared.commit().await.expect("commit scoped attempt");
 
-    let mut tx = w
-        .store
+    let mut tx = verifier
         .begin(w.admin.tenant_id(), run, Lock::Wait)
         .await
         .expect("reopen running member")
@@ -419,14 +494,17 @@ async fn addressed_persistence_keeps_scoped_journal_projection_and_output_identi
     .await
     .expect("scoped return projection");
     assert_eq!(returned_status, "PENDING");
-    w.assert_consistent(run).await;
+    verifier
+        .verify_run(w.admin.tenant_id(), run)
+        .await
+        .expect("journal and addressed projection agree");
 }
 
 #[tokio::test]
 async fn verification_detects_a_scope_projection_that_differs_from_the_journal() {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("b").expect("owner node"));
-    let run = collection_run(&w, &owner).await;
+    let (run, definitions) = collection_run(&w, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let lease = w
         .store
@@ -464,8 +542,7 @@ async fn verification_detects_a_scope_projection_that_differs_from_the_journal()
     .await
     .expect("corrupt scope projection");
 
-    let error = w
-        .store
+    let error = PgRunStore::new(w.db.pool.clone(), definitions)
         .verify_run(w.admin.tenant_id(), run)
         .await
         .expect_err("journal and projection must differ");
@@ -490,7 +567,7 @@ async fn verification_detects_a_scope_projection_that_differs_from_the_journal()
 async fn journal_attempt_spans_use_the_complete_instance_path() {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("b").expect("owner node"));
-    let run = collection_run(&w, &owner).await;
+    let (run, _) = collection_run(&w, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let root_step = Uuid::now_v7();
     let scoped_step = Uuid::now_v7();

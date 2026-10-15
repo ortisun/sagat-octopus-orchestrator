@@ -281,7 +281,10 @@ async fn fixture_with_progress(name: &str, prepare_collection: bool) -> Fixture 
         .await
         .expect("snapshot payload");
         let scope = CollectionScopeId::generate();
-        let collection_store = PgCollectionStore::new(world.db.pool.clone());
+        let collection_store = PgCollectionStore::with_definition_cache(
+            world.db.pool.clone(),
+            DefinitionCache::new(Arc::new(StructuredJsonIrCodec), 8),
+        );
         let entered = collection_store
             .enter_collection(
                 &CollectionEntry::new(

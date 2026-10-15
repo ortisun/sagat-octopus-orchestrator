@@ -51,12 +51,12 @@ fn digest(bytes: &[u8]) -> Digest {
     Digest::new(Sha256::digest(bytes).into())
 }
 
-fn collection_workflow(name: &str) -> serde_json::Value {
+fn collection_workflow(name: &str, owner: &str) -> serde_json::Value {
     json!({
         "apiVersion": "sagat-octopus-orchestrator.io/v1",
         "kind": "Workflow",
         "metadata": { "name": name },
-        "entrypoint": "items",
+        "entrypoint": owner,
         "bodies": {
             "line": {
                 "entrypoint": "work",
@@ -77,7 +77,7 @@ fn collection_workflow(name: &str) -> serde_json::Value {
         },
         "nodes": [
             {
-                "id": "items",
+                "id": owner,
                 "type": "forEach",
                 "items": "input.items",
                 "body": "line",
@@ -94,9 +94,11 @@ fn collection_workflow(name: &str) -> serde_json::Value {
 async fn publish_collection_fixture(
     w: &crate::support::engine::World,
     name: &str,
+    owner: &str,
 ) -> (WorkflowId, WorkflowVersionId, DefinitionCache) {
     let (workflow, _) = w.publish(chain(name)).await;
-    let document = serde_json::to_vec(&collection_workflow(name)).expect("structured document");
+    let document =
+        serde_json::to_vec(&collection_workflow(name, owner)).expect("structured document");
     let version = WorkflowVersionId::new(Uuid::now_v7());
     sqlx::query(
         "INSERT INTO workflow_versions \
@@ -640,7 +642,8 @@ async fn populated_scope_prevents_destructive_migration_rollback() {
 async fn collection_payloads_require_same_tenant_and_matching_content_digests() {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("b").expect("owner node"));
-    let (workflow, workflow_version) = w.publish(chain("collection-snapshot-tenant")).await;
+    let (workflow, workflow_version, definitions) =
+        publish_collection_fixture(&w, "collection-snapshot-tenant", "b").await;
     let run = primitive_run(&w, workflow, workflow_version, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let authority = scheduler_authority(&w.db.pool, run).await;
@@ -738,7 +741,7 @@ async fn collection_payloads_require_same_tenant_and_matching_content_digests() 
         .expect_err("an existing item digest with different content must reject entry");
     assert_eq!(error, PrimitiveStoreError::InvalidTransition);
 
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let scope = CollectionScopeId::generate();
     let local_snapshot = retain_payload(&w.db.pool, tenant, b"[2]").await;
     let entered = store
@@ -797,12 +800,13 @@ async fn collection_admission_writes_expected_journal_projection_and_usage_atomi
     let w = world().await;
     let owner_node = NodeId::parse("b").expect("owner node");
     let owner = ExecutionInstanceId::root(owner_node.clone());
-    let (workflow, workflow_version) = w.publish(chain("collection-transaction")).await;
+    let (workflow, workflow_version, definitions) =
+        publish_collection_fixture(&w, "collection-transaction", "b").await;
     let run = primitive_run(&w, workflow, workflow_version, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let authority = scheduler_authority(&w.db.pool, run).await;
     set_tenant_collection_capacity(&w.db.pool, tenant, 1).await;
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
     let item = retain_payload(&w.db.pool, tenant, b"1").await;
@@ -914,7 +918,7 @@ async fn collection_admission_writes_expected_journal_projection_and_usage_atomi
     );
 
     let unsupported_return =
-        ExecutionInstanceId::in_path(member_path, NodeId::parse("return").expect("return node"));
+        ExecutionInstanceId::in_path(member_path, NodeId::parse("returned").expect("return node"));
     let checkpoint_error = store
         .checkpoint_collection_iteration(
             &CollectionCheckpoint::new(
@@ -928,8 +932,8 @@ async fn collection_admission_writes_expected_journal_projection_and_usage_atomi
             .expect("checkpoint request"),
         )
         .await
-        .expect_err("checkpoint stays disabled until body routing replays");
-    assert_eq!(checkpoint_error, PrimitiveStoreError::RuntimeNotIntegrated);
+        .expect_err("checkpoint requires the body return projection");
+    assert_eq!(checkpoint_error, PrimitiveStoreError::InvalidTransition);
 }
 
 #[tokio::test]
@@ -937,7 +941,7 @@ async fn checkpoint_and_finish_are_atomic_replayable_and_restart_safe() {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("owner node"));
     let (workflow, workflow_version, definitions) =
-        publish_collection_fixture(&w, "collection-checkpoint").await;
+        publish_collection_fixture(&w, "collection-checkpoint", "items").await;
     let run = journaled_collection_run(&w, workflow, workflow_version, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let authority = scheduler_authority(&w.db.pool, run).await;
@@ -1502,7 +1506,7 @@ async fn empty_collection_finishes_without_admission_or_capacity_charge() {
     let w = world().await;
     let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("owner node"));
     let (workflow, workflow_version, definitions) =
-        publish_collection_fixture(&w, "empty-collection").await;
+        publish_collection_fixture(&w, "empty-collection", "items").await;
     let run = journaled_collection_run(&w, workflow, workflow_version, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let authority = scheduler_authority(&w.db.pool, run).await;
@@ -1554,12 +1558,13 @@ async fn failed_outbox_insert_rolls_back_admission_and_every_counter() {
     let w = world().await;
     let owner_node = NodeId::parse("b").expect("owner node");
     let owner = ExecutionInstanceId::root(owner_node.clone());
-    let (workflow, workflow_version) = w.publish(chain("collection-rollback")).await;
+    let (workflow, workflow_version, definitions) =
+        publish_collection_fixture(&w, "collection-rollback", "b").await;
     let run = primitive_run(&w, workflow, workflow_version, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let authority = scheduler_authority(&w.db.pool, run).await;
     set_tenant_collection_capacity(&w.db.pool, tenant, 1).await;
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
     let item = retain_payload(&w.db.pool, tenant, b"1").await;
@@ -1635,12 +1640,13 @@ async fn admission_owner_must_match_the_stored_scope_owner() {
     let w = world().await;
     let stored_owner_node = NodeId::parse("b").expect("owner node");
     let stored_owner = ExecutionInstanceId::root(stored_owner_node);
-    let (workflow, workflow_version) = w.publish(chain("collection-owner-match")).await;
+    let (workflow, workflow_version, definitions) =
+        publish_collection_fixture(&w, "collection-owner-match", "b").await;
     let run = primitive_run(&w, workflow, workflow_version, &stored_owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let authority = scheduler_authority(&w.db.pool, run).await;
     set_tenant_collection_capacity(&w.db.pool, tenant, 1).await;
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
     let item = retain_payload(&w.db.pool, tenant, b"1").await;
@@ -1790,13 +1796,14 @@ async fn missing_tenant_policy_fails_closed() {
     let w = world().await;
     let owner_node = NodeId::parse("b").expect("owner node");
     let owner = ExecutionInstanceId::root(owner_node.clone());
-    let (workflow, workflow_version) = w.publish(chain("collection-policy-required")).await;
+    let (workflow, workflow_version, definitions) =
+        publish_collection_fixture(&w, "collection-policy-required", "b").await;
     let run = primitive_run(&w, workflow, workflow_version, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let authority = scheduler_authority(&w.db.pool, run).await;
     let scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let entry = CollectionEntry::new(
         transition(&w, run, 0, owner.clone(), authority.clone()),
         scope,
@@ -1873,14 +1880,15 @@ async fn persisted_tenant_capacity_serializes_admission_across_runs() {
     let w = world().await;
     let owner_node = NodeId::parse("b").expect("owner node");
     let owner = ExecutionInstanceId::root(owner_node.clone());
-    let (workflow, workflow_version) = w.publish(chain("collection-tenant-contention")).await;
+    let (workflow, workflow_version, definitions) =
+        publish_collection_fixture(&w, "collection-tenant-contention", "b").await;
     let first_run = primitive_run(&w, workflow, workflow_version, &owner).await;
     let second_run = primitive_run(&w, workflow, workflow_version, &owner).await;
     let tenant = w.admin.tenant_id().as_uuid();
     let first_authority = scheduler_authority(&w.db.pool, first_run).await;
     let second_authority = scheduler_authority(&w.db.pool, second_run).await;
     set_tenant_collection_capacity(&w.db.pool, tenant, 1).await;
-    let store = PgCollectionStore::new(w.db.pool.clone());
+    let store = PgCollectionStore::with_definition_cache(w.db.pool.clone(), definitions);
     let first_scope = CollectionScopeId::generate();
     let second_scope = CollectionScopeId::generate();
     let snapshot = retain_payload(&w.db.pool, tenant, b"[1]").await;
