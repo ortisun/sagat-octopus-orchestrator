@@ -4,10 +4,11 @@ use std::fmt;
 
 use time::OffsetDateTime;
 
+use super::approval::{ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId};
 use super::error::ExecutionError;
 use super::instance::{ExecutionInstanceId, InstancePath};
 use super::state::{RunId, RunStatus};
-use crate::identity::clip;
+use crate::identity::{Subject, clip};
 use crate::saga::{ReconcileVerdict, SagaOutcome};
 use crate::workflow::{ActivityName, Digest, NodeId};
 
@@ -523,6 +524,23 @@ pub enum RunEvent {
         node: NodeId,
         handled: bool,
     },
+    ApprovalOpened {
+        node: NodeId,
+        request_id: ApprovalRequestId,
+        deadline: OffsetDateTime,
+    },
+    ApprovalDecided {
+        node: NodeId,
+        request_id: ApprovalRequestId,
+        receipt_id: ApprovalReceiptId,
+        decision: ApprovalDecision,
+        actor: Subject,
+        reason_code: Option<ApprovalReasonCode>,
+    },
+    ApprovalExpired {
+        node: NodeId,
+        request_id: ApprovalRequestId,
+    },
     ParallelForked {
         node: NodeId,
         branches: Vec<NodeId>,
@@ -845,6 +863,9 @@ impl RunEvent {
             Self::WaitStarted { .. } => "wait.started",
             Self::WaitSatisfied { .. } => "wait.satisfied",
             Self::WaitTimedOut { .. } => "wait.timed_out",
+            Self::ApprovalOpened { .. } => "approval.opened",
+            Self::ApprovalDecided { .. } => "approval.decided",
+            Self::ApprovalExpired { .. } => "approval.expired",
             Self::ParallelForked { .. } => "parallel.forked",
             Self::ParallelJoined { .. } => "parallel.joined",
             Self::CollectionEntered { .. } => "collection.entered",
@@ -905,6 +926,9 @@ impl RunEvent {
             | Self::WaitStarted { node, .. }
             | Self::WaitSatisfied { node }
             | Self::WaitTimedOut { node, .. }
+            | Self::ApprovalOpened { node, .. }
+            | Self::ApprovalDecided { node, .. }
+            | Self::ApprovalExpired { node, .. }
             | Self::ParallelForked { node, .. }
             | Self::ParallelJoined { node, .. }
             | Self::CollectionEntered { node, .. }

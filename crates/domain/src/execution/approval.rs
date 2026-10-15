@@ -277,6 +277,33 @@ pub struct ApprovalDecisionReceipt {
 }
 
 impl ApprovalDecisionReceipt {
+    /// Rebuilds a receipt whose columns were validated by durable storage.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn restore(
+        id: ApprovalReceiptId,
+        request_id: ApprovalRequestId,
+        decision_key: DecisionKey,
+        request_hash: Digest,
+        actor: Subject,
+        decision: ApprovalDecision,
+        reason_code: Option<ApprovalReasonCode>,
+        decided_at: OffsetDateTime,
+        outcome_sequence: u64,
+    ) -> Self {
+        Self {
+            id,
+            request_id,
+            decision_key,
+            request_hash,
+            actor,
+            decision,
+            reason_code,
+            decided_at,
+            outcome_sequence,
+        }
+    }
+
     #[must_use]
     pub const fn id(&self) -> ApprovalReceiptId {
         self.id
@@ -414,6 +441,65 @@ impl ApprovalRequest {
             outcome_sequence: None,
             settled_at: None,
         }
+    }
+
+    /// Rebuilds a request from a projection after checking its settlement invariants.
+    ///
+    /// # Errors
+    /// Returns [`ApprovalError::InvalidStoredApproval`] when status, receipt and outcome evidence
+    /// disagree.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore(
+        id: ApprovalRequestId,
+        tenant_id: TenantId,
+        namespace_id: NamespaceId,
+        run_id: RunId,
+        owner: ExecutionInstanceId,
+        policy: ApprovalPolicy,
+        initiator: Subject,
+        opened_sequence: u64,
+        deadline: OffsetDateTime,
+        status: ApprovalStatus,
+        winning_receipt: Option<ApprovalDecisionReceipt>,
+        outcome_sequence: Option<u64>,
+        settled_at: Option<OffsetDateTime>,
+    ) -> Result<Self, ApprovalError> {
+        let valid = match status {
+            ApprovalStatus::Pending => {
+                winning_receipt.is_none() && outcome_sequence.is_none() && settled_at.is_none()
+            }
+            ApprovalStatus::Approved | ApprovalStatus::Rejected => {
+                winning_receipt.as_ref().is_some_and(|receipt| {
+                    receipt.request_id == id
+                        && receipt.decision.status() == status
+                        && Some(receipt.outcome_sequence) == outcome_sequence
+                        && Some(receipt.decided_at) == settled_at
+                })
+            }
+            ApprovalStatus::Expired | ApprovalStatus::Cancelled => {
+                winning_receipt.is_none()
+                    && outcome_sequence.is_some_and(|sequence| sequence > opened_sequence)
+                    && settled_at.is_some()
+            }
+        };
+        if !valid {
+            return Err(ApprovalError::InvalidStoredApproval);
+        }
+        Ok(Self {
+            id,
+            tenant_id,
+            namespace_id,
+            run_id,
+            owner,
+            policy,
+            initiator,
+            opened_sequence,
+            deadline,
+            status,
+            winning_receipt,
+            outcome_sequence,
+            settled_at,
+        })
     }
 
     #[must_use]
@@ -635,6 +721,8 @@ pub enum ApprovalError {
     AlreadyDecided,
     #[error("the approval deadline has not been reached")]
     ExpiryNotDue,
+    #[error("stored approval projection is internally inconsistent")]
+    InvalidStoredApproval,
 }
 
 impl ApprovalError {
@@ -653,6 +741,7 @@ impl ApprovalError {
             Self::IdempotencyKeyReused => "IDEMPOTENCY_KEY_REUSED",
             Self::AlreadyDecided => "ALREADY_DECIDED",
             Self::ExpiryNotDue => "EXPIRY_NOT_DUE",
+            Self::InvalidStoredApproval => "INVALID_STORED_APPROVAL",
         }
     }
 }

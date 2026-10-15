@@ -4,6 +4,7 @@
 //! ports declared here, so the dependency always points inward (see `docs/architecture/overview.md`).
 
 pub mod api_admission;
+pub mod approval_progress;
 pub mod authz;
 pub mod bindings;
 pub mod clock;
@@ -18,6 +19,7 @@ pub mod error;
 pub mod events;
 pub mod execution;
 pub mod identity;
+pub mod loop_progress;
 pub mod maintenance;
 pub mod operations;
 pub mod outbound;

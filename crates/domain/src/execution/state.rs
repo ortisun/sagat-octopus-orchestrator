@@ -223,6 +223,9 @@ pub enum WaitingOn {
         correlation_key: CorrelationKey,
         deadline: OffsetDateTime,
     },
+    Approval {
+        request_id: super::ApprovalRequestId,
+    },
     Branches,
     /// A bounded dynamic collection whose accepted iterations are tracked separately.
     Collection,
@@ -2432,6 +2435,37 @@ impl RunState {
                     step.failure = Some(FailureCode::wait_timed_out());
                 }
             }
+            RunEvent::ApprovalOpened {
+                node, request_id, ..
+            } => {
+                let step = self.step_mut(node, name, &[Pending])?;
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Approval {
+                    request_id: *request_id,
+                });
+            }
+            RunEvent::ApprovalDecided {
+                node, request_id, ..
+            }
+            | RunEvent::ApprovalExpired {
+                node, request_id, ..
+            } => {
+                let step = self.step_mut(node, name, &[Waiting])?;
+                if !matches!(
+                    step.waiting,
+                    Some(WaitingOn::Approval {
+                        request_id: waiting_request,
+                    }) if waiting_request == *request_id
+                ) {
+                    return Err(ExecutionError::IllegalTransition {
+                        node: node.clone(),
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.status = Succeeded;
+                step.waiting = None;
+            }
             RunEvent::ParallelForked { node, branches } => {
                 // Validate everything first: `activate` inserts nothing unless all branches are new.
                 self.step_mut(node, name, &[Pending])?;
@@ -2986,6 +3020,31 @@ impl RunState {
                 step.failure = Some(code.clone());
                 step.waiting = None;
                 step.cancel_requested = false;
+            }
+            RunEvent::ApprovalOpened { request_id, .. } => {
+                let step = self.instance_mut(&instance, name, &[Pending])?;
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Approval {
+                    request_id: *request_id,
+                });
+            }
+            RunEvent::ApprovalDecided { request_id, .. }
+            | RunEvent::ApprovalExpired { request_id, .. } => {
+                let step = self.instance_mut(&instance, name, &[Waiting])?;
+                if !matches!(
+                    step.waiting,
+                    Some(WaitingOn::Approval {
+                        request_id: waiting_request,
+                    }) if waiting_request == *request_id
+                ) {
+                    return Err(ExecutionError::IllegalInstanceTransition {
+                        instance,
+                        status: step.status,
+                        event: name,
+                    });
+                }
+                step.status = Succeeded;
+                step.waiting = None;
             }
             event @ (RunEvent::CollectionEntered { .. }
             | RunEvent::CollectionIterationAdmitted { .. }

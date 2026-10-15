@@ -354,3 +354,47 @@ is not connected to the adapter, so no end-to-end collection runtime guarantee f
 
 Full fault matrix, quota and audit semantics, scoped worker
 claim/report, body routing, compensation and all-five runtime conformance remain open gates.
+
+## Continuation contract and storage boundary (2026-10-15)
+
+The five SDKs produce a common additive-v1 continuation document in build-only mode. The
+`continuation-builders` conformance scenario passed in all five languages, and their complete
+language suites passed after synchronizing worker-protocol copies. A parser check found that the
+state-transfer fixture needed a root state declaration; the fixture was corrected and now passes
+the internal typed parser round trip. The production publication parser remains closed.
+
+The chain migration records bounded head metadata, immutable segment identities and explicit
+child-chain links. Tenant and namespace foreign keys reject cross-boundary members; deferred
+membership keys prevent a head or successor from naming a run outside its chain. A real
+PostgreSQL test exercised a valid initial chain, rejected a foreign head/successor, and rejected
+an identity rewrite. The migration is a storage prerequisite only. No initial-run creation,
+handoff, chain-target command, parent settlement, quota or journal transaction is wired yet.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives chain_head_must_be_a_segment_of_its_own_chain --locked -q` | Passed against real PostgreSQL |
+| Complete SDK suites | TypeScript 114, Python 245, .NET 431, and complete Go/Java suites passed |
+| `SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` | Passed in all five languages after the root-state fixture correction; typed parser round trip passed |
+
+## Loop and approval transaction checkpoint (2026-10-15)
+
+The private loop adapter commits return checkpoint, timer or next iteration, quotas, journal,
+projection, outbox and audit together. A delayed loop has no worker lease. Its four real
+PostgreSQL tests cover restart, duplicate timer fire, stale owner fence, policy reductions,
+capacity limits and rollback. Terminal `Complete`/`IterationLimit` routing and canonical loop
+restore are still closed; no public loop runtime is enabled.
+
+The private approval adapter uses canonical `ApprovalOpened`, `ApprovalDecided` and
+`ApprovalExpired` journal events. Opening and expiry require a current scheduler fence; a decision
+checks current tenant membership and policy. First-commit decision/expiry races, replay, stale
+fence, cross-tenant denial, projection recovery and late audit/outbox rollback were exercised in
+seven PostgreSQL tests. Approval has no public endpoint or runtime planner wiring yet.
+
+| Check | Result |
+|---|---|
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked -q` | Passed: 44/44 against real PostgreSQL, including seven approval and four loop transaction tests |
+| `cargo test -p sagat-domain -p sagat-application -p sagat-infra-ir -p sagat-infra-postgres --locked -q` | Passed across all package test targets at this checkpoint |
+| `cargo fmt --all -- --check`; `git diff --check` | Passed |
+
+Fault tests for worker delivery, cancellation, compensation and signals against these primitives,
+plus public API, telemetry, schema publication and five-language runtime conformance remain open.

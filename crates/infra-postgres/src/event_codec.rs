@@ -5,15 +5,18 @@
 //! Times are stored as microseconds since the epoch, the precision PostgreSQL keeps.
 
 use sagat_domain::execution::{
-    ChildOutcome, CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId,
-    FailureCode, Fence, InstancePath, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind,
-    LoopOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, RunId, RunStatus,
-    StopReason, SwitchSelection,
+    ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId, ChildOutcome,
+    CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId, FailureCode,
+    Fence, InstancePath, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome,
+    PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, RunId, RunStatus, StopReason,
+    SwitchSelection,
 };
+use sagat_domain::identity::Subject;
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
 use sagat_domain::workflow::{ActivityName, Digest, NodeId};
 use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 /// The columns of one journal row that come from the event.
 pub(crate) struct Encoded {
@@ -124,6 +127,31 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             "deadline_us": micros(*deadline),
         }),
         RunEvent::WaitTimedOut { handled, .. } => json!({ "handled": handled }),
+        RunEvent::ApprovalOpened {
+            request_id,
+            deadline,
+            ..
+        } => json!({
+            "request_id": request_id.to_string(),
+            "deadline_us": micros(*deadline),
+        }),
+        RunEvent::ApprovalDecided {
+            request_id,
+            receipt_id,
+            decision,
+            actor,
+            reason_code,
+            ..
+        } => json!({
+            "request_id": request_id.to_string(),
+            "receipt_id": receipt_id.to_string(),
+            "decision": decision.as_str(),
+            "actor": actor.as_str(),
+            "reason_code": reason_code.as_ref().map(ApprovalReasonCode::as_str),
+        }),
+        RunEvent::ApprovalExpired { request_id, .. } => json!({
+            "request_id": request_id.to_string(),
+        }),
         RunEvent::ParallelForked { branches, .. } => json!({ "branches": names(branches) }),
         RunEvent::ParallelJoined { outcome, .. } => json!({
             "outcome": match outcome {
@@ -469,6 +497,31 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
         "wait.timed_out" => RunEvent::WaitTimedOut {
             node: node_id()?,
             handled: d.get("handled")?.as_bool()?,
+        },
+        "approval.opened" => RunEvent::ApprovalOpened {
+            node: node_id()?,
+            request_id: ApprovalRequestId::new(Uuid::parse_str(text(d, "request_id")?).ok()?),
+            deadline: time_of(d, "deadline_us")?,
+        },
+        "approval.decided" => RunEvent::ApprovalDecided {
+            node: node_id()?,
+            request_id: ApprovalRequestId::new(Uuid::parse_str(text(d, "request_id")?).ok()?),
+            receipt_id: ApprovalReceiptId::new(Uuid::parse_str(text(d, "receipt_id")?).ok()?),
+            decision: match text(d, "decision")? {
+                "APPROVE" => ApprovalDecision::Approve,
+                "REJECT" => ApprovalDecision::Reject,
+                _ => return None,
+            },
+            actor: Subject::parse(text(d, "actor")?).ok()?,
+            reason_code: match d.get("reason_code")? {
+                Value::Null => None,
+                Value::String(code) => Some(ApprovalReasonCode::parse(code).ok()?),
+                _ => return None,
+            },
+        },
+        "approval.expired" => RunEvent::ApprovalExpired {
+            node: node_id()?,
+            request_id: ApprovalRequestId::new(Uuid::parse_str(text(d, "request_id")?).ok()?),
         },
         "parallel.forked" => RunEvent::ParallelForked {
             node: node_id()?,

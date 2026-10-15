@@ -34,6 +34,14 @@ pub enum AuditAction {
     RunQueried,
     /// A declared Update committed an applied or rejected receipt.
     RunUpdated,
+    /// A workflow entered a durable human-approval wait.
+    ApprovalOpened,
+    /// An eligible person committed the winning approval decision.
+    ApprovalDecided,
+    /// The approval timer committed before a human decision.
+    ApprovalExpired,
+    /// A caller was not currently authorized or eligible to decide an approval.
+    ApprovalDenied,
     /// An operator inspected a payload's uniformly redacted structure.
     PayloadInspected,
     /// An authenticated caller without the dedicated permission tried to inspect a payload.
@@ -172,6 +180,7 @@ impl AuditAction {
                 | Self::PayloadInspected
                 | Self::PayloadInspectionDenied
                 | Self::RunQueried
+                | Self::ApprovalDenied
         )
     }
 
@@ -187,6 +196,7 @@ impl AuditAction {
             | Self::PayloadInspected
             | Self::PayloadInspectionDenied
             | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
+            Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
     }
@@ -218,6 +228,10 @@ impl AuditAction {
             Self::RunResumed => "run.resumed",
             Self::RunQueried => "run.queried",
             Self::RunUpdated => "run.updated",
+            Self::ApprovalOpened => "approval.opened",
+            Self::ApprovalDecided => "approval.decided",
+            Self::ApprovalExpired => "approval.expired",
+            Self::ApprovalDenied => "approval.denied",
             Self::PayloadInspected => "payload.inspected",
             Self::PayloadInspectionDenied => "payload.inspection_denied",
             Self::RunSignalled => "run.signalled",
@@ -318,6 +332,8 @@ pub enum ResourceType {
     ScriptVersion,
     /// A request to publish a workflow into a namespace that asks for approvals.
     PublicationRequest,
+    /// A durable human decision request owned by one workflow step instance.
+    ApprovalRequest,
 }
 
 impl ResourceType {
@@ -345,6 +361,7 @@ impl ResourceType {
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",
+            Self::ApprovalRequest => "approval_request",
         }
     }
 }

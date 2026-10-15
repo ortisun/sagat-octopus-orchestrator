@@ -7,6 +7,7 @@
 use sqlx::migrate::Migrator;
 
 mod api_admission;
+mod approval_progress;
 mod bindings;
 mod breaker;
 mod connectors;
@@ -19,6 +20,7 @@ mod event_codec;
 mod events;
 mod execution;
 mod identity;
+mod loop_progress;
 mod maintenance;
 mod operations;
 mod outbound;
@@ -35,10 +37,12 @@ mod telemetry;
 mod versioning;
 mod workers;
 
+pub use approval_progress::PgApprovalProgressStore;
 pub use declared_operations::PgDeclaredOperationStore;
 pub use definitions::PgDefinitionStore;
 pub use execution::{PgRunStore, PgRunTx};
 pub use identity::PgIdentityStore;
+pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
 pub use pool::{BeginSafely, PoolConfig, connect, spawn_pool_metrics};
 pub use primitives::PgCollectionStore;

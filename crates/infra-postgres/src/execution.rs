@@ -2895,6 +2895,12 @@ impl PgRunTx {
                     detail: "loop projection is not persisted".into(),
                 });
             }
+            Some(WaitingOn::Approval { .. }) => {
+                return Err(StoreError::Internal {
+                    detail: "approval projection is not persisted by the legacy run transaction"
+                        .into(),
+                });
+            }
         };
         // How far back an event wait accepts events, beyond the moment it began waiting.
         let lookback = match def_node.map(sagat_domain::workflow::Node::kind) {
