@@ -43,11 +43,18 @@ The reviewed fixture covers subject and built-in role policies, the default init
 bounded deadlines, all three routes and local validation failures. It does not count as approval
 runtime conformance.
 
+`continuation-builders.json` checks additive v1 `continueAsNew` authoring and the required finite
+`chainPolicy` in the five SDKs. It remains build-only while atomic handoff persistence, chain command
+serialization and parent-child finalization are disabled. The reviewed fixture covers explicit input
+and optional state transfer, the 10,000-segment and duration ceilings, inherited policy requirements
+and the top-level-only boundary. It does not count as continuation runtime conformance.
+
 ```text
 SAGAT_SDK_SCENARIO=switch-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=collection-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=loop-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=approval-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=continuation-builders cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -147,6 +154,7 @@ the server without an SDK API: `expireLease {run, node}`, `elapseRetryDelay {run
 | `switch` | `id`, ordered `cases` (`id`, `when`, `target`), `default` | `switch` (`switchCase` in Java) |
 | `forEach`, `map` | `id`, `items`, `body`, `result`, `maxItems`, `maxConcurrency` | collection builder |
 | `while`, `repeatUntil` | `id`, `condition`, `body`, `initial`, `carry`, `maxIterations`, `timeoutMs`, `delayMs?`, `onError?` | sequential loop builder |
+| `continueAsNew` | `id`, `input`, `state?` | terminal continuation builder; the workflow also declares `chainPolicy: {maxSegments,timeoutMs}` |
 | `return` | `id`, `result` inside a named body | body return builder |
 | `parallel` | `id`, `join`, `branches` (array of op arrays) | `parallel` |
 | `saga` | `id`, `options?`, `body` (op array) | `saga` |

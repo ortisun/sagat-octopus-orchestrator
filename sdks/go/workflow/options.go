@@ -160,6 +160,16 @@ func LoopOnError(node string) LoopOption {
 	return func(m map[string]any) { m["onError"] = node }
 }
 
+// ---- continuation
+
+// ContinuationOption sets an optional member of ContinueAsNew.
+type ContinuationOption func(map[string]any)
+
+// ContinuationState explicitly selects the declared state transferred to the successor.
+func ContinuationState(expression string) ContinuationOption {
+	return func(m map[string]any) { m["state"] = expression }
+}
+
 // ---- child
 
 // CancelPolicy is what happens to a child run when its parent is cancelled.

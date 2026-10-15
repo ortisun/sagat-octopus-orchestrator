@@ -62,6 +62,7 @@ type Builder struct {
 	triggers    []Trigger
 	input       map[string]any
 	output      map[string]any
+	chainPolicy map[string]any
 	bodies      map[string]*Builder
 
 	nodes    []node
@@ -146,6 +147,25 @@ func (b *Builder) InputSchema(schema map[string]any) *Builder {
 // OutputSchema sets the JSON schema of the run output.
 func (b *Builder) OutputSchema(schema map[string]any) *Builder {
 	b.output = schema
+	return b
+}
+
+// ChainPolicy sets the finite lifetime shared by every run in a continuation chain.
+func (b *Builder) ChainPolicy(maxSegments int, timeout time.Duration) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if maxSegments < 1 || maxSegments > 10000 {
+		return b.fail(sagat.Invalid("chainPolicy maxSegments must be between 1 and 10000"))
+	}
+	if timeout%time.Millisecond != 0 {
+		return b.fail(sagat.Invalid("chainPolicy timeoutMs must be a whole number of milliseconds"))
+	}
+	timeoutMs := millis(timeout)
+	if timeoutMs < 1 || timeoutMs > 31622400000 {
+		return b.fail(sagat.Invalid("chainPolicy timeoutMs must be between 1 and 31622400000"))
+	}
+	b.chainPolicy = map[string]any{"maxSegments": maxSegments, "timeoutMs": timeoutMs}
 	return b
 }
 
@@ -362,6 +382,24 @@ func (b *Builder) Approval(id string, policy ApprovalPolicy, timeout time.Durati
 	})
 }
 
+// ContinueAsNew closes this run and transfers explicitly selected values to its successor.
+func (b *Builder) ContinueAsNew(id, input string, opts ...ContinuationOption) *Builder {
+	if b.err != nil {
+		return b
+	}
+	if input == "" {
+		return b.fail(sagat.Invalid("continueAsNew %s needs an input expression", id))
+	}
+	n := node{"id": id, "type": "continueAsNew", "input": input}
+	for _, opt := range opts {
+		opt(n)
+	}
+	if state, present := n["state"]; present && state == "" {
+		return b.fail(sagat.Invalid("continueAsNew %s state must be a non-empty expression", id))
+	}
+	return b.push(n)
+}
+
 func (b *Builder) loop(kind, id, condition, body, initial, carry string, maxIterations int, timeout time.Duration, opts ...LoopOption) *Builder {
 	if b.err != nil {
 		return b
@@ -506,7 +544,7 @@ func (b *Builder) flatten() []node {
 		for key, value := range n {
 			linked[key] = value
 		}
-		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "approval" && linked["type"] != "end" && linked["type"] != "return" {
+		if i+1 < len(b.nodes) && linked["type"] != "condition" && linked["type"] != "switch" && linked["type"] != "approval" && linked["type"] != "continueAsNew" && linked["type"] != "end" && linked["type"] != "return" {
 			if _, set := linked["next"]; !set {
 				linked["next"] = b.nodes[i+1]["id"]
 			}
@@ -534,6 +572,20 @@ func (b *Builder) Build() (map[string]any, error) {
 		return nil, sagat.Invalid("a workflow needs at least one node")
 	}
 	nodes := b.flatten()
+	for _, inner := range b.embedded {
+		for _, n := range inner.flatten() {
+			if n["type"] == "continueAsNew" {
+				return nil, sagat.Invalid("continueAsNew is valid only in the top-level workflow")
+			}
+		}
+	}
+	hasContinuation := false
+	for _, n := range b.nodes {
+		hasContinuation = hasContinuation || n["type"] == "continueAsNew"
+	}
+	if hasContinuation && b.chainPolicy == nil {
+		return nil, sagat.Invalid("a workflow with continueAsNew needs chainPolicy")
+	}
 	for _, n := range nodes {
 		if n["type"] == "return" {
 			return nil, sagat.Invalid("return is only valid in a named body")
@@ -552,6 +604,9 @@ func (b *Builder) Build() (map[string]any, error) {
 		for _, n := range nested {
 			if n["type"] == "end" {
 				return nil, sagat.Invalid("body %q cannot hold an end node", name)
+			}
+			if n["type"] == "continueAsNew" {
+				return nil, sagat.Invalid("continueAsNew is valid only in the top-level workflow")
 			}
 			if n["type"] == "return" {
 				returns++
@@ -658,6 +713,12 @@ func (b *Builder) Build() (map[string]any, error) {
 	}
 	if b.output != nil {
 		document["outputSchema"] = b.output
+	}
+	if b.chainPolicy != nil {
+		document["chainPolicy"] = map[string]any{
+			"maxSegments": b.chainPolicy["maxSegments"],
+			"timeoutMs":   b.chainPolicy["timeoutMs"],
+		}
 	}
 	if len(bodyNodes) > 0 {
 		bodies := make(map[string]any, len(bodyNodes))

@@ -434,6 +434,15 @@ class Flow:
         )
         return self
 
+    def continue_as_new(self: _F, node_id: str, input: str, *, state: str | None = None) -> _F:
+        """Ends this run and transfers explicitly selected values to the next segment."""
+        if not input:
+            raise invalid(f"continueAsNew {node_id} needs an input expression")
+        if state is not None and not state:
+            raise invalid(f"continueAsNew {node_id} state must be a non-empty expression")
+        self._push(_add({"id": node_id, "type": "continueAsNew", "input": input}, state=state))
+        return self
+
     def parallel(self: _F, node_id: str, join: Literal["all", "any"], branches: Sequence[Flow]) -> _F:
         """Runs branches at once; ``all`` waits for every one, ``any`` for the first."""
         if len(branches) < 2:
@@ -481,7 +490,7 @@ class Flow:
         for index, node in enumerate(self._nodes):
             linked = dict(node)
             # Branching nodes name their routes and an end ends: neither has a next node.
-            branching = ("condition", "switch", "approval", "end", "return")
+            branching = ("condition", "switch", "approval", "continueAsNew", "end", "return")
             if index + 1 < len(self._nodes) and linked["type"] not in branching:
                 linked["next"] = self._nodes[index + 1]["id"]
             out.append(linked)
@@ -513,6 +522,7 @@ class WorkflowBuilder(Flow):
         self._triggers: list[dict[str, Any]] = []
         self._input_schema: dict[str, Any] | None = None
         self._output_schema: dict[str, Any] | None = None
+        self._chain_policy: dict[str, int] | None = None
         self._bodies: dict[str, Body] = {}
 
     def description(self, text: str) -> WorkflowBuilder:
@@ -558,6 +568,15 @@ class WorkflowBuilder(Flow):
         self._output_schema = dict(schema)
         return self
 
+    def chain_policy(self, *, max_segments: int, timeout_ms: int) -> WorkflowBuilder:
+        """Sets the finite lifetime shared by every run in a continuation chain."""
+        if isinstance(max_segments, bool) or not isinstance(max_segments, int) or not 1 <= max_segments <= 10_000:
+            raise invalid("chainPolicy maxSegments must be between 1 and 10000")
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or not 1 <= timeout_ms <= 31_622_400_000:
+            raise invalid("chainPolicy timeoutMs must be between 1 and 31622400000")
+        self._chain_policy = {"maxSegments": max_segments, "timeoutMs": timeout_ms}
+        return self
+
     def body(self, name: str, definition: Body) -> WorkflowBuilder:
         """Registers a closed body by name. The body is read when ``build()`` runs."""
         if not name:
@@ -572,6 +591,14 @@ class WorkflowBuilder(Flow):
         if not self._nodes:
             raise invalid("a workflow needs at least one node")
         nodes = self._flatten()
+        if any(
+            node["type"] == "continueAsNew"
+            for embedded in self._embedded
+            for node in embedded._flatten()
+        ):
+            raise invalid("continueAsNew is valid only in the top-level workflow")
+        if any(node["type"] == "continueAsNew" for node in self._nodes) and self._chain_policy is None:
+            raise invalid("a workflow with continueAsNew needs chainPolicy")
         bodies: dict[str, list[Node]] = {}
         for name, definition in self._bodies.items():
             nested = definition._flatten()
@@ -579,6 +606,8 @@ class WorkflowBuilder(Flow):
                 raise invalid(f"body {name!r} is empty")
             if any(node["type"] == "end" for node in nested):
                 raise invalid(f"body {name!r} cannot hold an end node")
+            if any(node["type"] == "continueAsNew" for node in nested):
+                raise invalid("continueAsNew is valid only in the top-level workflow")
             if sum(node["type"] == "return" for node in nested) != 1:
                 raise invalid(f"body {name!r} needs exactly one return node")
             bodies[name] = nested
@@ -632,6 +661,8 @@ class WorkflowBuilder(Flow):
             document["inputSchema"] = self._input_schema
         if self._output_schema is not None:
             document["outputSchema"] = self._output_schema
+        if self._chain_policy is not None:
+            document["chainPolicy"] = dict(self._chain_policy)
         if bodies:
             document["bodies"] = {
                 name: {"entrypoint": nested[0]["id"], "nodes": nested} for name, nested in bodies.items()

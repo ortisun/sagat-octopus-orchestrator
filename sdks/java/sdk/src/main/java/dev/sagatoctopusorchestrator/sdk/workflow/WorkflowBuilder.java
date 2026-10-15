@@ -36,6 +36,7 @@ public final class WorkflowBuilder {
     private String description;
     private JsonNode inputSchema;
     private JsonNode outputSchema;
+    private ChainPolicy chainPolicy;
 
     private WorkflowBuilder(String name) {
         if (name == null || !NAME.matcher(name).matches()) {
@@ -72,6 +73,20 @@ public final class WorkflowBuilder {
 
     public WorkflowBuilder outputSchema(Object schema) {
         this.outputSchema = objectOrThrow(schema, "outputSchema");
+        return this;
+    }
+
+    /** Sets the finite lifetime shared by every run in a continuation chain. */
+    public WorkflowBuilder chainPolicy(ChainPolicy policy) {
+        if (policy == null || policy.maxSegments() < 1 || policy.maxSegments() > 10_000) {
+            throw SagatException.invalid("chainPolicy maxSegments must be between 1 and 10000");
+        }
+        if (policy.timeout() == null || policy.timeout().isNegative() || policy.timeout().isZero()
+                || policy.timeout().getNano() % 1_000_000 != 0
+                || policy.timeout().compareTo(Duration.ofMillis(31_622_400_000L)) > 0) {
+            throw SagatException.invalid("chainPolicy timeoutMs must be between 1 and 31622400000");
+        }
+        this.chainPolicy = policy;
         return this;
     }
 
@@ -175,6 +190,16 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    public WorkflowBuilder continueAsNew(String id, String input) {
+        body.continueAsNew(id, input);
+        return this;
+    }
+
+    public WorkflowBuilder continueAsNew(String id, String input, String state) {
+        body.continueAsNew(id, input, state);
+        return this;
+    }
+
     public WorkflowBuilder parallel(String id, Flow.Join join, List<Flow> branches) {
         body.parallel(id, join, branches);
         return this;
@@ -206,6 +231,12 @@ public final class WorkflowBuilder {
             throw SagatException.invalid("a workflow needs at least one node");
         }
         List<ObjectNode> nodes = body.flatten();
+        if (body.hasNestedKind("continueAsNew")) {
+            throw SagatException.invalid("continueAsNew is valid only in the top-level workflow");
+        }
+        if (body.hasOwnKind("continueAsNew") && chainPolicy == null) {
+            throw SagatException.invalid("a workflow with continueAsNew needs chainPolicy");
+        }
         if (nodes.stream().anyMatch(node -> "return".equals(node.path("type").textValue()))) {
             throw SagatException.invalid("return is only valid in a named body");
         }
@@ -217,6 +248,9 @@ public final class WorkflowBuilder {
             }
             if (nested.stream().anyMatch(node -> "end".equals(node.path("type").textValue()))) {
                 throw SagatException.invalid("body \"" + entry.getKey() + "\" cannot hold an end node");
+            }
+            if (nested.stream().anyMatch(node -> "continueAsNew".equals(node.path("type").textValue()))) {
+                throw SagatException.invalid("continueAsNew is valid only in the top-level workflow");
             }
             if (nested.stream().filter(node -> "return".equals(node.path("type").textValue())).count() != 1) {
                 throw SagatException.invalid("body \"" + entry.getKey() + "\" needs exactly one return node");
@@ -250,6 +284,11 @@ public final class WorkflowBuilder {
         }
         if (outputSchema != null) {
             document.set("outputSchema", outputSchema.deepCopy());
+        }
+        if (chainPolicy != null) {
+            ObjectNode policy = document.putObject("chainPolicy");
+            policy.put("maxSegments", chainPolicy.maxSegments());
+            policy.put("timeoutMs", chainPolicy.timeout().toMillis());
         }
         if (!bodyNodes.isEmpty()) {
             ObjectNode bodyObject = document.putObject("bodies");

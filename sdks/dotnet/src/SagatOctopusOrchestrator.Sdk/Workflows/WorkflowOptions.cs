@@ -225,6 +225,16 @@ public sealed record ApprovalOptions
     public required string OnExpire { get; init; }
 }
 
+/// <summary>Finite lifetime shared by every run in a continuation chain.</summary>
+public sealed record ChainPolicyOptions
+{
+    /// <summary>Maximum number of segments, including the initial run.</summary>
+    public required int MaxSegments { get; init; }
+
+    /// <summary>Original deadline retained by every segment.</summary>
+    public required TimeSpan Timeout { get; init; }
+}
+
 /// <summary>The kind of a workflow trigger.</summary>
 public enum TriggerKind
 {

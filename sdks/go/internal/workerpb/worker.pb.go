@@ -22,12 +22,14 @@ const (
 )
 
 type WorkerCapabilities struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Languages       []string               `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
-	Activities      []string               `protobuf:"bytes,2,rep,name=activities,proto3" json:"activities,omitempty"`
-	Pools           []string               `protobuf:"bytes,3,rep,name=pools,proto3" json:"pools,omitempty"`
-	MaxInflight     int32                  `protobuf:"varint,4,opt,name=max_inflight,json=maxInflight,proto3" json:"max_inflight,omitempty"`
-	ProtocolVersion string                 `protobuf:"bytes,5,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Languages   []string               `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
+	Activities  []string               `protobuf:"bytes,2,rep,name=activities,proto3" json:"activities,omitempty"`
+	Pools       []string               `protobuf:"bytes,3,rep,name=pools,proto3" json:"pools,omitempty"`
+	MaxInflight int32                  `protobuf:"varint,4,opt,name=max_inflight,json=maxInflight,proto3" json:"max_inflight,omitempty"`
+	// The newest additive minor understood by the worker. The server accepts 1.5 only when its
+	// scoped claim and report storage path is enabled; otherwise negotiation remains at 1.4.
+	ProtocolVersion string `protobuf:"bytes,5,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }

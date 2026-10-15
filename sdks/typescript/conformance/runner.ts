@@ -40,6 +40,7 @@ function apply(target: Flow, ops: Obj[]): void {
       case 'while': target.while(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
       case 'repeatUntil': target.repeatUntil(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
       case 'approval': target.approval(op['id'], { policy: op['policy'], timeoutMs: op['timeoutMs'], onApprove: op['onApprove'], onReject: op['onReject'], onExpire: op['onExpire'] }); break;
+      case 'continueAsNew': target.continueAsNew(op['id'], op['input'], op['state']); break;
       case 'return': (target as Body).returnValue(op['id'], op['result']); break;
       case 'parallel': {
         const branches = (op['branches'] as Obj[][]).map((ops) => {
@@ -69,6 +70,7 @@ function builderOf(definition: Obj): WorkflowBuilder {
   for (const trigger of definition['triggers'] ?? []) builder.trigger(trigger);
   if (definition['inputSchema']) builder.inputSchema(definition['inputSchema']);
   if (definition['outputSchema']) builder.outputSchema(definition['outputSchema']);
+  if (definition['chainPolicy']) builder.chainPolicy(definition['chainPolicy']);
   for (const [name, bodyDefinition] of Object.entries<Obj>(definition['bodies'] ?? {})) {
     const nested = body();
     apply(nested, bodyDefinition['program']);

@@ -78,6 +78,11 @@ export interface ApprovalOptions {
   readonly onExpire: string;
 }
 
+export interface ChainPolicy {
+  readonly maxSegments: number;
+  readonly timeoutMs: number;
+}
+
 export interface SagaOptions {
   onCompensationFailure?: 'manual_review' | 'fail';
   cancelPolicy?: 'compensate_completed' | 'abort_no_compensation' | 'wait_in_flight_then_compensate';
@@ -265,6 +270,13 @@ export class Flow {
     });
   }
 
+  /** Ends this run and transfers explicitly selected values to the next segment. */
+  continueAsNew(id: string, input: string, state?: string): this {
+    if (!input) throw invalid(`continueAsNew ${id} needs an input expression`);
+    if (state !== undefined && !state) throw invalid(`continueAsNew ${id} state must be a non-empty expression`);
+    return this.push({ id, type: 'continueAsNew', input, ...clean({ state }) });
+  }
+
   /** Parallel: runs branches at once; `all` waits for every one, `any` for the first. */
   parallel(id: string, join: 'all' | 'any', branches: Flow[]): this {
     if (branches.length < 2) throw invalid(`parallel ${id} needs at least two branches`);
@@ -308,6 +320,7 @@ export class Flow {
       const next = this.nodes[i + 1];
       // A branching node names its routes and an end ends: neither has a next node.
       const branches = linked['type'] === 'condition' || linked['type'] === 'switch' || linked['type'] === 'approval'
+        || linked['type'] === 'continueAsNew'
         || linked['type'] === 'end' || linked['type'] === 'return';
       if (next && !branches && linked['next'] === undefined) linked['next'] = next['id'] as string;
       out.push(linked);
@@ -332,6 +345,7 @@ export class WorkflowBuilder extends Flow {
   private readonly triggerList: Trigger[] = [];
   private input: Record<string, Json> | undefined;
   private output: Record<string, Json> | undefined;
+  private chain: ChainPolicy | undefined;
   private readonly namedBodies = new Map<string, Body>();
 
   constructor(private readonly name: string) {
@@ -364,6 +378,18 @@ export class WorkflowBuilder extends Flow {
     return this;
   }
 
+  /** Sets the finite lifetime shared by every run in a continuation chain. */
+  chainPolicy(policy: ChainPolicy): this {
+    if (!Number.isInteger(policy.maxSegments) || policy.maxSegments < 1 || policy.maxSegments > 10_000) {
+      throw invalid('chainPolicy maxSegments must be between 1 and 10000');
+    }
+    if (!Number.isInteger(policy.timeoutMs) || policy.timeoutMs < 1 || policy.timeoutMs > 31_622_400_000) {
+      throw invalid('chainPolicy timeoutMs must be between 1 and 31622400000');
+    }
+    this.chain = { ...policy };
+    return this;
+  }
+
   /** Registers a closed body by name. The body is read when `build()` runs. */
   body(name: string, definition: Body): this {
     if (!name) throw invalid('a body needs a name');
@@ -376,11 +402,20 @@ export class WorkflowBuilder extends Flow {
   build(): Record<string, Json> {
     if (this.nodes.length === 0) throw invalid('a workflow needs at least one node');
     const nodes = this.flatten();
+    if (this.embedded.some((nested) => nested.flatten().some((node) => node['type'] === 'continueAsNew'))) {
+      throw invalid('continueAsNew is valid only in the top-level workflow');
+    }
+    if (this.nodes.some((node) => node['type'] === 'continueAsNew') && this.chain === undefined) {
+      throw invalid('a workflow with continueAsNew needs chainPolicy');
+    }
     const bodyNodes = new Map<string, Node[]>();
     for (const [name, definition] of this.namedBodies) {
       const nested = definition.flatten();
       if (nested.length === 0) throw invalid(`body ${JSON.stringify(name)} is empty`);
       if (nested.some((node) => node['type'] === 'end')) throw invalid(`body ${JSON.stringify(name)} cannot hold an end node`);
+      if (nested.some((node) => node['type'] === 'continueAsNew')) {
+        throw invalid('continueAsNew is valid only in the top-level workflow');
+      }
       if (nested.filter((node) => node['type'] === 'return').length !== 1) {
         throw invalid(`body ${JSON.stringify(name)} needs exactly one return node`);
       }
@@ -437,6 +472,7 @@ export class WorkflowBuilder extends Flow {
     if (this.triggerList.length > 0) document['triggers'] = this.triggerList.map((t) => clean(t));
     if (this.input) document['inputSchema'] = this.input;
     if (this.output) document['outputSchema'] = this.output;
+    if (this.chain) document['chainPolicy'] = { ...this.chain };
     if (bodyNodes.size > 0) {
       document['bodies'] = Object.fromEntries([...bodyNodes].map(([name, body]) => [name, {
         entrypoint: body[0]!['id'],

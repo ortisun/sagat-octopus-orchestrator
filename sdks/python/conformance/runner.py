@@ -143,6 +143,8 @@ def apply(target: Flow, ops: list[Obj]) -> None:
                 on_reject=op["onReject"],
                 on_expire=op["onExpire"],
             )
+        elif kind == "continueAsNew":
+            target.continue_as_new(op["id"], op["input"], state=op.get("state"))
         elif kind == "return":
             if not isinstance(target, Body):
                 raise ValueError("return is only valid in a named body")
@@ -177,6 +179,9 @@ def builder_of(definition: Obj) -> Any:
         builder.input_schema(definition["inputSchema"])
     if definition.get("outputSchema") is not None:
         builder.output_schema(definition["outputSchema"])
+    if definition.get("chainPolicy") is not None:
+        policy = definition["chainPolicy"]
+        builder.chain_policy(max_segments=policy["maxSegments"], timeout_ms=policy["timeoutMs"])
     for name, body_definition in (definition.get("bodies") or {}).items():
         nested = body()
         apply(nested, body_definition["program"])

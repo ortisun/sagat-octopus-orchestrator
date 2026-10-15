@@ -36,6 +36,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.ApprovalRole;
 import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.ChainPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
@@ -276,6 +277,10 @@ public final class Runner {
                             op.path("onReject").asText(null),
                             op.path("onExpire").asText(null)));
                 }
+                case "continueAsNew" -> target.continueAsNew(
+                        id,
+                        op.path("input").asText(null),
+                        op.has("state") ? op.path("state").asText() : null);
                 case "return" -> target.returnValue(id, op.path("result").asText(null));
                 case "parallel" -> {
                     List<Flow> branches = new ArrayList<>();
@@ -336,6 +341,12 @@ public final class Runner {
         }
         if (definition.has("outputSchema")) {
             builder.outputSchema(definition.get("outputSchema"));
+        }
+        if (definition.has("chainPolicy")) {
+            JsonNode policy = definition.path("chainPolicy");
+            builder.chainPolicy(ChainPolicy.of(
+                    policy.path("maxSegments").intValue(),
+                    Duration.ofMillis(policy.path("timeoutMs").longValue())));
         }
         definition.path("bodies").properties().forEach(e -> {
             Flow nested = Flow.body();

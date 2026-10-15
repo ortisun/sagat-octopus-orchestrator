@@ -361,6 +361,24 @@ public abstract partial class FlowBase<TSelf>
         });
     }
 
+    /// <summary>Ends this run and transfers explicitly selected values to the next segment.</summary>
+    public TSelf ContinueAsNew(string id, string input, string? state = null)
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            throw Invalid($"continueAsNew {id} needs an input expression");
+        }
+
+        if (state is not null && state.Length == 0)
+        {
+            throw Invalid($"continueAsNew {id} state must be a non-empty expression");
+        }
+
+        var node = new JsonObject { ["id"] = id, ["type"] = "continueAsNew", ["input"] = input };
+        Set(node, "state", state);
+        return Push(node);
+    }
+
     /// <summary>Parallel: runs branches at once; <see cref="JoinMode.All"/> waits for every one, <see cref="JoinMode.Any"/> for the first.</summary>
     public TSelf Parallel(string id, JoinMode join, params Flow[] branches) => Parallel(id, join, (IEnumerable<Flow>)branches);
 
@@ -453,7 +471,7 @@ public abstract partial class FlowBase<TSelf>
         {
             var linked = (JsonObject)nodes[i].DeepClone();
             var type = (string?)linked["type"];
-            if (i + 1 < nodes.Count && type is not ("condition" or "switch" or "approval" or "end" or "return") && !linked.ContainsKey("next"))
+            if (i + 1 < nodes.Count && type is not ("condition" or "switch" or "approval" or "continueAsNew" or "end" or "return") && !linked.ContainsKey("next"))
             {
                 linked["next"] = (string)nodes[i + 1]["id"]!;
             }
@@ -627,6 +645,7 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
     private string? descriptionText;
     private JsonObject? input;
     private JsonObject? output;
+    private JsonObject? chainPolicy;
     private readonly SortedDictionary<string, Body> bodies = new(StringComparer.Ordinal);
 
     internal WorkflowBuilder(string name)
@@ -678,6 +697,30 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         return this;
     }
 
+    /// <summary>Sets the finite lifetime shared by every run in a continuation chain.</summary>
+    public WorkflowBuilder ChainPolicy(ChainPolicyOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.MaxSegments is < 1 or > 10_000)
+        {
+            throw Invalid("chainPolicy maxSegments must be between 1 and 10000");
+        }
+
+        if (options.Timeout.Ticks % TimeSpan.TicksPerMillisecond != 0)
+        {
+            throw Invalid("chainPolicy timeoutMs must be a whole number of milliseconds");
+        }
+
+        var timeoutMs = options.Timeout.Ticks / TimeSpan.TicksPerMillisecond;
+        if (timeoutMs is < 1 or > 31_622_400_000)
+        {
+            throw Invalid("chainPolicy timeoutMs must be between 1 and 31622400000");
+        }
+
+        chainPolicy = new JsonObject { ["maxSegments"] = options.MaxSegments, ["timeoutMs"] = timeoutMs };
+        return this;
+    }
+
     /// <summary>Registers a closed body by name. The body is read when <see cref="Build"/> runs.</summary>
     public WorkflowBuilder Body(string name, Body definition)
     {
@@ -704,6 +747,15 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         }
 
         var all = Flatten();
+        if (all.Skip(Nodes.Count).Any(node => (string?)node["type"] == "continueAsNew"))
+        {
+            throw Invalid("continueAsNew is valid only in the top-level workflow");
+        }
+
+        if (Nodes.Any(node => (string?)node["type"] == "continueAsNew") && chainPolicy is null)
+        {
+            throw Invalid("a workflow with continueAsNew needs chainPolicy");
+        }
         var bodyNodes = new SortedDictionary<string, List<JsonObject>>(StringComparer.Ordinal);
         foreach (var (bodyName, definition) in bodies)
         {
@@ -716,6 +768,11 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
             if (nested.Any(node => (string?)node["type"] == "end"))
             {
                 throw Invalid($"body {Wire.Quote(bodyName)} cannot hold an end node");
+            }
+
+            if (nested.Any(node => (string?)node["type"] == "continueAsNew"))
+            {
+                throw Invalid("continueAsNew is valid only in the top-level workflow");
             }
 
             if (nested.Count(node => (string?)node["type"] == "return") != 1)
@@ -830,6 +887,11 @@ public sealed partial class WorkflowBuilder : FlowBase<WorkflowBuilder>
         if (output is not null)
         {
             document["outputSchema"] = output.DeepClone();
+        }
+
+        if (chainPolicy is not null)
+        {
+            document["chainPolicy"] = chainPolicy.DeepClone();
         }
 
         if (bodyNodes.Count > 0)

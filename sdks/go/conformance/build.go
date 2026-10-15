@@ -207,6 +207,12 @@ func apply(b *workflow.Builder, ops []any) {
 				policy.ExcludeInitiator = &exclude
 			}
 			b.Approval(id, policy, asMillis(op["timeoutMs"]), asString(op["onApprove"]), asString(op["onReject"]), asString(op["onExpire"]))
+		case "continueAsNew":
+			var opts []workflow.ContinuationOption
+			if state, present := op["state"]; present {
+				opts = append(opts, workflow.ContinuationState(asString(state)))
+			}
+			b.ContinueAsNew(id, asString(op["input"]), opts...)
 		case "return":
 			b.Return(id, asString(op["result"]))
 		case "parallel":
@@ -288,6 +294,9 @@ func builderOf(definition object) *workflow.Builder {
 	}
 	if schema := asObject(definition["outputSchema"]); schema != nil {
 		b.OutputSchema(schema)
+	}
+	if policy := asObject(definition["chainPolicy"]); policy != nil {
+		b.ChainPolicy(asInt(policy["maxSegments"]), asMillis(policy["timeoutMs"]))
 	}
 	for _, name := range sortedKeys(asObject(definition["bodies"])) {
 		bodyDefinition := asObject(asObject(definition["bodies"])[name])

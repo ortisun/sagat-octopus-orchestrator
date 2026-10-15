@@ -1,0 +1,111 @@
+{
+  "name": "continuation-builders",
+  "description": "All SDKs build the additive v1 continuation boundary and finite chain policy without publishing it.",
+  "buildOnly": true,
+  "workflows": {
+    "input-only": {
+      "name": "continuation-input-only",
+      "chainPolicy": { "maxSegments": 3, "timeoutMs": 86400000 },
+      "program": [
+        { "op": "continueAsNew", "id": "rollover", "input": "input.next" }
+      ]
+    },
+    "input-and-state-maximum": {
+      "name": "continuation-input-state",
+      "chainPolicy": { "maxSegments": 10000, "timeoutMs": 31622400000 },
+      "program": [
+        { "op": "continueAsNew", "id": "rollover", "input": "result.nextInput", "state": "state" }
+      ]
+    }
+  },
+  "invalidWorkflows": {
+    "missing-policy": {
+      "contains": "chainPolicy",
+      "workflow": {
+        "name": "continuation-missing-policy",
+        "program": [
+          { "op": "continueAsNew", "id": "rollover", "input": "input" }
+        ]
+      }
+    },
+    "zero-segments": {
+      "contains": "maxSegments",
+      "workflow": {
+        "name": "continuation-zero-segments",
+        "chainPolicy": { "maxSegments": 0, "timeoutMs": 1000 },
+        "program": [
+          { "op": "continueAsNew", "id": "rollover", "input": "input" }
+        ]
+      }
+    },
+    "too-many-segments": {
+      "contains": "maxSegments",
+      "workflow": {
+        "name": "continuation-too-many-segments",
+        "chainPolicy": { "maxSegments": 10001, "timeoutMs": 1000 },
+        "program": [
+          { "op": "continueAsNew", "id": "rollover", "input": "input" }
+        ]
+      }
+    },
+    "zero-timeout": {
+      "contains": "timeoutMs",
+      "workflow": {
+        "name": "continuation-zero-timeout",
+        "chainPolicy": { "maxSegments": 2, "timeoutMs": 0 },
+        "program": [
+          { "op": "continueAsNew", "id": "rollover", "input": "input" }
+        ]
+      }
+    },
+    "timeout-over-ceiling": {
+      "contains": "timeoutMs",
+      "workflow": {
+        "name": "continuation-long-timeout",
+        "chainPolicy": { "maxSegments": 2, "timeoutMs": 31622400001 },
+        "program": [
+          { "op": "continueAsNew", "id": "rollover", "input": "input" }
+        ]
+      }
+    },
+    "missing-input": {
+      "contains": "input",
+      "workflow": {
+        "name": "continuation-missing-input",
+        "chainPolicy": { "maxSegments": 2, "timeoutMs": 1000 },
+        "program": [
+          { "op": "continueAsNew", "id": "rollover", "input": "" }
+        ]
+      }
+    },
+    "empty-state": {
+      "contains": "state",
+      "workflow": {
+        "name": "continuation-empty-state",
+        "chainPolicy": { "maxSegments": 2, "timeoutMs": 1000 },
+        "program": [
+          { "op": "continueAsNew", "id": "rollover", "input": "input", "state": "" }
+        ]
+      }
+    },
+    "inside-body": {
+      "contains": "top-level",
+      "workflow": {
+        "name": "continuation-inside-body",
+        "chainPolicy": { "maxSegments": 2, "timeoutMs": 1000 },
+        "bodies": {
+          "invalid": {
+            "program": [
+              { "op": "continueAsNew", "id": "rollover", "input": "input" },
+              { "op": "return", "id": "done", "result": "input" }
+            ]
+          }
+        },
+        "program": [
+          { "op": "end", "id": "finished" }
+        ]
+      }
+    }
+  },
+  "steps": []
+}

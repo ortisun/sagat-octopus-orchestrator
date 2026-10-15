@@ -496,6 +496,29 @@ public final class Flow {
         return push(node);
     }
 
+    /** Ends this run and transfers explicitly selected values to the next segment. */
+    public Flow continueAsNew(String id, String input) {
+        return continueAsNew(id, input, null);
+    }
+
+    /** Ends this run and transfers explicitly selected input and state to the next segment. */
+    public Flow continueAsNew(String id, String input, String state) {
+        if (input == null || input.isEmpty()) {
+            throw SagatException.invalid("continueAsNew " + id + " needs an input expression");
+        }
+        if (state != null && state.isEmpty()) {
+            throw SagatException.invalid("continueAsNew " + id + " state must be a non-empty expression");
+        }
+        ObjectNode node = F.objectNode();
+        node.put("id", id);
+        node.put("type", "continueAsNew");
+        node.put("input", input);
+        if (state != null) {
+            node.put("state", state);
+        }
+        return push(node);
+    }
+
     private static long loopMillis(Duration duration, String subject) {
         if (duration == null || duration.isNegative() || duration.isZero()
                 || duration.getNano() % 1_000_000 != 0
@@ -609,6 +632,7 @@ public final class Flow {
             String type = linked.path("type").textValue();
             // A branching node names its routes and an end ends: neither has a next node.
             boolean terminal = "condition".equals(type) || "switch".equals(type) || "approval".equals(type)
+                    || "continueAsNew".equals(type)
                     || "end".equals(type) || "return".equals(type);
             if (i + 1 < nodes.size() && !terminal && !linked.has("next")) {
                 linked.put("next", nodes.get(i + 1).path("id").textValue());
@@ -619,5 +643,13 @@ public final class Flow {
             out.addAll(inner.flatten());
         }
         return out;
+    }
+
+    boolean hasOwnKind(String kind) {
+        return nodes.stream().anyMatch(node -> kind.equals(node.path("type").textValue()));
+    }
+
+    boolean hasNestedKind(String kind) {
+        return embedded.stream().anyMatch(flow -> flow.hasOwnKind(kind) || flow.hasNestedKind(kind));
     }
 }

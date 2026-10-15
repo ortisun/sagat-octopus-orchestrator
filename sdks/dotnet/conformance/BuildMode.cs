@@ -75,6 +75,15 @@ internal static class BuildMode
             builder.OutputSchema(output);
         }
 
+        if (definition["chainPolicy"] is JsonObject chainPolicy)
+        {
+            builder.ChainPolicy(new ChainPolicyOptions
+            {
+                MaxSegments = (int)chainPolicy["maxSegments"]!,
+                Timeout = Ms(chainPolicy["timeoutMs"]),
+            });
+        }
+
         foreach (var (name, bodyDefinition) in definition["bodies"]?.AsObject() ?? [])
         {
             var nested = Workflow.Body();
@@ -180,6 +189,9 @@ internal static class BuildMode
                         OnReject = (string)op["onReject"]!,
                         OnExpire = (string)op["onExpire"]!,
                     });
+                    break;
+                case "continueAsNew":
+                    target.ContinueAsNew(id, (string)op["input"]!, (string?)op["state"]);
                     break;
                 case "return" when target is Body bodyTarget:
                     bodyTarget.Return(id, (string)op["result"]!);
