@@ -7,6 +7,7 @@ use sagat_application::definitions::{IrCodec, IrError, ParsedDefinition};
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::error::AppError;
 use sagat_application::execution::{DefinitionCache, Engine, instance_step_id};
+use sagat_application::maintenance::{MaintenanceStore, Window};
 use sagat_application::primitives::{
     CollectionAdmission, CollectionEntry, CollectionLimits, CollectionScopeId, CollectionStore,
     CollectionTransition, SchedulerAuthority,
@@ -451,34 +452,38 @@ async fn scheduler_resumes_collection_through_checkpoint_and_finish() {
     let fixture = fixture_with_progress("scoped-collection-cycle", false).await;
     let owner = ExecutionInstanceId::root(NodeId::parse("items").expect("owner"));
     let tenant = fixture.world.admin.tenant_id();
+    let entered = scheduler(&fixture).tick().await;
     assert_eq!(
-        scheduler(&fixture)
-            .advance_collection(tenant, fixture.run, &owner)
-            .await
-            .expect("enter collection"),
-        CollectionAdvance::Entered
+        entered.collections_advanced, 1,
+        "automatic enter: {entered:?}"
     );
-    assert_eq!(
-        scheduler(&fixture)
-            .advance_collection(tenant, fixture.run, &owner)
-            .await
-            .expect("admit first item"),
-        CollectionAdvance::Admitted { index: 0 }
-    );
-    assert_eq!(
-        scheduler(&fixture)
-            .advance_collection(tenant, fixture.run, &owner)
-            .await
-            .expect("admit second item"),
-        CollectionAdvance::Admitted { index: 1 }
-    );
-    assert_eq!(
-        scheduler(&fixture)
-            .advance_collection(tenant, fixture.run, &owner)
-            .await
-            .expect("wait for workers"),
-        CollectionAdvance::Waiting
-    );
+    assert_eq!(entered.failed, 0, "automatic enter: {entered:?}");
+    let discovered = fixture
+        .store
+        .collection_candidates(&Window::everything(8))
+        .await
+        .expect("discover collection admission");
+    assert_eq!(discovered.len(), 1, "{discovered:?}");
+    for transition in ["first admission", "second admission"] {
+        let report = scheduler(&fixture).tick().await;
+        let progress: (String, i32, i32, i32, i32) = sqlx::query_as(
+            "SELECT lifecycle,next_admission_index,item_count,active_count,max_concurrency \
+             FROM iteration_scopes WHERE tenant_id=$1 AND run_id=$2 AND owner_node='items'",
+        )
+        .bind(tenant.as_uuid())
+        .bind(fixture.run.as_uuid())
+        .fetch_one(&fixture.world.db.pool)
+        .await
+        .expect("collection progress");
+        assert_eq!(
+            report.collections_advanced, 1,
+            "automatic {transition}: {report:?}, progress={progress:?}"
+        );
+        assert_eq!(report.failed, 0, "automatic {transition}: {report:?}");
+    }
+    let waiting = scheduler(&fixture).tick().await;
+    assert_eq!(waiting.collections_advanced, 0, "{waiting:?}");
+    assert_eq!(waiting.failed, 0, "{waiting:?}");
 
     let mut entries = poll(&fixture, 8).await;
     entries.sort_by_key(index);
@@ -526,10 +531,12 @@ async fn scheduler_resumes_collection_through_checkpoint_and_finish() {
     .execute(&fixture.world.db.pool)
     .await
     .expect("fault trigger");
-    scheduler(&fixture)
-        .advance_collection(tenant, fixture.run, &owner)
-        .await
-        .expect_err("checkpoint transaction must fail");
+    let failed_checkpoint = scheduler(&fixture).tick().await;
+    assert_eq!(
+        failed_checkpoint.collections_advanced, 0,
+        "{failed_checkpoint:?}"
+    );
+    assert_eq!(failed_checkpoint.failed, 1, "{failed_checkpoint:?}");
     let partial: (i64, i64) = sqlx::query_as(
         "SELECT \
            count(*) FILTER (WHERE event_type='collection.iteration_returned'), \
@@ -551,27 +558,106 @@ async fn scheduler_resumes_collection_through_checkpoint_and_finish() {
         .await
         .expect("drop fault function");
 
+    let first_checkpoint = scheduler(&fixture).tick().await;
     assert_eq!(
-        scheduler(&fixture)
-            .advance_collection(tenant, fixture.run, &owner)
-            .await
-            .expect("checkpoint first result after restart"),
-        CollectionAdvance::Checkpointed { index: 0 }
+        first_checkpoint.collections_advanced, 1,
+        "{first_checkpoint:?}"
     );
+    assert_eq!(first_checkpoint.failed, 0, "{first_checkpoint:?}");
+    let (first_digest, first_result): (Vec<u8>, Vec<u8>) = sqlx::query_as(
+        "SELECT c.result_digest,p.content FROM iteration_checkpoints c JOIN payloads p \
+           ON p.tenant_id=c.tenant_id AND p.digest=c.result_digest \
+         WHERE c.tenant_id=$1 AND c.run_id=$2 AND c.iteration_index=0",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("first checkpoint payload");
+    sqlx::query("ALTER TABLE payloads DISABLE TRIGGER payloads_append_only")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("disable append-only guard for corruption test");
+    sqlx::query("UPDATE payloads SET content='null' WHERE tenant_id=$1 AND digest=$2")
+        .bind(tenant.as_uuid())
+        .bind(&first_digest)
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("corrupt checkpoint payload");
+    let corrupt_checkpoint = scheduler(&fixture).tick().await;
     assert_eq!(
-        scheduler(&fixture)
-            .advance_collection(tenant, fixture.run, &owner)
-            .await
-            .expect("checkpoint second result after restart"),
-        CollectionAdvance::Checkpointed { index: 1 }
+        corrupt_checkpoint.collections_advanced, 0,
+        "{corrupt_checkpoint:?}"
     );
+    assert_eq!(corrupt_checkpoint.failed, 1, "{corrupt_checkpoint:?}");
+    sqlx::query("UPDATE payloads SET content=$3 WHERE tenant_id=$1 AND digest=$2")
+        .bind(tenant.as_uuid())
+        .bind(first_digest)
+        .bind(first_result)
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("restore checkpoint payload");
+    sqlx::query("ALTER TABLE payloads ENABLE TRIGGER payloads_append_only")
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("restore append-only guard");
+    let second_checkpoint = scheduler(&fixture).tick().await;
     assert_eq!(
-        scheduler(&fixture)
-            .advance_collection(tenant, fixture.run, &owner)
-            .await
-            .expect("finish collection"),
-        CollectionAdvance::Finished
+        second_checkpoint.collections_advanced, 1,
+        "{second_checkpoint:?}"
     );
+    assert_eq!(second_checkpoint.failed, 0, "{second_checkpoint:?}");
+
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_collection_successor_hint() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'injected successor hint failure'; END $$; \
+         CREATE TRIGGER reject_collection_successor_hint BEFORE INSERT ON event_outbox \
+         FOR EACH ROW WHEN (NEW.event_type = 'task.ready' AND NEW.routing_key = 'act.a') \
+         EXECUTE FUNCTION reject_collection_successor_hint()",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("install successor fault");
+    let failed_finish = scheduler(&fixture).tick().await;
+    assert_eq!(failed_finish.collections_advanced, 0, "{failed_finish:?}");
+    assert_eq!(failed_finish.failed, 1, "{failed_finish:?}");
+    let rolled_back_finish: (String, String, i64, i64, i64) = sqlx::query_as(
+        "SELECT s.lifecycle,o.status, \
+           (SELECT count(*) FROM steps next_step \
+             WHERE next_step.tenant_id=s.tenant_id AND next_step.run_id=s.run_id \
+               AND next_step.node='a' AND cardinality(next_step.instance_path_nodes)=0), \
+           (SELECT count(*) FROM run_events event \
+             WHERE event.tenant_id=s.tenant_id AND event.run_id=s.run_id \
+               AND event.event_type='collection.finished'), \
+           (SELECT count(*) FROM event_outbox message \
+             WHERE message.tenant_id=s.tenant_id AND message.aggregate_id=s.run_id \
+               AND message.event_type='task.ready' AND message.routing_key='act.a') \
+         FROM iteration_scopes s JOIN steps o \
+           ON o.tenant_id=s.tenant_id AND o.run_id=s.run_id AND o.node=s.owner_node \
+          AND o.instance_path_nodes=s.owner_path_nodes \
+          AND o.instance_path_indices=s.owner_path_indices \
+         WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.owner_node='items'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("finish rollback evidence");
+    assert_eq!(
+        rolled_back_finish,
+        ("OPEN".into(), "WAITING".into(), 0, 0, 0)
+    );
+    sqlx::raw_sql(
+        "DROP TRIGGER reject_collection_successor_hint ON event_outbox; \
+         DROP FUNCTION reject_collection_successor_hint()",
+    )
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("remove successor fault");
+
+    let finished = scheduler(&fixture).tick().await;
+    assert_eq!(finished.collections_advanced, 1, "{finished:?}");
+    assert_eq!(finished.failed, 0, "{finished:?}");
     assert_eq!(
         scheduler(&fixture)
             .advance_collection(tenant, fixture.run, &owner)
@@ -610,6 +696,127 @@ async fn scheduler_resumes_collection_through_checkpoint_and_finish() {
     .await
     .expect("finished projection");
     assert_eq!(lifecycle, ("SUCCEEDED".into(), "SUCCEEDED".into(), None, 2));
+
+    let successor: (String, String, bool, i32, i64, i64) = sqlx::query_as(
+        "SELECT status,activity,routed,hint_count, \
+           (SELECT count(*) FROM run_events event \
+             WHERE event.tenant_id=step.tenant_id AND event.run_id=step.run_id \
+               AND event.node=step.node AND cardinality(event.instance_path_nodes)=0 \
+               AND event.event_type='step.released'), \
+           (SELECT count(*) FROM event_outbox message \
+             WHERE message.tenant_id=step.tenant_id AND message.aggregate_id=step.run_id \
+               AND message.event_type='task.ready' AND message.routing_key=step.activity) \
+         FROM steps step WHERE tenant_id=$1 AND run_id=$2 AND node='a' \
+           AND cardinality(instance_path_nodes)=0",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("successor projection");
+    assert_eq!(successor, ("READY".into(), "act.a".into(), false, 1, 1, 1));
+
+    sqlx::query(
+        "UPDATE event_outbox SET delivered_at=clock_timestamp() \
+         WHERE tenant_id=$1 AND aggregate_id=$2 AND event_type='task.ready' \
+           AND routing_key='act.a'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("lose successor notification");
+    sqlx::query(
+        "UPDATE steps SET last_hinted_at=clock_timestamp() - interval '1 minute' \
+         WHERE tenant_id=$1 AND run_id=$2 AND node='a' \
+           AND cardinality(instance_path_nodes)=0 AND status='READY'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("age successor notification");
+    let recovered = scheduler(&fixture).tick().await;
+    assert_eq!(recovered.hints_renewed, 1, "{recovered:?}");
+    let replacement: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM event_outbox \
+         WHERE tenant_id=$1 AND aggregate_id=$2 AND event_type='task.ready' \
+           AND routing_key='act.a' AND delivered_at IS NULL",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("replacement successor notification");
+    assert_eq!(replacement, 1);
+    fixture
+        .store
+        .verify_run(tenant, fixture.run)
+        .await
+        .expect("journal and projections remain consistent");
+}
+
+#[tokio::test]
+async fn automatic_collection_progress_rechecks_the_tenant_capacity() {
+    let fixture = fixture_with_progress("scoped-collection-capacity", false).await;
+    let tenant = fixture.world.admin.tenant_id();
+    sqlx::query(
+        "UPDATE tenant_collection_policies SET max_active_iterations=1 \
+         WHERE tenant_id=$1",
+    )
+    .bind(tenant.as_uuid())
+    .execute(&fixture.world.db.pool)
+    .await
+    .expect("restrict tenant capacity");
+
+    let entered = scheduler(&fixture).tick().await;
+    assert_eq!(entered.collections_advanced, 1, "{entered:?}");
+    let admitted = scheduler(&fixture).tick().await;
+    assert_eq!(admitted.collections_advanced, 1, "{admitted:?}");
+    let capacity = scheduler(&fixture).tick().await;
+    assert_eq!(capacity.collections_advanced, 0, "{capacity:?}");
+    assert_eq!(capacity.skipped, 1, "{capacity:?}");
+    let usage: (i32, i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT active_iterations FROM tenant_iteration_usage WHERE tenant_id=$1), \
+           (SELECT count(*) FROM collection_iterations \
+             WHERE tenant_id=$1 AND run_id=$2 AND lifecycle='ADMITTED'), \
+           (SELECT count(*) FROM steps \
+             WHERE tenant_id=$1 AND run_id=$2 AND cardinality(instance_path_nodes)>0 \
+               AND status='READY')",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("capacity projection");
+    assert_eq!(usage, (1, 1, 1));
+
+    let first = poll(&fixture, 1).await.pop().expect("first entry task");
+    complete(&fixture, &first, 1, "capacity-entry")
+        .await
+        .expect("complete first entry");
+    let body = poll(&fixture, 1).await.pop().expect("first body task");
+    complete(&fixture, &body, 10, "capacity-body")
+        .await
+        .expect("complete first body");
+    let checkpointed = scheduler(&fixture).tick().await;
+    assert_eq!(checkpointed.collections_advanced, 1, "{checkpointed:?}");
+    let next = scheduler(&fixture).tick().await;
+    assert_eq!(next.collections_advanced, 1, "{next:?}");
+    let progress: (i32, i32, i32, i32) = sqlx::query_as(
+        "SELECT admitted_count,completed_count,active_count, \
+           (SELECT active_iterations FROM tenant_iteration_usage \
+             WHERE tenant_id=scope.tenant_id) \
+         FROM iteration_scopes scope \
+         WHERE tenant_id=$1 AND run_id=$2 AND owner_node='items'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(fixture.run.as_uuid())
+    .fetch_one(&fixture.world.db.pool)
+    .await
+    .expect("progress after released capacity");
+    assert_eq!(progress, (2, 1, 1, 1));
 }
 
 async fn age_instance_column(fixture: &Fixture, task: &ClaimedTask, column: &str) {

@@ -88,6 +88,7 @@ impl Default for SchedulerSettings {
 /// What one tick did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Report {
+    pub collections_advanced: u32,
     pub timers_fired: u32,
     pub waits_timed_out: u32,
     pub retries_released: u32,
@@ -144,6 +145,7 @@ impl Report {
     #[must_use]
     pub const fn did_work(&self) -> bool {
         self.timers_fired
+            + self.collections_advanced
             + self.waits_timed_out
             + self.retries_released
             + self.leases_expired
@@ -303,7 +305,7 @@ impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
 
 impl<S, E, R> Scheduler<S, E, R>
 where
-    S: RunStore + MaintenanceStore + DefinitionStore,
+    S: RunStore + MaintenanceStore + DefinitionStore + CollectionStore,
     E: ExpressionEvaluator,
     R: Entropy,
 {
@@ -365,6 +367,7 @@ where
         // A view for each pass, read when the pass begins: a tick that runs long must go on with the
         // leases the keeper has renewed since, not keep acting on the snapshot it began with until
         // that runs out (every later action would be counted as fenced and the later passes starved).
+        self.collections(&self.view(), &mut report).await;
         self.timers(&self.view(), &mut report).await;
         self.wait_deadlines(&self.view(), &mut report).await;
         self.retries(&self.view(), &mut report).await;
@@ -378,11 +381,12 @@ where
     }
 
     /// Advances one collection by one durable transition under the scheduler's current shard
-    /// lease. Callers repeat this after each commit; worker completions may interleave safely.
+    /// lease. The automatic pass uses the same operation; callers may also request an immediate
+    /// transition while worker completions interleave safely.
     ///
     /// # Errors
     /// Returns an error when ownership, projection data, the definition or an expression cannot be
-    /// proven consistent. This method is intentionally not part of [`Self::tick`] yet.
+    /// proven consistent.
     pub async fn advance_collection(
         &self,
         tenant: TenantId,
@@ -393,6 +397,20 @@ where
         S: CollectionStore,
     {
         let view = self.view();
+        self.advance_collection_in_view(&view, tenant, run, owner)
+            .await
+    }
+
+    async fn advance_collection_in_view(
+        &self,
+        view: &View,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError>
+    where
+        S: CollectionStore,
+    {
         let lease = match view.hold_for(run) {
             Hold::Lease(lease) => lease,
             Hold::Nothing | Hold::Lost => return Err(CollectionAdvanceError::FenceUnavailable),
@@ -426,7 +444,7 @@ where
         let body = definition
             .body(body)
             .ok_or(CollectionAdvanceError::NotCollection)?;
-        let authority = SchedulerAuthority::new(view.owner, lease);
+        let authority = SchedulerAuthority::new(view.owner.clone(), lease);
         let transition = |expected_run_version| {
             CollectionTransition::new(
                 tenant,
@@ -1152,6 +1170,72 @@ where
             .buffer_unordered(self.settings.concurrency.max(1))
             .collect()
             .await
+    }
+
+    async fn collections(&self, view: &View, report: &mut Report) {
+        if view.snapshot.is_none() {
+            return;
+        }
+        let candidates = self
+            .pick(
+                view,
+                "collections",
+                report,
+                |step: &StepRef| step.tenant_id,
+                |step| (step.run_id, step.instance()),
+                |store, window| async move { store.collection_candidates(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(candidates, |candidate| async move {
+                let run = candidate.run_id;
+                let instance = candidate.instance();
+                let outcome = match self
+                    .advance_collection_in_view(
+                        view,
+                        candidate.tenant_id,
+                        candidate.run_id,
+                        &instance,
+                    )
+                    .await
+                {
+                    Ok(
+                        CollectionAdvance::Entered
+                        | CollectionAdvance::Admitted { .. }
+                        | CollectionAdvance::Checkpointed { .. }
+                        | CollectionAdvance::Finished,
+                    ) => Outcome::Done,
+                    Ok(CollectionAdvance::Waiting | CollectionAdvance::AlreadyFinished)
+                    | Err(CollectionAdvanceError::NotCollection)
+                    | Err(CollectionAdvanceError::Primitive(
+                        PrimitiveStoreError::AtCapacity
+                        | PrimitiveStoreError::RevisionConflict { .. },
+                    )) => Outcome::Skipped,
+                    Err(CollectionAdvanceError::FenceUnavailable)
+                    | Err(CollectionAdvanceError::Primitive(
+                        PrimitiveStoreError::SchedulerFenceLost,
+                    )) => Outcome::Fenced,
+                    Err(error) => {
+                        tracing::error!(%error, %run, ?instance, "a collection scheduler action failed");
+                        Outcome::Failed
+                    }
+                };
+                metrics::counter!(
+                    "scheduler_actions_total",
+                    "kind" => "collection",
+                    "outcome" => outcome.label()
+                )
+                .increment(1);
+                if outcome == Outcome::Fenced {
+                    metrics::counter!("scheduler_fenced_total", "kind" => "collection")
+                        .increment(1);
+                }
+                outcome
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |value| value.collections_advanced += 1);
+        }
     }
 
     async fn timers(&self, view: &View, report: &mut Report) {

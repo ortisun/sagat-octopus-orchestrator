@@ -1357,21 +1357,6 @@ impl CollectionStore for PgCollectionStore {
                 run.version_id,
             )
             .await?;
-        let Some(owner_definition) = definition.node_for_instance(finish.transition.owner()) else {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        };
-        if !matches!(owner_definition.kind(), NodeKind::ForEach { .. }) {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
-        let successor_node = owner_definition
-            .next()
-            .cloned()
-            .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?;
-        let successor =
-            ExecutionInstanceId::in_path(finish.transition.owner().path().clone(), successor_node);
-        if definition.node_for_instance(&successor).is_none() {
-            return Err(PrimitiveStoreError::InvalidTransition);
-        }
         if scope.get::<String, _>("lifecycle") == "SUCCEEDED" {
             let matches = scope.get::<Option<Vec<u8>>, _>("result_digest")
                 == Some(finish.result_digest.as_bytes().to_vec())
@@ -1463,6 +1448,26 @@ impl CollectionStore for PgCollectionStore {
         if aggregate != Value::Array(ordered_results) {
             return Err(PrimitiveStoreError::InvalidTransition);
         }
+        let Some(owner_definition) = definition.node_for_instance(finish.transition.owner()) else {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        };
+        if !matches!(owner_definition.kind(), NodeKind::ForEach { .. }) {
+            return Err(PrimitiveStoreError::InvalidTransition);
+        }
+        let successor_node = owner_definition
+            .next()
+            .cloned()
+            .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?;
+        let successor =
+            ExecutionInstanceId::in_path(finish.transition.owner().path().clone(), successor_node);
+        let successor_activity = match definition
+            .node_for_instance(&successor)
+            .map(sagat_domain::workflow::Node::kind)
+        {
+            Some(NodeKind::Activity { activity, .. }) => Some(activity.clone()),
+            Some(_) => None,
+            None => return Err(PrimitiveStoreError::InvalidTransition),
+        };
         let owner_finished = sqlx::query(
             "UPDATE steps SET status = 'SUCCEEDED', waiting_kind = NULL, routed = true, \
                     updated_at = $6 \
@@ -1484,28 +1489,59 @@ impl CollectionStore for PgCollectionStore {
         }
         let finish_sequence = run.run_version + 1;
         let routed_sequence = finish_sequence + 1;
+        let final_sequence = if successor_activity.is_some() {
+            routed_sequence + 1
+        } else {
+            routed_sequence
+        };
         let (successor_nodes, successor_indices) = path_parts(&successor);
-        sqlx::query(
-            "INSERT INTO steps \
-             (tenant_id, run_id, node, step_id, namespace_id, status, updated_at, \
-              instance_path_nodes, instance_path_indices) \
-             VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7, $8)",
-        )
-        .bind(finish.transition.tenant_id().as_uuid())
-        .bind(finish.transition.run_id().as_uuid())
-        .bind(successor.node().as_str())
-        .bind(instance_step_id(
-            run.version_id,
-            finish.transition.run_id(),
-            &successor,
-        ))
-        .bind(run.namespace_id.as_uuid())
-        .bind(finish.transition.occurred_at())
-        .bind(successor_nodes)
-        .bind(successor_indices)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        if let Some(activity) = &successor_activity {
+            sqlx::query(
+                "INSERT INTO steps \
+                 (tenant_id, run_id, node, step_id, namespace_id, status, activity, ready_at, \
+                  last_hinted_at, hint_count, updated_at, \
+                  instance_path_nodes, instance_path_indices) \
+                 VALUES ($1, $2, $3, $4, $5, 'READY', $6, $7, $7, 1, $7, $8, $9)",
+            )
+            .bind(finish.transition.tenant_id().as_uuid())
+            .bind(finish.transition.run_id().as_uuid())
+            .bind(successor.node().as_str())
+            .bind(instance_step_id(
+                run.version_id,
+                finish.transition.run_id(),
+                &successor,
+            ))
+            .bind(run.namespace_id.as_uuid())
+            .bind(activity.as_str())
+            .bind(finish.transition.occurred_at())
+            .bind(&successor_nodes)
+            .bind(&successor_indices)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        } else {
+            sqlx::query(
+                "INSERT INTO steps \
+                 (tenant_id, run_id, node, step_id, namespace_id, status, updated_at, \
+                  instance_path_nodes, instance_path_indices) \
+                 VALUES ($1, $2, $3, $4, $5, 'PENDING', $6, $7, $8)",
+            )
+            .bind(finish.transition.tenant_id().as_uuid())
+            .bind(finish.transition.run_id().as_uuid())
+            .bind(successor.node().as_str())
+            .bind(instance_step_id(
+                run.version_id,
+                finish.transition.run_id(),
+                &successor,
+            ))
+            .bind(run.namespace_id.as_uuid())
+            .bind(finish.transition.occurred_at())
+            .bind(&successor_nodes)
+            .bind(&successor_indices)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
         sqlx::query(
             "UPDATE iteration_scopes SET lifecycle = 'SUCCEEDED', result_digest = $4, \
                     finish_sequence = $5, finish_outbox_id = $6, updated_at = $7 \
@@ -1542,6 +1578,39 @@ impl CollectionStore for PgCollectionStore {
             json!({ "activated": [successor.node().as_str()] }),
         )
         .await?;
+        if let Some(activity) = &successor_activity {
+            append_instance_event(
+                &mut tx,
+                &finish.transition,
+                run,
+                &successor,
+                final_sequence,
+                "step.released",
+                json!({}),
+            )
+            .await?;
+            sqlx::query(
+                "INSERT INTO event_outbox \
+                 (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
+                 VALUES ($1, $2, $3, 'task.ready', $4, $5)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(finish.transition.tenant_id().as_uuid())
+            .bind(finish.transition.run_id().as_uuid())
+            .bind(activity.as_str())
+            .bind(json!({
+                "tenantId": finish.transition.tenant_id().to_string(),
+                "namespaceId": finish.transition.namespace_id().to_string(),
+                "runId": finish.transition.run_id().to_string(),
+                "node": successor.node().as_str(),
+                "instancePath": instance_json(&successor)["path"],
+                "activity": activity.as_str(),
+                "traceId": finish.transition.trace_id(),
+            }))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
         sqlx::query(
             "INSERT INTO event_outbox \
              (id, tenant_id, aggregate_id, event_type, routing_key, payload) \
@@ -1562,11 +1631,11 @@ impl CollectionStore for PgCollectionStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        finish_version(&mut tx, &finish.transition, routed_sequence).await?;
+        finish_version(&mut tx, &finish.transition, final_sequence).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(PrimitiveWrite {
             applied: true,
-            run_version: routed_sequence,
+            run_version: final_sequence,
         })
     }
 }

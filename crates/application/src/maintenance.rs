@@ -105,6 +105,13 @@ pub struct LostLease {
 /// Candidate queries and housekeeping. Implemented by `sagat-infra-postgres`; every time
 /// comparison uses the database clock, so instances with skewed clocks agree.
 pub trait MaintenanceStore: Send + Sync {
+    /// Collection owners that can enter, admit, checkpoint or finish without waiting for worker
+    /// progress. The query only discovers candidates; the fenced transition revalidates them.
+    fn collection_candidates(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<StepRef>, StoreError>> + Send;
+
     /// Timers whose due time has passed, oldest first.
     fn due_timers(
         &self,

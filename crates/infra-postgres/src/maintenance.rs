@@ -103,6 +103,58 @@ impl MaintenanceStore for PgRunStore {
     // nothing due costs one probe), then the oldest `limit` of all of them. The oldest `limit` of the
     // owned shards are among the oldest `limit` of each, so the answer is exactly what one query
     // over all of them would give.
+    async fn collection_candidates(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        sqlx::query(
+            "SELECT candidate.tenant_id,candidate.run_id,candidate.node, \
+                    candidate.instance_path_nodes,candidate.instance_path_indices \
+             FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+               SELECT work.tenant_id,work.run_id,work.node,work.instance_path_nodes, \
+                      work.instance_path_indices,work.updated_at \
+               FROM ( \
+                 SELECT step.tenant_id,step.run_id,step.node,step.instance_path_nodes, \
+                        step.instance_path_indices,step.updated_at \
+                 FROM steps step JOIN runs run \
+                   ON run.tenant_id=step.tenant_id AND run.id=step.run_id \
+                 WHERE run_shard(step.run_id)=sh.s AND run.status='RUNNING' \
+                   AND step.status='PENDING' AND cardinality(step.instance_path_nodes)=0 \
+                   AND step.tenant_id <> ALL($3::uuid[]) \
+                 UNION ALL \
+                 SELECT scope.tenant_id,scope.run_id,scope.owner_node, \
+                        scope.owner_path_nodes,scope.owner_path_indices,scope.updated_at \
+                 FROM iteration_scopes scope JOIN runs run \
+                   ON run.tenant_id=scope.tenant_id AND run.id=scope.run_id \
+                 WHERE run_shard(scope.run_id)=sh.s AND run.status IN ('RUNNING','WAITING') \
+                   AND scope.kind='COLLECTION' AND scope.lifecycle='OPEN' \
+                   AND scope.tenant_id <> ALL($3::uuid[]) \
+                   AND ( \
+                     (scope.next_admission_index < scope.item_count \
+                       AND scope.active_count < scope.max_concurrency) \
+                     OR scope.completed_count = scope.item_count \
+                     OR EXISTS ( \
+                       SELECT 1 FROM collection_iterations member JOIN steps returned \
+                         ON returned.tenant_id=member.tenant_id \
+                        AND returned.run_id=member.run_id \
+                        AND returned.instance_path_nodes=member.entry_path_nodes \
+                        AND returned.instance_path_indices=member.entry_path_indices \
+                       WHERE member.tenant_id=scope.tenant_id \
+                         AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
+                         AND member.lifecycle='ADMITTED' AND returned.status='PENDING')) \
+               ) work ORDER BY work.updated_at LIMIT $1 \
+             ) candidate ORDER BY candidate.updated_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(addressed_step_ref)
+        .collect()
+    }
+
     async fn due_timers(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
